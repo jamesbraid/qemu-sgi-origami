@@ -9045,6 +9045,55 @@ static void test_command_fifo_gl_window_restore(void)
 }
 
 /*
+ * The kernel's off-screen tail. For a context drawing off-screen, the
+ * kernel's window push ends with 0x841 (0, 0), the full-range 0x204b and a
+ * zero 0x840 instead of 0x90008116. The library's later restore must bring
+ * back the window pushed just before that tail, so its clear lands in the
+ * probe window, not at the screen origin. A kernel window that really is at
+ * (0, 0), with ordinary rectangles, is still committed: the same restore
+ * then puts the clear at the screen origin.
+ */
+static void kernel_offscreen_tail(QTestState *qts)
+{
+    window_origin(qts, 0, 0);
+    cmd_push(qts, ODSY_CMD_WINDOW_CLIP);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x00ffffff);
+    for (unsigned i = 0; i < 6; i++) {
+        cmd_push(qts, 0);
+    }
+    cmd_push(qts, ODSY_CMD_DID_COMPARE);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0);
+}
+
+static void test_command_fifo_gl_window_offscreen_tail(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    kernel_offscreen_tail(qts);
+    user_cmd_push(qts, ODSY_CMD_WINDOW_RESTORE);
+    push_captured_clear(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 256, 256), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 383, 383), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 384, 300), ==, 0);
+    board_quit(qts);
+
+    qts = board_start("");
+    probe_window(qts);
+    window_origin(qts, 0, 0);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 127, 127 } }, 1);
+    user_window_override(qts);
+    user_cmd_push(qts, ODSY_CMD_WINDOW_RESTORE);
+    push_captured_clear(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 256, 256), ==, 0);
+    board_quit(qts);
+}
+
+/*
  * Texture uploads. The GL library overrides the window to (0, 0), selects
  * the texture level's board-memory object with 0x1017 (base in 16-byte
  * units, row length in 16-texel units, an 0x08... format word) and sends a
@@ -18581,6 +18630,8 @@ int main(int argc, char **argv)
                    test_unimplemented_reports_have_independent_budgets);
     add_case("sn1/odyssey/command-fifo-gl-window-restore",
              test_command_fifo_gl_window_restore);
+    add_case("sn1/odyssey/command-fifo-gl-window-offscreen-tail",
+             test_command_fifo_gl_window_offscreen_tail);
     add_case("sn1/odyssey/command-fifo-gl-texture-luminance",
              test_command_fifo_gl_texture_luminance);
     add_case("sn1/odyssey/command-fifo-gl-texture-rgb",
