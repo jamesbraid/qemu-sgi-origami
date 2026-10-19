@@ -564,6 +564,8 @@ static void sgi_kona_bitmap_reset(SGIKonaState *s)
 static void sgi_kona_saved_input_clear(SGIKonaSavedInput *v)
 {
     g_free(v->bitmap_payload);
+    g_free(v->texture_upload.pixels);
+    g_free(v->gl_image_upload.words);
     memset(v, 0, sizeof(*v));
 }
 
@@ -1314,6 +1316,12 @@ static void sgi_kona_context_stop(SGIKonaState *s, uint32_t token,
  * SGIKonaContext for the key. The host limit never evicts a logical record.
  */
 static void sgi_kona_gl_image_clear(SGIKonaState *s);
+/* The uploads an open GL data run fills (sgi_kona_gl_run_uploads()). */
+#define SGI_KONA_RUN_TEXTURE (1u << 0)
+#define SGI_KONA_RUN_IMAGE   (1u << 1)
+#define SGI_KONA_RUN_BITMAP  (1u << 2)
+#define SGI_KONA_RUN_MAP     (1u << 3)
+static unsigned sgi_kona_gl_run_uploads(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
 
@@ -1357,6 +1365,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     SGIKonaContext *c;
     SGIKonaGLState *replacement = NULL;
     int slot = SGI_KONA_CONTEXT_NONE;
+    unsigned kept;
 
     offset &= 0xfff;
     for (unsigned i = 0; i < s->context_count; i++) {
@@ -1413,19 +1422,23 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     sgi_kona_x_read_invalidate(s);
     sgi_kona_gl_read_dma_refuse(s);
     c = &s->contexts[slot];
-    if (s->texture_upload.draw_pixels &&
+    /* A suspended run's uploads go with its context, unless it starts anew. */
+    kept = s->suspended_owner != SGI_KONA_CONTEXT_NONE &&
+           !(fresh && s->suspended_owner == slot) ?
+           sgi_kona_gl_run_uploads(s) : 0;
+    if (!(kept & SGI_KONA_RUN_TEXTURE) && s->texture_upload.draw_pixels &&
         (fresh || s->context_current != slot)) {
         sgi_kona_texture_upload_clear(s);
     }
-    if (s->gl_image_upload.count &&
+    if (!(kept & SGI_KONA_RUN_IMAGE) && s->gl_image_upload.count &&
         (fresh || s->context_current != slot)) {
         s->gl_image_upload.refused = true;
     }
-    if (s->gl_bitmap_upload.count &&
+    if (!(kept & SGI_KONA_RUN_BITMAP) && s->gl_bitmap_upload.count &&
         (fresh || s->context_current != slot)) {
         s->gl_bitmap_upload.refused = true;
     }
-    if (s->gl_map_upload.header[1] &&
+    if (!(kept & SGI_KONA_RUN_MAP) && s->gl_map_upload.header[1] &&
         (fresh || s->context_current != slot)) {
         s->gl_map_upload.refused = true;
     }
@@ -1579,6 +1592,8 @@ static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
  */
 static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
 {
+    unsigned kept;
+
     sgi_kona_x_read_invalidate(s);
     sgi_kona_gl_read_dma_refuse(s);
     trace_sgi_kona_context_deactivate(index);
@@ -1603,16 +1618,21 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
                                         SGI_KONA_SAVE_AREA_TOKEN);
         }
     }
-    if (s->texture_upload.draw_pixels) {
+    /* A suspended run's uploads are kept for its context. */
+    kept = s->suspended_owner != SGI_KONA_CONTEXT_NONE ?
+           sgi_kona_gl_run_uploads(s) : 0;
+    if (!(kept & SGI_KONA_RUN_TEXTURE) && s->texture_upload.draw_pixels) {
         sgi_kona_texture_upload_clear(s);
     }
-    if (s->gl_image_upload.count) {
+    if (!(kept & SGI_KONA_RUN_IMAGE) && s->gl_image_upload.count) {
         s->gl_image_upload.refused = true;
     }
-    if (s->gl_bitmap_upload.count) {
+    if (!(kept & SGI_KONA_RUN_BITMAP) && s->gl_bitmap_upload.count) {
         s->gl_bitmap_upload.refused = true;
     }
-    s->gl_map_upload.refused = true;
+    if (!(kept & SGI_KONA_RUN_MAP)) {
+        s->gl_map_upload.refused = true;
+    }
     s->texture_associate_pending = false;
     s->texture_retire_pending = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
@@ -11134,13 +11154,45 @@ static void sgi_kona_user_command_drop(SGIKonaState *s)
 
 /*
  * Whether the open user command is one the model can keep with its
- * context: the framers' partial packets, the plain counted runs and a
- * textport bitmap. A GL data run or an X pixel write holds host buffers
- * the model does not move, so one of those still ends at a switch.
+ * context: the framers' partial packets, the plain counted runs, a
+ * textport bitmap and a GL data run. An X pixel write holds staging
+ * planes the model does not move, so one still ends at a switch.
  */
 static bool sgi_kona_input_savable(SGIKonaState *s)
 {
-    return !s->gl_data_remaining && !s->x_pixel_remaining;
+    return !s->x_pixel_remaining;
+}
+
+/*
+ * The uploads the open GL data run fills, by its token: a texel load's or
+ * a DrawPixels' texture upload, a raw bitmap's or a DrawPixels' image, an
+ * inline bitmap, a pixel map. A run that holds none, a polygon stipple's
+ * or a pop-lights', keeps its words in gl_data alone.
+ */
+static unsigned sgi_kona_gl_run_uploads(SGIKonaState *s)
+{
+    uint32_t token = s->gl_data_token;
+    unsigned uploads = 0;
+
+    if (!s->gl_data_remaining) {
+        return 0;
+    }
+    if ((token == SGI_KONA_CMD_GL_TEX_LOAD ||
+         token == SGI_KONA_CMD_GL_DRAW_PIXELS) && s->texture_upload.count) {
+        uploads |= SGI_KONA_RUN_TEXTURE;
+    }
+    if ((token == SGI_KONA_CMD_GL_BITMAP ||
+         (token == SGI_KONA_CMD_GL_DRAW_PIXELS &&
+          s->gl_image_upload.draw_pixels)) && s->gl_image_upload.count) {
+        uploads |= SGI_KONA_RUN_IMAGE;
+    }
+    if (token == SGI_KONA_CMD_GL_BITMAP_INLINE && s->gl_bitmap_upload.count) {
+        uploads |= SGI_KONA_RUN_BITMAP;
+    }
+    if (sgi_kona_gl_pixel_map_token(token) && s->gl_map_upload.header[1]) {
+        uploads |= SGI_KONA_RUN_MAP;
+    }
+    return uploads;
 }
 
 
@@ -11225,6 +11277,34 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->bitmap_payload_expected = s->bitmap_payload_expected;
     s->bitmap_payload = NULL;
     sgi_kona_bitmap_reset(s);
+    /* So does a GL data run's, with the uploads its token fills. */
+    if (s->gl_data_remaining) {
+        unsigned uploads = sgi_kona_gl_run_uploads(s);
+
+        v->gl_data_token = s->gl_data_token;
+        v->gl_data_remaining = s->gl_data_remaining;
+        v->gl_data_have = s->gl_data_have;
+        memcpy(v->gl_data, s->gl_data, sizeof(v->gl_data));
+        if (uploads & SGI_KONA_RUN_TEXTURE) {
+            v->texture_upload = s->texture_upload;
+            s->texture_upload = (SGIKonaTextureUpload) { 0 };
+        }
+        if (uploads & SGI_KONA_RUN_IMAGE) {
+            v->gl_image_upload = s->gl_image_upload;
+            memset(&s->gl_image_upload, 0, sizeof(s->gl_image_upload));
+        }
+        if (uploads & SGI_KONA_RUN_BITMAP) {
+            v->gl_bitmap_upload = s->gl_bitmap_upload;
+            memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+        }
+        if (uploads & SGI_KONA_RUN_MAP) {
+            v->gl_map_upload = s->gl_map_upload;
+            memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
+        }
+        s->gl_data_token = 0;
+        s->gl_data_remaining = 0;
+        s->gl_data_have = 0;
+    }
 
     sgi_command_port_reset(&s->textport);
     sgi_command_port_reset(&s->gl_port);
@@ -11240,6 +11320,39 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     sgi_kona_dma_calls_drop(s);
     s->x_stipple_store_remaining = 0;
     trace_sgi_kona_input_save(owner);
+}
+
+/*
+ * Move a saved GL data run back. Its uploads replace the live ones, which
+ * hold nothing of an open command; one that still holds a finished upload
+ * of another context, waiting for its load identifier, loses it, logged.
+ */
+static void sgi_kona_gl_run_restore(SGIKonaState *s, SGIKonaSavedInput *v)
+{
+    s->gl_data_token = v->gl_data_token;
+    s->gl_data_remaining = v->gl_data_remaining;
+    s->gl_data_have = v->gl_data_have;
+    memcpy(s->gl_data, v->gl_data, sizeof(s->gl_data));
+    if (v->texture_upload.count) {
+        if (s->texture_upload.count) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: a finished texture upload"
+                          " gives way to a restored context's run\n");
+        }
+        sgi_kona_texture_upload_clear(s);
+        s->texture_upload = v->texture_upload;
+        v->texture_upload = (SGIKonaTextureUpload) { 0 };
+    }
+    if (v->gl_image_upload.count) {
+        sgi_kona_gl_image_clear(s);
+        s->gl_image_upload = v->gl_image_upload;
+        memset(&v->gl_image_upload, 0, sizeof(v->gl_image_upload));
+    }
+    if (v->gl_bitmap_upload.count) {
+        s->gl_bitmap_upload = v->gl_bitmap_upload;
+    }
+    if (v->gl_map_upload.header[1]) {
+        s->gl_map_upload = v->gl_map_upload;
+    }
 }
 
 /* Copy `owner`'s saved command back into the input, which is idle. */
@@ -11292,6 +11405,9 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
     s->bitmap_payload_have = v->bitmap_payload_have;
     s->bitmap_payload_expected = v->bitmap_payload_expected;
     v->bitmap_payload = NULL;
+    if (v->gl_data_remaining) {
+        sgi_kona_gl_run_restore(s, v);
+    }
     sgi_kona_saved_input_clear(v);
     trace_sgi_kona_input_restore(owner);
 }
@@ -13860,6 +13976,116 @@ static const VMStateDescription vmstate_sgi_kona_saved_port = {
     },
 };
 
+/* Defined with the live uploads they also migrate. */
+static const VMStateInfo vmstate_sgi_kona_texture_upload;
+static const VMStateInfo vmstate_sgi_kona_gl_image_upload;
+
+static bool sgi_kona_saved_texture_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->texture_upload.count != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_texture = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-run/texture",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_texture_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(texture_upload, SGIKonaSavedInput, 1,
+                       vmstate_sgi_kona_texture_upload, SGIKonaTextureUpload),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_saved_image_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->gl_image_upload.count != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_image = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-run/image",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_image_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(gl_image_upload, SGIKonaSavedInput, 0,
+                       vmstate_sgi_kona_gl_image_upload, SGIKonaGLImageUpload),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_saved_gl_bitmap_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->gl_bitmap_upload.count != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_gl_bitmap = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-run/bitmap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_gl_bitmap_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gl_bitmap_upload.header, SGIKonaSavedInput, 8),
+        VMSTATE_UINT32(gl_bitmap_upload.context, SGIKonaSavedInput),
+        VMSTATE_UINT64(gl_bitmap_upload.generation, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_bitmap_upload.count, SGIKonaSavedInput),
+        VMSTATE_BOOL(gl_bitmap_upload.refused, SGIKonaSavedInput),
+        VMSTATE_UINT8_ARRAY(gl_bitmap_upload.bytes, SGIKonaSavedInput,
+                            SGI_KONA_GL_BITMAP_BYTES),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_saved_map_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->gl_map_upload.header[1] != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_map = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-run/pixel-map",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_map_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gl_map_upload.header, SGIKonaSavedInput, 4),
+        VMSTATE_UINT32(gl_map_upload.token, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_map_upload.context, SGIKonaSavedInput),
+        VMSTATE_UINT64(gl_map_upload.generation, SGIKonaSavedInput),
+        VMSTATE_BOOL(gl_map_upload.refused, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(gl_map_upload.values, SGIKonaSavedInput,
+                             SGI_KONA_GL_PIXEL_MAP_MAX),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* A saved GL data run, only while one is saved; its uploads follow. */
+static bool sgi_kona_saved_gl_run_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->gl_data_remaining != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_gl_run = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-run",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_gl_run_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(gl_data_token, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_data_remaining, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_data_have, SGIKonaSavedInput),
+        VMSTATE_UINT32_ARRAY(gl_data, SGIKonaSavedInput,
+                             SGI_KONA_GL_DATA_MAX),
+        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_kona_saved_texture,
+        &vmstate_sgi_kona_saved_image,
+        &vmstate_sgi_kona_saved_gl_bitmap,
+        &vmstate_sgi_kona_saved_map,
+        NULL
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .name = TYPE_SGI_KONA "/saved-input-entry",
     .version_id = 2,
@@ -13919,6 +14145,10 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
                                    vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_kona_saved_gl_run,
+        NULL
+    },
 };
 
 /* The saved open commands, only while one is saved. */
@@ -13956,6 +14186,74 @@ static bool sgi_kona_saved_port_valid(const SGIKonaSavedPort *p,
     return false;
 }
 
+/* Defined with the live uploads' own load paths. */
+static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u);
+static bool sgi_kona_texture_upload_run_valid(SGIKonaState *s, int owner,
+                                              const SGIKonaTextureUpload *u,
+                                              uint32_t token, uint32_t have,
+                                              uint32_t remaining);
+static bool sgi_kona_gl_image_run_valid(SGIKonaState *s, int owner,
+                                        const SGIKonaGLImageUpload *u,
+                                        uint32_t token, uint32_t have,
+                                        uint32_t remaining);
+static bool sgi_kona_gl_bitmap_run_valid(SGIKonaState *s, int owner,
+                                         const SGIKonaGLBitmapUpload *u,
+                                         uint32_t token, uint32_t have,
+                                         uint32_t remaining);
+static bool sgi_kona_gl_pixel_map_run_valid(SGIKonaState *s, int owner,
+                                            const SGIKonaGLPixelMapUpload *u,
+                                            uint32_t token, uint32_t have,
+                                            uint32_t remaining);
+
+/*
+ * A saved GL data run as the live one could be left by its owner: a
+ * token that has a data run, no GL packet or texture table framing beside
+ * it, and only the uploads its token fills, each passing the check its
+ * live load applies, with the owner in place of the current context.
+ */
+static bool sgi_kona_saved_gl_run_valid(SGIKonaState *s, int owner,
+                                        const SGIKonaSavedInput *v)
+{
+    uint32_t token = v->gl_data_token, have = v->gl_data_have;
+    uint32_t remaining = v->gl_data_remaining;
+    bool texel = token == SGI_KONA_CMD_GL_TEX_LOAD ||
+                 token == SGI_KONA_CMD_GL_DRAW_PIXELS;
+
+    if (!remaining || v->gl_port.framing || v->gl_tex_table_remaining ||
+        (!texel && token != SGI_KONA_CMD_GL_POLYGON_STIPPLE &&
+         token != SGI_KONA_CMD_GL_POP_LIGHTS &&
+         token != SGI_KONA_CMD_GL_BITMAP_INLINE &&
+         token != SGI_KONA_CMD_GL_BITMAP &&
+         !sgi_kona_gl_pixel_map_token(token))) {
+        return false;
+    }
+    if (v->texture_upload.count &&
+        (!texel || !sgi_kona_texture_upload_valid(&v->texture_upload) ||
+         !sgi_kona_texture_upload_run_valid(s, owner, &v->texture_upload,
+                                            token, have, remaining))) {
+        return false;
+    }
+    if (v->gl_image_upload.count &&
+        ((token != SGI_KONA_CMD_GL_BITMAP &&
+          !(token == SGI_KONA_CMD_GL_DRAW_PIXELS &&
+            v->gl_image_upload.draw_pixels)) ||
+         !sgi_kona_gl_image_run_valid(s, owner, &v->gl_image_upload, token,
+                                      have, remaining))) {
+        return false;
+    }
+    if (v->gl_bitmap_upload.count &&
+        !sgi_kona_gl_bitmap_run_valid(s, owner, &v->gl_bitmap_upload, token,
+                                      have, remaining)) {
+        return false;
+    }
+    if (v->gl_map_upload.header[1] &&
+        !sgi_kona_gl_pixel_map_run_valid(s, owner, &v->gl_map_upload, token,
+                                         have, remaining)) {
+        return false;
+    }
+    return true;
+}
+
 /*
  * A saved command must be one the live input could have held. Each check
  * is the live field's own, from sgi_kona_post_load_validate(), the DMA
@@ -13977,7 +14275,7 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
         if (!v->valid) {
             /* An empty slot owns no buffer. */
             if (v->bitmap_state != SGI_KONA_BITMAP_IDLE ||
-                v->bitmap_payload_expected) {
+                v->bitmap_payload_expected || v->gl_data_remaining) {
                 return -EINVAL;
             }
             continue;
@@ -14036,7 +14334,11 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
                                           v->bitmap_width, v->bitmap_height,
                                           v->bitmap_payload,
                                           v->bitmap_payload_have,
-                                          v->bitmap_payload_expected)) {
+                                          v->bitmap_payload_expected) ||
+            ((v->gl_data_remaining || v->gl_data_token || v->gl_data_have ||
+              v->texture_upload.count || v->gl_image_upload.count ||
+              v->gl_bitmap_upload.count || v->gl_map_upload.header[1]) &&
+             !sgi_kona_saved_gl_run_valid(s, i, v))) {
             return -EINVAL;
         }
     }
