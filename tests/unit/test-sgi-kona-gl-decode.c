@@ -692,12 +692,20 @@ static void test_texture_sampler(void)
     g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
     g_assert_cmpfloat(p.min_lod, ==, 0.5);
     g_assert_cmpfloat(p.max_lod, ==, 3.5);
-    for (unsigned axis = 12; axis <= 14; axis++) {
+    for (unsigned axis = 12; axis <= 13; axis++) {
         p = original;
+        p.base_level = 0;
         bind[3] = 1 << axis;
-        g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
-        g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+        g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+        g_assert_cmphex(p.wrap_s, ==, axis == 12 ? SGI_GL_CLAMP_TO_EDGE :
+                                                   SGI_GL_REPEAT);
+        g_assert_cmphex(p.wrap_t, ==, axis == 13 ? SGI_GL_CLAMP_TO_EDGE :
+                                                   SGI_GL_REPEAT);
     }
+    p = original;
+    bind[3] = 1 << 14;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
     bind[3] = 0;
     for (unsigned mode = 1; mode <= 3; mode++) {
         p = original;
