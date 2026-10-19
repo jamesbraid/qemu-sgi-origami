@@ -402,6 +402,21 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_GL_TEX_GEN     0x14
 #define SGI_KONA_GL_TEX_GEN_WORDS   9
+/*
+ * The glRasterPos forms other than the float ones above, each sent as
+ * the caller's components (established from libGLcore's
+ * __glkonim_RasterPos senders): a double as two words, an integer or
+ * short as one sign-extended word.
+ */
+#define SGI_KONA_CMD_GL_RASTER_POS2D 0xa8
+#define SGI_KONA_CMD_GL_RASTER_POS2I 0xaa
+#define SGI_KONA_CMD_GL_RASTER_POS2S 0xab
+#define SGI_KONA_CMD_GL_RASTER_POS3D 0xac
+#define SGI_KONA_CMD_GL_RASTER_POS3I 0xae
+#define SGI_KONA_CMD_GL_RASTER_POS3S 0xaf
+#define SGI_KONA_CMD_GL_RASTER_POS4D 0xb0
+#define SGI_KONA_CMD_GL_RASTER_POS4I 0xb2
+#define SGI_KONA_CMD_GL_RASTER_POS4S 0xb3
 /* glPopAttrib's per-light words after 0x119's count. */
 #define SGI_KONA_GL_POP_LIGHT_WORDS 12
 /* glPolygonStipple's rows after its three words, one word a row. */

@@ -26,6 +26,7 @@ draw /mips64/sn0/origin2000/kona-3d/image-transfer-refusal
 draw /mips64/sn0/origin2000/kona-3d/packed-ingress
 draw /mips64/sn0/origin2000/kona-3d/pixel-map-sizes
 draw /mips64/sn0/origin2000/kona-3d/raw-bitmap
+draw /mips64/sn0/origin2000/kona-3d/raster-pos-forms
 draw /mips64/sn0/origin2000/kona-3d/raw-pixels
 draw /mips64/sn0/origin2000/kona-3d/reordered-pixels
 draw /mips64/sn0/origin2000/kona-3d/scalar-pixels

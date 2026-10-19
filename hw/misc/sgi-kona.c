@@ -5030,6 +5030,27 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     case SGI_KONA_CMD_GL_RASTER_POS4F:
         cmd = (SGIGLCmd) { SGI_GL_OP_RASTER_POS4F, 4, args };
         break;
+    case SGI_KONA_CMD_GL_RASTER_POS2D:
+    case SGI_KONA_CMD_GL_RASTER_POS3D:
+    case SGI_KONA_CMD_GL_RASTER_POS4D:
+        cmd.nargs = selector == SGI_KONA_CMD_GL_RASTER_POS2D ? 2 :
+                    selector == SGI_KONA_CMD_GL_RASTER_POS3D ? 3 : 4;
+        cmd.op = SGI_GL_OP_RASTER_POS2F + cmd.nargs - 2;
+        break;
+    case SGI_KONA_CMD_GL_RASTER_POS2I:
+    case SGI_KONA_CMD_GL_RASTER_POS2S:
+    case SGI_KONA_CMD_GL_RASTER_POS3I:
+    case SGI_KONA_CMD_GL_RASTER_POS3S:
+    case SGI_KONA_CMD_GL_RASTER_POS4I:
+    case SGI_KONA_CMD_GL_RASTER_POS4S:
+        /* Shorts arrive sign-extended to a word, like integers. */
+        cmd.nargs = selector <= SGI_KONA_CMD_GL_RASTER_POS2S ? 2 :
+                    selector <= SGI_KONA_CMD_GL_RASTER_POS3S ? 3 : 4;
+        cmd.op = SGI_GL_OP_RASTER_POS2F + cmd.nargs - 2;
+        for (int k = 0; k < cmd.nargs; k++) {
+            a[k] = sgi_kona_gl_int(args[k]);
+        }
+        break;
     case SGI_KONA_CMD_GL_LIGHTF:
     case SGI_KONA_CMD_GL_LIGHTI:
         if (args[0] - SGI_GL_LIGHT0 >= SGI_GL_LIGHTS) {
@@ -5079,6 +5100,9 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     case SGI_KONA_CMD_GL_VERTEX2D:
     case SGI_KONA_CMD_GL_VERTEX3D:
     case SGI_KONA_CMD_GL_VERTEX4D:
+    case SGI_KONA_CMD_GL_RASTER_POS2D:
+    case SGI_KONA_CMD_GL_RASTER_POS3D:
+    case SGI_KONA_CMD_GL_RASTER_POS4D:
     case SGI_KONA_CMD_GL_COLOR3D:
     case SGI_KONA_CMD_GL_COLOR4D:
     case SGI_KONA_CMD_GL_NORMAL3D:

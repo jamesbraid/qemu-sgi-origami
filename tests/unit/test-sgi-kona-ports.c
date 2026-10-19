@@ -428,6 +428,9 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x112, 1 }, { 0x113, 1 }, { 0x1a9, 1 }, { 0x1be, 1 }, { 0x1c9, 1 },
     /* glTexGen: coordinate, name and seven value words. */
     { 0x14, 9 },
+    /* glRasterPos in doubles, integers and shorts. */
+    { 0xa8, 4 }, { 0xaa, 2 }, { 0xab, 2 }, { 0xac, 6 }, { 0xae, 3 },
+    { 0xaf, 3 }, { 0xb0, 8 }, { 0xb2, 4 }, { 0xb3, 4 },
 };
 
 /*
@@ -438,8 +441,7 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
 static void test_gl_table_shape(void)
 {
     static const uint32_t uncounted[] = {
-        0x65, 0x68, 0x69, 0x70, 0xa8, 0xaa, 0xab, 0xac, 0xae, 0xaf, 0xb0,
-        0xb2, 0xb3,
+        0x65, 0x68, 0x69, 0x70,
     };
 
     check_table_shape(sgi_kona_gl_tokens, sgi_kona_gl_num_tokens);
