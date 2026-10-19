@@ -275,6 +275,8 @@ struct SGIOdysseyState {
     uint32_t obj_clock;
     uint8_t obj_valid[SGI_ODYSSEY_OBJ_VALID_BYTES];
     bool obj_full_reported;
+    /* A full store forgot an object (reported once, not migrated). */
+    bool obj_forget_reported;
     /* A destination base beyond the active profile's board memory. */
     bool board_oob_reported;
 
