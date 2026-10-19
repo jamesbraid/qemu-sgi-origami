@@ -1048,6 +1048,14 @@ enum {
  * model uses C's int-to-float conversion, exact up to 2^24.
  */
 #define ODSY_GL_VERTEX_3I 0x8080cc02  /* 3 operands: X, Y, Z as int32 */
+/*
+ * Four floats, X, Y, Z, W: INFERRED to be glVertex4f. pfCity sends it, four
+ * operands (bits 13:10) and W 1.0 throughout, between glBegin and glEnd in
+ * place of 0x8080cc03, each after a 0xc380d025 texture coordinate; the low
+ * byte steps by two with each operand added, as the texture coordinate
+ * words' 0x1f, 0x21, 0x23 and 0x25 do.
+ */
+#define ODSY_GL_VERTEX_4F 0x8080d005
 
 /*
  * Depth state (ESTABLISHED from the GL library's entry points and the
@@ -5393,12 +5401,16 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
     if ((s->cmd_tag == ODSY_GL_VERTEX_2I ||
          s->cmd_tag == ODSY_GL_VERTEX_2F ||
          s->cmd_tag == ODSY_GL_VERTEX_3F ||
-         s->cmd_tag == ODSY_GL_VERTEX_3I) && s->gl_linear_texgen) {
+         s->cmd_tag == ODSY_GL_VERTEX_3I ||
+         s->cmd_tag == ODSY_GL_VERTEX_4F) && s->gl_linear_texgen) {
         double vertex[4] = {
             odyssey_f32(s->cmd_operand[0]),
             odyssey_f32(s->cmd_operand[1]),
-            s->cmd_tag == ODSY_GL_VERTEX_3F ?
-                odyssey_f32(s->cmd_operand[2]) : 0, 1,
+            s->cmd_tag != ODSY_GL_VERTEX_2I &&
+            s->cmd_tag != ODSY_GL_VERTEX_2F ?
+                odyssey_f32(s->cmd_operand[2]) : 0,
+            s->cmd_tag == ODSY_GL_VERTEX_4F ?
+                odyssey_f32(s->cmd_operand[3]) : 1,
         };
 
         if (s->cmd_tag == ODSY_GL_VERTEX_2I ||
@@ -9138,15 +9150,17 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_GL_VERTEX_2F:
     case ODSY_GL_VERTEX_3F:
-    case ODSY_GL_VERTEX_3I: {
+    case ODSY_GL_VERTEX_3I:
+    case ODSY_GL_VERTEX_4F: {
         /*
          * A float vertex uses the shared GL path, and so does an integer 3D
          * vertex once converted to float (ODSY_GL_VERTEX_3I). Open the
          * primitive lazily on its first vertex, as for shared integer
          * geometry above. The open-primitive record keeps the word and its
-         * operands as sent.
+         * operands as sent. glVertex4f (ODSY_GL_VERTEX_4F) passes its W on.
          */
-        bool has_z = tag != ODSY_GL_VERTEX_2F;
+        unsigned components = tag == ODSY_GL_VERTEX_4F ? 4 :
+                              tag == ODSY_GL_VERTEX_2F ? 2 : 3;
         const uint32_t *xyz = s->cmd_operand;
         uint32_t converted[3];
         double obj[3];
@@ -9169,7 +9183,13 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         }
         obj[0] = odyssey_f32(xyz[0]);
         obj[1] = odyssey_f32(xyz[1]);
-        obj[2] = has_z ? odyssey_f32(xyz[2]) : 0;
+        obj[2] = components > 2 ? odyssey_f32(xyz[2]) : 0;
+        if (components == 4 && odyssey_f32(xyz[3]) != 0) {
+            /* (x, y, z, w) and (x/w, y/w, z/w, 1) are the same point. */
+            for (unsigned k = 0; k < 3; k++) {
+                obj[k] /= odyssey_f32(xyz[3]);
+            }
+        }
         odyssey_gl_vertex_colour(s, obj);
         odyssey_texture_vertex(s);
         if (s->gl_restart_absorb) {
@@ -9177,18 +9197,16 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
 
             if (slot < ARRAY_SIZE(s->gl_restart_vertex)) {
                 sgi_gl_capture_vertex(&s->gl_ctx, s->gl_restart_type,
-                                      xyz, has_z ? 3 : 2,
+                                      xyz, components,
                                       s->gl_restart_vertex[slot]);
             }
             s->gl_restart_absorb--;
             odyssey_restart_finish(s);
             break;
         }
-        if (has_z) {
-            odyssey_gl_feed(s, SGI_GL_OP_VERTEX3F, xyz, 3);
-        } else {
-            odyssey_gl_feed(s, SGI_GL_OP_VERTEX2F, xyz, 2);
-        }
+        odyssey_gl_feed(s, components == 4 ? SGI_GL_OP_VERTEX4F :
+                           components == 3 ? SGI_GL_OP_VERTEX3F :
+                           SGI_GL_OP_VERTEX2F, xyz, components);
         break;
     }
     case ODSY_GL_LOAD_4F:
@@ -9791,6 +9809,10 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if (word == ODSY_GL_VERTEX_3F || word == ODSY_GL_VERTEX_3I) {
         odyssey_cmd_start(s, word, 3);
+        return;
+    }
+    if (word == ODSY_GL_VERTEX_4F) {
+        odyssey_cmd_start(s, word, 4);
         return;
     }
     if (word == ODSY_GL_LOAD_4F) {
