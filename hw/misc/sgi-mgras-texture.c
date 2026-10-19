@@ -115,9 +115,23 @@
  *   under one select overlap exactly as before. Approximated, the model's
  *   choice: which TRAM or lane each select names on the board is
  *   unknown, and so is how far the textures of different selects share
- *   capacity, so the model gives each select a whole TRAM's room. The
- *   kernel's TRAM save and restore move select 0's image only, so a level
- *   under another select is not carried by them.
+ *   capacity, so the model gives each select a whole TRAM's room. A
+ *   one- or two-component texel takes one TRAM word, its components in
+ *   the word's leading bytes: the client saves and restores such textures
+ *   one or two bytes a word over 64 rows of 64 words (traced), so a level
+ *   must lie one texel a word for its save to read it back.
+ *   Save and restore (mgras_tram_transfer_select()): a transfer of one to
+ *   three bytes a word moves the image of the select its TL_MODE names,
+ *   as the client sends the texture's own TL_MODE (traced); a transfer of
+ *   whole words, the kernel's and the client's RGB or RGBA save and
+ *   restore, moves select 0's image only. Whole-word writes into select
+ *   0's image (those restores and RGB or RGBA loads) mark the same blocks
+ *   unwritten in the other selects' images, as the board would have
+ *   overwritten every TRAM there. Limitation, approximated: a kernel save
+ *   and restore around a context switch therefore drops the other
+ *   selects' levels at those blocks rather than carrying them, and a draw
+ *   naming them finds no level and is logged; it never samples texels the
+ *   board would no longer hold.
  *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
  *   keeps one TRAM for both, approximated: each path holding the full
  *   texture is inferred, so a load, a base write and a draw reach the
@@ -621,6 +635,10 @@ static uint32_t mgras_tex_depth_bits(uint32_t mode)
  */
 static uint32_t mgras_tex_slot_bits(uint32_t mode)
 {
+    if (MGRAS_TEX_LAYOUT(mode) <= MGRAS_TEX_LAYOUT_LA) {
+        /* One TRAM word a texel (see "Storage", TRAM select). */
+        return MGRAS_TRAM_WORD_BYTES * 8;
+    }
     return pow2ceil(mgras_tex_components(mode) * mgras_tex_depth_bits(mode));
 }
 
@@ -650,6 +668,35 @@ static uint32_t mgras_tex_select(uint32_t mode)
            (mode >> 3) & 3 : 0;
 }
 
+/* The first bit of a select's image in the TRAM image. */
+static uint64_t mgras_tram_image_bit(uint32_t select)
+{
+    return (uint64_t)select * SGI_MGRAS_TRAM_BYTES * 8;
+}
+
+/*
+ * A write of whole TRAM words into select 0's image, bits [bit, bit +
+ * bits): a three- or four-component level, or a save-shaped restore of
+ * four bytes a word. On the board it rewrites every TRAM of those words,
+ * so whatever the other selects kept at those blocks is gone; the model
+ * marks their blocks unwritten, and a draw that names them finds no
+ * level and is logged, instead of sampling texels the board would no
+ * longer hold.
+ */
+static void mgras_tram_unmark_selects(SGIMgrasState *s, uint64_t bit,
+                                      uint64_t bits)
+{
+    uint64_t last = (bit + bits - 1) / MGRAS_TRAM_BLOCK_BITS;
+
+    for (uint32_t select = 1; select < SGI_MGRAS_TRAM_SELECTS; select++) {
+        uint64_t image = mgras_tram_image_bit(select) / MGRAS_TRAM_BLOCK_BITS;
+
+        for (uint64_t b = bit / MGRAS_TRAM_BLOCK_BITS; b <= last; b++) {
+            s->tram_written[(image + b) / 32] &= ~(1u << ((image + b) % 32));
+        }
+    }
+}
+
 /*
  * Where a level of the kept format mode, 1 << log2w by 1 << log2h, starts
  * in the TRAM image, in bits, under base and TXMIPMAP word, in the image
@@ -662,8 +709,7 @@ static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
     uint64_t bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w) << log2h;
     uint64_t block = (uint64_t)(base & 0xff) + (word & 0xff);
     uint64_t start = block * MGRAS_TRAM_BLOCK_BITS;
-    uint64_t image = (uint64_t)mgras_tex_select(mode) *
-                     SGI_MGRAS_TRAM_BYTES * 8;
+    uint64_t image = mgras_tram_image_bit(mgras_tex_select(mode));
 
     if (bits <= MGRAS_TRAM_BLOCK_BITS / 2) {
         start += MGRAS_TRAM_BLOCK_BITS - 2 * bits;
@@ -1298,6 +1344,25 @@ static uint32_t mgras_tram_word_bytes(uint64_t bytes, uint32_t rows)
     return bytes / words;
 }
 
+/*
+ * The select image a save or restore of k bytes a TRAM word moves. The
+ * client saves and restores a one- or two-component texture one or two
+ * bytes a word, under a TL_MODE whose layout and select are the
+ * texture's (traced on perfly's town database: restores under TL_MODE
+ * 0x4038, 0x4030 and 0x402a, saves under 0x18 and 0x8, and transfers of
+ * 64 rows of 64 words at one and two bytes a word), so such a transfer
+ * takes that select's image. A transfer of whole words, the kernel's and
+ * the client's save of an RGB or RGBA texture, takes select 0's image:
+ * on the board it moves every TRAM of those words, but the model keeps
+ * the other selects apart and cannot carry them in one word's bytes, so
+ * it moves select 0 alone (approximated; see "Storage").
+ */
+static uint32_t mgras_tram_transfer_select(SGIMgrasState *s, uint32_t k)
+{
+    return k < MGRAS_TRAM_WORD_BYTES ? mgras_tex_select(mgras_tex(s)->tl_mode)
+                                     : 0;
+}
+
 /* Read rows of TRAM from first_row back to host memory. */
 static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
 {
@@ -1305,6 +1370,8 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
     uint64_t bytes = sgi_mgras_raster_dma_bytes(s);
     uint32_t k = mgras_tram_word_bytes(bytes, s->tram_rows);
     uint64_t words = (uint64_t)s->tram_rows * MGRAS_TRAM_ROW_WORDS;
+    uint8_t *image = s->tram +
+                     mgras_tram_image_bit(mgras_tram_transfer_select(s, k)) / 8;
     g_autofree uint8_t *buf = NULL;
 
     if (first + s->tram_rows > MGRAS_TRAM_ROWS) {
@@ -1315,7 +1382,7 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
     }
     buf = g_malloc(bytes);
     for (uint64_t i = 0; i < words; i++) {
-        memcpy(buf + i * k, s->tram + (first * MGRAS_TRAM_ROW_WORDS + i) *
+        memcpy(buf + i * k, image + (first * MGRAS_TRAM_ROW_WORDS + i) *
                MGRAS_TRAM_WORD_BYTES, k);
     }
     if (sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, true)) {
@@ -1339,6 +1406,7 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
     uint32_t k = mgras_tram_word_bytes(bytes, rows);
     uint64_t words = (uint64_t)rows * MGRAS_TRAM_ROW_WORDS;
     g_autofree uint8_t *buf = NULL;
+    uint64_t image;
     bool ok;
 
     if (!k || first + rows > MGRAS_TRAM_ROWS) {
@@ -1355,13 +1423,18 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
     if (!ok) {
         return;
     }
+    image = mgras_tram_image_bit(mgras_tram_transfer_select(s, k));
     mgras_tex_border_invalidate_tram(
-        s, NULL, first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
+        s, NULL, image + first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
     for (uint64_t i = 0; i < words; i++) {
-        memcpy(s->tram + (first * MGRAS_TRAM_ROW_WORDS + i) *
+        memcpy(s->tram + image / 8 + (first * MGRAS_TRAM_ROW_WORDS + i) *
                MGRAS_TRAM_WORD_BYTES, buf + i * k, k);
     }
-    mgras_tram_mark(s, first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
+    mgras_tram_mark(s, image + first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
+    if (k == MGRAS_TRAM_WORD_BYTES) {
+        mgras_tram_unmark_selects(s, first * MGRAS_TRAM_ROW_WORDS * 32,
+                                  words * 32);
+    }
     trace_sgi_mgras_tram_transfer(client ? "client restore" : "restore",
                                   s->tram_load_block, rows, k);
 }
@@ -1924,6 +1997,9 @@ static void mgras_tex_commit(SGIMgrasState *s)
     }
     if (stored) {
         mgras_tram_mark(s, start, image_bits);
+        if (MGRAS_TEX_LAYOUT(mode) > MGRAS_TEX_LAYOUT_LA) {
+            mgras_tram_unmark_selects(s, start, image_bits);
+        }
         t->loaded_levels |= 1u << level;
         trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
                                       1u << log2w, 1u << log2h, mode);

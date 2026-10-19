@@ -4523,6 +4523,62 @@ static void test_tram_client_restore_round_trip(void)
 }
 
 /*
+ * The client's save and restore of a one-component texture under a TRAM
+ * select, as perfly's town database sends them: the save reads one byte a
+ * TRAM word over the block's 64 rows under the texture's own TL_MODE and
+ * returns its texels in order; another texture loaded over it under the
+ * same select replaces it; the restore, under TL_MODE 0x4030 (select 2)
+ * as traced, puts the first back where a select-2 draw finds it. A load
+ * of an RGBA level over the block then rewrites every TRAM there, so the
+ * select-2 draw finds no level and draws untextured rather than the old
+ * texels.
+ */
+#define TRAM_LUM8_BLOCK_BYTES 0x1000
+
+static void test_tram_client_restore_under_select(void)
+{
+    static const uint32_t rows[6] = { 0, 0, 64, 64, 64 << 16 | 64, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    g_autofree uint8_t *buffer = g_malloc(TRAM_LUM8_BLOCK_BYTES);
+    uint8_t first[8], second[8], rgba[32];
+
+    for (int i = 0; i < 8; i++) {
+        first[i] = 0x10 + 0x20 * i;
+        second[i] = 0xf0 - 0x18 * i;
+    }
+    tex_enter(t, GL_SLOT_A);
+    tex_select_load(t, 2, first);
+    memset(buffer, TRAM_BUFFER_FILL, TRAM_LUM8_BLOCK_BYTES);
+    qtest_memwrite(t, TRAM_BUFFER, buffer, TRAM_LUM8_BLOCK_BYTES);
+    tex_mipmap_word(t, 0);
+    tram_save_rss(t);
+    tram_read(t, TRAM_BLOCK_ROWS, TRAM_FORMAT_RGBA8, TRAM_LUM8_BLOCK_BYTES,
+              GL_ERAM_READ_KICK);
+    qtest_memread(t, TRAM_BUFFER, buffer, TRAM_LUM8_BLOCK_BYTES);
+    g_assert_true(tram_buffer_holds(buffer, TRAM_LUM8_BLOCK_BYTES, first,
+                                    sizeof(first)));
+
+    tex_select_load(t, 2, second);
+    tex_select_expect(t, 2, second);
+
+    tram_slot1_map(t, 7);
+    tex_record(t, TEX_TL_MODE, 0x4030);
+    tram_tl_mipmap(t, 0);
+    tex_record(t, TEX_TL_SPEC, TEX_TL_SPEC_WHOLE);
+    tram_save_rss(t);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, rows, 6);
+    tram_ge_dma(t, TEX_GE_LOAD_ROUTINE, TRAM_LUM8_BLOCK_BYTES, 4);
+    gl_word(t, TEX_RESTORE_RSS);
+    tex_select_expect(t, 2, first);
+
+    tex_texels(rgba);
+    tex_load(t, TEX_TL_MODE_RGBA8, rgba);
+    tex_select_expect(t, 2, NULL);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
  * A 0x9d10 for any other routine, or outside the whole-TRAM shape, opens a
  * transfer to the GE the model does not take: its kick moves nothing,
  * here under a raster box over screen row 0 1,024 pixels wide that would
@@ -5491,6 +5547,8 @@ int main(int argc, char **argv)
                    test_tram_save_returns_the_block);
     qtest_add_func("sn0/origin2000/mgras/tram-client-restore-round-trip",
                    test_tram_client_restore_round_trip);
+    qtest_add_func("sn0/origin2000/mgras/tram-client-restore-under-select",
+                   test_tram_client_restore_under_select);
     qtest_add_func("sn0/origin2000/mgras/tram-ge-dma-is-not-a-raster-image",
                    test_tram_ge_dma_is_not_a_raster_image);
     qtest_add_func("sn0/origin2000/mgras/tram-open-save-ends-at-other-kick",
