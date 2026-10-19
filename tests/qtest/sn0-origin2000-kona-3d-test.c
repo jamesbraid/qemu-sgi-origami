@@ -6411,6 +6411,35 @@ static void test_texture_rgb5_storage(gconstpointer opaque)
     qtest_quit(s);
 }
 
+/*
+ * pfCity's volume texture load (IRIX 6.5.30): a 128 by 128 RGBA-byte
+ * header by DMA whose layout word 0x9ad is layout mode one, family one,
+ * which the model does not place. The kernel then sends the source's DMA
+ * packet and waits for its completion; without one it killed the pipe
+ * ("idma timed out", death reason 4). The packet now completes on the
+ * mailbox with no texel kept, and a later load is unaffected.
+ */
+static void test_texture_refused_dma_completes(void)
+{
+    static const uint32_t h[20] = {
+        0x806f, 0x80, 0x80, 5, 1, 0, 1, 0, 0, 0x30,
+        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ad, 0x15610, 0x155a8,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    kona_command(s, 0x174, (uint32_t *)h, 20);
+    texture_dma_packet(s, 0, 512, 512, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "DMA source completed unread"),
+                     ==, 1);
+    g_assert_null(strstr(found, "no list record"));
+}
+
 static void draw_pixels_expected(QTestState *s, bool drawn)
 {
     g_autofree Expected *e = g_new(Expected, 1);
@@ -12489,7 +12518,8 @@ static void test_texture_refused(void)
     g_assert_cmpuint(count_occurrences(found, "payload length unknown"), ==, 5);
     g_assert_cmpuint(count_occurrences(found, "draining framed rows"),
                      ==, ARRAY_SIZE(fields) - 5);
-    g_assert_cmpuint(count_occurrences(found, "DMA source not staged"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "DMA source completed unread"),
+                     ==, 1);
 }
 
 static const uint32_t texture_8x8_headers[][20] = {
@@ -16308,6 +16338,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_texture_rgb5_storage);
     add_data_case("sn0/origin2000/kona-3d/texture-rgb5-storage/rgba4",
                   GUINT_TO_POINTER(2), test_texture_rgb5_storage);
+    add_case("sn0/origin2000/kona-3d/texture-refused-dma-completes",
+             test_texture_refused_dma_completes);
     add_case("sn0/origin2000/kona-3d/texture-curve/sampled",
              test_texture_curve_sampled);
     add_case("sn0/origin2000/kona-3d/texture-curve/transport",

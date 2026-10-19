@@ -1164,6 +1164,12 @@ struct SGIKonaState {
      * image and the old one is retired; any other next command keeps it.
      */
     bool texture_retire_pending;
+    /*
+     * A native texture load naming a DMA source whose header the model
+     * refused: the next DMA packet is its source, read by no one, and
+     * completes (see sgi_kona_texture_dma_discard()).
+     */
+    bool texture_dma_discard;
     uint32_t texture_retire_handle;
     /*
      * A video command (SGI_KONA_CMD_VIDEO) still collecting its data words
@@ -1470,6 +1476,7 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 
 /* A native texture upload staged from exact mapped source bytes. */
 bool sgi_kona_texture_dma_waiting(SGIKonaState *s);
+bool sgi_kona_texture_dma_discard(SGIKonaState *s);
 bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                  uint32_t per_line, uint64_t pitch);
 
