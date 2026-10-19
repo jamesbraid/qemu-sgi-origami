@@ -9808,6 +9808,12 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 }
             }
         }
+        if (fb_word && !s->fb_word_low_bits_reported) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: frame-buffer word read"
+                          " answered with bits 15:0 zero, so an alpha the X"
+                          " server asks for reads as 0 (reported once)\n");
+            s->fb_word_low_bits_reported = true;
+        }
         *out_data = g_steal_pointer(&data);
         *out_count = pitch * height;
         return true;
@@ -13885,6 +13891,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
     s->desktop_id_reported = false;
     s->packed_index_short_reported = false;
+    s->fb_word_low_bits_reported = false;
     sgi_scanout_reset(&s->scanout);
 }
 
@@ -13979,6 +13986,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
     s->desktop_id_reported = false;
     s->packed_index_short_reported = false;
+    s->fb_word_low_bits_reported = false;
     s->cursor_state_loaded = false;
     s->cursor_stage_words = 0;
     s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
