@@ -4973,6 +4973,56 @@ static void test_command_fifo_drawable_words(void)
 }
 
 /*
+ * The kernel driver's buffer clear: inside BEGIN 0xa, one 0x8f80a92f record
+ * per strip of the window -- colour R, G, B, A and two corners (x, y, z) --
+ * as ivview's clears arrive. Two strips side by side fill [0, 128) x
+ * [0, 128) blue and nothing beyond it, and no word of either record is
+ * parsed as a command.
+ */
+static void test_command_fifo_kernel_clear_box(void)
+{
+    static const uint32_t words[] = {
+        ODSY_CMD_GL_BEGIN, 0xa,
+        0x8f80a92f, 0, 0, ODSY_F_ONE, ODSY_F_ONE,
+        0, 0, 0x4fffffc0, 0x42800000, 0x43000000, 0x4fffffc0,
+        ODSY_CMD_GL_END,
+        ODSY_CMD_GL_BEGIN, 0xa,
+        0x8f80a92f, 0, 0, ODSY_F_ONE, ODSY_F_ONE,
+        0x42800000, 0, 0x4fffffc0, 0x43000000, 0x43000000, 0x4fffffc0,
+        ODSY_CMD_GL_END,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-clear-box-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        user_cmd_push(qts, words[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 100, 120), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 130, 10), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 130), ==, 0);
+
+    board_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * With the origin at (0, 0) the rectangle's window pixels are plane pixels:
  * exactly [0, 128) x [0, 128) turns blue (plane word 0x0000ffff), the upper
  * edges exclusive, and nothing else changes.
@@ -17948,6 +17998,8 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/readback/failures", test_readback_failures);
     add_fresh_case("sn1/odyssey/swap-retrace-vector",
                    test_swap_retrace_vector);
+    add_fresh_case("sn1/odyssey/command-fifo-kernel-clear-box",
+                   test_command_fifo_kernel_clear_box);
     add_fresh_case("sn1/odyssey/command-fifo-drawable-words",
                    test_command_fifo_drawable_words);
     add_fresh_case("sn1/odyssey/swap-arm-toggles-displayed-buffer",
