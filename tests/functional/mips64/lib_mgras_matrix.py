@@ -66,7 +66,7 @@ class Board:
     """One sgi-mgras board= value and what hinv prints for it."""
     option: str
     hinv_name: str
-    # Extra -device properties. si-t, esi-t, mxi and emxi are not in the model's
+    # Extra -device properties. esi-t, mxi and emxi are not in the model's
     # implemented set (they have texture hardware the model does not fully
     # draw), so they need x-unimplemented-board to be presented at all.
     properties: tuple = ()
@@ -76,8 +76,7 @@ class Board:
 
 BOARDS = {
     'si': Board('si', 'SI'),
-    'si-t': Board('si-t', 'SI with texture option',
-                  properties=('x-unimplemented-board=on',), textured=True),
+    'si-t': Board('si-t', 'SI with texture option', textured=True),
     'esi': Board('esi', 'ESI'),
     'esi-t': Board('esi-t', 'ESI with texture option',
                    properties=('x-unimplemented-board=on',), textured=True),
@@ -90,7 +89,7 @@ BOARDS = {
 }
 
 # mxi and emxi are refused by the model unless x-unimplemented-board is
-# set, like si-t: their texture and per-RE pixel-texture paths are only
+# set, like esi-t: their texture and per-RE pixel-texture paths are only
 # partly modelled.
 
 

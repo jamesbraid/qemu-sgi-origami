@@ -46,8 +46,10 @@ class MatrixTables(unittest.TestCase):
     def test_device_args(self):
         self.assertEqual(m.device_args(m.BOARDS['si']),
                          ('-device', 'sgi-mgras,slot=io3,board=si'))
+        self.assertEqual(m.device_args(m.BOARDS['si-t']),
+                         ('-device', 'sgi-mgras,slot=io3,board=si-t'))
         self.assertIn('x-unimplemented-board=on',
-                      m.device_args(m.BOARDS['si-t'])[1])
+                      m.device_args(m.BOARDS['esi-t'])[1])
 
 
 class Statistics(unittest.TestCase):

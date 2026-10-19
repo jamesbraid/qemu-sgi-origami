@@ -1329,7 +1329,7 @@ typedef struct MgrasBoardExpect {
 
 static const MgrasBoardExpect mgras_board_expect[] = {
     { "si",    true,  1, 1, 0, "SI", 0x45, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
-    { "si-t",  false, 1, 1, 4, "SI with texture option",
+    { "si-t",  true,  1, 1, 4, "SI with texture option",
       0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
     { "ssi",   true,  2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
     { "mxi",   false, 2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
@@ -2144,7 +2144,7 @@ int main(int argc, char **argv)
                 test_board_mapping_port_raster_write, false);
         }
         if (!e->implemented &&
-            (g_test_slow() || !strcmp(e->board, "si-t"))) {
+            (g_test_slow() || !strcmp(e->board, "esi-t"))) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);
 
