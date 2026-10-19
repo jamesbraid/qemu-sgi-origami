@@ -5875,8 +5875,10 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
 static void test_texture_native_volume(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool linear = mode == 1, dma = mode == 2 || mode == 10;
-    bool missing = mode == 4, bank = mode == 10;
+    bool linear = mode == 1, dma = mode == 2 || mode == 10 || mode == 14;
+    bool missing = mode == 4, bank = mode == 10 || mode == 14;
+    /* pfCity finishes all its slices with one 0x176 (IRIX 6.5.30). */
+    bool one_finish = mode == 14;
     bool mipmapped = mode == 5 || mode == 6 || mode == 12;
     /* Modes 11 and 12 load in the other layout mode than the bind's. */
     bool single = mode == 12 || (!mipmapped && mode != 11);
@@ -5921,7 +5923,9 @@ static void test_texture_native_volume(gconstpointer opaque)
                 }
             }
         }
-        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        if (!one_finish || z == 1) {
+            kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        }
     }
     if (mipmapped) {
         texture_volume_header(s, 0, false, true, single, false);
@@ -16785,6 +16789,7 @@ int main(int argc, char **argv)
         "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
         "physical-mismatch", "single-bank", "single-bind-mode-two-load",
         "mipmap-bind-mode-one-load", "unset-comparison-word",
+        "one-finish-for-all-slices",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {
