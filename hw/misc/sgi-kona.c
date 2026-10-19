@@ -5249,6 +5249,12 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
         cmd.op = SGI_GL_OP_POLYGON_OFFSET_EXT;
         cmd.nargs = 2;
         break;
+    /*
+     * The client sends the width and the width limited to its maximum.
+     * The context takes the first, the value glGet answers; which of the
+     * two the pipe rasterizes with is unknown, and they differ only above
+     * the library's maximum.
+     */
     case SGI_KONA_CMD_GL_LINE_WIDTH:
         cmd.op = SGI_GL_OP_LINE_WIDTH;
         cmd.nargs = 1;
