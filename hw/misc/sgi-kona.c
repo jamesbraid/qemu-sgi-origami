@@ -6800,6 +6800,7 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
 {
     g_free(s->texture_upload.pixels);
     s->texture_upload = (SGIKonaTextureUpload) { 0 };
+    s->texture_dma_discard = false;
 }
 
 static uint32_t sgi_kona_texture_source_bytes(uint32_t format, uint32_t type)
@@ -7447,8 +7448,9 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     }
     if (reason) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused: %s;"
-                      " %s\n", reason, h[6] ? "DMA source not staged" :
+                      " %s\n", reason, h[6] ? "DMA source completed unread" :
                                            "draining framed rows");
+        s->texture_dma_discard = h[6];
     } else {
         memcpy(u->header, h, sizeof(u->header));
         u->count = pixels;
@@ -10535,6 +10537,25 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
         }
     }
     return sgi_kona_gl_raw_bitmap_done(s);
+}
+
+/*
+ * The DMA packet that carries a refused native texture load's source:
+ * true, once, when one is due. The kernel waits for the packet's
+ * completion and kills the pipe when none comes (an IRIX 6.5.30 run of
+ * pfCity: "idma timed out", death reason 4), while the load is a
+ * command the pipe accepts. So the model completes the transfer and
+ * keeps none of its bytes, as it keeps no image for the refused header.
+ * Approximated: what the pipe stores for such a load is the model's
+ * unsupported case; that the transfer itself completes is what any
+ * accepted DMA does.
+ */
+bool sgi_kona_texture_dma_discard(SGIKonaState *s)
+{
+    bool due = s->texture_dma_discard;
+
+    s->texture_dma_discard = false;
+    return due;
 }
 
 bool sgi_kona_texture_dma_waiting(SGIKonaState *s)
@@ -16382,6 +16403,22 @@ static bool sgi_kona_texture_retire_needed(void *opaque)
     return ((SGIKonaState *)opaque)->texture_retire_pending;
 }
 
+static bool sgi_kona_texture_discard_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->texture_dma_discard;
+}
+
+static const VMStateDescription vmstate_sgi_kona_texture_discard = {
+    .name = TYPE_SGI_KONA "/textures/dma-discard",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_texture_discard_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(texture_dma_discard, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_texture_retire = {
     .name = TYPE_SGI_KONA "/textures/retire",
     .version_id = 1,
@@ -16426,6 +16463,7 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_texture_retire,
+        &vmstate_sgi_kona_texture_discard,
         NULL
     },
 };

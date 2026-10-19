@@ -314,6 +314,7 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     SGIKonaDma *d = &s->dma;
     bool record = d->record_pending;
     bool texture = !record && sgi_kona_texture_dma_waiting(s);
+    bool discard = !record && !texture && sgi_kona_texture_dma_discard(s);
     bool pixels = !record && sgi_kona_pixels_dma_waiting(s);
     bool bitmap = !record && sgi_kona_bitmap_dma_waiting(s);
     uint32_t total = w[2], per_line = w[3], gap = w[4];
@@ -392,6 +393,12 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         /* Publish only after the complete source was read and staged. */
         if (sgi_kona_texture_image_dma(s, io, lines, per_line, pitch) &&
             cookie != SGI_KONA_DMA_COOKIE_NONE) {
+            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
+                             SGI_DONE_WRITTEN, cookie, total);
+        }
+    } else if (discard) {
+        /* A refused native texture load's source: complete it unread. */
+        if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
         }
