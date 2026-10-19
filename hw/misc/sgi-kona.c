@@ -9869,7 +9869,7 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
     uint32_t pack = setup[SGI_KONA_X_SETUP_SRC_PACK];
     bool bitmap = pack == SGI_KONA_X_PACK_BITMAP ||
                   pack == SGI_KONA_X_PACK_OPAQUE_BITMAP;
-    bool geometry;
+    bool geometry, popup;
 
     memcpy(raw, s->x_write_gc, sizeof(raw));
     if (setup[SGI_KONA_X_SETUP_MODE] & ~SGI_KONA_X_SETUP_MODE_DMA) {
@@ -9908,8 +9908,16 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
      * so its ifmt stays 0.
      */
     geometry = pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0xc;
+    /*
+     * A glyph into the popup planes, as the Toolchest's menus draw their
+     * entries: cfg 0x1820, the glyph form's words 0 and 1 with the popup
+     * pixel unshifted in P(v) (kon_parseGC's index case without the depth
+     * shift, 0x539680-0x5396b4), write mask (pm & 3) << 20. It lands in
+     * the popup planes as a popup fill does.
+     */
+    popup = pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0x1820;
     if (bitmap) {
-        if ((raw[6] != 0x180c && !geometry) ||
+        if ((raw[6] != 0x180c && !geometry && !popup) ||
             raw[10] != (pack == SGI_KONA_X_PACK_BITMAP ? 0 : 5)) {
             return false;
         }
@@ -9931,6 +9939,10 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
         }
         raw[1] = raw[3] = 0;
         raw[10] = geometry ? 0 : 5;
+    }
+    if (popup) {
+        return sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
+               gc->target == SGI_X_GC_POPUP && !gc->opaque_or_tiled;
     }
     return sgi_x_gc_decode_main_index(raw, gc) == SGI_X_GC_OK &&
            !gc->opaque_or_tiled;
@@ -10789,9 +10801,14 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     }
 }
 
-/* Prepare every destination result before any canonical store. */
+/*
+ * Prepare every destination result before any canonical store. A write
+ * to the popup planes lands in the desktop planes, untagged, as a popup
+ * fill does (sgi_kona_x_fill_source()).
+ */
 static void sgi_kona_x_write_commit(SGIKonaState *s)
 {
+    SGIBoardMemory *memory = &s->mem;
     const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
     const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
     const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
@@ -10810,6 +10827,11 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
     }
     target_tag = gc.target == SGI_X_GC_MAIN_RGB8 ? SGI_KONA_TAG_DIRECT :
                  SGI_KONA_TAG_X_INDEX16;
+    if (gc.target == SGI_X_GC_POPUP) {
+        memory = &s->desktop_mem;
+        front = sgi_board_memory_plane(memory, 3);
+        tag = NULL;
+    }
     sgi_kona_x_write_bounds(s, &r);
     if (r.x1 >= r.x2 || r.y1 >= r.y2) {
         return;
@@ -10834,8 +10856,8 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
             if (!sgi_plane_load(&s->x_write_mem, valid, x, y)) {
                 continue;
             }
-            dest = sgi_plane_load(&s->mem, front, x, py);
-            dest_tag = sgi_plane_load(&s->mem, tag, x, py);
+            dest = sgi_plane_load(memory, front, x, py);
+            dest_tag = tag ? sgi_plane_load(memory, tag, x, py) : target_tag;
             if (sgi_x_gc_needs_destination(&gc) &&
                 (dest_tag != target_tag || dest > gc.width_mask)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: X streamed write "
@@ -10859,8 +10881,12 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
                 &prepared[(y - r.y1) * width + x - r.x1];
 
             if (pixel->write) {
-                sgi_plane_store(&s->mem, front, x, py, pixel->value);
-                sgi_plane_store(&s->mem, tag, x, py, pixel->tag);
+                sgi_plane_store(memory, front, x, py, pixel->value);
+                if (tag) {
+                    sgi_plane_store(memory, tag, x, py, pixel->tag);
+                } else {
+                    s->desktop_state_used = true;
+                }
                 changed = true;
             }
         }
