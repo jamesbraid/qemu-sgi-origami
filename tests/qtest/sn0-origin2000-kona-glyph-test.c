@@ -64,6 +64,7 @@
 #define PLANE_FRONT     0
 #define PLANE_FRONT_TAG 2
 #define TAG_X_INDEX     3
+#define TAG_DIRECT      0
 
 #define X_MAP_WINDOW    0x2d00
 
@@ -403,6 +404,69 @@ static void test_packing4_help_glyph(void)
     frame = kona_screendump(qts);
     assert_glyph(frame, 260, 304, glyph_h, RGB_RED, RGB_GREY_192);
     g_assert_cmphex(ppm_pixel(frame, 259, 307), ==, RGB_GREY_192);
+    assert_in_step(qts);
+}
+
+/* A colour byte widened to twelve bits, as kona.so widens it. */
+static uint32_t widen(uint32_t byte)
+{
+    return byte << 4 | byte >> 4;
+}
+
+/*
+ * The GC for a 24-bit TrueColor window, as the Icon Catalog's label GC
+ * carried it (cfg 0x2804, op 0x60001), with words 0 to 3 and ifmt given.
+ */
+static void load_rgb_gc(QTestState *s, uint32_t w0, uint32_t w1,
+                        uint32_t w2, uint32_t w3, uint32_t ifmt)
+{
+    x_command(s, TOKEN_GC, (uint32_t[]){ w0, w1, w2, w3, 0xffffff, 0xffffff,
+                                         0x2804, 0x60001, 1, 6, ifmt, 0, 0 },
+              13);
+}
+
+/* A solid TrueColor box: the colour as four 13-bit fields, alpha ones. */
+static void fill_rgb_box(QTestState *s, uint32_t rgb, int x1, int y1,
+                         int x2, int y2)
+{
+    uint64_t c = (uint64_t)widen(rgb >> 16) << 40 |
+                 (uint64_t)widen((rgb >> 8) & 0xff) << 27 |
+                 (uint64_t)widen(rgb & 0xff) << 14 | 0x1ffe;
+
+    load_rgb_gc(s, c >> 32, (uint32_t)c, 0, 0x1ffe, 8);
+    x_command(s, TOKEN_BOX, (uint32_t[]){ XY(x1, y1), XY(x2, y2) }, 2);
+}
+
+/*
+ * Packing 4 into a 24-bit TrueColor window, as the Icon Catalog draws its
+ * labels: kon_parseGC packs the foreground as word 0 = 0xfff0 with blue's
+ * top four widened bits, word 1 = blue's low eight, green, red, twelve
+ * bits each, and the setup's destination packing is 2. Each set bit of the
+ * "H" paints the foreground 0x2468ac as a direct-colour pixel and each
+ * clear bit leaves the grey box. A model that took packing 4 only for
+ * colour-index windows refused the write and drew no label.
+ */
+static void test_packing4_truecolor_glyph(void)
+{
+    const uint32_t rgb = 0x2468ac;
+    const uint32_t b = widen(rgb & 0xff);
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    fill_rgb_box(qts, RGB_GREY_192, 250, 300, 300, 330);
+    load_rgb_gc(qts, 0xfff0 | b >> 8,
+                (b & 0xff) << 24 | widen((rgb >> 8) & 0xff) << 12 |
+                widen(rgb >> 16), 0, 0, 0);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 4, 2, 0, 32, 20, 0 }, 7);
+    pixel_write(qts, 260, 304, glyph_h, 20);
+
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_DIRECT);
+    g_assert_cmphex(front_at(qts, 260, 307) & 0xffffff, ==, rgb);
+    g_assert_cmphex(front_at(qts, 261, 307) & 0xffffff, ==, RGB_GREY_192);
+    frame = kona_screendump(qts);
+    assert_glyph(frame, 260, 304, glyph_h, rgb, RGB_GREY_192);
     assert_in_step(qts);
 }
 
@@ -1356,6 +1420,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-help-glyph",
                    test_packing4_help_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/packing4-truecolor-glyph",
+                   test_packing4_truecolor_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-glyphs-one-finish",
                    test_packing4_glyphs_one_finish);
     qtest_add_func("sn0/origin2000/kona-glyph/"

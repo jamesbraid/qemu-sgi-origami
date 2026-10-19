@@ -9806,6 +9806,35 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
     memset(s->x_write_stipple_rows, 0, sizeof(s->x_write_stipple_rows));
 }
 
+/*
+ * A glyph write (source packing 4) into a 24-bit TrueColor window: kona.so's
+ * kon_parseGC, for that format (0x538384-0x5385b0), widens each colour byte
+ * to twelve bits as b << 4 | b >> 4 and stores word 0 as 0xfff0 with the
+ * blue value's top four bits and word 1 as its low eight bits, then green,
+ * then red: blue[11:8] in word 0 bits 3:0, blue[7:0] in word 1 bits 31:24,
+ * green in 23:12 and red in 11:0 (established from the code). That a set
+ * bit paints that colour and a clear bit nothing, as in a colour-index
+ * window, is inferred. Rewrite the pair into the colour-word form the solid
+ * fills use, with alpha all ones, so the shared decoder reads it.
+ */
+static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
+{
+    uint64_t red, green, blue, colour;
+
+    if ((raw[0] & ~0xfU) != 0xfff0 || raw[2] || raw[3] || raw[10]) {
+        return false;
+    }
+    red = raw[1] & 0xfff;
+    green = (raw[1] >> 12) & 0xfff;
+    blue = (uint64_t)(raw[0] & 0xf) << 8 | raw[1] >> 24;
+    colour = red << 40 | green << 27 | blue << 14 | 0x1ffe;
+
+    raw[0] = colour >> 32;
+    raw[1] = (uint32_t)colour;
+    raw[10] = 8;
+    return true;
+}
+
 /* Bitmap source colour fields retain their separately reviewed extraction. */
 static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
 {
@@ -9831,6 +9860,13 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
                sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
                gc->target == SGI_X_GC_MAIN_RGB8 && raw[10] == 8 &&
                !gc->opaque_or_tiled;
+    }
+    if (pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0x2804) {
+        return setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
+               !setup[SGI_KONA_X_SETUP_SHIFT] &&
+               sgi_kona_x_rgb_glyph_gc(raw) &&
+               sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
+               gc->target == SGI_X_GC_MAIN_RGB8 && !gc->opaque_or_tiled;
     }
     if (setup[SGI_KONA_X_SETUP_DST_PACK] != 1 ||
         setup[SGI_KONA_X_SETUP_SHIFT] != (bitmap ? 0 : 8) ||
