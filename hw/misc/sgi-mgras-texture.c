@@ -147,13 +147,16 @@
  * - Depth. Approximated, the model's choice: a host component kept at
  *   4 bits is the nearest of 15, round(v * 15 / 255) for a byte and
  *   round(c * 15 / 65535) for a halfword, and is widened back to 8 bits
- *   by replication (t * 17). Truncating to the high four bits instead,
- *   the earlier choice, darkened every texel by half a step on average
- *   and turned near-grey dark texels red or black (perfly's town
- *   streetlight base, (16, 12, 12) to (1, 0, 0)), which the
- *   textureless SI's software texturing does not show. The board's
- *   conversion is unknown; a physical render of texels differing in
- *   their low four bits would settle it.
+ *   by replication (t * 17). Rounding follows the model's own reduction
+ *   of a two-byte component to 8 bits, round(c * 255 / 65535), and
+ *   OpenGL's rule for converting a colour component to fixed point,
+ *   which rounds to the nearest representable value (OpenGL 1.2.1; the
+ *   section's wording was not verified for this change). Truncating to
+ *   the high four bits instead, the earlier choice, biased every texel
+ *   down by half a step and moved the hue of near-grey dark texels, for
+ *   example (16, 12, 12) to (1, 0, 0). The board's conversion is unknown;
+ *   a physical render of texels differing in their low four bits would
+ *   settle it.
  *   An 8-bit depth keeps the host byte. A 12-bit component keeps the top
  *   12 bits of its host halfword (approximated; the board's reduction is
  *   unknown, and a render of texels differing in the dropped bits would
