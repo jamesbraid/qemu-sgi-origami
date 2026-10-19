@@ -681,6 +681,12 @@ struct SGIOdysseyState {
     uint32_t pattern_shape;
     uint32_t pattern_mode;
     uint32_t pattern_load_offset;
+    /*
+     * 0x0c21 operands 1 and 2, the constant colour, as last written whether
+     * or not blending was on. The X server's opaque stipple carries its
+     * background there (ODSY_PATTERN_SHAPE_OPAQUE in hw/misc/sgi-odyssey.c).
+     */
+    uint32_t const_colour[2];
 
     /*
      * The BEGIN-0xa image raster path (the account icons and the text-field

@@ -3489,6 +3489,66 @@ static void test_command_fifo_pattern_quad_straddles_screen(void)
 }
 
 /*
+ * Shape bit 4 makes the pattern opaque: clear bits take the background the X
+ * server put in 0x0c21's constant colour, an index in operand 1 bits 23:12
+ * or 12-bit red, green and blue. This is bitmap(1)'s arrow buttons, a
+ * FillOpaqueStippled rectangle: shape 0x14, mode 0xa0018, 0x0c21 = 0x200,
+ * background << 12, 1.
+ */
+#define ODSY_CMD_BLEND 0x00010c21
+#define ODSY_PATTERN_SHAPE_OPAQUE 0x10
+
+static void test_command_fifo_pattern_quad_opaque(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bitmap[32] = { [0] = 0x80000000, [1] = 0x40000000 };
+
+    index_fill(qts, 0x11, 200, 300, 232, 332);
+    pattern_load(qts, bitmap);
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_OPAQUE | ODSY_PATTERN_SHAPE_32X32);
+    cmd_push(qts, ODSY_CMD_BLEND);
+    cmd_push(qts, 0x200);
+    cmd_push(qts, 7 << 12);
+    cmd_push(qts, 1);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0xa0000 | ODSY_PATTERN_MODE_ENABLE);
+    index_fill(qts, 0, 200, 300, 204, 302);
+
+    /* Set bits take the foreground, clear bits the background. */
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 300), ==, 7);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 301), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 203, 301), ==, 7);
+    /* Outside the quad nothing changed. */
+    g_assert_cmphex(odsy_test_pixel(qts, 204, 300), ==, 0x11);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 302), ==, 0x11);
+
+    /* An RGB quad: the constant colour's 12-bit channels, narrowed. */
+    cmd_push(qts, ODSY_CMD_BLEND);
+    cmd_push(qts, 0x200);
+    cmd_push(qts, 0xfff000);
+    cmd_push(qts, 0x808fff);
+    rgb_fill(qts, 0x00, 0xff, 0x00, 300, 300, 302, 301);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 300), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 301, 300), ==, 0xff0080ff);
+
+    /* Without bit 4 the clear bits keep what was there. */
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_32X32);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0);
+    index_fill(qts, 0x11, 200, 300, 204, 302);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0xa0000 | ODSY_PATTERN_MODE_ENABLE);
+    index_fill(qts, 0, 200, 300, 204, 302);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 300), ==, 0x11);
+
+    board_quit(qts);
+}
+
+/*
  * Solid axial independent lines in the captured default-cap mode include
  * both endpoints. Strips retain half-open coverage, and stippled lines use
  * bit k for the k-th covered pixel from the first vertex, k = 1 next to it.
@@ -19517,6 +19577,8 @@ int main(int argc, char **argv)
              test_command_fifo_pattern_quad);
     add_case("sn1/odyssey/command-fifo-pattern-quad-straddles-screen",
              test_command_fifo_pattern_quad_straddles_screen);
+    add_case("sn1/odyssey/command-fifo-pattern-quad-opaque",
+             test_command_fifo_pattern_quad_opaque);
     add_case("sn1/odyssey/command-fifo-integer-logic-op",
              test_command_fifo_integer_logic_op);
     add_case("sn1/odyssey/command-fifo-image-raster-rgb",
