@@ -1715,7 +1715,10 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
-    s->tram = g_malloc0(SGI_MGRAS_TRAM_IMAGE_BYTES);
+    /* Only a board with TRAM keeps a TRAM image; texture paths check. */
+    if (s->board->tram_count) {
+        s->tram = g_malloc0(SGI_MGRAS_TRAM_IMAGE_BYTES);
+    }
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
