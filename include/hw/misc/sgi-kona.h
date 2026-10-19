@@ -273,9 +273,18 @@ typedef struct SGIKonaContext {
  * fits that one window equally, since both its coordinates are 256; a
  * run with the window at two different coordinates would tell them
  * apart. 0x1ee's first two words repeat the corner and set it alone.
- * Words 2 to 5 and 8 to 10 of 0x1f3 and the last word of 0x1ee are
- * unknown and unused. placed is 0 until the first 0x1f3, and the context
- * then draws nothing.
+ * Words 2 to 5 and 8 of 0x1f3 and the last word of 0x1ee are unknown and
+ * unused. placed is 0 until the first 0x1f3, and the context then draws
+ * nothing.
+ *
+ * display_id and partial are 0x1f3's words 9 and 10. In the runs the
+ * kernel's word 9 is the display ID the X server paints into the
+ * window's pixels of the display-ID planes, and word 10 is 1 while
+ * another window covers part of it and 0 while it is wholly visible
+ * (observed). The model reads them as the pipe's pixel-ownership test:
+ * while partial is set, the context owns only the pixels of its
+ * rectangle whose display ID is display_id (inferred, see
+ * sgi_kona_gl_window_owns()).
  *
  * double_buffered is the double-buffer word of the context's buffer
  * configuration (token 1). A single-buffered context draws into colour
@@ -290,6 +299,10 @@ typedef struct SGIKonaGLWindow {
     uint32_t width, height;
     uint32_t double_buffered;   /* 0 or 1 */
     uint32_t displayed_bank;    /* 0 or 1 */
+    uint32_t display_id;
+    uint32_t partial;
+    /* Not migrated: the display-ID generation the drawable was cut at. */
+    uint64_t owned_generation;
 } SGIKonaGLWindow;
 
 /* Native return state follows its GL context and accepted attribute groups. */
@@ -1375,6 +1388,11 @@ struct SGIKonaState {
     /* Diagnostic suppression is host state, rebuilt after reset/load. */
     bool desktop_map_reported[256];
     bool desktop_id_reported;
+    /*
+     * Not migrated: counts changes to the display-ID plane, so a window
+     * cut to its display ID is cut again before its next command.
+     */
+    uint64_t display_id_generation;
     uint32_t list_memory_size;
     uint32_t plane_front;
     uint32_t plane_back;

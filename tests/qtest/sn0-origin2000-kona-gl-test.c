@@ -179,6 +179,42 @@ static void gl_place_window(QTestState *s, uint32_t x, uint32_t y,
     kona_command_kicked(s, 0x1ee, (uint32_t[]){ x, y, 0 }, 3);
 }
 
+/*
+ * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
+ * rows counted down, ends exclusive: whole-screen position and clip,
+ * then a display-ID GC (cfg 8) writing id into bits 7:2, as kon_drawDid
+ * sends it.
+ */
+static void x_paint_display_id(QTestState *s, uint32_t x1, uint32_t y1,
+                               uint32_t x2, uint32_t y2, uint32_t id)
+{
+    const uint32_t value = id << 2;
+    const uint32_t gc[13] = {
+        ((value & 15) << 3) | ((value & 0xfff0) << 4), 0, 0, 0,
+        0xf00fff, 0, 8, 1, 0, 6, 0, 1, 1,
+    };
+
+    kona_command(s, 0x12a, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(s, 0x12b, (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
+    kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
+    kona_command(s, 0x154, (uint32_t[]){ XY(x1, y1), XY(x2, y2) }, 2);
+}
+
+/*
+ * 0x1f3 and 0x1ee for the probe-sized window at plane (x, y) with
+ * display ID id and word 10 partial, as the runs' kernel sent them for
+ * a window another one covers in part.
+ */
+static void gl_place_window_id(QTestState *s, uint32_t x, uint32_t y,
+                               uint32_t id, uint32_t partial)
+{
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ x, y, 0x05670080, 0x05670080, x, y,
+                                      PROBE_SIZE, PROBE_SIZE, 0, id,
+                                      partial }, 11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ x, y, 0 }, 3);
+}
+
 /* The probe's state and clear: viewport, scissor, dither off, colour. */
 static void gl_clear(QTestState *s, uint32_t r, uint32_t g, uint32_t b)
 {
@@ -544,6 +580,77 @@ static void gl_show_bank1(QTestState *s)
     g_assert_cmphex(shown_pixel(s, PROBE_X, 640), ==, 0xff00ff);
 }
 
+/*
+ * A GL window another window partly covers draws only where the display-
+ * ID planes show its own ID. The probe window at (256, 640) has ID 0xd;
+ * the X server gives its top-right quadrant, plane columns 320 to 383
+ * and rows 704 to 767, a covering window's ID 5. With 0x1f3's word 10
+ * set, a clear fills the other three quadrants and leaves the covered
+ * one as it was. In the runs the kernel's 0x1f3 came before the X
+ * server's fills, so the clear follows the planes as they are when it
+ * draws: once the quadrant shows ID 0xd again, the next clear fills it
+ * too. With word 10 clear the window is wholly visible and its rectangle
+ * is drawn whatever the planes hold. The ownership test is inferred from
+ * the words the kernel and the X server sent in the runs; how the pipe
+ * performs it is unknown.
+ */
+static void test_overlap_clipped_to_display_id(void)
+{
+    const uint32_t y = 640, top = FB_HEIGHT - y - PROBE_SIZE;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    gl_place_window_id(qts, PROBE_X, y, 0xd, 1);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 0xd);
+    x_paint_display_id(qts, PROBE_X + 64, top, PROBE_X + PROBE_SIZE,
+                       top + 64, 5);
+    gl_clear(qts, F1, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 63, y + PROBE_SIZE - 1),
+                    ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1, y + 63),
+                    ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y + 64), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                y + PROBE_SIZE - 1), ==, 0);
+
+    x_paint_display_id(qts, PROBE_X + 64, top, PROBE_X + PROBE_SIZE,
+                       top + 64, 0xd);
+    gl_clear(qts, F0, F1, F0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y + 64), ==, 0x00ff00);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0x00ff00);
+
+    x_paint_display_id(qts, PROBE_X + 64, top, PROBE_X + PROBE_SIZE,
+                       top + 64, 5);
+    gl_place_window_id(qts, PROBE_X, y, 0xd, 0);
+    gl_clear(qts, F0, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, y + 64), ==, 0x0000ff);
+}
+
+/*
+ * A double-buffered window showing bank 1 shows it only at the pixels it
+ * owns once another window covers part of it: there the display shows
+ * bank 0, where the X server draws the covering window. The covered
+ * pixel at the window's corner shows the X server's red, and its
+ * neighbour still the GL window's magenta.
+ */
+static void test_overlap_shows_bank0_where_covered(void)
+{
+    const uint32_t top = FB_HEIGHT - 1 - 640;
+
+    gl_reset();
+    x_paint_display_id(qts, PROBE_X, FB_HEIGHT - 640 - PROBE_SIZE,
+                       PROBE_X + PROBE_SIZE, FB_HEIGHT - 640, 0xd);
+    gl_show_bank1(qts);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + 1, top + 1, 5);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    gl_place_window_id(qts, PROBE_X, 640, 0xd, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 1, 640), ==, 0xff00ff);
+}
+
 /* Only the destroy's exact reason releases the current window. */
 static void test_destroy_releases_window(void)
 {
@@ -783,6 +890,11 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-gl/depth-clear-keeps-colour",
                    test_depth_clear_keeps_colour);
+    qtest_add_func("sn0/origin2000/kona-gl/overlap-clipped-to-display-id",
+                   test_overlap_clipped_to_display_id);
+    qtest_add_func("sn0/origin2000/kona-gl/"
+                   "overlap-shows-bank0-where-covered",
+                   test_overlap_shows_bank0_where_covered);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();

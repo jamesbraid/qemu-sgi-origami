@@ -249,6 +249,114 @@ static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
 }
 
 /*
+ * The display ID at plane pixel (x, y): bits 7:2 of the display-ID
+ * plane's word. The X server writes a main-plane window's ID there under
+ * the mask 0xfc (the command grammar's display-ID GC), and the GL
+ * windows' IDs the kernel sends in 0x1f3 word 9 fit those bits.
+ */
+#define SGI_KONA_DISPLAY_ID_MAX 0x3f
+
+static unsigned sgi_kona_display_id_at(SGIKonaState *s, int x, int y)
+{
+    return (sgi_plane_load(&s->desktop_mem,
+                           sgi_board_memory_plane(&s->desktop_mem, 0),
+                           x, y) >> 2) & SGI_KONA_DISPLAY_ID_MAX;
+}
+
+/* Whether window w owns only the pixels showing its display ID. */
+static bool sgi_kona_gl_window_tests_id(const SGIKonaGLWindow *w)
+{
+    return w->partial && w->display_id <= SGI_KONA_DISPLAY_ID_MAX;
+}
+
+/*
+ * Whether window w owns plane pixel (x, y) of its rectangle, for drawing
+ * and for which bank the display shows there.
+ *
+ * Inferred: the kernel gives the pipe no clip list for a GL window, only
+ * its rectangle and, in 0x1f3, the display ID the X server paints into
+ * the pixels the window owns and a word that is 1 while another window
+ * covers part of it (observed in the runs). The GL library sends no
+ * window clip either, yet OpenGL's pixel ownership test (1.2.1, 4.1.1)
+ * keeps a context out of pixels another window owns. So the model keeps
+ * a partly covered window to the pixels that show its ID. How the pipe
+ * performs the test, and whether it tests a wholly visible window at
+ * all, is unknown; the model tests only while word 10 is set. A window
+ * whose word 9 is outside the main planes' IDs (an overlay ID, or all
+ * ones before the X server has given it one) keeps its rectangle.
+ */
+static bool sgi_kona_gl_window_owns(SGIKonaState *s,
+                                    const SGIKonaGLWindow *w, int x, int y)
+{
+    return !sgi_kona_gl_window_tests_id(w) ||
+           sgi_kona_display_id_at(s, x, y) == w->display_id;
+}
+
+typedef struct SGIKonaOwnedRun {
+    int x0, x1, y0;
+    bool seen;
+} SGIKonaOwnedRun;
+
+/*
+ * The pixels of rectangle r that window w owns, as clip rectangles: a run
+ * of owned pixels that repeats with the same columns on the next row
+ * extends the same rectangle. False when they need more than
+ * SGI_CLIP_MAX rectangles, the most a drawable holds.
+ */
+static bool sgi_kona_gl_owned_clip(SGIKonaState *s, const SGIKonaGLWindow *w,
+                                   const SGIClipRect *r, SGIClipList *clip)
+{
+    g_autofree SGIKonaOwnedRun *open =
+        g_new(SGIKonaOwnedRun, r->x1 - r->x0 + 3);
+    unsigned nopen = 0;
+
+    clip->n = 0;
+    clip->empty = 0;
+    for (int y = r->y0; y <= r->y1 + 1; y++) {
+        unsigned kept = 0;
+
+        for (unsigned k = 0; k < nopen; k++) {
+            open[k].seen = false;
+        }
+        for (int x = r->x0; y <= r->y1 && x <= r->x1; x++) {
+            int x0 = x;
+            unsigned k = 0;
+
+            if (!sgi_kona_gl_window_owns(s, w, x, y)) {
+                continue;
+            }
+            while (x < r->x1 && sgi_kona_gl_window_owns(s, w, x + 1, y)) {
+                x++;
+            }
+            while (k < nopen && (open[k].x0 != x0 || open[k].x1 != x)) {
+                k++;
+            }
+            if (k == nopen) {
+                open[nopen++] = (SGIKonaOwnedRun) { x0, x, y, false };
+            }
+            open[k].seen = true;
+        }
+        for (unsigned k = 0; k < nopen; k++) {
+            if (open[k].seen) {
+                open[kept++] = open[k];
+                continue;
+            }
+            if (clip->n == SGI_CLIP_MAX) {
+                return false;
+            }
+            clip->r[clip->n++] = (SGIClipRect) {
+                open[k].x0, open[k].y0, open[k].x1, y - 1,
+            };
+        }
+        nopen = kept;
+        if (clip->n + nopen > SGI_CLIP_MAX) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
  * The window of context table entry i if it shows colour bank 1, the
  * bank a double-buffered context's window shows after an odd number of
  * swaps; false otherwise.
@@ -267,14 +375,15 @@ static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
 }
 
 /*
- * The colour bank the display shows at plane (x, y): bank 1 inside the
- * window of a double-buffered context showing it, bank 0 everywhere else.
+ * The colour bank the display shows at plane (x, y): bank 1 at the pixels
+ * the window of a double-buffered context showing it owns, bank 0
+ * everywhere else.
  *
- * Approximated: which bank a pixel shows is decided by window rectangles,
- * standing in for the display table the swap rewrites, whose layout is
- * unknown. A pixel inside any window showing bank 1 shows bank 1, even
- * where another context's window lies over it: a window's stacking order
- * reaches the pipe in no packet the model decodes.
+ * Approximated: which bank a pixel shows is decided by window rectangles
+ * and the ownership sgi_kona_gl_window_owns() gives, standing in for the
+ * display table the swap rewrites, whose layout is unknown. A pixel
+ * inside a window showing bank 1 that the kernel reports wholly visible
+ * shows bank 1, even where another context's window lies over it.
  */
 static unsigned sgi_kona_displayed_bank(SGIKonaState *s, int x, int y)
 {
@@ -282,7 +391,8 @@ static unsigned sgi_kona_displayed_bank(SGIKonaState *s, int x, int y)
 
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
         if (sgi_kona_bank1_window(s, i, &r) &&
-            x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) {
+            x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 &&
+            sgi_kona_gl_window_owns(s, &s->state[i]->window, x, y)) {
             return 1;
         }
     }
@@ -407,7 +517,9 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
             continue;
         }
         for (int x = r.x0; x <= r.x1; x++) {
-            dst[x] = sgi_kona_bank_read(s, 1, x, row) & 0x00ffffff;
+            if (sgi_kona_gl_window_owns(s, &s->state[i]->window, x, row)) {
+                dst[x] = sgi_kona_bank_read(s, 1, x, row) & 0x00ffffff;
+            }
         }
     }
     for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
@@ -4102,7 +4214,7 @@ static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
  */
 static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
 {
-    const SGIKonaGLWindow *w = &s->state[i]->window;
+    SGIKonaGLWindow *w = &s->state[i]->window;
     unsigned front = w->double_buffered ? w->displayed_bank : 0;
     SGIGLDrawable d = {
         .bound = w->placed,
@@ -4111,11 +4223,20 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
         .back = w->double_buffered ? sgi_kona_bank_plane(s, !front) :
                                      SGI_PLANE_NONE,
     };
+    SGIClipRect r;
 
-    if (sgi_kona_gl_window_rect(w, &d.clip.r[0])) {
-        d.clip.n = 1;
-    } else {
+    w->owned_generation = s->display_id_generation;
+    if (!sgi_kona_gl_window_rect(w, &r)) {
         d.clip.empty = 1;
+    } else if (!sgi_kona_gl_window_tests_id(w)) {
+        d.clip.r[0] = r;
+        d.clip.n = 1;
+    } else if (!sgi_kona_gl_owned_clip(s, w, &r, &d.clip)) {
+        /* The whole rectangle, as before ownership was modelled. */
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: context %u's pixels with display"
+                      " ID 0x%x need more than %d rectangles; its whole"
+                      " window is drawn\n", i, w->display_id, SGI_CLIP_MAX);
+        d.clip = (SGIClipList) { .n = 1, .r[0] = r };
     }
     sgi_gl_set_drawable(&s->state[i]->gl, &d);
 }
@@ -4203,6 +4324,14 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
     w->x = args[0];
     w->y = args[1];
     if (selector == SGI_KONA_CMD_CONTEXT_RECORDS) {
+        w->display_id = args[9];
+        w->partial = args[10];
+        if (w->partial && w->display_id > SGI_KONA_DISPLAY_ID_MAX &&
+            w->display_id != UINT32_MAX) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's window with"
+                          " display ID 0x%x outside the main planes keeps"
+                          " its rectangle\n", i, w->display_id);
+        }
         if (!w->placed) {
             /* Retirement clears placement, retaining the context visual. */
             w->double_buffered = s->state[i]->pipe.draw_config_received &&
@@ -7996,6 +8125,12 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
              selector == SGI_KONA_CMD_GL_TEX_LOAD &&
              args[10] == s->texture_retire_handle;
     s->texture_retire_pending = false;
+    /* The X server repainted display IDs since the window was last cut. */
+    if (i != SGI_KONA_CONTEXT_NONE &&
+        sgi_kona_gl_window_tests_id(&s->state[i]->window) &&
+        s->state[i]->window.owned_generation != s->display_id_generation) {
+        sgi_kona_gl_set_drawable(s, i);
+    }
     if (selector != SGI_KONA_CMD_GL_TEX_BIND_2D) {
         s->texture_associate_pending = false;
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
@@ -8931,6 +9066,7 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                         s->desktop_state_used = true;
                         if (gc.target == SGI_X_GC_DID) {
                             s->desktop_id_reported = false;
+                            s->display_id_generation++;
                         }
                     }
                     changed = true;
@@ -13289,6 +13425,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
     s->desktop_state_used = false;
+    s->display_id_generation++;
     memset(s->desktop_map, 0, sizeof(s->desktop_map));
     memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
@@ -13381,6 +13518,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     sgi_kona_x_write_clear(s);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
     s->desktop_state_used = false;
+    s->display_id_generation++;
     memset(s->desktop_map, 0, sizeof(s->desktop_map));
     memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
@@ -13724,6 +13862,7 @@ static int sgi_kona_desktop_post_load(void *opaque, int version_id)
         }
     }
     s->desktop_state_used = true;
+    s->display_id_generation++;
     sgi_scanout_invalidate_all(&s->scanout);
     return 0;
 }
@@ -14417,8 +14556,8 @@ static const VMStateDescription vmstate_sgi_kona_retrace = {
 
 static const VMStateDescription vmstate_sgi_kona_gl_window = {
     .name = TYPE_SGI_KONA "/gl-window",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(placed, SGIKonaGLWindow),
         VMSTATE_INT32(x, SGIKonaGLWindow),
@@ -14427,6 +14566,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_window = {
         VMSTATE_UINT32(height, SGIKonaGLWindow),
         VMSTATE_UINT32(double_buffered, SGIKonaGLWindow),
         VMSTATE_UINT32(displayed_bank, SGIKonaGLWindow),
+        VMSTATE_UINT32(display_id, SGIKonaGLWindow),
+        VMSTATE_UINT32(partial, SGIKonaGLWindow),
         VMSTATE_END_OF_LIST()
     },
 };
