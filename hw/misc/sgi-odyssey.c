@@ -586,8 +586,10 @@
  * a first-party odydiags listing of a 128 MB board with BUZZ revision 10
  * reports PB&J version 1 too. The value comes from the backend-version
  * property: 1 for the v12 profile and the default, 0 for the other profiles,
- * whose value no capture gives (an approximation). No library or kernel path
- * other than the report was found to read it.
+ * whose value no capture gives (an approximation). The kernel's display
+ * back-end initialisation also reads this word and branches on bit 10,
+ * returning early when it is set (ESTABLISHED as driver behaviour). The
+ * model answers 0 in bit 10, as it always has; what bit 10 means is unknown.
  */
 #define ODSY_BACKEND_VERSION 0x23380c
 
