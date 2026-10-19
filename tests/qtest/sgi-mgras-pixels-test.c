@@ -947,6 +947,40 @@ static void test_dma_image_transfer_draws_overlay_indices(void)
     }
 }
 
+/*
+ * No capture moves a four-byte pixel in the overlay form. The model logs
+ * one and leaves the overlay as it was rather than store a byte of a
+ * colour as an index; the main planes still follow COLORMASKLSBSA.
+ */
+static void test_dma_image_transfer_wide_overlay_pixel_leaves_overlay(void)
+{
+    static const uint8_t src[4] = { 0x00, 0x30, 0x20, 0x10 };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(80, 80, 70);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 7));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (80u << 16) | 70u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (80u << 16) | 70u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+    g_assert_cmphex(mgras_test_overlay(qts, 80, 70), ==, 0x07);
+
+    dma_rules_draw(80, 70, 1, src, sizeof(src), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_overlay(qts, 80, 70), ==, 0x07);
+    g_assert_cmphex(mgras_test_pixel(qts, 80, 70), ==, 0x00102030);
+}
+
 #undef DMA_RULES_WIDGET
 #undef DMA_RULES_LIST_PAGE
 #undef DMA_RULES_LIST_BASE
@@ -5973,6 +6007,10 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-image-transfer-draws-overlay-indices",
         test_dma_image_transfer_draws_overlay_indices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-wide-overlay-pixel-leaves-overlay",
+        test_dma_image_transfer_wide_overlay_pixel_leaves_overlay, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "dma-image-transfer-reads-screen-to-host",
