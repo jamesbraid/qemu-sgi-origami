@@ -141,6 +141,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "GM10", .record_part = "030-0938-003",
         .record_revision = "U",
+        .implemented = true,
     }, {
         .name = "ssi", .hinv_name = "SSI",
         .width = 1280, .height = 1024,
@@ -1579,14 +1580,15 @@ static void mgras_reset_exit(Object *obj, ResetType type)
 }
 
 /*
- * Select the descriptor. SI+T and ESI+T make IRIX drive texture paths
- * the model has only in part (hw/misc/sgi-mgras-texture.c draws a loaded
- * RGBA level nearest-sampled and modulated, nothing more), so a board not
- * marked implemented is refused unless x-unimplemented-board asks for it
- * anyway; then it is presented with a LOG_UNIMP note naming what is
- * missing. MXI and EMXI stay refused with them: they need the same texture
- * boards' paths, and their client's pixel-texture passes, one per RE, are
- * not modelled (sgi-mgras-texture.c has no pixel texture on any board).
+ * Select the descriptor. A board not marked implemented is refused unless
+ * x-unimplemented-board asks for it anyway; then it is presented with a
+ * LOG_UNIMP note naming what is missing. SI+T is implemented: the texture
+ * subset in hw/misc/sgi-mgras-texture.c draws the stock IRIX 6.5.30
+ * programs it was compared on at least as the textureless SI draws them,
+ * and what it does not model is logged. ESI+T, MXI and EMXI stay refused:
+ * ESI+T has not been compared program by program, and MXI and EMXI need
+ * the client's pixel-texture passes, one per RE, which are not modelled
+ * (sgi-mgras-texture.c has no pixel texture on any board).
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
@@ -1615,7 +1617,7 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
             error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
                        "the model does not implement", b->name, b->hinv_name,
                        missing->str);
-            error_append_hint(errp, "Implemented boards: si, esi, ssi, "
+            error_append_hint(errp, "Implemented boards: si, si-t, esi, ssi, "
                               "essi\n");
             return false;
         }
