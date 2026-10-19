@@ -2642,6 +2642,65 @@ static void test_tex_table_usage_framed(void)
 }
 
 /*
+ * IRIS GL's IGLOO library calls glIglooInterfaceSGIX, which libGLcore
+ * sends as one selector and one word: 0x112 IRIS GL mode, 0x113 LMC
+ * colour, 0x1be colour-normal, 0x1c9 tmesh mode and 0x1a9 swap-tmesh.
+ * The first seven commands below are those an IRIS GL atlantis sent after
+ * its make-current; 0x1a9 and 0x1c9 come from the same sender. Unframed,
+ * 0x112 is dropped, its 1 opens a ten-word buffer configuration that
+ * swallows the commands after it, and the client's later query is lost.
+ * Framed, nothing is dropped, no buffer configuration is seen and the
+ * colour, index and enable after them frame whole.
+ */
+static void test_igloo_interface_framed(void)
+{
+    static const struct {
+        uint32_t token;
+        uint32_t word;
+    } sent[] = {
+        { 0x24, 0xba1 }, { 0xce, 0x203 }, { 0x112, 1 }, { 0x113, 1 },
+        { 0x1be, 0 }, { 0xc7, 0 }, { 0x113, 0 }, { 0x1a9, 0 }, { 0x1c9, 1 },
+    };
+    static const uint32_t igloo[] = { 0x112, 0x113, 0x1a9, 0x1be, 0x1c9 };
+    static const unsigned igloo_count[] = { 1, 2, 1, 1, 1 };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    const char *activated;
+    QTestState *s = kona_init_logged(&log);
+
+    context_a_with_filled_page(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(sent); i++) {
+        kona_command(s, sent[i].token, &sent[i].word, 1);
+    }
+    kona_command(s, 0x6b, (uint32_t[]){ 0, 0, 0, 0x3f800000 }, 4);
+    kona_command(s, 0x73, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    activated = strstr(found, "sgi_kona_context_activate token 0x1fd");
+    g_assert_nonnull(activated);
+    g_assert_false(log_shows_misframing(activated));
+    g_assert_null(strstr(activated, "sgi_kona_gl_buffer_config"));
+    for (unsigned i = 0; i < ARRAY_SIZE(igloo); i++) {
+        g_autofree char *line =
+            g_strdup_printf("token 0x%x argc 1 consumed", igloo[i]);
+
+        g_assert_cmpuint(count_occurrences(activated, line), ==,
+                         igloo_count[i]);
+    }
+    g_assert_nonnull(strstr(activated, "token 0x112 args 0x1 0x0 0x0"
+                                       " argc 1\n"));
+    g_assert_nonnull(strstr(activated, "token 0x6b args 0x0 0x0 0x0"
+                                       " argc 4\n"));
+    g_assert_nonnull(strstr(activated, "token 0x73 args 0x0 0x0 0x0"
+                                       " argc 1\n"));
+    g_assert_nonnull(strstr(activated, "token 0x24 args 0xb71 0x0 0x0"
+                                       " argc 1\n"));
+}
+
+/*
  * A retrace request, 0x1e7 and its tag, completes at the next retrace:
  * the tag register reads the tag and the video cause bit 0x8 rises, with
  * the general vector sent, which is what runs kona_video_intr and its
@@ -2910,6 +2969,8 @@ int main(int argc, char **argv)
                    test_buffer_config_after_activation);
     qtest_add_func("sn0/origin2000/kona-context/tex-table-usage-framed",
                    test_tex_table_usage_framed);
+    qtest_add_func("sn0/origin2000/kona-context/igloo-interface-framed",
+                   test_igloo_interface_framed);
     qtest_add_func("sn0/origin2000/kona-context/retrace-request-completes",
                    test_retrace_request_completes);
     qtest_add_func("sn0/origin2000/kona-context/"
