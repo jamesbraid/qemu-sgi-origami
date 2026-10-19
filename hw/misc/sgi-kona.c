@@ -9674,6 +9674,24 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
            !memcmp(gc + 6, forms[1], sizeof(forms[1]));
 }
 
+/*
+ * The frame-buffer word read: konal.so's kon_loadImpWordGC GC for plane
+ * selector 1 (cfg 0x1008, op 0x68001, addr 1, ifmt 0xa), with setup mode 2,
+ * packing 2 and 2 and shift 0, one 32-bit word a pixel. Its caller, under
+ * nfbReadDisplay, takes a colour-index main pixel's index from the word's
+ * top bits: index = word >> (32 - depth). The model's X index is a
+ * left-justified 16-bit value, so the word is that value shifted left 16.
+ * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8
+ * only for an alpha it is asked for, and the model leaves them zero.
+ * Approximated: only selector 1 over X colour-index pixels is answered.
+ */
+static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
+{
+    static const uint32_t form[] = { 0x1008, 0x68001, 1, 6, 0xa, 1, 1 };
+
+    return !memcmp(gc + 6, form, sizeof(form));
+}
+
 /* A bank-1 window hides bank 0 from indexed desktop reads. */
 static bool sgi_kona_x_read_hidden(SGIKonaState *s, int64_t x, int64_t y,
                                   int64_t width, int64_t height)
@@ -9704,7 +9722,9 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                      setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
                      setup[SGI_KONA_X_SETUP_SHIFT] == 12 ? 2 :
                      setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
-                     (int32_t)setup[SGI_KONA_X_SETUP_SHIFT] == -8 ? 4 : 0;
+                     ((int32_t)setup[SGI_KONA_X_SETUP_SHIFT] == -8 ||
+                      setup[SGI_KONA_X_SETUP_SHIFT] == 0) ? 4 : 0;
+    bool fb_word = bytes == 4 && setup[SGI_KONA_X_SETUP_SHIFT] == 0;
     uint64_t pitch = width * bytes;
     int64_t plane_y;
     const char *reason;
@@ -9718,7 +9738,8 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         reason = "an incompatible transfer is open";
     } else if (!s->x_read_gc_valid || !s->x_read_setup_valid) {
         reason = "GC or setup not loaded in this activation";
-    } else if (!sgi_kona_x_read_gc(s->x_gc, bytes == 4)) {
+    } else if (fb_word ? !sgi_kona_x_read_fb_word_gc(s->x_gc) :
+               !sgi_kona_x_read_gc(s->x_gc, bytes == 4)) {
         reason = "unsupported main-plane GC";
     } else if (setup[SGI_KONA_X_SETUP_MODE] != 2 ||
                setup[SGI_KONA_X_SETUP_SRC_PACK] != (bytes == 4 ? 2 : 1) ||
@@ -9747,9 +9768,11 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                if (tag != (bytes == 4 ? SGI_KONA_TAG_DIRECT :
-                                        SGI_KONA_TAG_X_INDEX16) ||
-                    word > (bytes == 4 ? 0xffffff : 0xffff)) {
+                bool rgb = bytes == 4 && !fb_word;
+
+                if (tag != (rgb ? SGI_KONA_TAG_DIRECT :
+                                  SGI_KONA_TAG_X_INDEX16) ||
+                    word > (rgb ? 0xffffff : 0xffff)) {
                     reason = "source is not supported main-plane colour";
                     goto refused;
                 }
@@ -9762,7 +9785,9 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
                     SGI_KONA_FB_HEIGHT - 1 - y - r);
 
-                if (bytes == 4) {
+                if (fb_word) {
+                    stl_be_p(data + r * pitch + c * 4, word << 16);
+                } else if (bytes == 4) {
                     /* The model stores logical RGB, not physical components. */
                     stl_be_p(data + r * pitch + c * 4, word);
                 } else if (bytes == 2) {

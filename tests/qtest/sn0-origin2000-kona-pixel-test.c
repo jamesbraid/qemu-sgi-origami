@@ -957,6 +957,47 @@ static void read_refused(QTestState *s, int32_t x, int32_t y)
     read_unchanged(s, READ_PAGE);
 }
 
+/*
+ * The X server's frame-buffer word read, as an oglsnoop start sent it:
+ * kon_loadImpWordGC's GC for plane selector 1, setup 2 2 2 0, then 0x138.
+ * Its caller under nfbReadDisplay takes a colour-index pixel's index from
+ * the word's top bits, so each word is the left-justified index. Selector
+ * 2's GC stays refused.
+ */
+static void test_read_fb_word(void)
+{
+    static const uint32_t gc[13] = {
+        0, 0, 0, 0, 0xffffff, 0xffffff, 0x1008, 0x68001, 1, 6, 0xa, 1, 1,
+    };
+    uint32_t other[13];
+
+    qtest_system_reset(qts);
+    read_activate(qts, READ_SAVE, READ_PAGE);
+    read_gc(qts);
+    read_write_pattern(qts, 454, 700, 4, 2);
+    x_command(qts, TOKEN_GC, gc, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 2, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    for (unsigned r = 0; r < 2; r++) {
+        for (unsigned c = 0; c < 4; c++) {
+            uint64_t at = READ_PAGE + 8 + 16 * r + 4 * c;
+
+            g_assert_cmphex(read_guest_word(qts, at), ==,
+                            (uint32_t)read_pattern(c, r) << 24);
+        }
+    }
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8 + 32), ==, 0xa5a5a5a5);
+
+    memcpy(other, gc, sizeof(other));
+    other[7] = 0xa8001;
+    other[8] = 2;
+    x_command(qts, TOKEN_GC, other, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 2, 0 }, 7);
+    read_refused(qts, 454, 700);
+}
+
 static void read_supported(QTestState *s)
 {
     read_prepare(s, READ_PAGE);
@@ -3544,6 +3585,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
                    test_read_indexed_rows);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-fb-word",
+                   test_read_fb_word);
     qtest_add_func("sn0/origin2000/kona-pixel/weave", test_weave);
     qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/rows",
                         GUINT_TO_POINTER(0), test_read_index12);
