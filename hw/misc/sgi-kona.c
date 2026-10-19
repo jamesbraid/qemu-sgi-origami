@@ -7461,6 +7461,19 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     }
 }
 
+/* Keep a complete native load's texels in its texture. */
+static void sgi_kona_texture_upload_publish(SGIKonaState *s)
+{
+    const SGIKonaTextureUpload *u = &s->texture_upload;
+    uint32_t base = sgi_kona_texture_storage_base(u->header);
+
+    if (!sgi_kona_texture_native_upload(&s->textures, u->header, u->pixels,
+                                        base, base)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture publication"
+                      " refused for handle 0x%" PRIx32 "\n", u->header[10]);
+    }
+}
+
 /* An allocated texture object may still have no sampleable base image. */
 static bool sgi_kona_texture_bound_ordinary_2d(SGIKonaState *s,
                                                 uint32_t handle)
@@ -8734,16 +8747,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_TEX_LOAD_ID:
         if (s->texture_upload.complete && !s->texture_upload.draw_pixels &&
             s->texture_upload.header[10] == args[0]) {
-            uint32_t base =
-                sgi_kona_texture_storage_base(s->texture_upload.header);
-
-            if (!sgi_kona_texture_native_upload(&s->textures,
-                                                s->texture_upload.header,
-                                                s->texture_upload.pixels,
-                                                base, base)) {
-                qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture publication"
-                              " refused for handle 0x%" PRIx32 "\n", args[0]);
-            }
+            sgi_kona_texture_upload_publish(s);
             sgi_kona_gl_texture_bind(s);
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -8754,6 +8758,18 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_TEX_LOAD:
         sgi_kona_gl_image_clear(s);
+        /*
+         * One 0x176 finishes a texture level however many loads make it
+         * up: the library's level producer (0x21ae0f0) sends it once,
+         * after a volume's slice loop (0x2197404-0x21974dc) or the copies
+         * that fill a small level's tile (0x21ae5f4-0x21ae714) have each
+         * sent a load. A complete load of the same texture followed by
+         * the next load is kept, not dropped.
+         */
+        if (s->texture_upload.complete && !s->texture_upload.draw_pixels &&
+            s->texture_upload.header[10] == args[10]) {
+            sgi_kona_texture_upload_publish(s);
+        }
         sgi_kona_texture_upload_clear(s);
         if (retire) {
             sgi_kona_texture_delete(&s->textures, args[10]);
