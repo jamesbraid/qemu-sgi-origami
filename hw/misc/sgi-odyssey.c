@@ -741,6 +741,17 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 /* The bound reading drawable's packed y:x origin, distinct from 0x841. */
 #define ODSY_REG_READ_ORIGIN 0x0000060b
 #define ODSY_SWAP_SYNC_OPERANDS 1
+/*
+ * The rest of that block: 0x60a and 0x60c to 0x60f. They arrive in the same
+ * run of 8-byte stores as 0x608, 0x609 and 0x60b, each store a word in its
+ * upper half and its one operand in the lower (observed in model traces of
+ * perfly), and their operand-count field (bits 13:10) says one too. 0x60a
+ * carried the same packed value as 0x60b in that trace. What any of the five
+ * sets is unknown: the model consumes the operand and reports the first such
+ * word, rather than parsing the operand as a command.
+ */
+#define ODSY_REG_DRAWABLE_FIRST 0x00000608
+#define ODSY_REG_DRAWABLE_LAST 0x0000060f
 
 /*
  * The fence word the 0x0a5a host-write command's operands form (see
@@ -8894,6 +8905,15 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->read_origin[0] = sextract32(s->cmd_operand[0], 0, 16);
         s->read_origin[1] = sextract32(s->cmd_operand[0], 16, 16);
         break;
+    case 0x0000060a:
+    case 0x0000060c ... ODSY_REG_DRAWABLE_LAST:
+        if (!s->drawable_word_reported) {
+            s->drawable_word_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: drawable word 0x%x with "
+                          "operand 0x%x is consumed but not modeled\n", tag,
+                          s->cmd_operand[0]);
+        }
+        break;
     case ODSY_REG_DRAW_MASK:
         /* The drawing mask: which colour buffers the next writes reach. */
         s->draw_mask = s->cmd_operand[0];
@@ -9010,6 +9030,11 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if (word == ODSY_REG_READ_ORIGIN) {
         odyssey_cmd_start(s, word, 1);
+        return;
+    }
+    if (word >= ODSY_REG_DRAWABLE_FIRST && word <= ODSY_REG_DRAWABLE_LAST) {
+        /* 0x60a, 0x60c to 0x60f; the three known ones are matched above. */
+        odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
         return;
     }
     if (word == ODSY_GL_COLOR_3UB) {
@@ -9719,6 +9744,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->read_word = 0;
     s->draw_mask_stereo_reported = false;
     s->draw_mask_high_reported = false;
+    s->drawable_word_reported = false;
     s->nic = 0;
     s->i2c_main_cmd = 0;
     s->i2c_opt_cmd = 0;

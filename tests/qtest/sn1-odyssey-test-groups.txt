@@ -39,6 +39,7 @@ board /mips64/sn1/odyssey/scanout-rgb-through-gamma
 board /mips64/sn1/odyssey/scanout-paint-order
 board /mips64/sn1/odyssey/backend-colormap-word-stream
 board /mips64/sn1/odyssey/swap-retrace-vector
+board /mips64/sn1/odyssey/command-fifo-drawable-words
 board /mips64/sn1/odyssey/swap-arm-toggles-displayed-buffer
 board /mips64/sn1/odyssey/swap-arm-accumulates
 board /mips64/sn1/odyssey/swap-immediate-set-and-clear

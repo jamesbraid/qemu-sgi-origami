@@ -4927,6 +4927,52 @@ static void push_clear(QTestState *qts, uint32_t r, uint32_t g, uint32_t b,
 #define ODSY_PLANE_YELLOW 0xffff00ffu
 
 /*
+ * The drawable-register block as perfly's context switch sends it, eight
+ * 8-byte stores of a word and its one operand: 0x608 to 0x60f. Each of
+ * 0x60a and 0x60c to 0x60f takes its operand, so none of the operands is
+ * parsed as a command, and a clear sent after them still draws. The first
+ * of those words is reported once, with its operand.
+ */
+static void test_command_fifo_drawable_words(void)
+{
+    static const uint32_t block[][2] = {
+        { 0x608, 0xff00ff00 }, { 0x60a, 0x02680008 },
+        { 0x609, 0xff00ff00 }, { 0x60b, 0x02680008 },
+        { 0x60c, 0x004caef3 }, { 0x60d, 0x004b6a8b },
+        { 0x60e, 0 }, { 0x60f, 0 },
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-drawable-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(block); i++) {
+        cmd_push64(qts, block[i][0], block[i][1]);
+    }
+    push_captured_clear(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 64, 100), ==, ODSY_PLANE_BLUE);
+
+    board_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "command FIFO word"));
+    g_assert_null(strstr(log, "drawable word 0x60c"));
+    g_assert_nonnull(strstr(log, "drawable word 0x60a with operand 0x2680008"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * With the origin at (0, 0) the rectangle's window pixels are plane pixels:
  * exactly [0, 128) x [0, 128) turns blue (plane word 0x0000ffff), the upper
  * edges exclusive, and nothing else changes.
@@ -17902,6 +17948,8 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/readback/failures", test_readback_failures);
     add_fresh_case("sn1/odyssey/swap-retrace-vector",
                    test_swap_retrace_vector);
+    add_fresh_case("sn1/odyssey/command-fifo-drawable-words",
+                   test_command_fifo_drawable_words);
     add_fresh_case("sn1/odyssey/swap-arm-toggles-displayed-buffer",
                    test_swap_arm_toggles_displayed_buffer);
     add_case("sn1/odyssey/swap-arm-accumulates",
