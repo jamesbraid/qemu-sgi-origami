@@ -1354,12 +1354,13 @@ static uint32_t mgras_tram_word_bytes(uint64_t bytes, uint32_t rows)
  * The select image a save or restore of k bytes a TRAM word moves. The
  * client saves and restores a one- or two-component texture one or two
  * bytes a word over 64 rows of 64 words (traced on perfly's town
- * database). Its save (mgrTM_SaveData) sends the texture's select in
- * TEXMODE1 bits 8:7 and, in TL_MODE bits 4:3, a value it makes differ
- * from the texture's select (the select XOR 1 when the last one sent was
- * the texture's): established from the client's listing at
- * 0xd99fcc8-0xd99fd4c, and traced as saves under TL_MODE 0x18 and
- * TEXMODE1 0x140 right after a load under TL_MODE 0x34e30. Its restore
+ * database). Its save sends the texture's select in TEXMODE1 bits 8:7
+ * and, in TL_MODE bits 4:3, a value it makes differ from the texture's
+ * select (the select XOR 1 when the last one sent was the texture's):
+ * established from the client's listing of the helper at 0xd99fc10 that
+ * mgrTM_SaveData calls (0xd99fcc8-0xd99fd4c), and traced as saves under
+ * TL_MODE 0x18 and TEXMODE1 0x140 right after a load under TL_MODE
+ * 0x34e30. Its restore
  * (0xd99fe10) is a load and sends the texture's select in TL_MODE bits
  * 4:3 (0xd99fe78-0xd99fe94; traced under 0x4038, 0x4030 and 0x402a). So a
  * save of fewer than four bytes a word reads the image of TEXMODE1's
