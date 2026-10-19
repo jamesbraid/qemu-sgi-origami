@@ -513,10 +513,43 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
 }
 
 /*
+ * A resolved x8r8g8b8 pixel through the gamma table, as the display
+ * shows it. The X server loads one 4,096-entry table per component, red
+ * at 0, green at 0x1000 and blue at 0x2000, with 12-bit entries (the
+ * command grammar's gamma load); the stock server's tables are a 1.7
+ * power curve (entry 2048 is 2724, read back in a run), and SI applies
+ * its own server's table the same way. The model's 8-bit component
+ * indexes the table with its bits repeated to 12, and the entry's top
+ * eight bits are shown.
+ *
+ * Inferred: that the table sits after the colour maps, on every pixel,
+ * as on SI; a component with no nonzero entry, before any load, is
+ * shown unchanged. What the pipe's gamma RAM holds before the X server
+ * loads it, and its index width, are unknown.
+ */
+static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, uint32_t rgb)
+{
+    uint32_t out = 0;
+
+    for (unsigned c = 0; c < SGI_KONA_GAMMA_COMPONENTS; c++) {
+        unsigned shift = 16 - 8 * c;
+        unsigned v = (rgb >> shift) & 0xff;
+
+        if (s->gamma_loaded[c]) {
+            v = s->gamma[c * SGI_KONA_GAMMA_COMPONENT_ENTRIES +
+                         ((v << 4) | (v >> 4))] >> 4;
+        }
+        out |= (v & 0xff) << shift;
+    }
+    return out;
+}
+
+/*
  * Display line y for the shared scanout: each pixel resolved by its tag
  * from the bank shown there (see sgi_kona_displayed_bank()), with the
- * unused top byte of an x8r8g8b8 word cleared. Gamma is not applied;
- * the shared scanout composes the loaded cursor after resolving the row.
+ * unused top byte of an x8r8g8b8 word cleared, then through the gamma
+ * table. The shared scanout composes the loaded cursor after resolving
+ * the row.
  */
 static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
@@ -539,7 +572,8 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         }
     }
     for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
-        dst[x] = sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff;
+        dst[x] = sgi_kona_gamma_apply(s,
+                     sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff);
     }
 }
 
@@ -2210,8 +2244,26 @@ static void sgi_kona_color_map_word(SGIKonaState *s, uint32_t word)
  * three commands with no entry read as a token checks the framing in a
  * run.
  */
+/* Note which gamma components hold a table, and repaint the display. */
+static void sgi_kona_gamma_update(SGIKonaState *s)
+{
+    for (unsigned c = 0; c < SGI_KONA_GAMMA_COMPONENTS; c++) {
+        const uint16_t *t = &s->gamma[c * SGI_KONA_GAMMA_COMPONENT_ENTRIES];
+
+        s->gamma_loaded[c] = false;
+        for (unsigned i = 0; i < SGI_KONA_GAMMA_COMPONENT_ENTRIES; i++) {
+            if (t[i]) {
+                s->gamma_loaded[c] = true;
+                break;
+            }
+        }
+    }
+    sgi_scanout_invalidate_all(&s->scanout);
+}
+
 static void sgi_kona_gamma_complete(SGIKonaState *s)
 {
+    sgi_kona_gamma_update(s);
     if (s->gamma_outside) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: gamma load at 0x%" PRIx32 " count %" PRIu32
@@ -13603,6 +13655,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->color_map_outside = 0;
     memset(s->x_color_map, 0, sizeof(s->x_color_map));
     memset(s->gamma, 0, sizeof(s->gamma));
+    memset(s->gamma_loaded, 0, sizeof(s->gamma_loaded));
     s->gamma_start = 0;
     s->gamma_count = 0;
     s->gamma_remaining = 0;
@@ -14081,6 +14134,7 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
     int result = sgi_kona_post_load_validate(opaque, version_id);
 
+    sgi_kona_gamma_update(s);
     if (result) {
         sgi_kona_renderer_stop(s);
         sgi_kona_contexts_clear(s);
