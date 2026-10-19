@@ -554,7 +554,7 @@ class CheckSystemModelTests(unittest.TestCase):
                 self.assertDocumentPasses(changed)
         for contract in ("qemu:docs/specs/Sgi-Hub.rst", "qemu:docs/specs/sgi-hub.md",
                          "qemu:docs/system/sgi-hub.rst", "docs/specs/sgi-hub.rst",
-                         "docs/datasheets/ioc3.md"):
+                         "docs/fictional-contract-fixture.md"):
             with self.subTest(contract=contract):
                 changed = copy.deepcopy(model)
                 next(component for component in changed["components"]

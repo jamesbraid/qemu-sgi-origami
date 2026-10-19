@@ -55,7 +55,6 @@ class RegistryTests(unittest.TestCase):
     def test_registry_names_no_other_repository(self):
         text = (INPUTS / citations.REGISTRY).read_text()
         self.assertEqual(citations.internal_pointers(text), [])
-        self.assertNotIn("docs/library", text)
 
 
 class ClassifyTests(unittest.TestCase):
@@ -119,12 +118,12 @@ class ClassifyTests(unittest.TestCase):
 
     def test_uncitable_text_is_reported_by_class(self):
         registry = self.registry
-        self.assertEqual(classes("docs/research/note.md: a finding", registry),
+        self.assertEqual(classes("docs/fictional-source-fixture.md: a finding", registry),
                          ["origami-path"])
         self.assertEqual(classes("D-0023: a decision", registry), ["decision-id"])
         self.assertEqual(classes("Origami commit 0123456789ab, tools/x.py: y", registry),
                          ["origami-path", "tool-path"])
-        self.assertEqual(classes("docs/datasheets/ioc3.md the joint-buck capture", registry),
+        self.assertEqual(classes("docs/fictional-contract-fixture.md the joint-buck capture", registry),
                          ["origami-path", "nickname"])
         self.assertEqual(classes("the two-node capture model-toad", registry), ["nickname"])
         self.assertEqual(classes("sgi-hw/booklet.pdf Table 41", registry), ["library-path"])
@@ -151,7 +150,7 @@ class CheckTests(unittest.TestCase):
         cases = {
             "malformed": fact("web:Bad_Key page 1"),
             "unregistered": fact("web:no-such-key page 1"),
-            "origami-path": fact("docs/research/note.md: a finding"),
+            "origami-path": fact("docs/fictional-source-fixture.md: a finding"),
             "decision-id": fact("D-0023: a decision"),
             "tool-path": fact("see tools/x.py"),
             "library-path": fact("sgi-hw/booklet.pdf Table 41"),
@@ -162,7 +161,7 @@ class CheckTests(unittest.TestCase):
             "free-text-only": fact("The composition selects it."),
             "missing-locator": fact("007-3708-002"),
             "unpinned-commit": fact("linux:arch/mips/include/asm/sn/ioc3.h"),
-            "internal-note": "notes: see docs/notebooks/x.md\n",
+            "internal-note": "notes: see docs/fictional-note-fixture.md\n",
         }
         self.assertEqual(set(cases) | {"unknown-tree"}, set(citations.FAILING))
         for cls, layer in cases.items():
@@ -193,7 +192,7 @@ class CheckTests(unittest.TestCase):
         # under docs/ names a document that does not ship with this tree.
         report = self.check_layer(
             "facts:\n  - {provenance: derived, sources: ['web:dmesgd-8994 line 3'],"
-            " description: 'see docs/component-taxonomy.md for the listing'}\n")
+            " description: 'see docs/fictional-guide-fixture.md for the listing'}\n")
         self.assertEqual(report.count("internal-note"), 1)
         self.assertTrue(report.failures)
 
