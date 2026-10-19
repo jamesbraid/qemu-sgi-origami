@@ -2750,7 +2750,7 @@ static void test_command_fifo_dma_image(void)
         ODSY_DMA_PTE(page_a + 0x3ff8, 8), ODSY_DMA_PTE(page_b, 16),
     };
     uint8_t a[8], b[20];
-    const uint8_t idx[4] = { 1, 2, 1, 2 };
+    const uint8_t idx[4] = { 1, 2, 0, 2 };
     const uint64_t pte8[] = { ODSY_DMA_PTE(page_a, 4) };
     uint32_t hdr8[8] = {
         0x2000, (310 << 16) | 200, 0x50, (1 << 16) | 4, 0x83331008, 0, 4,
@@ -2817,18 +2817,21 @@ static void test_command_fifo_dma_image(void)
 
     /*
      * One byte a pixel: colour indices, stored raw and shown through the
-     * pixel's drawable (id plane 0 takes drawable 1's group 17).
+     * pixel's drawable (id plane 0 takes drawable 1's group 17). Index 0 is
+     * written like any other over what was there.
      */
+    odsy_test_pixel_write(qts, 202, 310, 1);
     qtest_memwrite(qts, page_a, idx, sizeof(idx));
     dma_image_table(qts, table, hdr8, pte8, 1);
     dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
     g_assert_cmphex(odsy_test_pixel(qts, 200, 310), ==, 1);
     g_assert_cmphex(odsy_test_pixel(qts, 201, 310), ==, 2);
+    g_assert_cmphex(odsy_test_pixel(qts, 202, 310), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 204, 310), ==, 0);
     backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
     g_assert_cmphex(odsy_shown(qts, 200, 310), ==, 0x00ff00ff);
     g_assert_cmphex(odsy_shown(qts, 201, 310), ==, 0x0000ffff);
-    g_assert_cmphex(odsy_shown(qts, 202, 310), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_shown(qts, 202, 310), ==, 0xff0000ffu);
     g_assert_cmphex(odsy_shown(qts, 203, 310), ==, 0x0000ffff);
 
     /*
@@ -4199,9 +4202,10 @@ static void test_command_fifo_image_raster_short_incomplete(void)
 
 /*
  * BEGIN-0xa image raster, format 0x10: four colour indices per word. This pins
- * the colormap lookup, the caret-erase approximation (index 0 leaves the
- * background rather than stamping opaque black over it), and a bounded group's
- * padding being dropped so it never wraps into the next row.
+ * the colormap lookup, index 0 painted like any other index (black in the X
+ * server's colormap: a bitmap's foreground in xbiff and Inventor's viewer
+ * buttons), and a bounded group's padding being dropped so it never wraps
+ * into the next row.
  */
 static void test_command_fifo_image_raster_colour_index(void)
 {
@@ -4220,7 +4224,7 @@ static void test_command_fifo_image_raster_colour_index(void)
 
     /*
      * A 4x1 image whose one word packs indices 0, 2, 0, 2 (leftmost in bits
-     * 31:24). Index 0 must leave the green background; index 2 paints blue.
+     * 31:24) over the green background: index 0 paints red, index 2 blue.
      */
     image_begin(qts, 200, 200, 204, 201);
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
@@ -4230,9 +4234,9 @@ static void test_command_fifo_image_raster_colour_index(void)
     cmd_push(qts, 0x00020002);
     cmd_push(qts, ODSY_CMD_GL_END);
 
-    g_assert_cmphex(odsy_shown(qts, 200, 200), ==, 0x00ff00ff); /* index 0 */
+    g_assert_cmphex(odsy_shown(qts, 200, 200), ==, 0xff0000ffu); /* index 0 */
     g_assert_cmphex(odsy_shown(qts, 201, 200), ==, 0x0000ffff); /* index 2 */
-    g_assert_cmphex(odsy_shown(qts, 202, 200), ==, 0x00ff00ff); /* index 0 */
+    g_assert_cmphex(odsy_shown(qts, 202, 200), ==, 0xff0000ffu); /* index 0 */
     g_assert_cmphex(odsy_shown(qts, 203, 200), ==, 0x0000ffff); /* index 2 */
 
     /*

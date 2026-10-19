@@ -88,12 +88,11 @@
  * the text-field caret. An image opens with BEGIN primitive 0xa, takes its
  * destination box from the 0xcf80a92f floats, and fills it in raster order
  * from the pixel bursts -- fmt 0x11 as direct 0x00RRGGBB colour (the icons),
- * fmt 0x10 as four colormap indices per word. One approximation stands: the
- * caret's index-0 erase (a 6x20 field of colour index 0) would stamp opaque
- * black over the mauve input field, since the write mode that makes the
- * erase-then-redraw sequence correct is not established. Index-0 pixels of a
- * colour-index image are left unpainted rather than drawn black, which
- * preserves the field; it is flagged at the painter below.
+ * fmt 0x10 as four colormap indices per word. Every index is painted,
+ * index 0 included. An earlier approximation left index 0 unpainted because
+ * the greeter's caret erase arrived as a 6x20 field of zeros, before the
+ * model answered the X server's readback of that cell (the readback DMA
+ * below). INFERRED: the erase writes back the indices that readback returned.
  *
  * The ninth increment adds the page-table pixel/texture DMA engine on the
  * shared graphics foundation's SGIPixelDMA (hw/display/sgi/pixel-dma.h). The
@@ -3930,10 +3929,9 @@ static int odyssey_image_object(SGIOdysseyState *s)
  * buffer (odyssey_image_object()) and advance it. Each axis is a directed
  * half-open interval: increasing endpoints visit [first, last), while
  * decreasing endpoints visit [first - 1, last]. Payload advances along X,
- * then along Y. A cleared pixel (paint false) still advances the cursor but
- * leaves the framebuffer, so a transparent index shows what was drawn below.
+ * then along Y.
  */
-static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
+static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
                               bool is_index, bool preserve_alpha)
 {
     bool x_decreasing = s->image_x2 < s->image_x1;
@@ -3948,10 +3946,10 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
         return;
     }
     obj = odyssey_image_object(s);
-    if (paint && obj >= 0) {
+    if (obj >= 0) {
         /* An off-screen object: box coordinates, no window or id tests. */
         odyssey_object_store(s, obj, s->image_cur_x, s->image_cur_y, rgba);
-    } else if (paint) {
+    } else {
         /* Screen pixels are window-relative; object pixels are not. */
         odyssey_paint_pixel(s,
                             (int64_t)s->image_cur_x + s->win_origin[0],
@@ -3980,14 +3978,14 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
  * One byte-stream texel of the open image at the raster cursor, bounded by
  * the header's group length in pixels.
  */
-static void odyssey_image_texel(SGIOdysseyState *s, bool paint, uint32_t rgba,
+static void odyssey_image_texel(SGIOdysseyState *s, uint32_t rgba,
                                 bool is_index)
 {
     if (s->image_group_len &&
         s->image_group_painted >= s->image_group_len) {
         return;
     }
-    odyssey_image_put(s, paint, rgba, is_index, false);
+    odyssey_image_put(s, rgba, is_index, false);
     s->image_group_painted++;
 }
 
@@ -4043,15 +4041,12 @@ static uint32_t odyssey_decode_texel12(uint32_t code, const uint8_t *b,
 
 /*
  * Decode one pixel of a byte-stream source format (ODSY_IMAGE_CODE_*) whose
- * bytes are b[0 ..]: its 0xRRGGBBAA word, or for 0x41 the raw index, and
- * whether it paints (a colour
- * index 0 does not; see odyssey_image_burst_word()). False for a code this
- * model does not know.
+ * bytes are b[0 ..]: its 0xRRGGBBAA word, or for 0x41 the raw index. False
+ * for a code this model does not know.
  */
 static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
-                                 const uint8_t *b, uint32_t *rgba, bool *paint)
+                                 const uint8_t *b, uint32_t *rgba)
 {
-    *paint = true;
     switch (code) {
     case ODSY_IMAGE_CODE_XRGB:
         *rgba = odyssey_pack_pixel(b[1], b[2], b[3]);
@@ -4076,7 +4071,6 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
         return true;
     case ODSY_IMAGE_CODE_CI:
         /* The raw index: scanout resolves it through the pixel's drawable. */
-        *paint = b[0] != 0;
         *rgba = b[0];
         return true;
     default:
@@ -4116,14 +4110,6 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  * header with a code this model does not know falls back on the burst tag's
  * format, 0x11 one 0x00RRGGBB pixel a word and 0x10 four indices, and is
  * reported once.
- *
- * Approximation: colour index 0 in an image is the text-field caret's erase
- * (a 6x20 all-zeros block the DDX writes before redrawing the I-beam). With
- * plain overwrite it would paint opaque black over the mauve input field; the
- * write mode that makes the erase-then-redraw correct is not established.
- * Leave index-0 image pixels unpainted rather than stamp black -- the field
- * keeps the colour its fill drew, and the black I-beam still lands as its own
- * pattern quad.
  */
 static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 {
@@ -4176,7 +4162,7 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
             for (i = 0; i < comps; i++) {
                 stw_be_p(px + 2 * i, halves[i]);
             }
-            odyssey_image_put(s, true, odyssey_decode_texel12(code, px, true),
+            odyssey_image_put(s, odyssey_decode_texel12(code, px, true),
                               false, true);
             held = 0;
         }
@@ -4208,7 +4194,6 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
     for (i = 0; i < 4; i++) {
         uint8_t px[4];
         uint32_t rgba;
-        bool paint;
 
         s->image_bytes = (s->image_bytes << 8) | b[i];
         if (++s->image_nbytes < n) {
@@ -4217,8 +4202,8 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         s->image_nbytes = 0;
         /* The pixel's bytes, first byte highest, at the start of px[]. */
         stl_be_p(px, s->image_bytes << (8 * (4 - n)));
-        odyssey_decode_pixel(s, code, px, &rgba, &paint);
-        odyssey_image_texel(s, paint, rgba, code == ODSY_IMAGE_CODE_CI);
+        odyssey_decode_pixel(s, code, px, &rgba);
+        odyssey_image_texel(s, rgba, code == ODSY_IMAGE_CODE_CI);
     }
 }
 
@@ -7596,7 +7581,7 @@ static int odyssey_dma_entries(const SGIDMABus *bus, uint64_t table,
  * One pixel of a transfer at (x, y) of object obj, or of the colour buffers
  * the drawing mask selects when obj is -1, decoded by the
  * header's source format exactly as an image transfer's pixel is
- * (odyssey_decode_pixel()), a colour index 0 left unpainted. Clipped to the
+ * (odyssey_decode_pixel()). Clipped to the
  * plane only: the placement note names no other test for this path, and the
  * X server's 0x204b clip in force at each greeter transfer covers the
  * rectangle anyway, so no capture tells the two apart.
@@ -7605,19 +7590,15 @@ static void odyssey_dma_put(SGIOdysseyState *s, int obj, int64_t x,
                             int64_t y, const uint8_t *src, uint32_t code)
 {
     uint32_t pixel;
-    bool paint;
 
-    odyssey_decode_pixel(s, code, src, &pixel, &paint);
+    odyssey_decode_pixel(s, code, src, &pixel);
     if (obj >= 0) {
-        if (paint && x >= 0 && y >= 0) {
+        if (x >= 0 && y >= 0) {
             odyssey_object_store(s, obj, x, y, pixel);
         }
         return;
     }
     if (x < 0 || y < 0 || x >= SGI_ODYSSEY_WIDTH || y >= SGI_ODYSSEY_HEIGHT) {
-        return;
-    }
-    if (!paint) {
         return;
     }
     for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
