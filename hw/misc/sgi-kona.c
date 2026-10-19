@@ -5002,6 +5002,13 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
                           " current index preserved\n");
             return true;
         }
+        if (args[0] && !(args[0] & 0xff0000) &&
+            !s->packed_index_short_reported) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: packed index 0x%08" PRIx32
+                          " fits glIndexs and glIndexub; read as the short"
+                          " (reported once)\n", args[0]);
+            s->packed_index_short_reported = true;
+        }
         a[0] = sgi_kona_gl_int((int16_t)(args[0] >> 16));
         cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, a };
         break;
@@ -13834,6 +13841,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
     s->desktop_id_reported = false;
+    s->packed_index_short_reported = false;
     sgi_scanout_reset(&s->scanout);
 }
 

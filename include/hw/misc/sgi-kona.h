@@ -1406,6 +1406,8 @@ struct SGIKonaState {
     /* Diagnostic suppression is host state, rebuilt after reset/load. */
     bool desktop_map_reported[256];
     bool desktop_id_reported;
+    /* Host state: an overlapping packed index was read as a short. */
+    bool packed_index_short_reported;
     /*
      * Not migrated: counts changes to the display-ID plane, so a window
      * cut to its display ID is cut again before its next command.
