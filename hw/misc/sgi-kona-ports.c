@@ -441,6 +441,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_IGLOO_SWAPTMESH, 1 },
     { SGI_KONA_CMD_GL_IGLOO_COLORNORMAL, 1 },
     { SGI_KONA_CMD_GL_IGLOO_TMESHMODE, 1 },
+    { SGI_KONA_CMD_GL_TEX_GEN, SGI_KONA_GL_TEX_GEN_WORDS },
 };
 const unsigned sgi_kona_gl_num_tokens = ARRAY_SIZE(sgi_kona_gl_tokens);
 
