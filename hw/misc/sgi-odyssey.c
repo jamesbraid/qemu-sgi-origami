@@ -1495,14 +1495,27 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_PATTERN_SHAPE_64X16 0x5
 #define ODSY_PATTERN_SHAPE_32X32 0x4
 #define ODSY_PATTERN_SHAPE_16X64 0x6
+/*
+ * Bit 4 of the 0x043f operand makes a pattern opaque: a quad also paints
+ * its clear pattern bits, in the background colour. The X server's stippled
+ * rectangle fill sets it exactly when the GC's fill style is
+ * FillOpaqueStippled (shape 0x14 instead of 0x4), and at the same time sets
+ * 0x0404 bit 17 and sends 0x0c21 with factors ONE, ZERO and the GC
+ * background as the constant colour: for an 8-bit colour-index drawable the
+ * index shifted to bits 23:12 of operand 1, for an RGB drawable each channel
+ * widened to 12 bits as GL red, green and blue (from disassembly of the IRIX
+ * 6.5.30 X server's Odyssey module, ESTABLISHED as software behaviour). That
+ * the board paints clear bits in the constant colour is INFERRED: it is the
+ * only reading under which the server's sequence draws an opaque stipple.
+ * bitmap(1)'s arrow buttons draw this way.
+ */
+#define ODSY_PATTERN_SHAPE_OPAQUE 0x10
 
 /*
  * The 0x0404 mode operand's pattern-enable bits: the DDX sets bits 3 and 4
  * together (operands 0x80018 / 0x100018) immediately before a pattern load,
  * and clears them before every solid fill and image operation. Which bit does
- * what is unknown, so both must be set to enable. (The 0x043f operand's own
- * bit 4 -- opaque mode, painting a background colour where a pattern bit is 0
- * -- never appears in the login trace and is left unimplemented.)
+ * what is unknown, so both must be set to enable.
  */
 #define ODSY_PATTERN_MODE_ENABLE 0x18
 /* Proposed shape-4 screen-aligned rectangle policy. */
@@ -3498,7 +3511,7 @@ static bool odyssey_pattern_enabled(SGIOdysseyState *s)
         ODSY_PATTERN_MODE_ENABLE) {
         return false;
     }
-    switch (s->pattern_shape) {
+    switch (s->pattern_shape & ~ODSY_PATTERN_SHAPE_OPAQUE) {
     case ODSY_PATTERN_SHAPE_64X16:
     case ODSY_PATTERN_SHAPE_32X32:
     case ODSY_PATTERN_SHAPE_16X64:
@@ -3518,7 +3531,7 @@ static bool odyssey_pattern_bit(SGIOdysseyState *s, uint32_t u, uint32_t v)
 {
     uint32_t word, bit;
 
-    switch (s->pattern_shape) {
+    switch (s->pattern_shape & ~ODSY_PATTERN_SHAPE_OPAQUE) {
     case ODSY_PATTERN_SHAPE_64X16:
         if (u >= 64 || v >= 16) {
             return false;
@@ -3547,8 +3560,26 @@ static bool odyssey_pattern_bit(SGIOdysseyState *s, uint32_t u, uint32_t v)
 }
 
 /*
+ * The opaque pattern's background (ODSY_PATTERN_SHAPE_OPAQUE): the 0x0c21
+ * constant colour, an index from operand 1 bits 23:12, or an RGB pixel from
+ * the 12-bit red, green and blue fields narrowed to 8 bits.
+ */
+static uint32_t odyssey_pattern_background(SGIOdysseyState *s, bool is_index)
+{
+    uint32_t r = (s->const_colour[0] >> 12) & 0xfff;
+    uint32_t g = s->const_colour[0] & 0xfff;
+    uint32_t b = (s->const_colour[1] >> 12) & 0xfff;
+
+    if (is_index) {
+        return r;
+    }
+    return odyssey_pack_pixel(r >> 4, g >> 4, b >> 4);
+}
+
+/*
  * A pattern quad: paint the current colour at each pixel whose pattern bit is
- * set, leaving the rest of the rectangle as it was. Only the rows and columns
+ * set, and the background at each clear one when the pattern is opaque,
+ * leaving the rest as it was otherwise. Only the rows and columns
  * the quad covers are read, so the stale part of the persistent pattern buffer
  * beyond the tile never contributes.
  */
@@ -3557,12 +3588,16 @@ static void odyssey_pattern_fill(SGIOdysseyState *s, uint32_t x, uint32_t y,
                                  uint32_t pat_v0, bool is_index,
                                  uint32_t value)
 {
+    bool opaque = s->pattern_shape & ODSY_PATTERN_SHAPE_OPAQUE;
+    uint32_t background = odyssey_pattern_background(s, is_index);
     uint32_t u, v;
 
     for (v = 0; v < h; v++) {
         for (u = 0; u < w; u++) {
             if (odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v)) {
                 odyssey_paint_integer(s, x + u, y + v, is_index, value);
+            } else if (opaque) {
+                odyssey_paint_integer(s, x + u, y + v, is_index, background);
             }
         }
     }
@@ -9403,6 +9438,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         uint32_t eq, src, dst;
         uint32_t args[4];
 
+        /*
+         * The X server sends its opaque-stipple background here before the
+         * 0x0404 that sets bit 17, so keep the colour whatever the bit says.
+         */
+        s->const_colour[0] = s->cmd_operand[1];
+        s->const_colour[1] = s->cmd_operand[2];
         if (!(s->pattern_mode & ODSY_MODE_BLEND)) {
             /* The library parks this register at zero while blending is off. */
             break;
@@ -10846,6 +10887,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->copy_dst = 0;
     memset(s->pattern_buffer, 0, sizeof(s->pattern_buffer));
     s->pattern_shape = 0;
+    memset(s->const_colour, 0, sizeof(s->const_colour));
     s->pattern_mode = 0;
     s->pattern_load_offset = 0;
     s->image_active = false;
@@ -11617,6 +11659,24 @@ static const VMStateDescription vmstate_odyssey_window_tail = {
     },
 };
 
+static bool odyssey_const_colour_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    return s->const_colour[0] || s->const_colour[1];
+}
+
+static const VMStateDescription vmstate_odyssey_const_colour = {
+    .name = "sgi-odyssey/const-colour",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_const_colour_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(const_colour, SGIOdysseyState, 2),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_odyssey_colour_material = {
     .name = "sgi-odyssey/colour-material",
     .version_id = 1,
@@ -11635,6 +11695,7 @@ static int odyssey_pre_load(void *opaque)
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
     s->gl_colour_material = 0;
+    memset(s->const_colour, 0, sizeof(s->const_colour));
     s->gl_begin_open = false;
     s->gl_integer_prim = false;
     s->gl_open_r = s->gl_open_c = 0;
@@ -11899,6 +11960,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_colour_material,
         &vmstate_odyssey_window_tail,
         &vmstate_odyssey_overlay,
+        &vmstate_odyssey_const_colour,
         NULL
     },
 };
