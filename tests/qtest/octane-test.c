@@ -2615,6 +2615,128 @@ static void test_rad_output_clock(void)
     qtest_quit(qts);
 }
 
+static void octane_rad_input_program(QTestState *qts, uint64_t base,
+                                     uint32_t ctrl)
+{
+    qtest_writel(qts, RAD_BAR0 + 0x4d0, base);
+    qtest_writel(qts, RAD_BAR0 + 0x510, base >> 32);
+    qtest_writel(qts, RAD_BAR0 + 0x4d4, ctrl);
+    qtest_writel(qts, RAD_BAR0 + 0x400, base);
+    qtest_writel(qts, RAD_BAR0 + 0x404, base >> 32);
+    qtest_writel(qts, RAD_BAR0 + 0x408, ctrl);
+}
+
+/*
+ * IRIX opens analog input for recording clients and for demos with voice
+ * input. Its status servicer turns the input pointer in status slot +0x10
+ * into the ring's write index, so the engine must run and publish a pointer
+ * inside the ring once enabled.
+ */
+static void test_rad_input_clock(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    const uint64_t buffer = RAM + 0x8000;
+    const uint64_t ring = RAM + 0xa000;
+    int fd = g_file_open_tmp("octane-rad-input-XXXXXX", &log_path, NULL);
+    uint8_t memory[0x1000];
+    uint32_t count;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = octane_start_args(extra);
+    qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_memset(qts, ring, 0xa5, sizeof(memory));
+
+    /* The output's tag in the input's control word names no input ring. */
+    octane_rad_input_program(qts, 0xa000a000, 0xfffff008);
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0);
+
+    /* The board-12 interface word and the logged IRIX ring, tag 0, 4 KiB. */
+    octane_rad_input_program(qts, 0xa000a000, 0xfffff000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x510), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4d4), ==, 0xfffff000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x408), ==, 0xfffff000);
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000000);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x14), ==, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0x03000001);
+    qtest_clock_step(qts, 22675);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x14), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x14), ==,
+                    (1u << 18) | ((1022676 / 960) & 0x3ffff));
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x18), ==, 1u << 18);
+
+    /* With no host input a frame is silence; the ring past it is not. */
+    qtest_memread(qts, ring, memory, sizeof(memory));
+    for (unsigned i = 0; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, i < 8 ? 0 : 0xa5);
+    }
+
+    /* A running ring cannot be reprogrammed. */
+    qtest_writel(qts, RAD_BAR0 + 0x4d0, 0xa000b000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4d0), ==, 0xa000a000);
+
+    qtest_clock_step(qts, 24977324);
+    count = 1102;
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x14) >> 18, ==, count);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x18), ==, count << 18);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+
+    /* More than two laps: the whole ring now holds silence. */
+    qtest_memread(qts, ring, memory, sizeof(memory));
+    for (unsigned i = 0; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0);
+    }
+    octane_rad_status_program(qts, 0xa0008000, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x10), ==,
+                    0xa000a000 + count * 8 % 4096);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x38), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x54), ==,
+                    qtest_readl(qts, RAD_BAR0 + 0x14));
+
+    /* Disable holds the count; the interface word keeps its other bits. */
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 0x03000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0x03000000);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x14) >> 18, ==, count);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(qtest_get_irq(qts, i));
+    }
+
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x14), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4d0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x408), ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x4c "
+                                 "value 0x3000001"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x4d0 "
+                                 "value 0xa000b000"));
+    g_assert_null(strstr(log, "at 0x510"));
+    g_assert_null(strstr(log, "at 0x4d4"));
+    g_assert_null(strstr(log, "at 0x400"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_rad_status_continuous(void)
 {
     QTestState *qts = octane_start();
@@ -2713,8 +2835,8 @@ static void test_rad_startup_unsupported(void)
     const unsigned enables[] = { 0x44, 0x48, 0x4c, 0x50, 0x54 };
     const unsigned holes[] = { 0x1078, 0x107c, 0x10f8, 0x10fc, 0x1220 };
     const unsigned descriptors[] = {
-        0x4c4, 0x4cc, 0x4d4, 0x4dc, 0x4e4, 0x4ec, 0x4f4,
-        0x508, 0x50c, 0x510, 0x514, 0x518, 0x51c, 0x520,
+        0x4c4, 0x4cc, 0x4dc, 0x4e4, 0x4ec, 0x4f4,
+        0x508, 0x50c, 0x514, 0x518, 0x51c, 0x520,
     };
     uint8_t memory[0x100];
 
@@ -4699,6 +4821,7 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_rad_status_primary_only);
     qtest_add_func("/octane/rad-status-routes", test_rad_status_routes);
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
+    qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);
     qtest_add_func("/octane/rad-status-overrun", test_rad_status_overrun);
     qtest_add_func("/octane/rad-transfer-migration",
