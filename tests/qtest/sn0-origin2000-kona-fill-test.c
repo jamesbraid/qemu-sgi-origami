@@ -2948,6 +2948,42 @@ static void test_semantic_did_map(void)
     assert_in_step(qts);
 }
 
+/*
+ * A display-ID write under mask 0x1f00 sets bits 12:8 of the ID plane and
+ * leaves the main-plane ID in bits 7:2 alone. The GC is the one the X
+ * server sent for mandel's overlay window (fg_l 0x100000, word 5
+ * 0xf00001, mask 0x1f00) after the window's main ID. The main pixels must
+ * keep resolving through their own ID's map entry, not through an ID made
+ * of both fields.
+ */
+static void test_semantic_did_other_field(void)
+{
+    uint32_t gc[13] = {
+        0x5a000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+    uint32_t did[13] = { 0x20, 0, 0, 0, 0xf00fff, 0,
+                         8, 1, 0, 6, 0, 1, 1 };
+    uint32_t other[13] = { 0, 0x100000, 0, 0, 0, 0xf00001,
+                           8, 1, 0, 6, 0, 1, 1 };
+    unsigned row = KONA_FB_HEIGHT - 1 - 20;
+
+    qtest_system_reset(qts);
+    load_x_map(qts, 0x2e00 + 0x5a, (uint32_t[]){ ENTRY_GREY_192 }, 1);
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    kona_command(qts, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (7 << 3) | 4 }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    kona_command(qts, TOKEN_GC, other, ARRAY_SIZE(other));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 7, 10, row), ==, 0x404);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    assert_in_step(qts);
+}
+
 static void test_semantic_ancillary(void)
 {
     uint32_t main_gc[13] = { 0x5a000, 0, 0, 0, 0xf00fff, 0,
@@ -3226,6 +3262,8 @@ int main(int argc, char **argv)
              test_semantic_ancillary);
     add_case("sn0/origin2000/kona-fill/semantic-did/map",
              test_semantic_did_map);
+    add_case("sn0/origin2000/kona-fill/semantic-did/other-field",
+             test_semantic_did_other_field);
     add_case("sn0/origin2000/kona-fill/semantic-desktop/diagnostics",
              test_semantic_desktop_diagnostics);
     add_data_case("sn0/origin2000/kona-fill/semantic-desktop/"

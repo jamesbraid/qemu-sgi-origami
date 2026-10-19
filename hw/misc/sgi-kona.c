@@ -189,11 +189,28 @@ static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
     return sgi_kona_rgb10(s->x_color_map[base + index]);
 }
 
+/*
+ * The main-plane display ID at plane pixel (x, y): bits 7:2 of the
+ * display-ID plane's word. The X server writes a main-plane window's ID
+ * there under the mask 0xfc (the command grammar's display-ID GC), and
+ * the GL windows' IDs the kernel sends in 0x1f3 word 9 fit those bits. It
+ * writes bits 12:8 separately, under mask 0x1f00, for a window's overlay
+ * (established from the display-ID GCs of an IRIS GL mandel window); those
+ * bits do not choose the main pixel's colour map.
+ */
+#define SGI_KONA_DISPLAY_ID_MAX 0x3f
+
+static unsigned sgi_kona_display_id_at(SGIKonaState *s, int x, int y)
+{
+    return (sgi_plane_load(&s->desktop_mem,
+                           sgi_board_memory_plane(&s->desktop_mem, 0),
+                           x, y) >> 2) & SGI_KONA_DISPLAY_ID_MAX;
+}
+
 static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
                                             int x, int y, bool native_index)
 {
-    unsigned id = sgi_plane_load(&s->desktop_mem,
-                     sgi_board_memory_plane(&s->desktop_mem, 0), x, y) >> 2;
+    unsigned id = sgi_kona_display_id_at(s, x, y);
 
     if (id >= ARRAY_SIZE(s->desktop_map)) {
         if (!s->desktop_id_reported) {
@@ -246,21 +263,6 @@ static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
     }
     *r = (SGIClipRect) { x0, y0, x1, y1 };
     return true;
-}
-
-/*
- * The display ID at plane pixel (x, y): bits 7:2 of the display-ID
- * plane's word. The X server writes a main-plane window's ID there under
- * the mask 0xfc (the command grammar's display-ID GC), and the GL
- * windows' IDs the kernel sends in 0x1f3 word 9 fit those bits.
- */
-#define SGI_KONA_DISPLAY_ID_MAX 0x3f
-
-static unsigned sgi_kona_display_id_at(SGIKonaState *s, int x, int y)
-{
-    return (sgi_plane_load(&s->desktop_mem,
-                           sgi_board_memory_plane(&s->desktop_mem, 0),
-                           x, y) >> 2) & SGI_KONA_DISPLAY_ID_MAX;
 }
 
 /* Whether window w owns only the pixels showing its display ID. */
