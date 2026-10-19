@@ -9047,7 +9047,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if (word >= ODSY_REG_DRAWABLE_FIRST && word <= ODSY_REG_DRAWABLE_LAST) {
         /* 0x60a, 0x60c to 0x60f; the three known ones are matched above. */
-        odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
+        odyssey_cmd_start(s, word, 1);
         return;
     }
     if (word == ODSY_GL_COLOR_3UB) {
