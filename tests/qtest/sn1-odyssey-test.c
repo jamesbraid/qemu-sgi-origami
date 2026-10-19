@@ -10430,6 +10430,36 @@ static void test_command_fifo_gl_program_window_record(void)
 }
 
 /*
+ * Record 18, a local-viewer window record: light2.c's lights and material
+ * under record 18's entries 738 75b 77d and a synthetic body whose last four
+ * halfwords give record 18's CRC. It lights with the local viewer's half
+ * vector, the pixel the resident local-viewer test expects, not the
+ * infinite viewer's 0xd4663bff.
+ */
+static void test_command_fifo_gl_program_window_local_viewer(void)
+{
+    static const uint32_t list[] = { 0x49a, 0x203, 0x50f, 0x4c5 };
+    static uint16_t body[199 * 6];
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+
+    body[199 * 6 - 4] = 0x4659;
+    body[199 * 6 - 3] = 0xf8c6;
+    body[199 * 6 - 2] = 0xc9bc;
+    body[199 * 6 - 1] = 0xb12a;
+    push_user_words(qts, odsy_light2_data, ARRAY_SIZE(odsy_light2_data));
+    push_window_body(qts, body, 199);
+    push_constants(qts, list, ARRAY_SIZE(list));
+    push_program(qts, 0, 0x738, 0x75b, 0x77d);
+    push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xc55429ffu);
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "geometry program"));
+}
+
+/*
  * The combined matrix already carries the model-view (glfalls' probe):
  * a model-view loaded into slot 0x24 does not move geometry again. Under
  * the probe window's combined matrix and a model-view translating x by 1,
@@ -18453,6 +18483,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_program_window_unknown);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-record",
                    test_command_fifo_gl_program_window_record);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-window-local-viewer",
+                   test_command_fifo_gl_program_window_local_viewer);
     add_case("sn1/odyssey/command-fifo-gl-combined-carries-modelview",
              test_command_fifo_gl_combined_carries_modelview);
     add_case("sn1/odyssey/scanout-main-id-0-uses-drawable-1-mode",
