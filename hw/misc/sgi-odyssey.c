@@ -7859,21 +7859,50 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
 #define ODSY_DMA_ABGR_CONTROL_IGNORED 0x3e000000u
 
 /*
+ * dmplay's movie frames: the same A, B, G, R bytes under source format code
+ * 0x4c, with word 4 0x82233000 and word 7 0x7a01004c. OBSERVED on the
+ * model with Announcer.mov: each 320x240 frame arrives as nine tiles whose
+ * widths (96, 128, 96) and heights (10, 115, 115) cover it exactly, rows
+ * of 4 * width bytes with the rest of each 1280-byte source row skipped.
+ * The first tile sent holds the first source rows and names y 125, the
+ * last names y 0. INFERRED from the picture: the A, B, G, R order (a red
+ * tie and skin tones; the X server's 0x00RRGGBB reading of 0x4c turns the
+ * face blue), that the source's first row is the top of the picture (it
+ * comes out upside down otherwise), and that the header's y counts up from
+ * the bottom of the window, as GL window coordinates do, with rows sent
+ * top to bottom as under a pixel zoom of -1. Which of word 4's bits that
+ * differ from the ABGR write's 0x80035000 select that order is unknown;
+ * only this exact word is taken.
+ */
+#define ODSY_DMA_MOVIE_FORMAT 0x82233000u
+#define ODSY_DMA_MOVIE_CONTROL 0x4001004cu
+
+/*
  * The draw-sentinel uploads this model takes: the captured RGBA16 write,
  * whose words 4 and 7 must match exactly, eight bytes a pixel, and the ABGR
  * write above, four bytes a pixel, whose word 7 must match apart from the
  * ignored bits (ODSY_DMA_ABGR_CONTROL) and whose word 4 must be the observed
- * 0x80035000. 0 for any other upload, which the caller reports.
+ * 0x80035000. The movie write is taken under the same rule with its own
+ * words and sets *top_down. 0 for any other upload, which the caller
+ * reports.
  */
-static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr)
+static unsigned odyssey_dma_draw_sentinel_bytes(const uint32_t *hdr,
+                                                bool *top_down)
 {
     uint32_t control = hdr[ODSY_DMA_HDR_CONTROL];
 
+    *top_down = false;
     if (hdr[ODSY_DMA_HDR_FORMAT] == 0x02635000 && control == 0x7a02006b) {
         return 8;
     }
     if (hdr[ODSY_DMA_HDR_FORMAT] == 0x80035000 &&
         (control & ~ODSY_DMA_ABGR_CONTROL_IGNORED) == ODSY_DMA_ABGR_CONTROL) {
+        return 4;
+    }
+    if (hdr[ODSY_DMA_HDR_FORMAT] == ODSY_DMA_MOVIE_FORMAT &&
+        (control & ~ODSY_DMA_ABGR_CONTROL_IGNORED) ==
+        ODSY_DMA_MOVIE_CONTROL) {
+        *top_down = true;
         return 4;
     }
     return 0;
@@ -7899,7 +7928,16 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     uint64_t payload_len = 0, pos = 0, out = 0;
     g_autofree uint8_t *payload = NULL;
     uint32_t left, r;
-    unsigned psize = odyssey_dma_draw_sentinel_bytes(hdr);
+    bool top_down;
+    unsigned psize = odyssey_dma_draw_sentinel_bytes(hdr, &top_down);
+    /*
+     * APPROXIMATION: the window's height, for a top-down write's
+     * bottom-up y, taken from the 0x81d clip box's last row. The library
+     * sends the window intersected with the viewport and any scissor box,
+     * which is the window while dmplay's viewport covers it; the model
+     * keeps no other record of the height.
+     */
+    int64_t rows = (s->gl_clip_box[1] & ODSY_CLIP_BOX_FIELD_MASK) + 1;
     int n, i;
 
     if (!psize) {
@@ -7963,7 +8001,8 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
             const uint8_t *src = payload + (uint64_t)r * rowbytes +
                                  c * psize;
             int64_t px = (int64_t)x + c + s->win_origin[0];
-            int64_t py = (int64_t)y + h - 1 - r + s->win_origin[1];
+            int64_t py = (top_down ? rows - y - h + r :
+                          (int64_t)y + h - 1 - r) + s->win_origin[1];
             uint32_t rgba;
 
             if (psize == 4) {

@@ -18263,6 +18263,51 @@ static void test_draw_sentinel_abgr_upload(void)
     board_quit(qts);
 }
 
+/*
+ * dmplay's movie write: the ABGR bytes under code 0x4c with word 4
+ * 0x82233000. Its y counts up from the window's bottom, taken as the 0x81d
+ * clip box's last row, and the first source row is the top of the tile:
+ * in a 10-row window, a 2x2 tile at y 6 covers window rows 2 and 3, source
+ * row zero on row 2. Another word 4 leaves the write unpainted. Before,
+ * every movie frame was refused and the window stayed black.
+ */
+static void test_draw_sentinel_movie_upload(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, (6 << 16) | 3, 0x50, (2 << 16) | 2,
+        0x82233000, 0, 8, 0x7a01004c,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 16) };
+    const uint8_t pixels[16] = {
+        0xff, 0x7f, 0x80, 0x97, 0x80, 0x00, 0x00, 0xff,
+        0x40, 0x00, 0xff, 0x00, 0x00, 0x11, 0x22, 0x33,
+    };
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+    clip_box_set(qts, 0, 319, 0, 9);
+    qtest_memwrite(qts, RB_PAGE_A, pixels, sizeof(pixels));
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 202), ==, 0x97807fff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 202), ==, 0xff000080);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 203), ==, 0x00ff0040);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 203), ==, 0x33221100);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 201), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 204), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 105, 202), ==, 0);
+
+    window_origin(qts, 500, 600);
+    hdr[4] = 0x82233001;
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 602), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 503, 603), ==, 0);
+
+    board_quit(qts);
+}
+
 static void test_draw_sentinel_short_row_gap(void)
 {
     QTestState *qts = readback_start("");
@@ -19625,6 +19670,8 @@ int main(int argc, char **argv)
                    test_draw_sentinel_short_upload);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-abgr",
                    test_draw_sentinel_abgr_upload);
+    add_fresh_case("sn1/odyssey/dma/draw-sentinel-movie",
+                   test_draw_sentinel_movie_upload);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-row-gap",
                    test_draw_sentinel_short_row_gap);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",
