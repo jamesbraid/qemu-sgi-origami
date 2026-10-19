@@ -2122,13 +2122,28 @@ static uint64_t mgras_raster_dma_src_offset(SGIMgrasState *s)
  * The transfer between the resolved guest rows and the pixel banks, on
  * host memory only. The rows land through mgras_put_pixel(), so the logic
  * op, colour mask, clip and format tag apply as for any other paint.
+ *
+ * Under the overlay form (mgras_overlay_target()) a one-byte pixel is also
+ * an overlay index, as a byte transfer's is. The IRIX 6.5.30 server writes
+ * back an overlay save-under this way when it takes a Toolchest menu down:
+ * it reads the overlay under the menu before posting it and returns those
+ * bytes with COLORMASKLSBSA 0, so dropping them left the menu showing
+ * after it closed. No capture sends a four-byte pixel to the overlay; one
+ * is logged and kept out of it rather than stored as an invented index.
  */
 static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
                                      uint8_t op, uint32_t mask)
 {
     uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
+    bool overlay = mgras_overlay_target(s);
 
+    if (overlay && d->guest_bpp != 1) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer of %u-byte "
+                      "pixels to the overlay is not modelled; the overlay "
+                      "is left unchanged\n", d->guest_bpp);
+        overlay = false;
+    }
     for (int32_t row = 0; row < d->h; row++) {
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int y = d->y + row;
@@ -2159,6 +2174,9 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
 
             mgras_put_pixel(s, y * s->width + d->x + col, color, op, mask,
                             format);
+            if (overlay) {
+                mgras_put_overlay(s, y * s->width + d->x + col, p[0], op);
+            }
         }
     }
     s->dirty = true;
@@ -2169,13 +2187,24 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
  * The inverse of mgras_raster_dma_run_draw()'s pixel assembly: bytes 1, 2
  * and 3 of a 4-byte pixel carry blue, green and red of the stored
  * 0x00RRGGBB value, and byte 0 always reads back zero because the draw
- * path never stores it.
+ * path never stores it. Under the overlay form a one-byte read returns
+ * the overlay index, the save-under the server later writes back (see
+ * mgras_raster_dma_run_draw()); a wider overlay read is not modelled and
+ * returns the main planes as before, logged.
  */
 static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
                                      bool reverse_y)
 {
     uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
+    bool overlay = mgras_overlay_target(s);
+
+    if (overlay && d->guest_bpp != 1) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA read of %u-byte pixels "
+                      "from the overlay is not modelled; the main planes "
+                      "are read\n", d->guest_bpp);
+        overlay = false;
+    }
 
     for (int32_t row = 0; row < d->h; row++) {
         uint8_t did[SGI_MGRAS_MAX_WIDTH];
@@ -2189,7 +2218,9 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
             uint32_t stored = back ? s->back[index] : s->front[index];
             uint8_t *p = bytes + col * d->guest_bpp;
 
-            if (d->guest_bpp == 1) {
+            if (overlay) {
+                p[0] = s->overlay[index];
+            } else if (d->guest_bpp == 1) {
                 p[0] = stored;
             } else if (d->guest_bpp == 2) {
                 uint16_t rgb555 = ((stored >> 19) & 0x1f) |
