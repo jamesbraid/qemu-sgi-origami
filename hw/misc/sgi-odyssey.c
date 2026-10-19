@@ -11053,9 +11053,17 @@ static bool odyssey_colour_material_needed(void *opaque)
     return s->gl_colour_material != 0;
 }
 
+/* Sent once an overlay mode or pixel has been set; pre_load clears both. */
 static bool odyssey_overlay_needed(void *opaque)
 {
-    return true;
+    SGIOdysseyState *s = opaque;
+
+    for (unsigned i = 0; i < ODSY_OVERLAY_IDS; i++) {
+        if (s->overlay_mode[i]) {
+            return true;
+        }
+    }
+    return !buffer_is_zero(s->overlay, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
 }
 
 static const VMStateDescription vmstate_odyssey_overlay = {
