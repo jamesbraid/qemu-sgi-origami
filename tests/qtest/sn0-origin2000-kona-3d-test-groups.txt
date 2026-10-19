@@ -130,6 +130,7 @@ texture /mips64/sn0/origin2000/kona-3d/texture-curve
 texture /mips64/sn0/origin2000/kona-3d/texture-family
 texture /mips64/sn0/origin2000/kona-3d/texture-pio-layout
 texture /mips64/sn0/origin2000/kona-3d/texture-prefix
+texture /mips64/sn0/origin2000/kona-3d/texture-rgb5-storage
 texture /mips64/sn0/origin2000/kona-3d/texture-transfer
 texture /mips64/sn0/origin2000/kona-3d/texture/1d
 texture /mips64/sn0/origin2000/kona-3d/texture/byte

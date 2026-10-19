@@ -6082,6 +6082,66 @@ static void texture_dma_packet(QTestState *s, uint64_t io, uint32_t total,
     }
 }
 
+/*
+ * perfly's texture loads: 2D uploads by DMA with destination storage 0x14
+ * and family-zero layout 0x2204, which the library's internal-format
+ * records give to RGB5 (bind index 30) and RGB5_A1 (31), and storage 0x10
+ * with 0x220c (the bank bit set), which they give to RGBA4 (29) among
+ * others. Mode 0 sends RGB bytes and binds RGB5; mode 1 sends RGBA bytes
+ * and binds RGB5_A1; mode 2 sends RGBA bytes and binds RGBA4. The
+ * upload completes on the mailbox, and the texels keep their components
+ * (the model's eight-bit policy), RGB5 with alpha one. A model without the
+ * storage code refuses the header, posts nothing for the DMA, and the
+ * kernel kills the pipe when the completion never comes.
+ */
+static void test_texture_rgb5_storage(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool rgba = mode != 0;
+    unsigned bytes = rgba ? 4 : 3;
+    unsigned index = mode == 0 ? 30 : mode == 1 ? 31 : 29;
+    uint32_t storage = mode == 2 ? 0x10 : 0x14;
+    uint8_t source[16];
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10, 0x23 };
+    uint32_t h[20];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command(s, 0x1d5, (uint32_t[]) { 0, (2u << 28) | (index << 12),
+                                        storage << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    for (unsigned k = 0; k < 4; k++) {
+        source[k * bytes] = 0x10 + k;
+        source[k * bytes + 1] = 0x80;
+        source[k * bytes + 2] = 0xf0 - k;
+        if (rgba) {
+            source[k * bytes + 3] = 0x40 + k;
+        }
+    }
+    qtest_memwrite(s, 0x380000, source, 4 * bytes);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = rgba ? 5 : 4;
+    h[4] = 1;
+    h[5] = 0;
+    h[6] = 1;
+    h[7] = 0;
+    h[9] = storage;
+    h[16] = 0x23;
+    h[17] = mode == 2 ? 0x220c : 0x2204;
+    kona_command(s, 0x174, h, 20);
+    texture_dma_packet(s, 0, 4 * bytes, 4 * bytes, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2,
+                             (0x10u + k) << 24 | 0x80 << 16 |
+                             (0xf0u - k) << 8 | (rgba ? 0x40 + k : 0xff));
+    }
+    qtest_quit(s);
+}
+
 static void draw_pixels_expected(QTestState *s, bool drawn)
 {
     g_autofree Expected *e = g_new(Expected, 1);
@@ -15889,6 +15949,12 @@ int main(int argc, char **argv)
     take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
 
+    add_data_case("sn0/origin2000/kona-3d/texture-rgb5-storage/rgb",
+                  GUINT_TO_POINTER(0), test_texture_rgb5_storage);
+    add_data_case("sn0/origin2000/kona-3d/texture-rgb5-storage/rgba",
+                  GUINT_TO_POINTER(1), test_texture_rgb5_storage);
+    add_data_case("sn0/origin2000/kona-3d/texture-rgb5-storage/rgba4",
+                  GUINT_TO_POINTER(2), test_texture_rgb5_storage);
     add_case("sn0/origin2000/kona-3d/texture-curve/transport",
              test_texture_curve_transport);
     add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-empty",

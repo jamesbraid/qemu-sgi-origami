@@ -472,6 +472,8 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
     case 0xd:
     case 0xe:
     case 8:
+    case SGI_KONA_GL_STORAGE_RGB4:
+    case SGI_KONA_GL_STORAGE_RGB5:
         layout = volume ? 0x11c0 : 0x2200;
         break;
     case 0x30:
@@ -485,8 +487,16 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
     return (h[17] & ~8u) == layout;
 }
 
-bool sgi_kona_gl_texture_native_binding_layout(uint32_t base, uint32_t target,
-                                               uint32_t record)
+/*
+ * The record byte must agree with the storage code the internal format
+ * gives. The colour formats below eight bits a component are RGB and RGBA
+ * but store as 0x10 or 0x14 in layout family zero. Their record byte is
+ * inferred to be family zero's 0x44 (0x23 for a volume), as perfly sends;
+ * the library code that builds the byte was not read.
+ */
+bool sgi_kona_gl_texture_storage_binding_layout(uint32_t storage,
+                                                uint32_t target,
+                                                uint32_t record)
 {
     bool volume = target == SGI_GL_TEXTURE_3D;
     uint32_t expected;
@@ -494,15 +504,15 @@ bool sgi_kona_gl_texture_native_binding_layout(uint32_t base, uint32_t target,
     if (!volume && target != SGI_GL_TEXTURE_1D && target != SGI_GL_TEXTURE_2D) {
         return false;
     }
-    switch (base) {
-    case SGI_GL_DEPTH_COMPONENT:
-    case SGI_GL_LUMINANCE:
-    case SGI_GL_ALPHA:
-    case SGI_GL_LUMINANCE_ALPHA:
+    switch (storage) {
+    case 0xd:
+    case 0xe:
+    case 8:
+    case SGI_KONA_GL_STORAGE_RGB4:
+    case SGI_KONA_GL_STORAGE_RGB5:
         expected = volume ? 0x23 : 0x44;
         break;
-    case SGI_GL_RGB:
-    case SGI_GL_RGBA:
+    case 0x30:
         expected = volume ? 0x22 : 0x43;
         break;
     default:
@@ -575,42 +585,67 @@ bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
     return true;
 }
 
+/*
+ * The library's internal-format records: bind index to public base and
+ * internal format, and the native storage code its uploads carry. The
+ * colour formats below eight bits a component store as code 0x10 (RGB2,
+ * RGBA2, R3_G3_B2, RGB4, RGBA4) or 0x14 (RGB5, RGB5_A1), both in layout
+ * family zero; RGB and RGBA at eight bits store as 0x30, family one.
+ */
+static const struct {
+    uint32_t base, internal, storage;
+} sgi_kona_gl_formats[] = {
+    [0] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE, 0xd },
+    [1] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA, 8 },
+    [2] = { SGI_GL_RGBA, SGI_GL_RGBA, 0x30 },
+    [3] = { SGI_GL_LUMINANCE, 0x8042, 0xd },
+    [6] = { SGI_GL_LUMINANCE, 0x803f, 0xd },
+    [7] = { SGI_GL_ALPHA, 0x803b, 0xe },
+    [9] = { SGI_GL_LUMINANCE_ALPHA, 0x8043, 8 },
+    [10] = { SGI_GL_LUMINANCE, 0x8040, 0xd },
+    [11] = { SGI_GL_ALPHA, 0x803c, 0xe },
+    [13] = { SGI_GL_LUMINANCE_ALPHA, 0x8044, 8 },
+    [14] = { SGI_GL_LUMINANCE_ALPHA, 0x8045, 8 },
+    [15] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE, 0xd },
+    [16] = { SGI_GL_LUMINANCE, 0x8041, 0xd },
+    [17] = { SGI_GL_ALPHA, SGI_GL_ALPHA, 0xe },
+    [18] = { SGI_GL_ALPHA, 0x803d, 0xe },
+    [21] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA, 8 },
+    [23] = { SGI_GL_ALPHA, 0x803e, 0xe },
+    [25] = { SGI_GL_RGB, 0x804e, SGI_KONA_GL_STORAGE_RGB4 },
+    [26] = { SGI_GL_RGBA, SGI_GL_RGBA2, SGI_KONA_GL_STORAGE_RGB4 },
+    [27] = { SGI_GL_RGB, SGI_GL_R3_G3_B2, SGI_KONA_GL_STORAGE_RGB4 },
+    [28] = { SGI_GL_RGB, SGI_GL_RGB4, SGI_KONA_GL_STORAGE_RGB4 },
+    [29] = { SGI_GL_RGBA, SGI_GL_RGBA4, SGI_KONA_GL_STORAGE_RGB4 },
+    [30] = { SGI_GL_RGB, SGI_GL_RGB5, SGI_KONA_GL_STORAGE_RGB5 },
+    [31] = { SGI_GL_RGBA, SGI_GL_RGB5_A1, SGI_KONA_GL_STORAGE_RGB5 },
+    [33] = { SGI_GL_RGB, 0x8051, 0x30 },
+    [34] = { SGI_GL_RGBA, 0x8058, 0x30 },
+    [37] = { SGI_GL_RGB, SGI_GL_RGB, 0x30 },
+    [38] = { SGI_GL_RGB, SGI_GL_RGB, 0x30 },
+    [41] = { SGI_GL_RGBA, SGI_GL_RGBA, 0x30 },
+    [63] = { SGI_GL_DEPTH_COMPONENT, SGI_GL_DEPTH_COMPONENT, 0xd },
+};
+
 bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
                                          uint32_t *internal)
 {
-    static const struct {
-        uint32_t base, internal;
-    } formats[] = {
-        [0] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
-        [1] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
-        [2] = { SGI_GL_RGBA, SGI_GL_RGBA },
-        [3] = { SGI_GL_LUMINANCE, 0x8042 },
-        [6] = { SGI_GL_LUMINANCE, 0x803f },
-        [7] = { SGI_GL_ALPHA, 0x803b },
-        [9] = { SGI_GL_LUMINANCE_ALPHA, 0x8043 },
-        [10] = { SGI_GL_LUMINANCE, 0x8040 },
-        [11] = { SGI_GL_ALPHA, 0x803c },
-        [13] = { SGI_GL_LUMINANCE_ALPHA, 0x8044 },
-        [14] = { SGI_GL_LUMINANCE_ALPHA, 0x8045 },
-        [15] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
-        [16] = { SGI_GL_LUMINANCE, 0x8041 },
-        [17] = { SGI_GL_ALPHA, SGI_GL_ALPHA },
-        [18] = { SGI_GL_ALPHA, 0x803d },
-        [21] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
-        [23] = { SGI_GL_ALPHA, 0x803e },
-        [33] = { SGI_GL_RGB, 0x8051 },
-        [34] = { SGI_GL_RGBA, 0x8058 },
-        [37] = { SGI_GL_RGB, SGI_GL_RGB },
-        [38] = { SGI_GL_RGB, SGI_GL_RGB },
-        [41] = { SGI_GL_RGBA, SGI_GL_RGBA },
-        [63] = { SGI_GL_DEPTH_COMPONENT, SGI_GL_DEPTH_COMPONENT },
-    };
-
-    if (index >= ARRAY_SIZE(formats) || !formats[index].base) {
+    if (index >= ARRAY_SIZE(sgi_kona_gl_formats) ||
+        !sgi_kona_gl_formats[index].base) {
         return false;
     }
-    *base = formats[index].base;
-    *internal = formats[index].internal;
+    *base = sgi_kona_gl_formats[index].base;
+    *internal = sgi_kona_gl_formats[index].internal;
+    return true;
+}
+
+bool sgi_kona_gl_texture_format_storage(uint32_t index, uint32_t *storage)
+{
+    if (index >= ARRAY_SIZE(sgi_kona_gl_formats) ||
+        !sgi_kona_gl_formats[index].base) {
+        return false;
+    }
+    *storage = sgi_kona_gl_formats[index].storage;
     return true;
 }
 

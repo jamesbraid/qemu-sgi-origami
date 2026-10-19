@@ -948,11 +948,10 @@ static bool texture_detail_view(SGIKonaTextureState *s,
     if (!s->detail_bound) {
         return true;
     }
-    if (!sgi_kona_gl_texture_internal_format(args[3], &base, &internal)) {
+    if (!sgi_kona_gl_texture_internal_format(args[3], &base, &internal) ||
+        !sgi_kona_gl_texture_format_storage(args[3], &storage)) {
         return false;
     }
-    storage = base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ? 0xd :
-              base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30;
     o = texture_object(s, args[0], false);
     if (o) {
         for (unsigned k = 0; k < o->native_count; k++) {

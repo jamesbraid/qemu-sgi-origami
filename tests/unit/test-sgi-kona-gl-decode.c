@@ -854,7 +854,7 @@ static void test_texture_native_layout(void)
         uint32_t storage, layout;
     } families[] = {
         { 0xd, 0x2200 }, { 0xe, 0x2200 }, { 8, 0x2200 },
-        { 0x30, 0x2181 },
+        { 0x10, 0x2200 }, { 0x14, 0x2200 }, { 0x30, 0x2181 },
     };
     uint32_t h[20] = { [0] = SGI_GL_TEXTURE_2D };
 
@@ -968,39 +968,34 @@ static void test_texture_volume_layout(void)
 
 static void test_texture_binding_layout(void)
 {
-    static const uint32_t bases[] = {
-        SGI_GL_LUMINANCE, SGI_GL_ALPHA, SGI_GL_LUMINANCE_ALPHA,
-        SGI_GL_RGB, SGI_GL_RGBA,
+    /* Luminance, alpha and depth storage, then the 16-bit colour codes. */
+    static const uint32_t storages[] = {
+        0xd, 0xe, 8, SGI_KONA_GL_STORAGE_RGB4, SGI_KONA_GL_STORAGE_RGB5, 0x30,
     };
     static const uint32_t targets[] = {
         SGI_GL_TEXTURE_1D, SGI_GL_TEXTURE_2D, SGI_GL_TEXTURE_3D,
     };
 
-    for (unsigned k = 0; k < ARRAY_SIZE(bases); k++) {
+    for (unsigned k = 0; k < ARRAY_SIZE(storages); k++) {
         for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
+            bool colour = storages[k] == 0x30;
             uint32_t record = targets[t] == SGI_GL_TEXTURE_3D ?
-                              (k < 3 ? 0x23 : 0x22) : (k < 3 ? 0x44 : 0x43);
+                              (colour ? 0x22 : 0x23) : (colour ? 0x43 : 0x44);
 
-            g_assert_true(sgi_kona_gl_texture_native_binding_layout(bases[k],
-                                                       targets[t], record));
-            g_assert_true(sgi_kona_gl_texture_native_binding_layout(bases[k],
-                                         targets[t], record | 0x12340000));
-            g_assert_false(sgi_kona_gl_texture_native_binding_layout(bases[k],
-                                                   targets[t], record ^ 1));
-            g_assert_false(sgi_kona_gl_texture_native_binding_layout(bases[k],
-                                                   targets[t], record ^ 0x60));
+            g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+                storages[k], targets[t], record));
+            g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+                storages[k], targets[t], record | 0x12340000));
+            g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+                storages[k], targets[t], record ^ 1));
+            g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+                storages[k], targets[t], record ^ 0x60));
         }
     }
-    g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_INTENSITY,
-                                                   SGI_GL_TEXTURE_2D, 0x44));
-    g_assert_true(sgi_kona_gl_texture_native_binding_layout(
-        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_2D, 0x44));
-    g_assert_true(sgi_kona_gl_texture_native_binding_layout(
-        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_1D, 0x44));
-    g_assert_false(sgi_kona_gl_texture_native_binding_layout(
-        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_2D, 0x43));
-    g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_LUMINANCE,
-                                                              0xdead, 0x44));
+    g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+        0x15, SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+        0xd, 0xdead, 0x44));
 }
 
 static void test_texture_shadow_sampler(void)
@@ -1374,6 +1369,49 @@ static void test_texture_pixel_conversion(void)
     }
 }
 
+/*
+ * The storage code each supported index uploads as: the library's records
+ * give RGB4-class formats code 0x10 and RGB5 and RGB5_A1 code 0x14, both
+ * in family zero, while RGB and RGBA keep 0x30; the record byte follows
+ * the family, 0x44 (0x23 for a volume) for family zero and 0x43 (0x22)
+ * for 0x30.
+ */
+static void test_texture_format_storage(void)
+{
+    static const struct {
+        uint32_t index, storage;
+    } cases[] = {
+        { 0, 0xd }, { 1, 8 }, { 2, 0x30 }, { 17, 0xe }, { 25, 0x10 },
+        { 29, 0x10 }, { 30, 0x14 }, { 31, 0x14 }, { 33, 0x30 }, { 34, 0x30 },
+        { 63, 0xd },
+    };
+    uint32_t storage;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_assert_true(sgi_kona_gl_texture_format_storage(cases[i].index,
+                                                         &storage));
+        g_assert_cmphex(storage, ==, cases[i].storage);
+    }
+    storage = 0xdeadbeef;
+    g_assert_false(sgi_kona_gl_texture_format_storage(4, &storage));
+    g_assert_cmphex(storage, ==, 0xdeadbeef);
+
+    g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+        0x14, SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+        0x14, SGI_GL_TEXTURE_2D, 0x43));
+    g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+        0x14, SGI_GL_TEXTURE_3D, 0x23));
+    g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+        0x10, SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_true(sgi_kona_gl_texture_storage_binding_layout(
+        0x30, SGI_GL_TEXTURE_2D, 0x43));
+    g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+        0x30, SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
+        0x50, SGI_GL_TEXTURE_2D, 0x44));
+}
+
 static void test_texture_internal_format(void)
 {
     static const struct {
@@ -1396,6 +1434,13 @@ static void test_texture_internal_format(void)
         { 18, SGI_GL_ALPHA, 0x803d },
         { 21, SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
         { 23, SGI_GL_ALPHA, 0x803e },
+        { 25, SGI_GL_RGB, 0x804e },
+        { 26, SGI_GL_RGBA, SGI_GL_RGBA2 },
+        { 27, SGI_GL_RGB, SGI_GL_R3_G3_B2 },
+        { 28, SGI_GL_RGB, SGI_GL_RGB4 },
+        { 29, SGI_GL_RGBA, SGI_GL_RGBA4 },
+        { 30, SGI_GL_RGB, SGI_GL_RGB5 },
+        { 31, SGI_GL_RGBA, SGI_GL_RGB5_A1 },
         { 33, SGI_GL_RGB, 0x8051 },
         { 34, SGI_GL_RGBA, 0x8058 },
         { 37, SGI_GL_RGB, SGI_GL_RGB },
@@ -3068,6 +3113,8 @@ int main(int argc, char **argv)
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
                     test_texture_pixel_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-format-storage",
+                    test_texture_format_storage);
     g_test_add_func("/sgi-kona-gl-decode/texture-internal-format",
                     test_texture_internal_format);
     g_test_add_func("/sgi-kona-gl-decode/texture-integer-conversion",

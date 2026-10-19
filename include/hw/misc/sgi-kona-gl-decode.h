@@ -114,11 +114,20 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
                                     const uint32_t record[22],
                                     SGIKonaTextureParams *params);
 
+/*
+ * Native storage codes the library's records give the colour formats below
+ * eight bits a component, both in layout family zero: 0x10 to RGB2, RGBA2,
+ * R3_G3_B2, RGB4 and RGBA4, and 0x14 to RGB5 and RGB5_A1.
+ */
+#define SGI_KONA_GL_STORAGE_RGB4 0x10
+#define SGI_KONA_GL_STORAGE_RGB5 0x14
+
 /* Validate native storage families, dimensional mode and transport. */
 bool sgi_kona_gl_texture_native_layout(const uint32_t header[20]);
-/* The record byte must agree with an independently decoded public format. */
-bool sgi_kona_gl_texture_native_binding_layout(uint32_t base, uint32_t target,
-                                               uint32_t record);
+/* The record byte must agree with the internal format's storage code. */
+bool sgi_kona_gl_texture_storage_binding_layout(uint32_t storage,
+                                                uint32_t target,
+                                                uint32_t record);
 
 /* Volume records use fourteen mipmap words or four nonmipmap words. */
 bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
@@ -131,6 +140,8 @@ void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
 /* Decode supported native internal-format table indexes transactionally. */
 bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
                                          uint32_t *internal);
+/* The native storage code a supported internal-format index uploads as. */
+bool sgi_kona_gl_texture_format_storage(uint32_t index, uint32_t *storage);
 
 /* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
