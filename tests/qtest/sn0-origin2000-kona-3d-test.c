@@ -5203,7 +5203,7 @@ static void texture_rebind_patch_absent_subsection(const char *path)
     g_assert_true(g_file_get_contents(path, &stream, &len, &err));
     g_assert_no_error(err);
     start = kona_stream_subsection(stream, len, "sgi-kona/contexts", 7, 1);
-    end = kona_stream_subsection(stream, len, dma_name, 2, 1) -
+    end = kona_stream_subsection(stream, len, dma_name, 3, 1) -
           sizeof(dma_name) - 5;
     g_assert_cmpuint(start, <, end);
     kona_stream_subsection(stream, len, "sgi-kona/textures", 2, 0);

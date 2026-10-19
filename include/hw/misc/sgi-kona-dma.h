@@ -156,6 +156,14 @@ typedef struct SGIKonaDma {
     uint32_t pool_len;
 
     /*
+     * Where the current context's display-list region starts in the list
+     * plane, in bytes: the offset of the class 1, key 0 region the last
+     * 0x1e4 placed since the context was activated. The library's
+     * pipe-memory offsets count from it. See sgi_kona_dma_list_region().
+     */
+    uint32_t list_base;
+
+    /*
      * A 0x170 or 0x171 still taking its pairs: calls_token, and
      * calls_have of the calls_need words in calls_words. calls_need is 0
      * when none is open.
@@ -233,6 +241,8 @@ void sgi_kona_dma_calls_drop(SGIKonaState *s);
 
 /* The engine's state beyond the port, a subsection of the device's. */
 extern const VMStateDescription vmstate_sgi_kona_dma;
+
+void sgi_kona_dma_list_region(SGIKonaState *s, const uint32_t *args);
 
 /* Registers the x-test-dma-* qtest-only properties on kona's own object. */
 void sgi_kona_dma_test_props_init(Object *obj, SGIKonaDma *d);

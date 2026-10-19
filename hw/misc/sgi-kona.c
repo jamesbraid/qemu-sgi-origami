@@ -1544,6 +1544,8 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     int slot = SGI_KONA_CONTEXT_NONE;
     unsigned kept;
 
+    /* The restore's 0x1e4 packets place the new context's regions. */
+    s->dma.list_base = 0;
     offset &= 0xfff;
     for (unsigned i = 0; i < s->context_count; i++) {
         c = &s->contexts[i];
@@ -11402,15 +11404,17 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_MEM_REGION:
         trace_sgi_kona_kernel_mem_region(args[0], args[1], args[2], args[3]);
+        sgi_kona_dma_list_region(s, args);
         /* fall through */
     case SGI_KONA_CMD_MEM_COPY_DOWN:
     case SGI_KONA_CMD_MEM_SWAP_OUT:
     case SGI_KONA_CMD_RESOURCE_SYNC:
         /*
          * The kernel's pool packets, consumed whole so the stream stays in
-         * step. The model keeps no pipe memory
-         * behind the pools: a region's placement changes nothing it
-         * draws, and a copy-down or swap-out moves no data. A swap-out
+         * step. A display-list region's placement relocates the context's
+         * list addresses (sgi_kona_dma_list_region()); no other placement
+         * changes anything the model draws, and a copy-down or swap-out
+         * moves no data. A swap-out
          * names completion reason 0x102, which the model does not post;
          * how the kernel waits for it is unknown, and only a full pool
          * sends one. The guest test is the minimal GLX program's trace
