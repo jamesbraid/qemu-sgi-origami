@@ -360,6 +360,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_LIST_PAD1, 1 },
     { SGI_KONA_CMD_GL_LIST_PAD3, 3 },
     { SGI_KONA_CMD_GL_LIST_PAD4, 4 },
+    { SGI_KONA_CMD_GL_POINT_PARAMETER, 2 },
+    { SGI_KONA_CMD_GL_POINT_ATTENUATION, 4 },
     /* Lighting. */
     { SGI_KONA_CMD_GL_LIGHTF, 6 },
     { SGI_KONA_CMD_GL_LIGHTI, 6 },
