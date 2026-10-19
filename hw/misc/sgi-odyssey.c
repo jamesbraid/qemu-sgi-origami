@@ -1049,11 +1049,13 @@ enum {
  */
 #define ODSY_GL_VERTEX_3I 0x8080cc02  /* 3 operands: X, Y, Z as int32 */
 /*
- * Four floats, X, Y, Z, W: INFERRED to be glVertex4f. pfCity sends it, four
- * operands (bits 13:10) and W 1.0 throughout, between glBegin and glEnd in
- * place of 0x8080cc03, each after a 0xc380d025 texture coordinate; the low
- * byte steps by two with each operand added, as the texture coordinate
- * words' 0x1f, 0x21, 0x23 and 0x25 do.
+ * glVertex4f: four floats, X, Y, Z, W (ESTABLISHED from the IRIX 6.5.30
+ * IP30 library's immediate-mode glVertex4f, which writes this word and its
+ * four arguments; pfCity draws its triangles with it). The library's
+ * clip-check path also sends this word, after an edge flag and a colour,
+ * with four floats from a second coordinate set in its vertex record;
+ * whether those are object or clip coordinates is UNKNOWN, and the model
+ * takes every 0x8080d005 as an object-space vertex.
  */
 #define ODSY_GL_VERTEX_4F 0x8080d005
 
