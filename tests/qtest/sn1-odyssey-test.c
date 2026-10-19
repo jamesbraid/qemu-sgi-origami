@@ -10001,6 +10001,39 @@ static void test_scanout_overlay_planes(void)
     board_quit(qts);
 }
 
+/*
+ * An id-plane write whose drawing mask selects neither the id byte (buffer
+ * 0) nor the overlay byte (buffer 1) changes nothing and is reported once.
+ */
+static void test_scanout_overlay_unselected_mask(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-aux-mask-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    aux_write(qts, 0xff, 0xff, 0x0, 100, 100, 104, 104);
+    aux_write(qts, 0xff, 0xff, 0x0, 100, 100, 104, 104);
+    g_assert_cmphex(odsy_did(qts, 101, 101), ==, 0);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_substr(log, "selects neither the id nor the "
+                                       "overlay byte"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_command_fifo_gl_colour_index(void)
 {
     QTestState *qts = board_start("");
@@ -18753,6 +18786,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_float_colour_integer_vertices);
     add_case("sn1/odyssey/scanout-overlay-planes",
              test_scanout_overlay_planes);
+    add_case("sn1/odyssey/scanout-overlay-unselected-mask",
+             test_scanout_overlay_unselected_mask);
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",

@@ -329,6 +329,7 @@ struct SGIOdysseyState {
     /* The overlay pixel byte beside each id byte; same lifetime as did. */
     uint8_t *overlay;
     bool gl_aux_reported;
+    bool aux_mask_reported;
 
     /*
      * The command-FIFO interpreter (0x110000), reused across successive
