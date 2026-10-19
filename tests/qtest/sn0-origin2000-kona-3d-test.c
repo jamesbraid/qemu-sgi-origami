@@ -6461,6 +6461,33 @@ static void test_texture_refused_dma_completes(void)
     g_assert_null(strstr(found, "no list record"));
 }
 
+/*
+ * The refused load's own packet can itself be refused before it is routed,
+ * here for a zero line length. It still spends the mark, so the next
+ * packet is not taken as that source and completed unread: with nothing
+ * waiting it reaches no destination, where an X image write would
+ * otherwise have lost its bytes to the mark.
+ */
+static void test_texture_refused_dma_mark_spent_by_bad_packet(void)
+{
+    static const uint32_t h[20] = {
+        0x806f, 0x80, 0x80, 5, 1, 0, 1, 0, 0, 0x30,
+        9, 0, 0, 0x7f, 0x7f, 0, 0x677, 0x9ad, 0x15610, 0x155a8,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    kona_command(s, 0x174, (uint32_t *)h, 20);
+    texture_dma_packet(s, 0, 512, 0, 0);
+    texture_dma_packet(s, 0, 512, 512, 0);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "not whole lines"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "no list record"), ==, 1);
+}
+
 static void draw_pixels_expected(QTestState *s, bool drawn)
 {
     g_autofree Expected *e = g_new(Expected, 1);
@@ -16387,6 +16414,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(2), test_texture_rgb5_storage);
     add_case("sn0/origin2000/kona-3d/texture-refused-dma-completes",
              test_texture_refused_dma_completes);
+    add_case("sn0/origin2000/kona-3d/texture-refused-dma-mark-spent",
+             test_texture_refused_dma_mark_spent_by_bad_packet);
     add_case("sn0/origin2000/kona-3d/texture-curve/sampled",
              test_texture_curve_sampled);
     add_case("sn0/origin2000/kona-3d/texture-curve/transport",

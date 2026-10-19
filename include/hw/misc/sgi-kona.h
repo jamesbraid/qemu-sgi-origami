@@ -1486,7 +1486,6 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 
 /* A native texture upload staged from exact mapped source bytes. */
 bool sgi_kona_texture_dma_waiting(SGIKonaState *s);
-bool sgi_kona_texture_dma_discard_due(SGIKonaState *s);
 bool sgi_kona_texture_dma_discard(SGIKonaState *s);
 bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                  uint32_t per_line, uint64_t pitch);

@@ -10670,11 +10670,6 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
  * unsupported case; that the transfer itself completes is what any
  * accepted DMA does.
  */
-bool sgi_kona_texture_dma_discard_due(SGIKonaState *s)
-{
-    return s->texture_dma_discard;
-}
-
 bool sgi_kona_texture_dma_discard(SGIKonaState *s)
 {
     bool due = s->texture_dma_discard;

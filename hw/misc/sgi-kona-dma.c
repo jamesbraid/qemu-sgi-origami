@@ -316,8 +316,12 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     bool texture = !record && sgi_kona_texture_dma_waiting(s);
     bool pixels = !record && sgi_kona_pixels_dma_waiting(s);
     bool bitmap = !record && sgi_kona_bitmap_dma_waiting(s);
+    /*
+     * The packet after a refused DMA texture load is that load's source,
+     * whether or not it is refused below, so selecting it spends the mark.
+     */
     bool discard = !record && !texture && !pixels && !bitmap &&
-                   sgi_kona_texture_dma_discard_due(s);
+                   sgi_kona_texture_dma_discard(s);
     uint32_t total = w[2], per_line = w[3], gap = w[4];
     uint64_t cookie = SGI_KONA_DMA_COOKIE_NONE;
     g_autofree uint64_t *pages = NULL;
@@ -400,7 +404,6 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         }
     } else if (discard) {
         /* A refused native texture load's source: complete it unread. */
-        sgi_kona_texture_dma_discard(s);
         if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
