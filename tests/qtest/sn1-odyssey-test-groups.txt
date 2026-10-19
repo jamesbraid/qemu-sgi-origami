@@ -122,6 +122,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-zero-depth
 gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-depth-only
 gl /mips64/sn1/odyssey/command-fifo-gl-bitmap-rect-index
 gl /mips64/sn1/odyssey/command-fifo-gl-clear-rect
+gl /mips64/sn1/odyssey/command-fifo-kernel-clear-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clear-then-triangle
 gl /mips64/sn1/odyssey/command-fifo-gl-window-origin-and-clip
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-rectangles

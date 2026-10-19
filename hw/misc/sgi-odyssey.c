@@ -1325,6 +1325,19 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_GL_RECT 0x8f80a944
 #define ODSY_GL_RECT_FLOATS 10
+/*
+ * The kernel driver's buffer-clear request, made by a GL client with its
+ * parameters, sends the same ten-float record under this word inside
+ * BEGIN 0xa: the four colour words the client passed, then the corners
+ * (x, y, z) of each strip of the window's clip list, z the clear depth the
+ * client passed (0x4fffffc0, depth 1, from ivview), followed by END and the
+ * usual flush. ESTABLISHED from the IRIX 6.5.30 IP30 kernel's emitter and
+ * a model trace of ivview, which sent it again and again while it ran.
+ * No pixel data follows it, unlike the image path's 0xcf80a92f box. That
+ * the board fills it as it fills ODSY_GL_RECT, under the client's write
+ * mask, is INFERRED from that identical layout and the kernel's purpose.
+ */
+#define ODSY_GL_CLEAR_BOX 0x8f80a92f
 /* The identity the shared GL context keys draws by; this board has one. */
 #define ODSY_GL_CONTEXT_HW_ID 1
 
@@ -9117,7 +9130,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         s->cmd_operand_index = 0;
         return;
     }
-    if (word == ODSY_GL_RECT) {
+    if (word == ODSY_GL_RECT || word == ODSY_GL_CLEAR_BOX) {
         /* 10 floats, more than cmd_operand[] holds: gathered in gl_rect[]. */
         s->cmd_state = ODSY_CMD_GL_RECT;
         s->cmd_operand_count = ODSY_GL_RECT_FLOATS;
