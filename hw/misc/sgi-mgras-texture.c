@@ -183,8 +183,10 @@
  * bordered image (see "Load"), detail,
  * the texture colour table, one-dimensional and volume textures,
  * SGIS_texture_select's dual and quad groups (their draws name a
- * select no load used, so they find no level) and two-component
- * GL_ABGR_EXT loads.
+ * select their RGBA load did not use, so they usually find no level and
+ * are logged, but may sample another one- or two-component texture kept
+ * at the same block under that select) and two-component GL_ABGR_EXT
+ * loads.
  *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
