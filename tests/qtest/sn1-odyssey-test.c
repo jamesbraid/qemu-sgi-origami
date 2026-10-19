@@ -9430,6 +9430,165 @@ static void test_dma_texture_object(void)
 }
 
 /*
+ * One two-texel DMA row of a 12-bit texture source into the object at base:
+ * word 7 carries the source code and its size index (bits 18:16).
+ */
+static void dma_texel12_row(QTestState *qts, uint32_t base, uint32_t code,
+                            uint32_t size_index, uint32_t bpp,
+                            const uint8_t *bytes)
+{
+    const uint64_t table = 0xb80000;
+    const uint64_t page = 0xb84000;
+    const uint32_t hdr[8] = {
+        base, 0, 2, (1 << 16) | 2, 0x80015000, 0, 2 * bpp,
+        0x3a000000 | size_index << 16 | code,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(page, 2 * bpp) };
+
+    qtest_memwrite(qts, page, bytes, 2 * bpp);
+    dma_image_table(qts, table, hdr, pte, 1);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+}
+
+/*
+ * The GL library's uploads into a 12-bit texture, from a guest probe that
+ * sent distinct component values under each internal format, source format
+ * and type. The code names the components in the source's order (0x62 L,
+ * 0x68 L A, 0x69 R G B, 0x6b R G B A, 0x6c A B G R); the size index says
+ * whether each is a byte (3, 4) or a big-endian 16-bit word (2, 4, 6, 8
+ * bytes a pixel). 16-bit components keep their high byte, rounded. Before
+ * these codes were read, every one but the byte-sized 0x6b was dropped or
+ * laid out as an X server 0x00RRGGBB word.
+ */
+static void test_dma_texture_12bit_sources(void)
+{
+    static const struct {
+        uint32_t base, code, size_index, bpp;
+        uint8_t bytes[16];
+        uint32_t texel[2];
+    } cases[] = {
+        { 0x180000, 0x6c, 2, 8,
+          { 0x11, 0x22, 0x55, 0x66, 0x99, 0xaa, 0xdd, 0xee,
+            0xff, 0xff, 0x22, 0x02, 0x3e, 0xb4, 0x46, 0xfd },
+          { 0xdd995511, 0x473e22ff } },
+        { 0x181000, 0x6b, 2, 8,
+          { 0x11, 0x22, 0x55, 0x66, 0x99, 0xaa, 0xdd, 0xee,
+            0x00, 0x00, 0xff, 0xff, 0x80, 0x00, 0x00, 0x7f },
+          { 0x115599dd, 0x00ff8000 } },
+        { 0x182000, 0x69, 6, 6,
+          { 0x11, 0x22, 0x55, 0x66, 0x99, 0xaa,
+            0xdf, 0xdf, 0xa0, 0xa0, 0x00, 0x00 },
+          { 0x115599ff, 0xdfa000ff } },
+        { 0x183000, 0x69, 7, 3,
+          { 0x11, 0x55, 0x99, 0xd4, 0xa0, 0x00 },
+          { 0x115599ff, 0xd4a000ff } },
+        { 0x184000, 0x68, 1, 4,
+          { 0x11, 0x22, 0x55, 0x66, 0xd3, 0xd3, 0x7a, 0x7a },
+          { 0x11111155, 0xd3d3d37a } },
+        { 0x185000, 0x62, 0, 2,
+          { 0xa6, 0x8c, 0x87, 0x0d },
+          { 0xa6a6a6ff, 0x878787ff } },
+    };
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        dma_texel12_row(qts, cases[i].base, cases[i].code,
+                        cases[i].size_index, cases[i].bpp, cases[i].bytes);
+        for (unsigned x = 0; x < 2; x++) {
+            g_assert_cmphex(odsy_test_object_texel(qts, cases[i].base, x, 0),
+                            ==, cases[i].texel[x]);
+        }
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * The same sources as pixel bursts: 0x62 two 16-bit luminances a word and
+ * 0x68 a 16-bit luminance-alpha pair a word under tag format 0x10; 0x69 and
+ * 0x6c as a stream of 16-bit halves under 0x12, 0x69's three halves a
+ * pixel straddling words. Last, distort's row ending: a four-word group
+ * carries the row's last two 16-bit ABGR pixels, and the next row's burst
+ * follows with no header of its own and must still land.
+ */
+static void test_burst_texture_12bit_sources(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    upload_begin(qts, 0x180000, 2, 0x080024d0, 4, 1);
+    upload_first_header(qts, 0x62);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_CI));
+    push_user_words(qts, (uint32_t[]) { 0xa68c870d, 0x1122ffff }, 2);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    0xa6a6a6ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 0), ==,
+                    0x878787ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 2, 0), ==,
+                    0x111111ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 3, 0), ==,
+                    0xffffffff);
+
+    upload_begin(qts, 0x181000, 2, 0x080024d0, 2, 1);
+    upload_first_header(qts, 0x68);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_CI));
+    push_user_words(qts, (uint32_t[]) { 0x11225566, 0xd3d37a7a }, 2);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 0), ==,
+                    0x11111155);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 1, 0), ==,
+                    0xd3d3d37a);
+
+    upload_begin(qts, 0x182000, 2, 0x080024d0, 2, 1);
+    upload_first_header(qts, 0x69);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(3, ODSY_IMAGE_FMT_SHORT));
+    push_user_words(qts, (uint32_t[]) {
+        0x11225566, 0x99aadfdf, 0xa0a00000,
+    }, 3);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 0, 0), ==,
+                    0x115599ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 1, 0), ==,
+                    0xdfa000ff);
+
+    /* Two rows of three: one unbounded pixel, a two-pixel group, a row. */
+    upload_begin(qts, 0x183000, 2, 0x080024d0, 3, 2);
+    upload_first_header(qts, 0x6c);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_SHORT));
+    push_user_words(qts, (uint32_t[]) { 0xffff2202, 0x3eb446fd }, 2);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    user_cmd_push(qts, 0x0f41106c);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_SHORT));
+    push_user_words(qts, (uint32_t[]) {
+        0x80000000, 0x0000ffff, 0x11225566, 0x99aaddee,
+    }, 4);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(6, ODSY_IMAGE_FMT_SHORT));
+    push_user_words(qts, (uint32_t[]) {
+        0xffff0000, 0x0000ffff, 0xffff0000, 0xffff0000,
+        0xffffffff, 0x00000000,
+    }, 6);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 0, 0), ==,
+                    0x473e22ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 1, 0), ==,
+                    0xff000080);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 2, 0), ==,
+                    0xdd995511);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 0, 1), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 1, 1), ==,
+                    0x00ff00ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 2, 1), ==,
+                    0x0000ffff);
+    assert_screen_untouched(qts);
+    board_quit(qts);
+}
+
+/*
  * The textured draw after an upload (phase H's words): the state words are
  * accepted, the draw lands inside the probe window after 0x90008116, not at
  * the screen origin the upload's override named, and -- until the shared
@@ -18908,6 +19067,10 @@ int main(int argc, char **argv)
              test_command_fifo_gl_texture_rgba);
     add_fresh_case("sn1/odyssey/dma-texture-object",
                    test_dma_texture_object);
+    add_fresh_case("sn1/odyssey/dma-texture-12bit-sources",
+                   test_dma_texture_12bit_sources);
+    add_case("sn1/odyssey/burst-texture-12bit-sources",
+             test_burst_texture_12bit_sources);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",

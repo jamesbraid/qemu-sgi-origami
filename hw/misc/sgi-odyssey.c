@@ -1753,8 +1753,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * clear. Format 0x11 carries one 0x00RRGGBB pixel per word for RGB
  * sources, or one RRGGBBAA word for source code 0x6b. It also carries one
  * 0x00RRGGBB word for the account icons. Format 0x10 packs four colour
- * indices per word; format 0x12 carries two RGBA16 words per pixel for
- * source 0x6b. Other formats remain unsupported.
+ * indices per word; format 0x12 carries 16-bit components for sources 0x69,
+ * 0x6b and 0x6c (see the source codes below). Other formats remain
+ * unsupported.
  */
 #define ODSY_IMAGE_BURST_BASE 0x4000
 #define ODSY_IMAGE_BURST_FMT_MASK 0x1f
@@ -1772,6 +1773,25 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * one colour-index byte. The burst tag's own format bits (0x10, 0x11) do not
  * fix the layout: the X server's 0x00RRGGBB icon words and the library's
  * RRGGBBAA texels share the tag 0x7c11.
+ *
+ * The library's texture uploads into a 12-bit texture (GL_RGB12, GL_RGBA12,
+ * GL_LUMINANCE16 and friends, and the default formats on this board) use
+ * the 0x6 row of codes. Each names its components and their order: 0x62
+ * luminance; 0x68 luminance, alpha; 0x69 R, G, B; 0x6b R, G, B, A; 0x6c A,
+ * B, G, R. A DMA's size field (word 7 bits 18:16) then says whether each
+ * component is a byte or a big-endian 16-bit word. OBSERVED with a probe
+ * that uploaded distinct component values under each internal format,
+ * source format and source type (GL_UNSIGNED_BYTE or GL_UNSIGNED_SHORT,
+ * GL_ABGR_EXT for 0x6c): the components arrive in the source's own order,
+ * and only the code changes with it. In a pixel burst the same probe's
+ * 16-bit sources arrive as 16-bit components: 0x62 two luminances a word
+ * and 0x68 one luminance-alpha pair a word under tag format 0x10, 0x69,
+ * 0x6b and 0x6c as a stream of halves under format 0x12; 8-bit luminance
+ * sources use 0x42 and 0x48 instead. distort's photograph agrees: its 0x6c
+ * texels carry the file's blue, green and red bytes repeated into both
+ * halves of each 16-bit component. 0x4c, the 8-bit GL_ABGR_EXT code, keeps
+ * the X server's 0x00RRGGBB reading here; how the two uses agree is not
+ * known.
  */
 #define ODSY_IMAGE_CODE_MASK 0xff
 #define ODSY_IMAGE_CODE_CI 0x41
@@ -1781,6 +1801,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_RGBA 0x4b
 #define ODSY_IMAGE_CODE_XRGB 0x4c
 #define ODSY_IMAGE_CODE_RGBA12 0x6b
+#define ODSY_IMAGE_CODE_LUM12 0x62
+#define ODSY_IMAGE_CODE_LUM_ALPHA12 0x68
+#define ODSY_IMAGE_CODE_RGB12 0x69
+#define ODSY_IMAGE_CODE_ABGR12 0x6c
 
 /* The transfer header's first-burst count, bits 23:20, 15 standing for 16. */
 #define ODSY_IMAGE_HEADER_GROUP_SHIFT 20
@@ -3774,6 +3798,56 @@ static void odyssey_image_texel(SGIOdysseyState *s, bool paint, uint32_t rgba,
     s->image_group_painted++;
 }
 
+static uint32_t odyssey_unorm16_to_8(uint32_t v)
+{
+    return (v * 255 + UINT16_MAX / 2) / UINT16_MAX;
+}
+
+/* Components of a 12-bit texture source code, or 0 for any other code. */
+static unsigned odyssey_texel12_components(uint32_t code)
+{
+    switch (code) {
+    case ODSY_IMAGE_CODE_LUM12:
+        return 1;
+    case ODSY_IMAGE_CODE_LUM_ALPHA12:
+        return 2;
+    case ODSY_IMAGE_CODE_RGB12:
+        return 3;
+    case ODSY_IMAGE_CODE_RGBA12:
+    case ODSY_IMAGE_CODE_ABGR12:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+/*
+ * A 12-bit texture source pixel as 0xRRGGBBAA: its components, each a byte
+ * or (wide) a big-endian 16-bit word, in the order its code names.
+ */
+static uint32_t odyssey_decode_texel12(uint32_t code, const uint8_t *b,
+                                       bool wide)
+{
+    uint32_t c[4];
+    unsigned n = odyssey_texel12_components(code);
+
+    for (unsigned i = 0; i < n; i++) {
+        c[i] = wide ? odyssey_unorm16_to_8(lduw_be_p(b + 2 * i)) : b[i];
+    }
+    switch (code) {
+    case ODSY_IMAGE_CODE_LUM12:
+        return odyssey_pack_pixel(c[0], c[0], c[0]);
+    case ODSY_IMAGE_CODE_LUM_ALPHA12:
+        return (odyssey_pack_pixel(c[0], c[0], c[0]) & ~0xffu) | c[1];
+    case ODSY_IMAGE_CODE_RGB12:
+        return odyssey_pack_pixel(c[0], c[1], c[2]);
+    case ODSY_IMAGE_CODE_ABGR12:
+        return (odyssey_pack_pixel(c[3], c[2], c[1]) & ~0xffu) | c[0];
+    default:
+        return (odyssey_pack_pixel(c[0], c[1], c[2]) & ~0xffu) | c[3];
+    }
+}
+
 /*
  * Decode one pixel of a byte-stream source format (ODSY_IMAGE_CODE_*) whose
  * bytes are b[0 ..]: its 0xRRGGBBAA word, or for 0x41 the raw index, and
@@ -3802,6 +3876,11 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
     case ODSY_IMAGE_CODE_LUM_ALPHA:
         *rgba = (odyssey_pack_pixel(b[0], b[0], b[0]) & ~0xffu) | b[1];
         return true;
+    case ODSY_IMAGE_CODE_LUM12:
+    case ODSY_IMAGE_CODE_LUM_ALPHA12:
+        /* A burst's 16-bit components (odyssey_pixel_bytes()). */
+        *rgba = odyssey_decode_texel12(code, b, true);
+        return true;
     case ODSY_IMAGE_CODE_CI:
         /* The raw index: scanout resolves it through the pixel's drawable. */
         *paint = b[0] != 0;
@@ -3826,7 +3905,10 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
     case ODSY_IMAGE_CODE_CI:
         return 1;
     case ODSY_IMAGE_CODE_LUM_ALPHA:
+    case ODSY_IMAGE_CODE_LUM12:
         return 2;
+    case ODSY_IMAGE_CODE_LUM_ALPHA12:
+        return 4;
     default:
         return 0;
     }
@@ -3855,6 +3937,9 @@ static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
     if (code == ODSY_IMAGE_CODE_RGBA12) {
         return fmt == ODSY_IMAGE_FMT_RGB || fmt == ODSY_IMAGE_FMT_RGBA16;
     }
+    if (code == ODSY_IMAGE_CODE_RGB12 || code == ODSY_IMAGE_CODE_ABGR12) {
+        return fmt == ODSY_IMAGE_FMT_RGBA16;
+    }
     if (code == ODSY_IMAGE_CODE_LUM_ALPHA) {
         return fmt == ODSY_IMAGE_FMT_CI;
     }
@@ -3871,31 +3956,40 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         return;
     }
     if (s->image_fmt == ODSY_IMAGE_FMT_RGBA16) {
-        uint32_t rgba;
-        uint16_t r, g, b16, a;
+        /*
+         * A stream of 16-bit components, high half first, a pixel every
+         * odyssey_texel12_components() halves: two words for 0x6b and 0x6c,
+         * a word and a half for 0x69. At most two halves wait between
+         * words; image_nbytes counts them, image_bytes holds them.
+         */
+        unsigned comps = odyssey_texel12_components(code);
+        uint16_t halves[4];
+        unsigned held = MIN(s->image_nbytes, 2u);
 
         if (s->image_group_len &&
             s->image_group_painted >= s->image_group_len) {
             return;
         }
-        if (s->image_nbytes) {
-            r = s->image_bytes >> 16;
-            g = s->image_bytes;
-            b16 = word >> 16;
-            a = word;
-            rgba = odyssey_pack_pixel(
-                ((uint32_t)r * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                ((uint32_t)g * 255 + UINT16_MAX / 2) / UINT16_MAX,
-                ((uint32_t)b16 * 255 + UINT16_MAX / 2) / UINT16_MAX);
-            rgba = (rgba & ~0xffu) |
-                   (((uint32_t)a * 255 + UINT16_MAX / 2) / UINT16_MAX);
-            s->image_bytes = 0;
-            s->image_nbytes = 0;
-            odyssey_image_put(s, true, rgba, false, true);
-        } else {
-            s->image_bytes = word;
-            s->image_nbytes = 1;
+        for (i = 0; i < held; i++) {
+            halves[i] = s->image_bytes >> (16 * (held - 1 - i));
         }
+        for (unsigned h = 0; h < 2; h++) {
+            uint8_t px[8];
+
+            halves[held++] = h ? word : word >> 16;
+            if (held < comps) {
+                continue;
+            }
+            for (i = 0; i < comps; i++) {
+                stw_be_p(px + 2 * i, halves[i]);
+            }
+            odyssey_image_put(s, true, odyssey_decode_texel12(code, px, true),
+                              false, true);
+            held = 0;
+        }
+        s->image_bytes = held > 1 ? (uint32_t)halves[0] << 16 | halves[1] :
+                         held ? halves[0] : 0;
+        s->image_nbytes = held;
         s->image_group_painted++;
         if (s->image_group_len &&
             s->image_group_painted >= s->image_group_len &&
@@ -7302,12 +7396,17 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
     uint32_t bpp = odyssey_dma_bpp[(hdr[ODSY_DMA_HDR_CONTROL] >>
                                     ODSY_DMA_BPP_SHIFT) & ODSY_DMA_BPP_MASK];
     uint32_t code;
+    unsigned comps = odyssey_texel12_components(hdr[ODSY_DMA_HDR_CONTROL] &
+                                                ODSY_IMAGE_CODE_MASK);
+    /* A 12-bit texture source into an object: a byte or two a component. */
+    bool texel12 = obj >= 0 && comps &&
+                   (bpp == comps || bpp == 2 * comps);
     g_autofree uint8_t *row = NULL;
     uint64_t payload = 0, pos = 0;
     uint32_t left, r, c;
     int n, i = 0;
 
-    if (bpp != 4 && bpp != 3 && bpp != 1) {
+    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12) {
         if (!s->dma_bpp_reported) {
             s->dma_bpp_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA to buffer 0x%x at %u "
@@ -7316,7 +7415,8 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
         }
         return;
     }
-    code = odyssey_dma_code(s, hdr, bpp);
+    code = texel12 ? hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK :
+                     odyssey_dma_code(s, hdr, bpp);
     n = odyssey_dma_entries(bus, table, seq, e);
     if (n < 0) {
         return;
@@ -7359,6 +7459,12 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
             pos += skip;
         }
         for (c = 0; c < w; c++) {
+            if (texel12) {
+                odyssey_object_store(s, obj, x + c, y + r,
+                                     odyssey_decode_texel12(
+                                         code, row + c * bpp, bpp != comps));
+                continue;
+            }
             odyssey_dma_put(s, obj, (int64_t)x + c, (int64_t)y + r,
                             row + c * bpp, code);
         }
