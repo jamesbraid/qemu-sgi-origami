@@ -2466,6 +2466,73 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
 }
 
 /*
+ * The GL client's 0x3b 0 and 0x3d 0, the current-attribute and
+ * raster-position queries. libGLcore's two senders (n32 6.5.30, at
+ * 0xd95a5a0 and 0xd95a670) pass the selector to __glkon_get_special,
+ * wait for word 0 of the return page, and return a pointer into the
+ * words from byte 8 by the pname asked for; the glGet descriptors at
+ * 0xda82b10 read every one of those words as a binary32. So the layouts
+ * below are established from the reader:
+ *
+ *   0x3b: current RGBA (+0x00), index (+0x10), normal xyz (+0x14),
+ *         texture STRQ (+0x20), and one word for pname 0xb43 (+0x30);
+ *   0x3d: raster RGBA (+0x00), index (+0x10), texture STRQ (+0x14),
+ *         window xyz and clip w (+0x24), valid (+0x34), distance (+0x38).
+ *
+ * Inferred: that the pipe writes the whole block, since the client does
+ * not say which pname it wants; and the valid flag as 1.0 or 0.0, the
+ * value GL's float query gives a boolean. Unknown: what pname 0xb43 is,
+ * which no OpenGL 1.2 enumerant names; the model answers 0. Like the
+ * error query, a query with no usable current context posts nothing.
+ */
+#define SGI_KONA_GL_CURRENT_WORDS 13
+#define SGI_KONA_GL_RASTER_WORDS  15
+
+static void sgi_kona_gl_store_floats(uint8_t *p, const float *v, unsigned n)
+{
+    for (unsigned k = 0; k < n; k++) {
+        uint32_t bits;
+
+        memcpy(&bits, &v[k], sizeof(bits));
+        stl_be_p(p + 4 * k, bits);
+    }
+}
+
+static void sgi_kona_gl_get_block(SGIKonaState *s, uint32_t token)
+{
+    uint8_t block[SGI_KONA_GL_RASTER_WORDS * 4] = { 0 };
+    const SGIGLContext *c;
+    uint32_t len;
+
+    if (!sgi_kona_x_read_current(s) ||
+        s->state[s->context_current]->gl.in_begin) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: GL query 0x%x without a usable"
+                      " current context; no reply\n", token);
+        return;
+    }
+    c = &s->state[s->context_current]->gl;
+    if (token == SGI_KONA_CMD_GL_GET_CURRENT) {
+        sgi_kona_gl_store_floats(block, c->cur_color, 4);
+        sgi_kona_gl_store_floats(block + 0x10, &c->cur_index, 1);
+        sgi_kona_gl_store_floats(block + 0x14, c->cur_normal, 3);
+        sgi_kona_gl_store_floats(block + 0x20, c->cur_texcoord, 4);
+        len = SGI_KONA_GL_CURRENT_WORDS * 4;
+    } else {
+        float valid = c->raster_valid ? 1.0f : 0.0f;
+
+        sgi_kona_gl_store_floats(block, c->raster_color, 4);
+        sgi_kona_gl_store_floats(block + 0x10, &c->raster_index, 1);
+        sgi_kona_gl_store_floats(block + 0x14, c->raster_texcoord, 4);
+        sgi_kona_gl_store_floats(block + 0x24, c->raster_pos, 4);
+        sgi_kona_gl_store_floats(block + 0x34, &valid, 1);
+        sgi_kona_gl_store_floats(block + 0x38, &c->raster_distance, 1);
+        len = SGI_KONA_GL_RASTER_WORDS * 4;
+    }
+    trace_sgi_kona_gl_reply(token, 0, len);
+    sgi_kona_post_return(s, token, 8, block, len);
+}
+
+/*
  * The rules the GL client's drawing is rasterized under (OpenGL 1.1's
  * polygon rule: a pixel is drawn when its centre is inside).
  *
@@ -8189,6 +8256,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_GET_ERROR:
         sgi_kona_gl_get_error(s);
+        return;
+    case SGI_KONA_CMD_GL_GET_CURRENT:
+    case SGI_KONA_CMD_GL_GET_RASTER:
+        sgi_kona_gl_get_block(s, selector);
         return;
     case SGI_KONA_CMD_GL_FINISH:
         sgi_kona_gl_finish(s, args[0]);

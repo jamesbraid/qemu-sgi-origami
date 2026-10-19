@@ -171,6 +171,14 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_FINISH      0xc6
 #define SGI_KONA_CMD_GL_GET_ERROR   0x3e
 /*
+ * The current-attribute and raster-position queries, each with one 0,
+ * answered on the return page: glGet of GL_CURRENT_COLOR to
+ * GL_CURRENT_TEXTURE_COORDS sends 0x3b, of GL_CURRENT_RASTER_COLOR to
+ * GL_CURRENT_RASTER_DISTANCE 0x3d.
+ */
+#define SGI_KONA_CMD_GL_GET_CURRENT 0x3b
+#define SGI_KONA_CMD_GL_GET_RASTER  0x3d
+/*
  * The matrix commands: mode (the enumerant), load identity, push and pop
  * (each one 0), load and multiply with sixteen floats or sixteen doubles
  * in the caller's column-major order, frustum and ortho with six doubles,

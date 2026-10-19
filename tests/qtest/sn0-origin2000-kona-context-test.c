@@ -2371,6 +2371,118 @@ static void test_get_error_answer(void)
     g_assert_nonnull(strstr(found, "sgi_kona_return_post token 0x3e "));
 }
 
+static uint32_t fbits(float f)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+
+/* Words from byte 8 of A's return page, after the reply's word 0. */
+static void assert_return_floats(QTestState *s, uint32_t offset,
+                                 const float *v, unsigned n)
+{
+    for (unsigned k = 0; k < n; k++) {
+        g_assert_cmphex(guest_word(s, RETURN_A + 8 + offset + 4 * k), ==,
+                        fbits(v[k]));
+    }
+}
+
+/*
+ * The raster-position query 0x3d takes one word, the 0 the library
+ * sends, and answers fifteen binary32 words from byte 8: raster RGBA,
+ * index, texture STRQ, window x, y, z and clip w, valid as 1.0 or 0.0,
+ * and the eye distance. Under a 100 by 100 viewport and identity
+ * matrices, glRasterPos2f(0, 0) lands at the window centre at depth
+ * 0.5; (5, 5) lies outside the view volume, so the position is invalid.
+ * A model with no 0x3d drops both words as textport words and never
+ * answers, and gr_osview's glGet of GL_CURRENT_RASTER_POSITION hangs.
+ */
+static void test_raster_query_answer(void)
+{
+    static const float colour[4] = { 0.25f, 0.5f, 0.75f, 1 };
+    static const float index[1] = { 1 };
+    static const float strq[4] = { 0, 0, 0, 1 };
+    static const float centre[4] = { 50, 50, 0.5f, 1 };
+    static const float valid[1] = { 1 }, invalid[1] = { 0 };
+    static const float distance[1] = { 0 };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    context_a_with_filled_page(s);
+    kona_command(s, 0xe3, (uint32_t[]){ 0, 0, 100, 100 }, 4);
+    kona_command(s, 0x63, (uint32_t[]){ fbits(colour[0]), fbits(colour[1]),
+                                        fbits(colour[2]) }, 3);
+    kona_command(s, 0xa9, (uint32_t[]){ fbits(0), fbits(0) }, 2);
+    qtest_writel(s, REG_COMMAND, 0x3d);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    qtest_writel(s, REG_COMMAND, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A + 4), ==, 0x5a5a5a5a);
+    assert_return_floats(s, 0x00, colour, 4);
+    assert_return_floats(s, 0x10, index, 1);
+    assert_return_floats(s, 0x14, strq, 4);
+    assert_return_floats(s, 0x24, centre, 4);
+    assert_return_floats(s, 0x34, valid, 1);
+    assert_return_floats(s, 0x38, distance, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8 + 0x3c), ==, 0x5a5a5a5a);
+
+    guest_fill_word(s, RETURN_A, 0);
+    kona_command(s, 0xa9, (uint32_t[]){ fbits(5), fbits(5) }, 2);
+    kona_command(s, 0x3d, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
+    assert_return_floats(s, 0x34, invalid, 1);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found,
+                                       "sgi_kona_return_post token 0x3d "),
+                     ==, 2);
+}
+
+/*
+ * The current-attribute query 0x3b takes one word and answers thirteen
+ * binary32 words from byte 8: the current RGBA glColor3f set, the index,
+ * the normal, texture STRQ, and a word for pname 0xb43, whose meaning is
+ * unknown and which the model answers 0. libGLcore sends glGetFloatv of
+ * GL_CURRENT_COLOR this way, not as the 0x4c glGet.
+ */
+static void test_current_query_answer(void)
+{
+    static const float colour[4] = { 0.25f, 0.5f, 0.75f, 1 };
+    static const float index[1] = { 1 };
+    static const float normal[3] = { 0, 0, 1 };
+    static const float strq[4] = { 0, 0, 0, 1 };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    context_a_with_filled_page(s);
+    kona_command(s, 0x63, (uint32_t[]){ fbits(colour[0]), fbits(colour[1]),
+                                        fbits(colour[2]) }, 3);
+    qtest_writel(s, REG_COMMAND, 0x3b);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    qtest_writel(s, REG_COMMAND, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A + 4), ==, 0x5a5a5a5a);
+    assert_return_floats(s, 0x00, colour, 4);
+    assert_return_floats(s, 0x10, index, 1);
+    assert_return_floats(s, 0x14, normal, 3);
+    assert_return_floats(s, 0x20, strq, 4);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8 + 0x30), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8 + 0x34), ==, 0x5a5a5a5a);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "sgi_kona_return_post token 0x3b "));
+}
+
 /* An outgoing page does not authorize a context-owned error reply. */
 static void test_reply_after_deactivation(void)
 {
@@ -2998,6 +3110,10 @@ int main(int argc, char **argv)
                    test_line_distance_on_current_context);
     qtest_add_func("sn0/origin2000/kona-context/get-error-answer",
                    test_get_error_answer);
+    qtest_add_func("sn0/origin2000/kona-context/raster-query-answer",
+                   test_raster_query_answer);
+    qtest_add_func("sn0/origin2000/kona-context/current-query-answer",
+                   test_current_query_answer);
     qtest_add_func("sn0/origin2000/kona-context/finish-sets-word-0",
                    test_finish_sets_word_0);
     qtest_add_func("sn0/origin2000/kona-context/swap-finish-posts-nothing",
