@@ -12071,9 +12071,12 @@ void sgi_kona_command_word(SGIKonaState *s, uint32_t word)
  * A store to the command page at `offset`. Offset 0 and the data slot,
  * offset 0xc, both carry a plain word: the next argument of a command
  * still collecting arguments, otherwise a token (or the textport's sync
- * word). The kernel and gfxinit send every token that way. A store at
+ * word). The kernel and gfxinit send every token that way, and so does
+ * the X server the stock guest runs, whose konal.so writes each token as
+ * a plain word (0x129, 0x12a, 0x136 and 0x138 among them). A store at
  * 0xc + 0x20 * t opens token t with the stored value as its first
- * argument, the way the X server's kona.so sends its commands. Without
+ * argument, the way the alternative module kona.so sends its commands;
+ * the stock guest does not load it. Without
  * the privileged bit a slot store first settles a suspended or saved user
  * command, as a plain word does (sgi_kona_user_input()).
  *
