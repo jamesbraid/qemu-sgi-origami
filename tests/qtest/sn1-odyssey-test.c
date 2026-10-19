@@ -6918,6 +6918,47 @@ static void test_command_fifo_gl_program_record_lit(void)
 }
 
 /*
+ * The library's other precompiled lit records with resident entries, each
+ * with the list the library loads beside it (record, then the one-shot
+ * routines). ivview selects record 9 for its headlight under
+ * GL_NORMALIZE and perfly record 11. Each lights light.c's triangle as
+ * record 3 does; an unrecognised program would draw it in the current
+ * red.
+ */
+static void test_command_fifo_gl_program_records_lit(void)
+{
+    static const struct {
+        uint32_t e[3];
+        uint32_t list[5];
+    } records[] = {
+        { { 0x62c, 0x63d, 0x64d }, { 0x49a, 0x203, 0x4ca, 0x4c5 } },
+        { { 0x6d8, 0x6eb, 0x6fd }, { 0x49f, 0x203, 0x4ca, 0x4f1, 0x4c5 } },
+        { { 0x5f0, 0x605, 0x619 }, { 0x49a, 0x203, 0x4ca, 0x4c5 } },
+        { { 0x657, 0x66e, 0x684 }, { 0x49a, 0x203, 0x4ca, 0x4c5 } },
+        { { 0x699, 0x6b4, 0x6ce }, { 0x49a, 0x203, 0x4ca, 0x4c5 } },
+    };
+    char *log_path = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts = lit_start(&log_path);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(records); i++) {
+        unsigned n = records[i].list[4] ? 5 : 4;
+
+        push_program(qts, 0, 0x0d6, 0x0e0, 0x0ea);
+        push_constants(qts, records[i].list, n);
+        push_program(qts, 0, records[i].e[0], records[i].e[1],
+                     records[i].e[2]);
+        push_user_words(qts, odsy_lit_triangle,
+                        ARRAY_SIZE(odsy_lit_triangle));
+        g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
+        g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x090402ffu);
+    }
+
+    log = lit_finish(qts, log_path);
+    g_assert_null(strstr(log, "geometry program"));
+}
+
+/*
  * light.c's triangle lit under one normal sent before BEGIN, given as a
  * command word and its three operands, or under the current normal when
  * normal is NULL; returns the pixel inside it.
@@ -18045,6 +18086,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_depth_only_clear);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-lit",
                    test_command_fifo_gl_program_record_lit);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-program-records-lit",
+                   test_command_fifo_gl_program_records_lit);
     add_fresh_case("sn1/odyssey/command-fifo-gl-integer-normals",
                    test_command_fifo_gl_integer_normals);
     add_fresh_case("sn1/odyssey/command-fifo-gl-program-record-unlit",
