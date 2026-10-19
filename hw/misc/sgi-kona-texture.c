@@ -15,6 +15,8 @@
 typedef struct SGIKonaTextureCurve {
     uint32_t slot;
     uint32_t words[32];
+    /* Whether the words decode as 64 spline coefficients. */
+    bool spline;
     double values[64];
 } SGIKonaTextureCurve;
 
@@ -1443,7 +1445,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         uint32_t slot = qemu_get_be32(f), words[33] = { 0 };
 
         if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
-            sgi_kona_texture_curve(&tmp, slot)) {
+            g_hash_table_contains(tmp.filter_curves, GUINT_TO_POINTER(slot))) {
             goto invalid;
         }
         for (unsigned j = 0; j < 32; j++) {
@@ -1490,13 +1492,12 @@ const VMStateInfo vmstate_info_sgi_kona_texture = {
 bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
                                   const uint32_t words[33])
 {
-    SGIKonaTextureCurve next, *curve;
+    SGIKonaTextureCurve next = { .slot = slot }, *curve;
 
-    if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
-        !sgi_kona_gl_texture_filter_curve(words, next.values)) {
+    if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS) {
         return false;
     }
-    next.slot = slot;
+    next.spline = sgi_kona_gl_texture_filter_curve(words, next.values);
     memcpy(next.words, words, sizeof(next.words));
     curve = g_hash_table_lookup(s->filter_curves, GUINT_TO_POINTER(slot));
     if (!curve) {
@@ -1519,5 +1520,5 @@ const double *sgi_kona_texture_curve(SGIKonaTextureState *s, uint32_t slot)
     const SGIKonaTextureCurve *curve =
         g_hash_table_lookup(s->filter_curves, GUINT_TO_POINTER(slot));
 
-    return curve ? curve->values : NULL;
+    return curve && curve->spline ? curve->values : NULL;
 }

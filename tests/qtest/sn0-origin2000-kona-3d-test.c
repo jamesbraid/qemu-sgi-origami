@@ -374,21 +374,65 @@ static void test_texture_curve_transport(void)
     curve_assert(s, 7, next);
     curve_assert(s, 8, separate);
 
-    /* A malformed reserved bit cannot replace the previously valid slot. */
-    words[1] |= 0x100;
-    curve_open(s, 7);
-    curve_words(s, words, 33);
-    curve_assert(s, 7, next);
-    curve_assert(s, 8, separate);
     curve_open(s, 4096);
     curve_words(s, replacement, 33);
     g_assert_false(curve_valid(s, 4096));
     curve_assert(s, 7, next);
+    /* Words that are not a spline replace the slot, which then has none. */
+    words[1] |= 0x100;
+    curve_open(s, 7);
+    curve_words(s, words, 33);
+    g_assert_false(curve_valid(s, 7));
+    curve_assert(s, 8, separate);
     assert_textport_in_step(s);
     qtest_system_reset(s);
     g_assert_false(curve_valid(s, 7));
     g_assert_false(curve_valid(s, 8));
     qtest_quit(s);
+}
+
+/*
+ * The library's default table for texture unit 1 slot 1, as perfly sent
+ * it: 33 words of four signed eight-bit taps summing to 127 to 129, ending in
+ * the half-phase -8, 72, 72, -8. It is not a spline table, and the pipe
+ * is not told a table's type, so the upload must still be accepted.
+ */
+static const uint32_t curve_sampled[33] = {
+    0x00007f00, 0x00017f00, 0x00027fff, 0x00037ffe, 0x00047efd, 0x00067efc,
+    0x00087dfc, 0x00097cfb, 0x000b7bfa, 0xff0d7afa, 0xff0f78f9, 0xff1177f9,
+    0xff1376f9, 0xfe1574f8, 0xfe1872f8, 0xfe1a70f8, 0xfd1c6ff8, 0xfd1f6df7,
+    0xfd216af7, 0xfd2468f7, 0xfc2766f7, 0xfc2964f7, 0xfc2c61f7, 0xfb2f5ff7,
+    0xfb315df7, 0xfb345af7, 0xfa3758f7, 0xfa3a55f7, 0xfa3c52f8, 0xf93f50f8,
+    0xf9424df8, 0xf9454af8, 0xf84848f8,
+};
+
+static void test_texture_curve_sampled(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint32_t words[33];
+    double values[64];
+
+    gl_make_current(s);
+    curve_fixture(words, values, 5);
+    curve_open(s, 1);
+    curve_words(s, words, 33);
+    curve_assert(s, 1, values);
+    curve_open(s, 1);
+    for (unsigned pair = 0; pair < 16; pair++) {
+        qtest_writeq(s, REG_COMMAND, ((uint64_t)curve_sampled[2 * pair] << 32) |
+                                     curve_sampled[2 * pair + 1]);
+    }
+    curve_words(s, curve_sampled + 32, 1);
+    g_assert_false(curve_valid(s, 1));
+    curve_open(s, 1);
+    curve_words(s, words, 33);
+    curve_assert(s, 1, values);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "invalid texture filter table"),
+                     ==, 0);
 }
 
 static void test_texture_curve_migration(gconstpointer opaque)
@@ -488,7 +532,8 @@ static void test_every_command_frames(void)
                                    " 24\n"));
     g_assert_nonnull(strstr(found, "sgi_kona_gl_data token 0x174 data words"
                                    " 8\n"));
-    g_assert_cmpuint(count_occurrences(found, "token 0x17e argc 34 consumed"),
+    /* Any table is accepted; the 0xb after it shows its 33 words framed. */
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_gl_tex_table slot "),
                      ==, 1);
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_kernel_command "),
                      ==, commands);
@@ -15955,6 +16000,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_texture_rgb5_storage);
     add_data_case("sn0/origin2000/kona-3d/texture-rgb5-storage/rgba4",
                   GUINT_TO_POINTER(2), test_texture_rgb5_storage);
+    add_case("sn0/origin2000/kona-3d/texture-curve/sampled",
+             test_texture_curve_sampled);
     add_case("sn0/origin2000/kona-3d/texture-curve/transport",
              test_texture_curve_transport);
     add_data_case("sn0/origin2000/kona-3d/texture-curve/migrate-empty",

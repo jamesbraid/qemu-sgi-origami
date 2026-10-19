@@ -121,10 +121,18 @@ bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
 /* NULL params retain the object's sampler, including for an incomplete view. */
 bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
                           const SGIKonaTextureParams *params);
-/* Filter tables have device slot identity independent of image handles. */
+/*
+ * Filter tables have device slot identity independent of image handles.
+ * The pipe is not told a table's type, so any table is stored; only the
+ * first 32 words are kept, which loses a sampled table's last entry.
+ */
 bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
                                   const uint32_t words[33]);
-/* Borrowed until the slot is updated or the texture state is reset. */
+/*
+ * The slot's 64 spline coefficients, or NULL when the slot is empty or
+ * its table is not a spline. Borrowed until the slot is updated or the
+ * texture state is reset.
+ */
 const double *sgi_kona_texture_curve(SGIKonaTextureState *s, uint32_t slot);
 void sgi_kona_texture_delete(SGIKonaTextureState *s, uint32_t handle);
 /* Borrowed for one synchronous draw; updates/deletion must not overlap it. */
