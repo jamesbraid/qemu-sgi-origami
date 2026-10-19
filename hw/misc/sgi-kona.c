@@ -13978,6 +13978,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
     memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
     s->desktop_id_reported = false;
+    s->packed_index_short_reported = false;
     s->cursor_state_loaded = false;
     s->cursor_stage_words = 0;
     s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
