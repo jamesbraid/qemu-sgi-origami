@@ -4040,6 +4040,13 @@ static uint32_t odyssey_float_index(uint32_t bits)
  * for flight's overlay context (0x80142000; OBSERVED). The X server selects
  * the same destination for its own id writes, which a GL context's draws do
  * not follow.
+ *
+ * APPROXIMATION: this rule reconciles those two observations; it is not a
+ * known board mechanism. An equally consistent alternative is that GL draws
+ * simply follow the drawable 0x608 binds, whatever 0x1017 last selected.
+ * Disassembly of the library or kernel path that binds 0x608 for an overlay
+ * context, or a capture of a GL draw after the X server's id select with
+ * 0x608 naming the colour buffer, would settle it.
  */
 static bool odyssey_gl_to_aux(SGIOdysseyState *s)
 {
