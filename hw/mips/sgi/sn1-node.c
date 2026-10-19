@@ -2023,6 +2023,11 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
     qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
     qdev_prop_set_uint8(node->xbridge, "xio-port", node->xbridge_xio_port);
+    if (node->ni_route &&
+        !sgi_xbridge_enable_packet_context(SGI_XBRIDGE(node->xbridge),
+                                           errp)) {
+        return false;
+    }
     /*
      * The first node's buses keep the names they have always had; a second
      * node's carry its index, since PCI devices on same-named buses collide
