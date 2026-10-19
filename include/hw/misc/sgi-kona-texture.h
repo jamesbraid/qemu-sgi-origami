@@ -65,6 +65,8 @@ typedef struct SGIKonaTextureObject {
     uint32_t native_table[SGI_KONA_TEXTURE_TABLE_LEVELS];
     /* The bank of an ordinary texture's first table level. */
     bool native_bank_one;
+    /* A volume bound in layout mode one, the single-level layout. */
+    bool native_volume_single;
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
 } SGIKonaTextureObject;
 
@@ -119,6 +121,9 @@ bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
 bool sgi_kona_texture_native_volume_dimensions(SGIKonaTextureState *s,
                                               uint32_t handle, uint32_t width,
                                               uint32_t height, uint32_t depth);
+/* Whether a volume's bind names layout mode one rather than mode two. */
+bool sgi_kona_texture_native_volume_single(SGIKonaTextureState *s,
+                                           uint32_t handle, bool single);
 bool sgi_kona_texture_native_format(SGIKonaTextureState *s, uint32_t handle,
                                    uint32_t storage_format);
 /* Logical destination format does not alter the retained upload components. */

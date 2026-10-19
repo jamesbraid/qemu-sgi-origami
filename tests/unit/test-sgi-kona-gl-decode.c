@@ -943,11 +943,14 @@ static void test_texture_comparison_flag(void)
 
 static void test_texture_volume_layout(void)
 {
+    /* Layout mode two, then mode one: 0x22c4590's [3,2]/[2,2], [3,2]/[3,1]. */
     static const struct {
         uint32_t storage, layout;
     } families[] = {
         { 0xd, 0x11c0 }, { 0xe, 0x11c0 }, { 8, 0x11c0 },
         { 0x30, 0x1141 },
+        { 0xd, 0x11a0 }, { 0xe, 0x11a0 }, { 8, 0x11a0 },
+        { 0x30, 0x9a1 },
     };
     uint32_t h[20] = { [0] = SGI_GL_TEXTURE_3D };
 
@@ -967,6 +970,11 @@ static void test_texture_volume_layout(void)
                 h[17] = (h[9] == 0x30 ? 0x21c1 : 0x21c0) | extra;
                 g_assert_false(sgi_kona_gl_texture_native_layout(h));
                 h[17] = (h[9] == 0x30 ? 0x2181 : 0x2200) | extra;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                /* Mode three, and each family's mode-one word in the other. */
+                h[17] = (families[k].layout | 0x60) | extra;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = (h[9] == 0x30 ? 0x11a0 : 0x9a1) | extra;
                 g_assert_false(sgi_kona_gl_texture_native_layout(h));
                 h[17] = families[k].layout | extra;
                 h[0] = SGI_GL_TEXTURE_2D;
@@ -1007,6 +1015,17 @@ static void test_texture_binding_layout(void)
         0x15, SGI_GL_TEXTURE_2D, 0x44));
     g_assert_false(sgi_kona_gl_texture_storage_binding_layout(
         0xd, 0xdead, 0x44));
+    /* A volume's short record carries layout mode one's factor pair. */
+    for (unsigned k = 0; k < ARRAY_SIZE(storages); k++) {
+        uint32_t record = storages[k] == 0x30 ? 0x13 : 0x23;
+
+        g_assert_true(sgi_kona_gl_texture_storage_volume_single_layout(
+            storages[k], record | 0x12340000));
+        g_assert_false(sgi_kona_gl_texture_storage_volume_single_layout(
+            storages[k], storages[k] == 0x30 ? 0x22 : 0x13));
+    }
+    g_assert_false(sgi_kona_gl_texture_storage_volume_single_layout(
+        0x15, 0x23));
 }
 
 static void test_texture_shadow_sampler(void)

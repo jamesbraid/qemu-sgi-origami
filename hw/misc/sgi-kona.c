@@ -7388,6 +7388,9 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     uint32_t index = (s->texture_bind[1] >> 12) & 0xfff, format_storage;
     unsigned target = s->texture_bind[1] >> 28;
     bool volume = target == 3, one_dimensional = target == 1;
+    /* The library sends the short volume record only in layout mode one. */
+    bool single = volume && s->texture_record_token ==
+                            SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT;
     uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
 
     /* A bind's record follows it; until then nothing is bound or refused. */
@@ -7404,10 +7407,13 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         !sgi_kona_gl_texture_internal_format(index, &base, &internal) ||
         !sgi_kona_gl_texture_format_storage(index, &format_storage) ||
         storage != format_storage ||
-        !sgi_kona_gl_texture_storage_binding_layout(storage,
-            volume ? SGI_GL_TEXTURE_3D : one_dimensional ? SGI_GL_TEXTURE_1D :
-                                                         SGI_GL_TEXTURE_2D,
-            s->texture_record[0]) ||
+        !(single ?
+          sgi_kona_gl_texture_storage_volume_single_layout(storage,
+              s->texture_record[0]) :
+          sgi_kona_gl_texture_storage_binding_layout(storage,
+              volume ? SGI_GL_TEXTURE_3D :
+              one_dimensional ? SGI_GL_TEXTURE_1D : SGI_GL_TEXTURE_2D,
+              s->texture_record[0])) ||
         (volume ?
             ((s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
               s->texture_record_token !=
@@ -7445,8 +7451,9 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
                sgi_kona_texture_native_dimensions(&s->textures, handle, width,
                                                     height))) ||
         !sgi_kona_texture_native_layout(&s->textures, handle,
-            s->texture_record[volume && s->texture_record_token ==
-                SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT ? 1 : 3]) ||
+                                        s->texture_record[single ? 1 : 3]) ||
+        (volume && !sgi_kona_texture_native_volume_single(&s->textures, handle,
+                                                          single)) ||
         !sgi_kona_texture_bind(&s->textures, handle, &params)) {
         sgi_kona_texture_bind(&s->textures, UINT32_MAX, NULL);
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture binding refused for"

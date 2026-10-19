@@ -128,6 +128,9 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t header[20]);
 bool sgi_kona_gl_texture_storage_binding_layout(uint32_t storage,
                                                 uint32_t target,
                                                 uint32_t record);
+/* The same for a volume's short, single-level record. */
+bool sgi_kona_gl_texture_storage_volume_single_layout(uint32_t storage,
+                                                      uint32_t record);
 
 /* Volume records use fourteen mipmap words or four nonmipmap words. */
 bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
