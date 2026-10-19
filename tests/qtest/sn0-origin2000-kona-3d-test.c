@@ -4489,8 +4489,10 @@ static void test_texture_native_publication(void)
     qtest_writel(s, REG_COMMAND, 0xaabbccdd);
     kona_command(s, 0x176, (uint32_t[]) { h[10] + 1 }, 1);
     assert_texture_pixel(s, 0, 0, texture_source[0]);
+    /* Freeing the cache entry keeps the image; a reload after 0x1c4 won't. */
     kona_command(s, 0x1c5, (uint32_t[]) { h[10] }, 1);
-    assert_texture_pixel(s, 0, 0, 0);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    kona_command(s, 0x1c4, (uint32_t[]) { h[10] }, 1);
     /* A table supplied after upload resolves the same stored source bytes. */
     kona_command(s, 0x174, h, 20);
     for (unsigned k = 0; k < 4; k++) {
@@ -4503,10 +4505,11 @@ static void test_texture_native_publication(void)
     for (unsigned k = 0; k < 4; k++) {
         qtest_writel(s, REG_COMMAND, 0xaabbccdd);
     }
+    /* Freeing the entry mid-load drops that load, not the earlier image. */
     kona_command(s, 0x1c5, (uint32_t[]) { h[10] }, 1);
     kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
     texture_native_bind(s, h[10]);
-    assert_texture_pixel(s, 0, 0, 0);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
     kona_command(s, 0x174, h, 20);
     for (unsigned k = 0; k < 4; k++) {
         qtest_writel(s, REG_COMMAND, 0xaabbccdd);
@@ -4516,7 +4519,7 @@ static void test_texture_native_publication(void)
         qtest_writel(s, REG_COMMAND, 0);
     }
     kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
-    assert_texture_pixel(s, 0, 0, 0);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
     qtest_system_reset(s);
     assert_texture_pixel(s, 0, 0, 0);
     qtest_quit(s);
@@ -4636,6 +4639,146 @@ static void test_texture_rebind_refusals(void)
     texture_rebind_packet(s, 1, UINT32_MAX);
     assert_texture_pixel(s, 0, 0, 0);
     qtest_quit(s);
+}
+
+/*
+ * perfly's bind: the cache number in the first word or all ones, then the
+ * record, whose level table starts with table0. The 0x178 naming the
+ * number is sent separately, sometimes only after draws.
+ */
+static void texture_cache_bind(QTestState *s, uint32_t first, uint32_t table0)
+{
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    record[6] = table0;
+    kona_command(s, 0x106,
+                 (uint32_t[]) { first, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+}
+
+/* A 2 by 2 image under cache number id, its level 0 at destination addr. */
+static void texture_cache_upload(QTestState *s, uint32_t id, uint32_t addr,
+                                 const uint32_t pixels[4])
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = id;
+    h[18] = addr;
+    texture_cache_bind(s, id, addr);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, pixels[k]);
+    }
+    kona_command(s, 0x176, &id, 1);
+    kona_command(s, 0x178, &id, 1);
+}
+
+/*
+ * The library frees a texture's cache entry with 0x178 n, 0x1c5 n and
+ * takes it again with 0x1c4 n, then binds with all ones and a record and
+ * draws, naming n with 0x178 only afterwards. It never reloads the
+ * image, which perfly draws with every frame: neither id command may
+ * discard it, and the record's level table, which differs between
+ * textures, must find it before 0x178 does. Mode 1 gives both textures
+ * the same table, which leaves the all-ones bind refused until 0x178.
+ */
+static void test_texture_cache_entry_reuse(gconstpointer opaque)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    static const uint32_t green[4] = {
+        0x00ff00ff, 0x00ff00ff, 0x00ff00ff, 0x00ff00ff,
+    };
+    bool shared = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    texture_cache_upload(s, 29, shared ? 0x118 : 0x340, green);
+    texture_cache_upload(s, 17, 0x118, texture_source);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, texture_source[0] >> 8);
+    for (unsigned frame = 0; frame < 2; frame++) {
+        gl_window_cleared(s, 0, 0, 1);
+        kona_command(s, 0x178, (uint32_t[]) { 17 }, 1);
+        kona_command(s, 0x1c5, (uint32_t[]) { 17 }, 1);
+        kona_command(s, 0x1c4, (uint32_t[]) { 17 }, 1);
+        texture_cache_bind(s, UINT32_MAX, 0x118);
+        gl_triangle_z(s, tri, 0);
+        assert_stencil_colour(s, shared ? 0x0000ff : texture_source[0] >> 8);
+        kona_command(s, 0x178, (uint32_t[]) { 17 }, 1);
+        assert_texture_pixel(s, 1, 1, texture_source[3]);
+        gl_window_cleared(s, 0, 0, 1);
+        gl_triangle_z(s, tri, 0);
+        assert_stencil_colour(s, texture_source[0] >> 8);
+    }
+    qtest_quit(s);
+}
+
+/* One row of a 2 by 2 RGBA image under the given cache id. */
+static void texture_cache_row(QTestState *s, uint32_t id, uint32_t y,
+                              const uint32_t pixels[2])
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[2] = 1;
+    h[10] = id;
+    h[12] = y;
+    h[14] = y;
+    kona_command(s, 0x174, h, 20);
+    qtest_writel(s, REG_COMMAND, pixels[0]);
+    qtest_writel(s, REG_COMMAND, pixels[1]);
+    kona_command(s, 0x176, &id, 1);
+}
+
+/*
+ * A load header straight after 0x1c4 is a new texture under a reused id:
+ * its first row must not merge with the old image, so the half-loaded
+ * texture has no bottom row until the second row arrives. Mode 1
+ * migrates between 0x1c4 and the header; mode 2 puts a command between
+ * them, which keeps the old image as a re-bind does.
+ */
+static void test_texture_cache_entry_retire(gconstpointer opaque)
+{
+    static const uint32_t top[2] = { 0x11223344, 0x55667788 };
+    static const uint32_t bottom[2] = { 0x99aabbcc, 0xddeeff00 };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL;
+    QTestState *s = qtest_init(MACHINE_ARGS), *from = NULL;
+
+    texture_rebind_uploads(s, false);
+    kona_command(s, 0x1c4, (uint32_t[]) { 17 }, 1);
+    if (mode == 1) {
+        GError *err = NULL;
+
+        dir = g_dir_make_tmp("sn0-kona-cache-retire-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        from = s;
+        s = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+    } else if (mode == 2) {
+        kona_command(s, 0x178, (uint32_t[]) { 17 }, 1);
+    }
+    texture_cache_row(s, 17, 0, top);
+    texture_native_bind(s, 17);
+    assert_texture_pixel(s, 0, 1, mode == 2 ? texture_source[2] : 0);
+    texture_cache_row(s, 17, 1, bottom);
+    texture_native_bind(s, 17);
+    assert_texture_pixel(s, 0, 0, top[0]);
+    assert_texture_pixel(s, 1, 1, bottom[1]);
+    qtest_quit(s);
+    if (from) {
+        qtest_quit(from);
+        g_rmdir(dir);
+    }
 }
 
 static void test_texture_rebind_missing_draw(void)
@@ -16337,6 +16480,18 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(2), test_texture_rebind_control);
     add_case("sn0/origin2000/kona-3d/texture/rebind-refusals",
              test_texture_rebind_refusals);
+    add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/reuse",
+                  GUINT_TO_POINTER(0), test_texture_cache_entry_reuse);
+    add_data_case(
+        "sn0/origin2000/kona-3d/texture-cache-entry/reuse-shared-table",
+        GUINT_TO_POINTER(1), test_texture_cache_entry_reuse);
+    add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/retire",
+                  GUINT_TO_POINTER(0), test_texture_cache_entry_retire);
+    add_data_case(
+        "sn0/origin2000/kona-3d/texture-cache-entry/retire-migration",
+        GUINT_TO_POINTER(1), test_texture_cache_entry_retire);
+    add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/keep",
+                  GUINT_TO_POINTER(2), test_texture_cache_entry_retire);
     add_case("sn0/origin2000/kona-3d/texture/rebind-missing-draw",
              test_texture_rebind_missing_draw);
     add_case("sn0/origin2000/kona-3d/texture/rebind-missing-migration",

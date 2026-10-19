@@ -125,6 +125,7 @@ texture /mips64/sn0/origin2000/kona-3d/indexed-texture-pixels
 texture /mips64/sn0/origin2000/kona-3d/raster-texture
 texture /mips64/sn0/origin2000/kona-3d/texture
 texture /mips64/sn0/origin2000/kona-3d/texture-8x8
+texture /mips64/sn0/origin2000/kona-3d/texture-cache-entry
 texture /mips64/sn0/origin2000/kona-3d/texture-cleanup-prefix
 texture /mips64/sn0/origin2000/kona-3d/texture-curve
 texture /mips64/sn0/origin2000/kona-3d/texture-family

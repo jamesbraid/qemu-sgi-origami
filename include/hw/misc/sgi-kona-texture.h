@@ -99,6 +99,9 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
                                    uint32_t internal_format);
 bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
                                   const uint32_t table[16]);
+/* The one object whose stored level table equals table, if exactly one. */
+bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
+                                 const uint32_t table[16], uint32_t *handle);
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
 bool sgi_kona_texture_native_dimensions_1d(SGIKonaTextureState *s,

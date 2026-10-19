@@ -422,6 +422,26 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
+                                 const uint32_t table[16], uint32_t *handle)
+{
+    GHashTableIter iter;
+    gpointer value;
+    unsigned matches = 0;
+
+    g_hash_table_iter_init(&iter, s->objects);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        const SGIKonaTextureObject *o = value;
+
+        if (o->native_table_valid &&
+            !memcmp(o->native_table, table, sizeof(o->native_table))) {
+            *handle = o->handle;
+            matches++;
+        }
+    }
+    return matches == 1;
+}
+
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height)
 {

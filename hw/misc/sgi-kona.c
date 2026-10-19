@@ -1379,6 +1379,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         s->gl_map_upload.refused = true;
     }
     s->texture_associate_pending = false;
+    s->texture_retire_pending = false;
     if (fresh || s->context_current != slot) {
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         s->texture_bind_generation = 0;
@@ -1562,6 +1563,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     }
     s->gl_map_upload.refused = true;
     s->texture_associate_pending = false;
+    s->texture_retire_pending = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     s->texture_bind_generation = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
@@ -7888,6 +7890,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     SGIKonaState *s = opaque;
     int i = s->context_current;
     uint32_t words;
+    bool retire;
 
     if (s->context_failed) {
         return;
@@ -7895,6 +7898,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     sgi_kona_port_consumed(s, 1 + argc);
     trace_sgi_kona_kernel_command(selector, args[0], argc > 1 ? args[1] : 0,
                                   argc > 2 ? args[2] : 0, argc);
+    retire = s->texture_retire_pending &&
+             selector == SGI_KONA_CMD_GL_TEX_LOAD &&
+             args[10] == s->texture_retire_handle;
+    s->texture_retire_pending = false;
     if (selector != SGI_KONA_CMD_GL_TEX_BIND_2D) {
         s->texture_associate_pending = false;
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
@@ -7967,10 +7974,17 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_POP_LIGHTS:
         sgi_kona_gl_pop_lights_open(s, args[0]);
         return;
+    /*
+     * The library sends these ids from its texture cache: 0x1c4 when it
+     * gives a texture an entry, 0x1c5 when it frees one. Freeing an entry
+     * and taking it again re-binds the texture without reloading it, so
+     * neither discards the image; a load header right after 0x1c4 retires
+     * it instead, when the id has gone to a new texture.
+     */
     case SGI_KONA_CMD_GL_TEX_PREFIX:
         s->texture_state_used = true;
-        /* Reused allocation handles retire their previous model image. */
-        sgi_kona_texture_delete(&s->textures, args[0]);
+        s->texture_retire_pending = true;
+        s->texture_retire_handle = args[0];
         sgi_kona_texture_association_forget(s, args[0]);
         if (s->texture_upload.count &&
             s->texture_upload.header[10] == args[0]) {
@@ -7979,7 +7993,6 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_TEX_CLEANUP_PREFIX:
         s->texture_state_used = true;
-        sgi_kona_texture_delete(&s->textures, args[0]);
         sgi_kona_texture_association_forget(s, args[0]);
         if (s->texture_upload.count &&
             s->texture_upload.header[10] == args[0]) {
@@ -8052,7 +8065,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_TEX_BIND_2D:
     case SGI_KONA_CMD_GL_TEX_BIND_VOLUME:
     case SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT: {
-        uint32_t table[16];
+        uint32_t table[16], found = UINT32_MAX;
+        bool by_table = false, resolved;
 
         s->texture_state_used = true;
         memset(s->texture_record, 0, sizeof(s->texture_record));
@@ -8075,12 +8089,24 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                               "sgi-kona: native texture table refused for"
                               " model storage budget\n");
             }
+        } else if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
+                   s->texture_bind_valid &&
+                   sgi_kona_texture_find_table(&s->textures, table, &found)) {
+            /*
+             * A bind without its cache number draws before the 0x178 that
+             * names it, so the record must locate the image: take the one
+             * texture an earlier complete bind gave this level table.
+             */
+            s->texture_bind[0] = found;
+            by_table = true;
         }
         sgi_kona_gl_texture_bind(s);
+        resolved = by_table ?
+            s->textures.bound && s->textures.bound_handle == found :
+            sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0]);
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             i != SGI_KONA_CONTEXT_NONE && i == s->texture_bind_context &&
-            s->state[i]->pipe.texture_rebind_refused &&
-            sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0])) {
+            s->state[i]->pipe.texture_rebind_refused && resolved) {
             s->state[i]->pipe.texture_rebind_refused = false;
         }
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
@@ -8142,6 +8168,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_TEX_LOAD:
         sgi_kona_gl_image_clear(s);
         sgi_kona_texture_upload_clear(s);
+        if (retire) {
+            sgi_kona_texture_delete(&s->textures, args[10]);
+            sgi_kona_texture_association_forget(s, args[10]);
+        }
         words = sgi_kona_gl_tex_load_words(s, i, args);
         if (words) {
             sgi_kona_gl_data_open(s, selector, words);
@@ -12902,6 +12932,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
+    s->texture_retire_pending = false;
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
     s->mesa_failed = false;
@@ -13152,6 +13183,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->texture_associate_context = SGI_KONA_CONTEXT_NONE;
     s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
+    s->texture_retire_pending = false;
     memset(s->x_write_mem.bytes, 0, s->x_write_mem.bytes_len);
     sgi_kona_x_write_clear(s);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
@@ -15367,6 +15399,24 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/* Only between 0x1c4 and the command after it. */
+static bool sgi_kona_texture_retire_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->texture_retire_pending;
+}
+
+static const VMStateDescription vmstate_sgi_kona_texture_retire = {
+    .name = TYPE_SGI_KONA "/textures/retire",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_texture_retire_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(texture_retire_pending, SGIKonaState),
+        VMSTATE_UINT32(texture_retire_handle, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_kona_textures_needed(void *opaque)
 {
     return ((SGIKonaState *)opaque)->texture_state_used;
@@ -15396,6 +15446,10 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
         VMSTATE_UINT64(texture_associate_generation, SGIKonaState),
         VMSTATE_UINT8(texture_associate_slot, SGIKonaState),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_kona_texture_retire,
+        NULL
     },
 };
 
