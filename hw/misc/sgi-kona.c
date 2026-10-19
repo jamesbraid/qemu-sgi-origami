@@ -9994,6 +9994,19 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
                sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
                gc->target == SGI_X_GC_MAIN_RGB8 && !gc->opaque_or_tiled;
     }
+    /*
+     * An 8-bit image into the popup planes, as a Toolchest menu draws its
+     * 14 by 14 marks: cfg 0x1020, ifmt 5, destination packing 1 and no
+     * shift. The popup colour form takes the pixel unshifted (v = p), so
+     * each byte is the popup pixel, written under the GC's two-bit mask
+     * (inferred from that form and the zero shift).
+     */
+    if (pack == 0 && raw[6] == 0x1020) {
+        return setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
+               !setup[SGI_KONA_X_SETUP_SHIFT] &&
+               sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
+               gc->target == SGI_X_GC_POPUP && !gc->opaque_or_tiled;
+    }
     if (setup[SGI_KONA_X_SETUP_DST_PACK] != 1 ||
         setup[SGI_KONA_X_SETUP_SHIFT] != (bitmap ? 0 : 8) ||
         (!bitmap && pack != 0)) {
@@ -10258,6 +10271,9 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
     /* X RGB pixels occupy the low 24 bits of each big-endian word. */
     if (gc->target == SGI_X_GC_MAIN_RGB8) {
         value &= 0xffffff;
+    } else if (gc->target == SGI_X_GC_POPUP) {
+        /* The popup planes hold two bits. */
+        value &= gc->width_mask;
     } else if (gc->target == SGI_X_GC_MAIN_INDEX16 &&
                s->x_pixel_bpp != 1) {
         value = (value << s->x_write_setup[SGI_KONA_X_SETUP_SHIFT]) & 0xffff;

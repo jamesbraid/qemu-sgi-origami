@@ -529,6 +529,30 @@ static void test_packing4_popup_glyph(void)
     assert_in_step(qts);
 }
 
+/*
+ * An 8-bit image into the popup planes, as a Toolchest menu draws its
+ * marks: cfg 0x1020, ifmt 5, source packing 0, destination packing 1, no
+ * shift. Each byte is the popup pixel, kept to the planes' two bits.
+ */
+static void test_popup_image_bytes(void)
+{
+    unsigned row = KONA_FB_HEIGHT - 1 - 40;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0, 0, 0, 0, 0x300000, 0, 0x1020,
+                                           1, 0, 6, 5, 1, 1 }, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 0, 4, 1, 0 }, 7);
+    pixel_write(qts, 30, 40, (uint32_t[]){ 0x01020300 }, 1);
+
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 30, row), ==, 1);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 31, row), ==, 2);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 32, row), ==, 3);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_POPUP, 33, row), ==, 0);
+    assert_in_step(qts);
+}
+
 /* Several glyph writes can share the one finish sent for their label. */
 static void test_packing4_glyphs_one_finish(void)
 {
@@ -1517,6 +1541,8 @@ int main(int argc, char **argv)
                    test_packing4_mono_image_geometry_gc);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-popup-glyph",
                    test_packing4_popup_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/popup-image-bytes",
+                   test_popup_image_bytes);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-glyphs-one-finish",
                    test_packing4_glyphs_one_finish);
     qtest_add_func("sn0/origin2000/kona-glyph/"
