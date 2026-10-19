@@ -2177,6 +2177,16 @@ static inline void gl_readback(QTestState *qts, uint32_t header, uint32_t a,
 #define GL_NORMAL3F_HDR       0x0000070c
 
 /*
+ * IRIS GL's colour and normal rule as the client sends it for
+ * glIglooInterfaceSGIX: 0x0000dd00 then 0x00010200 turn it on in
+ * LMC_COLOR mode, 0x0000df00 and 0x0000de00 turn it off.
+ */
+#define GL_IRIS_LMC_COLOR     0x0000dd00
+#define GL_IRIS_LMC_OTHER     0x0000de00
+#define GL_IRIS_RULE_OFF      0x0000df00
+#define GL_IRIS_RULE_ON       0x00010200
+
+/*
  * A flat, lit scene in the probe window: light 0 as OpenGL starts it,
  * white along +z, enabled with lighting, and the vertex colour green, which
  * a lit vertex does not take. Unchanged, a front material ambient 0.2
