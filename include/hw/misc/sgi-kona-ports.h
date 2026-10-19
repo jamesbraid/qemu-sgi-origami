@@ -252,6 +252,12 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_LIST_PAD3    0x1d9
 #define SGI_KONA_CMD_GL_LIST_PAD4    0x1da
 /*
+ * glPointParameterfSGIS and the fv form: 0x1a7 with the pname and one
+ * value, or 0x1a8 with the distance-attenuation pname and three values.
+ */
+#define SGI_KONA_CMD_GL_POINT_PARAMETER   0x1a7
+#define SGI_KONA_CMD_GL_POINT_ATTENUATION 0x1a8
+/*
  * glRect: a count of the words up to and including the end that follows
  * the four vertices, which arrive as vertex commands.
  */
