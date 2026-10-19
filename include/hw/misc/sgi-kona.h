@@ -1114,6 +1114,13 @@ struct SGIKonaState {
     uint64_t texture_associate_generation;
     uint8_t texture_associate_slot;
     /*
+     * 0x1c4 allocates the library's texture cache entry for an id. When
+     * the next command is a load header for that id, the id names a new
+     * image and the old one is retired; any other next command keeps it.
+     */
+    bool texture_retire_pending;
+    uint32_t texture_retire_handle;
+    /*
      * A video command (SGI_KONA_CMD_VIDEO) still collecting its data words
      * and checksum after the command port framed its number: video_have
      * counts the data words so far, video_first is the first of them (the
