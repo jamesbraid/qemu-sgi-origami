@@ -32,6 +32,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "qobject/qnum.h"
 #include "qobject/qstring.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
@@ -1377,6 +1378,51 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
         "-display none");
 
     qtest_quit(qts);
+}
+
+/*
+ * The Onyx2's node board is the Origin 2000's. Its 16-Mb DIMM pairs make
+ * 64 or 128 MB banks (SGI 007-3439-002, printed page 35), so both Onyx2
+ * chassis take 256 MiB per node, laid out as two 128 MB banks.
+ */
+static void test_onyx2_accepts_256_mib_per_node(const void *data)
+{
+    static const struct {
+        const char *machine;
+        unsigned int nodes;
+    } cases[] = {
+        { "-M onyx2,topology=onyx2-deskside,nodes=1 -smp 2 -m 256M", 1 },
+        { "-M onyx2,topology=onyx2-deskside,nodes=2 -smp 4 -m 512M", 2 },
+        { "-M onyx2,nodes=1 -smp 2 -m 256M", 1 },
+        { "-M onyx2,nodes=4 -smp 8 -m 1G", 4 },
+    };
+    size_t i;
+    unsigned int node;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_initf("%s -display none", cases[i].machine);
+
+        for (node = 0; node < cases[i].nodes; node++) {
+            g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+            QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                                 "{'path': %s, 'property': 'banks-mb'}}",
+                                 path);
+            QList *banks = qdict_get_qlist(r, "return");
+            QListEntry *entry;
+            unsigned int count = 0;
+
+            g_assert_nonnull(banks);
+            QLIST_FOREACH_ENTRY(banks, entry) {
+                g_assert_cmpuint(qnum_get_uint(
+                                     qobject_to(QNum, qlist_entry_obj(entry))),
+                                 ==, 128);
+                count++;
+            }
+            g_assert_cmpuint(count, ==, 2);
+            qobject_unref(r);
+        }
+        qtest_quit(qts);
+    }
 }
 
 /*
@@ -9094,6 +9140,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-deskside-has-two-cpus-on-node-zero", NULL,
         test_origin2000_one_node_has_two_cpus_on_node_zero);
+    qtest_add_data_func("sn/builder/onyx2-accepts-256-mib-per-node", NULL,
+                        test_onyx2_accepts_256_mib_per_node);
     qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",
                         NULL, test_origin200_onboard_board_is_ip29_preset);
     qtest_add_data_func("sn/builder/origin2000-onboard-board-is-xio-baseio",

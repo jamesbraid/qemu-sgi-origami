@@ -117,8 +117,13 @@ layer:
         profile: onyx2-rack
         lifecycle: implemented
         emulator_constraints:
+          # Per-node totals -m may select. The node board is the Origin
+          # 2000's, whose 16-Mb DIMM pairs make 64 or 128 MB banks (SGI
+          # 007-3439-002, printed page 35). QEMU lays 256 MiB out as two
+          # 128 MB banks, as on the Origin 2000 deskside.
           accepted_bank_sizes_mib:
           - 64
+          - 256
         initially_operational_crossbow_links:
         - component: crossbow-0
           widgets: [8, 9, 10, 15]
