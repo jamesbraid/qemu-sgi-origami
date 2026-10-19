@@ -1,0 +1,42 @@
+# How tests/qtest/meson.build splits sn0-origin2000-kona-fill-test into
+# separate tests, qtest-mips64/sn0-origin2000-kona-fill-test-GROUP, which
+# meson runs at once. Each line is a group and a GLib test path: one case,
+# or a suite whose cases directly under it all join the group. A suite whose
+# case names the source builds from a printf template joins a group whole,
+# by its own line. Every case and suite the source registers must be in
+# exactly one group, which scripts/check-qtest-registered.py checks, so a
+# new case or suite needs a line here.
+#
+# The groups are areas: X boxes, clips, cursors and the semantic desktop
+# (box), the semantic GX truth tables (semantic), X points (point) and X
+# lines and segments (line).
+
+box /mips64/sn0/origin2000/kona-fill
+box /mips64/sn0/origin2000/kona-fill/semantic-ancillary
+box /mips64/sn0/origin2000/kona-fill/semantic-desktop
+box /mips64/sn0/origin2000/kona-fill/semantic-did
+
+semantic /mips64/sn0/origin2000/kona-fill/semantic-ci
+semantic /mips64/sn0/origin2000/kona-fill/semantic-rgb
+
+point /mips64/sn0/origin2000/kona-fill/point-batch/foreground24
+point /mips64/sn0/origin2000/kona-fill/point-batch/background1
+point /mips64/sn0/origin2000/kona-fill/point-batch/background6
+point /mips64/sn0/origin2000/kona-fill/point-batch/background24
+point /mips64/sn0/origin2000/kona-fill/relative-point/one
+point /mips64/sn0/origin2000/kona-fill/relative-point/six
+point /mips64/sn0/origin2000/kona-fill/relative-point/twenty-four
+point /mips64/sn0/origin2000/kona-fill/relative-point24-control
+point /mips64/sn0/origin2000/kona-fill/data5
+point /mips64/sn0/origin2000/kona-fill/relative-coordinates
+
+line /mips64/sn0/origin2000/kona-fill/solid-line
+line /mips64/sn0/origin2000/kona-fill/solid-line/segment
+line /mips64/sn0/origin2000/kona-fill/solid-line/line
+line /mips64/sn0/origin2000/kona-fill/solid-line/line6
+line /mips64/sn0/origin2000/kona-fill/solid-line/relative
+line /mips64/sn0/origin2000/kona-fill/solid-line/relative6
+line /mips64/sn0/origin2000/kona-fill/solid-line/segment6
+line /mips64/sn0/origin2000/kona-fill/solid-line/control
+line /mips64/sn0/origin2000/kona-fill/segment6-control
+line /mips64/sn0/origin2000/kona-fill/relative-line-coordinates

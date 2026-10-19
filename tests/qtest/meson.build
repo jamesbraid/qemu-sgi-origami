@@ -84,7 +84,16 @@ slow_qtests = {
   'sn0-origin2000-kona-3d-test-state': 180,
   'sn0-origin2000-kona-3d-test-texture': 840,
   'sn0-origin2000-kona-bringup-test': 230,
-  'sn0-origin2000-kona-fill-test': 360,
+  # The whole binary, which only a named run uses: its groups below are
+  # what the qtest suites run.
+  'sn0-origin2000-kona-fill-test': 900,
+  # sn0-origin2000-kona-fill-test's groups: three times each one's slowest
+  # of three runs in the CI image at four processes beside the KONA pixel,
+  # context, video and DMA qtests, 2026-10-19.
+  'sn0-origin2000-kona-fill-test-box': 320,
+  'sn0-origin2000-kona-fill-test-line': 240,
+  'sn0-origin2000-kona-fill-test-point': 250,
+  'sn0-origin2000-kona-fill-test-semantic': 240,
   'sn0-origin2000-kona-pixel-test': 710,
   'sn0-origin2000-kona-xdma-test': 70,
   'sn0-origin2000-pflash-test': 80,
@@ -509,6 +518,7 @@ sn0_machine_qtests = \
                                                    'sn0-origin2000-kona-bringup-test',
                                                    'sn0-origin2000-kona-video-test',
                                                    'sn0-origin2000-kona-scanout-test',
+                                                   'sn0-origin2000-kona-fill-test',
                                                    'sn0-origin2000-kona-pixel-test',
                                                    'sn0-origin2000-kona-glyph-test',
                                                    'sn0-origin2000-kona-context-test',
@@ -518,12 +528,6 @@ sn0_machine_qtests = \
                                                    'sn0-origin2000-kona-pi-credit-test',
                                                    'sn0-onyx2-test',
                                                    'sn0-display-heads-test'] : [])
-
-# Not built or run: this suite stops making progress partway through in
-# the merge queue (about case 278 of 335, at any time limit) and blocks
-# every landing.  Restore it to the list above once the hang is fixed.
-disabled_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-origin2000-kona-fill-test'] : [])
 
 sgi_qtests = \
   ['ds1742-test'] + \

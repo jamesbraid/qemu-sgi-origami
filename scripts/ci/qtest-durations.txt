@@ -114,7 +114,13 @@ qtest-mips64/sn0-origin2000-kona-3d-test-texture 160
 qtest-mips64/sn0-origin2000-kona-bringup-test 6
 qtest-mips64/sn0-origin2000-kona-context-test 21
 qtest-mips64/sn0-origin2000-kona-dma-test 2
-qtest-mips64/sn0-origin2000-kona-fill-test 285
+# The sn0-origin2000-kona-fill-test groups are estimates until the next
+# refresh: the whole test's 80 s above shared by each group's share of its
+# serial time in the CI image (2026-10-19).
+qtest-mips64/sn0-origin2000-kona-fill-test-box 24
+qtest-mips64/sn0-origin2000-kona-fill-test-line 16
+qtest-mips64/sn0-origin2000-kona-fill-test-point 18
+qtest-mips64/sn0-origin2000-kona-fill-test-semantic 22
 qtest-mips64/sn0-origin2000-kona-gl-test 4
 qtest-mips64/sn0-origin2000-kona-glyph-test 10
 qtest-mips64/sn0-origin2000-kona-pi-credit-test 2
