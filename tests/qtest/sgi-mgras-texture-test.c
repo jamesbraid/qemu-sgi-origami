@@ -4525,13 +4525,14 @@ static void test_tram_client_restore_round_trip(void)
 /*
  * The client's save and restore of a one-component texture under a TRAM
  * select, as perfly's town database sends them: the save reads one byte a
- * TRAM word over the block's 64 rows under the texture's own TL_MODE and
- * returns its texels in order; another texture loaded over it under the
- * same select replaces it; the restore, under TL_MODE 0x4030 (select 2)
- * as traced, puts the first back where a select-2 draw finds it. A load
- * of an RGBA level over the block then rewrites every TRAM there, so the
- * select-2 draw finds no level and draws untextured rather than the old
- * texels.
+ * TRAM word over the block's 64 rows, with the texture's select in
+ * TEXMODE1 (0x140, select 2) and another in TL_MODE (0x18, select 3), as
+ * the client's save routine sends them, and returns the texels in order;
+ * another texture loaded over it under the same select replaces it; the
+ * restore, under TL_MODE 0x4030 (select 2) as traced, puts the first back
+ * where a select-2 draw finds it. A load of an RGBA level over the block
+ * then rewrites every TRAM there, so the select-2 draw finds no level and
+ * draws untextured rather than the old texels.
  */
 #define TRAM_LUM8_BLOCK_BYTES 0x1000
 
@@ -4551,6 +4552,8 @@ static void test_tram_client_restore_under_select(void)
     memset(buffer, TRAM_BUFFER_FILL, TRAM_LUM8_BLOCK_BYTES);
     qtest_memwrite(t, TRAM_BUFFER, buffer, TRAM_LUM8_BLOCK_BYTES);
     tex_mipmap_word(t, 0);
+    tex_record(t, TEX_TL_MODE, 0x18);
+    tex_record(t, TEX_TEXMODE1, 0x140);
     tram_save_rss(t);
     tram_read(t, TRAM_BLOCK_ROWS, TRAM_FORMAT_RGBA8, TRAM_LUM8_BLOCK_BYTES,
               GL_ERAM_READ_KICK);

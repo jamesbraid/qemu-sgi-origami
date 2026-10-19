@@ -120,9 +120,10 @@
  *   the word's leading bytes: the client saves and restores such textures
  *   one or two bytes a word over 64 rows of 64 words (traced), so a level
  *   must lie one texel a word for its save to read it back.
- *   Save and restore (mgras_tram_transfer_select()): a transfer of one to
- *   three bytes a word moves the image of the select its TL_MODE names,
- *   as the client sends the texture's own TL_MODE (traced); a transfer of
+ *   Save and restore (mgras_tram_transfer_select()): a save of one to
+ *   three bytes a word reads the image of the select TEXMODE1 names and
+ *   such a restore writes the image of the select TL_MODE names, as the
+ *   client sends them (established from its listing); a transfer of
  *   whole words, the kernel's and the client's RGB or RGBA save and
  *   restore, moves select 0's image only. Whole-word writes into select
  *   0's image (those restores and RGB or RGBA loads) mark the same blocks
@@ -1349,20 +1350,33 @@ static uint32_t mgras_tram_word_bytes(uint64_t bytes, uint32_t rows)
 /*
  * The select image a save or restore of k bytes a TRAM word moves. The
  * client saves and restores a one- or two-component texture one or two
- * bytes a word, under a TL_MODE whose layout and select are the
- * texture's (traced on perfly's town database: restores under TL_MODE
- * 0x4038, 0x4030 and 0x402a, saves under 0x18 and 0x8, and transfers of
- * 64 rows of 64 words at one and two bytes a word), so such a transfer
- * takes that select's image. A transfer of whole words, the kernel's and
- * the client's save of an RGB or RGBA texture, takes select 0's image:
- * on the board it moves every TRAM of those words, but the model keeps
- * the other selects apart and cannot carry them in one word's bytes, so
- * it moves select 0 alone (approximated; see "Storage").
+ * bytes a word over 64 rows of 64 words (traced on perfly's town
+ * database). Its save (mgrTM_SaveData) sends the texture's select in
+ * TEXMODE1 bits 8:7 and, in TL_MODE bits 4:3, a value it makes differ
+ * from the texture's select (the select XOR 1 when the last one sent was
+ * the texture's): established from the client's listing at
+ * 0xd99fcc8-0xd99fd4c, and traced as saves under TL_MODE 0x18 and
+ * TEXMODE1 0x140 right after a load under TL_MODE 0x34e30. Its restore
+ * (0xd99fe10) is a load and sends the texture's select in TL_MODE bits
+ * 4:3 (0xd99fe78-0xd99fe94; traced under 0x4038, 0x4030 and 0x402a). So a
+ * save of fewer than four bytes a word reads the image of TEXMODE1's
+ * select and such a restore writes the image of TL_MODE's. That the
+ * board reads by the TEXMODE1 select is inferred from the client. A
+ * transfer of whole words, the kernel's and the client's save of an RGB
+ * or RGBA texture, takes select 0's image: on the board it moves every
+ * TRAM of those words, but the model keeps the other selects apart and
+ * cannot carry them in one word's bytes, so it moves select 0 alone
+ * (approximated; see "Storage").
  */
-static uint32_t mgras_tram_transfer_select(SGIMgrasState *s, uint32_t k)
+static uint32_t mgras_tram_transfer_select(SGIMgrasState *s, uint32_t k,
+                                           bool save)
 {
-    return k < MGRAS_TRAM_WORD_BYTES ? mgras_tex_select(mgras_tex(s)->tl_mode)
-                                     : 0;
+    SGIMgrasTexture *t = mgras_tex(s);
+    uint32_t mode = save ? MGRAS_TEXMODE1_LAYOUT(t->texmode1) << 1 |
+                           ((t->texmode1 & MGRAS_TEXMODE1_SELECT) >> 7) << 3
+                         : t->tl_mode;
+
+    return k < MGRAS_TRAM_WORD_BYTES ? mgras_tex_select(mode) : 0;
 }
 
 /* Read rows of TRAM from first_row back to host memory. */
@@ -1372,8 +1386,9 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
     uint64_t bytes = sgi_mgras_raster_dma_bytes(s);
     uint32_t k = mgras_tram_word_bytes(bytes, s->tram_rows);
     uint64_t words = (uint64_t)s->tram_rows * MGRAS_TRAM_ROW_WORDS;
-    uint8_t *image = s->tram +
-                     mgras_tram_image_bit(mgras_tram_transfer_select(s, k)) / 8;
+    uint32_t select = mgras_tram_transfer_select(s, k, true);
+    uint64_t image_bit = mgras_tram_image_bit(select);
+    uint8_t *image = s->tram + image_bit / 8;
     g_autofree uint8_t *buf = NULL;
 
     if (first + s->tram_rows > MGRAS_TRAM_ROWS) {
@@ -1382,6 +1397,21 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
                       s->tram_rows, s->tram_read_block);
         return;
     }
+    /*
+     * A save of a select's blocks nothing has written since they were
+     * last cleared reads zeros, which a later restore would put back as
+     * texels: keep it observable.
+     */
+    for (uint64_t b = first / MGRAS_TRAM_BLOCK_ROWS;
+         b * MGRAS_TRAM_BLOCK_ROWS < first + s->tram_rows; b++) {
+        if (select &&
+            !mgras_tram_written(s, image_bit / MGRAS_TRAM_BLOCK_BITS + b)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: TRAM save of block %"
+                          PRIu64 " under select %u, which holds no level\n",
+                          b, select);
+            break;
+        }
+    }
     buf = g_malloc(bytes);
     for (uint64_t i = 0; i < words; i++) {
         memcpy(buf + i * k, image + (first * MGRAS_TRAM_ROW_WORDS + i) *
@@ -1389,7 +1419,7 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
     }
     if (sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, true)) {
         trace_sgi_mgras_tram_transfer("save", s->tram_read_block, s->tram_rows,
-                                      k);
+                                      k, select, mgras_tex(s)->tl_mode);
     }
 }
 
@@ -1425,7 +1455,7 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
     if (!ok) {
         return;
     }
-    image = mgras_tram_image_bit(mgras_tram_transfer_select(s, k));
+    image = mgras_tram_image_bit(mgras_tram_transfer_select(s, k, false));
     mgras_tex_border_invalidate_tram(
         s, NULL, image + first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
     for (uint64_t i = 0; i < words; i++) {
@@ -1438,7 +1468,9 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
                                   words * 32);
     }
     trace_sgi_mgras_tram_transfer(client ? "client restore" : "restore",
-                                  s->tram_load_block, rows, k);
+                                  s->tram_load_block, rows, k,
+                                  mgras_tram_transfer_select(s, k, false),
+                                  mgras_tex(s)->tl_mode);
 }
 
 bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
