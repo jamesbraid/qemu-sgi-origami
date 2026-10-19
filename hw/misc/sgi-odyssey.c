@@ -1738,7 +1738,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_XRGB 0x4c
 #define ODSY_IMAGE_CODE_RGBA12 0x6b
 
-/* The transfer header's group length, bits 23:20, with 15 standing for 16. */
+/* The transfer header's first-burst count, bits 23:20, 15 standing for 16. */
 #define ODSY_IMAGE_HEADER_GROUP_SHIFT 20
 #define ODSY_IMAGE_HEADER_GROUP_MASK 0xf
 #define ODSY_IMAGE_HEADER_GROUP_FULL 16
@@ -8827,10 +8827,20 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_CMD_IMAGE_HEADER:
         /*
-         * The transfer header opens a pixel group: its length (bits 23:20, 15
-         * standing for 16, 0 meaning the group runs unbounded to the box edge)
-         * bounds byte-format pixels or SHORT-format words. Reset the per-group
-         * count and any partial pixel.
+         * The transfer header opens a pixel group: its count (bits 23:20, 15
+         * standing for 16, 0 meaning a full burst) is how many byte-format
+         * pixels or SHORT-format words the group's first burst carries; any
+         * more words in that burst are padding, and the bursts after it are
+         * full, running on to the box edge. Reset the per-group count and
+         * any partial pixel.
+         *
+         * That the count covers only the first burst is INFERRED from the
+         * X server's emitter: a colour-index image 56 pixels wide is sent
+         * as a header with count 0 and three 16-pixel bursts, then for each
+         * later group a header with count 8 and bit 16 set, an 8-pixel
+         * burst finishing the previous row, and three 16-pixel bursts. A
+         * count that bounded the whole group drew 8 pixels of every 56 and
+         * left the root window's background in grey bands.
          */
     {
         uint32_t glen = (s->cmd_operand[0] >> ODSY_IMAGE_HEADER_GROUP_SHIFT) &
@@ -9309,6 +9319,11 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
         /* Each data word paints into the open image at the raster cursor. */
         odyssey_image_burst_word(s, word);
         if (++s->cmd_operand_index == s->cmd_operand_count) {
+            /*
+             * The header's count bounds only the group's first burst; the
+             * bursts after it are full (ODSY_CMD_IMAGE_HEADER).
+             */
+            s->image_group_len = 0;
             s->cmd_state = ODSY_CMD_IDLE;
         }
         break;
