@@ -1195,14 +1195,16 @@ struct SGIKonaState {
     uint32_t x_color_map[SGI_KONA_X_COLOR_MAP_ENTRIES];
 
     /*
-     * The gamma table (SGI_KONA_GAMMA_ENTRIES), kept for the scanout to
-     * apply later; nothing reads it yet. An X gamma load still taking its
+     * The gamma table (SGI_KONA_GAMMA_ENTRIES), which the scanout applies
+     * (see sgi_kona_gamma_apply()). An X gamma load still taking its
      * entries: gamma_start and gamma_count are the load's first two
      * words, gamma_remaining the entries still to come, and gamma_outside
      * the entries so far whose address the table does not cover. See
      * sgi_kona_gamma_word().
      */
     uint16_t gamma[SGI_KONA_GAMMA_ENTRIES];
+    /* Not migrated: which components hold a nonzero entry. */
+    bool gamma_loaded[SGI_KONA_GAMMA_COMPONENTS];
     uint32_t gamma_start;
     uint32_t gamma_count;
     uint32_t gamma_remaining;

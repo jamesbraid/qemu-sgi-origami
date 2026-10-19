@@ -676,6 +676,36 @@ static void test_unmapped_window_shows_bank0(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
 }
 
+/*
+ * The X server's gamma load passes every displayed pixel through its
+ * table. With an inverting red table (entry i is 0xfff - i) and no green
+ * or blue table, a magenta clear shows as blue on the display: red 0xff
+ * indexes entry 0xfff, which is 0. The stored colour stays magenta.
+ */
+static void test_gamma_applied_at_scanout(void)
+{
+    const unsigned top = FB_HEIGHT - 1 - 640;
+    g_autofree uint8_t *frame = NULL;
+    const uint8_t *px;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(qts, F1, F0, F1);
+    qtest_writel(qts, REG_COMMAND, 0x12f);
+    qtest_writel(qts, REG_COMMAND, 0);
+    qtest_writel(qts, REG_COMMAND, 0x1000);
+    for (unsigned i = 0; i < 0x1000; i++) {
+        qtest_writel(qts, REG_COMMAND, 0xfff - i);
+    }
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    frame = kona_screendump(qts);
+    px = frame + ((size_t)top * FB_WIDTH + PROBE_X) * 3;
+    g_assert_cmpuint(px[0], ==, 0);
+    g_assert_cmpuint(px[1], ==, 0);
+    g_assert_cmpuint(px[2], ==, 0xff);
+}
+
 /* Only the destroy's exact reason releases the current window. */
 static void test_destroy_releases_window(void)
 {
@@ -922,6 +952,8 @@ int main(int argc, char **argv)
                    test_overlap_shows_bank0_where_covered);
     qtest_add_func("sn0/origin2000/kona-gl/unmapped-window-shows-bank0",
                    test_unmapped_window_shows_bank0);
+    qtest_add_func("sn0/origin2000/kona-gl/gamma-applied-at-scanout",
+                   test_gamma_applied_at_scanout);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
