@@ -70,7 +70,8 @@ sgi_kona_return_post(uint32_t token, uint64_t page) "token 0x%x page 0x%" PRIx64
 # A command framed whole whose display state the model does not keep.
 sgi_kona_command_unmodelled(uint32_t token, unsigned int argc) "token 0x%x argc %u consumed, not modelled"
 # The kernel's forced bracket suspended context's open user command; it
-# resumed when that context sent words again, or ended when another did.
+# resumes when that context sends words again, or is saved with it when
+# another context does (an X pixel write instead waits in place).
 sgi_kona_bracket_suspend(int context) "context %d"
 sgi_kona_bracket_resume(int context) "context %d"
 sgi_kona_input_save(int context) "context %d's open command saved"
