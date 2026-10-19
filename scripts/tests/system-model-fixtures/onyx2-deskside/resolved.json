@@ -2022,7 +2022,8 @@
       "display_description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
       "emulator_constraints": {
         "accepted_bank_sizes_mib": [
-          64
+          64,
+          256
         ]
       },
       "hub_ni_revision_overrides": [

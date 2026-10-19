@@ -687,7 +687,8 @@
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -843,7 +844,8 @@
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -999,7 +1001,8 @@
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1153,7 +1156,8 @@
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1301,7 +1305,8 @@
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1455,7 +1460,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1627,7 +1633,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1799,7 +1806,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -1971,7 +1979,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2143,7 +2152,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2313,7 +2323,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2477,7 +2488,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2641,7 +2653,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2805,7 +2818,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -2967,7 +2981,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -3123,7 +3138,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -3279,7 +3295,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -3433,7 +3450,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -3581,7 +3599,8 @@
       "machine-options": "onyx2,topology=onyx2-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
         "default": 64
       },
@@ -19109,7 +19128,8 @@
       "nodes": [
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
@@ -19171,7 +19191,8 @@
         },
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
@@ -19768,7 +19789,8 @@
       "nodes": [
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
@@ -19829,7 +19851,8 @@
         },
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
@@ -19890,7 +19913,8 @@
         },
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
@@ -19951,7 +19975,8 @@
         },
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
