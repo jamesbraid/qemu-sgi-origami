@@ -4560,6 +4560,22 @@ static bool odyssey_texture_read(void *opaque, uint32_t x, uint32_t y,
     return true;
 }
 
+/*
+ * A volume level's slices sit 64 << word 2 address units apart. OBSERVED
+ * three ways on the model: the captured 8x8x8 levels (word 2 1, 0x80
+ * apart), the captured stored 2x2x2 (word 2 4, 0x400 apart) and pfCity's
+ * 128x128x64 RGBA volume (word 2 6, 64 slice objects 0x1000 apart). The
+ * rule this replaced, row length times word 2 times 64, gave the same
+ * spacing for the first two and not the third. That word 2 is the log2 of
+ * the slice allocation is INFERRED.
+ */
+#define ODSY_VOLUME_SLICE_SHIFT_MAX 20
+
+static uint64_t odyssey_volume_slice_stride(uint32_t level_word2)
+{
+    return UINT64_C(64) << level_word2;
+}
+
 static bool odyssey_texture_read_3d_at(const OdysseyTextureVolume *volume,
                                       int32_t x, int32_t y, int32_t z,
                                       bool border, uint32_t *rgba)
@@ -4579,10 +4595,10 @@ static bool odyssey_texture_read_3d_at(const OdysseyTextureVolume *volume,
                      x >= (int32_t)volume->width ||
                      y >= (int32_t)volume->height ||
                      z >= (int32_t)volume->depth)) ||
-        umul64_overflow(volume->stride_units, volume->level_word2,
+        volume->level_word2 > ODSY_VOLUME_SLICE_SHIFT_MAX ||
+        umul64_overflow(border ? z + 1 : z,
+                        odyssey_volume_slice_stride(volume->level_word2),
                         &slice_offset) ||
-        umul64_overflow(slice_offset, 64, &slice_offset) ||
-        umul64_overflow(border ? z + 1 : z, slice_offset, &slice_offset) ||
         uadd64_overflow(volume->base, slice_offset, &base) ||
         base > UINT32_MAX) {
         return false;
@@ -5135,7 +5151,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
          * bounded model policy separate from the level-zero address rule.
          */
         if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
-            (!mipmap && word != 0x13000000 && !three_d_clamp) ||
+            (!mipmap && word != 0x13000000 && word != 0x13000022 &&
+             !three_d_clamp) ||
             (mipmap && ((filter != 0x40 && filter != 0xa0) || ws || wt ||
                         (image->base_format != SGI_GL_RGB &&
                          image->base_format != SGI_GL_RGBA) ||
@@ -5150,10 +5167,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
               height > 30 || depth > 30 ||
               (filter != 0 && filter != 0x22))) ||
             s->obj_count > SGI_ODYSSEY_OBJECTS ||
-            umul64_overflow(stride_units, entry[2], &slice_stride) ||
-            umul64_overflow(slice_stride, 64, &slice_stride)) {
+            entry[2] > ODSY_VOLUME_SLICE_SHIFT_MAX) {
             goto unsupported;
         }
+        slice_stride = odyssey_volume_slice_stride(entry[2]);
         /*
          * The captured 2x2x2 stored upload starts 15 slice strides above
          * the level base. For this one captured profile the rule applies
