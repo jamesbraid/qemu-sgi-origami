@@ -4778,6 +4778,27 @@ static void test_texture_base_level_bank(void)
     qtest_quit(s);
 }
 
+/* An all-ones bind its record resolves is not reported as refused. */
+static void test_texture_cache_entry_quiet(void)
+{
+    static const uint32_t green[4] = {
+        0x00ff00ff, 0x00ff00ff, 0x00ff00ff, 0x00ff00ff,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    texture_cache_upload(s, 29, 0x340, green);
+    texture_cache_upload(s, 17, 0x118, texture_source);
+    kona_command(s, 0x178, (uint32_t[]) { 29 }, 1);
+    texture_cache_bind(s, UINT32_MAX, 0x118);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "texture rebind without"),
+                     ==, 0);
+}
+
 /* One row of a 2 by 2 RGBA image under the given cache id. */
 static void texture_cache_row(QTestState *s, uint32_t id, uint32_t y,
                               const uint32_t pixels[2])
@@ -16557,6 +16578,8 @@ int main(int argc, char **argv)
              test_texture_bind_awaits_record);
     add_case("sn0/origin2000/kona-3d/texture/base-level-bank",
              test_texture_base_level_bank);
+    add_case("sn0/origin2000/kona-3d/texture-cache-entry/quiet",
+             test_texture_cache_entry_quiet);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/reuse",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_reuse);
     add_data_case(
