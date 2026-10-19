@@ -237,6 +237,21 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_RASTER_POS3F 0xad
 #define SGI_KONA_CMD_GL_RASTER_POS4F 0xb1
 /*
+ * setCurrentRaster's raster state: fourteen of the context's floats and
+ * one integer field converted to a float.
+ */
+#define SGI_KONA_CMD_GL_RASTER_STATE 0x10e
+/* __glKonUpdateEvalAttributes: four words, then 0x29 with eight. */
+#define SGI_KONA_CMD_GL_EVAL_ATTRIB  0x28
+#define SGI_KONA_CMD_GL_EVAL_ATTRIB2 0x29
+/*
+ * The tail padding of a display-list block, inferred to fill four, two
+ * and five words: 0x1d9 and three words, 0x1d8 and one, 0x1da and four.
+ */
+#define SGI_KONA_CMD_GL_LIST_PAD1    0x1d8
+#define SGI_KONA_CMD_GL_LIST_PAD3    0x1d9
+#define SGI_KONA_CMD_GL_LIST_PAD4    0x1da
+/*
  * glRect: a count of the words up to and including the end that follows
  * the four vertices, which arrive as vertex commands.
  */
