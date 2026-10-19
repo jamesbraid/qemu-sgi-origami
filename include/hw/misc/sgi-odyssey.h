@@ -273,6 +273,8 @@ struct SGIOdysseyState {
     /* When each object was last selected or grown (obj_clock's count). */
     uint64_t obj_stamp[SGI_ODYSSEY_OBJECTS];
     uint64_t obj_clock;
+    /* The store bytes a save carries, obj_used words (migration only). */
+    uint32_t obj_mem_saved;
     uint8_t obj_valid[SGI_ODYSSEY_OBJ_VALID_BYTES];
     bool obj_full_reported;
     /* A full store forgot an object (reported once, not migrated). */
