@@ -9711,6 +9711,72 @@ static void test_object_store_grows_without_forgetting(void)
     board_quit(qts);
 }
 
+/* Save a board to a file and return the stream's size in bytes. */
+static gint64 object_store_save(QTestState *from, const char *path)
+{
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+    GStatBuf st;
+
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmpint(g_stat(path, &st), ==, 0);
+    return st.st_size;
+}
+
+/*
+ * A save carries only the used part of the 128 MiB object store, and the
+ * objects come back whole: a board holding 48 MiB more of objects saves a
+ * stream at least that much longer. Before, every save carried the whole
+ * store, so the two streams were the same length.
+ */
+static void test_object_store_migrates_used_part(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *small_path = NULL;
+    g_autofree char *large_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *small = board_start("");
+    QTestState *large = board_start("");
+    QTestState *to;
+    gint64 small_size, large_size;
+    int fd;
+
+    fd = g_file_open_tmp("odyssey-store-small-XXXXXX", &small_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("odyssey-store-large-XXXXXX", &large_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (unsigned b = 0; b < 2; b++) {
+        QTestState *qts = b ? large : small;
+
+        qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                     BEDROCK_MD_INSTALLED_SELECT2);
+        dma_object_texel(qts, 0x200000, 2, 3, 40, 0x11223344);
+    }
+    dma_object_texel(large, 0x300000, 256, 5, 2999, 0x55667788);
+    small_size = object_store_save(small, small_path);
+    large_size = object_store_save(large, large_path);
+    g_test_message("streams %" G_GINT64_FORMAT " and %" G_GINT64_FORMAT
+                   " bytes", small_size, large_size);
+    g_assert_cmpint(large_size - small_size, >=, 4096 * 3000 * 4);
+
+    uri = g_strdup_printf("file:%s", large_path);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(odsy_test_object_texel(to, 0x200000, 3, 40), ==,
+                    0x11223344);
+    g_assert_cmphex(odsy_test_object_texel(to, 0x300000, 5, 2999), ==,
+                    0x55667788);
+    g_assert_cmphex(odsy_test_object_texel(to, 0x300000, 6, 2999), ==, 0);
+    board_quit(to);
+    board_quit(large);
+    board_quit(small);
+    g_assert_cmpint(unlink(small_path), ==, 0);
+    g_assert_cmpint(unlink(large_path), ==, 0);
+}
+
 /*
  * The textured draw after an upload (phase H's words): the state words are
  * accepted, the draw lands inside the probe window after 0x90008116, not at
@@ -19381,6 +19447,8 @@ int main(int argc, char **argv)
                    test_object_store_reclaims);
     add_fresh_case("sn1/odyssey/object-store-grows-without-forgetting",
                    test_object_store_grows_without_forgetting);
+    add_fresh_case("sn1/odyssey/object-store-migrates-used-part",
+                   test_object_store_migrates_used_part);
     add_case("sn1/odyssey/texture-adapter/rgba12-byte-upload",
              test_texture_adapter_rgba12_byte_upload);
     add_case("sn1/odyssey/texture-adapter/nearest",

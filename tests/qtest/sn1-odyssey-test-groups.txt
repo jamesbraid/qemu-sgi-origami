@@ -61,6 +61,7 @@ board /mips64/sn1/odyssey/dma-texture-12bit-sources
 board /mips64/sn1/odyssey/burst-texture-12bit-sources
 board /mips64/sn1/odyssey/object-store-reclaims
 board /mips64/sn1/odyssey/object-store-grows-without-forgetting
+board /mips64/sn1/odyssey/object-store-migrates-used-part
 board /mips64/sn1/odyssey/processor-credit-return
 board /mips64/sn1/odyssey/readback
 board /mips64/sn1/odyssey/dma

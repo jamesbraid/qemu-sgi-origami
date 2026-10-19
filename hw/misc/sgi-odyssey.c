@@ -11365,10 +11365,53 @@ static const VMStateDescription vmstate_odyssey_buffer_select = {
     },
 };
 
-/* The object store's words. */
-DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_objects,
-                                "sgi-odyssey/object-memory",
-                                SGIOdysseyState, obj_mem);
+/*
+ * The object store's words: only the first obj_used, so a mostly empty
+ * store does not ride every save whole. Every word past obj_used is zero
+ * (reset clears the store, packing and growth keep its tail clear), so
+ * the load clears the same tail.
+ */
+static int odyssey_objects_pre_save(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    s->obj_mem_saved = s->obj_used * 4;
+    return 0;
+}
+
+static bool odyssey_objects_saved_valid(void *opaque, int version_id)
+{
+    SGIOdysseyState *s = opaque;
+
+    return s->obj_used <= ODSY_OBJ_POOL_WORDS &&
+           s->obj_mem_saved == s->obj_used * 4 &&
+           s->obj_mem_saved <= s->obj_mem.bytes_len;
+}
+
+static int odyssey_objects_post_load(void *opaque, int version_id)
+{
+    SGIOdysseyState *s = opaque;
+
+    memset(s->obj_mem.bytes + s->obj_mem_saved, 0,
+           s->obj_mem.bytes_len - s->obj_mem_saved);
+    return 0;
+}
+
+static const VMStateDescription vmstate_odyssey_objects = {
+    .name = "sgi-odyssey/object-store",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = odyssey_objects_pre_save,
+    .post_load = odyssey_objects_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(obj_mem_saved, SGIOdysseyState),
+        VMSTATE_VALIDATE("object store within its budget",
+                         odyssey_objects_saved_valid),
+        VMSTATE_VBUFFER_UINT32(obj_mem.bytes, SGIOdysseyState, 0, NULL,
+                               obj_mem_saved),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 DEFINE_VMSTATE_SGI_SCANOUT(vmstate_odyssey_scanout, "sgi-odyssey/scanout",
                            SGIOdysseyState, scanout);
