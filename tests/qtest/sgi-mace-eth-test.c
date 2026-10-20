@@ -752,6 +752,105 @@ static void test_rx_fifo_dma_wrap(void)
     close(sv[1]);
 }
 
+static void rx_sequence_frame(uint8_t frame[60], unsigned sequence)
+{
+    static const uint8_t station[6] = {
+        0x02, 0xa1, 0x4c, 0x73, 0x95, 0xe6
+    };
+
+    memcpy(frame, station, sizeof(station));
+    frame[6] = 0x12;
+    frame[7] = 0x34;
+    frame[8] = 0x56;
+    frame[9] = 0x78;
+    frame[10] = sequence >> 8;
+    frame[11] = sequence;
+    frame[12] = 0x88;
+    frame[13] = 0xb5;
+    for (unsigned i = 14; i < 60; i++) {
+        frame[i] = sequence * 19 + i * 5;
+    }
+}
+
+static void test_rx_sustained_fifo_replenish(void)
+{
+    static const uint64_t refill_info[2] = {
+        UINT64_C(0x100010), UINT64_C(0x001010)
+    };
+    static const uint64_t drained_info[2] = {
+        0, UINT64_C(0x101000)
+    };
+    const uint64_t base = RAM_FULL + 0x80000;
+    uint8_t frames[16][60], old_buffer[256], landed[60], status[8];
+    g_autofree char *dir = g_dir_make_tmp("mace-rx-sustained-XXXXXX", NULL);
+    g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *log_text = NULL;
+    QTestState *qts;
+    int sv[2];
+
+    memset(old_buffer, 0xa5, sizeof(old_buffer));
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
+                      "mac=02:a1:4c:73:95:e6 -d guest_errors -D %s",
+                      sv[1], log_path);
+    mdio_write(qts, 8, 0, 0x2100);
+    qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, (1U << 15) | (4U << 12));
+
+    for (unsigned sent = 0; sent < 524;) {
+        unsigned count = MIN(16U, 524U - sent);
+        unsigned done = sent + count;
+
+        for (unsigned i = 0; i < count; i++) {
+            uint64_t address = base + i * 0x1000;
+
+            qtest_memwrite(qts, address, old_buffer, sizeof(old_buffer));
+            qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, address);
+            rx_sequence_frame(frames[i], sent + i);
+        }
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
+                        count == 16 ? refill_info[(sent / 16) & 1] :
+                                      UINT64_C(0x0c000c));
+        for (unsigned i = 0; i < count; i++) {
+            socket_send_frame(sv[0], frames[i], sizeof(frames[i]));
+        }
+        wait_fifo_count(qts, 0);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==,
+                        done == 524 ? UINT64_C(0x0c0c00) :
+                                      drained_info[(done / 16) & 1]);
+        for (unsigned i = 0; i < count; i++) {
+            uint64_t address = base + i * 0x1000;
+            unsigned sequence = sent + i;
+
+            qtest_memread(qts, address, status, sizeof(status));
+            g_assert_cmphex(status[0], ==, 0x80);
+            g_assert_cmphex(status[1] | status[2] | status[3], ==, 0);
+            g_assert_cmphex(status[4], ==,
+                            ((sequence & 31) << 3) | 0x04);
+            g_assert_cmphex(status[5] | status[6], ==, 0);
+            g_assert_cmphex(status[7], ==, 64);
+            qtest_memread(qts, address + 34, landed, sizeof(landed));
+            g_assert_cmpmem(landed, sizeof(landed), frames[i],
+                            sizeof(frames[i]));
+        }
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xc0, ==,
+                        0);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL) &
+                        (1U << 15), ==, 1U << 15);
+        sent = done;
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log_text, NULL, NULL));
+    g_assert_null(strstr(log_text, "RX address FIFO overrun"));
+    g_assert_null(strstr(log_text, "RX DMA failed"));
+    g_assert_cmpint(g_remove(log_path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_unfitted_crime_bank(void)
 {
     static const uint8_t tx_command[8] = {
@@ -1691,6 +1790,8 @@ int main(int argc, char **argv)
                    test_rx_filter_and_raw_dma);
     qtest_add_func("/sgi/mace/ethernet/rx-fifo-dma-wrap",
                    test_rx_fifo_dma_wrap);
+    qtest_add_func("/sgi/mace/ethernet/rx-sustained-replenish",
+                   test_rx_sustained_fifo_replenish);
     qtest_add_func("/sgi/mace/ethernet/unfitted-crime-bank",
                    test_unfitted_crime_bank);
     qtest_add_func("/sgi/mace/ethernet/no-ecc-dma-alias",
