@@ -159,6 +159,11 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.drawable.extra[0] = other ? 0x11 : 0x22;
     c->cur.drawable.extra[1] = other ? 0x33 : 0x44;
     c->lights_enabled = other ? 0x5a : 0xa5;
+    c->tex_gen_enabled = other ? 0x5 : 0xa;
+    c->tex_gen_mode[0] = other ? SGI_GL_SPHERE_MAP : SGI_GL_OBJECT_LINEAR;
+    c->tex_gen_mode[1] = other ? SGI_GL_EYE_LINEAR : SGI_GL_SPHERE_MAP;
+    c->tex_gen_mode[2] = other ? SGI_GL_OBJECT_LINEAR : SGI_GL_EYE_LINEAR;
+    c->tex_gen_mode[3] = other ? SGI_GL_EYE_LINEAR : SGI_GL_OBJECT_LINEAR;
     c->color_material_face = other ? SGI_GL_FRONT : SGI_GL_BACK;
     c->color_material_mode = other ? SGI_GL_EMISSION : SGI_GL_SPECULAR;
     c->in_begin = !other;
@@ -238,8 +243,11 @@ static bool context_padding(size_t at)
     }
     return (at >= before && at < offsetof(SGIGLContext, polygon)) ||
            (at >= end && at < offsetof(SGIGLContext, line_phase)) ||
-           at >= offsetof(SGIGLContext, sprite_translation) +
-                 sizeof(((SGIGLContext *)0)->sprite_translation);
+           (at >= offsetof(SGIGLContext, sprite_translation) +
+                  sizeof(((SGIGLContext *)0)->sprite_translation) &&
+            at < offsetof(SGIGLContext, tex_gen_enabled)) ||
+           at >= offsetof(SGIGLContext, tex_gen_eye_plane) +
+                 sizeof(((SGIGLContext *)0)->tex_gen_eye_plane);
 }
 
 /* The first byte at which two contexts differ, or -1. */
@@ -871,6 +879,9 @@ static const Corruption corruptions[] = {
     BAD(cur.polygon_offset, SGI_GL_OFFSET_POINT << 1, "polygon offset"),
     BAD(cur.clip_planes, 1u << SGI_GL_CLIP_PLANES, "clip plane enables"),
     BAD(lights_enabled, 1u << SGI_GL_LIGHTS, "light enables"),
+    BAD(tex_gen_enabled, 0x10, "texture generation enables"),
+    BAD(tex_gen_mode[0], 0, "texture generation mode"),
+    BAD(tex_gen_mode[2], SGI_GL_SPHERE_MAP, "texture generation mode"),
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),
     BAD(point_size, 0, "point size"),

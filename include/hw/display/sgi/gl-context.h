@@ -186,6 +186,21 @@ enum {
 #define SGI_GL_TEXTURE_2D       0x0de1
 #define SGI_GL_TEXTURE_3D       0x806f
 #define SGI_GL_TEXTURE_ENV_MODE 0x2200
+/* Texture coordinate generation (OpenGL 1.2.1, 2.10.4). */
+#define SGI_GL_S                0x2000
+#define SGI_GL_T                0x2001
+#define SGI_GL_R                0x2002
+#define SGI_GL_Q                0x2003
+#define SGI_GL_EYE_LINEAR       0x2400
+#define SGI_GL_OBJECT_LINEAR    0x2401
+#define SGI_GL_SPHERE_MAP       0x2402
+#define SGI_GL_TEXTURE_GEN_MODE 0x2500
+#define SGI_GL_OBJECT_PLANE     0x2501
+#define SGI_GL_EYE_PLANE        0x2502
+#define SGI_GL_TEXTURE_GEN_S    0x0c60
+#define SGI_GL_TEXTURE_GEN_T    0x0c61
+#define SGI_GL_TEXTURE_GEN_R    0x0c62
+#define SGI_GL_TEXTURE_GEN_Q    0x0c63
 #define SGI_GL_TEXTURE_ENV_COLOR 0x2201
 #define SGI_GL_MODULATE         0x2100
 #define SGI_GL_DECAL            0x2101
@@ -853,6 +868,16 @@ typedef struct SGIGLContext {
     uint32_t sprite_mode;
     float sprite_axis[3];
     float sprite_translation[3];
+    /*
+     * Texture coordinate generation for S, T, R and Q (2.10.4): bit i of
+     * tex_gen_enabled is GL_TEXTURE_GEN_S + i's enable, each coordinate's
+     * mode, its object plane and its eye plane, kept as p M^-1 for the
+     * modelview M current when it was given.
+     */
+    uint32_t tex_gen_enabled;
+    uint32_t tex_gen_mode[4];
+    float tex_gen_object_plane[4][4];
+    float tex_gen_eye_plane[4][4];
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -950,6 +975,11 @@ typedef enum SGIGLOp {
      */
     SGI_GL_OP_SWAP_TMESH,
     SGI_GL_OP_HINT,             /* target, mode */
+    /*
+     * glTexGenfv: the coordinate (GL_S to GL_Q), the parameter and four
+     * floats; GL_TEXTURE_GEN_MODE's mode is its enumerant as a float.
+     */
+    SGI_GL_OP_TEX_GEN,
 } SGIGLOp;
 
 /*
