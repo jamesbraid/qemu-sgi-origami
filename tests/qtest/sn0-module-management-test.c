@@ -1624,6 +1624,90 @@ static void test_module_power_cycle_holds_nodes(void)
 }
 
 /*
+ * A module's power going or coming gates each of its Hubs' seventeen I/O
+ * and big windows, and a power-up also resets the module's parts. Every
+ * memory commit renders the flat view of every address space in the
+ * machine again, so a commit per window rendered each view 68 times as the
+ * four-node module powered down and 72 times as it powered up. Under the
+ * MALLOC_PERTURB_ meson sets, that made each power change cost tens of
+ * seconds of host time. Batched, a power-down renders each view once and a
+ * power-up five times, one more per Hub reset. The flatview_new trace event
+ * names each rendered view's root region.
+ */
+#define MAX_POWER_RENDERS_PER_VIEW 8
+
+/* Renders traced in @path since byte @offset, which moves to the end. */
+static unsigned int renders_since(const char *path, gsize *offset)
+{
+    g_autoptr(GHashTable) renders =
+        g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned int most = 0;
+    gsize length;
+
+    g_assert_true(g_file_get_contents(path, &contents, &length, NULL));
+    g_assert_cmpuint(length, >=, *offset);
+    lines = g_strsplit(contents + *offset, "\n", -1);
+    *offset = length;
+    for (char **line = lines; *line; line++) {
+        const char *root = strstr(*line, "(root ");
+        unsigned int count;
+
+        if (!strstr(*line, "flatview_new ")) {
+            continue;
+        }
+        g_assert_nonnull(root);
+        count = GPOINTER_TO_UINT(g_hash_table_lookup(renders, root)) + 1;
+        g_hash_table_insert(renders, g_strdup(root), GUINT_TO_POINTER(count));
+        most = MAX(most, count);
+    }
+    return most;
+}
+
+static void test_module_power_renders(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *extra = NULL;
+    unsigned int down, up;
+    gsize offset = 0;
+    QTestState *qts;
+    int64_t t0;
+    int fd;
+
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("flat view renders are traced only by the log backend");
+    return;
+#endif
+    fd = g_file_open_tmp("o2000-power-renders-XXXXXX.log", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    extra = g_strdup_printf(" -no-shutdown -trace flatview_new -D %s", path);
+    qts = start_module_with(extra);
+    renders_since(path, &offset);
+
+    assert_exact(qts, 0, "pwr c 5", "ok ");
+    t0 = qtest_clock_step(qts, 1);
+    assert_exact(qts, 1, "pwr", "ok d");
+    down = renders_since(path, &offset);
+
+    qtest_clock_set(qts, t0 + 10 * NANOSECONDS_PER_SECOND);
+    module_reset_wait(qts);
+    assert_exact(qts, 0, "pwr", "ok u");
+    up = renders_since(path, &offset);
+    qtest_quit(qts);
+    unlink(path);
+
+    g_test_message("most renders of one view: %u powering down, %u up",
+                   down, up);
+    g_assert_cmpuint(down, >, 0);
+    g_assert_cmpuint(down, <=, MAX_POWER_RENDERS_PER_VIEW);
+    g_assert_cmpuint(up, >, 0);
+    g_assert_cmpuint(up, <=, MAX_POWER_RENDERS_PER_VIEW);
+}
+
+/*
  * By default the controller powers the module up at its own start, through
  * the power-up that ends a power cycle and with none of its wait, inside the
  * machine's reset. The module is therefore on and its processors enabled
@@ -2351,6 +2435,8 @@ int main(int argc, char **argv)
                    test_paused_destination_keeps_module_off);
     qtest_add_func("/sn0/o2000-module-management/power-cycle-holds-nodes",
                    test_module_power_cycle_holds_nodes);
+    qtest_add_func("/sn0/o2000-module-management/power-renders",
+                   test_module_power_renders);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display-status",
                    test_origin2000_display_status);
     qtest_add_func("/sn0/o2000-module-management/origin2000-display",
