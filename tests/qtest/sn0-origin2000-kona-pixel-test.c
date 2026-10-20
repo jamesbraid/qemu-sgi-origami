@@ -950,7 +950,31 @@ static void read_scene(QTestState *s)
     read_setup(s, 6, 20);
 }
 
+/*
+ * A refused read still completes, so the X server waiting on word 0 goes
+ * on: every byte after the header is zero and word 0 is set. Word 1 is
+ * not part of the reply.
+ */
+static void read_answered_zero(QTestState *s, uint64_t page)
+{
+    uint8_t got[0x4000], expected[0x4000];
+
+    memset(expected, 0, sizeof(expected));
+    expected[3] = 1;
+    memset(expected + 4, 0xa5, 4);
+    qtest_memread(s, page, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+}
+
 static void read_refused(QTestState *s, int32_t x, int32_t y)
+{
+    read_prepare(s, READ_PAGE);
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ x, y }, 2);
+    read_answered_zero(s, READ_PAGE);
+}
+
+/* With no return page of its own the context's read is not answered. */
+static void read_unanswered(QTestState *s, int32_t x, int32_t y)
 {
     read_prepare(s, READ_PAGE);
     x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ x, y }, 2);
@@ -1154,14 +1178,16 @@ static void test_read_context_pages(void)
     qtest_system_reset(qts);
     read_scene(qts);
     read_deactivate(qts);
-    read_refused(qts, 454, 700);
+    read_unanswered(qts, 454, 700);
     read_activate(qts, save_b, page_b);
     read_prepare(qts, page_b);
     x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
-    read_unchanged(qts, page_b);
+    read_answered_zero(qts, page_b);
+    read_prepare(qts, page_b);
     read_setup(qts, 6, 20);
     x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
-    read_unchanged(qts, page_b);
+    read_answered_zero(qts, page_b);
+    read_prepare(qts, page_b);
     read_gc(qts);
     x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
     read_assert_pattern(qts, page_b, 6, 20);
@@ -1360,7 +1386,7 @@ static void test_read_state_migrates(gconstpointer opaque)
         read_assert_pattern(to, READ_PAGE, 6, 20);
     } else if (state == 2) {
         x_command(to, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
-        read_unchanged(to, READ_PAGE);
+        read_answered_zero(to, READ_PAGE);
         read_gc(to);
         read_setup(to, 6, 20);
         read_supported(to);
@@ -1573,7 +1599,7 @@ static void test_read_page_transitions(void)
 
     read_prepare(qts, READ_OTHER_PAGE);
     read_register(qts, READ_OTHER_PAGE);
-    read_refused(qts, 454, 700);
+    read_unanswered(qts, 454, 700);
     read_unchanged(qts, READ_OTHER_PAGE);
     read_page_reload(qts, false);
 
@@ -1583,7 +1609,7 @@ static void test_read_page_transitions(void)
     read_write_pattern(qts, 454, 700, 6, 20);
     g_assert_cmphex(front_at(qts, 457, 700), ==, 0xff);
     read_setup(qts, 6, 20);
-    read_refused(qts, 454, 700);
+    read_unanswered(qts, 454, 700);
     read_unchanged(qts, READ_OTHER_PAGE);
     read_page_reload(qts, true);
 }
@@ -1608,10 +1634,10 @@ static void test_read_mismatched_page_migrates(gconstpointer opaque)
         read_gc(from);
         read_setup(from, 6, 20);
     }
-    read_refused(from, 454, 700);
+    read_unanswered(from, 454, 700);
     read_unchanged(from, READ_OTHER_PAGE);
     sgi_migrate_stopped(from, uri);
-    read_refused(to, 454, 700);
+    read_unanswered(to, 454, 700);
     read_unchanged(to, READ_OTHER_PAGE);
     read_page_reload(to, load_mismatched);
     /* The uninterrupted control follows the same reload/refusal sequence. */
@@ -1627,7 +1653,7 @@ static void test_read_reset_partial(void)
     read_scene(qts);
     qtest_writel(qts, REG_COMMAND_SLOT(TOKEN_PIXEL_READ), 454);
     qtest_system_reset(qts);
-    read_refused(qts, 454, 700);
+    read_unanswered(qts, 454, 700);
     read_scene(qts);
     read_supported(qts);
 }
@@ -2360,16 +2386,16 @@ static void test_read_index12(gconstpointer opaque)
             x_command(s, TOKEN_PIXEL_SETUP, unsupported[i], 7);
             read_prepare(s, READ_PAGE);
             x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
-            read_unchanged(s, READ_PAGE);
+            read_answered_zero(s, READ_PAGE);
         }
-        /* A bad final source tag cannot write a prefix or the ready word. */
+        /* A bad final source tag writes no prefix of the pixels. */
         seed_rgb(s, 12, 22, 0xabcdef);
         read_gc(s);
         x_command(s, TOKEN_PIXEL_SETUP,
                   (uint32_t[]){ 2, 1, 1, 12, 3, 3, 0 }, 7);
         read_prepare(s, READ_PAGE);
         x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
-        read_unchanged(s, READ_PAGE);
+        read_answered_zero(s, READ_PAGE);
     }
     assert_in_step(s);
     if (to) {
@@ -2484,19 +2510,27 @@ static void test_read_width_boundaries(gconstpointer opaque)
         g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x10), ==, 0);
     }
 
-    /* A rectangle extending beyond the source must preserve every byte. */
+    /*
+     * A rectangle extending beyond the source is refused but answered:
+     * zeros where the pixels would go, then the usual completion.
+     */
     read_prepare(s, READ_PAGE);
-    memset(expected_page + 16, 0, 4);
-    memset(expected_page + 24, 0xa5, total);
     if (transport) {
         read_dma_clear_notifications(s, reason_page);
         read_gl_command(s, 0x1f5, descriptor, ARRAY_SIZE(descriptor), true);
+        for (unsigned r = 0; r < height; r++) {
+            memset(expected + 16 + r * pitch, 0, width);
+        }
+    } else {
+        memset(expected_page + 24, 0, 0x4000 - 8);
     }
     x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 1279, 20 }, 2);
     if (transport) {
         read_gl_command(s, 0x1f6, (uint32_t[]){ 0x100, index }, 2, true);
-        read_unchanged(s, reason_page);
-        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+        qtest_memread(s, reason_page, reason, sizeof(reason));
+        g_assert_cmpmem(reason, sizeof(reason), expected_reason,
+                        sizeof(expected_reason));
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0x20);
     }
     qtest_memread(s, READ_PAGE - 16, page, sizeof(page));
     g_assert_cmpmem(page, sizeof(page), expected_page, sizeof(expected_page));
@@ -2509,6 +2543,10 @@ static void test_read_width_boundaries(gconstpointer opaque)
                         "sgi_kona_host_write addr 0x300000 len 0x10\n" :
                         "sgi_kona_host_write addr 0x320000 len 0x4\n");
     g_assert_nonnull(completion);
+    /* Only the first read's writes, up to its completion, are counted. */
+    found[completion - found + strlen(transport ?
+          "sgi_kona_host_write addr 0x300000 len 0x10\n" :
+          "sgi_kona_host_write addr 0x320000 len 0x4\n")] = '\0';
     g_auto(GStrv) lines = g_strsplit(found, "\n", -1);
     for (unsigned i = 0; lines[i]; i++) {
         const char *event = strstr(lines[i], "sgi_kona_host_write addr ");
@@ -2570,7 +2608,10 @@ static void test_read_dma(gconstpointer opaque)
     bool rgb = value >= 32;
     bool halfword = !rgb && (mode == 2 || mode == 3 || mode == 10);
     bool strided = mode == 1 || mode == 3 || mode == 19;
-    bool refused = mode >= 11 && mode != 25;
+    /* A refused source still completes, with zeros in the layout's bytes. */
+    bool zeroed = mode == 14 || mode == 21 || mode == 23 || mode == 24 ||
+                  (mode == 20 && !rgb);
+    bool refused = mode >= 11 && mode != 25 && !zeroed;
     unsigned width = mode == 25 ? 1280 : 3;
     unsigned height = mode == 25 ? 16 : 3;
     unsigned bytes = rgb ? 4 : halfword ? 2 : 1;
@@ -2722,7 +2763,9 @@ static void test_read_dma(gconstpointer opaque)
             for (unsigned c = 0; c < width; c++) {
                 uint8_t *out = expected + phase + r * pitch + c * bytes;
 
-                if (rgb) {
+                if (zeroed) {
+                    memset(out, 0, bytes);
+                } else if (rgb) {
                     stl_be_p(out, read_rgb_pattern(c, r));
                 } else if (halfword) {
                     stw_be_p(out, indices[r * width + c]);
@@ -2806,7 +2849,11 @@ static void test_read_rgb(gconstpointer opaque)
     }
     memset(expected, 0xa5, sizeof(expected));
     memset(expected, 0, 4);
-    if (!refused) {
+    if (refused) {
+        /* Answered all the same, with zeros after the header. */
+        memset(expected + 8, 0, sizeof(expected) - 8);
+        stl_be_p(expected, 1);
+    } else {
         stl_be_p(expected, 1);
         for (unsigned y = 0; y < 3; y++) {
             for (unsigned x = 0; x < 3; x++) {

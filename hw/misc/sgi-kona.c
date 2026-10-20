@@ -9963,10 +9963,32 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
 
 refused:
     qemu_log_mask(LOG_UNIMP, "sgi-kona: X pixel read at (%" PRId64 ",%"
-                  PRId64 ") setup %u %u %u %u %u %u %u refused: %s\n",
+                  PRId64 ") setup %u %u %u %u %u %u %u GC %x %x %x %x %x %x"
+                  " %x refused: %s\n",
                   x, y, setup[0], setup[1], setup[2], setup[3], setup[4],
-                  setup[5], setup[6], reason);
+                  setup[5], setup[6], s->x_gc[6], s->x_gc[7], s->x_gc[8],
+                  s->x_gc[9], s->x_gc[10], s->x_gc[11], s->x_gc[12], reason);
     return false;
+}
+
+/*
+ * A refused X pixel read still completes. konReadImage and the
+ * frame-buffer word reader wait on word 0 of the return page with no
+ * timeout (the command grammar's pixel-read reply), so a read the model
+ * cannot answer would stop the X server for good. The reply is the
+ * whole usable page zeroed, then the ready word: defined data, not
+ * pixels the model has. Model policy; what the pipe answers to a read it
+ * cannot perform is unknown. A read with no page this context owns is
+ * not answered, so another context's page is never written.
+ */
+static void sgi_kona_x_read_answer_refused(SGIKonaState *s)
+{
+    g_autofree uint8_t *zeros = g_malloc0(SGI_KONA_RETURN_PAGE_BYTES - 8);
+
+    if (sgi_kona_x_read_current(s)) {
+        sgi_kona_post_return(s, SGI_KONA_CMD_X_PIXEL_READ, 8, zeros,
+                             SGI_KONA_RETURN_PAGE_BYTES - 8);
+    }
 }
 
 static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
@@ -9984,11 +10006,24 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
         if (d->refused || d->count || d->context != s->context_current ||
         !sgi_kona_context_owner(s, d->context, d->generation) ||
             !sgi_kona_gl_read_dma_layout(d, header,
-                                            SGI_KONA_CMD_X_PIXEL_READ) ||
-            !sgi_kona_x_read_payload(s, args, 64 * MiB, &data, &count)) {
+                                            SGI_KONA_CMD_X_PIXEL_READ)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: X read DMA refused\n");
             sgi_kona_gl_read_dma_refuse(s);
             return;
+        }
+        if (!sgi_kona_x_read_payload(s, args, 64 * MiB, &data, &count)) {
+            if (!sgi_kona_x_read_current(s)) {
+                qemu_log_mask(LOG_UNIMP, "sgi-kona: X read DMA refused\n");
+                sgi_kona_gl_read_dma_refuse(s);
+                return;
+            }
+            /*
+             * As for the programmed-I/O reply, a refused source still
+             * completes: the bracket's descriptor already fixes the
+             * byte count, and those bytes are written as zeros.
+             */
+            count = d->descriptor[2];
+            data = g_malloc0(count);
         }
         memcpy(d->header, header, sizeof(d->header));
         d->selector = SGI_KONA_CMD_X_PIXEL_READ;
@@ -9997,6 +10032,8 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
     } else if (sgi_kona_x_read_payload(s, args, SGI_KONA_RETURN_PAGE_BYTES - 8,
                                        &data, &count)) {
         sgi_kona_post_return(s, SGI_KONA_CMD_X_PIXEL_READ, 8, data, count);
+    } else {
+        sgi_kona_x_read_answer_refused(s);
     }
 }
 
