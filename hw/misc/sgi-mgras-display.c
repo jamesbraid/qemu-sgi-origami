@@ -54,7 +54,9 @@
  * 24,708 observed live data-port writes has a zero low byte, and its
  * palette reads as an exact IRIS default when bits 31:24, 23:16 and 15:8
  * are taken as red, green and blue. The low byte's meaning is unknown.
- * Return the entry in the native 0x00BBGGRR order the callers convert.
+ * An index past the last of the 8192 entries wraps to the start: that is
+ * the model's choice, not observed. Return the entry in the native
+ * 0x00BBGGRR order the callers convert.
  */
 static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual,
                                uint32_t index)
