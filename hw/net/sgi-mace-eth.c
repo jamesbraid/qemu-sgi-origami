@@ -51,6 +51,9 @@
 #define MACE_ETH_TX_REINIT_RESET 0x02
 #define MACE_ETH_TX_REINIT_BASE  0x04
 #define MACE_ETH_TX_REINIT_READY 0x07
+#define MACE_ETH_RX_REINIT_DMA_OFF 0x01
+#define MACE_ETH_RX_REINIT_MAC_HELD 0x02
+#define MACE_ETH_RX_REINIT_MAC_PULSED 0x04
 #define MACE_ETH_MDIO_DATA 0x60
 #define MACE_ETH_MDIO_ADDRESS 0x68
 #define MACE_ETH_MDIO_READ 0x70
@@ -150,6 +153,25 @@ static uint32_t sgi_mace_eth_fifo_info(SGIMACEEthState *s)
            ((uint32_t)s->rx_write << 16) |
            ((uint32_t)s->rx_read_generation << 12) |
            ((uint32_t)s->rx_read << 8) | s->rx_count;
+}
+
+static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
+{
+    if ((s->rx_reinit_seen & (MACE_ETH_RX_REINIT_DMA_OFF |
+                              MACE_ETH_RX_REINIT_MAC_PULSED)) !=
+        (MACE_ETH_RX_REINIT_DMA_OFF | MACE_ETH_RX_REINIT_MAC_PULSED)) {
+        return;
+    }
+    if (!s->rx_active_ring_size && !(s->dma_control & 0x0c)) {
+        /* The combined 8 KiB setup retires old FIFO cursors in this model. */
+        s->rx_count = 0;
+        s->rx_read = 0;
+        s->rx_write = 0;
+        s->rx_read_generation = false;
+        s->rx_write_generation = false;
+        sgi_mace_eth_update_irq(s);
+    }
+    s->rx_reinit_seen = 0;
 }
 
 static void sgi_mace_eth_fifo_advance(uint8_t *index, bool *generation)
@@ -548,8 +570,15 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
         case MACE_ETH_MAC_CONTROL:
             if (value & MACE_ETH_MAC_RESET) {
                 s->tx_reinit_seen |= MACE_ETH_TX_REINIT_RESET;
+                s->rx_reinit_seen |= MACE_ETH_RX_REINIT_MAC_HELD;
+            } else if (s->rx_reinit_seen & MACE_ETH_RX_REINIT_MAC_HELD) {
+                s->rx_reinit_seen &= ~MACE_ETH_RX_REINIT_MAC_HELD;
+                s->rx_reinit_seen |= MACE_ETH_RX_REINIT_MAC_PULSED;
             }
             s->mac_control = MACE_ETH_REVISION | (value & 0x1fffffff);
+            if (!(value & MACE_ETH_MAC_RESET)) {
+                sgi_mace_eth_rx_reinit_finish(s);
+            }
             if (value & (MACE_ETH_MAC_LOOPBACK | MACE_ETH_MAC_SIA)) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-mace-eth: MAC loopback/SIA is unsupported\n");
@@ -578,6 +607,13 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                 s->tx_reinit_seen = 0;
             }
             s->dma_control = value & 0xffff;
+            if (!(s->dma_control & MACE_ETH_RX_ENABLE)) {
+                s->rx_reinit_seen |= MACE_ETH_RX_REINIT_DMA_OFF;
+                sgi_mace_eth_rx_reinit_finish(s);
+            } else {
+                s->rx_active_ring_size = s->dma_control & 0x0c;
+                s->rx_reinit_seen = 0;
+            }
             if (value & MACE_ETH_RX_GATHER) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-mace-eth: RX gathering is unsupported\n");
@@ -692,6 +728,8 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->tx_read = 0;
     s->tx_write = 0;
     s->tx_reinit_seen = 0;
+    s->rx_reinit_seen = 0;
+    s->rx_active_ring_size = 0;
     s->int_status = 0;
     s->rx_read = 0;
     s->rx_write = 0;
@@ -738,6 +776,8 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_UINT16(tx_read, SGIMACEEthState),
         VMSTATE_UINT16(tx_write, SGIMACEEthState),
         VMSTATE_UINT8(tx_reinit_seen, SGIMACEEthState),
+        VMSTATE_UINT8(rx_reinit_seen, SGIMACEEthState),
+        VMSTATE_UINT8(rx_active_ring_size, SGIMACEEthState),
         VMSTATE_UINT32_ARRAY(rx_fifo, SGIMACEEthState, 16),
         VMSTATE_UINT8(rx_read, SGIMACEEthState),
         VMSTATE_UINT8(rx_write, SGIMACEEthState),
