@@ -305,6 +305,12 @@ typedef struct SGIKonaGLWindow {
     uint32_t partial;
     /* Not migrated: the display-ID generation the drawable was cut at. */
     uint64_t owned_generation;
+    /*
+     * Not migrated, set again with the drawable: the pixels the window
+     * owns need more clip rectangles than a drawable holds, so each GL
+     * store tests the pixel's display ID itself.
+     */
+    bool owned_by_pixel;
 } SGIKonaGLWindow;
 
 /* Native return state follows its GL context and accepted attribute groups. */
