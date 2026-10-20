@@ -4897,6 +4897,81 @@ static void texture_cache_upload(QTestState *s, uint32_t id, uint32_t addr,
     kona_command(s, 0x178, &id, 1);
 }
 
+/* glTexGen as __glkonim_TexGen* sends it: 0x14 and nine words. */
+static void kona_tex_gen(QTestState *s, uint32_t coord, uint32_t pname,
+                         const float *plane)
+{
+    uint32_t w[9] = { coord, pname };
+
+    if (plane) {
+        memcpy(&w[2], plane, 4 * sizeof(float));
+    } else {
+        w[2] = 0x2401;          /* GL_OBJECT_LINEAR, as an integer */
+    }
+    kona_command(s, 0x14, w, 9);
+}
+
+/*
+ * glTexGen reaches the pipe as 0x14 with the coordinate, the pname and
+ * the mode as an integer or the plane as four floats (n32 libGLcore,
+ * IRIX 6.5.30). OBJECT_LINEAR planes giving s = 0.25 and t = 0.75 pick
+ * the 2x2 texture's blue texel whatever the vertex texture coordinate.
+ * The projection puts the probe at eye (0.25, 0.25), where the default
+ * eye planes give s = t = 0.25 and the red texel, so dropping the
+ * command shows red. Disabling generation goes back to the coordinate.
+ */
+static void test_texture_generation(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    static const float s_plane[4] = { 0, 0, 0, 0.25 };
+    static const float t_plane[4] = { 0, 0, 0, 0.75 };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    texture_native_bind(s, 0x12345678);
+    {
+        uint32_t h[20];
+
+        memcpy(h, texture_header, sizeof(h));
+        h[10] = 0x12345678;
+        kona_command(s, 0x174, h, 20);
+        for (unsigned k = 0; k < 4; k++) {
+            qtest_writel(s, REG_COMMAND, texture_source[k]);
+        }
+        kona_command(s, 0x176, &h[10], 1);
+    }
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1701 }, 1);
+    kona_command_f(s, 0xdf, (float[]) { -0.25, -0.25, 0 }, 3);
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1700 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.75, 0.25 }, 2);
+    kona_tex_gen(s, 0x2000, 0x2500, NULL);
+    kona_tex_gen(s, 0x2001, 0x2500, NULL);
+    kona_tex_gen(s, 0x2000, 0x2501, s_plane);
+    kona_tex_gen(s, 0x2001, 0x2501, t_plane);
+    kona_command(s, 0x24, (uint32_t[]) { 0xc60 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xc61 }, 1);
+    gl_window_cleared(s, 0, 0, 0);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, texture_source[2] >> 8);
+    kona_command(s, 0x25, (uint32_t[]) { 0xc60 }, 1);
+    kona_command(s, 0x25, (uint32_t[]) { 0xc61 }, 1);
+    gl_window_cleared(s, 0, 0, 0);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, texture_source[1] >> 8);
+    /* The SGIS point and line parameters are logged, not dropped. */
+    kona_tex_gen(s, 0x2000, 0x81f5, s_plane);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "glTexGen of coordinate 0x2000 "
+                            "parameter 0x81f5 is not modelled"));
+    g_assert_null(strstr(found, "capability 0xc6"));
+}
+
 /*
  * The library frees a texture's cache entry with 0x178 n, 0x1c5 n and
  * takes it again with 0x1c4 n, then binds with all ones and a record and
@@ -17470,6 +17545,8 @@ int main(int argc, char **argv)
              test_texture_base_level_bank);
     add_case("sn0/origin2000/kona-3d/texture-cache-entry/quiet",
              test_texture_cache_entry_quiet);
+    add_case("sn0/origin2000/kona-3d/texture/generation",
+             test_texture_generation);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/reuse",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_reuse);
     add_data_case(
