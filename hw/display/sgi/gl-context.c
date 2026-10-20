@@ -90,6 +90,8 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
         c->cur_color[i] = 1.0f;
     }
     c->cur.shade_model = SGI_GL_SMOOTH;
+    c->sprite_mode = SGI_GL_SPRITE_AXIAL_SGIX;
+    c->sprite_axis[2] = 1.0f;
     c->matrix_mode = SGI_GL_MODELVIEW;
     c->cur.dither = 1;
     sgi_gl_identity(c->cur.modelview);
@@ -1268,25 +1270,247 @@ static void sgi_gl_hold(SGIGLContext *c, unsigned int n, const float *v)
     memcpy(c->held[n], v, sizeof(c->held[n]));
 }
 
+/* r, row-major, turns +Z to the unit vector v about Z x v (Rodrigues). */
+static void sgi_gl_sprite_tilt(const double v[3], double r[9])
+{
+    double s = hypot(v[0], v[1]), k[3], cs = v[2];
+
+    if (!(s > 0)) {
+        /* Along Z already, or opposite it: a half turn about X. */
+        static const double half[9] = { 1, 0, 0, 0, -1, 0, 0, 0, -1 };
+        static const double none[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+
+        memcpy(r, cs < 0 ? half : none, sizeof(half));
+        return;
+    }
+    k[0] = -v[1] / s;
+    k[1] = v[0] / s;
+    k[2] = 0;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            r[i * 3 + j] = (i == j ? cs : 0) + (1 - cs) * k[i] * k[j];
+        }
+    }
+    /* sin(theta) [k]x, with sin(theta) = s. */
+    r[1] -= s * k[2];
+    r[2] += s * k[1];
+    r[3] += s * k[2];
+    r[5] -= s * k[0];
+    r[6] -= s * k[1];
+    r[7] += s * k[0];
+}
+
+/* out = a b for row-major 3x3 matrices. */
+static void sgi_gl_mul3(const double a[9], const double b[9], double out[9])
+{
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            out[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] +
+                             a[i * 3 + 2] * b[6 + j];
+        }
+    }
+}
+
+/*
+ * Where the eye-coordinate origin is in the frame M T rot, as a point,
+ * for M the modelview, T the sprite translation and rot a row-major
+ * rotation. False when that frame has no inverse.
+ */
+static bool sgi_gl_sprite_eye(const SGIGLContext *c, const double rot[9],
+                              double eye[3])
+{
+    const float *m = c->cur.modelview;
+    const float *t = c->sprite_translation;
+    float f[16];
+    double inv[16];
+
+    /* f = M T rot, column-major like M: f[col * 4 + row]. */
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 3; col++) {
+            f[col * 4 + row] = m[row] * rot[col] + m[4 + row] * rot[3 + col] +
+                               m[8 + row] * rot[6 + col];
+        }
+        f[12 + row] = m[row] * t[0] + m[4 + row] * t[1] + m[8 + row] * t[2] +
+                      m[12 + row];
+    }
+    if (!sgi_gl_invert(f, inv) || inv[15] == 0) {
+        return false;
+    }
+    for (int k = 0; k < 3; k++) {
+        eye[k] = inv[12 + k] / inv[15];
+    }
+    return true;
+}
+
+/*
+ * The SGIX_sprite transformation of the current state: the sprite
+ * geometry's object coordinates go through s4 (column-major, T A R)
+ * before the modelview, and its normals through rot (row-major, A R).
+ *
+ * A turns the canonical up vector, +Z, to the sprite axis, and R turns
+ * the geometry about +Z so that its front vector, -Y, faces the eye: R's
+ * cosine is the eye vector's dot product with -Y and its sine its dot
+ * product with +X, the eye vector made unit length in the plane normal
+ * to +Z. In the axial mode the axis is the one given and the eye vector
+ * is found in the frame M T A; in the two aligned modes it is found in
+ * M T, the axis is the given one less its component along the eye
+ * vector, given in object coordinates or, eye-aligned, in eye
+ * coordinates and taken back through M, and R uses the eye vector in the
+ * frame after A. The eye vector runs from the sprite's origin to the
+ * eye coordinates' origin. The extension's text says only that the eye
+ * vector comes from the inverse transpose of that frame; taking the
+ * eye's position follows its statement that the front vector points as
+ * nearly towards the eye coordinates' origin as possible.
+ */
+static void sgi_gl_sprite_transform(const SGIGLContext *c, double s4[16],
+                                    double rot[9])
+{
+    static const double ident[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    double axis[3], a[9], eye[3], len, spin[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+
+    for (int k = 0; k < 3; k++) {
+        axis[k] = c->sprite_axis[k];
+    }
+    len = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+    if (c->sprite_mode == SGI_GL_SPRITE_AXIAL_SGIX) {
+        if (len > 0) {
+            for (int k = 0; k < 3; k++) {
+                axis[k] /= len;
+            }
+            sgi_gl_sprite_tilt(axis, a);
+        } else {
+            memcpy(a, ident, sizeof(a));
+        }
+    } else if (sgi_gl_sprite_eye(c, ident, eye)) {
+        double e = sqrt(eye[0] * eye[0] + eye[1] * eye[1] + eye[2] * eye[2]);
+        double dot = 0, v[3];
+
+        if (c->sprite_mode == SGI_GL_SPRITE_EYE_ALIGNED_SGIX) {
+            float m3[16];
+            double inv[16];
+
+            /* The axis back through M's upper 3x3: a direction. */
+            memcpy(m3, c->cur.modelview, sizeof(m3));
+            m3[12] = m3[13] = m3[14] = 0;
+            if (sgi_gl_invert(m3, inv)) {
+                for (int k = 0; k < 3; k++) {
+                    v[k] = inv[k] * c->sprite_axis[0] +
+                           inv[4 + k] * c->sprite_axis[1] +
+                           inv[8 + k] * c->sprite_axis[2];
+                }
+                memcpy(axis, v, sizeof(axis));
+            }
+        }
+        if (e > 0) {
+            for (int k = 0; k < 3; k++) {
+                eye[k] /= e;
+                dot += eye[k] * axis[k];
+            }
+        }
+        for (int k = 0; k < 3; k++) {
+            v[k] = axis[k] - dot * eye[k];
+        }
+        len = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (len > 0) {
+            for (int k = 0; k < 3; k++) {
+                v[k] /= len;
+            }
+            sgi_gl_sprite_tilt(v, a);
+        } else {
+            memcpy(a, ident, sizeof(a));
+        }
+    } else {
+        memcpy(a, ident, sizeof(a));
+    }
+    if (sgi_gl_sprite_eye(c, a, eye)) {
+        double h = hypot(eye[0], eye[1]);
+
+        if (h > 0) {
+            double cs = -eye[1] / h, sn = eye[0] / h;
+
+            spin[0] = cs;
+            spin[1] = -sn;
+            spin[3] = sn;
+            spin[4] = cs;
+        }
+    }
+    sgi_gl_mul3(a, spin, rot);
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++) {
+            s4[col * 4 + row] = rot[row * 3 + col];
+        }
+        s4[12 + row] = c->sprite_translation[row];
+        s4[row * 4 + 3] = 0;
+    }
+    s4[15] = 1;
+}
+
+bool sgi_gl_sprite_parameter(SGIGLContext *c, uint32_t pname,
+                             const float v[3])
+{
+    float *dst = pname == SGI_GL_SPRITE_AXIS_SGIX ? c->sprite_axis :
+                 pname == SGI_GL_SPRITE_TRANSLATION_SGIX ?
+                 c->sprite_translation : NULL;
+
+    if (!dst || !isfinite(v[0]) || !isfinite(v[1]) || !isfinite(v[2])) {
+        return false;
+    }
+    memcpy(dst, v, 3 * sizeof(float));
+    return true;
+}
+
+bool sgi_gl_sprite_mode(SGIGLContext *c, uint32_t mode)
+{
+    if (mode != SGI_GL_SPRITE_AXIAL_SGIX &&
+        mode != SGI_GL_SPRITE_OBJECT_ALIGNED_SGIX &&
+        mode != SGI_GL_SPRITE_EYE_ALIGNED_SGIX) {
+        return false;
+    }
+    c->sprite_mode = mode;
+    return true;
+}
+
 void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
                            const uint32_t *bits, unsigned int components,
                            float out[SGI_GL_VERTEX_FLOATS])
 {
+    float normal[3];
+
     memset(out, 0, SGI_GL_VERTEX_FLOATS * sizeof(float));
     out[SGI_GL_V_POSITION + 3] = 1.0f;
     memcpy(&out[SGI_GL_V_POSITION], bits, components * sizeof(uint32_t));
     memcpy(&out[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
-    memcpy(&out[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
+    memcpy(normal, c->cur_normal, sizeof(normal));
+    if (c->sprite) {
+        double s4[16], rot[9], p[4];
+
+        sgi_gl_sprite_transform(c, s4, rot);
+        for (int row = 0; row < 4; row++) {
+            p[row] = s4[row] * out[SGI_GL_V_POSITION] +
+                     s4[4 + row] * out[SGI_GL_V_POSITION + 1] +
+                     s4[8 + row] * out[SGI_GL_V_POSITION + 2] +
+                     s4[12 + row] * out[SGI_GL_V_POSITION + 3];
+        }
+        for (int row = 0; row < 4; row++) {
+            out[SGI_GL_V_POSITION + row] = p[row];
+        }
+        for (int row = 0; row < 3; row++) {
+            normal[row] = rot[row * 3] * c->cur_normal[0] +
+                          rot[row * 3 + 1] * c->cur_normal[1] +
+                          rot[row * 3 + 2] * c->cur_normal[2];
+        }
+    }
+    memcpy(&out[SGI_GL_V_NORMAL], normal, sizeof(normal));
     sgi_gl_texture_coord(c, &out[SGI_GL_V_TEXCOORD]);
     memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     out[SGI_GL_V_INDEX] = c->cur_index;
     /* Material and lighting belong to the instant this vertex arrived. */
     if (sgi_gl_lit(c) && c->cur.index_bits) {
-        sgi_gl_light_index_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
+        sgi_gl_light_index_vertex(c, &out[SGI_GL_V_POSITION], normal,
                                   &out[SGI_GL_V_INDEX],
                                   &out[SGI_GL_V_BACK_INDEX]);
     } else if (sgi_gl_lit(c)) {
-        sgi_gl_light_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
+        sgi_gl_light_vertex(c, &out[SGI_GL_V_POSITION], normal,
                             &out[SGI_GL_V_COLOR], &out[SGI_GL_V_BACK_COLOR]);
         out[SGI_GL_V_BACK_INDEX] = out[SGI_GL_V_INDEX];
     } else {
@@ -2169,6 +2393,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         return;
     case SGI_GL_NORMALIZE:
         c->normalize = on;
+        return;
+    case SGI_GL_SPRITE_SGIX:
+        c->sprite = on;
         return;
     case SGI_GL_RESCALE_NORMAL:
         c->rescale_normal = on;
@@ -3551,6 +3778,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "strip_prev", c->strip_prev },
         { "strip_swap", c->strip_swap },
         { "in_begin", c->in_begin },
+        { "sprite", c->sprite },
     };
     const struct {
         const char *name;
@@ -3567,6 +3795,13 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
             return false;
         }
     }
+    if (c->sprite_mode != SGI_GL_SPRITE_AXIAL_SGIX &&
+        c->sprite_mode != SGI_GL_SPRITE_OBJECT_ALIGNED_SGIX &&
+        c->sprite_mode != SGI_GL_SPRITE_EYE_ALIGNED_SGIX) {
+        error_setg(errp, "sgi-gl: sprite mode 0x%x", c->sprite_mode);
+        return false;
+    }
+
     for (size_t i = 0; i < ARRAY_SIZE(flags); i++) {
         if (flags[i].value > 1) {
             error_setg(errp, "sgi-gl: %s is %u, not 0 or 1", flags[i].name,
@@ -4523,6 +4758,11 @@ static int sgi_gl_context_pre_load(void *opaque)
         c->hints[i] = SGI_GL_DONT_CARE;
     }
     c->strip_prev = c->strip_swap = 0;
+    c->sprite = 0;
+    c->sprite_mode = SGI_GL_SPRITE_AXIAL_SGIX;
+    memset(c->sprite_axis, 0, sizeof(c->sprite_axis));
+    c->sprite_axis[2] = 1.0f;
+    memset(c->sprite_translation, 0, sizeof(c->sprite_translation));
     c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.error = 0;
@@ -4600,6 +4840,30 @@ static const VMStateDescription vmstate_sgi_gl_hints = {
     },
 };
 
+static bool sgi_gl_sprite_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque, *init = sgi_gl_initial();
+
+    return SGI_GL_MOVED(c, init, sprite) ||
+           SGI_GL_MOVED(c, init, sprite_mode) ||
+           SGI_GL_MOVED(c, init, sprite_axis) ||
+           SGI_GL_MOVED(c, init, sprite_translation);
+}
+
+static const VMStateDescription vmstate_sgi_gl_sprite = {
+    .name = "sgi-gl-context/sprite",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_sprite_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(sprite, SGIGLContext),
+        VMSTATE_UINT32(sprite_mode, SGIGLContext),
+        VMSTATE_SGI_GL_FLOATS(sprite_axis, SGIGLContext, 3),
+        VMSTATE_SGI_GL_FLOATS(sprite_translation, SGIGLContext, 3),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 const VMStateDescription vmstate_sgi_gl_context = {
     .name = "sgi-gl-context",
     .version_id = SGI_GL_VMSTATE_VERSION,
@@ -4673,6 +4937,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_polygon,
         &vmstate_sgi_gl_draw_error,
         &vmstate_sgi_gl_texture_coords,
+        &vmstate_sgi_gl_sprite,
         NULL
     },
 };

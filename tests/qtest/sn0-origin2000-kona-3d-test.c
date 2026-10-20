@@ -9740,6 +9740,83 @@ static void test_bitmap_texture_dimensions(gconstpointer opaque)
     }
 }
 
+/* The colour at window pixel (x, y), counted from the lower left. */
+static uint32_t window_colour(QTestState *s, unsigned x, unsigned y)
+{
+    g_autofree uint8_t *image = kona_screendump(s);
+    unsigned at = ((FB_HEIGHT - 1 - (PROBE_Y + y)) * FB_WIDTH +
+                   PROBE_X + x) * 3;
+
+    return (image[at] << 16) | (image[at + 1] << 8) | image[at + 2];
+}
+
+/* One sprite parameter as 0x1a5 sends it: the pname and three floats. */
+static void sprite_vector(QTestState *s, uint32_t pname, float x, float y,
+                          float z)
+{
+    float v[3] = { x, y, z };
+    uint32_t words[4] = { pname };
+
+    memcpy(&words[1], v, sizeof(v));
+    kona_command(s, 0x1a5, words, 4);
+}
+
+/*
+ * The quad right of the axis in the sprite plane, translated to depth z
+ * with sprites enabled or not; then whether the window's left and right
+ * show it.
+ */
+static void sprite_quad(QTestState *s, bool enabled, float z, bool left,
+                        bool right)
+{
+    static const float quad[6][3] = {
+        { 0.1, 0, -0.4 }, { 0.6, 0, -0.4 }, { 0.6, 0, 0.4 },
+        { 0.1, 0, -0.4 }, { 0.6, 0, 0.4 }, { 0.1, 0, 0.4 },
+    };
+
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command(s, enabled ? 0x24 : 0x25, (uint32_t[]) { 0x8148 }, 1);
+    sprite_vector(s, 0x814b, 0, 0, z);
+    gl_begin(s, 4);
+    for (int k = 0; k < 6; k++) {
+        kona_command_f(s, 0x90, quad[k], 3);
+    }
+    gl_end(s);
+    g_assert_cmphex(window_colour(s, 41, 64), ==, left ? 0xffffff : 0xff);
+    g_assert_cmphex(window_colour(s, 86, 64), ==, right ? 0xffffff : 0xff);
+}
+
+/*
+ * Performer's town (IRIX 6.5.30) draws its trees and street lamps as
+ * SGIX_sprite geometry: glEnable(GL_SPRITE_SGIX), and glSpriteParameter
+ * for the mode, the axis and each one's translation, which reach the
+ * pipe as 0x1a4 and 0x1a5. A quad in the canonical sprite plane, y = 0,
+ * is edge-on and draws nothing until the sprite transformation turns its
+ * front, -Y, to the eye. With the axis screen up, +Y, the quad turns face
+ * on. At z = -0.5 the eye is in front of it and the quad, right of the
+ * axis, stays right; at z = 0.5 the eye is behind and the half turn
+ * about the axis puts the quad on the left. Disabled, nothing draws.
+ */
+static void test_sprite_axial(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command(s, 0x1a4, (uint32_t[]) { 0x8149, 0x814c }, 2);
+    /* The default axis, +Z, leaves the quad edge-on. */
+    sprite_quad(s, true, -0.5, false, false);
+    sprite_vector(s, 0x814a, 0, 1, 0);
+    sprite_quad(s, true, -0.5, false, true);
+    sprite_quad(s, true, 0.5, true, false);
+    sprite_quad(s, false, -0.5, false, false);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_null(strstr(found, "glSpriteParameter"));
+}
+
 /*
  * glDrawArrays as pfCity sends it (IRIX 6.5.30): the state word 0x2700047
  * (a 2-float texture coordinate and a 4-float position), glBegin, 0x181 0,
@@ -16908,6 +16985,7 @@ int main(int argc, char **argv)
 
         add_data_case(path, GUINT_TO_POINTER(mode), test_draw_arrays);
     }
+    add_case("sn0/origin2000/kona-3d/sprite-axial", test_sprite_axial);
     add_case("sn0/origin2000/kona-3d/depth-less-and-greater",
              test_depth_less_and_greater);
     add_case("sn0/origin2000/kona-3d/depth-without-buffer",

@@ -9239,6 +9239,27 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_PUSH_ATTRIB:
         sgi_kona_gl_push_attrib(s, args[0]);
         return;
+    case SGI_KONA_CMD_GL_SPRITE_MODE:
+    case SGI_KONA_CMD_GL_SPRITE_VECTOR: {
+        bool mode = args[0] == SGI_GL_SPRITE_MODE_SGIX;
+        float v[3] = {
+            sgi_kona_gl_float(args[1]),
+            selector == SGI_KONA_CMD_GL_SPRITE_VECTOR ?
+                sgi_kona_gl_float(args[2]) : 0,
+            selector == SGI_KONA_CMD_GL_SPRITE_VECTOR ?
+                sgi_kona_gl_float(args[3]) : 0,
+        };
+
+        if (i == SGI_KONA_CONTEXT_NONE ||
+            (selector == SGI_KONA_CMD_GL_SPRITE_MODE && !mode) ||
+            !(mode ? sgi_gl_sprite_mode(&s->state[i]->gl, args[1]) :
+              sgi_gl_sprite_parameter(&s->state[i]->gl, args[0], v))) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glSpriteParameter of"
+                          " 0x%" PRIx32 " with 0x%" PRIx32 " refused\n",
+                          args[0], args[1]);
+        }
+        return;
+    }
     case SGI_KONA_CMD_GL_POP_ATTRIB:
         sgi_kona_gl_pop_attrib(s);
         return;

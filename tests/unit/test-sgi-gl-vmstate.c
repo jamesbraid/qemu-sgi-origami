@@ -122,6 +122,9 @@ static void populate(SGIGLContext *c, bool other)
         c->hints[i] = other ? 0x1101 : 0x1102;
     }
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
+    c->sprite = !other;
+    c->sprite_mode = other ? SGI_GL_SPRITE_EYE_ALIGNED_SGIX :
+                             SGI_GL_SPRITE_OBJECT_ALIGNED_SGIX;
     c->cur.depth_test = !other;
     c->cur.depth_mask = !other;
     c->cur.cull_face = !other;
@@ -235,8 +238,8 @@ static bool context_padding(size_t at)
     }
     return (at >= before && at < offsetof(SGIGLContext, polygon)) ||
            (at >= end && at < offsetof(SGIGLContext, line_phase)) ||
-           at >= offsetof(SGIGLContext, hints) +
-                 sizeof(((SGIGLContext *)0)->hints);
+           at >= offsetof(SGIGLContext, sprite_translation) +
+                 sizeof(((SGIGLContext *)0)->sprite_translation);
 }
 
 /* The first byte at which two contexts differ, or -1. */
@@ -791,6 +794,8 @@ static const Corruption corruptions[] = {
     BAD(hints[2], UINT32_MAX, "hint 2 mode"),
     BAD(hints[3], 0x1103, "hint 3 mode"),
     BAD(hints[4], 0, "hint 4 mode"),
+    BAD(sprite, 2, "sprite is"),
+    BAD(sprite_mode, 0x814b, "sprite mode"),
     BAD(cur.depth_test, 2, "depth_test"),
     BAD(cur.depth_mask, 2, "depth_mask"),
     BAD(cur.cull_face, 2, "cull_face"),
