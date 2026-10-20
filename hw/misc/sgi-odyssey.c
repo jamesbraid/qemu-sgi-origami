@@ -1793,9 +1793,17 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * User clip planes, class 0x31 index 0x120 + 4j, reusing the same
  * index-select field as the light-vector loads (ODSY_PROG_LIGHT_VEC_SELECT,
  * gl_light_vec_sel): the slot select word is followed by
- * ODSY_GL_CLIP_PLANE_LOAD and the plane's four eye-space floats, a, b, c, d,
- * passed through to SGI_GL_OP_CLIP_PLANE unchanged -- the shared layer
- * transforms by the inverse modelview itself. The library loads every enabled
+ * ODSY_GL_CLIP_PLANE_LOAD and the plane's four eye-space floats, a, b, c, d:
+ * glClipPlane's plane already multiplied by the inverse of the model-view
+ * current at the call, as GL keeps it. The shared context's model-view is
+ * the identity here (odyssey_gl_load_matrix()), so its "eye" coordinates are
+ * object coordinates; each plane reaches it as (a, b, c, d) M, M the
+ * model-view last loaded into slot 0x24, and is recomputed whenever that
+ * model-view changes (odyssey_gl_apply_clip_plane()). OBSERVED in mirrors:
+ * its mirror-frame plane (-0.3585, -0.0134, 0.3483, 17.42), times the
+ * model-view loaded before it, is (1, 0, 0, 54.1) to four places, an
+ * axis-aligned plane in the room's own coordinates; fed as it came, it
+ * clipped every mirror away. The library loads every enabled
  * plane, user planes first and then its own two internal depth-range planes,
  * into consecutive slots starting at 0x120, including slots beyond the
  * hardware's six-plane budget: a model accepts those loads and leaves the
@@ -4681,6 +4689,7 @@ static bool odyssey_gl_load_rgba(void *opaque, SGIColourTarget target,
 
 /* Stored A describes the model's fourth byte, not physical V12 precision. */
 static double odyssey_f32(uint32_t bits);
+static uint32_t odyssey_f32_bits(float f);
 static double odyssey_gl_depth_scale(SGIOdysseyState *s);
 
 /*
@@ -6216,6 +6225,30 @@ static void odyssey_gl_apply_clip_box(SGIOdysseyState *s)
 }
 
 /*
+ * Feed eye-space clip plane i to the shared context as the object-space
+ * plane the current model-view gives it: p_obj[k] = sum_r p_eye[r] M[r][k],
+ * M row-major as gl_modelview holds it.
+ */
+static void odyssey_gl_apply_clip_plane(SGIOdysseyState *s, unsigned i)
+{
+    uint32_t args[5] = { i };
+    double eye[4], obj[4] = { 0 };
+
+    for (unsigned r = 0; r < 4; r++) {
+        eye[r] = odyssey_f32(s->gl_clip_eye[i * 4 + r]);
+    }
+    for (unsigned r = 0; r < 4; r++) {
+        for (unsigned k = 0; k < 4; k++) {
+            obj[k] += eye[r] * odyssey_f32(s->gl_modelview[r * 4 + k]);
+        }
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        args[1 + k] = odyssey_f32_bits(obj[k]);
+    }
+    odyssey_gl_feed(s, SGI_GL_OP_CLIP_PLANE, args, ARRAY_SIZE(args));
+}
+
+/*
  * Recompute which of the shared context's six clip-plane slots are tested,
  * from 0x0405 bits 2:0's thermometer count n (see ODSY_TEX_MODE_CLIP_COUNT_
  * MASK's comment): slots 0..n-1 enabled, the rest disabled. Called on every
@@ -7283,6 +7316,9 @@ static void odyssey_gl_load_matrix(SGIOdysseyState *s)
          * identity model-view; this copy serves lighting's eye position.
          */
         memcpy(s->gl_modelview, s->gl_matrix, sizeof(s->gl_modelview));
+        for (unsigned i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+            odyssey_gl_apply_clip_plane(s, i);
+        }
         return;
     }
     odyssey_gl_transpose(s->gl_matrix, m);
@@ -9698,11 +9734,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
                              ODSY_GL_CLIP_PLANE_STRIDE;
 
             if (plane < SGI_GL_CLIP_PLANES) {
-                uint32_t args[5];
-
-                args[0] = plane;
-                memcpy(&args[1], s->cmd_operand, 4 * sizeof(uint32_t));
-                odyssey_gl_feed(s, SGI_GL_OP_CLIP_PLANE, args, 5);
+                memcpy(&s->gl_clip_eye[plane * 4], s->cmd_operand,
+                       4 * sizeof(uint32_t));
+                odyssey_gl_apply_clip_plane(s, plane);
             }
         } else if (!s->gl_block_logged) {
             s->gl_block_logged = true;
@@ -11245,6 +11279,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     for (i = 0; i < 4; i++) {
         s->gl_modelview[i * 5] = ODSY_F32_ONE;
     }
+    memset(s->gl_clip_eye, 0, sizeof(s->gl_clip_eye));
     memset(s->gl_matrix, 0, sizeof(s->gl_matrix));
     memset(s->gl_texture_matrix, 0, sizeof(s->gl_texture_matrix));
     for (i = 0; i < 4; i++) {
@@ -12157,6 +12192,25 @@ static const VMStateDescription vmstate_odyssey_const_colour = {
     },
 };
 
+static bool odyssey_clip_eye_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    return !buffer_is_zero(s->gl_clip_eye, sizeof(s->gl_clip_eye));
+}
+
+static const VMStateDescription vmstate_odyssey_clip_eye = {
+    .name = "sgi-odyssey/clip-eye",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_clip_eye_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gl_clip_eye, SGIOdysseyState,
+                             SGI_GL_CLIP_PLANES * 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_odyssey_colour_material = {
     .name = "sgi-odyssey/colour-material",
     .version_id = 1,
@@ -12228,11 +12282,15 @@ static int odyssey_post_load(void *opaque, int version_id)
     odyssey_gl_apply_mode(s);
     odyssey_gl_apply_line_stipple(s);
     /*
-     * The shared context's scissor box and clip-plane enables are transient
-     * render state, not migrated; re-apply them from the migrated words.
+     * The shared context's scissor box, clip planes and their enables are
+     * transient render state, not migrated; re-apply them from the migrated
+     * words.
      */
     odyssey_gl_apply_clip_box(s);
     odyssey_gl_apply_clip_planes(s);
+    for (unsigned i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        odyssey_gl_apply_clip_plane(s, i);
+    }
     odyssey_gl_apply_depth(s);
     odyssey_gl_reload_combined(s);
     odyssey_gl_program(s);
@@ -12442,6 +12500,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_window_tail,
         &vmstate_odyssey_overlay,
         &vmstate_odyssey_const_colour,
+        &vmstate_odyssey_clip_eye,
         NULL
     },
 };

@@ -592,6 +592,13 @@ struct SGIOdysseyState {
      * Migrated.
      */
     uint32_t gl_modelview[16];
+    /*
+     * The user clip planes as the library sends them, in eye coordinates,
+     * the bits of four floats a plane. The shared context's model-view is
+     * the identity, so each reaches it as gl_modelview's object-space plane
+     * (odyssey_gl_apply_clip_plane()). Migrated.
+     */
+    uint32_t gl_clip_eye[SGI_GL_CLIP_PLANES * 4];
     bool gl_lit;
     bool gl_local_viewer;
     bool gl_colour_overridden;

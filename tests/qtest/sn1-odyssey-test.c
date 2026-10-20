@@ -11818,6 +11818,102 @@ static void test_command_fifo_gl_combined_carries_modelview(void)
 }
 
 /*
+ * A clip plane arrives in eye coordinates and the model-view that maps object
+ * coordinates there arrives in slot 0x24 (mirrors' mirror frames). Under the
+ * probe window, where object x -1 to 1 spans window x 256 to 383, and a
+ * model-view translating x by 0.5, eye plane (1, 0, 0, 0) keeps object
+ * x >= -0.5, window x 288 and right: (300, 340) is drawn and (270, 340) is
+ * not. A later model-view translating x by -0.5 moves the same eye plane to
+ * object x >= 0.5, window x 352 and right, without a new plane load. Taken
+ * as object-space planes, both would keep window x 320 and right.
+ */
+static void load_modelview(QTestState *qts, const uint32_t m[16])
+{
+    user_cmd_push(qts, ODSY_GL_MATRIX_SELECT_MODELVIEW);
+    user_cmd_push(qts, ODSY_GL_MATRIX_LOAD);
+    for (unsigned i = 0; i < 16; i++) {
+        user_cmd_push(qts, m[i]);
+    }
+}
+
+static void test_command_fifo_gl_clip_plane_eye_space(void)
+{
+    static const uint32_t right_half[16] = {
+        0x3f800000, 0, 0, 0x3f000000,
+        0, 0x3f800000, 0, 0,
+        0, 0, 0x3f800000, 0,
+        0, 0, 0, 0x3f800000,
+    };
+    static const uint32_t left_half[16] = {
+        0x3f800000, 0, 0, 0xbf000000,
+        0, 0x3f800000, 0, 0,
+        0, 0, 0x3f800000, 0,
+        0, 0, 0, 0x3f800000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    load_modelview(qts, right_half);
+    clip_plane_load(qts, 0, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_TEX_MODE, 0x4);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 270, 340), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 340), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    load_modelview(qts, left_half);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 360, 340), ==, ODSY_PLANE_YELLOW);
+
+    board_quit(qts);
+}
+
+/*
+ * The eye-space plane and the model-view survive migration: the destination
+ * clips as the source would, keeping window x 288 and right.
+ */
+static void test_command_fifo_gl_clip_plane_migration(void)
+{
+    static const uint32_t right_half[16] = {
+        0x3f800000, 0, 0, 0x3f000000,
+        0, 0x3f800000, 0, 0,
+        0, 0, 0x3f800000, 0,
+        0, 0, 0, 0x3f800000,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-gl-clip-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    load_modelview(from, right_half);
+    clip_plane_load(from, 0, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO,
+                    ODSY_F_ZERO);
+    set_reg(from, ODSY_REG_TEX_MODE, 0x4);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    probe_window(to);
+    push_depth_clear(to, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(to, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(to, 270, 340), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(to, 300, 340), ==, ODSY_PLANE_YELLOW);
+    board_quit(to);
+    board_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
  * A pixel whose id plane is unwritten -- main id 0 -- resolves through
  * drawable 1's display mode, the approximation odyssey_resolve_row()
  * documents (ODSY_DID_ROOT_MODE), not through drawable 0's own mode. Drawable
@@ -20241,6 +20337,10 @@ int main(int argc, char **argv)
              test_command_fifo_gl_clip_box);
     add_case("sn1/odyssey/command-fifo-gl-clip-plane",
              test_command_fifo_gl_clip_plane);
+    add_case("sn1/odyssey/command-fifo-gl-clip-plane-eye-space",
+             test_command_fifo_gl_clip_plane_eye_space);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-clip-plane-migration",
+                   test_command_fifo_gl_clip_plane_migration);
     add_case("sn1/odyssey/command-fifo-gl-depth-sign",
              test_command_fifo_gl_depth_sign);
     add_case("sn1/odyssey/command-fifo-gl-depth-scale",

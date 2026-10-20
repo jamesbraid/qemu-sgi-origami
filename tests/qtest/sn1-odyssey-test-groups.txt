@@ -164,6 +164,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-curve
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-native-packets
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-migration
+gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane-migration
 gl /mips64/sn1/odyssey/command-fifo-gl-dither
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-test
 gl /mips64/sn1/odyssey/command-fifo-gl-alpha-test
@@ -180,6 +181,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-line-stipple-migration
 gl /mips64/sn1/odyssey/command-fifo-gl-polygon-offset
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane
+gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane-eye-space
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-sign
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-scale
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-eye-linear
