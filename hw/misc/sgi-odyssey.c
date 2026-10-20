@@ -970,7 +970,11 @@ enum {
  * The select's format word: 0x2... for every colour buffer a drawable shows
  * (0x20006850, 0x20006950, 0x20086a00, 0x20006960) and the id planes, and
  * 0x08... for the texture objects (0x080024d0, 0x08000020). INFERRED from
- * those values only: the top nibble tells the screen from an object.
+ * those values only: the top nibble tells the screen from an object. That
+ * nibble's 0x2 is ODSY_DEST_NO_READ, which the X server drops from a colour
+ * buffer's word for its glyphs (0x00086a00), so a select without it that
+ * names the colour buffer already selected is still that buffer, and one
+ * whose word is 0 apart from the flags names no buffer.
  */
 #define ODSY_DEST_FORMAT_SHIFT 28
 #define ODSY_DEST_FORMAT_SCREEN 0x2
@@ -1519,6 +1523,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_DEST_SELECT 0x1017 /* 4 operands: destination-buffer select */
 #define ODSY_REG_PLANE_MASK 0x1023  /* 4 operands: plane write mask << 12 */
 #define ODSY_DEST_ID_PLANES 0x20080080 /* 0x1017 third word: write id planes */
+/*
+ * Two bits of the 0x1017 third word that the X server changes from one draw
+ * to the next for the same buffer, so they do not name the buffer. From
+ * disassembly of the IRIX 6.5.30 X server's odyssey.so (ESTABLISHED as
+ * software behaviour): its solid rectangle fill sets bit 29 exactly when the
+ * GC function is GXclear, GXcopy, GXcopyInverted or GXset -- the four that
+ * do not read the destination -- and its glyph and stipple routines send the
+ * cached word without it; after a select whose third word is 0 it sends the
+ * word again with bit 23 set, then 0x0019. So 4Dwm's overlay menus draw their
+ * text with 0x00080080 at the id-plane base where the plane clear used
+ * 0x20080080. What either bit does on the board is UNKNOWN.
+ */
+#define ODSY_DEST_NO_READ (1u << 29)
+#define ODSY_DEST_FLUSH (1u << 23)
+#define ODSY_DEST_FLAGS (ODSY_DEST_NO_READ | ODSY_DEST_FLUSH)
 #define ODSY_DEST_SELECT_VALUE_INDEX 2 /* the third operand */
 #define ODSY_DEST_SELECT_BASE_INDEX 0  /* the buffer's base, 0x2000 */
 #define ODSY_PLANE_MASK_SHIFT 12       /* the 0x1023 operand holds mask << 12 */
@@ -3006,10 +3025,14 @@ static void odyssey_buffer_store(SGIOdysseyState *s, unsigned b,
                     x, y, word);
 }
 
-/* Whether the last 0x1017 select named the id-plane destination. */
+/*
+ * Whether the last 0x1017 select named the id-plane destination, whatever
+ * ODSY_DEST_FLAGS it carried.
+ */
 static bool odyssey_dest_is_id_planes(SGIOdysseyState *s)
 {
-    return s->dest_buffer_word == ODSY_DEST_ID_PLANES;
+    return (s->dest_buffer_word & ~ODSY_DEST_FLAGS) ==
+           (ODSY_DEST_ID_PLANES & ~ODSY_DEST_FLAGS);
 }
 
 /*
@@ -9464,11 +9487,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         if (!s->dest_base || odyssey_dest_is_id_planes(s)) {
             break;
         }
-        if (!odyssey_board_address_valid(s, s->dest_base)) {
+        if (!odyssey_board_address_valid(s, s->dest_base) ||
+            !(s->dest_buffer_word & ~ODSY_DEST_FLAGS)) {
             break;
         }
         if ((s->dest_buffer_word >> ODSY_DEST_FORMAT_SHIFT) ==
-            ODSY_DEST_FORMAT_SCREEN) {
+            ODSY_DEST_FORMAT_SCREEN || s->dest_base == s->dma_colour_base) {
             s->dma_colour_base = s->dest_base;
         } else {
             /* An off-screen object: create it, or update its row length. */
