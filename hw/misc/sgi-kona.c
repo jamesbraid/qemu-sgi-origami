@@ -9331,6 +9331,28 @@ static void sgi_kona_x_run_begin(SGIKonaState *s)
     }
 }
 
+/*
+ * An X token from a context other than the held run's owner. The appenders
+ * and the box, rect, point, line and clip handlers share the one pair of
+ * run buffers, so such a token adds to or ends the owner's run. Only the X
+ * server's context is inferred to send X tokens (see the command grammar),
+ * so this is not expected; the token is still taken, as an X pixel write
+ * takes a DMA packet that arrives while another context is current, and
+ * the log makes the case visible.
+ */
+static void sgi_kona_x_run_foreign(SGIKonaState *s, uint32_t token)
+{
+    if ((s->x_boxes_have || s->x_clip_run_have) &&
+        s->x_run_owner != SGI_KONA_CONTEXT_NONE &&
+        s->x_run_owner != s->context_current) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's X run of %" PRIu32
+                      " words is taken by token 0x%" PRIx32 " while context"
+                      " %d is current\n", s->x_run_owner,
+                      s->x_boxes_have + s->x_clip_run_have, token,
+                      s->context_current);
+    }
+}
+
 /* A clip list's words ended by something other than X load clip. */
 static void sgi_kona_x_clip_run_drop(SGIKonaState *s, uint32_t next)
 {
@@ -11741,12 +11763,15 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_BOX6:
     case SGI_KONA_CMD_X_RECT:
     case SGI_KONA_CMD_X_RECT6:
+        sgi_kona_x_run_foreign(s, selector);
         break;
     default:
         sgi_kona_x_box_data_drop(s, selector);
     }
     if (selector != SGI_KONA_CMD_X_BDATA4 && selector != SGI_KONA_CMD_X_CLIP) {
         sgi_kona_x_clip_run_drop(s, selector);
+    } else {
+        sgi_kona_x_run_foreign(s, selector);
     }
     switch (selector) {
     case SGI_KONA_CMD_REASON_PAGE:
