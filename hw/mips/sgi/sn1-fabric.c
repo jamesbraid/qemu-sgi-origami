@@ -192,6 +192,9 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
     unsigned number = (address >> SN1_FABRIC_ADDRESS_SHIFT) & 0x7f;
     hwaddr canonical;
 
+    if (origin >= endpoint->processor_origins) {
+        return MEMTX_ACCESS_ERROR;
+    }
     if (address >= (UINT64_C(1) << 42) ||
         size > SN1_FABRIC_WINDOW_SIZE -
                (address & (SN1_FABRIC_WINDOW_SIZE - 1))) {

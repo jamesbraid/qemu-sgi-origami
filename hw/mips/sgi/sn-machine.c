@@ -5083,8 +5083,9 @@ static uint32_t sgi_machine_io_origin_count(SGIMachineState *s,
     if (t->generation == SGI_MODEL_GENERATION_SN1 && t->routers) {
         unsigned origins = 0;
 
+        /* Routed request origins name CPUs within a node. */
         for (unsigned node = 0; node < s->num_nodes; node++) {
-            origins += SN1_NODE(s->bedrock_nodes[node])->nr_cpus;
+            origins = MAX(origins, SN1_NODE(s->bedrock_nodes[node])->nr_cpus);
         }
         return origins;
     }

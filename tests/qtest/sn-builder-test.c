@@ -5008,6 +5008,61 @@ static char *expansion_storage_image(off_t size)
     return path;
 }
 
+typedef struct RoutedPopulationCase {
+    const char *population;
+    unsigned cpus;
+    unsigned origins;
+    unsigned node0;
+    unsigned node1;
+} RoutedPopulationCase;
+
+static const RoutedPopulationCase routed_populations[] = {
+    { "2:2", 4, 2, 2, 2 },
+    { "4:2", 6, 4, 4, 2 },
+    { "2:4", 6, 4, 2, 4 },
+    { "4:4", 8, 4, 4, 4 },
+};
+
+static void test_routed_expansion_population(const void *opaque)
+{
+    const RoutedPopulationCase *c = opaque;
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    unsigned counts[2];
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-numalink-pci-expansion-experiment,"
+        "population=%s," STORAGE_BINDING " "
+        "-cpu R14000 -smp %u -m 1024M -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none -S",
+        c->population, c->cpus, prom, image);
+
+    count_cpus_per_node(qts, counts, 2);
+    g_assert_cmpuint(counts[0], ==, c->node0);
+    g_assert_cmpuint(counts[1], ==, c->node1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module2/assembly",
+                                  "uart-origin-count"), ==, c->origins);
+    {
+        uint8_t bytes[8];
+
+        stq_be_p(bytes, UINT64_C(2) << 32);
+        g_assert_true(qtest_memwrite_cpu(qts, c->node0,
+            EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+            bytes, sizeof(bytes)));
+        for (unsigned cpu = 0; cpu < c->cpus; cpu++) {
+            g_assert_true(qtest_memread_cpu(qts, cpu,
+                EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                bytes, sizeof(bytes)));
+            g_assert_cmphex((ldq_be_p(bytes) >> 32) & 0xff, ==,
+                            cpu < c->node0 ? 0 : 2);
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+    g_unlink(image);
+}
+
 static void test_expansion_storage_input_refusals(void)
 {
     static const struct {
@@ -9021,6 +9076,14 @@ int main(int argc, char **argv)
                         NULL, test_origin300_vbrick_projects_v12);
     qtest_add_data_func("sn/builder/origin300-two-chassis-population",
                         NULL, test_origin300_two_chassis_population);
+    for (size_t i = 0; i < G_N_ELEMENTS(routed_populations); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn/builder/routed-expansion-population/%s",
+            routed_populations[i].population);
+
+        qtest_add_data_func(path, &routed_populations[i],
+                            test_routed_expansion_population);
+    }
     qtest_add_data_func(
         "sn/builder/origin2000-rack-accepts-its-populations", NULL,
         test_origin2000_rack_accepts_its_populations);
