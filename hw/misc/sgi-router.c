@@ -309,7 +309,10 @@ static void sgi_router_changed(SGIRouterState *s)
      * space in the machine, so one transaction defers them to a single
      * commit. The flood only re-derives port state, link bits and claim
      * aliases; nothing in it accesses an address space. The change callback
-     * runs after the commit, against the new view.
+     * runs after this commit. When the change comes inside a wider
+     * transaction, such as a module's power switch, this commit is nested
+     * and deferred, so the callback sees the old view. No device registers
+     * the callback today; only the router's unit tests do.
      */
     memory_region_transaction_begin();
     sgi_router_net_changed_at(s, sgi_net_port_flood_start(), 0);
