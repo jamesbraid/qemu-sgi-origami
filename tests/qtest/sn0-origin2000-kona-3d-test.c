@@ -2027,13 +2027,11 @@ static void x_read_fixture_command(QTestState *s, uint32_t token,
     }
 }
 
-static void test_read_indexed_source_refused(void)
+/* An X colour-index pixel at window (2, 1) of the cleared probe window. */
+static void place_indexed_probe_pixel(void)
 {
     QDict *reply;
 
-    gl_reset();
-    gl_make_current(qts);
-    gl_window_cleared(qts, 0, 0, 1);
     x_read_fixture_command(qts, 0x12e, (uint32_t[]){ 0x2d07, 1, 0x304c1304 },
                             3);
     x_read_fixture_command(qts, 0x129,
@@ -2059,6 +2057,14 @@ static void test_read_indexed_source_refused(void)
         "'property':'x-test-plane-word'}}");
     g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 3);
     qobject_unref(reply);
+}
+
+static void test_read_indexed_source_refused(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    place_indexed_probe_pixel();
     for (unsigned format = 4; format <= 5; format++) {
         static const uint32_t types[] = { 1, 3, 6 };
 
@@ -2070,6 +2076,33 @@ static void test_read_indexed_source_refused(void)
         }
     }
     assert_read_buffer(qts, 0x404);
+}
+
+/*
+ * An 8 by 1 read is a 1 by 1 caller's whole request for its first pixel:
+ * a pixel of another kind in its other columns is answered zero and the
+ * rest are read, and only a foreign first pixel refuses the read.
+ */
+static void test_read_eight_by_one_foreign_pixel(void)
+{
+    uint8_t got[24];
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    place_indexed_probe_pixel();
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]) { 0, 1, 8, 1, 4, 1, 0 }, 7);
+    assert_reply_posted(qts);
+    qtest_memread(qts, RETURN_PAGE + 8, got, sizeof(got));
+    for (unsigned c = 0; c < 8; c++) {
+        g_assert_cmphex(got[3 * c], ==, 0);
+        g_assert_cmphex(got[3 * c + 1], ==, 0);
+        g_assert_cmphex(got[3 * c + 2], ==, c == 2 ? 0 : 0xff);
+    }
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]) { 2, 1, 8, 1, 4, 1, 0 }, 7);
+    assert_read_answered_zero(qts);
 }
 
 static void test_read_double_buffers(void)
@@ -17517,6 +17550,8 @@ int main(int argc, char **argv)
                   zero_height, test_read_pixels_refused);
     add_data_case("sn0/origin2000/kona-3d/read-negative-width-refused",
                   negative_width, test_read_pixels_refused);
+    add_case("sn0/origin2000/kona-3d/read-eight-by-one-foreign-pixel",
+             test_read_eight_by_one_foreign_pixel);
     add_case("sn0/origin2000/kona-3d/read-eight-by-one",
              test_read_pixels_eight_by_one);
     add_data_case("sn0/origin2000/kona-3d/read-clipped-refused",
