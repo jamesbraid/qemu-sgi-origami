@@ -2649,6 +2649,22 @@ static int sgi_kona_target_bank(SGIKonaState *s, SGIColourTarget target)
     return -1;
 }
 
+/*
+ * Whether the current context may store at plane pixel (x, y): always,
+ * unless its window's owned pixels overflowed the clip list, when the
+ * pixel must show the window's display ID (sgi_kona_gl_window_owns()).
+ */
+static bool sgi_kona_gl_pixel_owned(SGIKonaState *s, int x, int y)
+{
+    const SGIKonaGLWindow *w;
+
+    if (s->context_current == SGI_KONA_CONTEXT_NONE) {
+        return true;
+    }
+    w = &s->state[s->context_current]->window;
+    return !w->owned_by_pixel || sgi_kona_gl_window_owns(s, w, x, y);
+}
+
 static void sgi_kona_gl_store_colour(void *opaque, SGIColourTarget target,
                                      int x, int y, uint32_t colour)
 {
@@ -2656,7 +2672,7 @@ static void sgi_kona_gl_store_colour(void *opaque, SGIColourTarget target,
     int bank = sgi_kona_target_bank(s, target);
     const SGIPlane *p;
 
-    if (bank < 0) {
+    if (bank < 0 || !sgi_kona_gl_pixel_owned(s, x, y)) {
         return;
     }
     p = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
@@ -2677,7 +2693,8 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
     const SGIPlane *p;
     uint32_t old, shift;
 
-    if (bank < 0 || (bits != 8 && bits != 12)) {
+    if (bank < 0 || (bits != 8 && bits != 12) ||
+        !sgi_kona_gl_pixel_owned(s, x, y)) {
         return;
     }
     shift = 16 - bits;
@@ -2725,6 +2742,9 @@ static void sgi_kona_gl_store_depth(void *opaque, int x, int y,
 {
     SGIKonaState *s = opaque;
 
+    if (!sgi_kona_gl_pixel_owned(s, x, y)) {
+        return;
+    }
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_depth), x, y, depth);
 }
 
@@ -2740,6 +2760,9 @@ static void sgi_kona_gl_store_stencil(void *opaque, int x, int y,
 {
     SGIKonaState *s = opaque;
 
+    if (!sgi_kona_gl_pixel_owned(s, x, y)) {
+        return;
+    }
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_stencil), x, y, value);
 }
 
@@ -3080,7 +3103,8 @@ static SGIRenderRefusal sgi_kona_renderer_request(
     if (d->back_colors || s->state[d->context]->gl.light_model_two_side) {
         return SGI_RENDER_REFUSAL_FACING;
     }
-    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
+    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty ||
+        s->state[d->context]->window.owned_by_pixel) {
         return SGI_RENDER_REFUSAL_WINDOW;
     }
     if (st->index_bits) {
@@ -3902,7 +3926,8 @@ static SGIRenderResult sgi_kona_renderer_draw(SGIKonaState *s,
         *reason = SGI_RENDER_REFUSAL_HOST_STAGING;
         return SGI_RENDER_UNSUPPORTED;
     }
-    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
+    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty ||
+        s->state[d->context]->window.owned_by_pixel) {
         *reason = SGI_RENDER_REFUSAL_WINDOW;
         return SGI_RENDER_UNSUPPORTED;
     }
@@ -4391,17 +4416,23 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
     SGIClipRect r;
 
     w->owned_generation = s->display_id_generation;
+    w->owned_by_pixel = false;
     if (!sgi_kona_gl_window_rect(w, &r)) {
         d.clip.empty = 1;
     } else if (!sgi_kona_gl_window_tests_id(w)) {
         d.clip.r[0] = r;
         d.clip.n = 1;
     } else if (!sgi_kona_gl_owned_clip(s, w, &r, &d.clip)) {
-        /* The whole rectangle, as before ownership was modelled. */
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: context %u's pixels with display"
-                      " ID 0x%x need more than %d rectangles; its whole"
-                      " window is drawn\n", i, w->display_id, SGI_CLIP_MAX);
+        /*
+         * The whole rectangle bounds the draw, and each store keeps to
+         * the pixels showing the window's ID (sgi_kona_gl_pixel_owned()).
+         * A root-window client such as twilight owns the screen less
+         * every window above it, far more than SGI_CLIP_MAX rectangles;
+         * drawing its whole rectangle overwrote those windows, which the
+         * X server does not repaint when the client exits.
+         */
         d.clip = (SGIClipList) { .n = 1, .r[0] = r };
+        w->owned_by_pixel = true;
     }
     sgi_gl_set_drawable(&s->state[i]->gl, &d);
 }

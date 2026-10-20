@@ -655,6 +655,42 @@ static void test_overlap_shows_bank0_where_covered(void)
 }
 
 /*
+ * A window whose owned pixels need more clip rectangles than a drawable
+ * holds still keeps to them. twilight draws into the root window, which
+ * owns the screen less every window above it; drawing its whole
+ * rectangle overwrote those windows, and the X server, which thinks them
+ * intact, never repainted them. Here 24 one-pixel holes with another
+ * window's ID 5, one on each of 24 rows and in a different column, cut
+ * the probe window into far more than 16 rectangles. A clear fills the
+ * window but leaves every hole as it was.
+ */
+static void test_overlap_beyond_clip_list(void)
+{
+    const uint32_t y = 640, top = FB_HEIGHT - y - PROBE_SIZE;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    gl_place_window_id(qts, PROBE_X, y, 0xd, 1);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 0xd);
+    for (uint32_t k = 0; k < 24; k++) {
+        x_paint_display_id(qts, PROBE_X + 4 + 5 * k, top + 2 + 5 * k,
+                           PROBE_X + 5 + 5 * k, top + 3 + 5 * k, 5);
+    }
+    gl_clear(qts, F1, F0, F1);
+    for (uint32_t k = 0; k < 24; k++) {
+        uint32_t hole_y = y + PROBE_SIZE - 3 - 5 * k;
+
+        g_assert_cmphex(shown_pixel(qts, PROBE_X + 4 + 5 * k, hole_y), ==, 0);
+        g_assert_cmphex(shown_pixel(qts, PROBE_X + 5 + 5 * k, hole_y), ==,
+                        0xff00ff);
+    }
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                y + PROBE_SIZE - 1), ==, 0xff00ff);
+}
+
+/*
  * A client killed with its window showing bank 1 sends no teardown; the
  * X server repaints the window's pixels with the IDs beneath, here the
  * root window's ID 1, and paints bank 0. The display then shows bank 0
@@ -947,6 +983,8 @@ int main(int argc, char **argv)
                    test_depth_clear_keeps_colour);
     qtest_add_func("sn0/origin2000/kona-gl/overlap-clipped-to-display-id",
                    test_overlap_clipped_to_display_id);
+    qtest_add_func("sn0/origin2000/kona-gl/overlap-beyond-clip-list",
+                   test_overlap_beyond_clip_list);
     qtest_add_func("sn0/origin2000/kona-gl/"
                    "overlap-shows-bank0-where-covered",
                    test_overlap_shows_bank0_where_covered);
