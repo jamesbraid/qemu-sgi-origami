@@ -1088,6 +1088,151 @@ static void test_gl_texture_ordinary_volume_point(gconstpointer data)
     qtest_quit(t);
 }
 
+/*
+ * A volume the way pfCity's client loads it: TL_SPEC once, its width the
+ * slice's doubled, the six GE load words at 0xe3d once, then one 0x9b00
+ * bracket a slice, nothing in the bracket naming the slice. The load
+ * words are pfCity's shape: the width, parity 0, level 0, TXMIPMAP word
+ * 0x100, no border block and the blocks a slice pair takes.
+ */
+#define TEX_SLICE_W              4
+#define TEX_SLICE_H              4
+#define TEX_SLICE_D              4
+#define TEX_SLICE_BYTES          (TEX_SLICE_W * TEX_SLICE_H * 4)
+
+static void tex_load_volume_slices(QTestState *t, const uint8_t *image)
+{
+    static const uint32_t box[6] = {
+        0, 0, TEX_SLICE_W, TEX_SLICE_H, TEX_SLICE_H << 16 | TEX_SLICE_W, 0,
+    };
+    static const uint32_t load[6] = {
+        TEX_SLICE_W, 0, 0, 0x100, 0xffffffff, 1,
+    };
+    static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
+    uint32_t unpack[6] = {
+        TEX_SLICE_BYTES / 4, tex_unpack_word(4), 0x464, 0xb, 0xc,
+        tex_unpack_scale(1),
+    };
+
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, ctz32(TEX_SLICE_H) << 8 |
+                               (ctz32(TEX_SLICE_W) + 1) << 4);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_ge_load(t, GL_GE_ERAM, 0xe3d, load, ARRAY_SIZE(load));
+    for (uint32_t z = 0; z < TEX_SLICE_D; z++) {
+        gl_word(t, TEX_LOAD_OPEN);
+        gl_pixels_program(t, GL_PIX_4UB, TEX_SLICE_BYTES / 4, 0, 0,
+                          TEX_SLICE_W - 1, TEX_SLICE_H - 1, 1);
+        gl_ge_load(t, GL_GE_ERAM, GL_GE_UNPACK, unpack, ARRAY_SIZE(unpack));
+        gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+        gl_word(t, TEX_PAIRS);
+        gl_word(t, 1);
+        gl_word(t, 2);
+        gl_word(t, GL_INLINE_BLOCK | 8);
+        gl_word(t, 0x159);
+        gl_word(t, 0xc00080);
+        gl_word(t, GL_PIXELS_HDR);
+        gl_word(t, TEX_SLICE_BYTES / 4);
+        for (int i = 1; i < 8; i++) {
+            gl_word(t, draw[i]);
+        }
+        gl_pixels_dma_on(t, 0, image + z * TEX_SLICE_BYTES, TEX_SLICE_BYTES,
+                         TEX_SLICE_BYTES, 1, TEX_SLICE_BYTES, 0xa7);
+        gl_word(t, TEX_LOAD_CLOSE);
+    }
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+/*
+ * pfCity's draw words for its volume, scaled to this one: TEXMODE2 with
+ * the volume bit, TXSIZE's low width nibble one above 11:8 and the log2
+ * depth in 22:19, MDDMA_CNTRL's log2 sizes, TXMIPMAP 0x100.
+ */
+static void tex_volume_slices_state(QTestState *t, uint32_t texmode2)
+{
+    uint32_t lw = ctz32(TEX_SLICE_W), lh = ctz32(TEX_SLICE_H);
+    uint32_t ld = ctz32(TEX_SLICE_D);
+
+    tex_record(t, 0x18a, (ld - 1) << 26 | ld << 10 | lh << 6 | lw << 2);
+    tex_bind(t, 0x40859, texmode2);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 0x100);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, ld << 19 | lh << 12 | lw << 8 | lh << 4 | (lw + 1),
+        TEX_TXLOD, 1,
+        TEX_TXCLAMPSIZE, TEX_SLICE_W << 13 | TEX_SLICE_H,
+    }, 3);
+}
+
+/*
+ * Each bracket after the first loads the next slice: nearest sampling
+ * at every texel of every slice returns that texel, so the slices are
+ * kept apart and each keeps its rows. pfCity's own linear, repeating
+ * state then returns a slice's colour at the slice's centre.
+ */
+static void test_gl_texture_volume_slices(gconstpointer data)
+{
+    QTestState *t = texture_board_start(data);
+    uint8_t image[TEX_SLICE_BYTES * TEX_SLICE_D];
+    uint8_t flat[TEX_SLICE_BYTES * TEX_SLICE_D];
+
+    for (uint32_t z = 0; z < TEX_SLICE_D; z++) {
+        for (uint32_t y = 0; y < TEX_SLICE_H; y++) {
+            for (uint32_t x = 0; x < TEX_SLICE_W; x++) {
+                uint8_t *p = &image[((z * TEX_SLICE_H + y) * TEX_SLICE_W +
+                                     x) * 4];
+                uint8_t *f = &flat[((z * TEX_SLICE_H + y) * TEX_SLICE_W +
+                                    x) * 4];
+
+                p[0] = 0x10 + 0x30 * x;
+                p[1] = 0x20 + 0x30 * y;
+                p[2] = 0x08 + 0x40 * z;
+                p[3] = 0xff;
+                f[0] = 0x40 * z;
+                f[1] = 0xff - 0x30 * z;
+                f[2] = 0x11 * (z + 1);
+                f[3] = 0xff;
+            }
+        }
+    }
+
+    tex_load_volume_slices(t, image);
+    for (uint32_t z = 0; z < TEX_SLICE_D; z++) {
+        /* Each quad ends with the client's 0x0c00, so bind again. */
+        tex_volume_slices_state(t, 0x810004);
+        tex_quad_volume_z(t, (z + 0.5f) / TEX_SLICE_D);
+        for (uint32_t y = 0; y < TEX_SLICE_H; y++) {
+            for (uint32_t x = 0; x < TEX_SLICE_W; x++) {
+                const uint8_t *p = &image[((z * TEX_SLICE_H + y) *
+                                           TEX_SLICE_W + x) * 4];
+
+                g_assert_cmphex(gl_window_pixel(t, 20 + 8 * x, 18 + 4 * y),
+                                ==, p[0] << 16 | p[1] << 8 | p[2]);
+            }
+        }
+    }
+
+    tex_load_volume_slices(t, flat);
+    for (uint32_t z = 0; z < TEX_SLICE_D; z++) {
+        const uint8_t *f = &flat[z * TEX_SLICE_BYTES];
+
+        tex_volume_slices_state(t, 0x8101c4);
+        tex_quad_volume_z(t, (z + 0.5f) / TEX_SLICE_D);
+        g_assert_cmphex(gl_window_pixel(t, 32, 24), ==,
+                        f[0] << 16 | f[1] << 8 | f[2]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 static void tex_load_captured_rect_volume(QTestState *t, const uint8_t *image,
                                           uint32_t width, uint32_t height,
                                           uint32_t depth, bool bad_area)
@@ -5497,6 +5642,8 @@ int main(int argc, char **argv)
     add_texture_board_cases(
         "sn0/origin2000/mgras/gl-texture-ordinary-volume-point",
         test_gl_texture_ordinary_volume_point);
+    add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-slices",
+                            test_gl_texture_volume_slices);
     qtest_add_func(
         "sn0/origin2000/mgras/gl-texture-ordinary-rectangular-volume",
         test_gl_texture_ordinary_rectangular_volume);
