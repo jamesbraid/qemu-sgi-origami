@@ -4455,6 +4455,7 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
         .returns.clear_depth = UINT64_C(0x3ff0000000000000),
     };
+    state->iris = (SGIKonaGLIrisRule) { 0 };
     state->attrib_depth = 0;
     sgi_gl_set_drawable(&state->gl, &drawable);
 }
@@ -4631,6 +4632,108 @@ static void sgi_kona_gl_finish(SGIKonaState *s, uint32_t wait)
 }
 
 /*
+ * IRIS GL's colour and normal rule: a vertex whose colour came after the
+ * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
+ * appendix B, "Color/normal flag"). The IRIX 6.5.30 n32 IP27KONA
+ * libGLcore.so (SHA-256 1639e2c6...352f) leaves it to the pipe: its
+ * __glkonim_IglooInterfaceSGIX (0xd9881a0) sends GL_IGLOO_COLORNORMAL_SGIX
+ * as 0x1be and GL_IGLOO_LMC_COLOR_SGIX as 0x113, each with the caller's
+ * parameter word, and keeps no state of its own (established from the
+ * listing). Inferred: the rule holds while the last colour-normal word is
+ * nonzero and the last LMC colour word is 1, the values for which the
+ * IP27GR532 MGRAS library of the same release turns the rule on.
+ *
+ * While the rule holds and lighting is enabled in an RGBA context, the
+ * model lights a vertex whose colour came after the last normal with
+ * ambient, diffuse and specular (0, 0, 0, 1) on both faces and the
+ * current colour as both emissions, then restores the materials. That is
+ * what the Octane2 VPro library does in software for the same rule.
+ * Approximated: how the pipe carries out the rule is unknown; this
+ * differs from leaving the vertex unlit only in its alpha, which the wrap
+ * makes 1. A colour-index context is lit as before: what the rule does to
+ * lit colour indices is unknown.
+ */
+static bool sgi_kona_gl_iris_unlit(SGIKonaGLState *state)
+{
+    return state->iris.colour_normal && state->iris.lmc == 1 &&
+           state->iris.colour_last && state->gl.lighting &&
+           !state->gl.cur.index_bits;
+}
+
+static void sgi_kona_gl_iris_material(SGIKonaGLState *state, SGIGLSink *sink,
+                                      uint32_t face, uint32_t pname,
+                                      const float v[4])
+{
+    uint32_t word[6] = { face, pname };
+    SGIGLCmd cmd = { SGI_GL_OP_MATERIAL, 6, word };
+
+    memcpy(&word[2], v, 4 * sizeof(float));
+    sgi_gl_command(&state->gl, sink, &cmd);
+}
+
+static void sgi_kona_gl_iris_vertex(SGIKonaGLState *state, SGIGLSink *sink,
+                                    const SGIGLCmd *cmd)
+{
+    static const float none[4] = { 0, 0, 0, 1 };
+    static const uint32_t faces[2] = { SGI_GL_FRONT, SGI_GL_BACK };
+    SGIGLMaterial saved[2];
+    float colour[4];
+
+    memcpy(saved, state->gl.material, sizeof(saved));
+    memcpy(colour, state->gl.cur_color, sizeof(colour));
+    sgi_kona_gl_iris_material(state, sink, SGI_GL_FRONT_AND_BACK,
+                              SGI_GL_AMBIENT, none);
+    sgi_kona_gl_iris_material(state, sink, SGI_GL_FRONT_AND_BACK,
+                              SGI_GL_DIFFUSE, none);
+    sgi_kona_gl_iris_material(state, sink, SGI_GL_FRONT_AND_BACK,
+                              SGI_GL_SPECULAR, none);
+    sgi_kona_gl_iris_material(state, sink, SGI_GL_FRONT_AND_BACK,
+                              SGI_GL_EMISSION, colour);
+    sgi_gl_command(&state->gl, sink, cmd);
+    for (int f = 0; f < 2; f++) {
+        sgi_kona_gl_iris_material(state, sink, faces[f], SGI_GL_AMBIENT,
+                                  saved[f].ambient);
+        sgi_kona_gl_iris_material(state, sink, faces[f], SGI_GL_DIFFUSE,
+                                  saved[f].diffuse);
+        sgi_kona_gl_iris_material(state, sink, faces[f], SGI_GL_SPECULAR,
+                                  saved[f].specular);
+        sgi_kona_gl_iris_material(state, sink, faces[f], SGI_GL_EMISSION,
+                                  saved[f].emission);
+    }
+}
+
+/* One command for context i's GL state, under IRIS GL's rule. */
+static void sgi_kona_gl_run(SGIKonaState *s, int i, SGIGLSink *sink,
+                            const SGIGLCmd *cmd)
+{
+    SGIKonaGLState *state = s->state[i];
+
+    switch (cmd->op) {
+    case SGI_GL_OP_COLOR3F:
+    case SGI_GL_OP_COLOR4F:
+    case SGI_GL_OP_COLOR3UB:
+    case SGI_GL_OP_COLOR4UB:
+        state->iris.colour_last = true;
+        break;
+    case SGI_GL_OP_NORMAL3F:
+        state->iris.colour_last = false;
+        break;
+    case SGI_GL_OP_VERTEX2F:
+    case SGI_GL_OP_VERTEX3F:
+    case SGI_GL_OP_VERTEX4F:
+    case SGI_GL_OP_VERTEX2I:
+        if (sgi_kona_gl_iris_unlit(state)) {
+            sgi_kona_gl_iris_vertex(state, sink, cmd);
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    sgi_gl_command(&state->gl, sink, cmd);
+}
+
+/*
  * The GL client's drawing and make-current state, onto the current
  * context (hw/display/sgi/gl-context.c), whose draws reach the colour
  * banks through the shared rasterizer:
@@ -4709,7 +4812,7 @@ static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
+    sgi_kona_gl_run(s, i, &sink, &cmd);
 }
 
 /* A slot and 33 transport words, published only after complete decoding. */
@@ -5202,7 +5305,7 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
+    sgi_kona_gl_run(s, i, &sink, &cmd);
     return true;
 }
 
@@ -5433,7 +5536,7 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
     }
     trace_sgi_kona_gl_command(selector, i);
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_command(&s->state[i]->gl, &sink, &cmd);
+    sgi_kona_gl_run(s, i, &sink, &cmd);
     return true;
 }
 
@@ -8400,6 +8503,19 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_FINISH:
         sgi_kona_gl_finish(s, args[0]);
+        return;
+    case SGI_KONA_CMD_GL_IGLOO_COLORNORMAL:
+    case SGI_KONA_CMD_GL_IGLOO_LMC_COLOR:
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            SGIKonaGLIrisRule *r = &s->state[i]->iris;
+
+            if (selector == SGI_KONA_CMD_GL_IGLOO_COLORNORMAL) {
+                r->colour_normal = args[0];
+            } else {
+                r->lmc = args[0];
+            }
+            trace_sgi_kona_gl_iris_rule(i, r->colour_normal, r->lmc);
+        }
         return;
     case SGI_KONA_CMD_GL_VIEWPORT:
     case SGI_KONA_CMD_GL_SCISSOR:
@@ -15782,6 +15898,28 @@ static int sgi_kona_gl_state_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/* Sent once the context has had IRIS GL's rule words or a colour. */
+static bool sgi_kona_gl_iris_needed(void *opaque)
+{
+    SGIKonaGLState *state = opaque;
+
+    return state->iris.colour_normal || state->iris.lmc ||
+           state->iris.colour_last;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_iris = {
+    .name = TYPE_SGI_KONA "/logical-state/iris-rule",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_iris_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(iris.colour_normal, SGIKonaGLState),
+        VMSTATE_UINT32(iris.lmc, SGIKonaGLState),
+        VMSTATE_BOOL(iris.colour_last, SGIKonaGLState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_state = {
     .name = TYPE_SGI_KONA "/logical-state",
     .version_id = 1,
@@ -15828,6 +15966,10 @@ static const VMStateDescription vmstate_sgi_kona_gl_state = {
                              vmstate_sgi_kona_gl_transfer,
                              SGIKonaGLPixelTransfer),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_kona_gl_iris,
+        NULL
     },
 };
 

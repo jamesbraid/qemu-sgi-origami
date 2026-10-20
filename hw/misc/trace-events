@@ -132,6 +132,8 @@ sgi_kona_gl_buffer_config(uint32_t token, uint32_t level, uint32_t rgb, uint32_t
 sgi_kona_gl_window(uint32_t token, int slot, int32_t x, int32_t y, uint32_t width, uint32_t height) "token 0x%x slot %d (%d, %d) width %u height %u"
 # A GL drawing or state command handed to the current context.
 sgi_kona_gl_command(uint32_t token, int slot) "token 0x%x slot %d"
+# IRIS GL's colour-normal and LMC colour words as the current context now holds them.
+sgi_kona_gl_iris_rule(int slot, uint32_t colour_normal, uint32_t lmc) "slot %d colour-normal 0x%x lmc colour 0x%x"
 # A double-buffered GL context's buffer swap, and the bank its window now shows.
 sgi_kona_gl_swap(int slot, uint32_t bank) "slot %d displays bank %u"
 # An X colour-map load opened with its start address and entry count, and
