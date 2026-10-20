@@ -166,7 +166,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-depth-test
 gl /mips64/sn1/odyssey/command-fifo-gl-alpha-test
 gl /mips64/sn1/odyssey/command-fifo-gl-blend
 gl /mips64/sn1/odyssey/command-fifo-gl-stencil-state
-gl /mips64/sn1/odyssey/command-fifo-gl-stencil-always-passes
+gl /mips64/sn1/odyssey/command-fifo-gl-stencil-masks-draws
 gl /mips64/sn1/odyssey/command-fifo-gl-cull-face
 gl /mips64/sn1/odyssey/command-fifo-gl-polygon-mode
 gl /mips64/sn1/odyssey/command-fifo-gl-line-point-size

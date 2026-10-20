@@ -512,6 +512,7 @@ struct SGIOdysseyState {
     uint32_t gl_combined[16];
     uint32_t gl_block16[4];
     bool gl_rect_depth_logged;
+    bool gl_rect_stencil_logged;
     bool gl_rect_pattern_logged;
     /*
      * Diagnostic only: whether a non-all-ones 0x452 index write mask (bits
@@ -528,6 +529,13 @@ struct SGIOdysseyState {
     bool gl_index_mask_logged;
     SGIBoardMemory depth_mem;
     uint32_t depth_plane;
+    /*
+     * stencil_mem holds the 8-bit stencil plane, one byte per pixel of the
+     * frame: a model plane like the depth plane, migrated as its own
+     * subsection.
+     */
+    SGIBoardMemory stencil_mem;
+    uint32_t stencil_plane;
 
     /*
      * The scissor and window clip box, 0x081d, as last written: word 0
