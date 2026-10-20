@@ -388,6 +388,13 @@ typedef struct SGIMgrasTexView {
     const uint8_t *volume_data_extra;
     uint64_t bit;
     uint32_t log2w, log2h;
+    /*
+     * A TRAM volume's slices go two to a TL_SPEC-shaped level twice the
+     * slice's width, pair_bits apart: row_log2w is that level's log2
+     * width. A two-dimensional level has row_log2w == log2w and no pairs.
+     */
+    uint32_t row_log2w;
+    uint64_t pair_bits;
     uint32_t mode;
     uint32_t format;
     uint32_t depth;
@@ -418,6 +425,8 @@ typedef struct SGIMgrasTexture {
     uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
     uint32_t wide_branch;       /* the client's wide-level branch: 0 to 2 */
     uint32_t loaded_levels;      /* levels with committed interior uploads */
+    /* Bracketed loads closed since TL_SPEC was last written. */
+    uint32_t tl_slices;
     /*
      * A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads:
      * the level, the rectangle of it, x, y and h << 16 | w, the image's
@@ -428,6 +437,7 @@ typedef struct SGIMgrasTexture {
     uint32_t load_base, load_block, load_spec, load_mode;
     uint32_t load_x, load_y, load_size, load_depth, load_volume;
     uint32_t load_comps, load_csize, load_abgr;
+    uint32_t load_slice;        /* the volume slice the transfer loads */
     uint32_t load_packet[8];
     uint64_t load_dma_bytes;
     uint32_t volume_base, volume_mode, volume_level;

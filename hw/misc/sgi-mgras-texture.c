@@ -144,6 +144,31 @@
  *   tables, approximated: whether the board's TE1 state survives a
  *   context switch or an opener is unknown. TRAM survives both.
  *
+ * - Volume. The client loads a three-dimensional texture one slice to a
+ *   0x9b00 bracket: one TL_SPEC and one set of GE words at 0xe3d, then a
+ *   bracket for each slice in turn, each carrying that slice's image
+ *   (established from the client's load loop and from pfCity's
+ *   128-by-128-by-64 RGBA8 volume, 64 brackets of two 64-wide strips under
+ *   TL_SPEC 0x780). Every one- or two-dimensional load sends one bracket
+ *   a TL_SPEC. Nothing in a bracket names its slice, so the model counts
+ *   the brackets closed since TL_SPEC was written and takes the k-th as
+ *   slice k (inferred: the board must place each slice from state the
+ *   client set once). TL_SPEC's and TXSIZE's low width nibble are the
+ *   slice's log2 width plus one, and the client counts a volume's TRAM
+ *   blocks a pair of slices at a time (GE word 0xe42, 8 blocks a pair for
+ *   pfCity's; MDDMA_CNTRL 25:23 its log2), so the model keeps each pair
+ *   of slices as one level of TL_SPEC's shape, the even slice in its left
+ *   half and the odd one in its right, the pairs a whole number of blocks
+ *   apart from the load's TXMIPMAP block on. That layout is the model's
+ *   choice (approximated): how the board lays slices out in TRAM is
+ *   unknown and visible only through a TRAM save, which moves the
+ *   model's own bytes and so restores them as they were. A run whose
+ *   first slice is the odd one of its pair (GE word 0xe3e set) was never
+ *   traced and is refused, logged, as is a slice outside its pair's left
+ *   half. The small volumes the client sends in a single transfer (its
+ *   depth in the transfer's sixth word) keep their bounded store and
+ *   their captured tuples.
+ *
  * - Depth. Approximated, the model's choice: a host component kept at
  *   4 bits is the nearest of 15, round(v * 15 / 255) for a byte and
  *   round(c * 15 / 65535) for a halfword, and is widened back to 8 bits
@@ -173,9 +198,16 @@
  *   bits 3:2 name, when a load or a restore has written that block since
  *   reset, the environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
  *   modulate, decal or blend, and nothing in TEXMODE2 asks for detail, a
- *   volume, a one-dimensional texture or the multi-buffer read: sampling
+ *   one-dimensional texture or the multi-buffer read: sampling
  *   by bits 5 to 8 and 19 (mgras_tex_pyramid), with the axes' wrap
  *   (mgras_tex_wrap), through the shared rasterizer's texture sampling.
+ *   A volume (TEXMODE2 bit 23) whose TXSIZE has the low width nibble one
+ *   above 11:8 draws from the slices in TRAM (see "Volume"), level 0
+ *   only, its depth from TXSIZE 22:19, filtered by bits 7 and 8 as a
+ *   two-dimensional level is but in all three axes (the client sets bit
+ *   6 with bit 8 on a volume), R wrapped by bit 13; the client refuses mipmap
+ *   filters on a volume, and a four-dimensional texture (MDDMA_CNTRL
+ *   17:14 set) is not drawn.
  *   Anything else draws untextured, logged.
  *
  * - Class. A one-component level is stored once; TEXMODE1 11:9 of the
@@ -188,7 +220,7 @@
  * Not implemented, and logged with the draw untextured: the multi-buffer
  * read (TEXMODE2 bit 4 and TL_MODE bit 8), the border texels of a
  * bordered image (see "Load"), detail,
- * the texture colour table, one-dimensional and volume textures,
+ * the texture colour table, one-dimensional and four-dimensional textures,
  * SGIS_texture_select's dual and quad groups (their draws name a
  * select their RGBA load did not use, so they usually find no level and
  * are logged, but may sample another one- or two-component texture kept
@@ -211,7 +243,8 @@
  * gl-texture-clamp-border-nearest, gl-texture-wrap-mixed-axes,
  * gl-texture-border-per-class, gl-texture-linear-midpoint,
  * gl-texture-linear-edge-wrap, gl-texture-depth12-halfword,
- * gl-texture-mip-level-select and gl-texture-trilinear-blend.
+ * gl-texture-mip-level-select and gl-texture-trilinear-blend, and for
+ * volumes loaded slice by slice gl-texture-volume-slices.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -385,6 +418,8 @@ enum {
 #define MGRAS_TEX_TXSIZE         0x181
 #define MGRAS_TEX_TXLOD          0x183
 #define MGRAS_TEX_MDDMA_CNTRL    0x18a
+/* MDDMA_CNTRL 17:14, the log2 of a four-dimensional texture's fourth size. */
+#define MGRAS_MDDMA_LOG2_FOURTH(v) (((v) >> 14) & 0xf)
 #define MGRAS_TEX_TXENV_RG       0x142
 #define MGRAS_TEX_TXENV_B        0x143
 #define MGRAS_TEX_TXBCOLOR_RG    0x184
@@ -503,7 +538,10 @@ enum {
  * the model does not read it.
  */
 #define MGRAS_TEX_GE_LOAD        0xe3d
+#define MGRAS_TEX_GE_PARITY      (MGRAS_TEX_GE_LOAD + 1)
 #define MGRAS_TEX_GE_BLOCK       (MGRAS_TEX_GE_LOAD + 3)
+/* TXSIZE 22:19, a volume's log2 depth, bounds the slices a load counts. */
+#define MGRAS_TEX_SLICES_MAX     (1u << 15)
 
 /* TL_MODE and TL_SPEC fields, and the kept formats the model stores. */
 #define MGRAS_TEX_LAYOUT(mode)   (((mode) >> 1) & 3)
@@ -728,6 +766,56 @@ static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
     }
     *bit = image + start;
     return true;
+}
+
+/*
+ * A volume's slices, two to a level of TL_SPEC's shape (see "Volume"
+ * above): the bits from one pair's first texel to the next's, whole
+ * blocks, as the client counts a pair's blocks.
+ */
+static uint64_t mgras_tex_pair_bits(uint32_t log2w, uint32_t log2h,
+                                    uint32_t mode)
+{
+    uint64_t bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w) << log2h;
+
+    return MAX(DIV_ROUND_UP(bits, MGRAS_TRAM_BLOCK_BITS), 1) *
+           MGRAS_TRAM_BLOCK_BITS;
+}
+
+/*
+ * Where the pair holding slice slice starts: the level mgras_tram_place()
+ * places for slice 0, then slice / 2 pair strides on. False when that
+ * pair would run past its select's image.
+ */
+static bool mgras_tram_place_slice(uint32_t base, uint32_t word,
+                                   uint32_t slice, uint32_t log2w,
+                                   uint32_t log2h, uint32_t mode,
+                                   uint64_t *bit)
+{
+    uint64_t bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w) << log2h;
+    uint64_t image = mgras_tram_image_bit(mgras_tex_select(mode));
+    uint64_t start;
+
+    if (!mgras_tram_place(base, word, log2w, log2h, mode, &start)) {
+        return false;
+    }
+    start += (uint64_t)(slice / 2) * mgras_tex_pair_bits(log2w, log2h, mode);
+    if (start - image + bits > (uint64_t)SGI_MGRAS_TRAM_BYTES * 8) {
+        return false;
+    }
+    *bit = start;
+    return true;
+}
+
+/*
+ * Whether a transfer of rw by rh at x, y loads a slice other than the
+ * first: a slice is the left half of TL_SPEC's w by h, with no border.
+ */
+static bool mgras_tex_slice_rect_fits(uint32_t x, uint32_t y, uint32_t rw,
+                                      uint32_t rh, uint32_t w, uint32_t h)
+{
+    return rw && rh && (int32_t)x >= 0 && (int32_t)y >= 0 &&
+           (uint64_t)x + rw <= w / 2 && (uint64_t)y + rh <= h;
 }
 
 /*
@@ -1061,6 +1149,7 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
         return;
     case MGRAS_TEX_TL_SPEC:
         t->tl_spec = value;
+        t->tl_slices = 0;
         return;
     case MGRAS_TEX_TL_ADDR:
         t->tl_addr = value % SGI_MGRAS_TEX_TABLE;
@@ -1309,6 +1398,9 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: texture load closed "
                           "before its transfer; nothing stored\n");
             t->load = 0;
+        }
+        if (t->bracket && t->tl_slices < MGRAS_TEX_SLICES_MAX) {
+            t->tl_slices++;
         }
         t->bracket = 0;
         return true;
@@ -1731,7 +1823,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
     uint32_t rw = size & 0xffff, rh = size >> 16;
     uint32_t hq = s->dma_desc_30000[0];
-    uint32_t comps, csize;
+    uint32_t comps, csize, slice;
     bool abgr, volume;
     uint64_t bit;
 
@@ -1842,10 +1934,26 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       MGRAS_TEX_DEPTH(mode));
         return true;
     }
+    /*
+     * The client sends one bracket a volume slice, all under one TL_SPEC
+     * and one set of GE words at 0xe3d, so the bracket's place in that run
+     * is the slice (see "Volume" above). Only a run whose first slice is
+     * the even one of its pair (GE parity word 0) was traced.
+     */
+    slice = volume || !t->bracket ? 0 : t->tl_slices;
+    if (slice && (s->ge_param[MGRAS_TEX_GE_PARITY] ||
+                  !mgras_tex_slice_rect_fits(x, y, rw, rh, w, h))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: volume slice %u, %u by %u at "
+                      "%d, %d under TL_SPEC 0x%x with GE parity word 0x%x, "
+                      "is not modelled; nothing stored\n", slice, rw, rh,
+                      (int32_t)x, (int32_t)y, spec,
+                      s->ge_param[MGRAS_TEX_GE_PARITY]);
+        return true;
+    }
     if (!volume &&
-        !mgras_tram_place(t->base, s->ge_param[MGRAS_TEX_GE_BLOCK],
-                          MGRAS_TEX_SPEC_LOG2W(spec),
-                          MGRAS_TEX_SPEC_LOG2H(spec), mode, &bit)) {
+        !mgras_tram_place_slice(t->base, s->ge_param[MGRAS_TEX_GE_BLOCK],
+                                slice, MGRAS_TEX_SPEC_LOG2W(spec),
+                                MGRAS_TEX_SPEC_LOG2H(spec), mode, &bit)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: texture level of %u by "
                       "%u at base %u, TXMIPMAP word 0x%x runs past TRAM's "
                       "end; nothing stored\n", w, h, t->base,
@@ -1858,6 +1966,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                      MGRAS_TEX_WIDE_LOADED : MGRAS_TEX_WIDE_NONE;
     t->load_depth = volume ? payload[5] : 1;
     t->load_volume = volume;
+    t->load_slice = slice;
     memcpy(t->load_packet, payload, sizeof(t->load_packet));
     t->load_dma_bytes = 0;
     t->load_base = t->base;
@@ -1938,6 +2047,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
     const uint8_t *in = t->staging;
     uint32_t w = 1u << log2w, h = 1u << log2h;
+    /* An odd slice is the right half of its pair's level. */
+    uint32_t slice_x = t->load_slice & 1 ? w / 2 : 0;
     bool stored = false, border_stored = false;
     bool touches_border;
     uint64_t start;
@@ -1984,8 +2095,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
                      (int32_t)t->load_y < 0 ||
                      (int64_t)(int32_t)t->load_x + rw > w ||
                      (int64_t)(int32_t)t->load_y + rh > h;
-    if (!mgras_tram_place(t->load_base, t->load_block, log2w, log2h, mode,
-                          &start)) {
+    if (!mgras_tram_place_slice(t->load_base, t->load_block, t->load_slice,
+                                log2w, log2h, mode, &start)) {
         /* load_start placed it; only a migrated load can get here. */
         goto done;
     }
@@ -2001,7 +2112,7 @@ static void mgras_tex_commit(SGIMgrasState *s)
         int64_t ty = (int64_t)(int32_t)t->load_y + row;
 
         for (uint32_t texel = 0; texel < rw; texel++) {
-            int64_t tx = (int64_t)(int32_t)t->load_x + texel;
+            int64_t tx = (int64_t)(int32_t)t->load_x + slice_x + texel;
             uint32_t border_index;
 
             if (mgras_tex_border_index(w, h, tx, ty, &border_index)) {
@@ -2148,6 +2259,20 @@ static uint32_t mgras_tex_components_to_rgba(uint32_t mode, uint32_t format,
     }
 }
 
+/*
+ * Where texel x, y of slice z starts in TRAM: a slice pair's level holds
+ * the even slice in its left half and the odd one in its right.
+ */
+static uint64_t mgras_tex_view_bit(const SGIMgrasTexView *l, uint32_t x,
+                                   uint32_t y, uint32_t z)
+{
+    uint64_t texel = ((uint64_t)y << l->row_log2w) + x +
+                     ((uint64_t)(z & 1) << l->log2w);
+
+    return l->bit + (uint64_t)(z / 2) * l->pair_bits +
+           texel * mgras_tex_slot_bits(l->mode);
+}
+
 static bool mgras_tex_read_volume_texel(void *opaque, uint32_t level,
                                         uint32_t x, uint32_t y, uint32_t z,
                                         uint32_t *rgba)
@@ -2155,8 +2280,7 @@ static bool mgras_tex_read_volume_texel(void *opaque, uint32_t level,
     const SGIMgrasTexView *l = opaque;
     uint32_t comps = mgras_tex_components(l->mode);
     uint32_t depth = mgras_tex_depth_bits(l->mode);
-    uint64_t bit = l->bit + (((uint64_t)y << l->log2w) + x) *
-                   mgras_tex_slot_bits(l->mode);
+    uint64_t bit = mgras_tex_view_bit(l, x, y, z);
     uint32_t c[4];
 
     if (l->volume_data) {
@@ -2178,7 +2302,7 @@ static bool mgras_tex_read_volume_texel(void *opaque, uint32_t level,
         *rgba = p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
         return true;
     }
-    if (z) {
+    if (z >= l->depth) {
         return false;
     }
     for (uint32_t k = 0; k < comps; k++) {
@@ -2226,8 +2350,7 @@ static bool mgras_tex_read_volume_components(void *opaque, uint32_t level,
     const SGIMgrasTexView *l = opaque;
     uint32_t comps = mgras_tex_components(l->mode);
     uint32_t depth = mgras_tex_depth_bits(l->mode);
-    uint64_t bit = l->bit + (((uint64_t)y << l->log2w) + x) *
-                   mgras_tex_slot_bits(l->mode);
+    uint64_t bit = mgras_tex_view_bit(l, x, y, z);
     uint16_t stored[4] = { 0, 0, 0, 0 };
 
     if (level != l->level) {
@@ -2252,7 +2375,7 @@ static bool mgras_tex_read_volume_components(void *opaque, uint32_t level,
         }
         return true;
     }
-    if (z) {
+    if (z >= l->depth) {
         return false;
     }
     for (uint32_t i = 0; i < comps; i++) {
@@ -2541,13 +2664,54 @@ static bool mgras_tex_environment(SGIMgrasState *s, uint32_t cls)
 }
 
 /*
+ * A volume out of TRAM, as loaded slice by slice: level 0 only, TXSIZE's
+ * low nibble the log2 width of a slice pair's level (the slice's plus
+ * one), 7:4 the log2 height and 22:19 the log2 depth, the pairs from
+ * TXMIPMAP entry 0 on. False unless every pair's first block has been
+ * written since reset and the last pair lies inside TRAM.
+ */
+static bool mgras_tex_draw_volume(SGIMgrasState *s, uint32_t n,
+                                  uint32_t mode, SGIMgrasTexView *view)
+{
+    SGIMgrasTexture *t = mgras_tex(s);
+    uint32_t row_log2w = t->txsize & 0xf, log2h = (t->txsize >> 4) & 0xf;
+    uint32_t depth = 1u << ((t->txsize >> 19) & 0xf);
+    uint64_t pair_bits, last;
+
+    if (n || !row_log2w || !(t->loaded_levels & 1) ||
+        !mgras_tram_place(t->base, t->txmipmap[0], row_log2w, log2h, mode,
+                          &view->bit) ||
+        !mgras_tram_place_slice(t->base, t->txmipmap[0], depth - 1,
+                                row_log2w, log2h, mode, &last)) {
+        return false;
+    }
+    pair_bits = mgras_tex_pair_bits(row_log2w, log2h, mode);
+    for (uint32_t z = 0; z < depth; z += 2) {
+        if (!mgras_tram_written(s, (view->bit + (uint64_t)(z / 2) *
+                                    pair_bits) / MGRAS_TRAM_BLOCK_BITS)) {
+            return false;
+        }
+    }
+    view->tram = s->tram;
+    view->volume_data = NULL;
+    view->volume_data_extra = NULL;
+    view->log2w = row_log2w - 1;
+    view->row_log2w = row_log2w;
+    view->log2h = log2h;
+    view->pair_bits = pair_bits;
+    view->mode = mode;
+    view->depth = depth;
+    return true;
+}
+
+/*
  * Level n of the draw, of the kept format mode, out of TRAM: TXMIPMAP
  * entry n under the context's base, the base size halved n times. False
  * when it would run past TRAM or no load or restore has written its first
  * block since reset.
  */
 static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
-                                 SGIMgrasTexView *view)
+                                 bool tram_volume, SGIMgrasTexView *view)
 {
     SGIMgrasTexture *t = mgras_tex(s);
     uint32_t log2w = t->txsize & 0xf, log2h = (t->txsize >> 4) & 0xf;
@@ -2557,6 +2721,11 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
     view->border_data = NULL;
     view->level = n;
     view->border_offset = view->border_count = 0;
+    view->row_log2w = log2w;
+    view->pair_bits = 0;
+    if (tram_volume) {
+        return mgras_tex_draw_volume(s, n, mode, view);
+    }
     if ((t->texmode2 & MGRAS_TEXMODE2_VOLUME) && t->volume_bytes &&
         n == t->volume_level && t->volume_base == t->base &&
         t->volume_mode == mode) {
@@ -2624,7 +2793,7 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
  * leaves a hole.
  */
 static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
-                              uint32_t format, bool mip)
+                              uint32_t format, bool mip, bool tram_volume)
 {
     SGIMgrasTexture *t = mgras_tex(s);
     uint32_t n = 0, last = mip ? MGRAS_TXLOD_LAST(t->txlod) : 0;
@@ -2633,7 +2802,7 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
     for (uint32_t level = 0; level <= last; level++) {
         SGIMgrasTexView *e = &t->views[n];
 
-        if (!mgras_tex_draw_level(s, level, mode, e)) {
+        if (!mgras_tex_draw_level(s, level, mode, tram_volume, e)) {
             continue;
         }
         uint8_t component_bits[4];
@@ -2886,6 +3055,14 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     bool ordinary_volume = mgras_tex_captured_ordinary_volume(t,
                                                                depth_size);
     bool captured_endpoint = pixel_endpoint || ordinary_volume;
+    /*
+     * A volume loaded slice by slice into TRAM: TXSIZE's width copy in
+     * 11:8 is one less than the low nibble, which names the slice pair's
+     * level (see "Volume" above).
+     */
+    bool tram_volume = volume && !captured_endpoint && (size & 0xf) &&
+                       (t->txsize & 0xffff) ==
+                       (((size & 0xf0) | ((size & 0xf) - 1)) << 8 | size);
     uint32_t color_table_mode = t->texmode1 & MGRAS_TEXMODE1_TABLE;
     bool color_table;
     uint32_t min_filter;
@@ -2909,9 +3086,12 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
      * 64 bytes. The depth-two second-slice payload used in tests is synthetic;
      * physical slice placement remains unknown.
      */
-    if ((!captured_endpoint &&
+    if ((!captured_endpoint && !tram_volume &&
          (t->txsize & 0xffff) != (size << 8 | size)) ||
-        (!volume && depth_size != 1) || depth_size > 64 ||
+        (!volume && depth_size != 1) ||
+        (!tram_volume && depth_size > 64) ||
+        (tram_volume && (t->volume_bytes ||
+                         MGRAS_MDDMA_LOG2_FOURTH(t->mddma_cntrl))) ||
         depth > MGRAS_TEX_DEPTH_12 ||
         (color_table_mode && color_table_mode != MGRAS_TEX_COLOR_TABLE_MODE) ||
         !mgras_tex_environment(s, cls) ||
@@ -2926,14 +3106,14 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                       t->texmode2, t->txsize, t->t_offset);
         return NULL;
     }
-    if (!mgras_tex_draw_level(s, 0, mode, &t->views[0]) ||
+    if (!mgras_tex_draw_level(s, 0, mode, tram_volume, &t->views[0]) ||
         (volume && t->views[0].depth != depth_size)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: textured draw with no level 0 "
                       "loaded under base %u at TXMIPMAP 0x%x\n", t->base,
                       t->txmipmap[0]);
         return NULL;
     }
-    mgras_tex_pyramid(s, mode, format, mip);
+    mgras_tex_pyramid(s, mode, format, mip, tram_volume);
     if (mip) {
         min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
             (t->texmode2 & MGRAS_TEXMODE2_MIP_BETWEEN ?
@@ -3009,6 +3189,9 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
     if (t->on > 1 || t->bracket > 1 || t->load > 1 ||
         t->wide_branch > MGRAS_TEX_WIDE_CLOSED ||
+        t->tl_slices > MGRAS_TEX_SLICES_MAX ||
+        t->load_slice > MGRAS_TEX_SLICES_MAX ||
+        (t->load && t->load_slice && t->load_volume) ||
         (t->loaded_levels & ~((1u << SGI_MGRAS_TEX_LEVELS) - 1)) ||
         t->txaddr >= SGI_MGRAS_TEX_TABLE || t->tl_addr >= SGI_MGRAS_TEX_TABLE ||
         t->staging || t->volume_bytes > SGI_MGRAS_VOLUME_TEX_BYTES ||
@@ -3106,11 +3289,15 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
         if (MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_12 ||
             (!t->load_volume &&
-             !mgras_tram_place(t->load_base, t->load_block,
-                               MGRAS_TEX_SPEC_LOG2W(t->load_spec),
-                               MGRAS_TEX_SPEC_LOG2H(t->load_spec),
-                               t->load_mode, &bit)) ||
+             !mgras_tram_place_slice(t->load_base, t->load_block,
+                                     t->load_slice,
+                                     MGRAS_TEX_SPEC_LOG2W(t->load_spec),
+                                     MGRAS_TEX_SPEC_LOG2H(t->load_spec),
+                                     t->load_mode, &bit)) ||
             !mgras_tex_rect_fits(t->load_x, t->load_y, rw, rh, w, h) ||
+            (t->load_slice &&
+             !mgras_tex_slice_rect_fits(t->load_x, t->load_y, rw, rh, w,
+                                        h)) ||
             t->load_abgr > 1 || t->load_comps < 1 || t->load_comps > 4 ||
             t->load_csize < 1 || t->load_csize > 2 ||
             !mgras_tex_image_fits(t->load_mode, t->load_comps,
@@ -3209,8 +3396,8 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 16,
-    .minimum_version_id = 16,
+    .version_id = 17,
+    .minimum_version_id = 17,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
@@ -3236,6 +3423,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(bracket, SGIMgrasTexture),
         VMSTATE_UINT32(wide_branch, SGIMgrasTexture),
         VMSTATE_UINT32(loaded_levels, SGIMgrasTexture),
+        VMSTATE_UINT32(tl_slices, SGIMgrasTexture),
         VMSTATE_UINT32(load, SGIMgrasTexture),
         VMSTATE_UINT32(load_base, SGIMgrasTexture),
         VMSTATE_UINT32(load_block, SGIMgrasTexture),
@@ -3251,6 +3439,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(load_comps, SGIMgrasTexture),
         VMSTATE_UINT32(load_csize, SGIMgrasTexture),
         VMSTATE_UINT32(load_abgr, SGIMgrasTexture),
+        VMSTATE_UINT32(load_slice, SGIMgrasTexture),
         VMSTATE_UINT32(volume_base, SGIMgrasTexture),
         VMSTATE_UINT32(volume_mode, SGIMgrasTexture),
         VMSTATE_UINT32(volume_level, SGIMgrasTexture),
@@ -3312,11 +3501,12 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
                    t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
                    t->bracket | t->wide_branch | t->load |
-                   t->loaded_levels | t->load_base |
+                   t->loaded_levels | t->tl_slices | t->load_base |
                    t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
                    t->load_size | t->load_depth | t->load_volume |
                    t->load_comps | t->load_csize | t->load_abgr |
+                   t->load_slice |
                    t->load_dma_bytes | t->volume_bytes |
                    t->volume_width | t->volume_height |
                    t->volume_depth | t->volume_base | t->volume_mode |
