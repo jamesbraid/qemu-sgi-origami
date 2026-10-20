@@ -5880,7 +5880,10 @@ static void test_texture_native_volume(gconstpointer opaque)
     /* pfCity finishes all its slices with one 0x176 (IRIX 6.5.30). */
     bool one_finish = mode == 14;
     bool mipmapped = mode == 5 || mode == 6 || mode == 12;
-    /* Modes 11 and 12 load in the other layout mode than the bind's. */
+    /*
+     * Modes 11 and 12 load in the other layout mode than the bind's. Mode
+     * 12 is a guard: the model refused that pairing before mode one too.
+     */
     bool single = mode == 12 || (!mipmapped && mode != 11);
     bool mismatch = mode == 9 || mode == 11 || mode == 12;
     g_autofree char *log = NULL, *found = NULL;
