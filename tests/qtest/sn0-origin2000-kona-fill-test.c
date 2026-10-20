@@ -2198,7 +2198,8 @@ static void test_solid_line_control(gconstpointer opaque)
             kona_command(s, 0x141, (uint32_t[]) { XY(10, 20) }, 1);
         }
         if (mode == 4) {
-            gc[7] = 5;
+            /* Op bits 3:2 that do not repeat bits 1:0 stay deferred. */
+            gc[7] = 6;
             kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
         } else if (mode == 5) {
             qtest_system_reset(s);

@@ -522,6 +522,36 @@ static void test_rgb30_box_and_glyph(void)
 }
 
 /*
+ * A 24-bit TrueColor window whose format has bit 0x80000, as gsview's
+ * windows draw: kon_parseGC repeats op's buffer selector in bits 3:2, so
+ * fills carry op 0x60005 and the geometry builder op 5. The model reads a
+ * repeated selector as the same selection and fills the box. A model that
+ * deferred op bit 2 left gsview's windows black.
+ */
+static void test_mirrored_selector_fill(void)
+{
+    const uint32_t rgb = 0x2468ac;
+    uint64_t c = (uint64_t)widen(rgb >> 16) << 40 |
+                 (uint64_t)widen((rgb >> 8) & 0xff) << 27 |
+                 (uint64_t)widen(rgb & 0xff) << 14 | 0x1ffe;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ c >> 32, (uint32_t)c, 0, 0x1ffe,
+                                           0xffffff, 0xffffff, 0x2804,
+                                           0x60005, 1, 6, 8, 0, 0 }, 13);
+    x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(250, 300), XY(260, 310) }, 2);
+    g_assert_cmphex(front_at(qts, 251, 301) & 0xffffff, ==, rgb);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0, 0x1ffe, 0, 0x1ffe,
+                                           0xffffff, 0xffffff, 4, 5, 1, 6,
+                                           0, 0, 0 }, 13);
+    x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(250, 300), XY(255, 310) }, 2);
+    g_assert_cmphex(front_at(qts, 251, 301) & 0xffffff, ==, 0);
+    g_assert_cmphex(front_at(qts, 256, 301) & 0xffffff, ==, rgb);
+    assert_in_step(qts);
+}
+
+/*
  * Packing 4 under kon_loadNfbBitmapGC's GC, konDrawMonoImage's: the glyph
  * form's words 0 and 1 (0xfff0 and index 0x23 packed) with the geometry
  * configuration, cfg 0xc, op 1 and ifmt 0, as the desktop's small mono
@@ -1589,6 +1619,8 @@ int main(int argc, char **argv)
                    test_packing4_truecolor_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/rgb30-box-and-glyph",
                    test_rgb30_box_and_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/mirrored-selector-fill",
+                   test_mirrored_selector_fill);
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "packing4-mono-image-geometry-gc",
                    test_packing4_mono_image_geometry_gc);

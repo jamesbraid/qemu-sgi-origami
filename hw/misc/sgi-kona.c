@@ -9721,8 +9721,8 @@ static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
                       "sgi-kona: invalid X solid-line vertex count; dropped\n");
         goto done;
     }
-    if (s->x_gc[7] != 1 || s->x_gc[10] ||
-        !sgi_kona_x_decode(s, &gc)) {
+    if (s->x_gc[10] || !sgi_kona_x_decode(s, &gc) ||
+        gc.first_selector != 1 || (s->x_gc[7] & ~0xcU) != 1) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: unsupported X solid-line GC; dropped\n");
         goto done;

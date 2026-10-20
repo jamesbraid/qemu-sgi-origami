@@ -233,6 +233,34 @@ static void test_rgb30(void)
     g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_FIELDS);
 }
 
+/*
+ * A format with bit 0x80000 repeats op's buffer selector in bits 3:2; a
+ * repeat of the same selector decodes as that selector, any other
+ * value in bits 3:2 stays deferred.
+ */
+static void test_mirrored_selector(void)
+{
+    uint32_t words[13];
+    SGIXGC gc;
+
+    memcpy(words, rgb, sizeof(words));
+    words[7] = 0x60005;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmpint(gc.target, ==, SGI_X_GC_MAIN_RGB8);
+    g_assert_cmpint(gc.first_selector, ==, 1);
+    words[6] = 4;
+    words[7] = 5;
+    words[10] = 0;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    words[7] = 6;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
+    memcpy(words, ci, sizeof(words));
+    words[7] = 0x40005;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    words[7] = 0x40006;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
+}
+
 static void test_masks(void)
 {
     SGIXGC gc;
@@ -321,6 +349,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/x-gc/did", test_did);
     g_test_add_func("/sgi/x-gc/classes", test_classes);
     g_test_add_func("/sgi/x-gc/rgb30", test_rgb30);
+    g_test_add_func("/sgi/x-gc/mirrored-selector", test_mirrored_selector);
     g_test_add_func("/sgi/x-gc/masks", test_masks);
     g_test_add_func("/sgi/x-gc/reserved", test_reserved);
     return g_test_run();
