@@ -355,6 +355,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_STATUS_RX_PROD_OFF  16
 #define BCM570X_STATUS_TX_CONS_OFF  18
 #define BCM570X_STATUS_TAG_OFF      4
+/* Chip-image positions, before the programmed non-frame DMA swaps. */
+#define BCM570X_STATUS_RX_STD_CONS_IMAGE_OFF   8
+#define BCM570X_STATUS_RX_JUMBO_CONS_IMAGE_OFF 10
 
 /*
  * The interrupt mailbox. Every write clears the pending status-block
@@ -951,6 +954,10 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
     next_tag = s->status_tag + 1;
     bcm570x_dma_st32(blk, BCM570X_STATFLAG_UPDATED);
     bcm570x_dma_st32(blk + BCM570X_STATUS_TAG_OFF, next_tag);
+    stw_be_p(blk + BCM570X_STATUS_RX_STD_CONS_IMAGE_OFF,
+             s->rx_std_cons);
+    stw_be_p(blk + BCM570X_STATUS_RX_JUMBO_CONS_IMAGE_OFF,
+             s->rx_jumbo_cons);
     bcm570x_dma_st16(blk + BCM570X_STATUS_TX_CONS_OFF, s->status_tx_cons);
     bcm570x_dma_st16(blk + BCM570X_STATUS_RX_PROD_OFF, s->status_rx_prod);
     if (bcm570x_dma_write_buf(s, base, blk, sizeof(blk)) != MEMTX_OK) {
