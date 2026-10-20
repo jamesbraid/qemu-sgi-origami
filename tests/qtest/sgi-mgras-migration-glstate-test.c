@@ -175,6 +175,56 @@ static void test_gl_colour_index_bank_one_migration(void)
 }
 
 /*
+ * A 12-bit index crosses a migration whole and still resolves through the
+ * 4096-entry map of its display ID's 12-bit mode (0x403), as the IRIX 6.5.30
+ * server sets one up for its 12-plane PseudoColor visuals: index 300 shows
+ * CMAP entry 300, not entry 44.
+ */
+static void test_gl_colour_index_twelve_bit_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-ci12-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_one(from, GL_INIT_CI_HDR, 12);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeb(from, REG_XMAP_INDEX, 8 << 2);
+    qtest_writel(from, REG_XMAP_MAIN_MODE, 0x403);
+    mgras_tag_wid(from, 256, 256, 383, 383, 8);
+    mgras_write_cmap_entry(from, 0, 0x2c, 0xff000000);
+    mgras_write_cmap_entry(from, 1, 0x2c, 0x00ff0000);
+    gl_indexs(from, 300);
+    gl_window_rect(from, 10, 10, 20, 30);
+
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_cmphex(gl_window_pixel(to, 15, 20), ==, 300);
+    g_assert_cmphex(mgras_test_display_pixel(to, 256 + 15, 383 - 20), ==,
+                    0x00ff00);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    g_remove(uri + sizeof("file:") - 1);
+    g_rmdir(tmpfs);
+}
+
+/*
  * Colour-index state and a bitmap's image under way cross a migration:
  * b's index mode, write mask and clear index, and a's image stopped after
  * its first word, which finishes on the destination in a's raster index.
@@ -837,6 +887,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-colour-index-bank-one-migration",
         test_gl_colour_index_bank_one_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-index-twelve-bit-migration",
+        test_gl_colour_index_twelve_bit_migration, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-depth-range-migration",
         test_gl_depth_range_migration, false);

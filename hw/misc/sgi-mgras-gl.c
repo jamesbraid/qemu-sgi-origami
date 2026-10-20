@@ -513,11 +513,14 @@ enum {
  * configuration, from which it also forms the index mask (1 << n) - 1, and the
  * RGB initializer (0xd973620) writes 0x0900 and nothing more. So 0x0a04's word
  * is the number of bits a colour index holds, 8 in gr_osview's context setup
- * and in glxinfo's, and 0x0900 marks an RGBA context. That the
+ * and in glxinfo's, 12 in showmap's and interp's on the server's 12-plane
+ * PseudoColor visuals, and 0x0900 marks an RGBA context. That the
  * board switches its colour handling on them is inferred.
  */
 #define MGRAS_GL_INIT_CI         0x00000a04
 #define MGRAS_GL_INIT_RGB        0x00000900
+/* The deepest colour index a pixel keeps (mgras_gl_store_index()). */
+#define MGRAS_GL_INDEX_BITS      12
 /*
  * glIndexs, glIndexi and glIndexf: headers 0x19000202, 0x18000204 and
  * 0x00000204, the colour register 0x02 under the attribute classes for a
@@ -3183,8 +3186,13 @@ static bool mgras_gl_load_rgba(void *opaque, SGIColourTarget target,
  * A colour index as a CI8 pixel in each bank of target, which scans out
  * through the colour map the window's display ID selects, the X server's
  * own CI8 form. The write mask keeps
- * the stored index's bits where it is clear. A context deeper than eight
- * bits keeps its low eight, logged at its setup.
+ * the stored index's bits where it is clear. The pixel keeps as many bits
+ * as the context's index holds, up to twelve: the X server offers
+ * 12-plane PseudoColor visuals with 4096 colour-map entries, and showmap
+ * and interp set up 12-bit contexts on them; a deeper context keeps its
+ * low twelve, logged at its setup. Whether scanout shows eight or twelve
+ * of them is the display ID's mode's (sgi-mgras-display.c). The
+ * discriminating test is gl-colour-index-twelve-bits-reach-4096-entries.
  *
  * Bank 1 takes indices as bank 0 does. The client sets up each colour
  * buffer of a colour-index visual with 0x0a04 (the colour-index initializer,
@@ -3195,10 +3203,10 @@ static bool mgras_gl_load_rgba(void *opaque, SGIColourTarget target,
  * tests are gl-colour-index-draws-into-bank-one and
  * gl-colour-index-swap-shows-the-drawn-bank.
  *
- * A mask with none of the eight bits set leaves the pixel as it was
+ * A mask with none of the context's bits set leaves the pixel as it was
  * (OpenGL 1.2.1, 4.2.2), whatever its format. Approximated: the model
  * tags each pixel with one format rather than keeping planes, so a
- * partial mask over a direct-colour pixel keeps that pixel's low byte
+ * partial mask over a direct-colour pixel keeps that pixel's low bits
  * as the index's other bits and makes it CI8. The discriminating test is
  * gl-colour-index-zero-mask-keeps-the-pixel.
  */
@@ -3207,22 +3215,24 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
 {
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
+    uint32_t planes = MAKE_64BIT_MASK(0, MIN(mgras_gl(s)->cur.index_bits,
+                                             MGRAS_GL_INDEX_BITS));
 
-    if (!(mask & 0xff) || !mgras_gl_owns(s, x, y)) {
+    if (!(mask & planes) || !mgras_gl_owns(s, x, y)) {
         return;
     }
     if (target & 1) {
-        s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & 0xff;
+        s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & planes;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
     if (target & 2) {
-        s->back[idx] = ((s->back[idx] & ~mask) | (index & mask)) & 0xff;
+        s->back[idx] = ((s->back[idx] & ~mask) | (index & mask)) & planes;
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
     for (int i = 0; i < 2; i++) {
         if ((target & (4u << i)) && s->slot[i]) {
             s->slot[i][idx] = ((s->slot[i][idx] & ~mask) | (index & mask)) &
-                              0xff;
+                              planes;
         }
     }
 }
@@ -5879,10 +5889,10 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           "of 0 bits ignored\n");
             return;
         }
-        if (payload[0] > 8) {
+        if (payload[0] > MGRAS_GL_INDEX_BITS) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index context of "
-                          "%u bits is stored as its low 8 bits\n",
-                          payload[0]);
+                          "%u bits is stored as its low %u bits\n",
+                          payload[0], MGRAS_GL_INDEX_BITS);
         }
         sgi_gl_set_index_mode(mgras_gl(s), payload[0]);
         return;

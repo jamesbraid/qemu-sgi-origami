@@ -33,17 +33,38 @@
 
 
 /*
- * A WID selects an XMAP mode, whose bits 9:5 select the colour map. The
+ * An XMAP main mode whose low field is 3 shows a 12-bit colour index;
+ * every other indexed mode shows the pixel's low eight bits. The IRIX
+ * 6.5.30 X server offers 12-plane PseudoColor visuals with 4096 colour-map
+ * entries (xdpyinfo, as on a real Indigo2 IMPACT's server). It gives such a
+ * window display ID 8 and that ID's mode 0x403, places the ID's colour map
+ * at CMAP entries 0 to 4095 (the colour-map group table in impactsr.so),
+ * and loads the window's map there one selector an entry (a captured run).
+ * Its 8-bit IDs 0 to 7 have modes 0x601 to 0x6e1, low field 1. That the
+ * low field names the depth is inferred; its width is unknown.
+ */
+#define MGRAS_XMAP_MODE_FORMAT 0x1f
+#define MGRAS_XMAP_MODE_CI12   0x03
+
+/*
+ * A WID selects an XMAP mode, whose bits 9:5 select the colour map: the
+ * index counts from that map's first entry, so a 12-bit index spans
+ * sixteen maps of 256. The
  * guest packs each entry left-justified, 0xRRGGBB00: every one of the
  * 24,708 observed live data-port writes has a zero low byte, and its
  * palette reads as an exact IRIS default when bits 31:24, 23:16 and 15:8
  * are taken as red, green and blue. The low byte's meaning is unknown.
  * Return the entry in the native 0x00BBGGRR order the callers convert.
  */
-static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
+static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual,
+                               uint32_t index)
 {
-    uint32_t map = (s->xmap[0].mode[visual & 0x1f] >> 5) & 0x1f;
-    uint32_t entry = s->cmap[map * 256 + index];
+    uint32_t mode = s->xmap[0].mode[visual & 0x1f];
+    uint32_t map = (mode >> 5) & 0x1f;
+    uint32_t bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
+                    0xfff : 0xff;
+    uint32_t entry = s->cmap[(map * 256 + (index & bits)) %
+                             SGI_MGRAS_CMAP_ENTRIES];
 
     return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
 }
@@ -137,8 +158,8 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
 /*
  * Resolve one bank word to mgras_cmap_rgb()'s native 0x00BBGGRR order,
  * keyed by its per-pixel format tag (sgi-mgras.h). CI8 indexes through the
- * WID's colour map as before. RGB is a direct 0x00RRGGBB triple a paint
- * wrote (see mgras_draw_fill() and its siblings in
+ * WID's colour map, at the depth the WID's mode shows. RGB is a direct
+ * 0x00RRGGBB triple a paint wrote (see mgras_draw_fill() and its siblings in
  * hw/misc/sgi-mgras-raster.c) and bypasses the CMAP entirely; only its R
  * and B bytes need swapping to this function's native order. RGB12 is the
  * 0xBGR nibble form a 12-bit window's paint stores; each nibble widens to
@@ -163,7 +184,7 @@ static uint32_t mgras_bank_bgr(SGIMgrasState *s, uint32_t word,
 
         return (b * 0x11) << 16 | (g * 0x11) << 8 | r * 0x11;
     }
-    return mgras_cmap_rgb(s, main_did, word & 0xff);
+    return mgras_cmap_rgb(s, main_did, word);
 }
 
 /*
