@@ -1291,6 +1291,114 @@ static void test_lit_flat_triangle(void)
 }
 
 /*
+ * The lit triangle's light and material, with IRIS GL's colour and normal
+ * rule turned on through glIglooInterfaceSGIX's words: colour-normal 0x1be
+ * nonzero and LMC colour 0x113 with 1.
+ */
+static void gl_iris_rule_setup(QTestState *s)
+{
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0xd9, (uint32_t[]){ 0 }, 1);
+    kona_command_f(s, 0xdb, (float[]){ 90, 1, 0, 0 }, 4);
+    kona_command(s, 0x7, (uint32_t[]){ 0x4000, 0x1203, F0, F1, F0, F0 }, 6);
+    kona_command(s, 0xd8, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x97, (uint32_t[]){ 0x408, 0x1201, fbits(0.8),
+                                       fbits(0.4), fbits(0.2), F1 }, 6);
+    kona_command(s, 0x24, (uint32_t[]){ 0xb50 }, 1);
+    kona_command(s, 0x24, (uint32_t[]){ 0x4000 }, 1);
+    kona_command(s, 0x1be, (uint32_t[]){ 1 }, 1);
+    kona_command(s, 0x113, (uint32_t[]){ 1 }, 1);
+}
+
+static void gl_iris_triangle(QTestState *s)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.7, 0 }, { 0.7, -0.6, 0 }, { -0.1, 0.8, 0 },
+    };
+
+    gl_begin(s, 4);
+    for (int k = 0; k < 3; k++) {
+        gl_vertex2f(s, tri[k][0], tri[k][1]);
+    }
+    gl_end(s);
+}
+
+static void assert_iris_triangle(QTestState *s, uint32_t rgb)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.7, 0 }, { 0.7, -0.6, 0 }, { -0.1, 0.8, 0 },
+    };
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    expected_clear(e, 0);
+    expected_object(e, mat_identity(), mat_identity(), tri, 3, rgb);
+    assert_window_matches(s, e);
+}
+
+/*
+ * IRIS GL's colour and normal rule: with lighting on, a colour sent after
+ * the last normal draws as itself, (0.53, 0.27, 0.11) as 0x87451c; a
+ * normal sent after it lights the next triangle with the material again,
+ * as lit-flat-triangle draws it (0xad5c33), which also shows the model
+ * put the material back. With colour-normal 0 the rule is off and the
+ * colour after the normal is lit too. A model that ignored the rule
+ * draws all three lit.
+ */
+static void test_iris_colour_after_normal_unlit(void)
+{
+    gl_reset();
+    gl_iris_rule_setup(qts);
+    kona_command_f(qts, 0x78, (float[]){ 0, 0.6, 0.8 }, 3);
+    kona_command_f(qts, 0x63, (float[]){ 0.53, 0.27, 0.11 }, 3);
+    gl_iris_triangle(qts);
+    assert_iris_triangle(qts, 0x87451c);
+
+    gl_window_cleared(qts, 0, 0, 0);
+    kona_command_f(qts, 0x78, (float[]){ 0, 0.6, 0.8 }, 3);
+    gl_iris_triangle(qts);
+    assert_iris_triangle(qts, 0xad5c33);
+
+    gl_window_cleared(qts, 0, 0, 0);
+    kona_command(qts, 0x1be, (uint32_t[]){ 0 }, 1);
+    kona_command_f(qts, 0x63, (float[]){ 0.53, 0.27, 0.11 }, 3);
+    gl_iris_triangle(qts);
+    assert_iris_triangle(qts, 0xad5c33);
+}
+
+/*
+ * The rule and a colour after the normal, set on the source, still leave
+ * the destination's triangle unlit after a migration.
+ */
+static void test_iris_rule_across_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-3d-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    gl_iris_rule_setup(from);
+    kona_command_f(from, 0x78, (float[]){ 0, 0.6, 0.8 }, 3);
+    kona_command_f(from, 0x63, (float[]){ 0.53, 0.27, 0.11 }, 3);
+    sgi_migrate_stopped(from, uri);
+
+    gl_iris_triangle(to);
+    assert_iris_triangle(to, 0x87451c);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
  * A packed glColor3ub caught by a migration between its two words: the
  * selector word, carrying red 0xff and green 0, arrives on the source and
  * blue 0xff on the destination, which then draws a triangle magenta. A
@@ -16446,6 +16554,10 @@ int main(int argc, char **argv)
              test_lit_flat_triangle);
     add_case("sn0/origin2000/kona-3d/packed-colour-across-migration",
              test_packed_colour_across_migration);
+    add_case("sn0/origin2000/kona-3d/iris-colour-after-normal-unlit",
+             test_iris_colour_after_normal_unlit);
+    add_case("sn0/origin2000/kona-3d/iris-rule-across-migration",
+             test_iris_rule_across_migration);
     add_case("sn0/origin2000/kona-3d/depth-less-and-greater",
              test_depth_less_and_greater);
     add_case("sn0/origin2000/kona-3d/depth-without-buffer",

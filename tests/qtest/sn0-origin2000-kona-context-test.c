@@ -3003,7 +3003,9 @@ static void test_tex_table_usage_framed(void)
  * 0x112 is dropped, its 1 opens a ten-word buffer configuration that
  * swallows the commands after it, and the client's later query is lost.
  * Framed, nothing is dropped, no buffer configuration is seen and the
- * colour, index and enable after them frame whole.
+ * colour, index and enable after them frame whole. The model keeps
+ * colour-normal and LMC colour for IRIS GL's colour and normal rule and
+ * consumes the other three.
  */
 static void test_igloo_interface_framed(void)
 {
@@ -3014,8 +3016,7 @@ static void test_igloo_interface_framed(void)
         { 0x24, 0xba1 }, { 0xce, 0x203 }, { 0x112, 1 }, { 0x113, 1 },
         { 0x1be, 0 }, { 0xc7, 0 }, { 0x113, 0 }, { 0x1a9, 0 }, { 0x1c9, 1 },
     };
-    static const uint32_t igloo[] = { 0x112, 0x113, 0x1a9, 0x1be, 0x1c9 };
-    static const unsigned igloo_count[] = { 1, 2, 1, 1, 1 };
+    static const uint32_t igloo[] = { 0x112, 0x1a9, 0x1c9 };
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
     const char *activated;
@@ -3040,9 +3041,11 @@ static void test_igloo_interface_framed(void)
         g_autofree char *line =
             g_strdup_printf("token 0x%x argc 1 consumed", igloo[i]);
 
-        g_assert_cmpuint(count_occurrences(activated, line), ==,
-                         igloo_count[i]);
+        g_assert_cmpuint(count_occurrences(activated, line), ==, 1);
     }
+    g_assert_cmpuint(count_occurrences(activated, "sgi_kona_gl_iris_rule"),
+                     ==, 3);
+    g_assert_nonnull(strstr(activated, "colour-normal 0x0 lmc colour 0x0\n"));
     g_assert_nonnull(strstr(activated, "token 0x112 args 0x1 0x0 0x0"
                                        " argc 1\n"));
     g_assert_nonnull(strstr(activated, "token 0x6b args 0x0 0x0 0x0"

@@ -395,12 +395,24 @@ typedef struct SGIKonaGLPipe {
     bool texture_rebind_refused;
 } SGIKonaGLPipe;
 
+/*
+ * IRIS GL's colour and normal rule (sgi_kona_gl_iris_vertex()): the last
+ * colour-normal and LMC colour words glIglooInterfaceSGIX sent, and
+ * whether a colour came after the last normal.
+ */
+typedef struct SGIKonaGLIrisRule {
+    uint32_t colour_normal;
+    uint32_t lmc;
+    bool colour_last;
+} SGIKonaGLIrisRule;
+
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
 typedef struct SGIKonaGLState {
     SGIGLContext gl;
     SGIKonaGLWindow window;
     SGIKonaGLPipe pipe;
+    SGIKonaGLIrisRule iris;
     uint32_t attrib_depth;
     SGIGLContext attrib[SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLReturnState return_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
