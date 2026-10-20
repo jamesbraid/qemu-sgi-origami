@@ -1259,9 +1259,12 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
 
 /*
  * Texture coordinate generation (OpenGL 1.2.1, 2.10.4) for a vertex at
- * object position obj with normal n: each enabled coordinate replaces the
- * current one. OBJECT_LINEAR is the object plane's product with obj,
- * EYE_LINEAR the eye plane's (kept as p M^-1) with the eye position, and
+ * object position obj, which the modelview takes to the eye from pos,
+ * with normal n: each enabled coordinate replaces the current one. pos
+ * is obj but for SGIX_sprite, whose T A R lie between object and eye
+ * coordinates (MM = M T A R), so pos is T A R obj and n is A R's turn of
+ * the current normal. OBJECT_LINEAR is the object plane's product with
+ * obj, the vertex as given, EYE_LINEAR the eye plane's with M pos, and
  * SPHERE_MAP, for S and T only, takes the reflection r of the unit vector
  * u from the eye to the vertex about the eye normal n', r = u - 2 n'
  * (n' . u), and gives r_x / m + 1/2 and r_y / m + 1/2 with m = 2
@@ -1269,14 +1272,15 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
  * lighting equation; a head's own arithmetic is unknown.
  */
 static void sgi_gl_tex_gen(const SGIGLContext *c, const float obj[4],
-                           const float n[3], float strq[4])
+                           const float pos[4], const float n[3],
+                           float strq[4])
 {
     const float *mv = c->cur.modelview;
     float eye[4], u[3], normal[3], r[3], m, nu;
 
     for (int row = 0; row < 4; row++) {
-        eye[row] = mv[row] * obj[0] + mv[4 + row] * obj[1] +
-                   mv[8 + row] * obj[2] + mv[12 + row] * obj[3];
+        eye[row] = mv[row] * pos[0] + mv[4 + row] * pos[1] +
+                   mv[8 + row] * pos[2] + mv[12 + row] * pos[3];
     }
     for (int i = 0; i < 4; i++) {
         const float *p;
@@ -1319,13 +1323,14 @@ static void sgi_gl_tex_gen(const SGIGLContext *c, const float obj[4],
  * clipping (OpenGL 1.2.1, 2.10.2).
  */
 static void sgi_gl_texture_coord(const SGIGLContext *c, const float obj[4],
-                                 const float n[3], float out[4])
+                                 const float pos[4], const float n[3],
+                                 float out[4])
 {
     float strq[4];
 
     memcpy(strq, c->cur_texcoord, sizeof(strq));
     if (c->tex_gen_enabled) {
-        sgi_gl_tex_gen(c, obj, n, strq);
+        sgi_gl_tex_gen(c, obj, pos, n, strq);
     }
     for (int row = 0; row < 4; row++) {
         double value = 0;
@@ -1547,13 +1552,14 @@ void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
                            const uint32_t *bits, unsigned int components,
                            float out[SGI_GL_VERTEX_FLOATS])
 {
-    float normal[3];
+    float normal[3], obj[4];
 
     memset(out, 0, SGI_GL_VERTEX_FLOATS * sizeof(float));
     out[SGI_GL_V_POSITION + 3] = 1.0f;
     memcpy(&out[SGI_GL_V_POSITION], bits, components * sizeof(uint32_t));
     memcpy(&out[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
     memcpy(normal, c->cur_normal, sizeof(normal));
+    memcpy(obj, &out[SGI_GL_V_POSITION], sizeof(obj));
     if (c->sprite) {
         double s4[16], rot[9], p[4];
 
@@ -1574,7 +1580,7 @@ void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
         }
     }
     memcpy(&out[SGI_GL_V_NORMAL], normal, sizeof(normal));
-    sgi_gl_texture_coord(c, &out[SGI_GL_V_POSITION], normal,
+    sgi_gl_texture_coord(c, obj, &out[SGI_GL_V_POSITION], normal,
                          &out[SGI_GL_V_TEXCOORD]);
     memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     out[SGI_GL_V_INDEX] = c->cur_index;
@@ -1830,7 +1836,7 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         }
         c->raster_index = c->cur_index;
     }
-    sgi_gl_texture_coord(c, obj, c->cur_normal, c->raster_texcoord);
+    sgi_gl_texture_coord(c, obj, obj, c->cur_normal, c->raster_texcoord);
 }
 
 /*
