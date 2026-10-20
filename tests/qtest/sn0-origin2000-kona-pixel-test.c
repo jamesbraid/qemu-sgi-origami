@@ -1417,10 +1417,43 @@ static void read_gl_command(QTestState *s, uint32_t token,
     }
 }
 
+/*
+ * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
+ * rows counted down, ends exclusive, as kon_drawDid sends it: whole-screen
+ * position and clip, then a display-ID GC (cfg 8) writing id into bits
+ * 7:2. The read GC is loaded again after it.
+ */
+static void read_paint_display_id(QTestState *s, uint32_t x1, uint32_t y1,
+                                  uint32_t x2, uint32_t y2, uint32_t id)
+{
+    const uint32_t value = id << 2;
+    const uint32_t gc[13] = {
+        ((value & 15) << 3) | ((value & 0xfff0) << 4), 0, 0, 0,
+        0xf00fff, 0, 8, 1, 0, 6, 0, 1, 1,
+    };
+
+    x_command(s, TOKEN_POSITION,
+              (uint32_t[]){ 0, 0, KONA_FB_WIDTH, KONA_FB_HEIGHT }, 4);
+    x_command(s, TOKEN_CLIP,
+              (uint32_t[]){ 1, 0, 0, KONA_FB_WIDTH, KONA_FB_HEIGHT }, 5);
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(s, 0x154, (uint32_t[]){ x1 << 16 | y1, x2 << 16 | y2 }, 2);
+    read_gc(s);
+}
+
+/*
+ * A double-buffered GL window showing bank 1 hides bank 0 only at the
+ * pixels holding its display ID, the pixels the display shows from bank
+ * 1. Where the X server has given its pixels another window's ID, as a
+ * dialog over the GL window or a dead client's repainted window, bank 0
+ * shows and the indexed read answers from it. A read that would cover
+ * any bank-1 pixel is refused, and answered with zeros.
+ */
 static void test_read_bank1_window(void)
 {
     qtest_system_reset(qts);
     read_scene(qts);
+    read_paint_display_id(qts, 454, 700, 460, 720, 0xd);
     read_gl_command(qts, 1, (uint32_t[]){ 0, 12, 0, 1, 0, 0, 0, 0, 0, 0 },
                     10, false);
     read_gl_command(qts, 0x1f3,
@@ -1442,14 +1475,10 @@ static void test_read_bank1_window(void)
     qtest_clock_step(qts, 20000000);
     read_refused(qts, 454, 700);
 
-    /* A one-pixel intersection refuses the whole otherwise-valid rectangle. */
-    read_gl_command(qts, 0x1f3,
-                    (uint32_t[]){ 459, 304, 0x05670080, 0x05670080,
-                                  459, 304, 6, 20, 0, 0xd, 0 }, 11, true);
+    /* One pixel still showing bank 1 refuses the whole rectangle. */
+    read_paint_display_id(qts, 454, 700, 460, 719, 1);
     read_refused(qts, 454, 700);
-    read_gl_command(qts, 0x1f3,
-                    (uint32_t[]){ 460, 304, 0x05670080, 0x05670080,
-                                  460, 304, 6, 20, 0, 0xd, 0 }, 11, true);
+    read_paint_display_id(qts, 454, 719, 460, 720, 1);
     read_supported(qts);
 }
 
