@@ -90,10 +90,12 @@ sgi_kona_x_box_data(uint32_t token, unsigned int words) "token 0x%x words %u"
 sgi_kona_x_box_data_dropped(uint32_t words, uint32_t next) "%u box words dropped before 0x%x"
 # The X load position, recorded only; an X load clip ending a clip list,
 # with the list's count and the last rectangle; and the words of a clip
-# list dropped when a token other than X load clip ends it.
+# list dropped when a token other than X load clip ends it, or an X data or
+# clip-list run kept past a word from the kernel or another context.
 sgi_kona_x_position(int32_t x, int32_t y, uint32_t w, uint32_t h) "x %d y %d width %u height %u"
 sgi_kona_x_clip(uint32_t count, int32_t x1, int32_t y1, int32_t x2, int32_t y2) "rectangles %u last (%d, %d) to (%d, %d)"
 sgi_kona_x_clip_run_dropped(uint32_t words, uint32_t next) "%u clip list words dropped before 0x%x"
+sgi_kona_x_run_held(uint32_t words, uint32_t next, int owner) "%u X run words kept past 0x%x for context %d"
 # An X stipple store opened with its entry and size, and completed,
 # stored=0 when the entry keeps no pattern; a rotate; and a load.
 sgi_kona_x_stipple_store(uint32_t entry, uint32_t width, uint32_t height) "entry 0x%x width %u height %u"
