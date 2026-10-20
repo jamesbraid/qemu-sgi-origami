@@ -47,6 +47,10 @@
 #define MACE_ETH_MEMORY_ERROR_INT (1U << 3)
 #define MACE_ETH_TX_STATUS_DONE (UINT64_C(1) << 63)
 #define MACE_ETH_TX_STATUS_SUCCESS (1U << 23)
+#define MACE_ETH_TX_REINIT_STOP  0x01
+#define MACE_ETH_TX_REINIT_RESET 0x02
+#define MACE_ETH_TX_REINIT_BASE  0x04
+#define MACE_ETH_TX_REINIT_READY 0x07
 #define MACE_ETH_MDIO_DATA 0x60
 #define MACE_ETH_MDIO_ADDRESS 0x68
 #define MACE_ETH_MDIO_READ 0x70
@@ -394,6 +398,7 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
         s->int_status |= MACE_ETH_TX_DONE_INT;
     }
     s->tx_read = (s->tx_read + 1) % ring_entries;
+    s->tx_reinit_seen = 0;
     return true;
 
 memory_error:
@@ -541,6 +546,9 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
         }
         switch (reg) {
         case MACE_ETH_MAC_CONTROL:
+            if (value & MACE_ETH_MAC_RESET) {
+                s->tx_reinit_seen |= MACE_ETH_TX_REINIT_RESET;
+            }
             s->mac_control = MACE_ETH_REVISION | (value & 0x1fffffff);
             if (value & (MACE_ETH_MAC_LOOPBACK | MACE_ETH_MAC_SIA)) {
                 qemu_log_mask(LOG_UNIMP,
@@ -551,6 +559,19 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             sgi_mace_eth_schedule_flush(s);
             return;
         case MACE_ETH_DMA_CONTROL:
+            if ((s->dma_control & MACE_ETH_TX_ENABLE) &&
+                !(value & MACE_ETH_TX_ENABLE)) {
+                s->tx_reinit_seen |= MACE_ETH_TX_REINIT_STOP;
+            }
+            if (!(s->dma_control & MACE_ETH_TX_ENABLE) &&
+                (value & MACE_ETH_TX_ENABLE)) {
+                if (s->tx_reinit_seen == MACE_ETH_TX_REINIT_READY &&
+                    !(s->mac_control & MACE_ETH_MAC_RESET)) {
+                    /* Full software reinit is a model policy, not MAC reset. */
+                    s->tx_read = s->tx_write;
+                }
+                s->tx_reinit_seen = 0;
+            }
             s->dma_control = value & 0xffff;
             if (value & MACE_ETH_RX_GATHER) {
                 qemu_log_mask(LOG_UNIMP,
@@ -578,6 +599,12 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             return;
         case MACE_ETH_TX_BASE:
             s->tx_base = value & UINT32_C(0xffffe000);
+            if (!(s->dma_control & MACE_ETH_TX_ENABLE) &&
+                (s->tx_reinit_seen & (MACE_ETH_TX_REINIT_STOP |
+                                      MACE_ETH_TX_REINIT_RESET)) ==
+                (MACE_ETH_TX_REINIT_STOP | MACE_ETH_TX_REINIT_RESET)) {
+                s->tx_reinit_seen |= MACE_ETH_TX_REINIT_BASE;
+            }
             return;
         case MACE_ETH_STATION:
             s->station = value & UINT64_C(0xffffffffffff);
@@ -659,6 +686,7 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->tx_base = 0;
     s->tx_read = 0;
     s->tx_write = 0;
+    s->tx_reinit_seen = 0;
     s->int_status = 0;
     s->rx_read = 0;
     s->rx_write = 0;
@@ -704,6 +732,7 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_UINT32(int_status, SGIMACEEthState),
         VMSTATE_UINT16(tx_read, SGIMACEEthState),
         VMSTATE_UINT16(tx_write, SGIMACEEthState),
+        VMSTATE_UINT8(tx_reinit_seen, SGIMACEEthState),
         VMSTATE_UINT32_ARRAY(rx_fifo, SGIMACEEthState, 16),
         VMSTATE_UINT8(rx_read, SGIMACEEthState),
         VMSTATE_UINT8(rx_write, SGIMACEEthState),
