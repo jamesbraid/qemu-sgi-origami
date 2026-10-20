@@ -324,6 +324,14 @@ enum {
 #define SGI_GL_HINTS            5
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_NORMALIZE        0x0ba1
+/* SGIX_sprite: the enable, its parameters and the modes. */
+#define SGI_GL_SPRITE_SGIX                  0x8148
+#define SGI_GL_SPRITE_MODE_SGIX             0x8149
+#define SGI_GL_SPRITE_AXIS_SGIX             0x814a
+#define SGI_GL_SPRITE_TRANSLATION_SGIX      0x814b
+#define SGI_GL_SPRITE_AXIAL_SGIX            0x814c
+#define SGI_GL_SPRITE_OBJECT_ALIGNED_SGIX   0x814d
+#define SGI_GL_SPRITE_EYE_ALIGNED_SGIX      0x814e
 #define SGI_GL_VIEWPORT         0x0ba2
 #define SGI_GL_MODELVIEW_STACK_DEPTH 0x0ba3
 #define SGI_GL_PROJECTION_STACK_DEPTH 0x0ba4
@@ -837,6 +845,14 @@ typedef struct SGIGLContext {
     uint32_t line_phase;
     /* Advisory modes are retained even though rendering ignores them. */
     uint32_t hints[SGI_GL_HINTS];
+    /*
+     * SGIX_sprite: whether it is enabled, the mode, and the axis and
+     * translation, as the family last set them.
+     */
+    uint32_t sprite;            /* 0 or 1 */
+    uint32_t sprite_mode;
+    float sprite_axis[3];
+    float sprite_translation[3];
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -1200,6 +1216,14 @@ void sgi_gl_set_normalize_always(SGIGLContext *c, bool on);
  */
 void sgi_gl_set_lighting(SGIGLContext *c, bool on);
 void sgi_gl_set_local_viewer(SGIGLContext *c, bool on);
+/*
+ * glSpriteParameter*SGIX: the mode, or the axis or translation's three
+ * values. Refuses, changing nothing, a pname or mode SGIX_sprite does not
+ * name and a value that is not finite.
+ */
+bool sgi_gl_sprite_parameter(SGIGLContext *c, uint32_t pname,
+                             const float v[3]);
+bool sgi_gl_sprite_mode(SGIGLContext *c, uint32_t mode);
 /* Execute one command against the context, sending any work to sink. */
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd);
