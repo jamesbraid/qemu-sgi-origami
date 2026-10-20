@@ -3006,6 +3006,12 @@ static void odyssey_buffer_store(SGIOdysseyState *s, unsigned b,
                     x, y, word);
 }
 
+/* Whether the last 0x1017 select named the id-plane destination. */
+static bool odyssey_dest_is_id_planes(SGIOdysseyState *s)
+{
+    return s->dest_buffer_word == ODSY_DEST_ID_PLANES;
+}
+
 /*
  * The buffers a colour write lands in, bit b for buffer b, from the last
  * 0x0424 drawing mask (ODSY_REG_DRAW_MASK). A right-eye bit folds into its
@@ -3361,6 +3367,55 @@ static uint32_t odyssey_fill_pixel(bool is_index, uint32_t value)
 }
 
 /*
+ * One pixel's id-plane write: the bits mask selects of the id byte when the
+ * drawing mask selects buffer 0, and of the overlay pixel byte when it
+ * selects buffer 1 (ODSY_OVERLAY_MODE_BASE).
+ */
+static void odyssey_aux_store(SGIOdysseyState *s, uint64_t at,
+                              unsigned buffers, uint8_t value, uint8_t mask)
+{
+    if (buffers & (1u << ODSY_AUX_ID_BUFFER)) {
+        s->did[at] = (s->did[at] & ~mask) | (value & mask);
+    }
+    if (buffers & (1u << ODSY_AUX_OVERLAY_BUFFER)) {
+        s->overlay[at] = (s->overlay[at] & ~mask) | (value & mask);
+    }
+    if (!(buffers & ((1u << ODSY_AUX_ID_BUFFER) |
+                     (1u << ODSY_AUX_OVERLAY_BUFFER))) &&
+        !s->aux_mask_reported) {
+        s->aux_mask_reported = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: id-plane write with "
+                      "drawing mask 0x%x selects neither the id nor "
+                      "the overlay byte; dropped\n", s->draw_mask);
+    }
+}
+
+/*
+ * One pixel the X server draws at the id-plane destination: the index's low
+ * byte combined through op with the byte it lands on -- the overlay byte
+ * when the drawing mask selects buffer 1, else the id byte -- and stored
+ * under the 0x1023 plane mask (odyssey_aux_store()).
+ */
+static void odyssey_paint_aux(SGIOdysseyState *s, int64_t x, int64_t y,
+                              uint32_t index, uint8_t op)
+{
+    uint64_t at = (uint64_t)y * SGI_ODYSSEY_WIDTH + x;
+    unsigned buffers = odyssey_draw_buffers(s);
+    uint8_t byte = index;
+
+    if (!odyssey_pixel_allowed(s, x, y)) {
+        return;
+    }
+    if (op != SGI_LOGIC_COPY) {
+        byte = sgi_logic_op(op, index,
+                            buffers & (1u << ODSY_AUX_OVERLAY_BUFFER) ?
+                            s->overlay[at] : s->did[at]);
+    }
+    odyssey_aux_store(s, at, buffers, byte,
+                      s->plane_write_mask >> ODSY_PLANE_MASK_SHIFT);
+}
+
+/*
  * One pixel of an integer primitive -- a QUADS rectangle, a pattern quad, a
  * line, point or polygon pixel -- combined with each selected buffer through
  * the logical operation 0x0422 names, when 0x0404 enables one for the
@@ -3371,6 +3426,12 @@ static uint32_t odyssey_fill_pixel(bool is_index, uint32_t value)
  * an RGB result keeps the fourth byte opaque, as every 2D fill does
  * (odyssey_pack_pixel()). Images and copies do not come through here: whether
  * the board applies the operation to them is unknown.
+ *
+ * At the id-plane destination the pixel goes to the id or overlay byte
+ * instead, under the 0x1023 plane mask, as the X server's plane clear does
+ * (odyssey_clear_planes()): 4Dwm's overlay menus draw their text and bevels
+ * there. Its logical operation reads the overlay byte when buffer 1 is
+ * selected and the id byte otherwise.
  */
 static void odyssey_paint_integer(SGIOdysseyState *s, int64_t x, int64_t y,
                                   bool is_index, uint32_t value)
@@ -3381,6 +3442,12 @@ static void odyssey_paint_integer(SGIOdysseyState *s, int64_t x, int64_t y,
     uint8_t op = s->gl_ctx.cur.logic_op_mode - SGI_GL_CLEAR;
     unsigned buffers = odyssey_draw_buffers(s);
 
+    if (odyssey_dest_is_id_planes(s)) {
+        odyssey_paint_aux(s, x, y, src,
+                          (s->pattern_mode & enable) && op != SGI_LOGIC_COPY ?
+                          op : SGI_LOGIC_COPY);
+        return;
+    }
     if (!(s->pattern_mode & enable) || op == SGI_LOGIC_COPY) {
         odyssey_paint_pixel(s, x, y, src);
         return;
@@ -3443,20 +3510,7 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
             if (!odyssey_pixel_allowed(s, px, py)) {
                 continue;
             }
-            if (buffers & (1u << ODSY_AUX_ID_BUFFER)) {
-                s->did[at] = (s->did[at] & ~mask) | (value & mask);
-            }
-            if (buffers & (1u << ODSY_AUX_OVERLAY_BUFFER)) {
-                s->overlay[at] = (s->overlay[at] & ~mask) | (value & mask);
-            }
-            if (!(buffers & ((1u << ODSY_AUX_ID_BUFFER) |
-                             (1u << ODSY_AUX_OVERLAY_BUFFER))) &&
-                !s->aux_mask_reported) {
-                s->aux_mask_reported = true;
-                qemu_log_mask(LOG_UNIMP, "sgi-odyssey: id-plane write with "
-                              "drawing mask 0x%x selects neither the id nor "
-                              "the overlay byte; dropped\n", s->draw_mask);
-            }
+            odyssey_aux_store(s, at, buffers, value, mask);
         }
     }
     /* A pixel's drawable picks its colour at scanout. */
@@ -4049,7 +4103,7 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
 static int odyssey_image_object(SGIOdysseyState *s)
 {
     if (!s->dest_base || s->dest_base == s->dma_colour_base ||
-        s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
+        odyssey_dest_is_id_planes(s)) {
         return -1;
     }
     return odyssey_object_find(s, s->dest_base);
@@ -4080,6 +4134,17 @@ static void odyssey_image_put(SGIOdysseyState *s, uint32_t rgba,
     if (obj >= 0) {
         /* An off-screen object: box coordinates, no window or id tests. */
         odyssey_object_store(s, obj, s->image_cur_x, s->image_cur_y, rgba);
+    } else if (odyssey_dest_is_id_planes(s)) {
+        /* 4Dwm's menu cascade arrows: index images into the overlay. */
+        if (is_index) {
+            odyssey_paint_aux(s, (int64_t)s->image_cur_x + s->win_origin[0],
+                              (int64_t)s->image_cur_y + s->win_origin[1],
+                              rgba, SGI_LOGIC_COPY);
+        } else if (!s->aux_image_reported) {
+            s->aux_image_reported = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: an RGB image to the "
+                          "id-plane destination is not modeled; dropped\n");
+        }
     } else {
         /* Screen pixels are window-relative; object pixels are not. */
         odyssey_paint_pixel(s,
@@ -4464,7 +4529,7 @@ static uint32_t odyssey_float_index(uint32_t bits)
  */
 static bool odyssey_gl_to_aux(SGIOdysseyState *s)
 {
-    return s->dest_buffer_word == ODSY_DEST_ID_PLANES &&
+    return odyssey_dest_is_id_planes(s) &&
            (s->draw_word & ~ODSY_DRAW_WORD_STATE) == s->dest_base;
 }
 
@@ -7416,9 +7481,11 @@ static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
      * destination word: it updates the did plane under the rectangle and does
      * not touch the colour framebuffer. The id value is the raw COLOR_INDEX
      * operand (id << 3), the mask the 0x1023 operand shifted down from its <<
-     * 12 position.
+     * 12 position. A pattern quad there is overlay text and goes through
+     * the pattern path, which odyssey_paint_integer() sends to the same
+     * bytes.
      */
-    if (s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
+    if (odyssey_dest_is_id_planes(s) && !odyssey_pattern_enabled(s)) {
         odyssey_clear_planes(s, x0, y0, x1 - x0, y1 - y0,
                              s->gl_color_index,
                              (s->plane_write_mask >> ODSY_PLANE_MASK_SHIFT) &
@@ -9394,7 +9461,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          */
         s->dest_buffer_word = s->cmd_operand[ODSY_DEST_SELECT_VALUE_INDEX];
         s->dest_base = s->cmd_operand[ODSY_DEST_SELECT_BASE_INDEX];
-        if (!s->dest_base || s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
+        if (!s->dest_base || odyssey_dest_is_id_planes(s)) {
             break;
         }
         if (!odyssey_board_address_valid(s, s->dest_base)) {
@@ -10982,6 +11049,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->overlay_mode_reported = false;
     s->gl_aux_reported = false;
     s->aux_mask_reported = false;
+    s->aux_image_reported = false;
     s->backend_index = 0;
     s->backend_count = 0;
     s->reported_addr_count = 0;

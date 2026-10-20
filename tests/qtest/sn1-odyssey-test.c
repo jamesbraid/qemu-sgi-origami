@@ -10751,6 +10751,100 @@ static void test_scanout_overlay_unselected_mask(void)
 }
 
 /*
+ * 4Dwm's menus are windows in the overlay visual: id 5 with mode 0xb1 here,
+ * over a background of overlay pixel 0x30.
+ */
+static QTestState *overlay_menu_start(void)
+{
+    QTestState *qts = board_start("");
+
+    dispmode_write(qts, 1, ODSY_DISPMODE_GROUP17);
+    lut_write(qts, 0x1105, ODSY_LUT_RED);
+    id_plane_write(qts, 1, 0xf8, 100, 100, 140, 140);
+    colour_index_fill(qts, 5, 100, 100, 140, 140);
+    aux_write(qts, 5, 0x07, 0x3, 100, 100, 140, 140);
+    aux_write(qts, 0x30, 0xff, 0xc, 100, 100, 140, 140);
+    lut_write(qts, 0x2925, 0xb1);
+    lut_write(qts, 0x1630, ODSY_LUT_BLUE);
+    lut_write(qts, 0x1602, ODSY_LUT_GREEN);
+    g_assert_cmphex(odsy_shown(qts, 101, 100), ==, 0x0000ffffu);
+    return qts;
+}
+
+/* An X server destination select of the id planes with third word value. */
+static void aux_select(QTestState *qts, uint32_t value)
+{
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x142000);
+    cmd_push(qts, 0x50);
+    cmd_push(qts, value);
+    cmd_push(qts, 0);
+}
+
+/*
+ * A one-bit glyph at (100, 100) in index 2: its set bit shows the overlay
+ * entry 2, its clear bits keep the background, and the colour buffers and
+ * the id byte are untouched.
+ */
+static void overlay_menu_glyph(QTestState *qts)
+{
+    uint32_t bitmap[32] = { [0] = 0x80000000 };
+
+    pattern_load(qts, bitmap);
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_32X32);
+    cmd_push(qts, ODSY_CMD_LOGIC_OP);
+    cmd_push(qts, 3);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0x80000 | ODSY_PATTERN_MODE_ENABLE);
+    index_fill(qts, 2, 100, 100, 104, 102);
+    g_assert_cmphex(odsy_shown(qts, 100, 100), ==, 0x00ff00ffu);
+    g_assert_cmphex(odsy_shown(qts, 101, 100), ==, 0x0000ffffu);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 100, 100), ==, 5);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 100, 100), ==, 0);
+    g_assert_cmphex(odsy_did(qts, 100, 100), ==, (1 << 3) | 5);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0x80000);
+}
+
+/*
+ * The X server draws a menu's text as pattern quads, its bevels as lines
+ * and its cascade arrows as index images, at the id-plane destination under
+ * drawing mask 0xc and plane mask 0xff. Each must land in the overlay byte
+ * over the menu's background and leave the colour buffers alone.
+ */
+static void test_scanout_overlay_menu(void)
+{
+    QTestState *qts = overlay_menu_start();
+
+    aux_select(qts, ODSY_DEST_ID_PLANES);
+    overlay_menu_glyph(qts);
+
+    /* A bevel line. */
+    colour_index(qts, 2);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 110, 110);
+    vertex2i(qts, 120, 110);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_shown(qts, 115, 110), ==, 0x00ff00ffu);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 115, 110), ==, 0);
+
+    /* A cascade arrow: indices 2, 0x30, 2, 0x30. */
+    image_begin(qts, 130, 120, 134, 121);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x41));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x02300230);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_shown(qts, 130, 120), ==, 0x00ff00ffu);
+    g_assert_cmphex(odsy_shown(qts, 131, 120), ==, 0x0000ffffu);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 130, 120), ==, 0);
+    board_quit(qts);
+}
+
+/*
  * The 0x840 drawable-id test. When a window's visible region needs more than
  * four rectangles, the X server sends its bounding rectangle alone and the
  * kernel enables the test in 0x840's second operand: bit 16 on, the id mask
@@ -20017,6 +20111,7 @@ int main(int argc, char **argv)
              test_scanout_overlay_planes);
     add_case("sn1/odyssey/scanout-overlay-unselected-mask",
              test_scanout_overlay_unselected_mask);
+    add_case("sn1/odyssey/scanout-overlay-menu", test_scanout_overlay_menu);
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
