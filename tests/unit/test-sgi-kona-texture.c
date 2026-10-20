@@ -1183,6 +1183,35 @@ static uint32_t native_voxel(SGIKonaTextureState *s, unsigned level,
     return rgba;
 }
 
+/*
+ * A handle bound as a layout-mode-one volume and later bound as 2D or 1D
+ * is no longer a mode-one volume, and its saved state must load again.
+ */
+static void test_native_volume_single_rebound_flat(void)
+{
+    SGIKonaTextureState src, dst;
+    GByteArray *a;
+
+    for (unsigned flat = 0; flat < 2; flat++) {
+        sgi_kona_texture_init(&src);
+        sgi_kona_texture_init(&dst);
+        g_assert_true(sgi_kona_texture_native_volume_dimensions(&src, 9,
+                                                                2, 2, 2));
+        g_assert_true(sgi_kona_texture_native_volume_single(&src, 9, true));
+        if (flat) {
+            g_assert_true(sgi_kona_texture_native_dimensions_1d(&src, 9, 4));
+        } else {
+            g_assert_true(sgi_kona_texture_native_dimensions(&src, 9, 4, 4));
+        }
+        g_assert_false(sgi_kona_texture_native_volume_single(&src, 9, true));
+        a = save(&src);
+        g_assert_true(load(a, &dst));
+        g_byte_array_unref(a);
+        sgi_kona_texture_cleanup(&src);
+        sgi_kona_texture_cleanup(&dst);
+    }
+}
+
 static void test_native_volume_slices(void)
 {
     SGIKonaTextureState src, dst;
@@ -2621,6 +2650,8 @@ int main(int argc, char **argv)
                     test_native_duplicate_transport_stream);
     g_test_add_func("/sgi/kona/texture/native-volume/slices",
                     test_native_volume_slices);
+    g_test_add_func("/sgi/kona/texture/native-volume/single-rebound-flat",
+                    test_native_volume_single_rebound_flat);
     g_test_add_data_func("/sgi/kona/texture/native-volume/padded-interior",
                          GUINT_TO_POINTER(0x20202),
                          test_native_volume_interior);

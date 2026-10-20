@@ -482,6 +482,8 @@ bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
     o->native_depth = 0;
     o->native_one_dimensional = false;
     o->native_layout_valid = false;
+    /* Only a volume has a layout mode one; the stream refuses it on 2D. */
+    o->native_volume_single = false;
     return true;
 }
 
