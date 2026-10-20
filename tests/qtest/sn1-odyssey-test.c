@@ -6619,13 +6619,10 @@ static unsigned count_substr(const char *hay, const char *needle)
  * depth-fail 21:19, depth-pass 18:16 -- KEEP 0, ZERO 1, REPLACE 2, INCR 3,
  * DECR 4, INVERT 5.
  *
- * This model has no stencil planes, so OpenGL's own rule makes the test
- * always pass no matter what is decoded here: there is no stencil buffer a
- * qtest could inspect to tell a modeled function or op from an unmodeled one
- * apart. A register-level test can and does confirm two things instead: a
- * clean library-shaped word (ALWAYS, REPLACE/REPLACE/REPLACE) decodes with
- * no complaint, and the two op codes the board never defines, 6 and 7, are
- * reported rather than silently treated as one of the five real ones.
+ * A register-level test confirms that a clean library-shaped word (ALWAYS,
+ * REPLACE/REPLACE/REPLACE) decodes with no complaint, and that the two op
+ * codes the board never defines, 6 and 7, are reported rather than silently
+ * treated as one of the five real ones.
  */
 #define ODSY_MODE_STENCIL_TEST (1u << 15)
 #define ODSY_REG_STENCIL_FUNC 0x0001041f
@@ -6670,25 +6667,38 @@ static void test_command_fifo_gl_stencil_state(void)
 }
 
 /*
- * With no stencil planes, enabling the test changes nothing: a function
- * that would reject every fragment on real hardware still lets this
- * triangle through, matching OpenGL's own rule for a stencil-less
- * framebuffer. This pins that contract; it does not discriminate a modeled
- * stencil test from an unmodeled one, since neither can block the draw.
+ * The stencil planes: glClear's rectangle under GL_ALWAYS and GL_REPLACE
+ * with reference 0 clears them, the yellow triangle writes 1 under
+ * GL_ALWAYS and GL_REPLACE, and a cyan triangle over the whole window under
+ * GL_EQUAL 1 and GL_KEEP then paints only where the yellow one did.
  */
-static void test_command_fifo_gl_stencil_always_passes(void)
+static void test_command_fifo_gl_stencil_masks_draws(void)
 {
+    static const uint32_t whole[9] = {
+        0xbf800000, 0xbf800000, 0,
+        0x40400000, 0xbf800000, 0,
+        0xbf800000, 0x40400000, 0,
+    };
     QTestState *qts = board_start("");
 
     probe_window(qts);
-    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_STENCIL_TEST);
-    /* func NEVER, ops KEEP/KEEP/KEEP, value mask 0xff, ref 0. */
-    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0000ff00);
-    push_triangle_3f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO,
-                     odsy_near_yellow);
-    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0e92ff00);
+    push_depth_clear(qts, 0, 0, ODSY_F_ONE, ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0e92ff01);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, odsy_near_yellow);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0400ff01);
+    push_triangle_3f(qts, 0, ODSY_F_ONE, ODSY_F_ONE, whole);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_CYAN);
+    g_assert_cmphex(odsy_test_pixel(qts, 366, 276), ==, ODSY_PLANE_BLUE);
 
+    /* A cleared reference of 1 lets the whole window through. */
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0e92ff01);
+    push_depth_clear(qts, 0, 0, ODSY_F_ONE, ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0400ff01);
+    push_triangle_3f(qts, 0, ODSY_F_ONE, ODSY_F_ONE, whole);
+    g_assert_cmphex(odsy_test_pixel(qts, 366, 276), ==, ODSY_PLANE_CYAN);
     board_quit(qts);
 }
 
@@ -20013,8 +20023,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_blend);
     add_fresh_case("sn1/odyssey/command-fifo-gl-stencil-state",
                    test_command_fifo_gl_stencil_state);
-    add_case("sn1/odyssey/command-fifo-gl-stencil-always-passes",
-             test_command_fifo_gl_stencil_always_passes);
+    add_case("sn1/odyssey/command-fifo-gl-stencil-masks-draws",
+             test_command_fifo_gl_stencil_masks_draws);
     add_case("sn1/odyssey/command-fifo-gl-cull-face",
              test_command_fifo_gl_cull_face);
     add_case("sn1/odyssey/command-fifo-gl-polygon-mode",

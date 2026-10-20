@@ -1619,18 +1619,22 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_LOGIC_OP_MASK 0xf
 
 /*
- * Bit 15 of the same register is GL_STENCIL_TEST, conditional on the
- * drawable's stencil planes. This model has none (the shared rasterizer's
- * stencil pipeline is wired for no visual here), and absent a stencil buffer
- * OpenGL's own stencil test is defined to always pass, so feeding the enable
- * is decoding real GL state, not drawing with a stencil test that has any
- * effect. 0x041f carries the function, reference and value mask together:
+ * Bit 15 of the same register is GL_STENCIL_TEST, which the library sets
+ * only for a drawable with stencil planes. The IRIX visuals for this board
+ * offer 8 stencil bits, and the model keeps an 8-bit stencil plane for every
+ * drawable (odyssey_gl_load_stencil()); a client whose visual has none never
+ * enables the test, and its write mask stays 0, so the plane is untouched.
+ * 0x041f carries the function, reference and value mask together:
  * bits 27:25 the comparison, GL_NEVER = 0 to GL_ALWAYS = 7, bits 7:0 the
  * reference clamped to [0, 2^s - 1], bits 15:8 the value mask ANDed with 2^s
  * - 1, and bits 24:22, 21:19, 18:16 the fail, depth-fail and depth-pass
  * operations: KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4, INVERT 5. 0x452 bits
  * 19:12 are the write mask under the same (2^s - 1) rule, forced 0 without
- * stencil planes.
+ * stencil planes. glClear of the stencil planes is the clear rectangle drawn
+ * with the stencil test on, GL_ALWAYS, the clear value as reference and
+ * every operation GL_REPLACE (ESTABLISHED from the IRIX 6.5.30 IP30 n32
+ * library's clear), so odyssey_gl_rect() writes the reference under the
+ * write mask.
  */
 #define ODSY_MODE_STENCIL_TEST (1u << 15)
 #define ODSY_REG_STENCIL_FUNC 0x041f    /* 1 operand */
@@ -1645,6 +1649,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_STENCIL_OP_MASK 0x7
 #define ODSY_WRITE_STENCIL_SHIFT 12
 #define ODSY_WRITE_STENCIL_MASK 0xff
+#define ODSY_STENCIL_MAX 0xffu
 
 /*
  * 0x452 bits 11:0 are glIndexMask ANDed with the drawable's index-plane mask:
@@ -4359,6 +4364,7 @@ static const SGIRasterRules odyssey_gl_rules = {
     .subpixel_bits = 8,
     .color_bits = 8,
     .depth_bits = 24,
+    .stencil_bits = 8,
     .rounding = SGI_ROUND_HALF_AWAY,
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
@@ -4596,6 +4602,33 @@ static void odyssey_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
     }
 }
 
+/*
+ * The stencil plane (odyssey_realize()): 8 bits, through the same pixel
+ * test as a depth write. A model plane: where the board keeps its stencil
+ * planes is not known.
+ */
+static uint32_t odyssey_gl_load_stencil(void *opaque, int x, int y)
+{
+    SGIOdysseyState *s = opaque;
+
+    return sgi_plane_load(&s->stencil_mem,
+                          sgi_board_memory_plane(&s->stencil_mem,
+                                                 s->stencil_plane), x, y);
+}
+
+static void odyssey_gl_store_stencil(void *opaque, int x, int y,
+                                     uint32_t stencil)
+{
+    SGIOdysseyState *s = opaque;
+
+    if (odyssey_pixel_allowed(s, x, y)) {
+        sgi_plane_store(&s->stencil_mem,
+                        sgi_board_memory_plane(&s->stencil_mem,
+                                               s->stencil_plane),
+                        x, y, stencil & ODSY_STENCIL_MAX);
+    }
+}
+
 /* Experimental policy; the board's scale sign and clamps are unmeasured. */
 static float odyssey_gl_fog_factor(void *opaque, float window_z, float eye_z)
 {
@@ -4632,6 +4665,8 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .load_rgba = odyssey_gl_index_mode(s) ? NULL : odyssey_gl_load_rgba,
         .load_depth = odyssey_gl_load_depth,
         .store_depth = odyssey_gl_store_depth,
+        .load_stencil = odyssey_gl_load_stencil,
+        .store_stencil = odyssey_gl_store_stencil,
         .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
     };
@@ -5921,12 +5956,8 @@ static uint32_t odyssey_front_face(uint32_t pattern_mode)
  * INFERRED. Called on every 0x0404, including the X server's pattern-mode
  * writes, which also update the separate integer 2D interpreter.
  *
- * This model has no stencil planes, so the shared rasterizer's stencil
- * pipeline stays permanently unset and the enable below never gates a
- * pixel: with no stencil buffer, OpenGL defines the stencil test to always
- * pass, which is exactly the behaviour a model with no stencil planes
- * already has. Feeding the enable keeps the decoded GL state faithful
- * without drawing a stencil test that could never do anything.
+ * Bit 15, the stencil test, gates fragments through the model's stencil
+ * plane (ODSY_MODE_STENCIL_TEST).
  */
 static void odyssey_gl_apply_polygon_stipple(SGIOdysseyState *s)
 {
@@ -7151,7 +7182,11 @@ static void odyssey_gl_load_block16(SGIOdysseyState *s)
  * known, so that case is reported and the rectangle written unconditionally.
  * In index mode the first float is the clear index, not red (glClearIndex(3)
  * sends 3.0 there, ESTABLISHED from the colour-index probe's capture), and
- * the rectangle stores it like any index fragment.
+ * the rectangle stores it like any index fragment. glClear of the stencil
+ * planes is the rectangle with the stencil test on under GL_ALWAYS and
+ * GL_REPLACE (ODSY_MODE_STENCIL_TEST), so it writes the reference under the
+ * stencil write mask; another stencil comparison or operation around a
+ * rectangle is reported and leaves the stencil unchanged.
  */
 static void odyssey_gl_rect(SGIOdysseyState *s)
 {
@@ -7193,6 +7228,24 @@ static void odyssey_gl_rect(SGIOdysseyState *s)
         d = MIN(MAX(d, 0.0), 1.0);
         op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
         op.clear_depth24 = sgi_raster_depth_code(&rules, d);
+    }
+    if ((s->pattern_mode & ODSY_MODE_STENCIL_TEST) &&
+        s->gl_ctx.cur.stencil_write_mask) {
+        const SGIGLDrawState *st = &s->gl_ctx.cur;
+
+        if (st->stencil_func == SGI_GL_ALWAYS &&
+            st->stencil_op[2] == SGI_GL_REPLACE) {
+            /* glClear's form (ODSY_MODE_STENCIL_TEST): write the reference. */
+            op.clear_buffers |= SGI_GL_STENCIL_BUFFER_BIT;
+            op.clear_stencil = st->stencil_ref;
+            op.stencil_mask = st->stencil_write_mask;
+        } else if (!s->gl_rect_stencil_logged) {
+            s->gl_rect_stencil_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: stencil-tested rectangle "
+                          "under comparison %u and operation 0x%x is not "
+                          "modeled; stencil left unchanged\n",
+                          st->stencil_func, st->stencil_op[2]);
+        }
     }
     if ((s->pattern_mode & ODSY_MODE_DEPTH_TEST) &&
         (s->gl_depth_func & ODSY_DEPTH_FUNC_MASK) != SGI_GL_ALWAYS &&
@@ -9629,10 +9682,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
 
         s->gl_write_mask = s->cmd_operand[0];
         odyssey_gl_apply_depth(s);
-        /*
-         * Forced 0 without stencil planes, which this model has none of; fed
-         * regardless, since it is still the GL state the library decoded.
-         */
+        /* The library forces it to 0 for a drawable with no stencil. */
         odyssey_gl_feed(s, SGI_GL_OP_STENCIL_MASK, &stencil_mask, 1);
         break;
     }
@@ -11064,6 +11114,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->gl_block16[0] = s->gl_block16[1] = s->gl_block16[2] = 0x80000000;
     s->gl_block16[3] = 0x3f800000;
     s->gl_rect_depth_logged = false;
+    s->gl_rect_stencil_logged = false;
     s->gl_rect_pattern_logged = false;
     s->gl_index_mask_logged = false;
     /*
@@ -11338,6 +11389,31 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
     }
 
     /*
+     * The stencil plane: 8 bits a pixel, as the IRIX visuals for this board
+     * offer, in device-backed memory of its own; like the depth plane, no
+     * aperture reaches it.
+     */
+    sgi_board_memory_init(&s->stencil_mem, (uint64_t)SGI_ODYSSEY_WIDTH *
+                          SGI_ODYSSEY_HEIGHT);
+    {
+        SGIPlane stencil = {
+            .format = SGI_PLANE_S8,
+            .packing = SGI_PACK_BE_RED_HIGH,
+            .width = SGI_ODYSSEY_WIDTH,
+            .height = SGI_ODYSSEY_HEIGHT,
+            .stride = SGI_ODYSSEY_WIDTH,
+            .base = 0,
+            .len = (uint64_t)SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT,
+            .bottom_origin = false,
+            .evidence = "model plane; the board's stencil placement and "
+                        "layout are unknown",
+        };
+
+        s->stencil_plane = sgi_board_memory_add_plane(&s->stencil_mem,
+                                                      &stencil, &error_abort);
+    }
+
+    /*
      * The shared scanout owns the console and its surface, resolving the
      * colour plane through odyssey_head_ops.resolve_row. Setting the mode
      * allocates the presented frame, marks it all dirty and arms the retrace
@@ -11370,6 +11446,7 @@ static void odyssey_unrealize(DeviceState *dev)
     sgi_board_memory_cleanup(&s->buffer1_mem);
     sgi_board_memory_cleanup(&s->obj_mem);
     sgi_board_memory_cleanup(&s->depth_mem);
+    sgi_board_memory_cleanup(&s->stencil_mem);
 }
 
 static void odyssey_reset_hold(Object *obj, ResetType type)
@@ -11395,6 +11472,7 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->buffer1_mem.bytes, 0, s->buffer1_mem.bytes_len);
     memset(s->obj_mem.bytes, 0, s->obj_mem.bytes_len);
+    memset(s->stencil_mem.bytes, 0, s->stencil_mem.bytes_len);
     memset(s->did, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT * sizeof(*s->did));
     memset(s->overlay, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     memset(s->poly_marks, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
@@ -11727,6 +11805,11 @@ DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_mem, "sgi-odyssey/board-memory",
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_depth,
                                 "sgi-odyssey/depth-memory",
                                 SGIOdysseyState, depth_mem);
+
+/* The stencil plane. */
+DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_stencil,
+                                "sgi-odyssey/stencil-memory",
+                                SGIOdysseyState, stencil_mem);
 
 /* Colour buffer 1 and the buffer-selection words. */
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_odyssey_buffer1,
@@ -12200,6 +12283,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_mem,
         &vmstate_odyssey_scanout,
         &vmstate_odyssey_depth,
+        &vmstate_odyssey_stencil,
         &vmstate_odyssey_objects,
         &vmstate_odyssey_buffer1,
         &vmstate_odyssey_buffer_select,
