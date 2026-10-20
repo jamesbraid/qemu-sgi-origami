@@ -6136,10 +6136,10 @@ static void test_command_fifo_gl_alpha_test(void)
 }
 
 /*
- * Blend and logic op: 0x0404 bit 17 is a computed GL_BLEND enable (the
- * library also parks 0x0c21 at all zeros whenever this bit is clear), bits 19
+ * Blend and logic op: 0x0404 bit 17 is a computed GL_BLEND enable, bits 19
  * and 20 are GL_INDEX_LOGIC_OP and GL_COLOR_LOGIC_OP, 0x0c21 carries the
- * blend factors, equation and constant colour, and 0x0422 the logic op mode.
+ * blend factors, equation and constant colour, kept whatever bit 17 says,
+ * and 0x0422 the logic op mode.
  */
 #define ODSY_MODE_BLEND (1u << 17)
 #define ODSY_MODE_COLOR_LOGIC_OP (1u << 20)
@@ -6185,18 +6185,18 @@ static void test_command_fifo_gl_blend(void)
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
 
     /*
-     * The library parks 0x0c21 at zero whenever bit 17 is clear. Disable
-     * blending, send that parked all-zero word, then re-enable blending
-     * without resending 0x0c21: the GL_ONE/GL_ZERO factors above must still
-     * be in effect, proving the parked zero word was never applied.
+     * The library sends 0x0c21 while bit 17 is clear and sets the bit later
+     * without sending it again (tex_cube, mirrors). Factors GL_ZERO, GL_ONE
+     * written with blending off are the ones in effect once the bit is set:
+     * the draw leaves the red background.
      */
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
-    set_blend(qts, 0, 0, 0);
+    set_blend(qts, 0x08, 0, 0);
     push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
     push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
                      odsy_near_yellow);
-    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
     /*
      * The equation field, bits 15:13: 6 is GL_FUNC_SUBTRACT, source minus
