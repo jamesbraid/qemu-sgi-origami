@@ -19,6 +19,7 @@ typedef struct SN1FabricEndpoint {
     Object *owner;
     SGIBedrockState *bedrock;
     uint32_t placement;
+    uint32_t processor_origins;
     bool ready;
     bool isolated_route;
     MemTxResult (*processor_rw)(struct SN1FabricEndpoint *endpoint,

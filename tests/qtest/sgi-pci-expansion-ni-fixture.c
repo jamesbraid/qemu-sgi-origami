@@ -1180,6 +1180,7 @@ static void fixture_build(DeviceState *dev, Error **errp)
         .owner = OBJECT(s),
         .bedrock = compute,
         .placement = 3,
+        .processor_origins = s->compute_origins,
         .ready = true,
         .place_claims = fixture_place_claims,
         .processor_rw = fixture_processor_rw,

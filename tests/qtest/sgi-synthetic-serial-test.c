@@ -68,6 +68,8 @@ static const TopologyExtra topology_extras[] = {
     { "tezro-rack-base", ",ip53-experimental=on", .io9 = true },
     { "tezro-tower-multi", ",ip53-experimental=on", .io9 = true },
     { "tezro-tower-one", ",ip53-experimental=on", .io9 = true },
+    { "origin300-numalink-pci-expansion-experiment",
+      STORAGE_BINDING, true },
     { "origin300-pci-expansion-configuration-storage-experiment",
       STORAGE_BINDING, true },
     { "origin300-pci-expansion-pending-register-experiment",

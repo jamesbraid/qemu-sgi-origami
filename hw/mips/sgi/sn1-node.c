@@ -595,6 +595,7 @@ static void sn1_node_init_claims(SN1NodeState *node)
     node->endpoint.owner = OBJECT(node);
     node->endpoint.bedrock = SGI_BEDROCK(node->bedrock);
     node->endpoint.placement = node->nasid;
+    node->endpoint.processor_origins = node->nr_cpus;
     node->endpoint.place_claims = sn1_node_place_endpoint_claims;
     node->endpoint.processor_rw = sn1_node_ni_processor_rw;
     node->endpoint.destination_rw = sn1_node_ni_destination_rw;

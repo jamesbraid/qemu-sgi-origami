@@ -5044,6 +5044,20 @@ static void test_uart_origins(gconstpointer opaque)
     qtest_quit(qts);
 }
 
+static void test_uart_source_origin_refused(void)
+{
+    QTestState *qts = management_start(UART_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.compute-origins=2"
+        " -global sgi-pci-expansion-ni-fixture.uart-origins=4");
+
+    uart_write(qts, 7, 0xaa);
+    qtest_writeq(qts, MANAGEMENT + 144, 2);
+    qtest_writeq(qts, UART_BASE(0) + 0x38, 0x55);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(uart_read(qts, 7), ==, 0xaa);
+    qtest_quit(qts);
+}
+
 static void test_uart_invalid_origins(gconstpointer opaque)
 {
     unsigned count = GPOINTER_TO_UINT(opaque);
@@ -5123,6 +5137,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/pci-expansion-ni/uart/registers", test_uart_registers);
+    qtest_add_func("/sgi/pci-expansion-ni/uart/source-origin-refused",
+                   test_uart_source_origin_refused);
     qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/two",
                         GUINT_TO_POINTER(2), test_uart_origins);
     qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/four",
