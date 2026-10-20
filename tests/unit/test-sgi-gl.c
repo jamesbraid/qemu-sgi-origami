@@ -2500,6 +2500,78 @@ static void test_depth_range_maps_window_depth(void)
     }
 }
 
+/*
+ * A depth row replaces OpenGL's depth: at eye (0, 0, -1.5, 2) under the
+ * identity projection OpenGL's depth is 0.125, and the row (0, 0, -0.25,
+ * 0) gives 0.375, for a point and for a triangle with that w and depth at
+ * every vertex.
+ */
+static void test_depth_row(void)
+{
+    static const float point[SGI_GL_VERTEX_FLOATS] = {
+        0, 0, -1.5f, 2, 1, 1, 1, 1,
+    };
+    static const float triangle[3][SGI_GL_VERTEX_FLOATS] = {
+        { -1.8f, -1.8f, -1.5f, 2, 1, 1, 1, 1 },
+        { 1.8f, -1.8f, -1.5f, 2, 1, 1, 1, 1 },
+        { 0, 1.8f, -1.5f, 2, 1, 1, 1, 1 },
+    };
+
+    for (unsigned row = 0; row < 2; row++) {
+        for (unsigned mode = 0; mode < 2; mode++) {
+            static Planes p;
+            SGIRasterTarget t = planes_target(&p);
+            SGIRasterRules rules = rules_supported;
+            SGIGLContext c;
+            SGIGLDraw draw = {
+                .mode = mode ? SGI_GL_TRIANGLES : SGI_GL_POINTS,
+                .count = mode ? 3 : 1,
+                .vertices = mode ? &triangle[0][0] : point,
+                .state = &c.cur,
+            };
+
+            memset(&p, 0, sizeof(p));
+            context_init(&c);
+            c.cur.depth_test = 1;
+            c.cur.depth_func = SGI_GL_ALWAYS;
+            rules.depth_row_given = row;
+            rules.depth_row[2] = -0.25;
+            sgi_soft_draw(&rules, &t, &draw);
+            g_assert_cmphex(p.depth[planes_index(W / 2, H / 2)], ==,
+                            row ? 0x600000 : 0x200000);
+        }
+    }
+}
+
+/*
+ * The floating-point depth code: a single's bits shifted to depth_bits,
+ * which orders depths and keeps two near 0 apart that a fixed-point store
+ * makes equal.
+ */
+static void test_depth_float_code(void)
+{
+    SGIRasterRules rules = rules_supported;
+
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0.0000000166), ==, 0);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 1), ==, 0xffffff);
+    rules.depth_float = true;
+    g_assert_true(sgi_raster_rules_supported(&rules));
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0), ==, 0);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0.5), ==, 0xfc0000);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 1), ==, 0xfe0000);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0.0000000166), >, 0);
+    g_assert_cmphex(sgi_raster_depth_code(&rules, 0.0000000166), <,
+                    sgi_raster_depth_code(&rules, 0.0000000167));
+    rules.depth_bits = 31;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules.depth_bits = 9;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+    rules.depth_bits = 24;
+    rules.depth_row_given = true;
+    rules.depth_row[3] = NAN;
+    g_assert_false(sgi_raster_rules_supported(&rules));
+}
+
 /* glRasterPos's window z goes through the depth range too (2.12). */
 static void test_depth_range_maps_the_raster_position(void)
 {
@@ -13477,6 +13549,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
     g_test_add_func("/sgi-gl/depth-range-maps-window-depth",
                     test_depth_range_maps_window_depth);
+    g_test_add_func("/sgi-gl/depth-row", test_depth_row);
+    g_test_add_func("/sgi-gl/depth-float-code", test_depth_float_code);
     g_test_add_func("/sgi-gl/depth-range-maps-the-raster-position",
                     test_depth_range_maps_the_raster_position);
     g_test_add_func("/sgi-gl/get-enables-and-depths",

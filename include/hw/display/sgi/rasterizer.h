@@ -112,11 +112,32 @@ typedef struct SGIRasterRules {
     uint8_t alpha_bits;         /* stored A width, zero means no alpha */
     uint8_t alpha_test_bits; /* Zero derives precision from color/alpha bits. */
     bool smooth_primitives; /* Enable area coverage for smooth primitives. */
+    /*
+     * A head whose depth is linear in eye distance, as a w-buffer keeps
+     * it, in place of OpenGL's, which is linear in window coordinates: a
+     * vertex's window depth is depth_row . e for its eye coordinates e,
+     * and a fragment's is that interpolated with perspective correction,
+     * its polygon offset scaled with it. The projection's z row then has
+     * no say in depth, and a depth outside [0, 1] is dropped per fragment,
+     * which is the near and far clip. The row depends on the head's own
+     * state, so it travels with the rules of the draw.
+     */
+    bool depth_row_given;
+    double depth_row[4];
+    /*
+     * Stored depth is a floating-point code, not a fixed-point fraction:
+     * the IEEE single-precision bits of the window depth shifted right by
+     * 30 - depth_bits, which keeps the order of depths in [0, 1] and their
+     * relative precision near 0 (sgi_raster_depth_code()). Needs
+     * depth_bits 10 to 30.
+     */
+    bool depth_float;
 } SGIRasterRules;
 
 /*
  * Whether the rasterizer implements a rule set. It implements subpixel_bits
- * 1 to 12, color_bits 1 to 10, alpha_bits 0 to 10, depth_bits 1 to 32,
+ * 1 to 12, color_bits 1 to 10, alpha_bits 0 to 10, depth_bits 1 to 32
+ * (10 to 30 for a floating-point depth code), a finite depth row,
  * stencil_bits 0 to 16,
  * every rounding and dither, and otherwise only
  * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
@@ -710,6 +731,8 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterTarget *target,
                                           const SGIRasterOp *op, Error **errp);
 
+/* The stored code of window depth z in [0, 1] under the rules. */
+uint32_t sgi_raster_depth_code(const SGIRasterRules *rules, double z);
 /* After alpha rejection, test and update canonical depth and stencil. */
 bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
                                const SGIGLDrawState *st,
