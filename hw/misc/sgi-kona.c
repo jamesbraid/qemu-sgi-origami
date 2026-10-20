@@ -10020,10 +10020,12 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
 refused:
     qemu_log_mask(LOG_UNIMP, "sgi-kona: X pixel read at (%" PRId64 ",%"
                   PRId64 ") setup %u %u %u %u %u %u %u GC %x %x %x %x %x %x"
-                  " %x refused: %s\n",
+                  " %x refused: %s; %s\n",
                   x, y, setup[0], setup[1], setup[2], setup[3], setup[4],
                   setup[5], setup[6], s->x_gc[6], s->x_gc[7], s->x_gc[8],
-                  s->x_gc[9], s->x_gc[10], s->x_gc[11], s->x_gc[12], reason);
+                  s->x_gc[9], s->x_gc[10], s->x_gc[11], s->x_gc[12], reason,
+                  sgi_kona_x_read_current(s) ? "answered with zeros" :
+                                               "not answered");
     return false;
 }
 
