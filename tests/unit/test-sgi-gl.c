@@ -2455,6 +2455,117 @@ static void test_texture_matrix(void)
     g_assert_cmphex(out[12], ==, bits(5));
 }
 
+static void tex_gen(SGIGLContext *c, uint32_t coord, uint32_t pname,
+                    float a, float b, float cc, float d)
+{
+    uint32_t word[6] = { coord, pname, bits(a), bits(b), bits(cc), bits(d) };
+
+    command(c, NULL, SGI_GL_OP_TEX_GEN, word, 6);
+}
+
+static void tex_gen_cap(SGIGLContext *c, uint32_t cap, bool on)
+{
+    uint32_t word[1] = { cap };
+
+    command(c, NULL, on ? SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
+}
+
+/* One captured vertex's texture coordinates. */
+static void tex_gen_vertex(SGIGLContext *c, float x, float y, float z,
+                           float out[4])
+{
+    uint32_t pos[3] = { bits(x), bits(y), bits(z) };
+    float v[SGI_GL_VERTEX_FLOATS];
+
+    sgi_gl_capture_vertex(c, SGI_GL_POINTS, pos, 3, v);
+    memcpy(out, &v[SGI_GL_V_TEXCOORD], 4 * sizeof(float));
+}
+
+/*
+ * Texture coordinate generation (OpenGL 1.2.1, 2.10.4): off by default,
+ * so the current coordinates pass; OBJECT_LINEAR takes the object plane's
+ * product with the object position; EYE_LINEAR the eye plane given under
+ * the modelview of its call, so a later modelview moves the result;
+ * SPHERE_MAP the reflection formula for S and T only; the texture matrix
+ * then applies to the generated coordinates.
+ */
+static void test_texture_generation(void)
+{
+    uint32_t word[4], out[SGI_GL_GET_WORDS];
+    SGIGLContext c;
+    float tc[4];
+
+    context_init(&c);
+    word[0] = bits(0.25f), word[1] = bits(0.5f);
+    command(&c, NULL, SGI_GL_OP_TEXCOORD2F, word, 2);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_GEN_S, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 0);
+    tex_gen_vertex(&c, 2, 3, 4, tc);
+    g_assert_cmpfloat(tc[0], ==, 0.25f);
+    g_assert_cmpfloat(tc[1], ==, 0.5f);
+
+    /* Setting a plane or mode generates nothing until enabled. */
+    tex_gen(&c, SGI_GL_S, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_OBJECT_LINEAR,
+            0, 0, 0);
+    tex_gen(&c, SGI_GL_S, SGI_GL_OBJECT_PLANE, 1, 2, 0, 1);
+    tex_gen_vertex(&c, 2, 3, 4, tc);
+    g_assert_cmpfloat(tc[0], ==, 0.25f);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_S, true);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_GEN_S, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
+    tex_gen_vertex(&c, 2, 3, 4, tc);
+    g_assert_cmpfloat(tc[0], ==, 9.0f);
+    g_assert_cmpfloat(tc[1], ==, 0.5f);
+
+    /* The eye plane is kept as p M^-1 for the modelview of its call. */
+    word[0] = bits(10), word[1] = bits(0), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    tex_gen(&c, SGI_GL_T, SGI_GL_EYE_PLANE, 1, 0, 0, 0);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_T, true);
+    tex_gen_vertex(&c, 2, 3, 4, tc);
+    g_assert_cmpfloat(tc[1], ==, 2.0f);
+    word[0] = bits(5);
+    command(&c, NULL, SGI_GL_OP_TRANSLATE, word, 3);
+    tex_gen_vertex(&c, 2, 3, 4, tc);
+    g_assert_cmpfloat(tc[1], ==, 7.0f);
+    command(&c, NULL, SGI_GL_OP_LOAD_IDENTITY, word, 0);
+
+    /* SPHERE_MAP: u = (0, 0, -1), n = (0.6, 0, 0.8), r = (0.96, 0, 0.28). */
+    tex_gen(&c, SGI_GL_S, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_SPHERE_MAP,
+            0, 0, 0);
+    tex_gen(&c, SGI_GL_T, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_SPHERE_MAP,
+            0, 0, 0);
+    word[0] = bits(0.6f), word[1] = bits(0), word[2] = bits(0.8f);
+    command(&c, NULL, SGI_GL_OP_NORMAL3F, word, 3);
+    tex_gen_vertex(&c, 0, 0, -1, tc);
+    g_assert_cmpfloat_with_epsilon(tc[0], 0.8f, 1.0f / 1048576);
+    g_assert_cmpfloat_with_epsilon(tc[1], 0.5f, 1.0f / 1048576);
+    /* R and Q refuse SPHERE_MAP and keep their mode. */
+    tex_gen(&c, SGI_GL_R, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_SPHERE_MAP,
+            0, 0, 0);
+    tex_gen(&c, SGI_GL_R, SGI_GL_EYE_PLANE, 0, 0, 1, 0);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_R, true);
+    tex_gen_vertex(&c, 0, 0, -1, tc);
+    g_assert_cmpfloat(tc[2], ==, -1.0f);
+
+    /* The texture matrix applies after generation. */
+    word[0] = SGI_GL_TEXTURE;
+    command(&c, NULL, SGI_GL_OP_MATRIX_MODE, word, 1);
+    word[0] = bits(2), word[1] = bits(2), word[2] = bits(2);
+    command(&c, NULL, SGI_GL_OP_SCALE, word, 3);
+    tex_gen_vertex(&c, 0, 0, -1, tc);
+    g_assert_cmpfloat_with_epsilon(tc[0], 1.6f, 1.0f / 1048576);
+    g_assert_cmpfloat(tc[2], ==, -2.0f);
+
+    /* Disabled again, the current coordinates return. */
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_S, false);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_T, false);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_R, false);
+    tex_gen_vertex(&c, 0, 0, -1, tc);
+    g_assert_cmpfloat(tc[0], ==, 0.5f);
+    g_assert_cmpfloat(tc[1], ==, 1.0f);
+}
+
 /*
  * The depth range maps normalized depth (zd + 1) / 2 to window depth
  * n + (f - n) z (OpenGL 1.2.1, 2.10.1), for a draw and for glRasterPos.
@@ -13559,6 +13670,7 @@ int main(int argc, char **argv)
                     test_lighting_initial_state);
     g_test_add_func("/sgi-gl/lighting-commands", test_lighting_commands);
     g_test_add_func("/sgi-gl/texture-matrix", test_texture_matrix);
+    g_test_add_func("/sgi-gl/texture-generation", test_texture_generation);
     g_test_add_func("/sgi-gl/color-material-tracks-the-colour",
                     test_color_material_tracks_the_colour);
     g_test_add_func("/sgi-gl/lighting-ambient-and-emission",

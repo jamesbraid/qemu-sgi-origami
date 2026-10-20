@@ -110,6 +110,11 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
     c->cur.logic_op_mode = SGI_GL_COPY;
     c->cur.texture_env_mode = SGI_GL_MODULATE;
     c->cur_texcoord[3] = c->raster_texcoord[3] = 1.0f;
+    for (int i = 0; i < 4; i++) {
+        c->tex_gen_mode[i] = SGI_GL_EYE_LINEAR;
+    }
+    c->tex_gen_object_plane[0][0] = c->tex_gen_eye_plane[0][0] = 1.0f;
+    c->tex_gen_object_plane[1][1] = c->tex_gen_eye_plane[1][1] = 1.0f;
     c->cur.fog_mode = SGI_GL_EXP;
     c->cur.fog_density = 1.0f;
     c->cur.fog_end = 1.0f;
@@ -725,6 +730,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_TEXCOORD3F] = 3,
     [SGI_GL_OP_TEXCOORD4F] = 4,
     [SGI_GL_OP_TEX_ENV] = 5,
+    [SGI_GL_OP_TEX_GEN] = 6,
     [SGI_GL_OP_SWAP_TMESH] = 0,
 };
 
@@ -1251,14 +1257,81 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
     sgi_gl_draw_result(c, sink, &d);
 }
 
-/* Texture coordinates transform before clipping (OpenGL 1.2.1, 2.10.2). */
-static void sgi_gl_texture_coord(const SGIGLContext *c, float out[4])
+/*
+ * Texture coordinate generation (OpenGL 1.2.1, 2.10.4) for a vertex at
+ * object position obj with normal n: each enabled coordinate replaces the
+ * current one. OBJECT_LINEAR is the object plane's product with obj,
+ * EYE_LINEAR the eye plane's (kept as p M^-1) with the eye position, and
+ * SPHERE_MAP, for S and T only, takes the reflection r of the unit vector
+ * u from the eye to the vertex about the eye normal n', r = u - 2 n'
+ * (n' . u), and gives r_x / m + 1/2 and r_y / m + 1/2 with m = 2
+ * sqrt(r_x^2 + r_y^2 + (r_z + 1)^2). Single-precision floats, like the
+ * lighting equation; a head's own arithmetic is unknown.
+ */
+static void sgi_gl_tex_gen(const SGIGLContext *c, const float obj[4],
+                           const float n[3], float strq[4])
 {
+    const float *mv = c->cur.modelview;
+    float eye[4], u[3], normal[3], r[3], m, nu;
+
+    for (int row = 0; row < 4; row++) {
+        eye[row] = mv[row] * obj[0] + mv[4 + row] * obj[1] +
+                   mv[8 + row] * obj[2] + mv[12 + row] * obj[3];
+    }
+    for (int i = 0; i < 4; i++) {
+        const float *p;
+
+        if (!(c->tex_gen_enabled & (1u << i))) {
+            continue;
+        }
+        switch (c->tex_gen_mode[i]) {
+        case SGI_GL_OBJECT_LINEAR:
+            p = c->tex_gen_object_plane[i];
+            strq[i] = p[0] * obj[0] + p[1] * obj[1] + p[2] * obj[2] +
+                      p[3] * obj[3];
+            break;
+        case SGI_GL_EYE_LINEAR:
+            p = c->tex_gen_eye_plane[i];
+            strq[i] = p[0] * eye[0] + p[1] * eye[1] + p[2] * eye[2] +
+                      p[3] * eye[3];
+            break;
+        case SGI_GL_SPHERE_MAP:
+            for (int k = 0; k < 3; k++) {
+                u[k] = eye[3] != 0.0f ? eye[k] / eye[3] : eye[k];
+            }
+            sgi_gl_unit3(u);
+            sgi_gl_eye_normal(c, n, normal);
+            nu = sgi_gl_dot3(normal, u);
+            for (int k = 0; k < 3; k++) {
+                r[k] = u[k] - 2.0f * normal[k] * nu;
+            }
+            m = 2.0f * sqrtf(r[0] * r[0] + r[1] * r[1] +
+                             (r[2] + 1.0f) * (r[2] + 1.0f));
+            strq[i] = m != 0.0f ? r[i] / m + 0.5f : 0.5f;
+            break;
+        }
+    }
+}
+
+/*
+ * A vertex's texture coordinates: the current ones, or the generated
+ * ones of the enabled coordinates, then the texture matrix, before
+ * clipping (OpenGL 1.2.1, 2.10.2).
+ */
+static void sgi_gl_texture_coord(const SGIGLContext *c, const float obj[4],
+                                 const float n[3], float out[4])
+{
+    float strq[4];
+
+    memcpy(strq, c->cur_texcoord, sizeof(strq));
+    if (c->tex_gen_enabled) {
+        sgi_gl_tex_gen(c, obj, n, strq);
+    }
     for (int row = 0; row < 4; row++) {
         double value = 0;
 
         for (int k = 0; k < 4; k++) {
-            value += (double)c->texture[k * 4 + row] * c->cur_texcoord[k];
+            value += (double)c->texture[k * 4 + row] * strq[k];
         }
         out[row] = value;
     }
@@ -1501,7 +1574,8 @@ void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
         }
     }
     memcpy(&out[SGI_GL_V_NORMAL], normal, sizeof(normal));
-    sgi_gl_texture_coord(c, &out[SGI_GL_V_TEXCOORD]);
+    sgi_gl_texture_coord(c, &out[SGI_GL_V_POSITION], normal,
+                         &out[SGI_GL_V_TEXCOORD]);
     memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     out[SGI_GL_V_INDEX] = c->cur_index;
     /* Material and lighting belong to the instant this vertex arrived. */
@@ -1756,7 +1830,7 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         }
         c->raster_index = c->cur_index;
     }
-    sgi_gl_texture_coord(c, c->raster_texcoord);
+    sgi_gl_texture_coord(c, obj, c->cur_normal, c->raster_texcoord);
 }
 
 /*
@@ -2404,6 +2478,10 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
         c->lights_enabled = deposit32(c->lights_enabled, cap - SGI_GL_LIGHT0,
                                       1, on);
         return;
+    case SGI_GL_TEXTURE_GEN_S ... SGI_GL_TEXTURE_GEN_Q:
+        c->tex_gen_enabled = deposit32(c->tex_gen_enabled,
+                                       cap - SGI_GL_TEXTURE_GEN_S, 1, on);
+        return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-gl: capability 0x%x is not modelled; "
                       "%s ignored\n", cap, on ? "glEnable" : "glDisable");
@@ -2799,6 +2877,54 @@ out_of_memory:
     return false;
 }
 
+/*
+ * glTexGen (OpenGL 1.2.1, 2.10.4): a coordinate's mode, SPHERE_MAP only
+ * for S and T, or its object or eye plane; the eye plane is kept as p M^-1,
+ * M the modelview current at the call, as glClipPlane's is. Anything else,
+ * or an eye plane under a modelview with no inverse, changes nothing.
+ */
+static void sgi_gl_tex_gen_param(SGIGLContext *c, const uint32_t *a)
+{
+    uint32_t i = a[0] - SGI_GL_S;
+    float v[4];
+    double inv[16];
+
+    for (int k = 0; k < 4; k++) {
+        v[k] = sgi_gl_float(a[k + 2]);
+    }
+    if (a[0] < SGI_GL_S || a[0] > SGI_GL_Q) {
+        goto bad;
+    }
+    switch (a[1]) {
+    case SGI_GL_TEXTURE_GEN_MODE:
+        if (v[0] == SGI_GL_OBJECT_LINEAR || v[0] == SGI_GL_EYE_LINEAR ||
+            (v[0] == SGI_GL_SPHERE_MAP && i < 2)) {
+            c->tex_gen_mode[i] = v[0];
+            return;
+        }
+        break;
+    case SGI_GL_OBJECT_PLANE:
+        memcpy(c->tex_gen_object_plane[i], v, sizeof(v));
+        return;
+    case SGI_GL_EYE_PLANE:
+        if (!sgi_gl_invert(c->cur.modelview, inv)) {
+            break;
+        }
+        for (int j = 0; j < 4; j++) {
+            double p = 0;
+
+            for (int k = 0; k < 4; k++) {
+                p += v[k] * inv[j * 4 + k];
+            }
+            c->tex_gen_eye_plane[i][j] = p;
+        }
+        return;
+    }
+bad:
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: glTexGen of coordinate 0x%x "
+                  "parameter 0x%x ignored\n", a[0], a[1]);
+}
+
 static bool sgi_gl_hint_mode(uint32_t mode)
 {
     return mode == SGI_GL_DONT_CARE || mode == SGI_GL_FASTEST ||
@@ -2834,6 +2960,9 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->cur_texcoord[2] = 0;
         c->cur_texcoord[3] = 1;
         memcpy(c->cur_texcoord, a, cmd->nargs * sizeof(float));
+        return;
+    case SGI_GL_OP_TEX_GEN:
+        sgi_gl_tex_gen_param(c, a);
         return;
     case SGI_GL_OP_TEX_ENV:
         if (a[0] == SGI_GL_TEXTURE_ENV_MODE) {
@@ -3635,6 +3764,11 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = extract32(c->lights_enabled, pname - SGI_GL_LIGHT0, 1);
         *n = 1;
         return true;
+    case SGI_GL_TEXTURE_GEN_S ... SGI_GL_TEXTURE_GEN_Q:
+        out[0] = extract32(c->tex_gen_enabled,
+                           pname - SGI_GL_TEXTURE_GEN_S, 1);
+        *n = 1;
+        return true;
     case SGI_GL_COLOR_MATERIAL_FACE:
         out[0] = c->color_material_face;
         *n = 1;
@@ -3947,6 +4081,21 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
     if (c->lights_enabled >> SGI_GL_LIGHTS) {
         error_setg(errp, "sgi-gl: light enables 0x%x", c->lights_enabled);
         return false;
+    }
+    if (c->tex_gen_enabled >> 4) {
+        error_setg(errp, "sgi-gl: texture generation enables 0x%x",
+                   c->tex_gen_enabled);
+        return false;
+    }
+    for (int i = 0; i < 4; i++) {
+        uint32_t mode = c->tex_gen_mode[i];
+
+        if (mode != SGI_GL_EYE_LINEAR && mode != SGI_GL_OBJECT_LINEAR &&
+            (mode != SGI_GL_SPHERE_MAP || i >= 2)) {
+            error_setg(errp, "sgi-gl: texture generation mode %d 0x%x", i,
+                       mode);
+            return false;
+        }
     }
     if (!sgi_gl_faces(c->color_material_face)) {
         error_setg(errp, "sgi-gl: colour material face 0x%x",
@@ -4763,6 +4912,13 @@ static int sgi_gl_context_pre_load(void *opaque)
     memset(c->sprite_axis, 0, sizeof(c->sprite_axis));
     c->sprite_axis[2] = 1.0f;
     memset(c->sprite_translation, 0, sizeof(c->sprite_translation));
+    c->tex_gen_enabled = sgi_gl_initial()->tex_gen_enabled;
+    memcpy(c->tex_gen_mode, sgi_gl_initial()->tex_gen_mode,
+           sizeof(c->tex_gen_mode));
+    memcpy(c->tex_gen_object_plane, sgi_gl_initial()->tex_gen_object_plane,
+           sizeof(c->tex_gen_object_plane));
+    memcpy(c->tex_gen_eye_plane, sgi_gl_initial()->tex_gen_eye_plane,
+           sizeof(c->tex_gen_eye_plane));
     c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.error = 0;
@@ -4813,6 +4969,30 @@ static const VMStateDescription vmstate_sgi_gl_texture_coords = {
     .fields = (const VMStateField[]) {
         VMSTATE_SGI_GL_FLOATS(cur_texcoord, SGIGLContext, 4),
         VMSTATE_SGI_GL_FLOATS(raster_texcoord, SGIGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_gl_tex_gen_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque, *init = sgi_gl_initial();
+
+    return SGI_GL_MOVED(c, init, tex_gen_enabled) ||
+           SGI_GL_MOVED(c, init, tex_gen_mode) ||
+           SGI_GL_MOVED(c, init, tex_gen_object_plane) ||
+           SGI_GL_MOVED(c, init, tex_gen_eye_plane);
+}
+
+static const VMStateDescription vmstate_sgi_gl_tex_gen = {
+    .name = "sgi-gl-context/texture-generation",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_tex_gen_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(tex_gen_enabled, SGIGLContext),
+        VMSTATE_UINT32_ARRAY(tex_gen_mode, SGIGLContext, 4),
+        VMSTATE_SGI_GL_FLOATS_2D(tex_gen_object_plane, SGIGLContext, 4, 4),
+        VMSTATE_SGI_GL_FLOATS_2D(tex_gen_eye_plane, SGIGLContext, 4, 4),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -4938,6 +5118,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_draw_error,
         &vmstate_sgi_gl_texture_coords,
         &vmstate_sgi_gl_sprite,
+        &vmstate_sgi_gl_tex_gen,
         NULL
     },
 };
