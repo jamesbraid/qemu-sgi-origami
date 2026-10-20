@@ -6056,12 +6056,21 @@ static uint64_t sgi_kona_gl_read_row_bytes(uint32_t width, uint32_t format,
  * Reads stage dense rows for either return transport.
  * The pointer's low bits do not offset the framebuffer source.
  * The selected logical bank supplies direct RGB at drawable-local lower-
- * left coordinates, bottom-first. Unsupported visuals/bindings, indexed
- * pixels and clipped rectangles receive no reply.
+ * left coordinates, bottom-first. A request the model cannot answer
+ * from its source returns false, logged with `outcome`, which says what
+ * the caller does instead (see sgi_kona_gl_read_pixels()).
+ *
+ * A wire extent of 8 by 1 is what the client sends for a public 1 by 1
+ * read, of which it copies only the first pixel; a genuine 8 by 1 read
+ * sends the same (established from the client, see the command grammar).
+ * Approximated: the model answers eight pixels from the request's
+ * corner, those past the window or the screen as zero, and needs only
+ * the first pixel inside. Both readings then get the pixels they copy.
  */
 static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                                       uint32_t limit, uint8_t **out_data,
-                                      uint32_t *out_count)
+                                      uint32_t *out_count,
+                                      const char *outcome)
 {
     int i = s->context_current;
     int32_t x0 = args[0], y0 = args[1];
@@ -6070,7 +6079,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     const SGIKonaGLPipe *p;
     uint32_t pixel_bytes;
     uint64_t row, len;
-    int64_t px, py;
+    int64_t px, py, cols;
     uint32_t selection;
     int bank;
     bool depth = format == 13, stencil = format == 12;
@@ -6082,7 +6091,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
 
     if (i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels with no current"
-                      " context; no reply\n");
+                      " context; %s\n", outcome);
         return false;
     }
     p = &s->state[i]->pipe;
@@ -6093,7 +6102,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     }
     if (s->state[i]->gl.in_begin || p->pixel_transfer_unsupported) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
-                      " unsupported; no reply\n");
+                      " unsupported; %s\n", outcome);
         return false;
     }
     if ((depth && p->draw_config_received && !p->draw_config[6]) ||
@@ -6103,7 +6112,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     }
     if (stencil && !sgi_kona_gl_stencil_index(p, 0, &index)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: stencil read transfer "
-                      "unsupported; no reply\n");
+                      "unsupported; %s\n", outcome);
         return false;
     }
     depth_scale = sgi_kona_gl_float(p->pixel_transfer.depth_scale);
@@ -6111,14 +6120,14 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     if (depth && (p->draw_config[6] != 24 || !isfinite(depth_scale) ||
                   !isfinite(depth_bias))) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels depth profile "
-                      "unsupported; no reply\n");
+                      "unsupported; %s\n", outcome);
         return false;
     }
     for (unsigned k = 0; !depth && !stencil && !indexed_visual && k < 4; k++) {
         if (!isfinite(sgi_kona_gl_float(p->pixel_transfer.scale[k])) ||
             !isfinite(sgi_kona_gl_float(p->pixel_transfer.bias[k]))) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels nonfinite"
-                          " transfer; no reply\n");
+                          " transfer; %s\n", outcome);
             return false;
         }
     }
@@ -6126,16 +6135,17 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     if (!row || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
-                      " is not modelled; no reply\n", format, type, args[6]);
+                      " is not modelled; %s\n", format, type, args[6],
+                      outcome);
         return false;
     }
     /* Check the complete dense extent before allocating or writing. */
     pixel_bytes = sgi_kona_gl_native_pixel_bytes(format, type);
     if ((int32_t)w <= 0 || (int32_t)h <= 0 ||
-        row > limit || h > limit / row || (w == 8 && h == 1)) {
+        row > limit || h > limit / row) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
-                      PRIu32 " has an unsupported extent; no reply\n",
-                      w, h);
+                      PRIu32 " has an unsupported extent; %s\n",
+                      w, h, outcome);
         return false;
     }
     len = row * h;
@@ -6145,31 +6155,35 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     bank = depth ? (sgi_kona_gl_depth_source_ready(s, i) ? 0 : -1) :
            stencil ? (sgi_kona_gl_stencil_source_ready(s, i) ? 0 : -1) :
                      sgi_kona_gl_read_bank(s, i, &selection);
-    if (bank < 0 ||
-        x0 < 0 || y0 < 0 || (uint64_t)x0 + w > win->width ||
+    /* An 8 by 1 wire extent needs only its first pixel inside. */
+    cols = w == 8 && h == 1 && x0 >= 0 && px >= 0 ?
+           MIN(w, MIN((int64_t)win->width - x0,
+                      (int64_t)SGI_KONA_FB_WIDTH - px)) : w;
+    if (bank < 0 || (int64_t)cols <= 0 ||
+        x0 < 0 || y0 < 0 || (uint64_t)x0 + cols > win->width ||
         (uint64_t)y0 + h > win->height || px < 0 || py < 0 ||
-        px + w > SGI_KONA_FB_WIDTH || py + h > SGI_KONA_FB_HEIGHT) {
+        px + cols > SGI_KONA_FB_WIDTH || py + h > SGI_KONA_FB_HEIGHT) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has no supported"
-                      " pixel source; no reply\n");
+                      " pixel source; %s\n", outcome);
         return false;
     }
     /* One unsupported tag refuses the whole rectangle before any write. */
     for (uint32_t r = 0; !depth && !stencil && r < h; r++) {
-        for (uint32_t c = 0; c < w; c++) {
+        for (uint32_t c = 0; c < cols; c++) {
             if (sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank)),
                     px + c, py + r) !=
                 (indexed_visual ? SGI_KONA_TAG_X_INDEX16 :
                                   SGI_KONA_TAG_DIRECT)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has an"
-                              " unsupported source tag; no reply\n");
+                              " unsupported source tag; %s\n", outcome);
                 return false;
             }
         }
     }
-    data = bitmap ? g_malloc0(len) : g_malloc(len);
+    data = g_malloc0(len);
     for (uint32_t r = 0; r < h; r++) {
-        for (uint32_t c = 0; c < w; c++) {
+        for (uint32_t c = 0; c < cols; c++) {
             if (stencil) {
                 uint32_t raw = sgi_kona_gl_load_stencil(s, px + c, py + r);
 
@@ -6326,30 +6340,59 @@ static void sgi_kona_gl_read_dma_start(SGIKonaState *s, const uint32_t *a)
     }
 }
 
+/*
+ * A glReadPixels the model cannot answer from its source still completes,
+ * as a refused X pixel read does (sgi_kona_x_read_answer_refused()): the
+ * client waits for its reply with no timeout, and oglsnoop blocked there
+ * before drawing anything. The reply is the whole usable return page
+ * zeroed, then the ready word; inside a matched DMA bracket, the
+ * descriptor's byte count of zeros. Model policy: what the pipe answers
+ * to a read it cannot perform is unknown. A read with no page of the
+ * current context's own is not answered, and a DMA request whose bracket,
+ * descriptor or owner does not match is refused as before.
+ */
 static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 {
     SGIKonaGLReadDMA *d = &s->gl_read_dma;
     g_autofree uint8_t *data = NULL;
+    bool answer = sgi_kona_x_read_current(s);
+    const char *outcome = answer ? "answered with zeros" : "not answered";
     uint32_t count;
 
     if (d->active) {
         if (d->refused || d->count || d->context != s->context_current ||
-        !sgi_kona_context_owner(s, d->context, d->generation) ||
+            !sgi_kona_context_owner(s, d->context, d->generation) ||
             !sgi_kona_gl_read_dma_layout(d, args,
-                                            SGI_KONA_CMD_GL_READ_PIXELS) ||
-            !sgi_kona_gl_read_payload(s, args, 64 * MiB, &data, &count)) {
+                                            SGI_KONA_CMD_GL_READ_PIXELS)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: ReadPixels DMA refused\n");
             sgi_kona_gl_read_dma_refuse(s);
             return;
+        }
+        if (!sgi_kona_gl_read_payload(s, args, 64 * MiB, &data, &count,
+                                      outcome)) {
+            if (!answer) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: ReadPixels DMA refused\n");
+                sgi_kona_gl_read_dma_refuse(s);
+                return;
+            }
+            count = d->descriptor[2];
+            data = g_malloc0(count);
         }
         memcpy(d->header, args, sizeof(d->header));
         d->selector = SGI_KONA_CMD_GL_READ_PIXELS;
         d->count = count;
         d->data = g_steal_pointer(&data);
     } else if (sgi_kona_gl_read_payload(s, args, SGI_KONA_SMALL_RETURN_BYTES,
-                                         &data, &count)) {
+                                         &data, &count, outcome)) {
         trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_PIXELS, args[4], count);
         sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 8, data, count);
+    } else if (answer) {
+        g_autofree uint8_t *zeros =
+            g_malloc0(SGI_KONA_RETURN_PAGE_BYTES - 8);
+
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 8, zeros,
+                             SGI_KONA_RETURN_PAGE_BYTES - 8);
     }
 }
 
