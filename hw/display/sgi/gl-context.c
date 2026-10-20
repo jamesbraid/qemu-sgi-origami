@@ -2886,13 +2886,16 @@ out_of_memory:
 /*
  * glTexGen (OpenGL 1.2.1, 2.10.4): a coordinate's mode, SPHERE_MAP only
  * for S and T, or its object or eye plane; the eye plane is kept as p M^-1,
- * M the modelview current at the call, as glClipPlane's is. Anything else,
- * or an eye plane under a modelview with no inverse, changes nothing.
+ * M the matrix taking object to eye coordinates at the call: the
+ * modelview, or under SGIX_sprite's enable the compound M T A R, which
+ * the extension says eye planes given inside the enable are transformed
+ * by. Anything else, or an eye plane under a matrix with no inverse,
+ * changes nothing.
  */
 static void sgi_gl_tex_gen_param(SGIGLContext *c, const uint32_t *a)
 {
     uint32_t i = a[0] - SGI_GL_S;
-    float v[4];
+    float v[4], mm[16];
     double inv[16];
 
     for (int k = 0; k < 4; k++) {
@@ -2913,7 +2916,24 @@ static void sgi_gl_tex_gen_param(SGIGLContext *c, const uint32_t *a)
         memcpy(c->tex_gen_object_plane[i], v, sizeof(v));
         return;
     case SGI_GL_EYE_PLANE:
-        if (!sgi_gl_invert(c->cur.modelview, inv)) {
+        memcpy(mm, c->cur.modelview, sizeof(mm));
+        if (c->sprite) {
+            const float *mv = c->cur.modelview;
+            double s4[16], rot[9];
+
+            sgi_gl_sprite_transform(c, s4, rot);
+            for (int col = 0; col < 4; col++) {
+                for (int row = 0; row < 4; row++) {
+                    double e = 0;
+
+                    for (int k = 0; k < 4; k++) {
+                        e += mv[k * 4 + row] * s4[col * 4 + k];
+                    }
+                    mm[col * 4 + row] = e;
+                }
+            }
+        }
+        if (!sgi_gl_invert(mm, inv)) {
             break;
         }
         for (int j = 0; j < 4; j++) {

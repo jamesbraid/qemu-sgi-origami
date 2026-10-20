@@ -2498,18 +2498,28 @@ static void test_texture_generation_sprite(void)
     context_init(&c);
     g_assert_true(sgi_gl_sprite_parameter(&c, SGI_GL_SPRITE_TRANSLATION_SGIX,
                                           translation));
-    word[0] = SGI_GL_SPRITE_SGIX;
-    command(&c, NULL, SGI_GL_OP_ENABLE, word, 1);
     tex_gen(&c, SGI_GL_S, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_OBJECT_LINEAR,
             0, 0, 0);
     tex_gen(&c, SGI_GL_S, SGI_GL_OBJECT_PLANE, 1, 0, 0, 0);
+    /* Given before the enable, the eye plane sees the modelview alone. */
     tex_gen(&c, SGI_GL_T, SGI_GL_EYE_PLANE, 1, 0, 0, 0);
+    word[0] = SGI_GL_SPRITE_SGIX;
+    command(&c, NULL, SGI_GL_OP_ENABLE, word, 1);
     tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_S, true);
     tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_T, true);
     sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos, 3, v);
     g_assert_cmpfloat(v[SGI_GL_V_POSITION], !=, 2.0f);
     g_assert_cmpfloat(v[SGI_GL_V_TEXCOORD], ==, 2.0f);
     g_assert_cmpfloat(v[SGI_GL_V_TEXCOORD + 1], ==, v[SGI_GL_V_POSITION]);
+
+    /*
+     * An eye plane given inside the enable is transformed by MM's inverse,
+     * so (1, 0, 0, 0) then gives back the vertex's own x.
+     */
+    tex_gen(&c, SGI_GL_T, SGI_GL_EYE_PLANE, 1, 0, 0, 0);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos, 3, v);
+    g_assert_cmpfloat_with_epsilon(v[SGI_GL_V_TEXCOORD + 1], 2.0f,
+                                   1.0f / 65536);
 }
 
 /*
