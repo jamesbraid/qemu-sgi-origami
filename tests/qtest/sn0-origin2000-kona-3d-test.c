@@ -6020,6 +6020,142 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
     kona_command(s, 0x174, h, 20);
 }
 
+/*
+ * A 2x2x2 mode-one volume of one colour under cache number id, its level
+ * at descriptor pair (pair, pair + 1): bound by number with its 0x17c
+ * record, loaded slice by slice, finished and named.
+ */
+static void texture_volume_load(QTestState *s, uint32_t id, uint32_t pair,
+                                uint32_t colour)
+{
+    uint32_t h[20];
+
+    kona_command(s, 0x1d5,
+                 (uint32_t[]) { id, (3u << 28) | (41 << 12), 0x30 << 14,
+                                0x111, 0 }, 5);
+    kona_command(s, 0x17c, (uint32_t[]) {
+        0x13, VOLUME_SINGLE_PHYSICAL, pair, pair + 1 }, 4);
+    for (unsigned z = 0; z < 2; z++) {
+        memcpy(h, texture_header, sizeof(h));
+        h[0] = 0x806f;
+        h[10] = id;
+        h[13] = h[14] = 1;
+        h[15] = z;
+        h[16] = VOLUME_SINGLE_PHYSICAL;
+        h[17] = VOLUME_SINGLE_LAYOUT;
+        h[18] = pair;
+        h[19] = pair + 1;
+        kona_command(s, 0x174, h, 20);
+        for (unsigned k = 0; k < 4; k++) {
+            qtest_writel(s, REG_COMMAND, colour);
+        }
+    }
+    kona_command(s, 0x176, &id, 1);
+    kona_command(s, 0x178, &id, 1);
+}
+
+/*
+ * pfCity (IRIX 6.5.30) binds its 128x128x64 volume by number once, then
+ * frees and retakes its cache entry and binds it as 0x106 with all ones
+ * and the 0x17c record, naming it with 0x178 only after the draws. The
+ * record's descriptor pair must find the volume, as a 2D record's table
+ * finds its texture; otherwise every draw went untextured ("incomplete
+ * texture image", 968 times in its city frames). Two volumes check that
+ * the pair, not the last one bound, chooses.
+ */
+static void test_texture_volume_rebind(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    static const uint32_t pairs[2] = { 0x15610, 0x16610 };
+    static const uint32_t colours[2] = { 0xff0000ff, 0x00ff00ff };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    for (unsigned v = 0; v < 2; v++) {
+        texture_volume_load(s, 9 + v, pairs[v], colours[v]);
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    for (unsigned frame = 0; frame < 2; frame++) {
+        for (unsigned v = 0; v < 2; v++) {
+            uint32_t id = 9 + v;
+
+            gl_window_cleared(s, 0, 0, 1);
+            kona_command(s, 0x1c5, &id, 1);
+            kona_command(s, 0x1c4, &id, 1);
+            kona_command(s, 0x106,
+                         (uint32_t[]) { UINT32_MAX, (3u << 28) | (41 << 12),
+                                        0x30 << 14, 0x111, 0 }, 5);
+            kona_command(s, 0x17c, (uint32_t[]) {
+                0x13, VOLUME_SINGLE_PHYSICAL, pairs[v], pairs[v] + 1 }, 4);
+            kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
+            gl_triangle_z(s, tri, 0);
+            assert_stencil_colour(s, colours[v] >> 8);
+            kona_command(s, 0x178, &id, 1);
+        }
+    }
+    qtest_quit(s);
+}
+
+/* The volume at pair 0x15610 bound with all ones, drawn, then named. */
+static void texture_volume_rebind_draw(QTestState *s, uint32_t expected)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    uint32_t id = 9;
+
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x25, (uint32_t[]) { 0xde1 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
+    kona_command(s, 0x1d5,
+                 (uint32_t[]) { UINT32_MAX, (3u << 28) | (41 << 12),
+                                0x30 << 14, 0x111, 0 }, 5);
+    kona_command(s, 0x17c, (uint32_t[]) {
+        0x13, VOLUME_SINGLE_PHYSICAL, 0x15610, 0x15611 }, 4);
+    kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, expected >> 8);
+    kona_command(s, 0x178, &id, 1);
+    kona_command(s, 0x25, (uint32_t[]) { 0x806f }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+}
+
+/*
+ * pfCity (IRIX 6.5.30) mixes the volume with 2D textures. While the
+ * volume's record is current it frees a 2D texture's entry, 0x178 8
+ * then 0x1c5 8, which the model takes as naming texture 8 under the
+ * volume's record. Texture 8's next all-ones bind must still find it by
+ * its table. And a 2D rebind that finds nothing refuses the draws after
+ * it only until the next bind is found, a volume's included.
+ */
+static void test_texture_volume_rebind_mixed(void)
+{
+    static const uint32_t green[4] = {
+        0x00ff00ff, 0x00ff00ff, 0x00ff00ff, 0x00ff00ff,
+    };
+    uint32_t id = 8;
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    texture_bank_load(s, id, 0x2000, false, green);
+    texture_volume_load(s, 9, 0x15610, 0xff0000ff);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    texture_volume_rebind_draw(s, 0xff0000ff);
+    kona_command(s, 0x178, &id, 1);
+    kona_command(s, 0x1c5, &id, 1);
+    kona_command(s, 0x1c4, &id, 1);
+    texture_bank_rebind_draw(s, 0x2000, false, id, green[0]);
+    /* No texture has this table: refused, and the draw dropped. */
+    texture_bank_rebind_draw(s, 0x7000, false, id, 0x0000ffff);
+    texture_volume_rebind_draw(s, 0xff0000ff);
+    texture_bank_rebind_draw(s, 0x2000, false, id, green[0]);
+    qtest_quit(s);
+}
+
 static void test_texture_native_volume(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -17308,6 +17444,10 @@ int main(int argc, char **argv)
         GUINT_TO_POINTER(1), test_texture_cache_entry_reuse);
     add_case("sn0/origin2000/kona-3d/texture-cache-entry/bank-pair",
              test_texture_cache_entry_bank_pair);
+    add_case("sn0/origin2000/kona-3d/texture-cache-entry/volume-rebind",
+             test_texture_volume_rebind);
+    add_case("sn0/origin2000/kona-3d/texture-cache-entry/volume-rebind-mixed",
+             test_texture_volume_rebind_mixed);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/retire",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_retire);
     add_data_case(

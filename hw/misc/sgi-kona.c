@@ -9034,35 +9034,35 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                               "sgi-kona: native texture table refused for"
                               " model storage budget\n");
             }
-        } else if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
-                   s->texture_bind_valid) {
+        } else if (s->texture_bind_valid) {
+            bool volume = selector != SGI_KONA_CMD_GL_TEX_BIND_2D;
             bool bank_one = (s->texture_bind[2] >> 28) & 1;
+            SGIKonaGLPipe *p = i != SGI_KONA_CONTEXT_NONE ?
+                               &s->state[i]->pipe : NULL;
 
             /*
              * A bind without its cache number draws before the 0x178 that
              * names it, so the record must locate the image: take the one
-             * texture an earlier complete bind gave this level table with
-             * its first level in the same bank. Two textures may share a
-             * table word list in opposite banks, as mirrors' do.
+             * texture an earlier complete bind gave this level table, an
+             * ordinary texture's with its first level in the same bank.
+             * Two textures may share a table word list in opposite banks,
+             * as mirrors' do. pfCity rebinds its volume this way too, with
+             * 0x17c.
              */
-            if (sgi_kona_texture_find_table(&s->textures, table, bank_one,
-                                            &found)) {
-                by_table = true;
-            } else if (i != SGI_KONA_CONTEXT_NONE &&
-                       s->state[i]->pipe.texture_selector_valid &&
-                       (s->state[i]->pipe.texture_assoc_valid &
-                        (1u << s->state[i]->pipe.texture_selector))) {
-                SGIKonaGLPipe *p = &s->state[i]->pipe;
-
-                /*
-                 * The retained association names a texture only while its
-                 * own stored table is this record's; anything else is a
-                 * different texture, and taking it would rewrite that
-                 * texture's table and size with this record's.
-                 */
+            by_table = sgi_kona_texture_find_table(&s->textures, table,
+                                                   volume, bank_one, &found);
+            /*
+             * The retained association names a texture only while its
+             * own stored table is this record's; anything else is a
+             * different texture, and taking it would rewrite that
+             * texture's table and size with this record's.
+             */
+            if (!by_table && !volume && p && p->texture_selector_valid &&
+                (p->texture_assoc_valid & (1u << p->texture_selector))) {
                 found = p->texture_assoc_handle[p->texture_selector];
                 by_table = sgi_kona_texture_table_matches(&s->textures, found,
-                                                          table, bank_one);
+                                                          table, false,
+                                                          bank_one);
             }
             if (by_table) {
                 s->texture_bind[0] = found;
@@ -9072,7 +9072,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         resolved = by_table ?
             s->textures.bound && s->textures.bound_handle == found :
             sgi_kona_texture_bound_ordinary_2d(s, s->texture_bind[0]);
-        if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
+        /* A volume found by its record replaces a refused 2D rebind too. */
+        if ((selector == SGI_KONA_CMD_GL_TEX_BIND_2D || by_table) &&
             i != SGI_KONA_CONTEXT_NONE && i == s->texture_bind_context &&
             s->state[i]->pipe.texture_rebind_refused) {
             if (resolved) {
