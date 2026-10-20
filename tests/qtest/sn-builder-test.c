@@ -3075,7 +3075,8 @@ static void test_ip53_origin_to_onyx_machine_type_migration_refused(void)
     IP53RuntimeTestFixture *from, *to;
 
     if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC, 0);
+        g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC,
+                               G_TEST_SUBPROCESS_INHERIT_STDERR);
         g_test_trap_assert_passed();
         g_test_trap_assert_stderr("*Machine type received is 'origin350' "
                                   "and local is 'onyx350'*");
