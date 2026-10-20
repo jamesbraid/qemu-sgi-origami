@@ -5,8 +5,27 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "migration/vmstate.h"
 
-/* Model resource bounds, not physical texture-memory capacities. */
+/* The largest single image and staged load: a model bound. */
 #define SGI_KONA_TEXTURE_BYTES (64u * 1024u * 1024u)
+
+/*
+ * The texture memory the model's pipe reports to the library: 64 MB, as
+ * on each RM7 board of the InfiniteReality2 capture. The library places
+ * resident textures in that pool (class 3), so it keeps them within it.
+ */
+#define SGI_KONA_TEXTURE_MEMORY (64u * 1024u * 1024u)
+
+/*
+ * The host memory the model may spend on all resident textures. It keeps
+ * every texel as 32 bits plus a coverage bit, whatever the native texel
+ * size, and each texture's own record. A texture memory full of 4-bit
+ * texels, the narrowest the library's formats name (inferred; the native
+ * sizes are not read), takes eight times its size in texels and a
+ * quarter of it in coverage; the ninth share is for the records. A
+ * budget of only the reported size refused textures pfCity keeps
+ * resident.
+ */
+#define SGI_KONA_TEXTURE_BUDGET (9ull * SGI_KONA_TEXTURE_MEMORY)
 
 typedef struct SGIKonaTextureParams {
     uint32_t min_filter, mag_filter, wrap_s, wrap_t, wrap_r;

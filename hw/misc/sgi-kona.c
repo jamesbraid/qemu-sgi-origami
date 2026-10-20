@@ -1899,7 +1899,8 @@ static const SGIKonaPoolDescriptor sgi_kona_pools[SGI_KONA_POOL_CLASSES] = {
       .copy_down = 1, .granule = 0x400, .capacity = 0x400 },
     /* texture: 64 MiB */
     { .max_key = 0, .max_align = 0x4000, .copies = 1, .shared = 0,
-      .copy_down = 1, .granule = 0x400, .capacity = 0x10000 },
+      .copy_down = 1, .granule = 0x400,
+      .capacity = SGI_KONA_TEXTURE_MEMORY / 0x400 },
 };
 
 static const struct {
