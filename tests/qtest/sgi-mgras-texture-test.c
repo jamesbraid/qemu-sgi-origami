@@ -228,6 +228,78 @@ static void test_gl_texture_load_draws_the_level(gconstpointer data)
     qtest_quit(t);
 }
 
+/* The client's glTexGen and generic enable words (sgi-mgras-gl.c). */
+#define TEX_GEN_MODE_HDR         0x00005a0c
+#define TEX_GEN_PLANE_HDR        0x00005b08
+#define TEX_GEN_PLANE_F_HDR      0x00005c10
+#define TEX_GEN_ENABLE_HDR       0x00007504
+#define TEX_GEN_DISABLE_HDR      0x00007604
+
+static void tex_gen_object_plane(QTestState *t, uint32_t coord,
+                                 const float p[4])
+{
+    gl_word(t, TEX_GEN_MODE_HDR);
+    gl_word(t, coord);
+    gl_word(t, 0x2500);
+    gl_word(t, 0x2401);
+    gl_word(t, TEX_GEN_PLANE_HDR);
+    gl_word(t, coord);
+    gl_word(t, 0x2501);
+    gl_word(t, TEX_GEN_PLANE_F_HDR);
+    for (int i = 0; i < 4; i++) {
+        gl_float(t, p[i]);
+    }
+}
+
+/*
+ * glTexGen's words generate S and T from the object position: planes
+ * mapping the quad's corners to 0 and 1 draw every texel where tex_quad()'s
+ * explicit coordinates put it, though each vertex's own coordinates are 0;
+ * the client's disable of GL_TEXTURE_GEN_S and T then gives texel 0, 0
+ * everywhere.
+ */
+static void test_gl_texture_generation(gconstpointer data)
+{
+    static const float s_plane[4] = { 1.0f / 32, 0, 0, -0.5f };
+    static const float t_plane[4] = { 0, 1.0f / 16, 0, -1 };
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 0, 0 }, { 48, 32, 0, 0 }, { 16, 32, 0, 0 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_gen_object_plane(t, 0x2000, s_plane);
+    tex_gen_object_plane(t, 0x2001, t_plane);
+    gl_one(t, TEX_GEN_ENABLE_HDR, 0x0c60);
+    gl_one(t, TEX_GEN_ENABLE_HDR, 0x0c61);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad_rect(t, white, v);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+
+    gl_one(t, TEX_GEN_DISABLE_HDR, 0x0c60);
+    gl_one(t, TEX_GEN_DISABLE_HDR, 0x0c61);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad_rect(t, white, v);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            texels[0] << 16 | texels[1] << 8 | texels[2]);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 #define TEX_COLOR_TABLE_SELECTOR 0x15c
 #define TEX_COLOR_TABLE_DATA     0x15d
 #define TEX_COLOR_TABLE_MODE     0x0000e000
@@ -5644,6 +5716,8 @@ int main(int argc, char **argv)
         test_gl_texture_ordinary_volume_point);
     add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-slices",
                             test_gl_texture_volume_slices);
+    add_texture_board_cases("sn0/origin2000/mgras/gl-texture-generation",
+                            test_gl_texture_generation);
     qtest_add_func(
         "sn0/origin2000/mgras/gl-texture-ordinary-rectangular-volume",
         test_gl_texture_ordinary_rectangular_volume);

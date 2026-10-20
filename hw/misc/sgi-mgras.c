@@ -2356,6 +2356,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_client_read,
         &vmstate_sgi_mgras_gl_clip_query,
         &vmstate_sgi_mgras_gl_iris_rule,
+        &vmstate_sgi_mgras_gl_tex_gen,
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
         &vmstate_sgi_mgras_texture,

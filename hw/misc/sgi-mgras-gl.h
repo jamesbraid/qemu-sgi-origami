@@ -38,6 +38,7 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_readback;
 extern const VMStateDescription vmstate_sgi_mgras_gl_client_read;
 extern const VMStateDescription vmstate_sgi_mgras_gl_clip_query;
 extern const VMStateDescription vmstate_sgi_mgras_gl_iris_rule;
+extern const VMStateDescription vmstate_sgi_mgras_gl_tex_gen;
 
 /*
  * An inline data block's header: bit 31, the byte offset of its first byte in

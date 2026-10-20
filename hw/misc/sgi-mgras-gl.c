@@ -872,6 +872,38 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * to lit colour indices is unknown. The discriminating test is
  * gl-iris-colour-after-normal-is-unlit.
  */
+/*
+ * Texture coordinate generation, from the IRIX 6.5.30 IP27GR532
+ * libGLcore.so's glTexGenfv (__glMgrim_TexGenfv, 0xd960670), established
+ * from the listing:
+ *
+ * - GL_TEXTURE_GEN_MODE writes 0x5a0c, the coordinate (GL_S to GL_Q,
+ *   0x2000 to 0x2003), 0x2500 and the mode's enumerant as an integer;
+ *   GL_SPHERE_MAP for R or Q is refused there (0xd9607a4).
+ * - GL_OBJECT_PLANE and GL_EYE_PLANE write 0x5b08, the coordinate and the
+ *   parameter (0x2501 or 0x2502), then 0x5c10 and the plane's four
+ *   floats in order; glTexGeniv's integers come under 0x18005c10. The
+ *   eye plane goes as the application gave it, so the board transforms
+ *   it by the modelview's inverse (inferred: the client multiplies
+ *   nothing, and OpenGL 1.2.1, 2.10.4 defines the eye plane that way).
+ * - glEnable and glDisable of GL_TEXTURE_GEN_S to Q write 0x7504 or 0x7604
+ *   and the capability, on a board with texture (the client's notes in
+ *   Origami's docs/analysis; 0x7604 with 0x0c60 to 0x0c63 traced from
+ *   pfCity on SI with texture). Other capabilities under these two words
+ *   are logged.
+ *
+ * The model keeps the generation state in the shared context, which
+ * generates as OpenGL 1.2.1, 2.10.4 gives (approximated: the geometry
+ * engine's arithmetic is unknown). A 0x5c10 with no 0x5b08 before it is
+ * logged. The discriminating test is gl-texture-generation.
+ */
+#define MGRAS_GL_TEX_GEN_MODE    0x00005a0c
+#define MGRAS_GL_TEX_GEN_PLANE   0x00005b08
+#define MGRAS_GL_TEX_GEN_PLANE_F 0x00005c10
+#define MGRAS_GL_TEX_GEN_PLANE_I 0x18005c10
+#define MGRAS_GL_ENABLE_CAP      0x00007504
+#define MGRAS_GL_DISABLE_CAP     0x00007604
+
 #define MGRAS_GL_IRIS_LMC_COLOR  0x0000dd00
 #define MGRAS_GL_IRIS_LMC_OTHER  0x0000de00
 #define MGRAS_GL_IRIS_RULE_OFF   0x0000df00
@@ -956,6 +988,12 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_IRIS_LMC_OTHER:
     case MGRAS_GL_IRIS_RULE_OFF:
     case MGRAS_GL_IRIS_RULE_ON:
+    case MGRAS_GL_TEX_GEN_MODE:
+    case MGRAS_GL_TEX_GEN_PLANE:
+    case MGRAS_GL_TEX_GEN_PLANE_F:
+    case MGRAS_GL_TEX_GEN_PLANE_I:
+    case MGRAS_GL_ENABLE_CAP:
+    case MGRAS_GL_DISABLE_CAP:
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_RENDER_SELECT:
     case MGRAS_GL_RENDER:
@@ -1467,6 +1505,9 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
                sizeof(s->gl_context[i].clip_query));
         s->gl_context[i].iris_rule = 0;
         s->gl_context[i].iris_colour_last = 0;
+        s->gl_context[i].tex_gen_plane_open = 0;
+        memset(s->gl_context[i].tex_gen_plane, 0,
+               sizeof(s->gl_context[i].tex_gen_plane));
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
         memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
@@ -1512,6 +1553,9 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
            sizeof(s->gl_context[i].clip_query));
     s->gl_context[i].iris_rule = 0;
     s->gl_context[i].iris_colour_last = 0;
+    s->gl_context[i].tex_gen_plane_open = 0;
+    memset(s->gl_context[i].tex_gen_plane, 0,
+           sizeof(s->gl_context[i].tex_gen_plane));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
     memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
     sgi_mgras_texture_reset(&s->gl_context[i].tex);
@@ -2756,6 +2800,57 @@ const VMStateDescription vmstate_sgi_mgras_gl_iris_rule = {
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
                              SGI_MGRAS_GL_CONTEXTS, 1,
                              vmstate_sgi_mgras_gl_context_iris_rule,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_tex_gen = {
+    .name = TYPE_SGI_MGRAS "/gl-context-tex-gen",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(tex_gen_plane_open, SGIMgrasGLContext),
+        VMSTATE_UINT32_ARRAY(tex_gen_plane, SGIMgrasGLContext, 2),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* Sent while some context is between a 0x5b08 and its plane. */
+static bool mgras_gl_tex_gen_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].tex_gen_plane_open) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int mgras_gl_tex_gen_post_load(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].tex_gen_plane_open > 1) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_tex_gen = {
+    .name = TYPE_SGI_MGRAS "/gl-tex-gen",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_tex_gen_needed,
+    .post_load = mgras_gl_tex_gen_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_tex_gen,
                              SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
@@ -5226,6 +5321,63 @@ static void mgras_gl_readback(SGIMgrasState *s, uint32_t header,
     memcpy(rb, out, MIN(n, 4) * sizeof(*rb));
 }
 
+/* Execute a texture coordinate generation packet; false for any other. */
+static bool mgras_gl_tex_gen(SGIMgrasState *s, uint32_t header,
+                             const uint32_t *payload)
+{
+    SGIMgrasGLContext *g = &s->gl_context[s->gl_current];
+    uint32_t word[6] = { 0 };
+    float f;
+
+    switch (header) {
+    case MGRAS_GL_TEX_GEN_MODE:
+        word[0] = payload[0];
+        word[1] = payload[1];
+        f = payload[2];
+        memcpy(&word[2], &f, sizeof(f));
+        mgras_gl_command(s, SGI_GL_OP_TEX_GEN, word, 6);
+        return true;
+    case MGRAS_GL_TEX_GEN_PLANE:
+        g->tex_gen_plane_open = 1;
+        g->tex_gen_plane[0] = payload[0];
+        g->tex_gen_plane[1] = payload[1];
+        return true;
+    case MGRAS_GL_TEX_GEN_PLANE_F:
+    case MGRAS_GL_TEX_GEN_PLANE_I:
+        if (!g->tex_gen_plane_open) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: glTexGen plane 0x%x "
+                          "with no coordinate before it ignored\n", header);
+            return true;
+        }
+        g->tex_gen_plane_open = 0;
+        word[0] = g->tex_gen_plane[0];
+        word[1] = g->tex_gen_plane[1];
+        for (int i = 0; i < 4; i++) {
+            if (header == MGRAS_GL_TEX_GEN_PLANE_I) {
+                f = (int32_t)payload[i];
+                memcpy(&word[i + 2], &f, sizeof(f));
+            } else {
+                word[i + 2] = payload[i];
+            }
+        }
+        mgras_gl_command(s, SGI_GL_OP_TEX_GEN, word, 6);
+        return true;
+    case MGRAS_GL_ENABLE_CAP:
+    case MGRAS_GL_DISABLE_CAP:
+        if (payload[0] < SGI_GL_TEXTURE_GEN_S ||
+            payload[0] > SGI_GL_TEXTURE_GEN_Q) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: capability 0x%x under "
+                          "0x%x is not modelled\n", payload[0], header);
+            return true;
+        }
+        word[0] = payload[0];
+        mgras_gl_command(s, header == MGRAS_GL_ENABLE_CAP ?
+                         SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, word, 1);
+        return true;
+    }
+    return false;
+}
+
 /* Execute a lighting packet; false for any other header. */
 static bool mgras_gl_lighting(SGIMgrasState *s, uint32_t header,
                               const uint32_t *payload, uint32_t words)
@@ -5450,6 +5602,7 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     }
     if (mgras_gl_lighting(s, header, payload, words) ||
+        mgras_gl_tex_gen(s, header, payload) ||
         sgi_mgras_texture_execute(s, header, payload, words)) {
         return;
     }

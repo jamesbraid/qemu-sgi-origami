@@ -506,6 +506,13 @@ typedef struct SGIMgrasGLContext {
      */
     uint32_t iris_rule;
     uint32_t iris_colour_last;
+    /*
+     * glTexGen's plane (hw/misc/sgi-mgras-gl.c): 1 between a 0x5b08 and
+     * the 0x5c10 that carries the plane it names, with its coordinate
+     * and parameter.
+     */
+    uint32_t tex_gen_plane_open;
+    uint32_t tex_gen_plane[2];
     /* A pixel draw under way in this context. */
     SGIMgrasGLPixels pixels;
     /* Texture state, used on a board with TRAM. */
