@@ -2504,6 +2504,17 @@ static void odyssey_backend_write(SGIOdysseyState *s, uint64_t value,
  */
 #define ODSY_HW_PIPE_STATE 0x80
 #define ODSY_HW_PIPE_IDLE 0xf
+/*
+ * Pipe-state bit 11 of an open triangle strip: its next triangle is odd, so
+ * it takes its two held vertices in reverse order (OpenGL 1.2.1, 2.6.1).
+ * ESTABLISHED as the GL library's reading: its near-plane workaround reads
+ * the page back mid-strip and, with bit 11 set, replays the two held
+ * vertices and the new one as the triangle (newer, older, new), otherwise
+ * as a strip (older, newer, new) (the IRIX 6.5.30 IP30 n32 library's
+ * vertex-clipping workaround). That the board sets it so is INFERRED: the
+ * library's replay is wrong otherwise.
+ */
+#define ODSY_HW_PIPE_STRIP_ODD (1u << 11)
 #define ODSY_HW_CURRENT_ATTRIBUTES 0x84
 #define ODSY_HW_DESCRIPTOR_WORDS 10     /* +0x84 to +0xab */
 #define ODSY_HW_INDEX_WORD 0x240
@@ -2873,6 +2884,12 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
         uint32_t state = s->gl_primitive | (s->gl_open_held << 4) |
                          (s->gl_open_r << 6) | (s->gl_open_m3 << 12) |
                          (s->gl_open_m4 << 14) | (s->gl_open_c << 21);
+
+        /* After c >= 2 vertices the next triangle is number c - 2. */
+        if (s->gl_primitive == ODSY_GL_TRIANGLE_STRIP &&
+            s->gl_open_c >= 2 && (s->gl_open_m4 & 1)) {
+            state |= ODSY_HW_PIPE_STRIP_ODD;
+        }
 
         odyssey_open_current_records(s, current);
         odyssey_shadow_put(s, base, ODSY_HW_PIPE_STATE, state);
