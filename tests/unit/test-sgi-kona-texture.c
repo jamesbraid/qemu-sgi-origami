@@ -49,10 +49,16 @@ static void test_objects(void)
     /* The oversized image is rejected before the one-word source is read. */
     g_assert_false(sgi_kona_texture_upload(&s, 0, 0, 8192, 8192,
                                           SGI_GL_RGBA, SGI_GL_RGBA, green));
-    /* Image alone fits 64MiB, but its object metadata must fit too. */
+    /*
+     * With all but 64 MiB of the budget spent elsewhere, the image alone
+     * fits, but its object metadata must fit too.
+     */
+    s.bytes = bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES;
     g_assert_false(sgi_kona_texture_upload(&s, 0, 0, 4096, 4096,
                                           SGI_GL_RGBA, SGI_GL_RGBA, green));
-    g_assert_cmpuint(s.bytes, ==, bytes);
+    g_assert_cmpuint(s.bytes, ==,
+                     bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES);
+    s.bytes = bytes;
     g_assert_cmphex(texel(&s, 0, 0), ==, red[0]);
     g_assert_true(sgi_kona_texture_upload(&s, 0, 0, 1, 1,
                                          SGI_GL_RGBA, SGI_GL_RGBA, green));
@@ -633,9 +639,13 @@ static void test_native_growth(void)
     h[13]--;
     h[2] = 4096;
     h[14] = 4095;
+    /* A 64 MiB image and its coverage cannot fit the last 64 MiB. */
+    s.bytes = bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES;
     g_assert_false(sgi_kona_texture_native_upload(&s, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
-    g_assert_cmpuint(s.bytes, ==, bytes);
+    g_assert_cmpuint(s.bytes, ==,
+                     bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES);
+    s.bytes = bytes;
     sgi_kona_texture_cleanup(&s);
 }
 
@@ -1305,7 +1315,7 @@ static void test_native_volume_slices(void)
     h[17] = 0x40;
     bytes = src.bytes;
     h[16]++;
-    src.bytes = SGI_KONA_TEXTURE_BYTES;
+    src.bytes = SGI_KONA_TEXTURE_BUDGET;
     g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     src.bytes = bytes;
@@ -2523,6 +2533,37 @@ static void test_native_far_corner_level_has_no_border(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+/*
+ * Five 2048x2048 luminance textures are 20 MB of 8-bit texels, well
+ * within the 64 MB texture memory the pipe reports, but over 80 MiB as
+ * the model holds them. pfCity (IRIX 6.5.30) keeps more than 64 MiB of
+ * model texture resident; every one of its textures must still publish.
+ */
+static void test_native_budget_covers_texture_memory(void)
+{
+    SGIKonaTextureState s;
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 2048, [2] = 2048, [9] = 0xd,
+        [13] = 2047, [14] = 2047, [16] = 0xbb, [17] = 0x2200,
+    };
+    uint32_t *texels = g_new(uint32_t, 2048 * 2048);
+
+    for (unsigned k = 0; k < 2048 * 2048; k++) {
+        texels[k] = 0x808080ff;
+    }
+    sgi_kona_texture_init(&s);
+    for (unsigned k = 0; k < 5; k++) {
+        h[10] = 20 + k;
+        h[18] = 0x1000 * (k + 1);
+        g_assert_true(sgi_kona_texture_native_upload(&s, h, texels,
+                                                     SGI_GL_LUMINANCE,
+                                                     SGI_GL_LUMINANCE));
+    }
+    g_assert_cmpuint(s.bytes, >, 80u * 1024 * 1024);
+    sgi_kona_texture_cleanup(&s);
+    g_free(texels);
+}
+
 static void test_filter_curve_budget(void)
 {
     SGIKonaTextureState s;
@@ -2532,7 +2573,7 @@ static void test_filter_curve_budget(void)
     sgi_kona_texture_init(&s);
     g_assert_true(sgi_kona_texture_curve_upload(&s, 1, words));
     first = s.bytes;
-    s.bytes = SGI_KONA_TEXTURE_BYTES;
+    s.bytes = SGI_KONA_TEXTURE_BUDGET;
     g_assert_false(sgi_kona_texture_curve_upload(&s, 2, words));
     /* Replacing an existing slot requires no additional budget. */
     words[0] = 0x200;
@@ -2652,6 +2693,8 @@ int main(int argc, char **argv)
                     test_native_volume_slices);
     g_test_add_func("/sgi/kona/texture/native-volume/single-rebound-flat",
                     test_native_volume_single_rebound_flat);
+    g_test_add_func("/sgi/kona/texture/native-budget-covers-texture-memory",
+                    test_native_budget_covers_texture_memory);
     g_test_add_data_func("/sgi/kona/texture/native-volume/padded-interior",
                          GUINT_TO_POINTER(0x20202),
                          test_native_volume_interior);
