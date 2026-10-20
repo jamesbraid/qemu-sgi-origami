@@ -18,6 +18,7 @@ draw /mips64/sn0/origin2000/kona-3d/colour-matrix
 draw /mips64/sn0/origin2000/kona-3d/copy-pixels
 draw /mips64/sn0/origin2000/kona-3d/copy-query
 draw /mips64/sn0/origin2000/kona-3d/depth-blend
+draw /mips64/sn0/origin2000/kona-3d/draw-arrays
 draw /mips64/sn0/origin2000/kona-3d/depth-boundaries
 draw /mips64/sn0/origin2000/kona-3d/draw-pixels
 draw /mips64/sn0/origin2000/kona-3d/draw-pixels-transfer

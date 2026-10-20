@@ -9590,6 +9590,66 @@ static void test_bitmap_texture_dimensions(gconstpointer opaque)
     }
 }
 
+/*
+ * glDrawArrays as pfCity sends it (IRIX 6.5.30): the state word 0x2700047
+ * (a 2-float texture coordinate and a 4-float position), glBegin, 0x181 0,
+ * the run, 0x1a3 0 and glEnd, the vertices carrying no selector. Mode 0
+ * sends a short run (0x1a3 - 2 * 3 for three vertices of two arrays),
+ * mode 1 a bulk run (0x182, 3, two 0xdeadbeef words). Mode 2 is a
+ * position of three GL_SHORTs (state 0x33): framed at two words a vertex,
+ * not drawn. Every mode then draws an immediate-mode triangle in green
+ * over the first one to show the commands after the run still frame.
+ */
+static void test_draw_arrays(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const float tri[3][2] = { { -0.8, -0.8 }, { 0.8, -0.8 },
+                                     { 0, 0.8 } };
+    static const double green_tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    bool shorts = mode == 2;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command_f(s, 0x6b, (float[]) { 1, 0, 0, 1 }, 4);
+    kona_command(s, 0x180, (uint32_t[]) { shorts ? 0x33 : 0x2700047 }, 1);
+    gl_begin(s, 4);
+    kona_command(s, 0x181, (uint32_t[]) { 0 }, 1);
+    if (mode == 1) {
+        kona_command(s, 0x182, (uint32_t[]) { 3, 0xdeadbeef, 0xdeadbeef },
+                     3);
+    } else {
+        qtest_writel(s, REG_COMMAND, shorts ? 0x1a3 - 3 : 0x1a3 - 2 * 3);
+    }
+    for (unsigned k = 0; k < 3; k++) {
+        if (shorts) {
+            qtest_writel(s, REG_COMMAND, 0x10002000);
+            qtest_writel(s, REG_COMMAND, 0x30000000);
+            continue;
+        }
+        qtest_writel(s, REG_COMMAND, fbits(0.5));
+        qtest_writel(s, REG_COMMAND, fbits(0.5));
+        qtest_writel(s, REG_COMMAND, fbits(tri[k][0]));
+        qtest_writel(s, REG_COMMAND, fbits(tri[k][1]));
+        qtest_writel(s, REG_COMMAND, fbits(0));
+        qtest_writel(s, REG_COMMAND, fbits(1));
+    }
+    kona_command(s, 0x1a3, (uint32_t[]) { 0 }, 1);
+    gl_end(s);
+    assert_stencil_colour(s, shorts ? 0x0000ff : 0xff0000);
+    kona_command_f(s, 0x6b, (float[]) { 0, 1, 0, 1 }, 4);
+    gl_triangle_z(s, green_tri, 0);
+    assert_stencil_colour(s, 0x00ff00);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "expected a sync word"));
+    g_assert_null(strstr(found, "vertices not framed"));
+    g_assert_true(!strstr(found, "framed, not drawn") == !shorts);
+}
+
 static void colour_map_upload(QTestState *s, unsigned component,
                               uint32_t token, const float *values,
                               unsigned count)
@@ -16661,6 +16721,16 @@ int main(int argc, char **argv)
              test_iris_colour_after_normal_unlit);
     add_case("sn0/origin2000/kona-3d/iris-rule-across-migration",
              test_iris_rule_across_migration);
+    static const char *draw_arrays_cases[] = {
+        "short-run", "bulk-run", "short-position-framed-not-drawn",
+    };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(draw_arrays_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-arrays/%s", draw_arrays_cases[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode), test_draw_arrays);
+    }
     add_case("sn0/origin2000/kona-3d/depth-less-and-greater",
              test_depth_less_and_greater);
     add_case("sn0/origin2000/kona-3d/depth-without-buffer",

@@ -399,6 +399,10 @@ typedef struct SGIKonaGLPipe {
     uint32_t texture_assoc_handle[2];
     uint8_t texture_assoc_valid;
     bool texture_rebind_refused;
+    /* The last glDrawArrays state word (0x180), and an open 0x181. */
+    uint32_t array_state;
+    bool array_state_valid;
+    bool array_open;
 } SGIKonaGLPipe;
 
 /*

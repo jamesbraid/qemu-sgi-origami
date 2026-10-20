@@ -266,6 +266,21 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_POINT_PARAMETER   0x1a7
 #define SGI_KONA_CMD_GL_POINT_ATTENUATION 0x1a8
 /*
+ * glDrawArrays (libGLcore __glkonim_DrawArraysEXT): 0x180 and the enabled
+ * arrays' state word when it changed; then inside glBegin and glEnd,
+ * 0x181 0, a short run, a bulk run and 0x1a3 0. A short run's token is
+ * 0x1a3 - e * r (e = 1, 2 or 4 enabled arrays) or 0x1a1 - e * r (e = 3,
+ * 5 or 6) for its r vertices, and has no words of its own. A bulk run
+ * is 0x182, its vertex count and two 0xdeadbeef words. The vertices
+ * follow either run with no selector.
+ */
+#define SGI_KONA_CMD_GL_ARRAY_STATE       0x180
+#define SGI_KONA_CMD_GL_ARRAY_BEGIN       0x181
+#define SGI_KONA_CMD_GL_ARRAY_BULK        0x182
+#define SGI_KONA_CMD_GL_ARRAY_SHORT_FIRST 0x184
+#define SGI_KONA_CMD_GL_ARRAY_SHORT_LAST  0x1a2
+#define SGI_KONA_CMD_GL_ARRAY_END         0x1a3
+/*
  * glRect: a count of the words up to and including the end that follows
  * the four vertices, which arrive as vertex commands.
  */
