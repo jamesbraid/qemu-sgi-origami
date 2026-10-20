@@ -4,6 +4,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/misc/sgi-bedrock-io.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -673,6 +674,19 @@ static void target_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(s->pic), &local_err)) {
             error_propagate(errp, local_err);
             return;
+        }
+        if (s->pic_runtime_profile && s->target_port) {
+            SGIBedrockIOState *ii = SGI_BEDROCK_IO(object_dynamic_cast(
+                s->target_port, TYPE_SGI_BEDROCK_IO));
+
+            if (ii && ii->bedrock) {
+                SGIBedrockState *bedrock = SGI_BEDROCK(ii->bedrock);
+
+                sgi_pic_set_bedrock_pi(SGI_PIC(s->pic), 0,
+                                       &bedrock->pi[0], 0);
+                sgi_pic_set_bedrock_pi(SGI_PIC(s->pic), 1,
+                                       &bedrock->pi[1], 0);
+            }
         }
         if (s->pic_test_irq_route) {
             DeviceState *head = sgi_pic_head_device(SGI_PIC(s->pic), 0);

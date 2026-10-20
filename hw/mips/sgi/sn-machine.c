@@ -52,6 +52,7 @@
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-bic-board-interface.h"
 #include "hw/misc/sgi-bedrock-flash.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "chardev/char.h"
 #include "migration/vmstate.h"
@@ -3139,6 +3140,12 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                   &attachment_count);
     nodes = sgi_model_node_array(t->nodes, &node_count);
+    if (s->ip53_experiment_authorized &&
+        host_count > SGI_BEDROCK_PI_LEVEL_SOURCES / SGI_PIC_LEVEL_SOURCES) {
+        error_setg(errp, "IP53 PIC count exceeds the supported interrupt "
+                   "source count");
+        return false;
+    }
 
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
@@ -3165,6 +3172,14 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             !sysbus_realize(SYS_BUS_DEVICE(pic), errp) ||
             !sgi_xio_link_connect(&s->pic_links[i], errp)) {
             return false;
+        }
+        if (s->ip53_experiment_authorized) {
+            SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+            sgi_pic_set_bedrock_pi(pic, 0, &bedrock->pi[0],
+                                   i * SGI_PIC_LEVEL_SOURCES);
+            sgi_pic_set_bedrock_pi(pic, 1, &bedrock->pi[1],
+                                   i * SGI_PIC_LEVEL_SOURCES);
         }
     }
 

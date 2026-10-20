@@ -14,6 +14,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockPIState, SGI_BEDROCK_PI)
 #define SGI_BEDROCK_PI_SIZE 0x30108
 #define SGI_BEDROCK_PI_PROCESSORS 2
 #define SGI_BEDROCK_PI_HW_IRQS 5
+#define SGI_BEDROCK_PI_LEVEL_SOURCES 256
+#define SGI_BEDROCK_PI_INTERRUPT_LEVELS 128
 
 typedef struct SGIBedrockPITimerLine {
     struct SGIBedrockPIState *pi;
@@ -58,6 +60,9 @@ struct SGIBedrockPIState {
     uint32_t rq_timeout_scale;
     uint8_t cpu_enable[2];
     uint64_t pending[2];
+    uint8_t level_source[SGI_BEDROCK_PI_LEVEL_SOURCES];
+    int64_t level_rearm_due[SGI_BEDROCK_PI_INTERRUPT_LEVELS];
+    QEMUTimer *level_rearm_timer;
     uint64_t cc_pend[2];
     uint64_t cc_pend_mask;
     uint64_t mask[2][2];
@@ -117,6 +122,8 @@ void sgi_bedrock_pi_set_uart_irq(SGIBedrockPIState *s, bool level);
 */
 void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
                                 unsigned bit);
+void sgi_bedrock_pi_set_level_source(SGIBedrockPIState *s, unsigned source,
+                                     unsigned level, bool active);
 /*
  * The memory unit found an uncorrectable error: raise the error-interrupt
  * pending register's memory-uncorrectable bit, bit 24, the one bit of that

@@ -2106,8 +2106,9 @@ static QTestState *pic_profile_width_migration_start(bool incoming,
     return qts;
 }
 
-static QTestState *pic_bedrock_parent_start(bool map_io_registers,
-                                            bool runtime_profile)
+static QTestState *pic_bedrock_parent_start_full(bool map_io_registers,
+                                                 bool runtime_profile,
+                                                 bool incoming)
 {
     QTestState *qts = qtest_initf(
         "-M none -cpu R10000 -m 256M -S -d unimp,guest_errors "
@@ -2117,8 +2118,8 @@ static QTestState *pic_bedrock_parent_start(bool map_io_registers,
         "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
         "pic-runtime-profile=%s,"
         "pic-linked=on,pic-switched=on,pic-bedrock-interrupts=on,"
-        "target-port=/machine/peripheral/bedrock/io",
-        runtime_profile ? "on" : "off");
+        "target-port=/machine/peripheral/bedrock/io %s",
+        runtime_profile ? "on" : "off", incoming ? "-incoming defer" : "");
 
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/bedrock", 0,
                           0x10000000);
@@ -2128,6 +2129,13 @@ static QTestState *pic_bedrock_parent_start(bool map_io_registers,
     }
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 3, BASE);
     return qts;
+}
+
+static QTestState *pic_bedrock_parent_start(bool map_io_registers,
+                                            bool runtime_profile)
+{
+    return pic_bedrock_parent_start_full(map_io_registers, runtime_profile,
+                                         false);
 }
 
 static QTestState *pic_bedrock_start(bool runtime_profile)
@@ -4228,6 +4236,155 @@ static void test_runtime_profile_bedrock_interrupt(void)
     test_bedrock_interrupt_profile(true);
 }
 
+static void test_runtime_profile_bedrock_level_mirror(void)
+{
+    const uint64_t pending = UINT64_C(1) << 11;
+    const uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+    const uint64_t destination = (UINT64_C(11) << 48) | address;
+    const uint64_t invalid_destination = (UINT64_C(11) << 48) |
+        (II_REGISTER | II_NODE(2) | II_HUB_REMOTE | 0x90);
+    QTestState *qts = pic_bedrock_parent_start(false, true);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_irq_intercept_out_named(qts, "/machine/peripheral/bedrock",
+                                  "hardware-irq");
+    qtest_writeq(qts, 0x10000000 + 0xa8, pending);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+    qtest_writeq(qts, HEAD(0) + 0x148, destination);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x118), ==, 0);
+    qtest_writeq(qts, HEAD(0) + 0x108, 1U << 3);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 1);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    for (unsigned service = 0; service < 3; service++) {
+        qtest_writeq(qts, 0x10000000 + 0x90, 11);
+        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                        0);
+        g_assert_false(qtest_get_irq(qts, 0));
+        qtest_clock_step(qts, 500000);
+        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                        0);
+        qtest_clock_step(qts, 1000000);
+        g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                        pending);
+        g_assert_true(qtest_get_irq(qts, 0));
+    }
+
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 0);
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==, 0);
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 1);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 0);
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    qtest_writeq(qts, HEAD(0) + 0x148, invalid_destination);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 1);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==, 0);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 0);
+    qtest_quit(qts);
+}
+
+static void test_runtime_profile_bedrock_rearm_one_level(void)
+{
+    const uint64_t a = UINT64_C(1) << 11;
+    const uint64_t b = UINT64_C(1) << 12;
+    const uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+    QTestState *qts = pic_bedrock_parent_start(true, true);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_writeq(qts, 0x10000000 + 0xa8, a | b);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+    qtest_writeq(qts, HEAD(0) + 0x148, (UINT64_C(11) << 48) | address);
+    qtest_writeq(qts, HEAD(0) + 0x150, (UINT64_C(12) << 48) | address);
+    qtest_writeq(qts, HEAD(0) + 0x108, (1U << 3) | (1U << 4));
+
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 1);
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 4, 1);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & (a | b), ==, b);
+    qtest_writeq(qts, 0x3000000000000ULL + 0x90, 12);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & (a | b), ==, 0);
+    qtest_clock_step(qts, 1500000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & (a | b), ==, a);
+    qtest_quit(qts);
+}
+
+static void test_runtime_profile_bedrock_rearm_staggered_levels(void)
+{
+    const uint64_t a = UINT64_C(1) << 11;
+    const uint64_t b = UINT64_C(1) << 12;
+    const uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+    QTestState *qts = pic_bedrock_parent_start(false, true);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_writeq(qts, 0x10000000 + 0xa8, a | b);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+    qtest_writeq(qts, HEAD(0) + 0x148, (UINT64_C(11) << 48) | address);
+    qtest_writeq(qts, HEAD(0) + 0x150, (UINT64_C(12) << 48) | address);
+    qtest_writeq(qts, HEAD(0) + 0x108, (1U << 3) | (1U << 4));
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 3, 1);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 4, 1);
+
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    qtest_clock_step(qts, 500000);
+    qtest_writeq(qts, 0x10000000 + 0x90, 12);
+    qtest_clock_step(qts, 500000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & (a | b), ==, a);
+    qtest_clock_step(qts, 500000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & (a | b), ==,
+                    a | b);
+    qtest_quit(qts);
+}
+
+static void test_runtime_profile_bedrock_rearm_migration(void)
+{
+    const uint64_t pending = UINT64_C(1) << 11;
+    const uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-rearm-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_bedrock_parent_start_full(false, true, false);
+    QTestState *to = pic_bedrock_parent_start_full(false, true, true);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    qtest_writeq(from, 0x10000000 + 0xa8, pending);
+    qtest_writeq(from, HEAD(0) + 0x20, 14);
+    qtest_writeq(from, HEAD(0) + 0x148,
+                 (UINT64_C(11) << 48) | address);
+    qtest_writeq(from, HEAD(0) + 0x108, 1U << 3);
+    qtest_set_irq_in(from, PIC_CHILD "/head-0", NULL, 3, 1);
+    qtest_writeq(from, 0x10000000 + 0x90, 11);
+    qtest_clock_step(from, 500000);
+    g_assert_cmphex(qtest_readq(from, 0x10000000 + 0x98) & pending, ==, 0);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, 0x10000000 + 0x98) & pending, ==, 0);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_clock_step(to, 1000000);
+    g_assert_cmphex(qtest_readq(to, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_linked_bedrock_interrupt_node_route(void)
 {
     static const uint8_t set_value[8] = { 0, 0, 0, 0, 0, 0, 1, 0x34 };
@@ -5183,6 +5340,14 @@ int main(int argc, char **argv)
                    test_linked_bedrock_interrupt);
     qtest_add_func("/sgi-pic/runtime-profile-bedrock-interrupt",
                    test_runtime_profile_bedrock_interrupt);
+    qtest_add_func("/sgi-pic/runtime-profile-bedrock-level-mirror",
+                   test_runtime_profile_bedrock_level_mirror);
+    qtest_add_func("/sgi-pic/runtime-profile-bedrock-rearm-one-level",
+                   test_runtime_profile_bedrock_rearm_one_level);
+    qtest_add_func("/sgi-pic/runtime-profile-bedrock-rearm-staggered-levels",
+                   test_runtime_profile_bedrock_rearm_staggered_levels);
+    qtest_add_func("/sgi-pic/runtime-profile-bedrock-rearm-migration",
+                   test_runtime_profile_bedrock_rearm_migration);
     qtest_add_func("/sgi-pic/linked-bedrock-interrupt-node-route",
                    test_linked_bedrock_interrupt_node_route);
     qtest_add_func("/sgi-pic/bedrock-interrupt-level-bounds",
