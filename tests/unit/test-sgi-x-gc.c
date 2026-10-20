@@ -181,8 +181,55 @@ static void test_classes(void)
     words[6] = 0;
     words[7] = 0x64001;
     words[10] = 9;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmpint(gc.target, ==, SGI_X_GC_MAIN_RGB8);
+    words[7] = 0xa4001;
     g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
     memset(words, 0, sizeof(words));
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_FIELDS);
+}
+
+/* kon_parseGC's 30-bit packing: each 10-bit component to c << 2 | c >> 8. */
+static void rgb30_words(uint32_t pixel, uint32_t *high, uint32_t *low)
+{
+    uint64_t colour = 0x1ffe;
+
+    for (unsigned k = 1; k <= 3; k++) {
+        uint32_t c = (pixel >> (10 * (k - 1))) & 0x3ff;
+
+        colour |= (uint64_t)((c << 2) | (c >> 8)) << (13 * k + 1);
+    }
+    *high = colour >> 32;
+    *low = colour;
+}
+
+/*
+ * 30-bit TrueColor GCs: cfg 0 with ifmt 9, or ifmt 0 from the geometry
+ * builder. The model keeps the top eight bits of each component.
+ */
+static void test_rgb30(void)
+{
+    uint32_t words[13] = {
+        0, 0, 0, 0, 0xffffff, 0xffffff, 0, 0x64001, 1, 6, 9, 0, 0,
+    };
+    SGIXGC gc;
+
+    rgb30_words(0x123 << 20 | 0x2c7 << 10 | 0x0a5, &words[0], &words[1]);
+    rgb30_words(0x3ff << 20 | 0x001 << 10 | 0x200, &words[2], &words[3]);
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmpint(gc.target, ==, SGI_X_GC_MAIN_RGB8);
+    g_assert_cmphex(gc.foreground, ==, 0x48b129);
+    g_assert_cmphex(gc.background, ==, 0xff0080);
+    g_assert_cmphex(gc.mask, ==, 0xffffff);
+    words[7] = 1;
+    words[10] = 0;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmphex(gc.foreground, ==, 0x48b129);
+    /* A field that is not a widened 10-bit component. */
+    words[1] ^= 1U << 14;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_COLOR);
+    words[1] ^= 1U << 14;
+    words[10] = 5;
     g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_FIELDS);
 }
 
@@ -273,6 +320,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/x-gc/rgb", test_rgb);
     g_test_add_func("/sgi/x-gc/did", test_did);
     g_test_add_func("/sgi/x-gc/classes", test_classes);
+    g_test_add_func("/sgi/x-gc/rgb30", test_rgb30);
     g_test_add_func("/sgi/x-gc/masks", test_masks);
     g_test_add_func("/sgi/x-gc/reserved", test_reserved);
     return g_test_run();
