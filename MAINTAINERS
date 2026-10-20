@@ -1507,6 +1507,7 @@ F: hw/misc/sgi-kona-mesa-provider.h
 F: hw/net/dp83840.c
 F: hw/net/ics1890.c
 F: hw/net/sgi-ioc3-eth.c
+F: hw/net/sgi-mace-eth.c
 F: hw/net/net-rx-latency.c
 F: hw/nvram/sgi-elsc-nvram*.c
 F: hw/pci-host/sgi-bridge.c
@@ -1528,6 +1529,7 @@ F: include/hw/misc/sgi-*.h
 F: include/hw/net/dp83840.h
 F: include/hw/net/ics1890.h
 F: include/hw/net/sgi-ioc3-eth.h
+F: include/hw/net/sgi-mace-eth.h
 F: include/hw/net/net-rx-latency.h
 F: include/hw/nvram/sgi-elsc-nvram.h
 F: include/hw/pci-host/sgi-bridge.h
@@ -1560,6 +1562,10 @@ F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/ics1890-test.c
 F: tests/qtest/sgi-heart*-test.c
 F: tests/qtest/sgi-crime-test.c
+F: tests/qtest/sgi-mace-id-test.c
+F: tests/qtest/sgi-mace-dma-test.c
+F: tests/qtest/sgi-mace-eth-test.c
+F: tests/qtest/sgi-o2-id-test.c
 F: tests/qtest/sgi-mace-test.c
 F: tests/qtest/sgi-o2-rom-test.c
 F: tests/qtest/sgi-o2-test.c
@@ -1568,6 +1574,7 @@ F: tests/qtest/octane-mgras-test.c
 F: tests/qtest/octane-timer-test.c
 F: tests/qtest/r10000-identity-test.c
 F: tests/qtest/o2-r10k-cache-test.c
+F: tests/qtest/o2-r10k-scache-reset-test.c
 F: tests/qtest/sgi-pci-expansion-ni-fixture.c
 F: tests/qtest/sgi-pci-expansion-ni-test.c
 F: tests/qtest/sgi-mgras-*-test.c
@@ -2533,6 +2540,7 @@ F: hw/scsi/*
 F: tests/qtest/virtio-scsi-test.c
 F: tests/qtest/fuzz-virtio-scsi-test.c
 F: tests/qtest/am53c974-test.c
+F: tests/qtest/fixtures/aic7880-short-inquiry-target.c
 F: tests/qtest/aic7880-test.c
 F: tests/qtest/fuzz-lsi53c895a-test.c
 F: tests/functional/x86_64/test_hotplug_scsi.py

@@ -75,12 +75,33 @@ static void mips_r10k_reset_mode_get(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static bool mips_r10k_reset_mode_geometry(uint32_t mode,
+                                           uint32_t *capacity,
+                                           uint32_t *line_size, Error **errp)
+{
+    uint32_t ss = extract32(mode, CP0C0_R10K_SS, 3);
+
+    *line_size = extract32(mode, CP0C0_R10K_SB, 1) ? 128 : 64;
+    if (ss > 5) {
+        error_setg(errp, "reset-mode secondary cache size is unsupported");
+        return false;
+    }
+    *capacity = (R10K_SCACHE_SIZE / 2) << ss;
+    if (!r10k_scache_size_valid(*capacity) ||
+        *capacity / *line_size > R10K_SCACHE_MAX_TAGS) {
+        error_setg(errp, "reset-mode secondary cache geometry is unsupported");
+        return false;
+    }
+    return true;
+}
+
 static void mips_r10k_reset_mode_set(Object *obj, Visitor *v,
                                      const char *name, void *opaque,
                                      Error **errp)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
     uint32_t value;
+    uint32_t capacity, line_size;
 
     if (DEVICE(obj)->realized) {
         error_setg(errp, "%s cannot change after CPU realization", name);
@@ -97,6 +118,9 @@ static void mips_r10k_reset_mode_set(Object *obj, Visitor *v,
         error_setg(errp, "%s unavailable on this CPU model", name);
         return;
     }
+    if (!mips_r10k_reset_mode_geometry(value, &capacity, &line_size, errp)) {
+        return;
+    }
     cpu->r10k_profile->reset_mode = value;
     cpu->r10k_profile->reset_mode_set = true;
 }
@@ -109,15 +133,22 @@ static void mips_r10k_reset_mode_set(Object *obj, Visitor *v,
 static bool mips_r10k_reset_mode_validate(MIPSCPU *cpu, Error **errp)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
+    uint32_t capacity, line_size;
 
     if (!profile || !profile->reset_mode_set) {
         return true;
+    }
+    if (!mips_r10k_reset_mode_geometry(profile->reset_mode, &capacity,
+                                       &line_size, errp)) {
+        return false;
     }
     profile->cpu_model = g_new(mips_def_t, 1);
     *profile->cpu_model = *cpu->env.cpu_model;
     profile->cpu_model->CP0_Config0 =
         (profile->cpu_model->CP0_Config0 & ~0x01ffffffu) |
         profile->reset_mode;
+    profile->cpu_model->cfg.scache_size = capacity;
+    profile->cpu_model->cfg.scache_line_size = line_size;
     cpu->env.cpu_model = profile->cpu_model;
     profile->valid = true;
     return true;

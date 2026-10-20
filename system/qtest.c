@@ -938,6 +938,14 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
         new_ns = qemu_clock_advance_virtual_time(ns);
         qtest_sendf(chr, "%s %"PRIi64"\n",
                     new_ns == ns ? "OK" : "FAIL", new_ns);
+    } else if (qtest_enabled() && strcmp(words[0], "clock_timers") == 0) {
+        if (words[1] && !words[2] &&
+            (!strcmp(words[1], "off") || !strcmp(words[1], "on"))) {
+            qemu_clock_enable(QEMU_CLOCK_VIRTUAL, !strcmp(words[1], "on"));
+            qtest_send(chr, "OK\n");
+        } else {
+            qtest_send(chr, "FAIL expected clock_timers off|on\n");
+        }
     } else if (strcmp(words[0], "qom-tests") == 0) {
         GSList *list, *l;
 

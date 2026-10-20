@@ -10,8 +10,11 @@
 #include "qemu/rcu.h"
 #include "system/dma.h"
 #include "system/ram_addr.h"
+#include "system/qtest.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci-64bit.h"
 #include "migration/vmstate.h"
@@ -69,6 +72,8 @@ struct SGIBridgeDMATestState {
     uint16_t device_id;
 
     bool dma_r32;
+    bool pci_only_latched;
+    bool ever_realized;
     MemoryRegion dma_view;
     AddressSpace dma_view_as;
     MemoryRegion *dma_memory;
@@ -315,6 +320,151 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
     s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
 }
 
+static void sgi_bridge_dma_test_command(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+    uint32_t command;
+
+    if (!visit_type_uint32(v, name, &command, errp)) {
+        return;
+    }
+    switch (command) {
+    case GO_FILL:
+        sgi_bridge_dma_test_go(s);
+        break;
+    case GO_COPY:
+        sgi_bridge_dma_test_copy(s);
+        break;
+    default:
+        error_setg(errp, "unknown DMA test command %u", command);
+    }
+}
+
+static bool sgi_bridge_dma_test_master_get(Object *obj, Error **errp)
+{
+    PCIDevice *dev = PCI_DEVICE(obj);
+
+    return !!(pci_default_read_config(dev, PCI_COMMAND, 2) &
+              PCI_COMMAND_MASTER);
+}
+
+static void sgi_bridge_dma_test_master_set(Object *obj, bool enabled,
+                                           Error **errp)
+{
+    PCIDevice *dev = PCI_DEVICE(obj);
+    uint16_t command;
+
+    if (!qtest_enabled()) {
+        error_setg(errp, "test-master-enable requires qtest");
+        return;
+    }
+    if (!qdev_is_realized(DEVICE(obj)) ||
+        !memory_region_is_mapped(&dev->bus_master_enable_region)) {
+        error_setg(errp, "test-master-enable requires machine initialization");
+        return;
+    }
+    command = pci_default_read_config(dev, PCI_COMMAND, 2);
+    command = enabled ? command | PCI_COMMAND_MASTER :
+                        command & ~PCI_COMMAND_MASTER;
+    pci_default_write_config(dev, PCI_COMMAND, command, 2);
+}
+
+static bool sgi_bridge_dma_test_r32_get(Object *obj, Error **errp)
+{
+    return SGI_BRIDGE_DMA_TEST(obj)->dma_r32;
+}
+
+static void sgi_bridge_dma_test_r32_set(Object *obj, bool value, Error **errp)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    if (DEVICE(obj)->realized) {
+        qdev_prop_set_after_realize(DEVICE(obj), "dma-r32", errp);
+    } else if (s->pci_only_latched) {
+        error_setg(errp, "fixture PCI-only DMA route is locked");
+    } else {
+        s->dma_r32 = value;
+    }
+}
+
+static void sgi_bridge_dma_test_memory_set_check(const Object *obj,
+                                                  const char *name,
+                                                  Object *value,
+                                                  Error **errp)
+{
+    const SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    if (DEVICE(obj)->realized) {
+        qdev_prop_allow_set_link_before_realize(obj, name, value, errp);
+    } else if (s->pci_only_latched) {
+        error_setg(errp, "fixture PCI-only DMA route is locked");
+    }
+}
+
+static bool sgi_bridge_dma_test_latch_get(Object *obj, Error **errp)
+{
+    return SGI_BRIDGE_DMA_TEST(obj)->pci_only_latched;
+}
+
+static void sgi_bridge_dma_test_latch_set(Object *obj, bool value,
+                                           Error **errp)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    if (s->pci_only_latched) {
+        error_setg(errp, "fixture PCI-only DMA route is locked");
+    } else if (DEVICE(obj)->realized) {
+        qdev_prop_set_after_realize(DEVICE(obj), "pci-only-latch", errp);
+    } else if (value) {
+        if (s->dma_r32 || s->dma_memory) {
+            error_setg(errp, "fixture PCI-only DMA route needs both bypass "
+                             "properties disabled");
+        } else {
+            s->pci_only_latched = true;
+        }
+    }
+}
+
+static void sgi_bridge_dma_test_init(Object *obj)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    object_property_add_bool(obj, "dma-r32", sgi_bridge_dma_test_r32_get,
+                             sgi_bridge_dma_test_r32_set);
+    object_property_add_link(obj, "dma-memory", TYPE_MEMORY_REGION,
+                             (Object **)&s->dma_memory,
+                             sgi_bridge_dma_test_memory_set_check,
+                             OBJ_PROP_LINK_STRONG);
+    object_property_add_bool(obj, "pci-only-latch",
+                             sgi_bridge_dma_test_latch_get,
+                             sgi_bridge_dma_test_latch_set);
+    object_property_add_uint64_ptr(obj, "test-address", &s->address,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "test-source", &s->source,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "test-length", &s->length,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "test-seed", &s->seed,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "test-result", &s->result,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "test-read-data", &s->read_data,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add(obj, "test-command", "uint32", NULL,
+                        sgi_bridge_dma_test_command, NULL, NULL);
+    object_property_add_bool(obj, "test-master-enable",
+                             sgi_bridge_dma_test_master_get,
+                             sgi_bridge_dma_test_master_set);
+    object_property_add_uint32_ptr(obj, "x-test-bar-read-count",
+                                   &s->bar_reads, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-bar-write-count",
+                                   &s->bar_writes, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-fault-result",
+                                   &s->fault_result, OBJ_PROP_FLAG_READ);
+}
+
 static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
@@ -540,6 +690,11 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
 
+    if (s->pci_only_latched && s->ever_realized) {
+        error_setg(errp, "fixture PCI-only DMA route cannot be realized "
+                         "again");
+        return;
+    }
     qdev_init_gpio_in_named(DEVICE(dev), sgi_bridge_dma_test_irq_in,
                             "test-irq", 1);
 
@@ -574,6 +729,7 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->io, OBJECT(s), &sgi_bridge_dma_test_io_ops, s,
                           "sgi-bridge-dma-test.io", IO_WINDOW);
     pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
+    s->ever_realized = true;
 }
 
 static void sgi_bridge_dma_test_exit(PCIDevice *dev)
@@ -593,6 +749,14 @@ static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+    PCIDevice *dev = PCI_DEVICE(s);
+
+    if (memory_region_is_mapped(&dev->bus_master_enable_region)) {
+        uint16_t command = pci_default_read_config(dev, PCI_COMMAND, 2);
+
+        pci_default_write_config(dev, PCI_COMMAND,
+                                 command & ~PCI_COMMAND_MASTER, 2);
+    }
 
     sgi_bridge_dma_test_dirty_stop(s);
 
@@ -645,9 +809,6 @@ static const Property sgi_bridge_dma_test_properties[] = {
                        SGI_BRIDGE_DMA_TEST_VENDOR),
     DEFINE_PROP_UINT16("device-id", SGIBridgeDMATestState, device_id,
                        SGI_BRIDGE_DMA_TEST_DEVICE),
-    DEFINE_PROP_BOOL("dma-r32", SGIBridgeDMATestState, dma_r32, false),
-    DEFINE_PROP_LINK("dma-memory", SGIBridgeDMATestState, dma_memory,
-                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("repetitions", SGIBridgeDMATestState, repetitions, 1),
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
     DEFINE_PROP_BOOL("x-test-fault-read", SGIBridgeDMATestState,
@@ -655,18 +816,6 @@ static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_BOOL("x-test-fault-write", SGIBridgeDMATestState,
                      fault_write, false),
 };
-
-static void sgi_bridge_dma_test_init(Object *obj)
-{
-    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
-
-    object_property_add_uint32_ptr(obj, "x-test-bar-read-count",
-                                   &s->bar_reads, OBJ_PROP_FLAG_READ);
-    object_property_add_uint32_ptr(obj, "x-test-bar-write-count",
-                                   &s->bar_writes, OBJ_PROP_FLAG_READ);
-    object_property_add_uint32_ptr(obj, "x-test-fault-result",
-                                   &s->fault_result, OBJ_PROP_FLAG_READ);
-}
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
 {
@@ -698,6 +847,93 @@ static void sgi_bridge_dma_test_64bit_class_init(ObjectClass *oc,
     pc->req64_sampled = sgi_bridge_dma_test_req64_sampled;
 }
 
+#define TYPE_SGI_MACE_PIO_TEST "sgi-mace-pio-test"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIMacePIOTestState, SGI_MACE_PIO_TEST)
+
+struct SGIMacePIOTestState {
+    PCIDevice parent_obj;
+    MemoryRegion mmio;
+    uint8_t bytes[0x100];
+    uint32_t last_offset;
+    uint32_t last_size;
+    uint32_t read_count;
+    uint32_t write_count;
+};
+
+static uint64_t sgi_mace_pio_test_read(void *opaque, hwaddr offset,
+                                       unsigned size)
+{
+    SGIMacePIOTestState *s = opaque;
+
+    s->last_offset = offset;
+    s->last_size = size;
+    s->read_count++;
+    return size == 1 ? s->bytes[offset] : 0;
+}
+
+static void sgi_mace_pio_test_write(void *opaque, hwaddr offset,
+                                     uint64_t value, unsigned size)
+{
+    SGIMacePIOTestState *s = opaque;
+
+    s->last_offset = offset;
+    s->last_size = size;
+    s->write_count++;
+    if (size == 1) {
+        s->bytes[offset] = value;
+    }
+}
+
+static const MemoryRegionOps sgi_mace_pio_test_ops = {
+    .read = sgi_mace_pio_test_read,
+    .write = sgi_mace_pio_test_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static void sgi_mace_pio_test_realize(PCIDevice *dev, Error **errp)
+{
+    SGIMacePIOTestState *s = SGI_MACE_PIO_TEST(dev);
+
+    memory_region_init_io(&s->mmio, OBJECT(s), &sgi_mace_pio_test_ops, s,
+                          "sgi-mace-pio-test.mmio", sizeof(s->bytes));
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+}
+
+static void sgi_mace_pio_test_init(Object *obj)
+{
+    SGIMacePIOTestState *s = SGI_MACE_PIO_TEST(obj);
+
+    for (unsigned i = 0; i < 4; i++) {
+        s->bytes[i] = 0x10 + i;
+        s->bytes[0x84 + i] = 0x84 + i;
+    }
+    object_property_add_uint32_ptr(obj, "test-pio-last-offset",
+                                   &s->last_offset, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "test-pio-last-size",
+                                   &s->last_size, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "test-pio-read-count",
+                                   &s->read_count, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "test-pio-write-count",
+                                   &s->write_count, OBJ_PROP_FLAG_READ);
+}
+
+static void sgi_mace_pio_test_class_init(ObjectClass *oc, const void *data)
+{
+    PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    pc->realize = sgi_mace_pio_test_realize;
+    pc->vendor_id = PCI_VENDOR_ID_REDHAT;
+    pc->device_id = PCI_DEVICE_ID_REDHAT_TEST;
+    pc->class_id = PCI_CLASS_OTHERS;
+    dc->desc = "byte-addressable PCI BAR for MACE PIO tests";
+    dc->user_creatable = true;
+}
+
 static const TypeInfo sgi_bridge_dma_test_types[] = {
     {
         .name = TYPE_SGI_BRIDGE_DMA_TEST,
@@ -715,6 +951,16 @@ static const TypeInfo sgi_bridge_dma_test_types[] = {
         .class_init = sgi_bridge_dma_test_64bit_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_PCI_64BIT_DEVICE },
+            { },
+        },
+    }, {
+        .name = TYPE_SGI_MACE_PIO_TEST,
+        .parent = TYPE_PCI_DEVICE,
+        .instance_size = sizeof(SGIMacePIOTestState),
+        .instance_init = sgi_mace_pio_test_init,
+        .class_init = sgi_mace_pio_test_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
             { },
         },
     },

@@ -1250,6 +1250,12 @@ int64_t qtest_clock_set(QTestState *s, int64_t val)
     return qtest_clock_rsp(s);
 }
 
+void qtest_clock_timers(QTestState *s, bool enabled)
+{
+    qtest_sendf(s, "clock_timers %s\n", enabled ? "on" : "off");
+    qtest_rsp(s);
+}
+
 void qtest_sysbus_mmio_map(QTestState *s, const char *qom_path,
                            int index, uint64_t addr)
 {

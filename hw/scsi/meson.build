@@ -12,6 +12,8 @@ scsi_ss.add(files(
 scsi_ss.add(when: 'CONFIG_ESP', if_true: files('esp.c'))
 scsi_ss.add(when: 'CONFIG_ESP_PCI', if_true: files('esp-pci.c'))
 scsi_ss.add(when: 'CONFIG_AIC7880_SCSI_PCI', if_true: files('aic7880.c'))
+scsi_ss.add(when: 'CONFIG_AIC7880_SCSI_PCI',
+            if_true: files('../../tests/qtest/fixtures/aic7880-short-inquiry-target.c'))
 scsi_ss.add(when: 'CONFIG_LSI_SCSI_PCI', if_true: files('lsi53c895a.c'))
 scsi_ss.add(when: 'CONFIG_NCR710_SCSI', if_true: files('ncr53c710.c', 'lasi_ncr710.c'))
 scsi_ss.add(when: 'CONFIG_MEGASAS_SCSI_PCI', if_true: files('megasas.c'))

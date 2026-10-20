@@ -919,3 +919,16 @@ tests/unit/test-sn0-fabric-routed.c
 tests/unit/test-sn1-topology.c
 tests/unit/wctablet-stubs.c
 tests/unit/wctablet-stubs.h
+hw/mips/sgi/mace-id.c
+hw/net/sgi-mace-eth.c
+hw/scsi/aic7880.c
+include/hw/mips/sgi/mace-id.h
+include/hw/net/sgi-mace-eth.h
+include/hw/scsi/aic7880.h
+tests/qtest/aic7880-test.c
+tests/qtest/fixtures/aic7880-short-inquiry-target.c
+tests/qtest/o2-r10k-scache-reset-test.c
+tests/qtest/sgi-mace-dma-test.c
+tests/qtest/sgi-mace-eth-test.c
+tests/qtest/sgi-mace-id-test.c
+tests/qtest/sgi-o2-id-test.c

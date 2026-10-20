@@ -24,6 +24,7 @@
 #include "qapi/qmp/qerror.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qobject-output-visitor.h"
+#include "qobject/qbool.h"
 #include "qemu/cutils.h"
 #include "qom/object_interfaces.h"
 #include "qom/qom-qobject.h"
@@ -126,12 +127,25 @@ void qmp_qom_set(const char *path, const char *property, QObject *value,
                  Error **errp)
 {
     Object *obj;
+    QBool *realized;
 
     obj = object_resolve_path(path, NULL);
     if (!obj) {
         error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
                   "Device '%s' not found", path);
         return;
+    }
+
+    /* Direct QOM unrealize must not bypass an explicit unplug blocker. */
+    if (!strcmp(property, "realized") &&
+        object_dynamic_cast(obj, TYPE_DEVICE) &&
+        qdev_is_realized(DEVICE(obj)) &&
+        DEVICE(obj)->unplug_blockers) {
+        realized = qobject_to(QBool, value);
+        if (realized && !qbool_get_bool(realized) &&
+            !qdev_hotunplug_allowed(DEVICE(obj), errp)) {
+            return;
+        }
     }
 
     object_property_set_qobject(obj, property, value, errp);

@@ -26,6 +26,7 @@ system_ss.add(when: 'CONFIG_ICS1890', if_true: files('ics1890.c'))
 system_ss.add(when: 'CONFIG_SGI_NET_RX_LATENCY',
               if_true: files('net-rx-latency.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3_ETH', if_true: files('sgi-ioc3-eth.c'))
+system_ss.add(when: 'CONFIG_SGI_MACE', if_true: files('sgi-mace-eth.c'))
 system_ss.add(when: 'CONFIG_TIGON', if_true: files('tigon.c'))
 system_ss.add(when: 'CONFIG_BCM570X', if_true: files('bcm570x.c', 'bcm570x_phy.c'))
 system_ss.add(when: 'CONFIG_LAN9118_PHY', if_true: files('lan9118_phy.c'))

@@ -3,7 +3,7 @@
 /*
  * SGI CRIME 1.5 revision-1 processor interface and MACE interrupts.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
- * ECC, timer operation, watchdog, graphics, GBE and VICE are not modeled.
+ * ECC, watchdog, graphics, GBE and VICE are not modeled.
  * Unsupported register operations fail visibly.
  */
 #include "qemu/osdep.h"
@@ -16,10 +16,13 @@
 #include "qapi/visitor.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "qemu/units.h"
 #include "system/address-spaces.h"
 
 #define CRIME_REGISTER_SIZE 0x2000000
+#define CRIME_RENDER_STATUS 0x01004000
+#define CRIME_EMPTY_RENDER_STATUS 0x1e000000U
 #define CRIME_FITTED_RAM (64 * MiB)
 #define CRIME_OPTIONAL_RAM (128 * MiB)
 #define CRIME_BANK_SIZE (128 * MiB)
@@ -43,6 +46,8 @@
 #define CRIME_IP4_MASK (1U << 28)
 #define CRIME_IP5_MASK ((1U << 6) | (1U << 29))
 #define CRIME_IP6_MASK (1U << 7)
+#define CRIME_ID_REVISION 0xb1U
+#define CRIME_TIMER_HZ 66666666U
 
 static void crime_update_irq(SGICrimeState *s)
 {
@@ -67,6 +72,33 @@ static void crime_mace_input(void *opaque, int n, int level)
     crime_update_irq(s);
 }
 
+static void crime_timer_snapshot(SGICrimeState *s, int64_t now,
+                                 uint32_t *count, uint32_t *fraction)
+{
+    int64_t elapsed_ns = now - s->timer_epoch_ns;
+    uint64_t whole_seconds;
+    uint64_t partial;
+
+    if (elapsed_ns < 0) {
+        elapsed_ns = 0;
+    }
+    whole_seconds = elapsed_ns / NANOSECONDS_PER_SECOND;
+    partial = (elapsed_ns % NANOSECONDS_PER_SECOND) * CRIME_TIMER_HZ +
+              s->timer_fraction;
+    *count = s->timer_base + whole_seconds * CRIME_TIMER_HZ +
+             partial / NANOSECONDS_PER_SECOND;
+    *fraction = partial % NANOSECONDS_PER_SECOND;
+}
+
+static uint32_t crime_timer_value(SGICrimeState *s)
+{
+    uint32_t count, fraction;
+
+    crime_timer_snapshot(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                         &count, &fraction);
+    return count;
+}
+
 static void crime_update_bank_mapping(SGICrimeState *s)
 {
     if (!s->alias_profile || !s->ram_aliases_initialized) {
@@ -78,6 +110,7 @@ static void crime_update_bank_mapping(SGICrimeState *s)
         memory_region_set_enabled(&s->bank_ram[bank], false);
         memory_region_set_enabled(&s->wrong_geometry[bank], false);
     }
+    memory_region_set_enabled(&s->reset_low_ram, false);
     for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
         uint16_t control = s->bank_control[bank];
 
@@ -90,9 +123,11 @@ static void crime_update_bank_mapping(SGICrimeState *s)
             hwaddr address = (control & 0x1f) * CRIME_SMALL_BANK_SIZE;
 
             memory_region_set_address(&s->wrong_geometry[bank], address);
-            memory_region_set_enabled(&s->wrong_geometry[bank], true);
+            memory_region_set_enabled(&s->wrong_geometry[bank],
+                                      bank != 0 || !s->reset_low_ram_active);
         }
     }
+    memory_region_set_enabled(&s->reset_low_ram, s->reset_low_ram_active);
     memory_region_transaction_commit();
 }
 
@@ -176,6 +211,15 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
 {
     SGICrimeState *s = opaque;
 
+    if (s->empty_renderer_status && offset == CRIME_RENDER_STATUS &&
+        size == 4) {
+        *value = CRIME_EMPTY_RENDER_STATUS;
+        return MEMTX_OK;
+    }
+    if (s->prom_id_word && offset == 0x0004 && size == 4) {
+        *value = CRIME_ID_REVISION;
+        return MEMTX_OK;
+    }
     if (size != 8 || offset & 7) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte read at 0x%" HWADDR_PRIx
@@ -190,7 +234,7 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
     }
     switch (offset) {
     case 0x0000:
-        *value = 0xb1;
+        *value = CRIME_ID_REVISION;
         break;
     case 0x0008:
         *value = 0x120;
@@ -208,11 +252,13 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         *value = s->hardware;
         break;
     case 0x0030: /* Watchdog remains disabled. */
-    case 0x0038: /* Counter frequency and writes are not modeled. */
     case 0x0040: /* No CPU error producer is modeled. */
     case 0x0200: /* ECC control remains disabled. */
     case 0x4048: /* No CPU error producer is modeled. */
         *value = 0;
+        break;
+    case 0x0038:
+        *value = crime_timer_value(s);
         break;
     case 0x0250:
         if (s->eight_128m_banks) {
@@ -250,8 +296,17 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
     if (offset >= 0x208 && offset <= 0x240 && s->eight_128m_banks) {
         unsigned bank = (offset - 0x208) / 8;
 
-        if (!(value & ~CRIME_BANK_FIELDS)) {
+        if (!(value & ~(uint64_t)CRIME_BANK_FIELDS)) {
             s->bank_control[bank] = value;
+            if (s->reset_low_ram_active) {
+                s->reset_low_ram_active = false;
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-crime: reset low-RAM approximation ended "
+                              "by bank %u control write at register offset "
+                              "0x%" HWADDR_PRIx
+                              " value 0x%" PRIx64 "\n",
+                              bank, offset, value);
+            }
             crime_update_bank_mapping(s);
             return MEMTX_OK;
         }
@@ -268,6 +323,14 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
         if (!(value & ~CRIME_SOFTWARE_MASK)) {
             s->software = value;
             crime_update_irq(s);
+            return MEMTX_OK;
+        }
+        break;
+    case 0x0038:
+        if (!(value >> 32)) {
+            s->timer_base = value;
+            s->timer_fraction = 0;
+            s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
             return MEMTX_OK;
         }
         break;
@@ -296,8 +359,18 @@ static void crime_reset_enter(Object *obj, ResetType type)
 
     s->enable = 0;
     s->software = 0;
+    s->timer_base = 0;
+    s->timer_fraction = 0;
+    s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->memory_error_status = 0;
     s->memory_error_address = 0;
+    s->reset_low_ram_active = s->reset_low_ram_approx;
+    if (s->reset_low_ram_active) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: reset low-RAM approximation active for "
+                      "decoder offsets [0, 0x%" HWADDR_PRIx ")\n",
+                      (hwaddr)CRIME_SMALL_BANK_SIZE);
+    }
     for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
         s->bank_control[bank] = bank;
     }
@@ -311,6 +384,19 @@ static void crime_reset_hold(Object *obj, ResetType type)
     crime_update_irq(s);
 }
 
+static bool crime_pre_save(void *opaque, Error **errp)
+{
+    SGICrimeState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint32_t count, fraction;
+
+    crime_timer_snapshot(s, now, &count, &fraction);
+    s->timer_base = count;
+    s->timer_fraction = fraction;
+    s->timer_epoch_ns = now;
+    return true;
+}
+
 static int crime_post_load(void *opaque, int version_id)
 {
     SGICrimeState *s = opaque;
@@ -320,21 +406,36 @@ static int crime_post_load(void *opaque, int version_id)
         (s->software & ~CRIME_SOFTWARE_MASK)) {
         return -EINVAL;
     }
+    if (version_id == 1) {
+        s->timer_base = 0;
+        s->timer_fraction = 0;
+    } else if (s->timer_fraction >= NANOSECONDS_PER_SECOND) {
+        return -EINVAL;
+    }
+    s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     crime_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_crime = {
     .name = TYPE_SGI_CRIME,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .pre_save_errp = crime_pre_save,
     .post_load = crime_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(hardware, SGICrimeState),
         VMSTATE_UINT32(enable, SGICrimeState),
         VMSTATE_UINT32(software, SGICrimeState),
+        VMSTATE_UINT32_V(timer_base, SGICrimeState, 2),
+        VMSTATE_UINT32_V(timer_fraction, SGICrimeState, 2),
         VMSTATE_END_OF_LIST()
     },
+};
+
+static const VMStateDescription vmstate_crime_populated_banks = {
+    .name = "sgi-crime-populated-banks",
+    .unmigratable = true,
 };
 
 static void crime_realize(DeviceState *dev, Error **errp)
@@ -344,6 +445,11 @@ static void crime_realize(DeviceState *dev, Error **errp)
 
     if (s->interface_revision != 1) {
         error_setg(errp, "sgi-crime supports only interface revision 1");
+        return;
+    }
+    if (s->reset_low_ram_approx && !s->eight_128m_banks) {
+        error_setg(errp, "sgi-crime reset low-RAM approximation requires "
+                   "eight 128 MiB banks");
         return;
     }
     if (s->decoded_carrier && !s->eight_128m_banks) {
@@ -409,6 +515,13 @@ static void crime_realize(DeviceState *dev, Error **errp)
         if (migrate_add_blocker(&s->migration_blocker, errp) < 0) {
             return;
         }
+        if (vmstate_register_with_alias_id(
+                VMSTATE_IF(dev), VMSTATE_INSTANCE_ID_ANY,
+                &vmstate_crime_populated_banks, s, -1, 0, errp) < 0) {
+            migrate_del_blocker(&s->migration_blocker);
+            return;
+        }
+        s->bank_migration_marker_registered = true;
     }
     if (!s->ram_aliases_initialized) {
         MemoryRegion *target = s->ram;
@@ -422,6 +535,13 @@ static void crime_realize(DeviceState *dev, Error **errp)
                                   "sgi-crime.invalid-ram", CRIME_BANKED_RAM);
             memory_region_add_subregion_overlap(&s->decoded_ram, 0,
                                                 &s->invalid_ram, -1);
+            memory_region_init_alias(&s->reset_low_ram, OBJECT(dev),
+                                     "sgi-crime.reset-low-ram", s->ram, 0,
+                                     CRIME_SMALL_BANK_SIZE);
+            memory_region_set_enabled(&s->reset_low_ram, false);
+            memory_region_add_subregion_overlap(&s->decoded_ram, 0,
+                                                &s->reset_low_ram,
+                                                SGI_CRIME_BANK_COUNT);
             for (unsigned bank = 0; bank < SGI_CRIME_BANK_COUNT; bank++) {
                 g_autofree char *name =
                     g_strdup_printf("sgi-crime.bank%u", bank);
@@ -540,6 +660,10 @@ static void crime_unrealize(DeviceState *dev)
         memory_region_del_subregion(get_system_memory(), &s->low_ram);
         s->ram_aliases_mapped = false;
     }
+    if (s->bank_migration_marker_registered) {
+        vmstate_unregister(VMSTATE_IF(dev), &vmstate_crime_populated_banks, s);
+        s->bank_migration_marker_registered = false;
+    }
     migrate_del_blocker(&s->migration_blocker);
 }
 
@@ -580,6 +704,42 @@ static void crime_set_decoded_base(Object *obj, Visitor *v, const char *name,
     s->decoded_base = value;
 }
 
+static bool crime_get_reset_low_ram_approx(Object *obj, Error **errp)
+{
+    return SGI_CRIME(obj)->reset_low_ram_approx;
+}
+
+static void crime_set_reset_low_ram_approx(Object *obj, bool value,
+                                           Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME(obj);
+
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime reset-low-ram-approx cannot change "
+                   "after initial realization");
+        return;
+    }
+    s->reset_low_ram_approx = value;
+}
+
+static bool crime_get_empty_renderer_status(Object *obj, Error **errp)
+{
+    return SGI_CRIME(obj)->empty_renderer_status;
+}
+
+static void crime_set_empty_renderer_status(Object *obj, bool value,
+                                            Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME(obj);
+
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime empty-renderer-status cannot change "
+                   "after initial realization");
+        return;
+    }
+    s->empty_renderer_status = value;
+}
+
 static void crime_init(Object *obj)
 {
     SGICrimeState *s = SGI_CRIME(obj);
@@ -596,6 +756,12 @@ static void crime_init(Object *obj)
     object_property_add(obj, "decoded-base", "uint64",
                         crime_get_decoded_base, crime_set_decoded_base,
                         NULL, NULL);
+    object_property_add_bool(obj, "reset-low-ram-approx",
+                             crime_get_reset_low_ram_approx,
+                             crime_set_reset_low_ram_approx);
+    object_property_add_bool(obj, "empty-renderer-status",
+                             crime_get_empty_renderer_status,
+                             crime_set_empty_renderer_status);
 }
 
 static const Property crime_properties[] = {
@@ -605,6 +771,7 @@ static const Property crime_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_BOOL("eight-128m-banks", SGICrimeState, eight_128m_banks,
                      false),
+    DEFINE_PROP_BOOL("prom-id-word", SGICrimeState, prom_id_word, false),
 };
 
 static void crime_class_init(ObjectClass *klass, const void *data)

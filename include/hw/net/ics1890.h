@@ -21,11 +21,16 @@ struct ICS1890State {
     bool speed100;
     bool full_duplex;
     QEMUTimer *negotiation_timer;
+    void (*link_ready_notify)(void *opaque);
+    void *link_ready_opaque;
 };
 
 uint16_t ics1890_read(ICS1890State *s, unsigned reg);
 void ics1890_write(ICS1890State *s, unsigned reg, uint16_t val);
 void ics1890_update_link(ICS1890State *s, bool link_down);
+void ics1890_set_link_ready_notify(ICS1890State *s,
+                                   void (*notify)(void *opaque),
+                                   void *opaque);
 bool ics1890_in_loopback(ICS1890State *s);
 bool ics1890_data_enabled(ICS1890State *s);
 

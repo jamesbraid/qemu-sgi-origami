@@ -25,6 +25,7 @@
 
 #define DS2502_PAGE_SIZE 32
 #define DS2502_DATA_SIZE 128   /* 0000h-007Fh on both parts */
+#define DS2502_STATUS_SIZE 7
 
 /*
  * Load the part's EPROM image before realize. Bytes at or beyond the part's
@@ -33,5 +34,9 @@
  * cannot be programmed". Bytes beyond DS2502_DATA_SIZE in buf are ignored.
  */
 void ds2502_set_image(DeviceState *dev, const uint8_t *buf, size_t len);
+
+/* Set the seven programmable status bytes before realize; byte 7 is fixed. */
+bool ds2502_set_status(DeviceState *dev, const uint8_t *buf, size_t len,
+                       Error **errp);
 
 #endif

@@ -60,7 +60,9 @@ config SGI_O2_TEST
     depends on SGI_DEVICES
     imply TEST_DEVICES
     select SGI_CRIME
+    select AIC7880_SCSI_PCI
     select SGI_MACE
+    select SGI_O2_GBE
     select SGI_O2_ROM
 
 config SGI_OCTANE
@@ -158,6 +160,8 @@ config SGI_MACE
     default y if SGI_DEVICES
     depends on SGI_DEVICES
     select DS1685
+    select ICS1890
+    select ONEWIRE
     select PCI
     select SERIAL_MM
 

@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
-/* Host test requests use a CPU's physical address space through QOM. */
+/* Synthetic requests use CPU or global memory address spaces through QOM. */
 #include "qemu/osdep.h"
+#include "system/address-spaces.h"
+#include "system/dma.h"
 #include "system/memory.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev.h"
@@ -19,7 +21,10 @@ struct MemoryTransactionTest {
     char *result;
 };
 
-/* CPU -1 selects first_cpu; nonnegative indices are resolved per request. */
+/*
+ * -2 uses global memory as a synthetic DMA observer, without an IOMMU.
+ * -1 selects first_cpu; nonnegative indices select that CPU.
+ */
 static void transaction_request(Object *obj, const char *request, Error **errp)
 {
     MemoryTransactionTest *s = MEMORY_TRANSACTION_TEST(obj);
@@ -29,6 +34,7 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
     unsigned size;
     int index;
     CPUState *cpu;
+    bool dma;
     bool write;
     MemTxResult result;
     GString *reply;
@@ -40,14 +46,15 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
     }
     if (g_strv_length(args) != 4 ||
         (strcmp(args[0], "read") && strcmp(args[0], "write")) ||
-        qemu_strtoi(args[1], NULL, 0, &index) || index < -1 ||
+        qemu_strtoi(args[1], NULL, 0, &index) || index < -2 ||
         qemu_strtou64(args[2], NULL, 0, &address)) {
-        error_setg(errp, "Expected read CPU ADDRESS SIZE or "
-                   "write CPU ADDRESS HEXBYTES");
+        error_setg(errp, "Expected read ADDRESS_SPACE ADDRESS SIZE or "
+                   "write ADDRESS_SPACE ADDRESS HEXBYTES");
         return;
     }
-    cpu = index == -1 ? first_cpu : qemu_get_cpu(index);
-    if (!cpu || !cpu->as) {
+    dma = index == -2;
+    cpu = dma ? NULL : index == -1 ? first_cpu : qemu_get_cpu(index);
+    if (!dma && (!cpu || !cpu->as)) {
         error_setg(errp, "CPU %d has no address space", index);
         return;
     }
@@ -82,11 +89,17 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
             }
             bytes[i] = high << 4 | low;
         }
-        result = address_space_write(cpu->as, address, MEMTXATTRS_UNSPECIFIED,
-                                     bytes, size);
+        result = dma ?
+            dma_memory_write(&address_space_memory, address, bytes, size,
+                             MEMTXATTRS_UNSPECIFIED) :
+            address_space_write(cpu->as, address, MEMTXATTRS_UNSPECIFIED,
+                                bytes, size);
     } else {
-        result = address_space_read(cpu->as, address, MEMTXATTRS_UNSPECIFIED,
-                                    bytes, size);
+        result = dma ?
+            dma_memory_read(&address_space_memory, address, bytes, size,
+                            MEMTXATTRS_UNSPECIFIED) :
+            address_space_read(cpu->as, address, MEMTXATTRS_UNSPECIFIED,
+                               bytes, size);
     }
     reply = g_string_new(NULL);
     g_string_append_printf(reply, "0x%08x ", result);

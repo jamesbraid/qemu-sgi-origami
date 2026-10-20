@@ -1,5 +1,16 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
+# aic7880.c
+aic7880_host_reg(unsigned int devfn, bool write, uint32_t reg, uint8_t value, uint32_t haddr, uint32_t hcnt, uint8_t dfcntrl, uint8_t intstat) "devfn 0x%x write %d reg 0x%02x value 0x%02x haddr 0x%08x hcnt %u dfcntrl 0x%02x intstat 0x%02x"
+aic7880_pci_command(unsigned int devfn, uint16_t before, uint16_t after, uint32_t haddr, uint32_t hcnt, uint8_t dfcntrl) "devfn 0x%x command 0x%04x->0x%04x haddr 0x%08x hcnt %u dfcntrl 0x%02x"
+aic7880_dma(unsigned int devfn, uint32_t addr, uint32_t len, bool to_memory, int result) "devfn 0x%x addr 0x%08x len %u to_memory %d result %d"
+aic7880_irq(unsigned int devfn, bool level, uint8_t intstat, uint8_t hcntrl, uint16_t command) "devfn 0x%x level %d intstat 0x%02x hcntrl 0x%02x command 0x%04x"
+aic7880_qinfifo(unsigned int devfn, bool enqueue, uint8_t id, unsigned int before, unsigned int after, bool paused, bool running, bool accepted) "devfn 0x%x enqueue %d id 0x%02x before %u after %u paused %d running %d accepted %d"
+aic7880_seq_index_write(unsigned int devfn, uint16_t pc, uint32_t insn, uint8_t reg, uint8_t value, uint8_t scbptr, uint8_t scbcnt) "devfn 0x%x pc 0x%03x insn 0x%08x reg 0x%02x value 0x%02x scbptr 0x%02x scbcnt 0x%02x"
+aic7880_seq_indirect(unsigned int devfn, uint16_t pc, uint32_t insn, uint8_t sindex, uint8_t dindex, uint8_t scbptr, uint8_t scbcnt) "devfn 0x%x pc 0x%03x insn 0x%08x sindex 0x%02x dindex 0x%02x scbptr 0x%02x scbcnt 0x%02x"
+aic7880_seq_data(unsigned int devfn, uint16_t pc, uint32_t insn, uint8_t reg, uint8_t value, uint8_t scbptr, uint8_t scbcnt, uint8_t fifo_read, uint16_t fifo_len) "devfn 0x%x pc 0x%03x insn 0x%08x reg 0x%02x value 0x%02x scbptr 0x%02x scbcnt 0x%02x fifo_read %u fifo_len %u"
+aic7880_seq_host_only(unsigned int devfn, uint16_t pc, uint32_t insn, uint8_t src, uint8_t dst, uint8_t effective, uint8_t sindex, uint8_t dindex, uint8_t scbptr, uint8_t scbcnt) "devfn 0x%x pc 0x%03x insn 0x%08x src 0x%02x dst 0x%02x effective 0x%02x sindex 0x%02x dindex 0x%02x scbptr 0x%02x scbcnt 0x%02x"
+
 # scsi-bus.c
 scsi_req_alloc(int target, int lun, int tag) "target %d lun %d tag %d"
 scsi_req_cancel(int target, int lun, int tag) "target %d lun %d tag %d"

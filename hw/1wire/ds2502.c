@@ -2,11 +2,14 @@
 /* DS2501 and DS2502 add-only EPROM memory commands. */
 #include "qemu/osdep.h"
 #include "qemu/module.h"
+#include "qemu/log.h"
 #include "qom/object.h"
 #include "migration/vmstate.h"
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/core/qdev-properties.h"
+#include "qapi/error.h"
 #include "trace/trace-hw_1wire.h"
 
 /*
@@ -19,10 +22,9 @@
  *                               runs through the last byte of memory
  *                               (007Fh) one CRC-8 over the data read
  *                               follows, and only then.
- *   Read Data+CRC (C3h)        a CRC-8 after every 32-byte page, with no
- *                               defined end. The datasheet never caps it
- *                               at end of memory, so the model does not
- *                               either.
+ *   Read Data+CRC (C3h)        a CRC-8 after every 32-byte page. The usual
+ *                               model continues beyond memory; the opt-in
+ *                               diagnostic stops after page 3.
  *   Read Status (AAh)          the 8-byte status field 0000h-0007h, closed
  *                               by one CRC-8 the same way Read Memory's is.
  *
@@ -68,6 +70,9 @@ struct DS2502State {
     OneWireSlave parent_obj;
 
     uint8_t data[DS2502_DATA_SIZE];
+    uint8_t status[DS2502_STATUS_SIZE];
+    bool strict_readonly;
+    bool refused;
 
     /*
      * Header capture: the command byte, then TA1, then TA2, exactly as
@@ -96,13 +101,15 @@ static uint8_t ds2502_data_byte(DS2502State *d, uint16_t addr)
     return (addr < DS2502_DATA_SIZE) ? d->data[addr] : 0xff;
 }
 
-static uint8_t ds2502_status_byte(uint16_t addr)
+static uint8_t ds2502_status_byte(DS2502State *d, uint16_t addr)
 {
     /*
-     * 0007h is factory-programmed 00h; every other status byte
-     * (write-protect, the four redirection bytes, and the
-     * two reserved bytes) is unprogrammed EPROM, which reads as 0xff.
+     * 0007h is factory-programmed 00h. The seven programmable bytes default
+     * to unprogrammed EPROM (0xff), unless a caller supplied them.
      */
+    if (addr < DS2502_STATUS_SIZE) {
+        return d->status[addr];
+    }
     return (addr == DS2502_STATUS_FACTORY_ADDR) ? 0x00 : 0xff;
 }
 
@@ -130,11 +137,15 @@ static uint8_t ds2502_advance_read_memory(DS2502State *d)
 
 /*
  * Read Data / Generate 8-bit CRC (C3h): a CRC-8 after every 32-byte page,
- * indefinitely. The datasheet does not cap this command at end of memory.
+ * indefinitely by default. The opt-in diagnostic stops after page 3.
  */
 static uint8_t ds2502_advance_read_data_crc(DS2502State *d)
 {
     if (d->unit == DS2502_UNIT_PAGE_CRC) {
+        if (d->strict_readonly && d->addr == DS2502_DATA_SIZE - 1) {
+            d->finished = true;
+            return 0xff;
+        }
         d->crc_acc = 0;
         d->addr++;                              /* now page-aligned */
         d->page_end = d->addr | (DS2502_PAGE_SIZE - 1);
@@ -179,7 +190,7 @@ static uint8_t ds2502_advance_read_status(DS2502State *d)
     }
 
     d->addr++;
-    d->sent_byte = ds2502_status_byte(d->addr);
+    d->sent_byte = ds2502_status_byte(d, d->addr);
     d->unit = DS2502_UNIT_DATA;
     return d->sent_byte;
 }
@@ -214,15 +225,26 @@ static uint8_t ds2502_advance_stream(DS2502State *d)
  * The address the stream reads from, and the one the echoed CRC-8 covers. A
  * memory start address above 007Fh has
  * its 9 MSBs forced to zero (datasheet C.1); no masking is documented for the
- * status field, so AAh keeps the
- * address as sent.
+ * status field, so AAh keeps the address as sent. The opt-in diagnostic
+ * rejects an out-of-range raw start address instead.
  */
 static uint16_t ds2502_start_address(const DS2502State *d)
 {
     uint16_t raw = ((uint16_t)d->hdr[2] << 8) | d->hdr[1];
 
-    return d->cmd == DS2502_CMD_READ_STATUS
+    return d->strict_readonly || d->cmd == DS2502_CMD_READ_STATUS
            ? raw : raw & (DS2502_DATA_SIZE - 1);
+}
+
+static bool ds2502_valid_start_address(const DS2502State *d)
+{
+    uint16_t addr = ds2502_start_address(d);
+
+    if (!d->strict_readonly) {
+        return true;
+    }
+    return addr < (d->cmd == DS2502_CMD_READ_STATUS ?
+                   DS2502_STATUS_FACTORY_ADDR + 1 : DS2502_DATA_SIZE);
 }
 
 /*
@@ -247,6 +269,10 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
 {
     DS2502State *d = ONEWIRE_DS2502_FAMILY(s);
 
+    if (d->refused) {
+        *out = 0xff;
+        return true;
+    }
     if (d->cmd == 0) {
         /* The first byte of a fresh memory function: the command. */
         switch (in) {
@@ -263,6 +289,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         case DS2502_CMD_WRITE_STATUS:
         default:
             trace_ds2502_command(in, false);
+            d->refused = d->strict_readonly;
             /*
              * Add-only: writes are refused, not misread as a Read Memory or
              * Read Status. An unrecognised byte is
@@ -277,6 +304,15 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         if (d->hdr_pos < 3) {
             *out = 0xff;                /* TA2 still to come, master write */
         } else {
+            if (!ds2502_valid_start_address(d)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "ds2502: read command 0x%02x starts outside "
+                              "its field at 0x%04x\n", d->cmd,
+                              ds2502_start_address(d));
+                d->refused = true;
+                *out = 0xff;
+                return true;
+            }
             /*
              * Both address bytes are in hand: the header CRC-8 lands on the
              * wire in the very next window, right
@@ -308,7 +344,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
              * the full 16-bit range to reach 0007h
              * again.
              */
-            d->sent_byte = ds2502_status_byte(d->addr);
+            d->sent_byte = ds2502_status_byte(d, d->addr);
         } else {
             if (d->cmd == DS2502_CMD_READ_DATA_CRC) {
                 d->page_end = d->addr | (DS2502_PAGE_SIZE - 1);
@@ -338,6 +374,20 @@ static void ds2502_function_reset(OneWireSlave *s)
     d->sent_byte = 0;
     d->unit = DS2502_UNIT_DATA;
     d->finished = false;
+    d->refused = false;
+}
+
+bool ds2502_set_status(DeviceState *dev, const uint8_t *buf, size_t len,
+                       Error **errp)
+{
+    DS2502State *d = ONEWIRE_DS2502_FAMILY(dev);
+
+    if (qdev_is_realized(dev) || len != DS2502_STATUS_SIZE || !buf) {
+        error_setg(errp, "ds2502 status needs seven bytes before realize");
+        return false;
+    }
+    memcpy(d->status, buf, len);
+    return true;
 }
 
 void ds2502_set_image(DeviceState *dev, const uint8_t *buf, size_t len)
@@ -362,6 +412,7 @@ static void ds2502_instance_init(Object *obj)
     DS2502State *d = ONEWIRE_DS2502_FAMILY(obj);
 
     memset(d->data, 0xff, sizeof(d->data));    /* unprogrammed EPROM */
+    memset(d->status, 0xff, sizeof(d->status));
 }
 
 /*
@@ -398,6 +449,9 @@ static const VMStateDescription vmstate_ds2502 = {
     .fields = (const VMStateField[]) {
         VMSTATE_ONEWIRE_SLAVE(parent_obj, DS2502State),
         VMSTATE_UINT8_ARRAY(data, DS2502State, DS2502_DATA_SIZE),
+        VMSTATE_UINT8_ARRAY(status, DS2502State, DS2502_STATUS_SIZE),
+        VMSTATE_BOOL(strict_readonly, DS2502State),
+        VMSTATE_BOOL(refused, DS2502State),
         VMSTATE_UINT8(cmd, DS2502State),
         VMSTATE_UINT8_ARRAY(hdr, DS2502State, 3),
         VMSTATE_UINT8(hdr_pos, DS2502State),
@@ -416,10 +470,15 @@ static void ds2502_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     OneWireSlaveClass *k = ONEWIRE_SLAVE_CLASS(oc);
+    static const Property props[] = {
+        DEFINE_PROP_BOOL("strict-readonly-diagnostic", DS2502State,
+                         strict_readonly, false),
+    };
 
     k->function_reset = ds2502_function_reset;
     k->function_byte = ds2502_function_byte;
     dc->vmsd = &vmstate_ds2502;
+    device_class_set_props(dc, props);
 }
 
 typedef struct DS2502Variant {

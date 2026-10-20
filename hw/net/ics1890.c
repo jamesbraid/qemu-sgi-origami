@@ -82,6 +82,9 @@ static void ics1890_negotiation_done(void *opaque)
     s->regs[MII_ANER] |= 3;
     s->regs[ICS_QPR] |= 0x3800;
     trace_ics1890_negotiation(s->speed100, s->full_duplex);
+    if (s->link_ready_notify) {
+        s->link_ready_notify(s->link_ready_opaque);
+    }
 }
 
 static void ics1890_configure(ICS1890State *s)
@@ -100,6 +103,14 @@ static void ics1890_configure(ICS1890State *s)
         timer_mod(s->negotiation_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ICS_NEGOTIATION_NS);
     }
+}
+
+void ics1890_set_link_ready_notify(ICS1890State *s,
+                                   void (*notify)(void *opaque),
+                                   void *opaque)
+{
+    s->link_ready_notify = notify;
+    s->link_ready_opaque = opaque;
 }
 
 void ics1890_update_link(ICS1890State *s, bool link_down)
