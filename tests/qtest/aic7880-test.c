@@ -3698,6 +3698,65 @@ static void test_bus_free_scsiint_latch(void)
     qtest_quit(qts);
 }
 
+static void test_selection_timeout_scsiint_latch_migrates(void)
+{
+    uint8_t program[12] = { 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("aic7880-scsiint-XXXXXX", &error);
+    g_autofree char *socket_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    size_t n = 0;
+
+    g_assert_no_error(error);
+    socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    from = start_aic();
+    to = qtest_init("-M pc -m 128M -nodefaults -S -incoming defer "
+                    "-device aic7880,id=hba,bus=pci.0,addr=04.0");
+    qtest_irq_intercept_in(from, "ioapic");
+    qtest_irq_intercept_in(to, "ioapic");
+    qtest_outl(from, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(from, PCI_CONFIG_DATA + 3, 11);
+    emit_or(program, &n, 0x07, 0x05);
+    emit_or(program, &n, 0x40, 0x00);
+    emit(program, &n, branch_word(8, 0, 0x65, 2));
+    qtest_writeb(from, REG_BASE + 0x02, 0x04);
+    qtest_writeb(from, REG_BASE + 0x11, 0x80);
+    start_program(from, program, n);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    qtest_writeb(from, REG_BASE + 0x11, 0);
+    qtest_writeb(from, REG_BASE + 0x0c, 0x80);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x0c) & 0x80, ==, 0);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x91) & 0x04, ==, 0x04);
+    g_assert_cmphex(config_readl(from, 0x04) & 0x00080000, ==, 0x00080000);
+    g_assert_true(qtest_get_irq(from, 11));
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x11), ==, 0);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 0x80, ==, 0);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x91) & 0x04, ==, 0x04);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x87) & 0x06, ==, 0x06);
+    g_assert_cmphex(config_readl(to, 0x04) & 0xffff, ==, 0x0006);
+    g_assert_cmphex(config_readl(to, 0x04) & 0x00080000, ==, 0x00080000);
+    /* qtest observes IRQ changes, so drive a new transition after loading. */
+    qtest_writeb(to, REG_BASE + 0x87, 0x04);
+    g_assert_false(qtest_get_irq(to, 11));
+    qtest_writeb(to, REG_BASE + 0x87, 0x06);
+    g_assert_true(qtest_get_irq(to, 11));
+    qtest_writeb(to, REG_BASE + 0x92, 0x04);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x91) & 0x04, ==, 0);
+    g_assert_cmphex(config_readl(to, 0x04) & 0x00080000, ==, 0);
+    g_assert_false(qtest_get_irq(to, 11));
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket_path);
+    g_rmdir(dir);
+}
+
 static void test_unmasked_selection_timeout(void)
 {
     uint8_t program[12] = { 0 };
@@ -8207,6 +8266,8 @@ int main(int argc, char **argv)
                    test_selection_timeout_scsiint_latch);
     qtest_add_func("aic7880/bus-free-scsiint-latch",
                    test_bus_free_scsiint_latch);
+    qtest_add_func("aic7880/selection-timeout-scsiint-latch-migrates",
+                   test_selection_timeout_scsiint_latch_migrates);
     qtest_add_func("aic7880/unmasked-selection-timeout",
                    test_unmasked_selection_timeout);
     qtest_add_func("aic7880/unsupported-scsi-controls",
