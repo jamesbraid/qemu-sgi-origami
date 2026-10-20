@@ -179,6 +179,8 @@ gl /mips64/sn1/odyssey/command-fifo-gl-clip-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-sign
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-scale
+gl /mips64/sn1/odyssey/command-fifo-gl-depth-eye-linear
+gl /mips64/sn1/odyssey/command-fifo-gl-depth-float
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-scale-fallback
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-mask
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-only-clear
