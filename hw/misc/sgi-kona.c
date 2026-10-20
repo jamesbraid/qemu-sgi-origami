@@ -7310,11 +7310,241 @@ static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
     trace_sgi_kona_gl_data(token, words);
 }
 
+
+/*
+ * glDrawArrays' vertices (see SGI_KONA_CMD_GL_ARRAY_STATE). The state
+ * word holds one field for each enabled array, zero for a disabled one
+ * (libGLcore's +0x1518 & +0x151c, __glim_*PointerEXT and glEnable): the
+ * position's size and type in bits 0 to 7, the normal's type in 8 to 11,
+ * the colour's type and size in 12 to 19, the texture coordinate's type
+ * and size in 20 to 26, the edge flag in bit 27 and the colour index's
+ * type in 28 to 31. A type code is 1 to 6 for GL_BYTE to
+ * GL_UNSIGNED_INT, 7 for GL_FLOAT and 0xb for GL_DOUBLE. A vertex is each
+ * enabled array's element in turn, normal, colour, texture coordinate,
+ * then position, each element's bytes packed into whole words.
+ */
+typedef struct SGIKonaGLArrayLayout {
+    unsigned enabled;           /* arrays sent, e */
+    unsigned words;             /* words in one vertex */
+    uint8_t size[4], code[4];   /* normal, colour, texcoord, position */
+    const char *undrawn;        /* why the vertices are not drawn */
+} SGIKonaGLArrayLayout;
+
+enum {
+    SGI_KONA_ARRAY_NORMAL,
+    SGI_KONA_ARRAY_COLOUR,
+    SGI_KONA_ARRAY_TEXCOORD,
+    SGI_KONA_ARRAY_POSITION,
+};
+
+static unsigned sgi_kona_gl_array_type_bytes(unsigned code)
+{
+    static const uint8_t bytes[16] = {
+        [1] = 1, [2] = 1, [3] = 2, [4] = 2, [5] = 4, [6] = 4, [7] = 4,
+        [0xb] = 8,
+    };
+
+    return bytes[code & 15];
+}
+
+/* False when an enabled array's length is unknown: nothing can be framed. */
+static bool sgi_kona_gl_array_layout(uint32_t state, SGIKonaGLArrayLayout *l)
+{
+    static const struct {
+        unsigned code_shift, size_shift, size_mask, fixed_size, field;
+    } arrays[] = {
+        [SGI_KONA_ARRAY_NORMAL] = { 8, 0, 0, 3, 0x00000f00 },
+        [SGI_KONA_ARRAY_COLOUR] = { 12, 16, 15, 0, 0x000ff000 },
+        [SGI_KONA_ARRAY_TEXCOORD] = { 20, 24, 7, 0, 0x07f00000 },
+        [SGI_KONA_ARRAY_POSITION] = { 0, 4, 15, 0, 0x000000ff },
+    };
+
+    memset(l, 0, sizeof(*l));
+    for (unsigned k = 0; k < ARRAY_SIZE(arrays); k++) {
+        unsigned code, size, bytes;
+
+        if (!(state & arrays[k].field)) {
+            continue;
+        }
+        code = (state >> arrays[k].code_shift) & 15;
+        size = arrays[k].fixed_size ? arrays[k].fixed_size :
+               (state >> arrays[k].size_shift) & arrays[k].size_mask;
+        bytes = sgi_kona_gl_array_type_bytes(code);
+        if (!bytes || !size) {
+            return false;
+        }
+        l->size[k] = size;
+        l->code[k] = code;
+        l->enabled++;
+        l->words += DIV_ROUND_UP(size * bytes, 4);
+        if (code != 7 && !l->undrawn) {
+            l->undrawn = "an array whose type is not GL_FLOAT";
+        }
+    }
+    if (state & 0x08000000) {
+        l->enabled++;
+        l->words++;
+        l->undrawn = "an edge-flag array, whose place in the vertex is unknown";
+    }
+    if (state & 0xf0000000) {
+        unsigned bytes = sgi_kona_gl_array_type_bytes(state >> 28);
+
+        if (!bytes) {
+            return false;
+        }
+        l->enabled++;
+        l->words += DIV_ROUND_UP(bytes, 4);
+        l->undrawn = "a colour-index array, whose place in the vertex is"
+                     " unknown";
+    }
+    if (!l->enabled) {
+        return false;
+    }
+    if (!l->undrawn &&
+        (l->size[SGI_KONA_ARRAY_POSITION] < 2 ||
+         l->size[SGI_KONA_ARRAY_POSITION] > 4 ||
+         (l->size[SGI_KONA_ARRAY_COLOUR] &&
+          (l->size[SGI_KONA_ARRAY_COLOUR] < 3 ||
+           l->size[SGI_KONA_ARRAY_COLOUR] > 4)) ||
+         l->size[SGI_KONA_ARRAY_TEXCOORD] > 4)) {
+        l->undrawn = "no position array, or a size OpenGL does not allow";
+    }
+    if (l->words > SGI_KONA_GL_DATA_MAX) {
+        l->undrawn = "more words in a vertex than the model holds";
+    }
+    return true;
+}
+
+/* A vertex's words: the immediate-mode commands they stand for. */
+static void sgi_kona_gl_array_vertex(SGIKonaState *s, int i,
+                                     const SGIKonaGLArrayLayout *l,
+                                     const uint32_t *w)
+{
+    static const uint32_t texcoord[] = {
+        0, SGI_KONA_CMD_GL_TEXCOORD1F, SGI_KONA_CMD_GL_TEXCOORD2F,
+        SGI_KONA_CMD_GL_TEXCOORD3F, SGI_KONA_CMD_GL_TEXCOORD4F,
+    };
+    uint32_t high = s->gl_token_high, colour[4];
+    unsigned size;
+
+    s->gl_token_high = 0;
+    if (l->size[SGI_KONA_ARRAY_NORMAL]) {
+        sgi_kona_gl_transform(s, i, SGI_KONA_CMD_GL_NORMAL3F, w);
+        w += 3;
+    }
+    size = l->size[SGI_KONA_ARRAY_COLOUR];
+    if (size) {
+        /* glColor3f leaves alpha at 1 (OpenGL 1.2.1, 2.7). */
+        colour[3] = 0x3f800000;
+        memcpy(colour, w, size * sizeof(*w));
+        sgi_kona_gl_transform(s, i, SGI_KONA_CMD_GL_COLOR4F, colour);
+        w += size;
+    }
+    size = l->size[SGI_KONA_ARRAY_TEXCOORD];
+    if (size) {
+        sgi_kona_gl_transform(s, i, texcoord[size], w);
+        w += size;
+    }
+    switch (l->size[SGI_KONA_ARRAY_POSITION]) {
+    case 2:
+        sgi_kona_gl_command(s, SGI_KONA_CMD_GL_VERTEX2, w, 2);
+        break;
+    case 3:
+        sgi_kona_gl_transform(s, i, SGI_KONA_CMD_GL_VERTEX3F, w);
+        break;
+    default:
+        sgi_kona_gl_transform(s, i, SGI_KONA_CMD_GL_VERTEX4F, w);
+        break;
+    }
+    s->gl_token_high = high;
+}
+
+/*
+ * A short run (selector holds its count) or a bulk run (count given).
+ * The model frames the vertices only when it knows their length: inside
+ * 0x181 and 0x1a3, after a state word, with every enabled array's type
+ * known. Otherwise it logs, and the words fall to the textport as before.
+ */
+static void sgi_kona_gl_array_run(SGIKonaState *s, int i, uint32_t selector,
+                                  const uint32_t *args)
+{
+    SGIKonaGLArrayLayout l;
+    SGIKonaGLPipe *p;
+    uint32_t count;
+    uint64_t words;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    p = &s->state[i]->pipe;
+    if (!p->array_open || !p->array_state_valid ||
+        !sgi_kona_gl_array_layout(p->array_state, &l)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glDrawArrays run 0x%"
+                      PRIx32 " outside 0x181, with no state word or with an"
+                      " array of unknown length (state 0x%" PRIx32 ");"
+                      " vertices not framed\n", selector, p->array_state);
+        return;
+    }
+    if (selector == SGI_KONA_CMD_GL_ARRAY_BULK) {
+        count = args[0];
+        if (args[1] != 0xdeadbeef || args[2] != 0xdeadbeef) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glDrawArrays bulk run"
+                          " padding 0x%" PRIx32 " 0x%" PRIx32 ", not"
+                          " 0xdeadbeef\n", args[1], args[2]);
+        }
+    } else {
+        unsigned e = l.enabled;
+        uint32_t base = e == 1 || e == 2 || e == 4 ?
+                        SGI_KONA_CMD_GL_ARRAY_END :
+                        SGI_KONA_CMD_GL_ARRAY_END - 2;
+
+        count = selector < base && !((base - selector) % e) ?
+                (base - selector) / e : 0;
+        if (!count || count >= 32 / e) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glDrawArrays short run"
+                          " 0x%" PRIx32 " does not fit %u arrays; vertices"
+                          " not framed\n", selector, e);
+            return;
+        }
+    }
+    words = (uint64_t)count * l.words;
+    if (!words || words > UINT32_MAX) {
+        return;
+    }
+    if (l.undrawn) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glDrawArrays state 0x%" PRIx32
+                      " has %s; %" PRIu32 " vertices framed, not drawn\n",
+                      p->array_state, l.undrawn, count);
+    }
+    sgi_kona_gl_data_open(s, SGI_KONA_CMD_GL_ARRAY_BULK, words);
+}
+
+/* One word of a run's vertices; a vertex is drawn when it is whole. */
+static void sgi_kona_gl_array_word(SGIKonaState *s, uint32_t word)
+{
+    int i = s->context_current;
+    SGIKonaGLArrayLayout l;
+    unsigned at;
+
+    if (i == SGI_KONA_CONTEXT_NONE ||
+        !sgi_kona_gl_array_layout(s->state[i]->pipe.array_state, &l) ||
+        l.undrawn) {
+        return;
+    }
+    at = s->gl_data_have % l.words;
+    s->gl_data[at] = word;
+    if (at == l.words - 1) {
+        sgi_kona_gl_array_vertex(s, i, &l, s->gl_data);
+    }
+}
+
 static void sgi_kona_gl_data_done(SGIKonaState *s);
 
 static void sgi_kona_gl_data_word(SGIKonaState *s, uint32_t word)
 {
-    if (s->gl_data_have < SGI_KONA_GL_DATA_MAX) {
+    if (s->gl_data_token == SGI_KONA_CMD_GL_ARRAY_BULK) {
+        sgi_kona_gl_array_word(s, word);
+    } else if (s->gl_data_have < SGI_KONA_GL_DATA_MAX) {
         s->gl_data[s->gl_data_have] = word;
     }
     if (s->gl_data_token == SGI_KONA_CMD_GL_TEX_LOAD ||
@@ -8600,6 +8830,28 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_FLUSH:
         sgi_kona_gl_command(s, selector, args, argc);
         return;
+    case SGI_KONA_CMD_GL_ARRAY_STATE:
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            s->state[i]->pipe.array_state = args[0];
+            s->state[i]->pipe.array_state_valid = true;
+        }
+        return;
+    case SGI_KONA_CMD_GL_ARRAY_BEGIN:
+    case SGI_KONA_CMD_GL_ARRAY_END:
+        if (args[0]) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glDrawArrays bracket"
+                          " 0x%" PRIx32 " with word 0x%" PRIx32 ", not 0\n",
+                          selector, args[0]);
+        }
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            s->state[i]->pipe.array_open =
+                selector == SGI_KONA_CMD_GL_ARRAY_BEGIN;
+        }
+        return;
+    case SGI_KONA_CMD_GL_ARRAY_BULK:
+    case SGI_KONA_CMD_GL_ARRAY_SHORT_FIRST ... SGI_KONA_CMD_GL_ARRAY_SHORT_LAST:
+        sgi_kona_gl_array_run(s, i, selector, args);
+        return;
     case SGI_KONA_CMD_GL_POLYGON_STIPPLE:
         /*
          * The 32 rows of the pattern follow, one word each: inferred from
@@ -8966,7 +9218,10 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
         s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_US) {
         sgi_kona_gl_pixel_map_done(s);
     }
-    trace_sgi_kona_command_unmodelled(s->gl_data_token, s->gl_data_have);
+    if (s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK) {
+        trace_sgi_kona_command_unmodelled(s->gl_data_token,
+                                          s->gl_data_have);
+    }
     s->gl_data_token = 0;
     s->gl_data_have = 0;
 }
@@ -14520,7 +14775,8 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
           s->gl_data_token != SGI_KONA_CMD_GL_BITMAP &&
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
-          s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_US))) {
+          s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_US &&
+          s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK))) {
         return -EINVAL;
     }
     if (s->gl_sync_held &&
@@ -15057,6 +15313,7 @@ static bool sgi_kona_saved_gl_run_valid(SGIKonaState *s, int owner,
          token != SGI_KONA_CMD_GL_POP_LIGHTS &&
          token != SGI_KONA_CMD_GL_BITMAP_INLINE &&
          token != SGI_KONA_CMD_GL_BITMAP &&
+         token != SGI_KONA_CMD_GL_ARRAY_BULK &&
          !sgi_kona_gl_pixel_map_token(token))) {
         return false;
     }
@@ -15552,8 +15809,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer_pipe = {
 
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = sgi_kona_gl_pipe_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(unpack_alignment, SGIKonaGLPipe),
@@ -15577,6 +15834,9 @@ static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
         VMSTATE_UINT32_ARRAY(texture_assoc_handle, SGIKonaGLPipe, 2),
         VMSTATE_UINT8(texture_assoc_valid, SGIKonaGLPipe),
         VMSTATE_BOOL(texture_rebind_refused, SGIKonaGLPipe),
+        VMSTATE_UINT32(array_state, SGIKonaGLPipe),
+        VMSTATE_BOOL(array_state_valid, SGIKonaGLPipe),
+        VMSTATE_BOOL(array_open, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
