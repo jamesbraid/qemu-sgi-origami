@@ -1886,9 +1886,17 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * halves of each 16-bit component. 0x4c, the 8-bit GL_ABGR_EXT code, keeps
  * the X server's 0x00RRGGBB reading here; how the two uses agree is not
  * known.
+ *
+ * 0x61 is a 16-bit colour index, two big-endian bytes a pixel. OBSERVED in
+ * IRIS GL writepixels from mandel: its headers carry 0x61, its pixel counts
+ * are pixels at two bytes each (count 4 before a two-word burst), and every
+ * word holds two of its indices, 0x0168 and 0x0170 among them. The model
+ * keeps the low 12 bits, the index width it stores everywhere else
+ * (ODSY_INDEX_MASK); what the board does with bits 15:12 is not known.
  */
 #define ODSY_IMAGE_CODE_MASK 0xff
 #define ODSY_IMAGE_CODE_CI 0x41
+#define ODSY_IMAGE_CODE_CI16 0x61
 #define ODSY_IMAGE_CODE_LUM 0x42
 #define ODSY_IMAGE_CODE_LUM_ALPHA 0x48
 #define ODSY_IMAGE_CODE_RGB 0x49
@@ -4260,8 +4268,8 @@ static uint32_t odyssey_decode_texel12(uint32_t code, const uint8_t *b,
 
 /*
  * Decode one pixel of a byte-stream source format (ODSY_IMAGE_CODE_*) whose
- * bytes are b[0 ..]: its 0xRRGGBBAA word, or for 0x41 the raw index. False
- * for a code this model does not know.
+ * bytes are b[0 ..]: its 0xRRGGBBAA word, or for 0x41 and 0x61 the raw
+ * index. False for a code this model does not know.
  */
 static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
                                  const uint8_t *b, uint32_t *rgba)
@@ -4292,9 +4300,18 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
         /* The raw index: scanout resolves it through the pixel's drawable. */
         *rgba = b[0];
         return true;
+    case ODSY_IMAGE_CODE_CI16:
+        *rgba = lduw_be_p(b) & ODSY_INDEX_MASK;
+        return true;
     default:
         return false;
     }
+}
+
+/* Whether a source format carries colour indices rather than colours. */
+static bool odyssey_code_is_index(uint32_t code)
+{
+    return code == ODSY_IMAGE_CODE_CI || code == ODSY_IMAGE_CODE_CI16;
 }
 
 /* Bytes a pixel of a source format takes, 0 for an unknown code. */
@@ -4312,6 +4329,7 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
         return 1;
     case ODSY_IMAGE_CODE_LUM_ALPHA:
     case ODSY_IMAGE_CODE_LUM12:
+    case ODSY_IMAGE_CODE_CI16:
         return 2;
     case ODSY_IMAGE_CODE_LUM_ALPHA12:
         return 4;
@@ -4422,7 +4440,7 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
         /* The pixel's bytes, first byte highest, at the start of px[]. */
         stl_be_p(px, s->image_bytes << (8 * (4 - n)));
         odyssey_decode_pixel(s, code, px, &rgba);
-        odyssey_image_texel(s, rgba, code == ODSY_IMAGE_CODE_CI);
+        odyssey_image_texel(s, rgba, odyssey_code_is_index(code));
     }
 }
 
@@ -7925,7 +7943,7 @@ static void odyssey_dma_put(SGIOdysseyState *s, int obj, int64_t x,
     }
     for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
         if (odyssey_draw_buffers(s) & (1u << b)) {
-            odyssey_buffer_store(s, b, x, y, code == ODSY_IMAGE_CODE_CI ?
+            odyssey_buffer_store(s, b, x, y, odyssey_code_is_index(code) ?
                                  pixel : (pixel & ~0xffu) | 0xff);
         }
     }

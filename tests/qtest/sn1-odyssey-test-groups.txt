@@ -96,6 +96,7 @@ fifo /mips64/sn1/odyssey/command-fifo-image-raster-short
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-short-incomplete
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index
 fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index-groups
+fifo /mips64/sn1/odyssey/command-fifo-image-raster-colour-index16
 fifo /mips64/sn1/odyssey/command-fifo-x11-integer-after-gl
 fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-default
 fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-not-last

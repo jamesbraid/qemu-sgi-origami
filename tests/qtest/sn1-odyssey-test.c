@@ -4390,6 +4390,35 @@ static void test_command_fifo_image_raster_colour_index(void)
 }
 
 /*
+ * Source format 0x61, as IRIS GL writepixels sends it (mandel): a 16-bit
+ * colour index a pixel, two to a word, high half first. A 3x1 image over an
+ * index-1 background takes the indices 0x168, 0x002 and 0xfff, and the
+ * fourth half, past the header's count of 3, is dropped. Read a byte at a
+ * time, the word 0x01680002 would paint indices 1, 0x68 and 0.
+ */
+static void test_command_fifo_image_raster_colour_index16(void)
+{
+    QTestState *qts = board_start("");
+
+    index_fill(qts, 1, 200, 200, 204, 201);
+    image_begin(qts, 200, 200, 203, 201);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(3, 0x61));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_CI));
+    cmd_push(qts, 0x01680002);
+    cmd_push(qts, 0x0fff0007);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 200), ==, 0x168);
+    g_assert_cmphex(odsy_test_pixel(qts, 201, 200), ==, 0x002);
+    g_assert_cmphex(odsy_test_pixel(qts, 202, 200), ==, 0xfff);
+    g_assert_cmphex(odsy_test_pixel(qts, 203, 200), ==, 1);
+
+    board_quit(qts);
+}
+
+/*
  * A colour-index image wider than one burst, as the X server sends its root
  * background: a 56x3 box whose first group is a header with count 0 and
  * three full 16-pixel bursts, and whose later groups each start with a
@@ -20038,6 +20067,8 @@ int main(int argc, char **argv)
              test_command_fifo_image_raster_colour_index);
     add_case("sn1/odyssey/command-fifo-image-raster-colour-index-groups",
              test_command_fifo_image_raster_colour_index_groups);
+    add_case("sn1/odyssey/command-fifo-image-raster-colour-index16",
+             test_command_fifo_image_raster_colour_index16);
     add_case("sn1/odyssey/command-fifo-gl-crossing-eye",
              test_command_fifo_gl_crossing_eye);
     add_case("sn1/odyssey/command-fifo-gl-integer-points-transform",
