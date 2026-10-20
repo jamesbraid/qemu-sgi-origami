@@ -885,9 +885,17 @@ static unsigned odyssey_cmd_arity(uint32_t word)
  * - A sentinel transfer's word 1 is drawable-relative with y top-down: the
  *   current window origin is added. An address transfer's is a screen or
  *   object coordinate. INFERRED from the kernel's own clipping arithmetic.
+ *   dmplay's movie write (ODSY_DMA_MOVIE_FORMAT) disagrees: its tiles fit
+ *   together only with y counted up from the window's bottom. Which
+ *   reading holds for the other forms is unknown; their observed writes
+ *   start at y 0 and fill the window, where the two agree.
  * - Word 7 bit 30 puts the bottom board row of the rectangle in host row 0.
  *   Every GL read into client memory sets it. That the board flips rows
- *   inside one block is INFERRED.
+ *   inside one block is INFERRED. The GL library sets it when the source's
+ *   and destination's descriptions differ in their second word
+ *   (ESTABLISHED, disassembly); the movie write sets it yet sends its top
+ *   row first, so for writes to the drawable bit 30 alone does not give
+ *   the row order.
  * - A GL read leaves word 7 bits 7:0 zero; its layout is word 4 bits 2:0
  *   (source class) with bits 7:3 (transfer code). An X read puts the image
  *   format byte there instead, and the X server's 24-bit word 4 code does not
@@ -7870,9 +7878,22 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
  * face blue), that the source's first row is the top of the picture (it
  * comes out upside down otherwise), and that the header's y counts up from
  * the bottom of the window, as GL window coordinates do, with rows sent
- * top to bottom as under a pixel zoom of -1. Which of word 4's bits that
- * differ from the ABGR write's 0x80035000 select that order is unknown;
- * only this exact word is taken.
+ * top to bottom as under a pixel zoom of -1. Only this exact word 4 is
+ * taken.
+ *
+ * ESTABLISHED from disassembly of the IRIX 6.5.30 IP30 n32 libGLcore.so,
+ * whose image DMA to the drawable builds this header: word 4 bit 31 comes
+ * from the draw buffer, bits 27:24 and 23:20 from a mode table indexed by
+ * two words of the destination's description, bits 19:16 from a third,
+ * bits 15:13 from the format and type table and bit 12 is always set.
+ * None of them reads the pixel zoom, so the bits this word has and the
+ * ABGR write's 0x80035000 lacks (0x02206000) follow the destination,
+ * format and type, not the row order. Word 1's y is the smaller y of the
+ * destination box the library computes; no drawable height is sent. Word
+ * 7 bit 30 is set when the source's and destination's descriptions
+ * differ in their second word, and bit 27 by another flag; neither reads
+ * the zoom either. What tells the board this form's rows run top down,
+ * and the window height its bottom-up y needs, remain unknown.
  */
 #define ODSY_DMA_MOVIE_FORMAT 0x82233000u
 #define ODSY_DMA_MOVIE_CONTROL 0x4001004cu
@@ -7934,8 +7955,11 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
      * APPROXIMATION: the window's height, for a top-down write's
      * bottom-up y, taken from the 0x81d clip box's last row. The library
      * sends the window intersected with the viewport and any scissor box,
-     * which is the window while dmplay's viewport covers it; the model
-     * keeps no other record of the height.
+     * which is the window while dmplay's viewport covers it; the header
+     * carries no height (see ODSY_DMA_MOVIE_FORMAT) and the model keeps no
+     * other record of it. The draw-sentinel-movie qtest pins this rule. A
+     * capture of the write with a scissor box smaller than the window
+     * would tell it from the board's own: under this rule the frame moves.
      */
     int64_t rows = (s->gl_clip_box[1] & ODSY_CLIP_BOX_FIELD_MASK) + 1;
     int n, i;
