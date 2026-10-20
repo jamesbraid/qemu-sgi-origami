@@ -266,6 +266,19 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_POINT_PARAMETER   0x1a7
 #define SGI_KONA_CMD_GL_POINT_ATTENUATION 0x1a8
 /*
+ * glSpriteParameter*SGIX (libGLcore __glkonim_SpriteParameter*SGIX):
+ * 0x1a4 with the mode pname and the mode, or 0x1a5 with a pname and three
+ * words, the axis's or translation's floats, or the mode three times as
+ * an integer.
+ */
+#define SGI_KONA_CMD_GL_SPRITE_MODE       0x1a4
+#define SGI_KONA_CMD_GL_SPRITE_VECTOR     0x1a5
+/*
+ * glSampleMaskSGIS (__glkonim_SampleMaskSGIS): 0x118, the value clamped
+ * to zero through one, and the invert flag.
+ */
+#define SGI_KONA_CMD_GL_SAMPLE_MASK       0x118
+/*
  * glDrawArrays (libGLcore __glkonim_DrawArraysEXT): 0x180 and the enabled
  * arrays' state word when it changed; then inside glBegin and glEnd,
  * 0x181 0, a short run, a bulk run and 0x1a3 0. A short run's token is
