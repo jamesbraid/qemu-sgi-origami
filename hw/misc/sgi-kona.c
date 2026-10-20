@@ -8982,16 +8982,12 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             SGIKonaGLPipe *p = &s->state[i]->pipe;
 
             if (handle == UINT32_MAX) {
-                unsigned slot = p->texture_selector;
-
-                if (p->texture_selector_valid &&
-                    (p->texture_assoc_valid & (1u << slot))) {
-                    handle = p->texture_assoc_handle[slot];
-                    s->texture_bind[0] = handle;
-                } else {
-                    /* Reported at the record if it cannot find the image. */
-                    p->texture_rebind_refused = true;
-                }
+                /*
+                 * The record that follows locates the image; until it
+                 * does, draws are refused. It is reported there if it
+                 * cannot.
+                 */
+                p->texture_rebind_refused = true;
             } else if (p->texture_selector_valid) {
                 s->texture_associate_pending = true;
                 s->texture_associate_context = i;
@@ -9039,15 +9035,38 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                               " model storage budget\n");
             }
         } else if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
-                   s->texture_bind_valid &&
-                   sgi_kona_texture_find_table(&s->textures, table, &found)) {
+                   s->texture_bind_valid) {
+            bool bank_one = (s->texture_bind[2] >> 28) & 1;
+
             /*
              * A bind without its cache number draws before the 0x178 that
              * names it, so the record must locate the image: take the one
-             * texture an earlier complete bind gave this level table.
+             * texture an earlier complete bind gave this level table with
+             * its first level in the same bank. Two textures may share a
+             * table word list in opposite banks, as mirrors' do.
              */
-            s->texture_bind[0] = found;
-            by_table = true;
+            if (sgi_kona_texture_find_table(&s->textures, table, bank_one,
+                                            &found)) {
+                by_table = true;
+            } else if (i != SGI_KONA_CONTEXT_NONE &&
+                       s->state[i]->pipe.texture_selector_valid &&
+                       (s->state[i]->pipe.texture_assoc_valid &
+                        (1u << s->state[i]->pipe.texture_selector))) {
+                SGIKonaGLPipe *p = &s->state[i]->pipe;
+
+                /*
+                 * The retained association names a texture only while its
+                 * own stored table is this record's; anything else is a
+                 * different texture, and taking it would rewrite that
+                 * texture's table and size with this record's.
+                 */
+                found = p->texture_assoc_handle[p->texture_selector];
+                by_table = sgi_kona_texture_table_matches(&s->textures, found,
+                                                          table, bank_one);
+            }
+            if (by_table) {
+                s->texture_bind[0] = found;
+            }
         }
         sgi_kona_gl_texture_bind(s);
         resolved = by_table ?

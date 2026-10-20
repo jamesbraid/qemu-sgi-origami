@@ -4911,6 +4911,99 @@ static void test_texture_cache_entry_reuse(gconstpointer opaque)
 }
 
 /*
+ * A 2 by 2 image under cache number id, loaded, then bound by number with
+ * its record and named by 0x178, in mirrors' order. Its level 0 is at addr
+ * in bank one or bank zero, and the bind's bit 28 says which.
+ */
+static void texture_bank_load(QTestState *s, uint32_t id, uint32_t addr,
+                              bool bank_one, const uint32_t pixels[4])
+{
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = id;
+    h[17] |= bank_one ? 8 : 0;
+    h[18] = bank_one ? 0 : addr;
+    h[19] = bank_one ? addr : 0;
+    kona_command(s, 0x1c4, &id, 1);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, pixels[k]);
+    }
+    kona_command(s, 0x176, &id, 1);
+    record[6] = addr;
+    kona_command(s, 0x106,
+                 (uint32_t[]) { id, (2u << 28) | (41 << 12),
+                                (0x30 << 14) | ((uint32_t)bank_one << 28),
+                                0x11, 1 }, 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    kona_command(s, 0x178, &id, 1);
+}
+
+/* An all-ones bind of the texture at addr in that bank, then its 0x178. */
+static void texture_bank_rebind_draw(QTestState *s, uint32_t addr,
+                                     bool bank_one, uint32_t id,
+                                     uint32_t expected)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    record[6] = addr;
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x106,
+                 (uint32_t[]) { UINT32_MAX, (2u << 28) | (41 << 12),
+                                (0x30 << 14) | ((uint32_t)bank_one << 28),
+                                0x11, 1 }, 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, expected >> 8);
+    kona_command(s, 0x178, &id, 1);
+}
+
+/*
+ * mirrors (IRIX 6.5.30) loads its textures in pairs whose level tables
+ * are the same words, the first level of one in bank zero and of the
+ * other in bank one, and binds each by number once. After that every
+ * bind is all ones and a record, and 0x178 names the texture only after
+ * the draws. So the record's table and the bind's bank find the texture,
+ * and the number the last 0x178 named, which is the previous texture's,
+ * picks none: taking it drew the wrong image and rewrote that texture's
+ * table with this record's.
+ */
+static void test_texture_cache_entry_bank_pair(void)
+{
+    static const uint32_t green[4] = {
+        0x00ff00ff, 0x00ff00ff, 0x00ff00ff, 0x00ff00ff,
+    };
+    static const uint32_t yellow[4] = {
+        0xffff00ff, 0xffff00ff, 0xffff00ff, 0xffff00ff,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    texture_bank_load(s, 0, 0x2000, false, texture_source);
+    texture_bank_load(s, 1, 0x2000, true, green);
+    texture_bank_load(s, 2, 0x4000, false, yellow);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    for (unsigned frame = 0; frame < 2; frame++) {
+        texture_bank_rebind_draw(s, 0x2000, false, 0, texture_source[0]);
+        texture_bank_rebind_draw(s, 0x4000, false, 2, yellow[0]);
+        texture_bank_rebind_draw(s, 0x2000, true, 1, green[0]);
+    }
+    assert_texture_pixel(s, 1, 1, green[3]);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "texture rebind without"), ==,
+                     0);
+}
+
+/*
  * Every explicit bind is followed by its record. The bind alone binds
  * nothing, which is not a refusal; the complete pair samples.
  */
@@ -17135,6 +17228,8 @@ int main(int argc, char **argv)
     add_data_case(
         "sn0/origin2000/kona-3d/texture-cache-entry/reuse-shared-table",
         GUINT_TO_POINTER(1), test_texture_cache_entry_reuse);
+    add_case("sn0/origin2000/kona-3d/texture-cache-entry/bank-pair",
+             test_texture_cache_entry_bank_pair);
     add_data_case("sn0/origin2000/kona-3d/texture-cache-entry/retire",
                   GUINT_TO_POINTER(0), test_texture_cache_entry_retire);
     add_data_case(

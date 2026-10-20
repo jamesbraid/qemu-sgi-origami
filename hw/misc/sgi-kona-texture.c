@@ -446,7 +446,8 @@ bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
 }
 
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
-                                 const uint32_t table[16], uint32_t *handle)
+                                 const uint32_t table[16], bool bank_one,
+                                 uint32_t *handle)
 {
     GHashTableIter iter;
     gpointer value;
@@ -456,13 +457,22 @@ bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         const SGIKonaTextureObject *o = value;
 
-        if (o->native_table_valid &&
+        if (o->native_table_valid && o->native_bank_one == bank_one &&
             !memcmp(o->native_table, table, sizeof(o->native_table))) {
             *handle = o->handle;
             matches++;
         }
     }
     return matches == 1;
+}
+
+bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
+                                    const uint32_t table[16], bool bank_one)
+{
+    const SGIKonaTextureObject *o = texture_object(s, handle, false);
+
+    return o && o->native_table_valid && o->native_bank_one == bank_one &&
+           !memcmp(o->native_table, table, sizeof(o->native_table));
 }
 
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
