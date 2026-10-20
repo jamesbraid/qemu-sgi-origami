@@ -9897,6 +9897,11 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  * over direct-colour pixels are answered. What the pipe puts in the low
  * bits, and selector 1's alpha word over a direct pixel, are unknown;
  * selector 1 there stays refused, which answers zeros.
+ *
+ * Known limit: the reader's pair starts at selector 2, not 1, when the
+ * window private's byte at +2 is 1, so it asks for 2 and 3. The model
+ * then answers the alpha word (selector 2) with the RGB word, and refuses
+ * selector 3, answering zeros. What that byte means is unknown.
  */
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
