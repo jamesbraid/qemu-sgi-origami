@@ -1377,9 +1377,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * with a select of index 16 and this word carrying four floats
  * (ESTABLISHED): (-0, -0, -0, 1)
  * under the identity projection, (-0, -0, -0, -1) under glOrtho(-1, 1, -1,
- * 1, -1, 1) and (-0, -0, -0, -3) under glFrustum(-1, 1, -1, 1, 1, 3). Only
- * the fourth float's sign has an observed role (odyssey_gl_load_combined());
- * the rest are kept and unread.
+ * 1, -1, 1) and (-0, -0, -0, -3) under glFrustum(-1, 1, -1, 1, 1, 3). They
+ * are the depth row's denominator, and the model reads the fourth
+ * (odyssey_gl_load_combined()); the rest are kept and unread.
  */
 #define ODSY_GL_MATRIX_SELECT_BLOCK16 0x10
 #define ODSY_GL_LOAD_4F 0x908091df
@@ -4365,9 +4365,11 @@ static const SGIRasterRules odyssey_gl_rules = {
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .alpha_test_bits = 12,
     .smooth_primitives = true,
+    /* The board's own depth format; odyssey_gl_load_combined(). */
+    .depth_float = true,
     .evidence = "chosen, pending capture: borrowed from MGRAS (Octane RE4); "
                 "Odyssey's subpixel grid and GL colour depth are unmeasured "
-                "(odyssey-gl-family-side.md)",
+                "(odyssey-gl-family-side.md); the depth rule is inferred",
 };
 
 /* Whether a GL fragment's colour is an index (ODSY_PROG_COLOUR_MODE). */
@@ -4543,11 +4545,25 @@ static bool odyssey_gl_load_rgba(void *opaque, SGIColourTarget target,
 }
 
 /* Stored A describes the model's fourth byte, not physical V12 precision. */
+static double odyssey_f32(uint32_t bits);
+static double odyssey_gl_depth_scale(SGIOdysseyState *s);
+
+/*
+ * The depth row over the block-16 denominator, in units of the client's
+ * [0, 1] depth (odyssey_gl_load_combined()). The shared context's
+ * model-view is the identity, so its eye coordinates are the object
+ * coordinates the combined matrix takes.
+ */
 static SGIRasterRules odyssey_gl_operation_rules(SGIOdysseyState *s)
 {
     SGIRasterRules rules = odyssey_gl_rules;
+    double scale = 2 * ODSY_GL_DEPTH_S * odyssey_gl_depth_scale(s);
 
     rules.alpha_bits = odyssey_gl_index_mode(s) ? 0 : 8;
+    rules.depth_row_given = true;
+    for (unsigned k = 0; k < 4; k++) {
+        rules.depth_row[k] = odyssey_f32(s->gl_combined[8 + k]) / scale;
+    }
     return rules;
 }
 
@@ -4579,8 +4595,6 @@ static void odyssey_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
                         x, y, depth & ODSY_DEPTH24_MAX);
     }
 }
-
-static double odyssey_f32(uint32_t bits);
 
 /* Experimental policy; the board's scale sign and clamps are unmeasured. */
 static float odyssey_gl_fog_factor(void *opaque, float window_z, float eye_z)
@@ -6959,28 +6973,64 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * no flip is needed. Clipping is then the window's own rectangles; where the
  * board clips geometry that leaves the window is unknown.
  *
- * Depth: the retained block-16 fourth float scales the combined depth row. In
- * native orthographic 1/5, 1/10 and 1/20 controls, dividing the signed row by
- * that float gives the GL window depth. This is an experimental model policy,
- * not a measured board contract. Malformed zero or non-finite words retain
- * the previous sign-only fallback. The shared pipeline's window depth is (z_c
- * / w_c + 1) / 2, so its z row is row2 / (block16[3] * S) - row3, with S =
- * ODSY_GL_DEPTH_S. A depth outside [0, 1] is then dropped by the shared
- * rasterizer, which is the near and far clip. The other three block-16 floats
- * have no observed role. A non-default glDepthRange changes the row in a way
- * this rule does not fit: it is drawn with the default [0, 1] range, and the
- * near and far clip planes the library adds for it are reported as a program
- * stage (odyssey_gl_program()).
+ * Depth: the library builds the depth row and the four block-16 floats from
+ * the same rows of its composite transform (ESTABLISHED from the IRIX 6.5.30
+ * IP30 n32 library's combined-matrix validation). Block 16 is the eye-space w
+ * row times d, the determinant of the projection's lower-right 2x2; the depth
+ * row is the eye-space z and w rows, mapped so that the near and far eye
+ * depths give 0 and 2S, times the same d (S = ODSY_GL_DEPTH_S). Their ratio
+ * (row2 . v) / (block16 . v) is then the eye-linear depth in board units for
+ * any projection, and under an affine model-view block 16 is (0, 0, 0, d).
+ * That the board divides by block 16 and not by w is INFERRED: it is the one
+ * reading under which the identity, glOrtho and glFrustum(-1, 1, -1, 1, 1, 3)
+ * captures, the native orthographic 1/5, 1/10 and 1/20 controls and
+ * Performer town's perspective rows all span the depth range; dividing by w
+ * as well puts the town in [0, 0.001]. The model divides by the fourth
+ * float, which is d; malformed zero or non-finite words keep the sign-only
+ * fallback, and the other three, zero up to rounding, are kept unread.
+ *
+ * The depth reaches the shared rasterizer as its rules' depth row,
+ * row2 / (2S block16[3]), applied to the object coordinates and
+ * interpolated with perspective correction (odyssey_gl_operation_rules()).
+ * Under perspective the shared projection's z row is 0, so no depth is
+ * carried as a difference from w, which a float row could not resolve; a
+ * fragment outside depth [0, 1] is dropped, which is the near and far clip.
+ * Under an orthographic matrix the z row stays row2 / (block16[3] S) - row3,
+ * whose window depth is the same. Board depth is floating point in a format
+ * of its own (a public statement by an SGI engineer, comp.sys.sgi.graphics,
+ * 2002-10-01) whose layout is UNKNOWN; pfCity's rows put its scene at w +
+ * 42.85 board units, near 0, which a fixed-point store would flatten to one
+ * value, so the rules' floating-point code stands in for the board's
+ * (APPROXIMATED). Whether the board interpolates depth with perspective
+ * correction is UNKNOWN.
+ *
+ * A non-default glDepthRange changes the row in a way this rule does not
+ * fit: it is drawn with the default [0, 1] range, and the near and far clip
+ * planes the library adds for it are reported as a program stage
+ * (odyssey_gl_program()).
  *
  * A matrix whose x or y row is zero -- the library's load before its window
  * exists, or the kernel's zero restore at a context switch -- leaves an empty
  * viewport, so nothing is drawn.
  */
+static double odyssey_gl_depth_scale(SGIOdysseyState *s)
+{
+    float sign_word;
+
+    memcpy(&sign_word, &s->gl_block16[ODSY_GL_BLOCK16_SIGN],
+           sizeof(sign_word));
+    if (isfinite(sign_word) && sign_word != 0) {
+        return sign_word;
+    }
+    return sign_word < 0 ? -1.0 : 1.0;
+}
+
 static void odyssey_gl_load_combined(SGIOdysseyState *s, const float m[16])
 {
     int32_t *vp = s->gl_ctx.cur.viewport;
-    float p[16], sign_word;
-    double depth_scale;
+    bool perspective = m[3] != 0 || m[7] != 0 || m[11] != 0;
+    double depth_scale = odyssey_gl_depth_scale(s);
+    float p[16];
     unsigned int col;
 
     memset(s->gl_ctx.cur.viewport, 0, sizeof(s->gl_ctx.cur.viewport));
@@ -6988,18 +7038,11 @@ static void odyssey_gl_load_combined(SGIOdysseyState *s, const float m[16])
         (m[1] == 0 && m[5] == 0 && m[9] == 0)) {
         return;
     }
-    memcpy(&sign_word, &s->gl_block16[ODSY_GL_BLOCK16_SIGN],
-           sizeof(sign_word));
-    if (isfinite(sign_word) && sign_word != 0) {
-        depth_scale = sign_word;
-    } else {
-        depth_scale = sign_word < 0 ? -1.0 : 1.0;
-    }
     for (col = 0; col < 4; col++) {
         p[col * 4 + 0] = m[col * 4 + 0] / ODSY_GL_WINDOW_REACH;
         p[col * 4 + 1] = m[col * 4 + 1] / ODSY_GL_WINDOW_REACH;
-        p[col * 4 + 2] = m[col * 4 + 2] /
-                         (depth_scale * ODSY_GL_DEPTH_S) -
+        p[col * 4 + 2] = perspective ? 0 :
+                         m[col * 4 + 2] / (depth_scale * ODSY_GL_DEPTH_S) -
                          m[col * 4 + 3];
         p[col * 4 + 3] = m[col * 4 + 3];
     }
@@ -7149,7 +7192,7 @@ static void odyssey_gl_rect(SGIOdysseyState *s)
         d = f[6] / (2 * ODSY_GL_DEPTH_S);
         d = MIN(MAX(d, 0.0), 1.0);
         op.clear_buffers |= SGI_GL_DEPTH_BUFFER_BIT;
-        op.clear_depth24 = lround(d * ODSY_DEPTH24_MAX);
+        op.clear_depth24 = sgi_raster_depth_code(&rules, d);
     }
     if ((s->pattern_mode & ODSY_MODE_DEPTH_TEST) &&
         (s->gl_depth_func & ODSY_DEPTH_FUNC_MASK) != SGI_GL_ALWAYS &&

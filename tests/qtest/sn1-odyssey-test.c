@@ -6369,6 +6369,97 @@ static void test_command_fifo_gl_depth_scale_fallback(void)
 }
 
 /*
+ * glFrustum(-1, 1, -1, 1, 1, 3)'s captured rows: the depth row 3S z + 3S
+ * over the block-16 word -3 is the eye-linear depth -(z + 1) / 2, 0.5 at
+ * eye z -2. OpenGL's depth there is 0.75, and the depth row over w and -3
+ * would be 0.25, so clears at 0.4 and 0.6 tell all three apart.
+ */
+static void test_command_fifo_gl_depth_eye_linear(void)
+{
+    static const uint32_t frustum[16] = {
+        0x42800000, 0, 0xc2800000, 0,
+        0, 0xc2800000, 0xc27ffc00, 0,
+        0, 0, 0x503fffd0, 0x503fffd0,
+        0, 0, 0xbf800000, 0,
+    };
+    static const uint32_t at_two[9] = {
+        0xbf800000, 0xbf800000, 0xc0000000,
+        0x3f800000, 0xbf800000, 0xc0000000,
+        0, 0x3f800000, 0xc0000000,
+    };
+    static const struct {
+        float clear;
+        uint32_t pixel;
+    } cases[] = {
+        { 0.4f, ODSY_PLANE_BLUE },
+        { 0.6f, ODSY_PLANE_YELLOW },
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_window_transform(qts, frustum);
+    push_block_16(qts, 0xc0400000);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        float clear_word = cases[i].clear * (2 * 4294950912.0f);
+        uint32_t clear_bits;
+
+        memcpy(&clear_bits, &clear_word, sizeof(clear_bits));
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, 0, 0, ODSY_F_ONE, clear_bits);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+        push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, at_two);
+        g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, cases[i].pixel);
+    }
+    board_quit(qts);
+}
+
+/*
+ * pfCity's rows put its scene a few board units past depth 0: a depth row
+ * of 0.2 z - 8.5 over the block-16 word -0.2 gives (-z + 42.5) / 2S, about
+ * 1.7e-8 at eye z -100 and -101. A 24-bit fixed-point store holds both as
+ * 0, and a float projection row cannot carry either as a difference from
+ * w, so the nearer triangle, drawn second, would fail GL_LESS; the board's
+ * floating-point depth keeps them apart.
+ */
+static void test_command_fifo_gl_depth_float(void)
+{
+    static const uint32_t rows[16] = {
+        0x42800000, 0, 0xc2800000, 0,
+        0, 0xc2800000, 0xc27ffc00, 0,
+        0, 0, 0x3e4ccccd, 0xc1080000,
+        0, 0, 0xbf800000, 0,
+    };
+    static const uint32_t near_yellow[9] = {
+        0xc2c80000, 0xc2c80000, 0xc2c80000,
+        0x42c80000, 0xc2c80000, 0xc2c80000,
+        0, 0x42c80000, 0xc2c80000,
+    };
+    static const uint32_t far_cyan[9] = {
+        0xc2ca0000, 0xc2ca0000, 0xc2ca0000,
+        0x42ca0000, 0xc2ca0000, 0xc2ca0000,
+        0, 0x42ca0000, 0xc2ca0000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_window_transform(qts, rows);
+    push_block_16(qts, 0xbe4ccccd);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, 0, 0, ODSY_F_ONE, ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+    push_triangle_3f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE, far_cyan);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+    push_triangle_3f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE, far_cyan);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+    board_quit(qts);
+}
+
+/*
  * glClear(GL_DEPTH_BUFFER_BIT) alone: the colour write mask is 0, so the
  * colour operands are ignored; the test passes arbitrary non-zero ones to
  * prove it. No colour changes; the depth becomes 0.25, so a GL_LESS draw
@@ -19948,6 +20039,10 @@ int main(int argc, char **argv)
              test_command_fifo_gl_depth_sign);
     add_case("sn1/odyssey/command-fifo-gl-depth-scale",
              test_command_fifo_gl_depth_scale);
+    add_case("sn1/odyssey/command-fifo-gl-depth-eye-linear",
+             test_command_fifo_gl_depth_eye_linear);
+    add_case("sn1/odyssey/command-fifo-gl-depth-float",
+             test_command_fifo_gl_depth_float);
     add_case("sn1/odyssey/command-fifo-gl-depth-scale-fallback",
              test_command_fifo_gl_depth_scale_fallback);
     add_case("sn1/odyssey/command-fifo-gl-colour-mask",
