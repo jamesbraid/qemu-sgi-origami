@@ -4229,7 +4229,13 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy.state = &st;
         d = &copy;
     }
+    /*
+     * The Mesa route writes board memory itself, bounded by the clip list
+     * alone, so a window owning more pixels than the list holds
+     * (owned_by_pixel) stays on the scalar path, whose stores test them.
+     */
     if (s->host_gpu && s->mesa_provider && !s->renderer_failed &&
+        !s->state[d->context]->window.owned_by_pixel &&
         d->mode == SGI_GL_TRIANGLES && d->count == 3 &&
         d->state->shade_model == SGI_GL_SMOOTH &&
         d->state->draw_buffers == SGI_GL_DRAW_FRONT &&
