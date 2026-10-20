@@ -6,6 +6,22 @@ sn_promdata_forward(int cpu, uint64_t node_base, uint64_t offset, unsigned int s
 sn_promdata_private(int cpu, uint64_t offset, unsigned int size, bool write, uint64_t pc, uint64_t sp) "cpu %d offset 0x%" PRIx64 " size %u write %d pc 0x%" PRIx64 " sp 0x%" PRIx64
 sn_promdata_phase(int cpu, const char *event, uint64_t pc, uint64_t sp, uint32_t asid, uint64_t private_reads, uint64_t private_writes, uint64_t peer_writes, int64_t realtime_ns) "cpu %d %s pc 0x%" PRIx64 " sp 0x%" PRIx64 " asid 0x%x private_reads %" PRIu64 " private_writes %" PRIu64 " peer_writes %" PRIu64 " realtime_ns %" PRId64
 
+# o2.c
+o2_private_phase(const char *event, uint64_t pc, uint64_t sp, bool unspecified) "event %s pc 0x%" PRIx64 " sp 0x%" PRIx64 " unspecified %d"
+
+# o2-rom.c; phase: idle=0, prefix=1..3, loading=4, busy=5
+# All offsets are canonical device offsets. No ROM data is traced.
+# A load attempt of zero denotes the first refused write while BUSY.
+o2_at29_load(uint32_t offset, int phase, uint32_t sector, unsigned int loaded, uint64_t attempt, int64_t now_ns, int64_t deadline_ns, bool prefixed, const char *outcome) "offset 0x%" PRIx32 " phase %d sector 0x%" PRIx32 " loaded %u attempt %" PRIu64 " virtual_ns %" PRId64 " deadline_ns %" PRId64 " prefixed %d outcome %s"
+o2_at29_timeout(uint32_t offset, int phase, uint32_t sector, unsigned int loaded, int64_t now_ns, int64_t deadline_ns, bool timer_callback, const char *outcome) "offset 0x%" PRIx32 " phase %d sector 0x%" PRIx32 " loaded %u virtual_ns %" PRId64 " deadline_ns %" PRId64 " timer_callback %d outcome %s"
+o2_at29_poll(uint32_t offset, unsigned int size, int phase, uint32_t sector, unsigned int loaded, uint64_t reads, int64_t now_ns, int64_t deadline_ns, bool toggle, const char *outcome) "offset 0x%" PRIx32 " size %u phase %d sector 0x%" PRIx32 " loaded %u reads %" PRIu64 " virtual_ns %" PRId64 " deadline_ns %" PRId64 " toggle %d outcome %s"
+
+# mace-id.c
+mace_id_drive(int64_t now_ns, uint64_t offset, unsigned int size, bool release, int64_t interval_ns) "virtual_ns %" PRId64 " offset 0x%" PRIx64 " size %u release %d prior_interval_ns %" PRId64
+mace_id_reset(int64_t now_ns, int64_t low_ns, bool high_ready, bool qualified) "virtual_ns %" PRId64 " low_ns %" PRId64 " high_ready %d qualified %d"
+mace_id_presence_schedule(int64_t now_ns, int64_t start_ns, int64_t end_ns) "virtual_ns %" PRId64 " start_ns %" PRId64 " end_ns %" PRId64
+mace_id_sample(int64_t now_ns, uint64_t offset, unsigned int size, bool level, bool presence) "virtual_ns %" PRId64 " offset 0x%" PRIx64 " size %u level %d presence %d"
+
 # sn0.c
 sn0_backdoor_populated(int cpu, unsigned int node, const char *window, uint64_t pc, uint64_t offset, unsigned int size, bool write, uint64_t value, uint64_t index) "cpu %d node %u window %s pc 0x%016" PRIx64 " offset 0x%08" PRIx64 " size %u write %d value 0x%016" PRIx64 " index 0x%08" PRIx64
 sn0_backdoor_absent(int cpu, unsigned int node, const char *window, uint64_t pc, uint64_t offset, unsigned int size, bool write, uint64_t value) "cpu %d node %u window %s pc 0x%016" PRIx64 " offset 0x%08" PRIx64 " size %u write %d value 0x%016" PRIx64

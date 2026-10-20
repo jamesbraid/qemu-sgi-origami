@@ -2,9 +2,13 @@
 /* SGI MACE 2.0 platform registers. */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "qemu/rcu.h"
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/mace.h"
+#include "hw/mips/sgi/mace-id.h"
+#include "hw/net/sgi-mace-eth.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
@@ -12,13 +16,18 @@
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
 #include "hw/core/qdev-properties.h"
+#include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "qemu/units.h"
+#include "system/qtest.h"
 
 #define MACE_APERTURE_SIZE 0x400000
 #define MACE_RING_BASE     0x310000
+#define MACE_ID_BASE       0x310008
+#define MACE_ETH_BASE      0x280000
 #define MACE_PCI_BASE      0x080000
 #define MACE_PCI_SIZE      0x080000
 #define MACE_PCI_ERROR_ADDR  0x0000
@@ -29,7 +38,7 @@
 #define MACE_PCI_CFGDATA     0x0cfc
 #define MACE_PCI_MASTER_ABORT (1U << 31)
 #define MACE_PCI_ADDR_VALID   (1U << 19)
-#define MACE_PCI_SUPPORTED_CONTROL (0x800000ffU)
+#define MACE_PCI_SUPPORTED_CONTROL (0xff0005ffU)
 #define MACE_PCI_NO_PIN 8
 #define MACE_UART_A        0x390000
 #define MACE_UART_B        0x398000
@@ -51,11 +60,27 @@ struct SGIMACEState {
     PCIHostState parent_obj;
     MemoryRegion aperture;
     MemoryRegion regs;
+    SGIMACEEthState eth;
+    DeviceState *identity;
+    MemoryRegion eth_dma;
+    MemoryRegion eth_low_ram;
+    MemoryRegion eth_full_ram;
+    MemoryRegion eth_no_ecc_ram;
     MemoryRegion pci_regs;
     MemoryRegion pci_memory;
     MemoryRegion pci_io;
     MemoryRegion pci_mem_block;
     MemoryRegion pci_io_block;
+    MemoryRegion pci_lower_ram;
+    MemoryRegion pci_native_ram;
+    MemoryRegion cpu_pci_view;
+    MemoryRegion cpu_pci_alias;
+    MemoryRegion cpu_pci_high_view;
+    MemoryRegion cpu_pci_pio_low;
+    MemoryRegion cpu_pci_pio_high;
+    AddressSpace pci_dma_as;
+    AddressSpace pci_ram_as;
+    MemoryRegion *ram;
     DS1685State rtc;
     SerialState uart[2];
     MACEUARTPort uart_port[2];
@@ -76,7 +101,32 @@ struct SGIMACEState {
     uint32_t pci_error_flags;
     uint8_t pci_wire_level;
     uint8_t pci_bus_level;
+    bool aic_pci_diagnostic;
+    bool o2_storage_diagnostic;
+    bool pio_byte_test;
+    bool identity_diagnostic;
+    bool misc_word_pio;
+    bool eth_low_dma_compat;
+    bool pci_native_word_swap;
+    char *identity_test_serial;
+    char *identity_eprom_file;
+    char *identity_status;
+    bool storage_diagnostic_authorized;
+    bool storage_diagnostic_realized;
 };
+
+void sgi_mace_enable_storage_diagnostic(DeviceState *dev, Error **errp)
+{
+    SGIMACEState *s = SGI_MACE(dev);
+
+    if (qdev_is_realized(dev) || s->storage_diagnostic_realized) {
+        error_setg(errp, "sgi-mace storage diagnostic must be selected "
+                         "before realize");
+        return;
+    }
+    s->storage_diagnostic_authorized = true;
+    s->o2_storage_diagnostic = true;
+}
 
 static uint64_t mace_elapsed_ticks(SGIMACEState *s)
 {
@@ -92,6 +142,13 @@ static void mace_update_irqs(SGIMACEState *s)
     qemu_set_irq(s->crime[4], (active & 0xffff0000U) != 0);
     qemu_set_irq(s->crime[5], (active & 0x0000ff00U) != 0);
     qemu_set_irq(s->crime[6], (active & 0x000000ffU) != 0);
+}
+
+static void mace_eth_irq(void *opaque, int n, int level)
+{
+    SGIMACEState *s = opaque;
+
+    qemu_set_irq(s->crime[3], level);
 }
 
 static void mace_rtc_irq(void *opaque, int n, int level)
@@ -175,6 +232,28 @@ static bool mace_pci_config_claimed(SGIMACEState *s, uint32_t addr)
     PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
 
     return pci_find_device(bus, addr >> 16, (addr >> 8) & 0xff) != NULL;
+}
+
+static bool mace_pci_onboard_aic(SGIMACEState *s, uint32_t addr)
+{
+    unsigned devfn = (addr >> 8) & 0xff;
+    PCIDevice *dev = pci_find_device(PCI_HOST_BRIDGE(s)->bus,
+                                     addr >> 16, devfn);
+
+    return !(addr >> 16) &&
+           (devfn == PCI_DEVFN(1, 0) || devfn == PCI_DEVFN(2, 0)) &&
+           dev && object_dynamic_cast(OBJECT(dev), "aic7880");
+}
+
+static bool mace_pci_byte_test_card(SGIMACEState *s, uint32_t addr)
+{
+    unsigned devfn = (addr >> 8) & 0xff;
+    PCIDevice *dev = pci_find_device(PCI_HOST_BRIDGE(s)->bus,
+                                     addr >> 16, devfn);
+
+    return s->pio_byte_test && qtest_enabled() && !(addr >> 16) &&
+           devfn == PCI_DEVFN(3, 0) && dev &&
+           object_dynamic_cast(OBJECT(dev), "sgi-mace-pio-test");
 }
 
 static uint32_t mace_pci_config_address(SGIMACEState *s, hwaddr offset,
@@ -274,14 +353,24 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
                                          addr & ~3U, 4);
             uint32_t next = (old & ~mask) | (value << shift);
 
-            if (next & 7) {
+            if (mace_pci_onboard_aic(s, addr) && (next & 0xffb8)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace: unsupported AIC PCI COMMAND bits\n");
+                return MEMTX_ERROR;
+            }
+            if ((next & 7) && !mace_pci_onboard_aic(s, addr) &&
+                !(mace_pci_byte_test_card(s, addr) && (next & 7) == 2)) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-mace: PCI BAR and bus-master enables "
                               "require a reviewed address view\n");
                 return MEMTX_ERROR;
             }
         }
-        if (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28) ||
+        if (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28 &&
+             !((mace_pci_onboard_aic(s, addr) &&
+                ((addr & 0xfc) == 0x10 || (addr & 0xfc) == 0x14)) ||
+               (mace_pci_byte_test_card(s, addr) &&
+                (addr & 0xfc) == 0x10))) ||
             (addr & 0xfc) == PCI_ROM_ADDRESS ||
             ((addr & 0xfc) == PCI_ROM_ADDRESS1 &&
              (pci_data_read(PCI_HOST_BRIDGE(s)->bus,
@@ -377,6 +466,122 @@ static const MemoryRegionOps mace_pci_dma_block_ops = {
     .valid.max_access_size = 8,
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
+};
+
+static MemTxResult mace_pci_native_read(void *opaque, hwaddr offset,
+                                        uint64_t *value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result;
+
+    result = address_space_read(&s->pci_ram_as, offset ^ (4 - size), attrs,
+                                bytes, size);
+    *value = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult mace_pci_native_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint8_t bytes[8];
+
+    stn_be_p(bytes, size, value);
+    return address_space_write(&s->pci_ram_as, offset ^ (4 - size), attrs,
+                               bytes, size);
+}
+
+/* The selected O2 approximation reverses bytes within each aligned word. */
+static const MemoryRegionOps mace_pci_native_ops = {
+    .read_with_attrs = mace_pci_native_read,
+    .write_with_attrs = mace_pci_native_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    /* Each callback stays within one naturally aligned word. */
+    .impl.max_access_size = 4,
+};
+
+static bool mace_cpu_pci_access_valid(SGIMACEState *s, hwaddr addr,
+                                      unsigned size, bool is_write,
+                                      MemTxAttrs attrs)
+{
+    hwaddr offset, length = size;
+    MemoryRegion *target;
+
+    if (size != 1 && size != 4) {
+        return false;
+    }
+    /* Reject AIC words before QEMU can split them into byte accesses. */
+    target = address_space_translate(&s->pci_dma_as, addr, &offset,
+                                     &length, is_write, attrs);
+    return length == size &&
+           memory_region_access_valid(target, offset, size, is_write, attrs);
+}
+
+static MemTxResult mace_cpu_pci_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint8_t bytes[4] = { 0 };
+    hwaddr addr = 0x80000000ULL + (size == 1 ? offset ^ 3 : offset);
+    MemTxResult result;
+
+    RCU_READ_LOCK_GUARD();
+    if (!mace_cpu_pci_access_valid(s, addr, size, false, attrs)) {
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    result = address_space_read(&s->pci_dma_as, addr, attrs, bytes, size);
+    *value = size == 1 ? bytes[0] : ldl_be_p(bytes);
+    return result;
+}
+
+static MemTxResult mace_cpu_pci_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    SGIMACEState *s = opaque;
+    uint8_t bytes[4];
+    hwaddr addr = 0x80000000ULL + (size == 1 ? offset ^ 3 : offset);
+
+    RCU_READ_LOCK_GUARD();
+    if (!mace_cpu_pci_access_valid(s, addr, size, true, attrs)) {
+        return MEMTX_ERROR;
+    }
+    if (size == 1) {
+        bytes[0] = value;
+    } else {
+        stl_be_p(bytes, value);
+    }
+    return address_space_write(&s->pci_dma_as, addr, attrs, bytes, size);
+}
+
+static const MemoryRegionOps mace_cpu_pci_ops = {
+    .read_with_attrs = mace_cpu_pci_read,
+    .write_with_attrs = mace_cpu_pci_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+static AddressSpace *mace_pci_dma_address_space(PCIBus *bus, void *opaque,
+                                                int devfn)
+{
+    SGIMACEState *s = opaque;
+
+    return &s->pci_dma_as;
+}
+
+static const PCIIOMMUOps mace_pci_dma_ops = {
+    .get_address_space = mace_pci_dma_address_space,
 };
 
 static void mace_schedule_compare(SGIMACEState *s)
@@ -656,16 +861,34 @@ static void mace_init(Object *obj)
 {
     SGIMACEState *s = SGI_MACE(obj);
 
+    object_property_add_uint8_ptr(obj, "x-test-pci-bus-level",
+                                  &s->pci_bus_level, OBJ_PROP_FLAG_READ);
+
     memory_region_init(&s->aperture, obj, "sgi-mace", MACE_APERTURE_SIZE);
     memory_region_init_io(&s->regs, obj, &mace_ops, s, "sgi-mace-regs",
                           MACE_APERTURE_SIZE);
     memory_region_add_subregion(&s->aperture, 0, &s->regs);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->aperture);
+    memory_region_init(&s->cpu_pci_view, obj, "sgi-mace-cpu-pci-view",
+                       16 * MiB);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->cpu_pci_view);
+    memory_region_init(&s->cpu_pci_high_view, obj,
+                       "sgi-mace-cpu-pci-high-view", 2 * GiB);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->cpu_pci_high_view);
     qdev_init_gpio_out_named(DEVICE(obj), s->crime, "crime", 16);
     qdev_init_gpio_out_named(DEVICE(obj), &s->isa_reset, "isa-reset", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_eth_irq, "eth", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_rtc_irq, "rtc", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_uart_irq, "uart", 2);
     qdev_init_gpio_in_named(DEVICE(obj), mace_pci_wire_irq, "pci", 8);
+    object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
+    memory_region_init(&s->eth_dma, obj, "sgi-mace-eth-dma", 1ULL << 32);
+    object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
+    object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
+    object_property_add_alias(obj, "phy-ics1890", OBJECT(&s->eth),
+                              "phy-ics1890");
+    object_property_add_alias(obj, "phy-address", OBJECT(&s->eth),
+                              "phy-address");
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_DS1685);
     object_initialize_child(obj, "uart-a", &s->uart[0], TYPE_SERIAL);
     object_initialize_child(obj, "uart-b", &s->uart[1], TYPE_SERIAL);
@@ -686,7 +909,98 @@ static void mace_finalize(Object *obj)
 static void mace_realize(DeviceState *dev, Error **errp)
 {
     SGIMACEState *s = SGI_MACE(dev);
+    DeviceState *identity;
     unsigned i;
+
+    if (s->storage_diagnostic_realized) {
+        error_setg(errp, "sgi-mace storage diagnostic cannot be "
+                         "realized again");
+        return;
+    }
+    if (s->ram &&
+        !((memory_region_is_ram(s->ram) &&
+           !memory_region_is_rom(s->ram) &&
+           memory_region_size(s->ram)) ||
+          (!memory_region_is_ram(s->ram) && !s->ram->alias &&
+           !s->ram->terminates && memory_region_size(s->ram) == GiB))) {
+        error_setg(errp, "sgi-mace requires writable RAM or a 1 GiB "
+                         "decoded RAM container for its PCI view");
+        return;
+    }
+    if (s->eth_low_dma_compat &&
+        (!s->ram || memory_region_is_ram(s->ram) || s->ram->alias ||
+         s->ram->terminates || memory_region_size(s->ram) != GiB)) {
+        error_setg(errp, "sgi-mace low Ethernet DMA compatibility requires "
+                         "the O2 decoded 1 GiB RAM container");
+        return;
+    }
+    if (s->aic_pci_diagnostic && !qtest_enabled()) {
+        error_setg(errp, "sgi-mace AIC PCI diagnostic requires QTest");
+        return;
+    }
+    if (s->pio_byte_test &&
+        (!qtest_enabled() || s->aic_pci_diagnostic ||
+         s->o2_storage_diagnostic)) {
+        error_setg(errp, "sgi-mace PIO byte fixture requires QTest and "
+                         "no other PCI diagnostic");
+        return;
+    }
+    if (!s->identity_diagnostic &&
+        (s->identity_test_serial || s->identity_eprom_file ||
+         s->identity_status)) {
+        error_setg(errp, "sgi-mace identity inputs require "
+                         "identity-diagnostic=on");
+        return;
+    }
+    if (s->misc_word_pio && !s->identity_diagnostic) {
+        error_setg(errp, "sgi-mace misc-word-pio requires "
+                         "identity-diagnostic=on");
+        return;
+    }
+    if (s->identity_diagnostic &&
+        (!s->identity_test_serial || !s->identity_eprom_file ||
+         !s->identity_status)) {
+        error_setg(errp, "sgi-mace identity diagnostic requires "
+                         "test-serial, eprom-file and status");
+        return;
+    }
+    if (s->o2_storage_diagnostic &&
+        (!s->storage_diagnostic_authorized ||
+         s->aic_pci_diagnostic || !s->ram ||
+         memory_region_size(s->ram) != GiB || memory_region_is_ram(s->ram))) {
+        error_setg(errp, "sgi-mace storage diagnostic requires the O2 "
+                         "decoded RAM view and machine-owned event sink");
+        return;
+    }
+
+    if (s->ram) {
+        uint64_t size = MIN(memory_region_size(s->ram), 1ULL << 30);
+
+        if (s->eth_low_dma_compat) {
+            memory_region_init_alias(&s->eth_low_ram, OBJECT(dev),
+                                     "sgi-mace-eth-low-ram", s->ram, 0,
+                                     256 * MiB);
+            memory_region_add_subregion(&s->eth_dma, 0, &s->eth_low_ram);
+        }
+        memory_region_init_alias(&s->eth_full_ram, OBJECT(dev),
+                                 "sgi-mace-eth-full-ram", s->ram, 0, size);
+        memory_region_init_alias(&s->eth_no_ecc_ram, OBJECT(dev),
+                                 "sgi-mace-eth-no-ecc-ram", s->ram, 0, size);
+        memory_region_add_subregion(&s->eth_dma, 0x40000000,
+                                    &s->eth_full_ram);
+        memory_region_add_subregion(&s->eth_dma, 0x80000000,
+                                    &s->eth_no_ecc_ram);
+    }
+    object_property_set_link(OBJECT(&s->eth), "dma-memory",
+                             OBJECT(&s->eth_dma), &error_abort);
+    qemu_configure_nic_device(DEVICE(&s->eth), true, NULL);
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->eth), errp)) {
+        return;
+    }
+    memory_region_add_subregion_overlap(&s->aperture, MACE_ETH_BASE,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->eth), 0), 1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->eth), 0,
+                       qdev_get_gpio_in_named(dev, "eth", 0));
 
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->rtc), errp)) {
         return;
@@ -733,11 +1047,87 @@ static void mace_realize(DeviceState *dev, Error **errp)
                                         &s->pci_mem_block, 2);
     memory_region_add_subregion_overlap(&s->pci_io, 0,
                                         &s->pci_io_block, 2);
+    if (s->ram && !s->aic_pci_diagnostic) {
+        uint64_t size = MIN(memory_region_size(s->ram), 1ULL << 30);
+
+        if (s->pci_native_word_swap) {
+            address_space_init(&s->pci_ram_as, s->ram, "sgi-mace-pci-ram");
+            memory_region_init_io(&s->pci_native_ram, OBJECT(dev),
+                                  &mace_pci_native_ops, s,
+                                  "sgi-mace-pci-native-ram", size);
+            /* CPU PIO through MACE can synchronously start PCI DMA. */
+            s->pci_native_ram.disable_reentrancy_guard = true;
+        } else {
+            memory_region_init_alias(&s->pci_native_ram, OBJECT(dev),
+                                     "sgi-mace-pci-native-ram", s->ram, 0,
+                                     size);
+        }
+        memory_region_add_subregion_overlap(&s->pci_memory, 0x40000000,
+                                            &s->pci_native_ram, 3);
+        if (s->pci_native_word_swap || s->o2_storage_diagnostic) {
+            /* The lower view remains a byte-identity approximation. */
+            memory_region_init_alias(&s->pci_lower_ram, OBJECT(dev),
+                                     "sgi-mace-pci-lower-ram", s->ram, 0,
+                                     size);
+            memory_region_add_subregion_overlap(&s->pci_memory, 0,
+                                                &s->pci_lower_ram, 3);
+        }
+    }
+    address_space_init(&s->pci_dma_as, &s->pci_memory, "sgi-mace-pci-dma");
+    if (s->aic_pci_diagnostic) {
+        memory_region_init_alias(&s->cpu_pci_alias, OBJECT(dev),
+                                 "sgi-mace-cpu-pci-alias", &s->pci_memory,
+                                 0x80000000, 8 * KiB);
+        memory_region_add_subregion(&s->cpu_pci_view, 0,
+                                    &s->cpu_pci_alias);
+    }
+    if (!s->aic_pci_diagnostic) {
+        memory_region_init_io(&s->cpu_pci_pio_low, OBJECT(dev),
+                              &mace_cpu_pci_ops, s, "sgi-mace-cpu-pci-pio-low",
+                              16 * MiB);
+        memory_region_add_subregion(&s->cpu_pci_view, 0,
+                                    &s->cpu_pci_pio_low);
+        memory_region_init_io(&s->cpu_pci_pio_high, OBJECT(dev),
+                              &mace_cpu_pci_ops, s, "sgi-mace-cpu-pci-pio-high",
+                              2 * GiB);
+        memory_region_add_subregion(&s->cpu_pci_high_view, 0,
+                                    &s->cpu_pci_pio_high);
+    }
+    if (s->o2_storage_diagnostic) {
+        s->storage_diagnostic_realized = true;
+    }
     PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, "mace.0",
         mace_pci_set_irq, mace_pci_map_irq, s,
         &s->pci_memory, &s->pci_io, PCI_DEVFN(0, 0), 9, TYPE_PCI_BUS);
-    pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
-                                   ~((1U << 1) | (1U << 2) | (1U << 3)));
+    pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &mace_pci_dma_ops, s);
+    if (s->o2_storage_diagnostic) {
+        /* Only the two onboard AIC slots are available in this mode. */
+        pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
+                                       ~((1U << 1) | (1U << 2)));
+    } else if (s->pio_byte_test) {
+        pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
+                                       ~(1U << 3));
+    } else {
+        pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
+                                       ~((1U << 1) | (1U << 2) | (1U << 3)));
+    }
+    identity = qdev_new(TYPE_SGI_MACE_ID);
+    object_property_add_child(OBJECT(dev), "identity", OBJECT(identity));
+    qdev_prop_set_bit(identity, "no-responder", !s->identity_diagnostic);
+    if (s->identity_diagnostic) {
+        qdev_prop_set_string(identity, "test-serial", s->identity_test_serial);
+        qdev_prop_set_string(identity, "eprom-file", s->identity_eprom_file);
+        qdev_prop_set_string(identity, "status", s->identity_status);
+    }
+    qdev_prop_set_bit(identity, "misc-word-pio", s->misc_word_pio);
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(identity), errp)) {
+        object_unparent(OBJECT(identity));
+        return;
+    }
+    s->identity = identity;
+    qdev_pass_gpios(identity, dev, "flash-write-enable");
+    memory_region_add_subregion_overlap(&s->aperture, MACE_ID_BASE,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(identity), 0), 1);
 }
 
 static void mace_unrealize(DeviceState *dev)
@@ -748,7 +1138,53 @@ static void mace_unrealize(DeviceState *dev)
         pci_unregister_root_bus(phb->bus);
         phb->bus = NULL;
     }
+    if (SGI_MACE(dev)->identity) {
+        DeviceState *identity = SGI_MACE(dev)->identity;
+
+        memory_region_del_subregion(&SGI_MACE(dev)->aperture,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(identity), 0));
+        qdev_unrealize(identity);
+        object_unparent(OBJECT(identity));
+        SGI_MACE(dev)->identity = NULL;
+    }
+    address_space_destroy(&SGI_MACE(dev)->pci_dma_as);
+    if (SGI_MACE(dev)->ram && !SGI_MACE(dev)->aic_pci_diagnostic &&
+        SGI_MACE(dev)->pci_native_word_swap) {
+        address_space_destroy(&SGI_MACE(dev)->pci_ram_as);
+    }
+    if (SGI_MACE(dev)->aic_pci_diagnostic) {
+        memory_region_del_subregion(&SGI_MACE(dev)->cpu_pci_view,
+                                    &SGI_MACE(dev)->cpu_pci_alias);
+    }
+    if (!SGI_MACE(dev)->aic_pci_diagnostic) {
+        memory_region_del_subregion(&SGI_MACE(dev)->cpu_pci_view,
+                                    &SGI_MACE(dev)->cpu_pci_pio_low);
+        memory_region_del_subregion(&SGI_MACE(dev)->cpu_pci_high_view,
+                                    &SGI_MACE(dev)->cpu_pci_pio_high);
+    }
 }
+
+static const Property mace_properties[] = {
+    DEFINE_PROP_LINK("ram", SGIMACEState, ram, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
+    DEFINE_PROP_BOOL("aic-pci-diagnostic", SGIMACEState,
+                     aic_pci_diagnostic, false),
+    DEFINE_PROP_BOOL("o2-storage-diagnostic", SGIMACEState,
+                     o2_storage_diagnostic, false),
+    DEFINE_PROP_BOOL("pci-native-word-swap", SGIMACEState,
+                     pci_native_word_swap, false),
+    DEFINE_PROP_BOOL("pio-byte-test", SGIMACEState, pio_byte_test, false),
+    DEFINE_PROP_BOOL("identity-diagnostic", SGIMACEState,
+                     identity_diagnostic, false),
+    DEFINE_PROP_BOOL("misc-word-pio", SGIMACEState, misc_word_pio, false),
+    DEFINE_PROP_BOOL("mace-eth-low-dma-compat", SGIMACEState,
+                     eth_low_dma_compat, false),
+    DEFINE_PROP_STRING("identity-test-serial", SGIMACEState,
+                       identity_test_serial),
+    DEFINE_PROP_STRING("identity-eprom-file", SGIMACEState,
+                       identity_eprom_file),
+    DEFINE_PROP_STRING("identity-status", SGIMACEState, identity_status),
+};
 
 static void mace_class_init(ObjectClass *oc, const void *data)
 {
@@ -760,6 +1196,7 @@ static void mace_class_init(ObjectClass *oc, const void *data)
     dc->unrealize = mace_unrealize;
     dc->user_creatable = true;
     dc->vmsd = &vmstate_mace;
+    device_class_set_props(dc, mace_properties);
     rc->phases.hold = mace_reset_hold;
 }
 

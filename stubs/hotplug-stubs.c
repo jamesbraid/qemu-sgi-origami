@@ -13,10 +13,20 @@
  */
 #include "qemu/osdep.h"
 #include "hw/core/qdev.h"
+#include "qapi/error.h"
 
 const HotplugHandler *qdev_get_hotplug_handler(DeviceState *dev)
 {
     return NULL;
+}
+
+bool qdev_hotunplug_allowed(DeviceState *dev, Error **errp)
+{
+    if (dev->unplug_blockers) {
+        error_propagate(errp, error_copy(dev->unplug_blockers->data));
+        return false;
+    }
+    return true;
 }
 
 void hotplug_handler_pre_plug(const HotplugHandler *plug_handler,

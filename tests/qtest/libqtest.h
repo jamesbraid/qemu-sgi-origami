@@ -857,6 +857,15 @@ int64_t qtest_clock_step(QTestState *s, int64_t step);
 int64_t qtest_clock_set(QTestState *s, int64_t val);
 
 /**
+ * qtest_clock_timers:
+ * @s: #QTestState instance to operate on.
+ * @enabled: Whether virtual timer callbacks may run.
+ *
+ * Hold virtual timer callbacks while qtest advances virtual time.
+ */
+void qtest_clock_timers(QTestState *s, bool enabled);
+
+/**
  * qtest_big_endian:
  * @s: QTestState instance to operate on.
  *

@@ -10,6 +10,8 @@
 
 #define MEMTX_TEST_DEVICE " -device memory-transaction-test,id=memtx "
 #define MEMTX_TEST_PATH "/machine/peripheral/memtx"
+/* Synthetic device access to the global address space, not a bus IOMMU. */
+#define MEMTX_DMA_AS -2
 
 /* Raw bytes, including failed-read data; no translated CPU-load semantics. */
 static inline MemTxResult memtx_transaction(QTestState *qts, int cpu,
