@@ -338,6 +338,7 @@ struct SGIOdysseyState {
     uint8_t *overlay;
     bool gl_aux_reported;
     bool aux_mask_reported;
+    bool aux_image_reported;
 
     /*
      * The command-FIFO interpreter (0x110000), reused across successive
