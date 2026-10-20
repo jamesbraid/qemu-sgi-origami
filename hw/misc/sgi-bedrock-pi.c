@@ -275,13 +275,68 @@ void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
     sgi_bedrock_pi_recompute(s);
 }
 
+#define PI_LEVEL_REARM_NS 1000000
+
+static void pi_level_rearm(void *opaque)
+{
+    SGIBedrockPIState *s = opaque;
+    uint64_t active[2] = { 0 };
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t next = INT64_MAX;
+
+    for (unsigned source = 0; source < SGI_BEDROCK_PI_LEVEL_SOURCES; source++) {
+        unsigned encoded = s->level_source[source];
+
+        if (encoded) {
+            unsigned level = encoded - 1;
+
+            active[level / 64] |= UINT64_C(1) << (level % 64);
+        }
+    }
+    for (unsigned level = 7; level < SGI_BEDROCK_PI_INTERRUPT_LEVELS;
+         level++) {
+        int64_t due = s->level_rearm_due[level];
+        uint64_t bit = UINT64_C(1) << (level % 64);
+
+        if (!due) {
+            continue;
+        }
+        if (due > now) {
+            next = MIN(next, due);
+            continue;
+        }
+        s->level_rearm_due[level] = 0;
+        s->pending[level / 64] |= active[level / 64] & bit;
+    }
+    if (next != INT64_MAX) {
+        timer_mod_ns(s->level_rearm_timer, next);
+    }
+    sgi_bedrock_pi_recompute(s);
+}
+
+void sgi_bedrock_pi_set_level_source(SGIBedrockPIState *s, unsigned source,
+                                     unsigned level, bool active)
+{
+    uint8_t encoded;
+
+    if (source >= SGI_BEDROCK_PI_LEVEL_SOURCES ||
+        (active && (level < 7 || level > 127))) {
+        return;
+    }
+    encoded = active ? level + 1 : 0;
+    if (s->level_source[source] != encoded) {
+        s->level_source[source] = encoded;
+    }
+    sgi_bedrock_pi_recompute(s);
+}
+
 void sgi_bedrock_pi_set_memory_uncorrectable(SGIBedrockPIState *s)
 {
     s->error_pending |= PI_ERROR_MEMORY_UNCORRECTABLE;
     sgi_bedrock_pi_recompute(s);
 }
 
-static void pi_modify(SGIBedrockPIState *s, uint64_t value)
+static void pi_modify(SGIBedrockPIState *s, uint64_t value, bool reissue)
 {
     unsigned bank = (value >> 6) & 1;
     unsigned bit = value & 0x3f;
@@ -294,6 +349,25 @@ static void pi_modify(SGIBedrockPIState *s, uint64_t value)
         s->pending[bank] |= bitmask;
     } else {
         s->pending[bank] &= ~bitmask;
+        if (reissue) {
+            for (unsigned source = 0; source < SGI_BEDROCK_PI_LEVEL_SOURCES;
+                 source++) {
+                unsigned source_level = s->level_source[source];
+
+                if (source_level && source_level - 1 == bank * 64 + bit) {
+                    unsigned level = bank * 64 + bit;
+                    int64_t due = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                  PI_LEVEL_REARM_NS;
+
+                    s->level_rearm_due[level] = due;
+                    if (!timer_pending(s->level_rearm_timer) ||
+                        timer_expire_time_ns(s->level_rearm_timer) > due) {
+                        timer_mod_ns(s->level_rearm_timer, due);
+                    }
+                    break;
+                }
+            }
+        }
     }
     sgi_bedrock_pi_recompute(s);
 }
@@ -307,7 +381,7 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
                       value, region);
         return false;
     }
-    pi_modify(s, value);
+    pi_modify(s, value, false);
     if (trace_event_get_state_backends(TRACE_SGI_BEDROCK_PI_IO_MODIFY)) {
         trace_sgi_bedrock_pi_io_modify(
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->interface, region,
@@ -542,7 +616,7 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_PENDING_MODIFY:
     case PI_PENDING_ALIAS:
-        pi_modify(s, value);
+        pi_modify(s, value, true);
         if (trace_event_get_state_backends(
                 TRACE_SGI_BEDROCK_PI_PENDING_MODIFY)) {
             trace_sgi_bedrock_pi_pending_modify(
@@ -791,6 +865,8 @@ static void pi_reset_enter(Object *obj, ResetType type)
 
     s->pending[0] = 0;
     s->pending[1] = 0;
+    memset(s->level_source, 0, sizeof(s->level_source));
+    memset(s->level_rearm_due, 0, sizeof(s->level_rearm_due));
     sgi_pi_gfx_reset(&s->gfx);
     s->gfx_credit_mode = 0;
     memset(s->cc_pend, 0, sizeof(s->cc_pend));
@@ -815,6 +891,7 @@ static void pi_reset_enter(Object *obj, ResetType type)
     timer_del(s->rt_timer[0]);
     timer_del(s->rt_timer[1]);
     timer_del(s->profile_timer);
+    timer_del(s->level_rearm_timer);
     memset(s->rt_timer_match, 0, sizeof(s->rt_timer_match));
 }
 
@@ -889,6 +966,10 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT32(rq_timeout_scale, SGIBedrockPIState),
         VMSTATE_UINT8_ARRAY(cpu_enable, SGIBedrockPIState, 2),
         VMSTATE_UINT64_ARRAY(pending, SGIBedrockPIState, 2),
+        VMSTATE_UINT8_ARRAY(level_source, SGIBedrockPIState,
+                            SGI_BEDROCK_PI_LEVEL_SOURCES),
+        VMSTATE_INT64_ARRAY(level_rearm_due, SGIBedrockPIState,
+                            SGI_BEDROCK_PI_INTERRUPT_LEVELS),
         VMSTATE_UINT64_ARRAY(cc_pend, SGIBedrockPIState, 2),
         VMSTATE_UINT64(cc_pend_mask, SGIBedrockPIState),
         VMSTATE_UINT64_2DARRAY(mask, SGIBedrockPIState, 2, 2),
@@ -915,6 +996,7 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT8_ARRAY(profile_enable, SGIBedrockPIState, 2),
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIBedrockPIState, 2),
         VMSTATE_TIMER_PTR(profile_timer, SGIBedrockPIState),
+        VMSTATE_TIMER_PTR(level_rearm_timer, SGIBedrockPIState),
         VMSTATE_BOOL_ARRAY(rt_timer_match, SGIBedrockPIState, 2),
         VMSTATE_STRUCT(gfx, SGIBedrockPIState, 0, vmstate_sgi_pi_gfx, SGIPIGfx),
         VMSTATE_UINT8(gfx_credit_mode, SGIBedrockPIState),
@@ -961,6 +1043,7 @@ static void pi_init(Object *obj)
                                         &s->rt_line[cpu]);
     }
     s->profile_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_profile_expire, s);
+    s->level_rearm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_level_rearm, s);
     memory_region_init_io(&s->mmio, obj, &pi_ops, s, TYPE_SGI_BEDROCK_PI,
                           SGI_BEDROCK_PI_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -979,6 +1062,7 @@ static void pi_finalize(Object *obj)
     timer_free(s->rt_timer[0]);
     timer_free(s->rt_timer[1]);
     timer_free(s->profile_timer);
+    timer_free(s->level_rearm_timer);
 }
 
 static void pi_class_init(ObjectClass *klass, const void *data)

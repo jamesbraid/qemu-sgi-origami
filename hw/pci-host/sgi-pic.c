@@ -10,6 +10,7 @@
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "hw/misc/sgi-xbow.h"
+#include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/pci/pci.h"
@@ -166,6 +167,8 @@ struct SGIPICState {
     uint8_t pxbow_pic_widget;
     uint8_t pxbow_revision;
     uint8_t req64_slots[2];
+    SGIBedrockPIState *bedrock_pi[2];
+    unsigned bedrock_source_base;
     SGIModelPicCompatibilityProfile compatibility_profile;
     bool peer_connected;
     bool widget_as_initialized;
@@ -900,7 +903,7 @@ static bool pic_access_valid(void *opaque, hwaddr addr, unsigned size,
     return !(addr & (size - 1));
 }
 
-static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
+static bool pic_packet(SGIPICHead *s, unsigned pin, bool set)
 {
     uint64_t destination = REG(s, 0x130 + pin * 8);
     uint16_t level = destination >> 48;
@@ -922,7 +925,7 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u pin %u rejected Bedrock interrupt "
                       "level 0x%x\n", s->head, pin, level);
-        return;
+        return false;
     }
     qemu_log_mask(LOG_UNIMP,
                   "sgi-pic: head %u pin %u %s request destination 0x%"
@@ -963,6 +966,40 @@ trace_result:
         trace_sgi_pic_interrupt_packet(
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->head, pin, set,
             destination, packet_value, result);
+    }
+    return result == MEMTX_OK;
+}
+
+static void pic_update_level_source(SGIPICHead *s, unsigned pin,
+                                    bool packet_delivered)
+{
+    uint64_t destination = REG(s, 0x130 + pin * 8);
+    unsigned level = destination >> 48;
+    unsigned pi_index = (destination & (UINT64_C(1) << 21)) ? 1 : 0;
+    bool active = packet_delivered && (s->pins & (1U << pin)) &&
+                  (REG(s, 0x108) & (1U << pin)) &&
+                  level >= 7 && level <= 127;
+    unsigned source = s->pic->bedrock_source_base +
+                      s->head * PIC_PIN_COUNT + pin;
+
+    if (!pic_uses_runtime_profile(s->pic)) {
+        return;
+    }
+    for (unsigned pi = 0; pi < ARRAY_SIZE(s->pic->bedrock_pi); pi++) {
+        if (s->pic->bedrock_pi[pi]) {
+            sgi_bedrock_pi_set_level_source(s->pic->bedrock_pi[pi], source,
+                                             level, active && pi == pi_index);
+        }
+    }
+}
+
+void sgi_pic_set_bedrock_pi(SGIPICState *s, unsigned pi,
+                            SGIBedrockPIState *bedrock_pi,
+                            unsigned source_base)
+{
+    s->bedrock_source_base = source_base;
+    if (pi < ARRAY_SIZE(s->bedrock_pi)) {
+        s->bedrock_pi[pi] = bedrock_pi;
     }
 }
 
@@ -1131,7 +1168,11 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         REG(s, 0x108) = value;
         for (pin = 0; pin < PIC_PIN_COUNT; pin++) {
             if ((newly_enabled & REG(s, 0x100) & s->pins) & (1U << pin)) {
-                pic_packet(s, pin, true);
+                bool delivered = pic_packet(s, pin, true);
+
+                pic_update_level_source(s, pin, delivered);
+            } else if (!(value & (1U << pin))) {
+                pic_update_level_source(s, pin, false);
             }
         }
         if (trace) {
@@ -1144,7 +1185,9 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         REG(s, 0x100) |= s->pins;
         for (unsigned pin = 0; pin < PIC_PIN_COUNT; pin++) {
             if ((value & s->pins & REG(s, 0x108)) & (1U << pin)) {
-                pic_packet(s, pin, true);
+                bool delivered = pic_packet(s, pin, true);
+
+                pic_update_level_source(s, pin, delivered);
             }
         }
         if (trace) {
@@ -1173,6 +1216,9 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
                      (1U << 12) | (1U << 22) | 0xfff;
         }
         REG(s, addr) = value;
+        if (addr >= 0x130 && addr <= 0x168) {
+            pic_update_level_source(s, (addr - 0x130) / 8, false);
+        }
         if (trace) {
             trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
         }
@@ -1484,6 +1530,9 @@ static void pic_set_pin(void *opaque, int pin, int level)
     bool was_high = s->pins & bit;
 
     s->pins = (s->pins & ~bit) | (level ? bit : 0);
+    if (!level) {
+        pic_update_level_source(s, pin, false);
+    }
     if (trace_event_get_state_backends(TRACE_SGI_PIC_PIN)) {
         trace_sgi_pic_pin(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), s->head,
                           pin, level, s->pins);
@@ -1492,7 +1541,9 @@ static void pic_set_pin(void *opaque, int pin, int level)
         REG(s, 0x100) |= bit;
     }
     if (!was_high && level && (REG(s, 0x108) & bit)) {
-        pic_packet(s, pin, true);
+        bool delivered = pic_packet(s, pin, true);
+
+        pic_update_level_source(s, pin, delivered);
     }
     if (was_high && !level && (REG(s, 0x118) & bit)) {
         pic_packet(s, pin, false);
@@ -1506,6 +1557,9 @@ static void pic_head_reset_hold(Object *obj, ResetType type)
     memset(s->reg, 0, sizeof(s->reg));
     memset(s->req, 0, sizeof(s->req));
     s->pins = 0;
+    for (unsigned pin = 0; pin < PIC_PIN_COUNT; pin++) {
+        pic_update_level_source(s, pin, false);
+    }
     s->unsupported_logs = 0;
     memset(s->set_requests, 0, sizeof(s->set_requests));
     memset(s->clear_requests, 0, sizeof(s->clear_requests));
