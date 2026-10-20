@@ -9010,6 +9010,34 @@ static void test_context_save_zero_vertex_primitive(void)
     board_quit(qts);
 }
 
+/*
+ * Bit 11 of an open triangle strip's pipe state says its next triangle is
+ * odd: set after 3 and 5 vertices, clear after 2 and 4. The GL library's
+ * near-plane workaround reads it to replay the held vertices in order.
+ */
+static void test_context_save_strip_parity(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+
+    for (unsigned n = 2; n <= 5; n++) {
+        QTestState *qts = shadow_start("");
+
+        user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+        user_cmd_push(qts, 5);
+        for (unsigned i = 0; i < n; i++) {
+            user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+            user_cmd_push(qts, (i & 1) ? 0x3f000000 : 0xbf000000);
+            user_cmd_push(qts, i << 22);
+        }
+        qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                     ODSY_CTX_SWITCH_TO_1);
+        g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE) &
+                        ((1u << 11) | 0xf), ==,
+                        (n & 1 ? 1u << 11 : 0) | 5);
+        board_quit(qts);
+    }
+}
+
 static void test_context_restart_one_vertex_strip(void)
 {
     const uint64_t p = ODSY_SHADOW_PAGE;
@@ -20449,6 +20477,8 @@ int main(int argc, char **argv)
                    test_context_save_unrecorded_attributes);
     add_fresh_case("sn1/odyssey/context-save-zero-vertex-primitive",
                    test_context_save_zero_vertex_primitive);
+    add_fresh_case("sn1/odyssey/context-save-strip-parity",
+                   test_context_save_strip_parity);
     add_fresh_case("sn1/odyssey/context-restart-one-vertex-strip",
                    test_context_restart_one_vertex_strip);
     add_fresh_case("sn1/odyssey/context-restart-quad-strip-after-wrap",
