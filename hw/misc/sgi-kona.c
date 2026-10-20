@@ -9844,22 +9844,6 @@ static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
     return !memcmp(gc + 6, form, sizeof(form));
 }
 
-/* A bank-1 window hides bank 0 from indexed desktop reads. */
-static bool sgi_kona_x_read_hidden(SGIKonaState *s, int64_t x, int64_t y,
-                                  int64_t width, int64_t height)
-{
-    SGIClipRect r;
-
-    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
-        if (sgi_kona_bank1_window(s, i, &r) &&
-            x <= r.x1 && x + width > r.x0 &&
-            y <= r.y1 && y + height > r.y0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /* Public index values use tightly packed rows; source words stay native. */
 static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                                     uint32_t limit, uint8_t **out_data,
@@ -9878,7 +9862,6 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                       setup[SGI_KONA_X_SETUP_SHIFT] == 0) ? 4 : 0;
     bool fb_word = bytes == 4 && setup[SGI_KONA_X_SETUP_SHIFT] == 0;
     uint64_t pitch = width * bytes;
-    int64_t plane_y;
     const char *reason;
     g_autofree uint8_t *data = NULL;
 
@@ -9905,12 +9888,14 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
     } else if (pitch > limit || height > limit / pitch) {
         reason = "payload exceeds the transport capacity";
     } else {
-        plane_y = SGI_KONA_FB_HEIGHT - y - height;
-        if (sgi_kona_x_read_hidden(s, x, plane_y, width, height)) {
-            reason = "bank 0 hidden by a displayed bank-1 window";
-            goto refused;
-        }
-        /* Check every source before writing any part of the reply. */
+        /*
+         * Check every source before writing any part of the reply. A pixel
+         * the display shows from bank 1 (see sgi_kona_displayed_bank()) is
+         * not the bank this read answers from. A window's rectangle alone
+         * does not hide bank 0: where another window covers it, or where
+         * its client died and the X server repainted its display IDs, bank
+         * 0 is what shows.
+         */
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
                 int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
@@ -9922,6 +9907,10 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
 
                 bool rgb = bytes == 4 && !fb_word;
 
+                if (sgi_kona_displayed_bank(s, x + c, py)) {
+                    reason = "bank 0 hidden by a displayed bank-1 window";
+                    goto refused;
+                }
                 if (tag != (rgb ? SGI_KONA_TAG_DIRECT :
                                   SGI_KONA_TAG_X_INDEX16) ||
                     word > (rgb ? 0xffffff : 0xffff)) {
