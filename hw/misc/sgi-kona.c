@@ -1603,6 +1603,16 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
             s->x_pixel_remaining = 0;
             s->x_write_refused = true;
         }
+        if ((s->x_boxes_have || s->x_clip_run_have) &&
+            s->x_run_owner == slot) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: context %d started"
+                          " afresh with an X data run of %" PRIu32
+                          " words open; the run is dropped\n", slot,
+                          s->x_boxes_have + s->x_clip_run_have);
+            sgi_kona_x_read_invalidate(s);
+            s->x_boxes_have = 0;
+            s->x_clip_run_have = 0;
+        }
         /* Rendering and return writes are synchronous under the big lock. */
         sgi_kona_renderer_stop(s);
         sgi_kona_state_free(s->state[slot]);
@@ -9286,10 +9296,45 @@ static void sgi_kona_x_load_position(SGIKonaState *s, const uint32_t *args)
     trace_sgi_kona_x_position(args[0], args[1], args[2], args[3]);
 }
 
+/*
+ * Whether a word that would end the waiting X data or clip-list run
+ * leaves it in place instead: the kernel's privileged words, and the
+ * words of a context other than the run's owner. The run is part of the
+ * X server's command, as an X pixel write's rows are, so a context
+ * switch the kernel makes between two of the X server's commands, and
+ * whatever another context sends while switched in, leave it for the X
+ * server's next command (inferred: the pipe keeps a context's open
+ * command with the context, see sgi_kona_input_save()). A run begun with
+ * no context current has no owner and ends at any such word, as before.
+ */
+static bool sgi_kona_x_run_held(SGIKonaState *s, uint32_t next)
+{
+    uint32_t words = s->x_boxes_have + s->x_clip_run_have;
+
+    if (!words ||
+        (!s->kernel_input &&
+         (s->x_run_owner == SGI_KONA_CONTEXT_NONE ||
+          s->x_run_owner == s->context_current))) {
+        return false;
+    }
+    trace_sgi_kona_x_run_held(words, next, s->x_run_owner);
+    return true;
+}
+
+/* The current context starts an X data or clip-list run. */
+static void sgi_kona_x_run_begin(SGIKonaState *s)
+{
+    if (!s->x_boxes_have && !s->x_clip_run_have) {
+        s->x_run_owner = s->context_current;
+        s->x_run_owner_generation =
+            sgi_kona_context_generation(s, s->context_current);
+    }
+}
+
 /* A clip list's words ended by something other than X load clip. */
 static void sgi_kona_x_clip_run_drop(SGIKonaState *s, uint32_t next)
 {
-    if (s->x_clip_run_have) {
+    if (s->x_clip_run_have && !sgi_kona_x_run_held(s, next)) {
         sgi_kona_x_read_invalidate(s);
         trace_sgi_kona_x_clip_run_dropped(s->x_clip_run_have, next);
         s->x_clip_run_have = 0;
@@ -9310,6 +9355,7 @@ static void sgi_kona_x_clip_data(SGIKonaState *s, const uint32_t *args)
         sgi_kona_x_clip_run_drop(s, SGI_KONA_CMD_X_BDATA4);
         return;
     }
+    sgi_kona_x_run_begin(s);
     memcpy(s->x_clip_run + s->x_clip_run_have, args,
            SGI_KONA_X_BDATA4_WORDS * sizeof(*args));
     s->x_clip_run_have += SGI_KONA_X_BDATA4_WORDS;
@@ -9884,14 +9930,18 @@ static void sgi_kona_x_box_data(SGIKonaState *s, uint32_t token,
         s->x_boxes_have = 0;
         return;
     }
+    sgi_kona_x_run_begin(s);
     memcpy(s->x_boxes + s->x_boxes_have, args, argc * sizeof(*args));
     s->x_boxes_have += argc;
 }
 
-/* A run of data tokens ended by something other than an X box or rect. */
+/*
+ * A run of data tokens ended by something other than an X box or rect,
+ * unless the word leaves it in place (sgi_kona_x_run_held()).
+ */
 static void sgi_kona_x_box_data_drop(SGIKonaState *s, uint32_t next)
 {
-    if (s->x_boxes_have) {
+    if (s->x_boxes_have && !sgi_kona_x_run_held(s, next)) {
         sgi_kona_x_read_invalidate(s);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: X data run of %u words dropped before 0x%x\n",
@@ -14339,6 +14389,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(s->x_clip_rects, 0, sizeof(s->x_clip_rects));
     memset(s->x_clip_run, 0, sizeof(s->x_clip_run));
     s->x_clip_run_have = 0;
+    s->x_run_owner = SGI_KONA_CONTEXT_NONE;
+    s->x_run_owner_generation = 0;
     s->x_scissor_valid = false;
     memset(s->x_scissor, 0, sizeof(s->x_scissor));
     memset(s->x_stipple_width, 0, sizeof(s->x_stipple_width));
@@ -15044,6 +15096,40 @@ static const VMStateDescription vmstate_sgi_kona_x_pixel_owner = {
     .fields = (const VMStateField[]) {
         VMSTATE_INT32(x_pixel_owner, SGIKonaState),
         VMSTATE_UINT64(x_pixel_owner_generation, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The owner of an X data or clip-list run, while its words wait. */
+static bool sgi_kona_x_run_owner_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->x_boxes_have || s->x_clip_run_have;
+}
+
+static int sgi_kona_x_run_owner_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (s->x_run_owner != SGI_KONA_CONTEXT_NONE &&
+        (s->x_run_owner < 0 || s->x_run_owner >= SGI_KONA_CONTEXTS ||
+         !sgi_kona_context_owner(s, s->x_run_owner,
+                                 s->x_run_owner_generation))) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_x_run_owner = {
+    .name = TYPE_SGI_KONA "/x-run-owner",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_x_run_owner_needed,
+    .post_load = sgi_kona_x_run_owner_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(x_run_owner, SGIKonaState),
+        VMSTATE_UINT64(x_run_owner_generation, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -17307,6 +17393,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_bracket,
         &vmstate_sgi_kona_saved_input,
         &vmstate_sgi_kona_x_pixel_owner,
+        &vmstate_sgi_kona_x_run_owner,
         &vmstate_sgi_kona_retrace,
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,

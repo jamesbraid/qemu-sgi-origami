@@ -900,6 +900,184 @@ static void test_x_command_split_by_switch(void)
 }
 
 /*
+ * The X server's data tokens hold rectangles for the X rect that ends
+ * the run, and the kernel can switch the X server out between the two:
+ * the traced distort run sent X data4, then the kernel's 0x1fc, a GL
+ * context's commands, the X server's restore and the X rect. Each of the
+ * three rectangles is drawn once the rect arrives, with nothing dropped.
+ * A run_x_data_split() with `migrate` set moves the machine while B is
+ * current and A's run waits, and the destination finishes it.
+ */
+static const uint32_t x_run_data[] = {
+    0x000a0014, 0x001e0028, 0x0032003c, 0x00070008,
+};
+static const uint32_t x_run_rect[] = { 0x00640064, 0x00050006 };
+
+/* The X initialise and a solid fill GC of index 0x3c, as the fill tests. */
+static void x_run_setup(QTestState *s)
+{
+    static const uint32_t gc[13] = {
+        0x3c000, 0x1ffe, 0, 0, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+
+    x_initialise(s, 1280);
+    kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
+}
+
+static void assert_x_run_drawn(const char *found)
+{
+    g_assert_null(strstr(found, "X data run of"));
+    g_assert_null(strstr(found, "box words dropped"));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_rect (10, 20) width 30"
+                                   " height 40 "));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_rect (50, 60) width 7"
+                                   " height 8 "));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_rect (100, 100) width 5"
+                                   " height 6 "));
+}
+
+static void test_x_data_run_survives_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_run_setup(s);
+    kona_command(s, 0x144, x_run_data, ARRAY_SIZE(x_run_data));
+    context_deactivate(s, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    guest_fill_word(s, REASON_PAGE, 0);
+    context_deactivate(s, 2);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x101);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x152, x_run_rect, ARRAY_SIZE(x_run_rect));
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_run_held 4 X run words kept"
+                                   " past 0x1fc for context 0\n"));
+    assert_x_run_drawn(found);
+}
+
+/* A clip list split the same way loads whole when its X load clip comes. */
+static void test_x_clip_run_survives_other_context(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_initialise(s, 1280);
+    /* Two rectangles: the count and the first in X bdata4, the rest. */
+    kona_command(s, 0x145, (uint32_t[]){ 2, 0, 0, 10 }, 4);
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(s, 2);
+    context_restore_physical(s, SAVE_A);
+    kona_command(s, 0x12b, (uint32_t[]){ 10, 20, 20, 40, 40 }, 5);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "clip list words dropped"));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_clip rectangles 2 last"
+                                   " (20, 20) to (40, 40)\n"));
+}
+
+/*
+ * The owner's own non-X command still ends its run, as before; and a
+ * context started afresh in the owner's table entry drops the run it
+ * left, logged, rather than handing it to the new context.
+ */
+static void test_x_data_run_owner_rules(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_run_setup(s);
+    kona_command(s, 0x144, x_run_data, ARRAY_SIZE(x_run_data));
+    kona_command(s, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    kona_command(s, 0x144, x_run_data, ARRAY_SIZE(x_run_data));
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x152, x_run_rect, ARRAY_SIZE(x_run_rect));
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "X data run of 4 words dropped before"
+                                   " 0x177\n"));
+    g_assert_nonnull(strstr(found, "started afresh with an X data run of 4"
+                                   " words open; the run is dropped\n"));
+    g_assert_null(strstr(found, "sgi_kona_x_rect (10, 20) "));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_rect (100, 100) width 5"
+                                   " height 6 "));
+}
+
+/* The waiting run and its owner migrate with B current. */
+static void test_migration_of_x_data_run(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = kona_init_logged_args(dest_args, &log);
+
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    x_run_setup(from);
+    kona_command(from, 0x144, x_run_data, ARRAY_SIZE(x_run_data));
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+
+    sgi_migrate_stopped(from, uri);
+
+    kona_command(to, 0x177, (uint32_t[]){ 0x77000000 }, 1);
+    context_deactivate(to, 2);
+    context_restore_physical(to, SAVE_A);
+    kona_command(to, 0x152, x_run_rect, ARRAY_SIZE(x_run_rect));
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+
+    found = kona_log_read(log);
+    assert_x_run_drawn(found);
+}
+
+/*
  * A kernel command is still the kernel's: one the forced bracket cuts
  * short is dropped and logged as before, and the kernel's next packet
  * frames whole. Here a reason-page registration, 0x1f1 and three words,
@@ -3436,6 +3614,16 @@ int main(int argc, char **argv)
                    test_list_call_split_by_switch);
     qtest_add_func("sn0/origin2000/kona-context/x-command-split-by-switch",
                    test_x_command_split_by_switch);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "x-data-run-survives-other-context",
+                   test_x_data_run_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "x-clip-run-survives-other-context",
+                   test_x_clip_run_survives_other_context);
+    qtest_add_func("sn0/origin2000/kona-context/x-data-run-owner-rules",
+                   test_x_data_run_owner_rules);
+    qtest_add_func("sn0/origin2000/kona-context/migration-of-x-data-run",
+                   test_migration_of_x_data_run);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "privileged-command-cut-by-force",
                    test_privileged_command_cut_by_force);

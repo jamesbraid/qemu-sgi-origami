@@ -864,7 +864,8 @@ enum {
  * copied back when the context sends words again. See
  * sgi_kona_input_save(). A textport bitmap's payload buffer and a GL data
  * run's upload buffers move here with them. An X pixel write stays in
- * place, its rows fed only by its owner (see x_pixel_owner).
+ * place, its rows fed only by its owner (see x_pixel_owner), and so does
+ * an X data or clip-list run (see x_run_owner).
  */
 typedef struct SGIKonaSavedPort {
     bool framing;
@@ -1302,6 +1303,14 @@ struct SGIKonaState {
     uint32_t x_clip_rects[4 * SGI_KONA_X_CLIP_MAX_RECTS];
     uint32_t x_clip_run[SGI_KONA_X_CLIP_LIST_WORDS];
     uint32_t x_clip_run_have;
+    /*
+     * The context whose X data words wait in x_boxes or x_clip_run, and
+     * its generation. Like an X pixel write's rows, the run stays in
+     * place across a context switch: only its owner's commands end or
+     * drop it. See sgi_kona_x_run_held().
+     */
+    int32_t x_run_owner;
+    uint64_t x_run_owner_generation;
 
     /*
      * The X load scissor (SGI_KONA_CMD_X_SCISSOR) as sent, x1, y1, width
