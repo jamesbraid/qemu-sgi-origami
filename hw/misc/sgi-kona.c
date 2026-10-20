@@ -265,10 +265,21 @@ static bool sgi_kona_gl_window_rect(const SGIKonaGLWindow *w, SGIClipRect *r)
     return true;
 }
 
-/* Whether window w owns only the pixels showing its display ID. */
+/*
+ * Whether window w owns only the pixels showing its display ID. Word 9
+ * all ones with word 10 set is the kernel's word for a window the X
+ * server has not given an ID yet (observed: ivview's contexts, and mag's
+ * first placement, before the X server mapped the window), which is also
+ * what its null clip sends. No pixel holds that ID, so such a window
+ * owns none: mag's first clear, sent while its unmapped window was still
+ * at the screen's corner, otherwise drew a grey box over the Toolchest
+ * that nothing repainted. Inferred from the same ownership test as an
+ * ID in the main planes'; how the pipe treats word 9 all ones is unknown.
+ */
 static bool sgi_kona_gl_window_tests_id(const SGIKonaGLWindow *w)
 {
-    return w->partial && w->display_id <= SGI_KONA_DISPLAY_ID_MAX;
+    return w->partial && (w->display_id <= SGI_KONA_DISPLAY_ID_MAX ||
+                          w->display_id == UINT32_MAX);
 }
 
 /*
@@ -4539,7 +4550,8 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
         w->height = args[7];
         w->placed = 1;
     }
-    trace_sgi_kona_gl_window(selector, i, w->x, w->y, w->width, w->height);
+    trace_sgi_kona_gl_window(selector, i, w->x, w->y, w->width, w->height,
+                             w->display_id, w->partial);
     sgi_kona_gl_set_drawable(s, i);
 }
 
