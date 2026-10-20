@@ -348,6 +348,9 @@ endif
 # Longer timeouts that leave a test in its quick suites, unlike slow_tests.
 unit_timeouts = {
   'test-sgi-renderer-gl': 240,
+  # Nine llvmpipe renderer start-ups and no fixed waits: 12-27 s in full
+  # eight-process VPro runs, and one that passed 30 s and was stopped.
+  'test-sgi-odyssey-native-mesa': 90,
 }
 
 slow_tests = {

@@ -122,7 +122,9 @@ slow_qtests = {
   'sn1-fuel-test': 250,
   'sn1-io8-scsi-test': 160,
   'sn1-l1-test': 225,
-  'sn1-odyssey-query-test': 100,
+  # About three times its slowest full eight-process VPro run: 42-130 s,
+  # and one that passed 100 s and was stopped.
+  'sn1-odyssey-query-test': 400,
   # The whole binary, which only a named run uses: its groups below are
   # what the qtest suites run.
   'sn1-odyssey-test': 3400,
