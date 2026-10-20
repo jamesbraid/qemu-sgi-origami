@@ -1542,6 +1542,184 @@ static void test_tx_ring_wrap(void)
     close(sv[1]);
 }
 
+static void tx_sequence_frame(uint8_t frame[60], unsigned sequence)
+{
+    memset(frame, 0xff, 6);
+    frame[6] = 0x02;
+    frame[7] = 0xa1;
+    frame[8] = 0x4c;
+    frame[9] = 0x73;
+    frame[10] = sequence >> 8;
+    frame[11] = sequence;
+    frame[12] = 0x88;
+    frame[13] = 0xb5;
+    for (unsigned i = 14; i < 60; i++) {
+        frame[i] = sequence * 17 + i * 7;
+    }
+}
+
+static void test_tx_pointer_outside_ring(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("mace-tx-pointer-range-XXXXXX",
+                                       NULL);
+    g_autofree char *log_path = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *log_text = NULL;
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
+                      "-d unimp,guest_errors -D %s", sv[1], log_path);
+    mdio_write(qts, 8, 0, 0x2100);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 64);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x18, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & 2, ==, 2);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log_text, NULL, NULL));
+    g_assert_nonnull(strstr(log_text, "TX pointer outside active ring"));
+    g_assert_cmpint(g_remove(log_path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_tx_sustained_ring(void)
+{
+    static const uint8_t command[8] = {
+        0, 0, 0, 0, 0x01, 0x44, 0, 0x3b
+    };
+    static const uint8_t status[8] = {
+        0x80, 0, 0, 0, 0, 0x80, 0, 0x3c
+    };
+    const uint64_t base = RAM_FULL + 0x40000;
+    const uint64_t restarted_base = RAM_FULL + 0x60000;
+    uint8_t frames[63][60], entry[128], got[60], landed[8];
+    uint8_t guard[16], guard_after[16];
+    uint64_t pointer;
+    uint32_t wire_length;
+    unsigned read, next;
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    socket_timeout(sv[0]);
+    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
+    mdio_write(qts, 8, 0, 0x2100);
+    memset(guard, 0xa5, sizeof(guard));
+    qtest_memwrite(qts, base - sizeof(guard), guard, sizeof(guard));
+    qtest_memwrite(qts, base + 8192, guard, sizeof(guard));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + TX_BASE, base);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+
+    for (unsigned sent = 0; sent < 524;) {
+        unsigned count = MIN(63U, 524U - sent);
+
+        if (sent < 64 && sent + count > 64) {
+            count = 64 - sent;
+        }
+        if (sent == 64) {
+            count = 1;
+        }
+        for (unsigned i = 0; i < count; i++) {
+            unsigned slot = (sent + i) & 63;
+
+            memset(entry, 0, sizeof(entry));
+            memcpy(entry, command, sizeof(command));
+            tx_sequence_frame(frames[i], sent + i);
+            memcpy(entry + 68, frames[i], sizeof(frames[i]));
+            qtest_memwrite(qts, base + slot * 128, entry, sizeof(entry));
+        }
+        next = (sent + count) & 63;
+        qtest_writeq(qts, ETH_BASE + TX_POINTER, next);
+        for (unsigned i = 0; i < count; i++) {
+            unsigned slot = (sent + i) & 63;
+
+            g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                                 MSG_WAITALL), ==, sizeof(wire_length));
+            g_assert_cmpuint(ntohl(wire_length), ==, sizeof(got));
+            g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_WAITALL), ==,
+                            sizeof(got));
+            g_assert_cmpmem(got, sizeof(got), frames[i], sizeof(frames[i]));
+            qtest_memread(qts, base + slot * 128, landed, sizeof(landed));
+            g_assert_cmpmem(landed, sizeof(landed), status, sizeof(status));
+        }
+        sent += count;
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==,
+                        ((uint64_t)next << 16) | next);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x1a, ==, 2);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & 2, ==, 2);
+        qtest_writeq(qts, ETH_BASE + INT_STATUS, 2);
+        if (sent == 64) {
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==, 0);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x1a,
+                            ==, 0);
+            g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                                 MSG_DONTWAIT), ==, -1);
+            g_assert_cmpint(errno, ==, EAGAIN);
+        }
+        if (sent == 65) {
+            g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                                 MSG_DONTWAIT), ==, -1);
+            g_assert_cmpint(errno, ==, EAGAIN);
+        }
+    }
+
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+    qtest_writeq(qts, ETH_BASE + TX_BASE, restarted_base);
+    for (unsigned i = 0; i < 16; i++) {
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
+                     RAM_FULL + 0x50000 + i * 0x1000);
+    }
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    pointer = qtest_readq(qts, ETH_BASE + TX_POINTER);
+    read = (pointer >> 16) & 63;
+    next = (read + 1) & 63;
+
+    g_assert_cmphex(pointer & 63, ==, read);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_BASE), ==,
+                    restarted_base);
+    memset(entry, 0, sizeof(entry));
+    memcpy(entry, command, sizeof(command));
+    tx_sequence_frame(frames[0], 524);
+    memcpy(entry + 68, frames[0], sizeof(frames[0]));
+    qtest_memwrite(qts, restarted_base + (read & 63) * 128,
+                   entry, sizeof(entry));
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, next);
+    g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                         MSG_WAITALL), ==, sizeof(wire_length));
+    g_assert_cmpuint(ntohl(wire_length), ==, sizeof(got));
+    g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_WAITALL), ==,
+                    sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frames[0], sizeof(frames[0]));
+    qtest_memread(qts, restarted_base + (read & 63) * 128,
+                  landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), status, sizeof(status));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + TX_POINTER), ==,
+                    ((uint64_t)next << 16) | next);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x1a, ==, 2);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & 2, ==, 2);
+    g_assert_cmpint(recv(sv[0], &wire_length, sizeof(wire_length),
+                         MSG_DONTWAIT), ==, -1);
+    g_assert_cmpint(errno, ==, EAGAIN);
+    qtest_memread(qts, base - sizeof(guard), guard_after, sizeof(guard_after));
+    g_assert_cmpmem(guard_after, sizeof(guard_after), guard, sizeof(guard));
+    qtest_memread(qts, base + 8192, guard_after, sizeof(guard_after));
+    g_assert_cmpmem(guard_after, sizeof(guard_after), guard, sizeof(guard));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_tx_large_ring(unsigned size_bits)
 {
     static const uint8_t command[8] = {
@@ -1813,6 +1991,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace/ethernet/control-aliases",
                    test_control_aliases);
     qtest_add_func("/sgi/mace/ethernet/tx-ring-wrap", test_tx_ring_wrap);
+    qtest_add_func("/sgi/mace/ethernet/tx-pointer-outside-ring",
+                   test_tx_pointer_outside_ring);
+    qtest_add_func("/sgi/mace/ethernet/tx-sustained-ring",
+                   test_tx_sustained_ring);
     qtest_add_func("/sgi/mace/ethernet/tx-pointer-readback",
                    test_tx_pointer_readback);
     qtest_add_func("/sgi/mace/ethernet/tx-ring-wrap-16k",
