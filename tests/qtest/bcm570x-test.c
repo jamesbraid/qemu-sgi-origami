@@ -187,6 +187,10 @@
 #define BCM_STATUS_RX_PROD_OFF  16
 #define BCM_STATUS_TX_CONS_OFF  18
 #define BCM_STATUS_TAG_OFF       4      /* incremented per status DMA */
+/* BCM5701 chip image, visible byte for byte with both DMA swaps set. */
+#define BCM_STATUS_STD_CONS_IMAGE_OFF   8
+#define BCM_STATUS_JUMBO_CONS_IMAGE_OFF 10
+#define BCM_STATUS_RX_PROD_IMAGE_OFF   18
 
 /* Receive ring. */
 #define BCM_MBX_RX_STD_PROD_LO  0x026cu
@@ -3775,6 +3779,7 @@ static void test_receive_jumbo_frame(const void *data)
     uint8_t *frame = g_malloc(BCM_JUMBO_FRAME_LEN);
     uint8_t *got = g_malloc(BCM_JUMBO_FRAME_LEN);
     uint8_t ret[BCM_RXBD_SIZE];
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
     unsigned int i;
 
     for (i = 0; i < BCM_JUMBO_FRAME_LEN; i++) {
@@ -3804,6 +3809,11 @@ static void test_receive_jumbo_frame(const void *data)
                     ==, BCM_RXBDFLAG_JUMBO_RING);
     qtest_memread(b.qts, JUMBO_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN, frame, BCM_JUMBO_FRAME_LEN);
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF + 1], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF + 1], ==, 0x01);
 
     bcm_close(&b);
     close(sv[0]);
@@ -4724,6 +4734,12 @@ static void test_receive_round_trip(const void *data)
     g_assert_cmphex(get16dma(sb, BCM_STATUS_RX_PROD_OFF), ==, 1);
     g_assert_cmphex(sb[DMA16(BCM_STATUS_RX_PROD_OFF)], ==, 0x00);
     g_assert_cmphex(sb[DMA16(BCM_STATUS_RX_PROD_OFF) + 1], ==, 0x01);
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF + 1], ==, 0x01);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF + 1], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_IMAGE_OFF + 1], ==, 0x01);
 
     /* And the frame reached the posted buffer byte-for-byte. */
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(frame));
@@ -4733,6 +4749,22 @@ static void test_receive_round_trip(const void *data)
      * The driver's return-ring acknowledgement is accepted (write returns).
      */
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF + 1], ==, 0x01);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF + 1], ==, 0x00);
+
+    /* Reposting a second buffer must expose the next chip consumer. */
+    memset(bd, 0, sizeof(bd));
+    put32dma(bd + 0, (RX_BUF_PHYS + 0x1000) >> 32);
+    put32dma(bd + 4, (RX_BUF_PHYS + 0x1000) & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS + BCM_RXBD_SIZE, bd, sizeof(bd));
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF], ==, 0x00);
+    g_assert_cmphex(sb[BCM_STATUS_STD_CONS_IMAGE_OFF + 1], ==, 0x02);
+    g_assert_cmphex(sb[BCM_STATUS_JUMBO_CONS_IMAGE_OFF + 1], ==, 0x00);
     g_assert_cmphex(mii_read(&b, BCM_PHY_ADDR, MII_PHYIDR1), ==,
                     BCM_PHY_IDR1_VALUE);
 
