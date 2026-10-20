@@ -24,7 +24,29 @@ static uint32_t index_mask(uint32_t word)
     return ((word & 0xfff) << 4) | ((word >> 20) & 0xf);
 }
 
-static bool canonical_rgb(uint64_t color, uint32_t *out)
+/*
+ * Whether a 12-bit colour field is a widened component: an 8-bit one
+ * b << 4 | b >> 4 for 24-bit TrueColor, a 10-bit one c << 2 | c >> 8 for
+ * 30-bit TrueColor (kon_parseGC, konal.so 0x541d1c-0x541f78).
+ */
+static bool canonical_component(unsigned component, bool rgb30)
+{
+    if (rgb30) {
+        unsigned c = component >> 2;
+
+        return component == ((c << 2) | (c >> 8));
+    } else {
+        unsigned byte = component >> 4;
+
+        return component == ((byte << 4) | (byte >> 4));
+    }
+}
+
+/*
+ * The model keeps eight bits a component: a 30-bit TrueColor component's
+ * low two bits are dropped.
+ */
+static bool canonical_rgb(uint64_t color, bool rgb30, uint32_t *out)
 {
     const uint64_t fields = (0xfffULL << 40) | (0xfffULL << 27) |
                             (0xfffULL << 14) | 0x1ffe;
@@ -36,21 +58,13 @@ static bool canonical_rgb(uint64_t color, uint32_t *out)
     *out = 0;
     for (unsigned k = 1; k <= 3; k++) {
         unsigned component = (color >> (13 * k + 1)) & 0xfff;
-        unsigned byte = component >> 4;
 
-        if (component != ((byte << 4) | (byte >> 4))) {
+        if (!canonical_component(component, rgb30)) {
             return false;
         }
-        *out |= byte << (8 * (k - 1));
+        *out |= (component >> 4) << (8 * (k - 1));
     }
     return true;
-}
-
-static bool canonical_mask(unsigned component)
-{
-    unsigned byte = component >> 4;
-
-    return component == ((byte << 4) | (byte >> 4));
 }
 
 static SGIXGCStatus decode_did(const uint32_t *w, SGIXGC *gc)
@@ -91,6 +105,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     uint32_t mask_word = w[4] & ~0x80000000U;
     uint32_t residual = w[7] & ~0xfc0003U;
     bool geometry = w[10] == 0;
+    bool rgb30 = w[6] == 0 && (w[10] == 0 || w[10] == 9);
 
     memset(gc, 0, sizeof(*gc));
     memcpy(gc->raw, w, sizeof(gc->raw));
@@ -105,14 +120,23 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     if (w[6] == 8) {
         return decode_did(w, gc);
     }
-    if (w[6] == 0 && w[10] == 9) {
-        return SGI_X_GC_DEFERRED;
-    }
     if (plane == 0x28 ||
         (w[6] == 0x1008 && w[7] == 0x10001 && w[10] == 5)) {
         return SGI_X_GC_DEFERRED;
     }
     switch (w[6]) {
+    case 0:
+        /*
+         * 30-bit TrueColor: cfg 0 from every builder, told apart by ifmt
+         * 9, or 0 from the geometry builder (kon_parseGC sets ifmt 9 and
+         * op residual 0x24000, konal.so 0x542194-0x542204).
+         */
+        if (!rgb30) {
+            return SGI_X_GC_BAD_FIELDS;
+        }
+        gc->target = SGI_X_GC_MAIN_RGB8;
+        gc->width_mask = 0xffffff;
+        break;
     case 0xc:
     case 0x180c:
         gc->target = native_index ? SGI_X_GC_MAIN_INDEX16 : SGI_X_GC_MAIN_CI8;
@@ -149,7 +173,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     if (w[7] & 4) {
         return SGI_X_GC_DEFERRED;
     }
-    if (geometry != (w[6] < 0x1000)) {
+    if (!rgb30 && geometry != (w[6] < 0x1000)) {
         return SGI_X_GC_BAD_FIELDS;
     }
     if (gc->target == SGI_X_GC_MAIN_CI8 ||
@@ -164,6 +188,11 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
         if (geometry) {
             if (w[7] != 1 && !(rgb && w[6] == 4 && w[7] == 3)) {
                 return SGI_X_GC_BAD_FIELDS;
+            }
+        } else if (rgb30) {
+            /* Selector 2 has no cfg form to show it in; deferred. */
+            if (w[7] != 0x64001) {
+                return SGI_X_GC_DEFERRED;
             }
         } else if (w[10] != (rgb ? 8 : 5) ||
                    gc->first_selector < 1 || gc->first_selector > 2 ||
@@ -185,16 +214,17 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
         unsigned green = (mask_word >> 12) & 0xfff;
         unsigned blue = w[5] & 0xfff;
 
-        if (!canonical_rgb(((uint64_t)w[0] << 32) | w[1],
+        if (!canonical_rgb(((uint64_t)w[0] << 32) | w[1], rgb30,
                            &gc->foreground) ||
-            !canonical_rgb(((uint64_t)w[2] << 32) | w[3],
+            !canonical_rgb(((uint64_t)w[2] << 32) | w[3], rgb30,
                            &gc->background)) {
             return SGI_X_GC_BAD_COLOR;
         }
         if (mask_word & ~0xffffffU || w[5] & ~0xffffffU ||
             (w[5] & 0xfff000) != 0xfff000 ||
-            !canonical_mask(red) || !canonical_mask(green) ||
-            !canonical_mask(blue)) {
+            !canonical_component(red, rgb30) ||
+            !canonical_component(green, rgb30) ||
+            !canonical_component(blue, rgb30)) {
             return SGI_X_GC_BAD_MASK;
         }
         gc->mask = ((red >> 4) << 16) | ((green >> 4) << 8) |

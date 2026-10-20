@@ -470,6 +470,57 @@ static void test_packing4_truecolor_glyph(void)
     assert_in_step(qts);
 }
 
+/* A 10-bit component widened to twelve bits, as kon_parseGC does. */
+static uint32_t widen10(uint32_t c)
+{
+    return c << 2 | c >> 8;
+}
+
+/*
+ * A 30-bit TrueColor window, as nedit's windows draw: konal.so's
+ * kon_parseGC gives cfg 0 for every builder, ifmt 9 and op 0x64001 for
+ * fills and ifmt 0, op 1 for the geometry builder, with each 10-bit
+ * component widened as c << 2 | c >> 8. A box fills with the colour's top
+ * eight bits a component, and a glyph in the 30-bit glyph form, op
+ * 0x64001 and ifmt 0, paints its set bits. A model that deferred cfg 0
+ * left nedit's window black, with no text.
+ */
+static void test_rgb30_box_and_glyph(void)
+{
+    const uint32_t red = 0x123, green = 0x2c7, blue = 0x0a5;
+    uint64_t c = (uint64_t)widen10(0x300) << 40 |
+                 (uint64_t)widen10(0x301) << 27 |
+                 (uint64_t)widen10(0x302) << 14 | 0x1ffe;
+    const uint32_t b = widen10(blue);
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    x_command(qts, TOKEN_GC, (uint32_t[]){ c >> 32, (uint32_t)c, 0, 0x1ffe,
+                                           0xffffff, 0xffffff, 0, 1, 1, 6,
+                                           0, 0, 0 }, 13);
+    x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(250, 300), XY(300, 330) }, 2);
+    g_assert_cmphex(front_tag_at(qts, 251, 301), ==, TAG_DIRECT);
+    g_assert_cmphex(front_at(qts, 251, 301) & 0xffffff, ==, 0xc0c0c0);
+
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0xfff0 | b >> 8,
+                                           (b & 0xff) << 24 |
+                                           widen10(green) << 12 |
+                                           widen10(red), 0, 0,
+                                           0xffffff, 0xffffff, 0, 0x64001,
+                                           1, 6, 0, 0, 0 }, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 4, 2, 0, 32, 20, 0 }, 7);
+    pixel_write(qts, 260, 304, glyph_h, 20);
+
+    g_assert_cmphex(front_tag_at(qts, 260, 307), ==, TAG_DIRECT);
+    g_assert_cmphex(front_at(qts, 260, 307) & 0xffffff, ==, 0x48b129);
+    g_assert_cmphex(front_at(qts, 261, 307) & 0xffffff, ==, 0xc0c0c0);
+    frame = kona_screendump(qts);
+    assert_glyph(frame, 260, 304, glyph_h, 0x48b129, 0xc0c0c0);
+    assert_in_step(qts);
+}
+
 /*
  * Packing 4 under kon_loadNfbBitmapGC's GC, konDrawMonoImage's: the glyph
  * form's words 0 and 1 (0xfff0 and index 0x23 packed) with the geometry
@@ -1536,6 +1587,8 @@ int main(int argc, char **argv)
                    test_packing4_help_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-truecolor-glyph",
                    test_packing4_truecolor_glyph);
+    qtest_add_func("sn0/origin2000/kona-glyph/rgb30-box-and-glyph",
+                   test_rgb30_box_and_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "packing4-mono-image-geometry-gc",
                    test_packing4_mono_image_geometry_gc);

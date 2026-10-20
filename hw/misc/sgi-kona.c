@@ -10142,10 +10142,16 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
  * bit paints that colour and a clear bit nothing, as in a colour-index
  * window, is inferred. Rewrite the pair into the colour-word form the solid
  * fills use, with alpha all ones, so the shared decoder reads it.
+ *
+ * A 30-bit TrueColor window's glyphs come with cfg 0 and op 0x64001, and
+ * konal.so's kon_parseGC stores the same layout with each 10-bit component
+ * widened as c << 2 | c >> 8 (0x541e94-0x541f48, established from the
+ * code); the rewritten pair then carries ifmt 9, the 30-bit form.
  */
 static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
 {
     uint64_t red, green, blue, colour;
+    bool rgb30 = raw[6] == 0;
 
     if ((raw[0] & ~0xfU) != 0xfff0 || raw[2] || raw[3] || raw[10]) {
         return false;
@@ -10157,7 +10163,7 @@ static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
 
     raw[0] = colour >> 32;
     raw[1] = (uint32_t)colour;
-    raw[10] = 8;
+    raw[10] = rgb30 ? 9 : 8;
     return true;
 }
 
@@ -10188,7 +10194,8 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
                gc->target == SGI_X_GC_MAIN_RGB8 && raw[10] == 8 &&
                !gc->opaque_or_tiled;
     }
-    if (pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0x2804) {
+    if (pack == SGI_KONA_X_PACK_BITMAP &&
+        (raw[6] == 0x2804 || (raw[6] == 0 && raw[7] == 0x64001))) {
         return setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
                !setup[SGI_KONA_X_SETUP_SHIFT] &&
                sgi_kona_x_rgb_glyph_gc(raw) &&
@@ -11039,8 +11046,12 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
             return;
         }
         rgb = gc.target == SGI_X_GC_MAIN_RGB8;
+        /*
+         * A copy moves stored pixels; the model keeps 30-bit TrueColor
+         * (ifmt 9) as the same logical RGB as 24-bit, so both copy alike.
+         */
         if ((!rgb && gc.target != SGI_X_GC_MAIN_INDEX16) ||
-            gc.raw[10] != (rgb ? 8 : 5) ||
+            (rgb ? gc.raw[10] != 8 && gc.raw[10] != 9 : gc.raw[10] != 5) ||
             setup[SGI_KONA_X_SETUP_MODE] != 1 ||
             setup[SGI_KONA_X_SETUP_SRC_PACK] != (rgb ? 2 : 1) ||
             setup[SGI_KONA_X_SETUP_DST_PACK] != (rgb ? 2 : 1) ||
