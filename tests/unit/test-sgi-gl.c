@@ -2482,6 +2482,37 @@ static void tex_gen_vertex(SGIGLContext *c, float x, float y, float z,
 }
 
 /*
+ * Under SGIX_sprite, MM = M T A R takes object to eye coordinates, so
+ * OBJECT_LINEAR generates from the vertex as given while EYE_LINEAR
+ * sees the sprite's transform: with a translation of (5, 0, 0) and
+ * plane (1, 0, 0, 0), s is the given x and t the eye x, which the
+ * captured, transformed position carries under an identity modelview.
+ */
+static void test_texture_generation_sprite(void)
+{
+    uint32_t word[3], pos[3] = { bits(2), bits(3), bits(4) };
+    static const float translation[3] = { 5, 0, 0 };
+    float v[SGI_GL_VERTEX_FLOATS];
+    SGIGLContext c;
+
+    context_init(&c);
+    g_assert_true(sgi_gl_sprite_parameter(&c, SGI_GL_SPRITE_TRANSLATION_SGIX,
+                                          translation));
+    word[0] = SGI_GL_SPRITE_SGIX;
+    command(&c, NULL, SGI_GL_OP_ENABLE, word, 1);
+    tex_gen(&c, SGI_GL_S, SGI_GL_TEXTURE_GEN_MODE, SGI_GL_OBJECT_LINEAR,
+            0, 0, 0);
+    tex_gen(&c, SGI_GL_S, SGI_GL_OBJECT_PLANE, 1, 0, 0, 0);
+    tex_gen(&c, SGI_GL_T, SGI_GL_EYE_PLANE, 1, 0, 0, 0);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_S, true);
+    tex_gen_cap(&c, SGI_GL_TEXTURE_GEN_T, true);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos, 3, v);
+    g_assert_cmpfloat(v[SGI_GL_V_POSITION], !=, 2.0f);
+    g_assert_cmpfloat(v[SGI_GL_V_TEXCOORD], ==, 2.0f);
+    g_assert_cmpfloat(v[SGI_GL_V_TEXCOORD + 1], ==, v[SGI_GL_V_POSITION]);
+}
+
+/*
  * Texture coordinate generation (OpenGL 1.2.1, 2.10.4): off by default,
  * so the current coordinates pass; OBJECT_LINEAR takes the object plane's
  * product with the object position; EYE_LINEAR the eye plane given under
@@ -13671,6 +13702,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/lighting-commands", test_lighting_commands);
     g_test_add_func("/sgi-gl/texture-matrix", test_texture_matrix);
     g_test_add_func("/sgi-gl/texture-generation", test_texture_generation);
+    g_test_add_func("/sgi-gl/texture-generation-sprite",
+                    test_texture_generation_sprite);
     g_test_add_func("/sgi-gl/color-material-tracks-the-colour",
                     test_color_material_tracks_the_colour);
     g_test_add_func("/sgi-gl/lighting-ambient-and-emission",
