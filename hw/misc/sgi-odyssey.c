@@ -7052,6 +7052,20 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * (APPROXIMATED). Whether the board interpolates depth with perspective
  * correction is UNKNOWN.
  *
+ * APPROXIMATION, polygon offset: the shared rasterizer adds a polygon's
+ * offset to depth over w before multiplying w back, so under perspective
+ * the offset grows with the fragment's w, where OpenGL adds a constant
+ * window-depth offset. How the board offsets eye-linear depth is UNKNOWN;
+ * a board capture of glPolygonOffset decals at two eye distances, or a
+ * depth readback of one offset polygon, would settle it.
+ *
+ * APPROXIMATION, raster position: under perspective the shared projection's
+ * z row is 0, so glRasterPos takes window z 0.5 whatever its eye distance,
+ * and a bitmap or pixel rectangle placed there is depth-tested at 0.5.
+ * Where the board puts a perspective raster position's depth is UNKNOWN; a
+ * capture of the raster-position query's z after glRasterPos3f at two eye
+ * distances under glFrustum would settle it.
+ *
  * A non-default glDepthRange changes the row in a way this rule does not
  * fit: it is drawn with the default [0, 1] range, and the near and far clip
  * planes the library adds for it are reported as a program stage
@@ -11493,7 +11507,12 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
     memset(s->did, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT * sizeof(*s->did));
     memset(s->overlay, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
     memset(s->poly_marks, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT);
-    /* The depth plane starts at the far value, all ones (a model choice). */
+    /*
+     * The depth plane starts at the far value, all ones (a model choice).
+     * Under the floating-point code depth 1.0 is 0xfe0000, and every code
+     * of a depth in [0, 1] is at most that, so all ones still compares as
+     * farther than any fragment.
+     */
     for (int y = 0; y < SGI_ODYSSEY_HEIGHT; y++) {
         for (int x = 0; x < SGI_ODYSSEY_WIDTH; x++) {
             sgi_plane_store(&s->depth_mem,
