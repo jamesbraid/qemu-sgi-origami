@@ -10845,6 +10845,46 @@ static void test_scanout_overlay_menu(void)
 }
 
 /*
+ * The X server sets bit 29 of a 0x1017 select's third word only when the GC
+ * function does not read the destination, and bit 23 in the select that
+ * follows a select of word 0. Neither names a buffer. 4Dwm's menu text
+ * arrives under 0x00080080 and lands in the overlay as under 0x20080080;
+ * selecting the colour buffer or the id planes with either bit, or a word
+ * of 0, makes no off-screen object, while a texture select still does.
+ */
+static void test_command_fifo_dest_select_flags(void)
+{
+    static const uint32_t selects[][2] = {
+        { 0x2000, ODSY_DEST_COLOUR_INDEX },
+        { 0x2000, ODSY_DEST_COLOUR_INDEX & ~(1u << 29) },
+        { 0x2000, 0 },
+        { 0x2000, ODSY_DEST_COLOUR_INDEX | (1u << 23) },
+        { 0x142000, ODSY_DEST_ID_PLANES & ~(1u << 29) },
+        { 0x142000, 0 },
+        { 0x142000, ODSY_DEST_ID_PLANES | (1u << 23) },
+    };
+    QTestState *qts = overlay_menu_start();
+
+    aux_select(qts, ODSY_DEST_ID_PLANES & ~(1u << 29));
+    overlay_menu_glyph(qts);
+    for (unsigned int i = 0; i < ARRAY_SIZE(selects); i++) {
+        cmd_push(qts, ODSY_CMD_DEST_SELECT);
+        cmd_push(qts, selects[i][0]);
+        cmd_push(qts, 0x50);
+        cmd_push(qts, selects[i][1]);
+        cmd_push(qts, 0);
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+    }
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x300000);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x080024d0);
+    cmd_push(qts, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 1);
+    board_quit(qts);
+}
+
+/*
  * The 0x840 drawable-id test. When a window's visible region needs more than
  * four rectangles, the X server sends its bounding rectangle alone and the
  * kernel enables the test in 0x840's second operand: bit 16 on, the id mask
@@ -20112,6 +20152,8 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/scanout-overlay-unselected-mask",
              test_scanout_overlay_unselected_mask);
     add_case("sn1/odyssey/scanout-overlay-menu", test_scanout_overlay_menu);
+    add_case("sn1/odyssey/command-fifo-dest-select-flags",
+             test_command_fifo_dest_select_flags);
     add_case("sn1/odyssey/command-fifo-gl-colour-index",
              test_command_fifo_gl_colour_index);
     add_fresh_case("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
