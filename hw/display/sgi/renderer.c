@@ -252,6 +252,19 @@ static bool sgi_render_widths_proven(const SGIRasterRules *rules,
                                            rules->alpha_bits));
 }
 
+/*
+ * Whether the rules' depth row departs from OpenGL's depth for this draw:
+ * it does wherever clip w varies, which the host's depth cannot follow.
+ */
+static bool sgi_render_depth_departs(const SGIRasterRules *rules,
+                                     const SGIGLDrawState *st)
+{
+    return rules->depth_row_given &&
+           (st->projection[3] != 0 || st->projection[7] != 0 ||
+            st->projection[11] != 0 || st->modelview[3] != 0 ||
+            st->modelview[7] != 0 || st->modelview[11] != 0);
+}
+
 static bool sgi_render_mode_polygons(uint32_t mode)
 {
     return mode >= SGI_GL_TRIANGLES && mode <= SGI_GL_POLYGON;
@@ -339,6 +352,9 @@ static SGIRenderRefusal sgi_render_draw_supported(
     if (st->window_matrix_given || !st->drawable.bound ||
         st->drawable.origin[0] || st->drawable.origin[1]) {
         return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (sgi_render_depth_departs(rules, st)) {
+        return SGI_RENDER_REFUSAL_RULES;
     }
     if (st->viewport[2] < 0 || st->viewport[3] < 0) {
         return SGI_RENDER_REFUSAL_GEOMETRY;
@@ -1414,6 +1430,9 @@ static SGIRenderRefusal sgi_render_index_supported(
     if (st->window_matrix_given || !st->drawable.bound ||
         st->drawable.origin[0] || st->drawable.origin[1]) {
         return SGI_RENDER_REFUSAL_WINDOW;
+    }
+    if (sgi_render_depth_departs(rules, st)) {
+        return SGI_RENDER_REFUSAL_RULES;
     }
     if (st->viewport[2] < 0 || st->viewport[3] < 0) {
         return SGI_RENDER_REFUSAL_GEOMETRY;
