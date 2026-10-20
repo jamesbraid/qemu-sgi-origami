@@ -21,9 +21,10 @@
  * size, and each texture's own record. A texture memory full of 4-bit
  * texels, the narrowest the library's formats name (inferred; the native
  * sizes are not read), takes eight times its size in texels and a
- * quarter of it in coverage; the ninth share is for the records. A
- * budget of only the reported size refused textures pfCity keeps
- * resident.
+ * quarter of it in coverage; the ninth share is for the records, about
+ * 4,000 resident textures. So the worst-case host cost is about 576 MiB
+ * for each KONA pipe. A budget of only the reported size refused textures
+ * pfCity keeps resident.
  */
 #define SGI_KONA_TEXTURE_BUDGET (9ull * SGI_KONA_TEXTURE_MEMORY)
 
