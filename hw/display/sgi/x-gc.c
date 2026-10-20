@@ -103,7 +103,14 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     const uint32_t *w = words;
     uint32_t plane = w[6] & 0x3c;
     uint32_t mask_word = w[4] & ~0x80000000U;
-    uint32_t residual = w[7] & ~0xfc0003U;
+    /*
+     * kon_parseGC copies the buffer selector in op bits 1:0 into bits 3:2
+     * for a format with bit 0x80000 (konal.so 0x542e98-0x542ec0). What
+     * the second copy selects is unknown; a copy equal to the first is
+     * read as the same selection, and any other value is deferred.
+     */
+    uint32_t op = ((w[7] >> 2) & 3) == (w[7] & 3) ? w[7] & ~0xcU : w[7];
+    uint32_t residual = op & ~0xfc0003U;
     bool geometry = w[10] == 0;
     bool rgb30 = w[6] == 0 && (w[10] == 0 || w[10] == 9);
 
@@ -170,7 +177,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     default:
         return SGI_X_GC_BAD_FIELDS;
     }
-    if (w[7] & 4) {
+    if (op & 4) {
         return SGI_X_GC_DEFERRED;
     }
     if (!rgb30 && geometry != (w[6] < 0x1000)) {
@@ -186,12 +193,12 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
             return SGI_X_GC_BAD_FIELDS;
         }
         if (geometry) {
-            if (w[7] != 1 && !(rgb && w[6] == 4 && w[7] == 3)) {
+            if (op != 1 && !(rgb && w[6] == 4 && op == 3)) {
                 return SGI_X_GC_BAD_FIELDS;
             }
         } else if (rgb30) {
             /* Selector 2 has no cfg form to show it in; deferred. */
-            if (w[7] != 0x64001) {
+            if (op != 0x64001) {
                 return SGI_X_GC_DEFERRED;
             }
         } else if (w[10] != (rgb ? 8 : 5) ||
@@ -205,7 +212,7 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
         }
     } else if (w[8] || w[11] != 1 || w[12] != 1 ||
                (!geometry && w[10] != 5) ||
-               w[7] != (gc->target == SGI_X_GC_OVERLAY1 ? 2 : 1)) {
+               op != (gc->target == SGI_X_GC_OVERLAY1 ? 2 : 1)) {
         return SGI_X_GC_BAD_FIELDS;
     }
 
