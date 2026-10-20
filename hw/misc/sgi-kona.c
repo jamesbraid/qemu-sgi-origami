@@ -6052,6 +6052,16 @@ static uint64_t sgi_kona_gl_read_row_bytes(uint32_t width, uint32_t format,
     return (uint64_t)width * sgi_kona_gl_native_pixel_bytes(format, type);
 }
 
+/* Whether a read source pixel has the tag its visual's read decodes. */
+static bool sgi_kona_gl_read_tag_ok(SGIKonaState *s, int bank, int64_t x,
+                                    int64_t y, bool indexed_visual)
+{
+    return sgi_plane_load(&s->mem,
+                          sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank)),
+                          x, y) ==
+           (indexed_visual ? SGI_KONA_TAG_X_INDEX16 : SGI_KONA_TAG_DIRECT);
+}
+
 /*
  * Reads stage dense rows for either return transport.
  * The pointer's low bits do not offset the framebuffer source.
@@ -6080,6 +6090,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     uint32_t pixel_bytes;
     uint64_t row, len;
     int64_t px, py, cols;
+    bool wide8 = w == 8 && h == 1;
     uint32_t selection;
     int bank;
     bool depth = format == 13, stencil = format == 12;
@@ -6156,7 +6167,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
            stencil ? (sgi_kona_gl_stencil_source_ready(s, i) ? 0 : -1) :
                      sgi_kona_gl_read_bank(s, i, &selection);
     /* An 8 by 1 wire extent needs only its first pixel inside. */
-    cols = w == 8 && h == 1 && x0 >= 0 && px >= 0 ?
+    cols = wide8 && x0 >= 0 && px >= 0 ?
            MIN(w, MIN((int64_t)win->width - x0,
                       (int64_t)SGI_KONA_FB_WIDTH - px)) : w;
     if (bank < 0 || (int64_t)cols <= 0 ||
@@ -6167,14 +6178,15 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                       " pixel source; %s\n", outcome);
         return false;
     }
-    /* One unsupported tag refuses the whole rectangle before any write. */
+    /*
+     * One unsupported tag refuses the whole rectangle before any write;
+     * an 8 by 1 read needs only its first pixel's, the one a 1 by 1 caller
+     * copies, and its other pixels of another kind are answered zero.
+     */
     for (uint32_t r = 0; !depth && !stencil && r < h; r++) {
-        for (uint32_t c = 0; c < cols; c++) {
-            if (sgi_plane_load(&s->mem,
-                    sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank)),
-                    px + c, py + r) !=
-                (indexed_visual ? SGI_KONA_TAG_X_INDEX16 :
-                                  SGI_KONA_TAG_DIRECT)) {
+        for (uint32_t c = 0; c < (wide8 ? 1 : cols); c++) {
+            if (!sgi_kona_gl_read_tag_ok(s, bank, px + c, py + r,
+                                         indexed_visual)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has an"
                               " unsupported source tag; %s\n", outcome);
                 return false;
@@ -6184,6 +6196,11 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     data = g_malloc0(len);
     for (uint32_t r = 0; r < h; r++) {
         for (uint32_t c = 0; c < cols; c++) {
+            if (wide8 && !depth && !stencil &&
+                !sgi_kona_gl_read_tag_ok(s, bank, px + c, py + r,
+                                         indexed_visual)) {
+                continue;
+            }
             if (stencil) {
                 uint32_t raw = sgi_kona_gl_load_stencil(s, px + c, py + r);
 
