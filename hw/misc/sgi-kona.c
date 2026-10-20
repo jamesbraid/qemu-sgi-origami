@@ -9835,13 +9835,27 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  * left-justified 16-bit value, so the word is that value shifted left 16.
  * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8
  * only for an alpha it is asked for, and the model leaves them zero.
- * Approximated: only selector 1 over X colour-index pixels is answered.
+ *
+ * Plane selector 2 (op 0xa8001, addr 2) is answered over a direct-colour
+ * pixel only. For a TrueColor window whose format has bit 0x4000 clear,
+ * the same caller reads selectors 1 and 2 and takes red, green and blue
+ * from the second word's bits 31:24, 23:16 and 15:8 (konal.so
+ * 0x434070-0x435238, established for the reader); oglsnoop over a GL
+ * window sends exactly that pair. The model stores logical RGB, so the
+ * word is that value shifted left 8, bits 7:0 zero.
+ *
+ * Approximated: only selector 1 over X colour-index pixels and selector 2
+ * over direct-colour pixels are answered. What the pipe puts in the low
+ * bits, and selector 1's alpha word over a direct pixel, are unknown;
+ * selector 1 there stays refused, which answers zeros.
  */
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
     static const uint32_t form[] = { 0x1008, 0x68001, 1, 6, 0xa, 1, 1 };
+    static const uint32_t rgb_form[] = { 0x1008, 0xa8001, 2, 6, 0xa, 1, 1 };
 
-    return !memcmp(gc + 6, form, sizeof(form));
+    return !memcmp(gc + 6, form, sizeof(form)) ||
+           !memcmp(gc + 6, rgb_form, sizeof(rgb_form));
 }
 
 /* Public index values use tightly packed rows; source words stay native. */
@@ -9905,7 +9919,8 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                bool rgb = bytes == 4 && !fb_word;
+                bool rgb = bytes == 4 &&
+                           (!fb_word || s->x_gc[8] == 2);
 
                 if (sgi_kona_displayed_bank(s, x + c, py)) {
                     reason = "bank 0 hidden by a displayed bank-1 window";
@@ -9926,7 +9941,10 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
                     SGI_KONA_FB_HEIGHT - 1 - y - r);
 
-                if (fb_word) {
+                if (fb_word && s->x_gc[8] == 2) {
+                    /* Selector 2's word: see sgi_kona_x_read_fb_word_gc(). */
+                    stl_be_p(data + r * pitch + c * 4, word << 8);
+                } else if (fb_word) {
                     stl_be_p(data + r * pitch + c * 4, word << 16);
                 } else if (bytes == 4) {
                     /* The model stores logical RGB, not physical components. */
@@ -9939,7 +9957,7 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 }
             }
         }
-        if (fb_word && !s->fb_word_low_bits_reported) {
+        if (fb_word && s->x_gc[8] == 1 && !s->fb_word_low_bits_reported) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: frame-buffer word read"
                           " answered with bits 15:0 zero, so an alpha the X"
                           " server asks for reads as 0 (reported once)\n");

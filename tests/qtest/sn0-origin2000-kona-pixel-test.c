@@ -1014,11 +1014,30 @@ static void test_read_fb_word(void)
     }
     g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8 + 32), ==, 0xa5a5a5a5);
 
+    /* Selector 2 over colour-index pixels is refused, and answered zero. */
     memcpy(other, gc, sizeof(other));
     other[7] = 0xa8001;
     other[8] = 2;
     x_command(qts, TOKEN_GC, other, 13);
     x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 2, 0 }, 7);
+    read_refused(qts, 454, 700);
+
+    /*
+     * Over direct-colour pixels, as oglsnoop reads a GL window, selector
+     * 2's word carries red, green and blue in bits 31:8; selector 1's
+     * alpha word there stays refused.
+     */
+    seed_rgb(qts, 454, 700, 0x123456);
+    seed_rgb(qts, 455, 700, 0xabcdef);
+    x_command(qts, TOKEN_GC, other, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 2, 1, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==, 0x12345600);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==, 0xabcdef00);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 16), ==, 0xa5a5a5a5);
+    x_command(qts, TOKEN_GC, gc, 13);
     read_refused(qts, 454, 700);
 }
 
