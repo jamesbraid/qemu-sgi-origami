@@ -1651,6 +1651,65 @@ static void test_gl_colour_index_zero_mask_keeps_the_pixel(void)
 }
 
 /*
+ * A 12-bit colour-index context, as showmap and interp set up on the IRIX
+ * 6.5.30 server's 12-plane PseudoColor visuals (4096 colour-map entries in
+ * xdpyinfo), keeps all twelve bits of an index. The server gives such a
+ * window display ID 8, writes its XMAP mode as 0x403 (index byte 0x20) and
+ * loads its colour map at CMAP entries 0 to 4095, one selector a entry:
+ * selector bits 4:0 carry the entry's bits 12:8 (a captured run). So index
+ * 300 under that mode shows entry 300, map 1's entry 0x2c, not entry 44.
+ * The same index under an 8-bit mode (0x601, map 16) resolves through its
+ * low eight bits. A write mask of bits above the low eight still writes.
+ */
+static void test_gl_colour_index_twelve_bits_reach_4096_entries(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 12);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeb(qts, REG_XMAP_INDEX, 8 << 2);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x403);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x601);
+    mgras_tag_wid(qts, 256, 256, 319, 383, 8);
+    mgras_write_cmap_entry(qts, 0, 0x2c, 0xff000000);
+    mgras_write_cmap_entry(qts, 1, 0x2c, 0x00ff0000);
+    mgras_write_cmap_entry(qts, 16, 0x2c, 0x0000ff00);
+    mgras_write_cmap_entry(qts, 15, 0xff, 0xffff0000);
+    mgras_write_cmap_entry(qts, 5, 0x2c, 0x00ffff00);
+
+    gl_word(qts, GL_INDEXI_HDR);
+    gl_word(qts, 300);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    gl_window_rect(qts, 90, 10, 100, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 300);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 15, 383 - 20), ==,
+                    0x00ff00);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 95, 383 - 20), ==,
+                    0x0000ff);
+
+    gl_word(qts, GL_INDEXI_HDR);
+    gl_word(qts, 4095);
+    gl_window_rect(qts, 30, 10, 40, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 35, 20), ==, 4095);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 35, 383 - 20), ==,
+                    0xffff00);
+
+    /* Mask 0xf00 over 0x12c writes 0x500's high bits only: 0x52c. */
+    gl_one(qts, GL_INDEX_MASK_HDR, 0xf00);
+    gl_word(qts, GL_INDEXI_HDR);
+    gl_word(qts, 0x500);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 0x52c);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 256 + 15, 383 - 20), ==,
+                    0x00ffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A double-buffered colour-index visual's back buffer holds indices as
  * its front does. The colour-index initializer sends 0x0a04 once for each
  * colour buffer the per-buffer setup routine sets up, and it sets up a second
@@ -2489,6 +2548,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-colour-index-zero-mask-keeps-the-pixel",
         test_gl_colour_index_zero_mask_keeps_the_pixel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-colour-index-twelve-bits-reach-4096-entries",
+        test_gl_colour_index_twelve_bits_reach_4096_entries, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-colour-index-draws-into-bank-one",
         test_gl_colour_index_draws_into_bank_one, true);

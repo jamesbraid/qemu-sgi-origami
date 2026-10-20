@@ -726,13 +726,14 @@ struct SGIMgrasState {
     uint32_t depth_count;
     /*
      * Per-pixel colour-format tag, one of the SGI_MGRAS_PIXEL_FORMAT_*
-     * values above: CI8 selects the indexed plane (front holds an 8-bit
-     * CMAP index), RGB selects packed colour (front holds 0x00RRGGBB
-     * directly) and RGB12 a 12-bit window's colour (front holds 0xBGR,
-     * four bits a channel). No register exposes a stored per-pixel format;
-     * painting code derives it from PP1FILLMODE at the time each pixel is
-     * written and records it here so scanout can resolve mixed-format
-     * content within one WID. This is a model approximation.
+     * values above: CI8 selects the indexed plane (front holds a CMAP
+     * index, eight bits or a 12-bit GL context's twelve), RGB selects
+     * packed colour (front holds 0x00RRGGBB directly) and RGB12 a 12-bit
+     * window's colour (front holds 0xBGR, four bits a channel). No
+     * register exposes a stored per-pixel format; painting code derives
+     * it from PP1FILLMODE at the time each pixel is written and records it
+     * here so scanout can resolve mixed-format content within one WID.
+     * This is a model approximation.
      */
     uint8_t *format;
     /*

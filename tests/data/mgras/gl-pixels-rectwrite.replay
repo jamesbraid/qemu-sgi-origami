@@ -16,8 +16,9 @@ head sgi-mgras
 # inline block of 100 big-endian 16-bit indices. The window's lower-left
 # pixel is (96, 828) counted from the bottom (context word 2, 0x033c0060),
 # so the row lands on screen row 195, columns 96 to 195, and each index
-# keeps its low eight bits. The row above keeps index 8, the clear index
-# the context's glClear (0xbd04, 0x1500 above) left. The rectangle is the
+# keeps all twelve bits, as a 12-bit context's pixel does. The row above
+# keeps index 8, the clear index the context's glClear (0xbd04, 0x1500
+# above) left. The rectangle is the
 # image's own; the GE places it at the raster position, which mandel's
 # glRasterPos2i (0x58003808, 0, 0 above) puts at the centre of the
 # window's corner pixel through its projection (0x2b40 above). That
@@ -401,12 +402,12 @@ write 4 0x120400 0x156
 write 4 0x120400 0xffffffff
 write 4 0x120400 0xd300
 write 4 0x120400 0xea00
-pixel 96 195 0x00000060
-pixel 97 195 0x00000060
-pixel 100 195 0x00000060
-pixel 101 195 0x00000060
-pixel 146 195 0x00000070
-pixel 194 195 0x00000068
-pixel 195 195 0x00000068
+pixel 96 195 0x00000160
+pixel 97 195 0x00000160
+pixel 100 195 0x00000160
+pixel 101 195 0x00000160
+pixel 146 195 0x00000170
+pixel 194 195 0x00000168
+pixel 195 195 0x00000168
 pixel 196 195 0x00000000
 pixel 96 194 0x00000008
