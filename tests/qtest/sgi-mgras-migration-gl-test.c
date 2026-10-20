@@ -556,6 +556,44 @@ static void test_gl_texture_migration_rejects_load_past_tram(void)
     g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
 }
 
+/*
+ * TRAM's bytes into a board without TRAM: a source with the texture
+ * option that has loaded a level sends them, and a destination presented
+ * as plain SI has no image to take them, so the load fails cleanly.
+ */
+static void test_gl_texture_migration_rejects_tram_without_tram(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *stream = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t texels[32];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-texture-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(tmpfs, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+
+    from = tex_start(TEX_MIGRATION_ARGS);
+    tex_texels(texels);
+    tex_load(from, TEX_TL_MODE_RGBA8, texels);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    to = qtest_init(MIGRATION_ARGS " -global sgi-mgras.board=si "
+                    "-incoming defer");
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
 static void test_context_ack_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -1406,6 +1444,10 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-texture-migration",
         test_gl_texture_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-texture-migration-rejects-tram-without-tram",
+        test_gl_texture_migration_rejects_tram_without_tram, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-volume-texture-migration",
         test_gl_volume_texture_migration, false);

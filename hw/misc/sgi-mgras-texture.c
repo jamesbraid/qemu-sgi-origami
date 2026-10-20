@@ -3572,11 +3572,28 @@ static bool mgras_tram_needed(void *opaque)
     return false;
 }
 
+/*
+ * A board without TRAM has no image to load into, and a source with the
+ * same board never sends one; refuse a stream that does instead of
+ * writing through the absent image.
+ */
+static bool mgras_tram_pre_load(void *opaque, Error **errp)
+{
+    SGIMgrasState *s = opaque;
+
+    if (!s->tram) {
+        error_setg(errp, "sgi-mgras: TRAM state for a board without TRAM");
+        return false;
+    }
+    return true;
+}
+
 const VMStateDescription vmstate_sgi_mgras_tram = {
     .name = TYPE_SGI_MGRAS "/tram",
     .version_id = 2,
     .minimum_version_id = 2,
     .needed = mgras_tram_needed,
+    .pre_load_errp = mgras_tram_pre_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(tram_written, SGIMgrasState,
                              SGI_MGRAS_TRAM_SELECTS *
