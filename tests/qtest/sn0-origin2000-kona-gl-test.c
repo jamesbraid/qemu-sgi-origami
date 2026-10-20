@@ -691,6 +691,35 @@ static void test_overlap_beyond_clip_list(void)
 }
 
 /*
+ * A window the X server has not given an ID yet comes in 0x1f3 with word
+ * 9 all ones and word 10 set, as mag's first placement did while its
+ * window was still unmapped at the screen's corner. It owns no pixel: a
+ * clear then leaves the pixels beneath, here another window's ID 1 and
+ * black. Once the kernel sends the window's ID 0xd, which the X server
+ * has painted, the clear fills it.
+ */
+static void test_unassigned_id_owns_nothing(void)
+{
+    const uint32_t y = 640, top = FB_HEIGHT - y - PROBE_SIZE;
+
+    gl_reset();
+    gl_make_current(qts, false);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 1);
+    gl_place_window_id(qts, PROBE_X, y, UINT32_MAX, 1);
+    gl_clear(qts, F1, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                y + PROBE_SIZE - 1), ==, 0);
+
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 0xd);
+    gl_place_window_id(qts, PROBE_X, y, 0xd, 0);
+    gl_clear(qts, F1, F0, F1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xff00ff);
+}
+
+/*
  * A client killed with its window showing bank 1 sends no teardown; the
  * X server repaints the window's pixels with the IDs beneath, here the
  * root window's ID 1, and paints bank 0. The display then shows bank 0
@@ -985,6 +1014,8 @@ int main(int argc, char **argv)
                    test_overlap_clipped_to_display_id);
     qtest_add_func("sn0/origin2000/kona-gl/overlap-beyond-clip-list",
                    test_overlap_beyond_clip_list);
+    qtest_add_func("sn0/origin2000/kona-gl/unassigned-id-owns-nothing",
+                   test_unassigned_id_owns_nothing);
     qtest_add_func("sn0/origin2000/kona-gl/"
                    "overlap-shows-bank0-where-covered",
                    test_overlap_shows_bank0_where_covered);

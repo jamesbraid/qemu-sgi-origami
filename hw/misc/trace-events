@@ -129,7 +129,7 @@ sgi_kona_gl_reply(uint32_t token, uint32_t what, uint64_t bytes) "token 0x%x 0x%
 sgi_kona_gl_buffer_config(uint32_t token, uint32_t level, uint32_t rgb, uint32_t index, uint32_t dbl) "token 0x%x level %u rgb %u index %u double %u"
 # A GL context's window from a 0x1f3 or 0x1ee: its lower-left pixel in
 # plane coordinates and its size.
-sgi_kona_gl_window(uint32_t token, int slot, int32_t x, int32_t y, uint32_t width, uint32_t height) "token 0x%x slot %d (%d, %d) width %u height %u"
+sgi_kona_gl_window(uint32_t token, int slot, int32_t x, int32_t y, uint32_t width, uint32_t height, uint32_t display_id, uint32_t partial) "token 0x%x slot %d (%d, %d) width %u height %u display ID 0x%x partial %u"
 # A GL drawing or state command handed to the current context.
 sgi_kona_gl_command(uint32_t token, int slot) "token 0x%x slot %d"
 # IRIS GL's colour-normal and LMC colour words as the current context now holds them.
