@@ -1606,6 +1606,23 @@ static uint32_t guest_word(QTestState *s, uint64_t addr)
 }
 
 /* The client's wait: word 0 goes non-zero, and the client clears it. */
+/*
+ * A refused ReadPixels on the context's own page is answered: the whole
+ * usable page zeroed after word 1, which keeps its canary, then the ready
+ * word, so a client waiting on word 0 goes on (oglsnoop blocked there).
+ */
+static void assert_read_answered_zero(QTestState *s)
+{
+    uint8_t expected[0x4000 - 8], got[0x4000 - 8];
+
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+    memset(expected, 0, sizeof(expected));
+    qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+}
+
 static void assert_reply_posted(QTestState *s)
 {
     g_assert_cmphex(guest_word(s, RETURN_PAGE), !=, 0);
@@ -1746,8 +1763,10 @@ static void test_read_selection(void)
     for (unsigned k = 0; k < ARRAY_SIZE(invalid); k++) {
         kona_command(qts, 0x37, &invalid[k], 1);
         qtest_memset(qts, RETURN_PAGE, 0, 4);
+        qtest_memset(qts, RETURN_PAGE, 0xa5, 0x4000);
+        qtest_memset(qts, RETURN_PAGE, 0, 4);
         kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
-        g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 0);
+        assert_read_answered_zero(qts);
         kona_command(qts, 0x4c, (uint32_t[]){ 0xc02 }, 1);
         g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 0);
         kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
@@ -1832,7 +1851,8 @@ static void assert_source_refused(QTestState *s)
 {
     prepare_refused_reply(s);
     kona_command(s, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
-    assert_reply_unchanged(s);
+    assert_read_answered_zero(s);
+    prepare_refused_reply(s);
     kona_command(s, 0x4c, (uint32_t[]){ 0xc02 }, 1);
     assert_reply_unchanged(s);
 }
@@ -1983,16 +2003,16 @@ static void test_read_coordinates(void)
     g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x0000ff00);
     prepare_refused_reply(qts);
     kona_command(qts, 0x39, (uint32_t[]){ 1, 0, 3, 2, 4, 1, 0 }, 7);
-    assert_reply_unchanged(qts);
+    assert_read_answered_zero(qts);
     prepare_refused_reply(qts);
     kona_command(qts, 0x39,
                  (uint32_t[]){ INT32_MAX, INT32_MAX, 3, 2, 4, 1, 0 }, 7);
-    assert_reply_unchanged(qts);
+    assert_read_answered_zero(qts);
     place_read_window(qts, 1278, 1022, 16, 16);
     kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
     prepare_refused_reply(qts);
     kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
-    assert_reply_unchanged(qts);
+    assert_read_answered_zero(qts);
     kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 2, 2, 4, 1, 0 }, 7);
     assert_reply_posted(qts);
     g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x0000ff00);
@@ -2046,7 +2066,7 @@ static void test_read_indexed_source_refused(void)
             prepare_refused_reply(qts);
             kona_command(qts, 0x39,
                          (uint32_t[]) { 0, 0, 3, 2, format, types[k], 0 }, 7);
-            assert_reply_unchanged(qts); /* Last source pixel is indexed. */
+            assert_read_answered_zero(qts); /* Last source pixel is indexed. */
         }
     }
     assert_read_buffer(qts, 0x404);
@@ -2134,13 +2154,48 @@ static void test_read_pixels_refused(gconstpointer opaque)
     gl_rect_scene(s);
     prepare_refused_reply(s);
     kona_command(s, 0x39, args, 7);
-    assert_reply_unchanged(s);
+    assert_read_answered_zero(s);
     kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
     assert_reply_posted(s);
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_false(log_shows_misframing(found));
     g_assert_nonnull(strstr(found, "sgi-kona: glReadPixels"));
+}
+
+/*
+ * The client sends wire extent 8 by 1 for a public 1 by 1 read and copies
+ * the first pixel. The model answers eight pixels from the corner, those
+ * past the window as zero: at (10, 20) all eight are the blue clear, and
+ * at the window's last column (127, 20) the first is blue and the other
+ * seven zero. Both reads were refused, unanswered, before.
+ */
+static void test_read_pixels_eight_by_one(void)
+{
+    static const uint32_t corners[][2] = { { 10, 20 }, { 127, 20 } };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint8_t got[24];
+
+    gl_make_current(s);
+    gl_rect_scene(s);
+    for (unsigned k = 0; k < ARRAY_SIZE(corners); k++) {
+        unsigned inside = k ? 1 : 8;
+
+        prepare_refused_reply(s);
+        kona_command(s, 0x39, (uint32_t[]){ corners[k][0], corners[k][1],
+                                            8, 1, 4, 1, 0 }, 7);
+        assert_reply_posted(s);
+        qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+        for (unsigned c = 0; c < 8; c++) {
+            g_assert_cmphex(got[3 * c], ==, 0);
+            g_assert_cmphex(got[3 * c + 1], ==, 0);
+            g_assert_cmphex(got[3 * c + 2], ==, c < inside ? 0xff : 0);
+        }
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "unsupported extent"));
 }
 
 /* Missing pages and failed bus writes must never publish a ready word. */
@@ -7726,7 +7781,7 @@ static void test_depth_pixel_boundaries(gconstpointer opaque)
     prepare_refused_reply(s);
     kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 13, type, 2 }, 7);
     if (mode == 17) {
-        assert_reply_unchanged(s);
+        assert_read_answered_zero(s);
     } else {
         assert_reply_posted(s);
         for (unsigned pixel = 0; pixel < 2; pixel++) {
@@ -7845,7 +7900,7 @@ static void test_stencil_pixels_boundaries(gconstpointer opaque)
     prepare_refused_reply(s);
     kona_command(s, 0x39, (uint32_t[]) { 64, 64, 3, 1, 12, 1, 0 }, 7);
     if (mode < 2) {
-        assert_reply_unchanged(s);
+        assert_read_answered_zero(s);
         prepare_refused_reply(s);
         kona_command(s, 0x3e, (uint32_t[]) { 0xdbdbdbdb }, 1);
         assert_reply_posted(s);
@@ -8103,7 +8158,8 @@ static void test_bitmap_stencil_read(gconstpointer opaque)
     bool dma = mode >= 24;
     bool lsb = mode == 1 || mode == 3 || (mode >= 5 && mode <= 8) ||
                mode == 10 || mode == 18 || (dma && ((mode & 1) || mode == 32));
-    bool refused = (mode >= 11 && mode <= 17) || mode == 19 || mode >= 34;
+    /* A refused PIO read is answered with zeros; mode 19, 8 by 1, is read. */
+    bool refused = (mode >= 11 && mode <= 17) || mode >= 34;
     unsigned phase = dma ? mode & 3 : 0;
     unsigned gap = dma && mode >= 28 && mode <= 31 ? 5 : 0;
     uint8_t payload[] = { lsb ? 0x6a : 0x56, lsb ? 1 : 0x80,
@@ -8210,12 +8266,13 @@ static void test_bitmap_stencil_read(gconstpointer opaque)
                         refused ? 0 : 0x20);
         assert_reply_unchanged(s);
     } else if (refused) {
-        assert_reply_unchanged(s);
+        assert_read_answered_zero(s);
     } else {
         assert_reply_posted(s);
         memset(expected, 0xa5, sizeof(expected));
         stl_be_p(expected, 0);
-        memcpy(expected + 8, payload, sizeof(payload));
+        /* The 8 by 1 read's one byte is the first row's first eight bits. */
+        memcpy(expected + 8, payload, mode == 19 ? 1 : sizeof(payload));
         qtest_memread(s, RETURN_PAGE, got, sizeof(got));
         for (unsigned k = 0; k < sizeof(got); k++) {
             if (got[k] != expected[k]) {
@@ -8471,7 +8528,7 @@ static void test_native_index_state(gconstpointer opaque)
         /* The final untouched pixel still has an RGB tag. */
         prepare_refused_reply(s);
         kona_command(s, 0x39, (uint32_t[]) { 64, 64, 3, 1, 11, 5, 0 }, 7);
-        assert_reply_unchanged(s);
+        assert_read_answered_zero(s);
     }
     assert_native_index_pixels(s, 64, expected, 2);
     qtest_quit(s);
@@ -8861,7 +8918,7 @@ static void test_native_index_pixels(gconstpointer opaque)
         }
         prepare_refused_reply(s);
         kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 11, 5, 0 }, 7);
-        assert_reply_unchanged(s);
+        assert_read_answered_zero(s);
         goto out;
     }
 read:
@@ -10067,7 +10124,12 @@ static void test_read_pixels_dma(gconstpointer opaque)
     bool strided = mode < 8 ? mode >= 4 : matrix ? mode & 1 : mode == 33;
     bool swap = mode == 8 || mode == 42;
     bool transferred = matrix || swap;
-    bool refused = mode >= 18 && mode <= 50 && mode != 42;
+    /*
+     * A clipped source or nonfinite transfer in a matched bracket
+     * completes with zeros.
+     */
+    bool zeroed = mode == 39 || mode == 40;
+    bool refused = mode >= 18 && mode <= 50 && mode != 42 && !zeroed;
     const uint64_t reason_page = 0x300000, destination = 0x380000;
     const uint32_t index = 0x13579bdf;
     uint32_t phase = mode < 8 ? mode & 3 : matrix ? mode & 3 : 3;
@@ -10305,6 +10367,9 @@ static void test_read_pixels_dma(gconstpointer opaque)
                         scaled = (scaled - 1) / 2;
                     }
                     bits = type == 6 ? fbits(packed[c]) : floor(scaled + 0.5);
+                    if (zeroed) {
+                        bits = 0;
+                    }
                     for (unsigned k = 0; k < size; k++) {
                         unsigned shift = 8 * (swap ? k : size - 1 - k);
 
@@ -10611,8 +10676,24 @@ static void test_read_pixels_typed_extent(gconstpointer opaque)
     }
     prepare_refused_reply(s);
     kona_command(s, 0x39, h, ARRAY_SIZE(h));
-    if (mode) {
-        assert_reply_unchanged(s);
+    if (mode == 1) {
+        assert_read_answered_zero(s);
+    } else if (mode >= 2) {
+        /* Wire 8 by 1: eight RGBA pixels of the blue clear. */
+        memset(expected, 0xa5, sizeof(expected));
+        stl_be_p(expected, 1);
+        for (unsigned k = 0; k < 8; k++) {
+            if (mode == 2) {
+                stl_be_p(expected + 8 + k * 8, 0);
+                stl_be_p(expected + 12 + k * 8, 0xffffffff);
+            } else {
+                stq_be_p(expected + 8 + k * 16, 0);
+                stl_be_p(expected + 16 + k * 16, 0x3f800000);
+                stl_be_p(expected + 20 + k * 16, 0x3f800000);
+            }
+        }
+        qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
     } else {
         memset(expected, 0xa5, sizeof(expected));
         stl_be_p(expected, 1);
@@ -11503,7 +11584,11 @@ static void test_native_image_state_refusal(gconstpointer opaque)
     } else {
         kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 1, 1, 0 }, 8);
     }
-    assert_reply_unchanged(s);
+    if (mode < 2) {
+        assert_read_answered_zero(s);
+    } else {
+        assert_reply_unchanged(s);
+    }
     memcpy(h, texture_header, sizeof(h));
     if (mode >= 2) {
         h[6] = h[7] = 1;
@@ -16669,7 +16754,6 @@ int main(int argc, char **argv)
     static const uint32_t zero_width[] = { 10, 20, 0, 2, 4, 1, 0 };
     static const uint32_t zero_height[] = { 10, 20, 3, 0, 4, 1, 0 };
     static const uint32_t negative_width[] = { 10, 20, -1, 2, 4, 1, 0 };
-    static const uint32_t ambiguous[] = { 10, 20, 8, 1, 4, 1, 0 };
     static const uint32_t clipped[] = { 127, 127, 2, 2, 4, 1, 0 };
 
     int ret;
@@ -17120,8 +17204,8 @@ int main(int argc, char **argv)
                   zero_height, test_read_pixels_refused);
     add_data_case("sn0/origin2000/kona-3d/read-negative-width-refused",
                   negative_width, test_read_pixels_refused);
-    add_data_case("sn0/origin2000/kona-3d/read-ambiguous-extent-refused",
-                  ambiguous, test_read_pixels_refused);
+    add_case("sn0/origin2000/kona-3d/read-eight-by-one",
+             test_read_pixels_eight_by_one);
     add_data_case("sn0/origin2000/kona-3d/read-clipped-refused",
                   clipped, test_read_pixels_refused);
     add_data_case("sn0/origin2000/kona-3d/read-missing-page-refused",
@@ -17944,8 +18028,8 @@ int main(int argc, char **argv)
                      test_read_pixels_luminance_transfer);
     }
     static const char *typed_extent_cases[] = {
-        "float-capacity", "float-capacity-exceeded", "ushort-ambiguous",
-        "float-ambiguous",
+        "float-capacity", "float-capacity-exceeded", "ushort-eight-by-one",
+        "float-eight-by-one",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(typed_extent_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
