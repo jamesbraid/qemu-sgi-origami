@@ -13471,6 +13471,29 @@ static void renderer_typed_setup(QTestState *s)
     kona_command(s, 0xc0, (uint32_t[]){ 0x1d01 }, 1);
 }
 
+/*
+ * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
+ * rows counted down, ends exclusive, as kon_drawDid sends it.
+ */
+static void renderer_paint_display_id(QTestState *s, uint32_t x1,
+                                      uint32_t y1, uint32_t x2, uint32_t y2,
+                                      uint32_t id)
+{
+    const uint32_t value = id << 2;
+
+    x_read_fixture_command(s, 0x12a,
+                           (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    x_read_fixture_command(s, 0x12b,
+                           (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
+    x_read_fixture_command(s, 0x129,
+                           (uint32_t[]){ ((value & 15) << 3) |
+                                         ((value & 0xfff0) << 4), 0, 0, 0,
+                                         0xf00fff, 0, 8, 1, 0, 6, 0, 1, 1 },
+                           13);
+    x_read_fixture_command(s, 0x154,
+                           (uint32_t[]){ x1 << 16 | y1, x2 << 16 | y2 }, 2);
+}
+
 static uint32_t renderer_plane_at(QTestState *s, unsigned plane,
                                   unsigned x, unsigned y)
 {
@@ -13880,6 +13903,54 @@ static void test_renderer_create_arm_cleared_on_load(void)
     qtest_quit(to);
     qtest_quit(from);
     g_rmdir(dir);
+}
+
+/*
+ * A window whose owned pixels need more than the drawable's 16 clip
+ * rectangles stays off the Mesa route, which bounds its writes by the clip
+ * list alone. The window covers the screen with display ID 0xd and word 10
+ * set; 24 one-pixel holes with another window's ID 5, each on its own row
+ * and column, cut it into far more rectangles. A triangle over the holes
+ * leaves them unpainted and takes no Mesa frame. twilight, which draws into
+ * the root window, otherwise painted over every window above it.
+ */
+static void test_renderer_overflow_ownership_excluded(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    uint64_t generation;
+
+    gl_make_current(s);
+    renderer_paint_display_id(s, 0, 0, FB_WIDTH, FB_HEIGHT, 0xd);
+    for (uint32_t k = 0; k < 24; k++) {
+        uint32_t row = FB_HEIGHT - 1 - (280 + 4 * k);
+
+        renderer_paint_display_id(s, 520 + 10 * k, row, 521 + 10 * k,
+                                  row + 1, 5);
+    }
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ 0, 0, 0x05670080, 0x05670080,
+                                      0, 0, FB_WIDTH, FB_HEIGHT, 0, 0xd, 1 },
+                        11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ 0, 0, 0 }, 3);
+    kona_command(s, 0xe3, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(s, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+    kona_command(s, 0xc0, (uint32_t[]){ 0x1d01 }, 1);
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    generation = renderer_counter(s, "x-test-mesa-front-generation");
+    gl_begin(s, 4);
+    gl_vertex2f(s, -0.5, -0.5);
+    gl_vertex2f(s, 0.5, -0.5);
+    gl_vertex2f(s, 0, 0.5);
+    gl_end(s);
+    for (uint32_t k = 0; k < 24; k++) {
+        g_assert_cmphex(renderer_plane_at(s, 0, 520 + 10 * k, 280 + 4 * k),
+                        ==, 0);
+        g_assert_cmphex(renderer_plane_at(s, 0, 521 + 10 * k, 280 + 4 * k),
+                        ==, 0xff0000);
+    }
+    g_assert_cmpuint(renderer_counter(s, "x-test-mesa-front-generation"),
+                     ==, generation);
+    qtest_quit(s);
 }
 
 static void test_renderer_typed_ortho_excluded(void)
@@ -17128,6 +17199,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(0), test_texture_8x8_refused);
     add_data_case("sn0/origin2000/kona-3d/renderer/no-render-node",
                   GUINT_TO_POINTER(0), test_renderer_fixture);
+    add_case("sn0/origin2000/kona-3d/renderer/overflow-ownership-excluded",
+             test_renderer_overflow_ownership_excluded);
     add_data_case("sn0/origin2000/kona-3d/renderer/typed-coverage",
                   GUINT_TO_POINTER(0), test_renderer_typed_coverage);
     add_data_case("sn0/origin2000/kona-3d/renderer/typed-same-rgb",
