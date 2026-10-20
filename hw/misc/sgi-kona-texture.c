@@ -861,14 +861,25 @@ static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
 
 static bool texture_native_covers(const SGIKonaTextureNativeImage *n,
                                    uint32_t x0, uint32_t y0, uint32_t width,
-                                   uint32_t height, uint32_t depth)
+                                   uint32_t height, uint32_t depth,
+                                   uint64_t *tests)
 {
+    /*
+     * covered counts the set coverage bits exactly, so a complete image
+     * covers every rectangle in it. Resolving runs for every draw, and
+     * scanning a whole large image's bits each time cost pfCity's draw
+     * thread most of its time.
+     */
+    if (n->covered == native_pixels(n)) {
+        return true;
+    }
     for (uint32_t z = 0; z < depth; z++) {
         for (uint32_t y = 0; y < height; y++) {
             uint64_t row = ((uint64_t)z * n->image.height + y0 + y) *
                            n->image.width + x0;
 
             for (uint32_t x = 0; x < width; x++) {
+                ++*tests;
                 if (!native_covered(n->coverage, row + x)) {
                     return false;
                 }
@@ -894,7 +905,7 @@ static bool texture_native_covers(const SGIKonaTextureNativeImage *n,
 static bool texture_native_interior(const SGIKonaTextureObject *o,
                                       const SGIKonaTextureNativeImage *n,
                                       unsigned level, uint32_t *x0,
-                                      uint32_t *y0)
+                                      uint32_t *y0, uint64_t *tests)
 {
     bool volume = o->native_depth != 0;
     uint32_t width = MAX(1u, o->native_width >> level);
@@ -917,7 +928,7 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
         height > n->image.height || depth > n->image.depth) {
         return false;
     }
-    if (texture_native_covers(n, 0, 0, width, height, depth)) {
+    if (texture_native_covers(n, 0, 0, width, height, depth, tests)) {
         return true;
     }
     if (volume || (width == n->image.width && height == n->image.height)) {
@@ -925,7 +936,7 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
     }
     *x0 = n->image.width - width;
     *y0 = n->image.height - height;
-    return texture_native_covers(n, *x0, *y0, width, height, 1);
+    return texture_native_covers(n, *x0, *y0, width, height, 1, tests);
 }
 
 static uint32_t texture_native_view(SGIKonaTextureObject *o)
@@ -989,7 +1000,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                       (!o->native_format_valid || h[9] == o->native_format);
             if (o->native_layout_valid) {
                 matches = matches &&
-                          texture_native_interior(o, n, level, &ox, &oy);
+                          texture_native_interior(o, n, level, &ox, &oy,
+                                                  &o->coverage_tests);
             } else {
                 matches = matches && n->covered == native_pixels(n) &&
                           texture_dimensions(n->image.width, n->image.height);

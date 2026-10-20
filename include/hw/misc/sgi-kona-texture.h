@@ -87,6 +87,11 @@ typedef struct SGIKonaTextureObject {
     bool native_bank_one;
     /* A volume bound in layout mode one, the single-level layout. */
     bool native_volume_single;
+    /*
+     * Coverage bits tested while resolving the object's levels, so their
+     * cost can be seen; not migrated.
+     */
+    uint64_t coverage_tests;
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
 } SGIKonaTextureObject;
 

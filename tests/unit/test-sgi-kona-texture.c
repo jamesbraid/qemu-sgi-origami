@@ -428,6 +428,66 @@ static void test_native_depth_storage(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+/* Load the rectangle (x, y, w, h) of handle 5's 64x64 level, every texel 0. */
+static void resolve_cost_load(SGIKonaTextureState *s, uint32_t x, uint32_t y,
+                              uint32_t w, uint32_t h)
+{
+    uint32_t hd[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = w, [2] = h, [3] = 5, [4] = 1,
+        [9] = 0x30, [10] = 5, [11] = x, [12] = y, [13] = x + w - 1,
+        [14] = y + h - 1, [16] = 0x66, [17] = 0x2200, [18] = 23,
+    };
+    g_autofree uint32_t *pixels = g_new0(uint32_t, w * h);
+
+    g_assert_true(sgi_kona_texture_native_upload(s, hd, pixels, SGI_GL_RGBA,
+                                                 SGI_GL_RGBA));
+}
+
+/*
+ * Resolving the bound texture happens for every draw. pfCity (IRIX
+ * 6.5.30) draws with large complete textures, and a resolve that tested
+ * every coverage bit of each level took most of its draw thread's time.
+ * A complete level is now taken without testing any bit. A partial one
+ * is still tested until its first missing texel, and is refused.
+ */
+static void test_native_resolve_cost(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    SGIKonaTextureObject *o;
+    uint32_t table[16];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(table); i++) {
+        table[i] = UINT32_MAX;
+    }
+    table[0] = 23;
+    sgi_kona_texture_init(&s);
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = p.mag_filter = SGI_GL_LINEAR;
+    /* The last texel, then the lower half: rows 32 to 62 are missing. */
+    resolve_cost_load(&s, 63, 63, 1, 1);
+    resolve_cost_load(&s, 0, 0, 64, 32);
+    g_assert_true(sgi_kona_texture_native_dimensions(&s, 5, 64, 64));
+    g_assert_true(sgi_kona_texture_native_layout(&s, 5, 0x66));
+    g_assert_true(sgi_kona_texture_native_table(&s, 5, table));
+    g_assert_true(sgi_kona_texture_bind(&s, 5, &p));
+    o = g_hash_table_lookup(s.objects, GUINT_TO_POINTER(5));
+    g_assert_nonnull(o);
+    g_assert_cmpuint(sgi_kona_texture_resolve(&s)->pyramid->count, ==, 0);
+    /* Rows 0 to 31, then the first texel of row 32. */
+    g_assert_cmpuint(o->coverage_tests, ==, 64 * 32 + 1);
+    resolve_cost_load(&s, 0, 32, 64, 32);
+    o->coverage_tests = 0;
+    for (unsigned k = 0; k < 3; k++) {
+        const SGIGLTexImage *im = sgi_kona_texture_resolve(&s);
+
+        g_assert_cmpuint(im->pyramid->count, ==, 1);
+        g_assert_cmpuint(im->pyramid->levels[0].width, ==, 64);
+    }
+    g_assert_cmpuint(o->coverage_tests, ==, 0);
+    sgi_kona_texture_cleanup(&s);
+}
+
 static void test_native(void)
 {
     SGIKonaTextureState s;
@@ -2647,6 +2707,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/migration", test_migration);
     g_test_add_func("/sgi/kona/texture/subimage", test_subimage);
     g_test_add_func("/sgi/kona/texture/native", test_native);
+    g_test_add_func("/sgi/kona/texture/native-resolve-cost",
+                    test_native_resolve_cost);
     g_test_add_func("/sgi/kona/texture/native-chunks", test_native_chunks);
     g_test_add_func("/sgi/kona/texture/native-growth", test_native_growth);
     g_test_add_func("/sgi/kona/texture/native-format", test_native_format);
