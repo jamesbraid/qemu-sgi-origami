@@ -1,12 +1,14 @@
 From: origami QEMU Chimera diagnostics
-Subject: [PATCH] tftp: retransmit the outstanding block on a duplicate ACK
+Subject: [PATCH] tftp: retransmit outstanding data on a duplicate ACK
 
 A delayed TFTP client ACK can repeat the previous block number. The
 server must resend its outstanding DATA block; advancing skips data and
-leaves the client unable to finish a transfer.
+leaves the client unable to finish a transfer. Check that an ACK carries
+its block number before reading it.
 
-The existing BSD-3-Clause TFTP test covers the duplicate ACK and the
-following valid ACK. Existing libslirp source license notices remain.
+The existing BSD-3-Clause TFTP test covers duplicate and truncated
+ACKs, payload bytes, response length, and the following valid ACK.
+Existing libslirp source license notices remain.
 
 diff --git a/src/tftp.c b/src/tftp.c
 --- a/src/tftp.c
@@ -86,32 +88,53 @@ diff --git a/src/tftp.c b/src/tftp.c
  }
  
  static void tftp_handle_error(Slirp *slirp, struct sockaddr_storage *srcsas,
-@@ -477,7 +486,7 @@
+@@ -477,7 +486,9 @@
          break;
  
      case TFTP_ACK:
 -        tftp_handle_ack(m->slirp, srcsas, hdr);
-+        tftp_handle_ack(m->slirp, srcsas, mtod(m, struct tftp_t *));
++        if (mtod_check(m, sizeof(struct tftphdr) + sizeof(uint16_t))) {
++            tftp_handle_ack(m->slirp, srcsas, mtod(m, struct tftp_t *));
++        }
          break;
  
      case TFTP_ERROR:
 diff --git a/test/tftptest.c b/test/tftptest.c
 --- a/test/tftptest.c
 +++ b/test/tftptest.c
-@@ -41,6 +41,9 @@
-     HEADERS(41),
-     0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
- };
-+
-+static const uint8_t ack_one[] = { HEADERS(32), 0, 4, 0, 1 };
-+static const uint8_t ack_two[] = { HEADERS(32), 0, 4, 0, 2 };
+@@ -15,11 +15,13 @@
+ #include "slirp.h"
  
- static const uint8_t option[] = {
-     HEADERS(53),
-@@ -92,6 +95,13 @@
-     return ntohs(tp->hdr.tp_op);
+ static uint8_t reply[IP_MAXPACKET];
++static size_t reply_len;
+ 
+ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque)
+ {
+     assert(len <= IP_MAXPACKET);
+     memcpy(opaque, buf, len);
++    reply_len = len;
+     return len;
  }
  
+@@ -42,6 +44,9 @@
+     0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
+ };
+ 
++static const uint8_t ack_one[] = { HEADERS(32), 0, 4, 0, 1 };
++static const uint8_t ack_two[] = { HEADERS(32), 0, 4, 0, 2 };
++
+ static const uint8_t option[] = {
+     HEADERS(53),
+     0, 1, 'b', 'o', 'o', 't', 0, 'o', 'c', 't', 'e', 't', 0,
+@@ -88,8 +93,56 @@
+     const struct tftp_t *tp = (void *)(reply + ETH_HLEN + sizeof(struct ip));
+ 
+     memset(reply, 0, sizeof(reply));
++    reply_len = 0;
+     slirp_input(slirp, frame, len);
+     return ntohs(tp->hdr.tp_op);
++}
++
 +static uint16_t sent_block(void)
 +{
 +    const struct tftp_t *tp = (void *)(reply + ETH_HLEN + sizeof(struct ip));
@@ -119,32 +142,75 @@ diff --git a/test/tftptest.c b/test/tftptest.c
 +    return ntohs(tp->x.tp_data.tp_block_nr);
 +}
 +
++static void assert_data_block(uint16_t block, uint8_t fill)
++{
++    const struct tftp_t *tp = (void *)(reply + ETH_HLEN + sizeof(struct ip));
++    uint8_t expected[512];
++
++    memset(expected, fill, sizeof(expected));
++    assert(sent_block() == block);
++    assert(reply_len == ETH_HLEN + sizeof(struct ip) +
++           sizeof(struct tftphdr) + sizeof(uint16_t) +
++           sizeof(expected));
++    assert(memcmp(tp->x.tp_data.tp_buf, expected, sizeof(expected)) == 0);
++}
++
++static void check_short_ack(Slirp *slirp)
++{
++    struct sockaddr_storage src = { 0 };
++    struct sockaddr_in *in = (void *)&src;
++    struct mbuf *m = m_get(slirp);
++    struct tftp_t *tp = (void *)m->m_data;
++    uint16_t block = htons(1);
++    const struct tftp_t *sent =
++        (void *)(reply + ETH_HLEN + sizeof(struct ip));
++
++    in->sin_family = AF_INET;
++    in->sin_addr.s_addr = htonl(0x0a00020f);
++    in->sin_port = htons(9069);
++    memset(tp, 0, sizeof(struct tftphdr));
++    tp->hdr.udp.uh_sport = htons(9069);
++    tp->hdr.udp.uh_dport = htons(69);
++    tp->hdr.tp_op = htons(TFTP_ACK);
++    memcpy(m->m_data + sizeof(struct tftphdr), &block, sizeof(block));
++    m->m_len = sizeof(struct tftphdr);
++    memset(reply, 0, sizeof(reply));
++    reply_len = 0;
++    tftp_input(&src, m);
++    assert(ntohs(sent->hdr.tp_op) == 0);
++    assert(reply_len == 0);
++    m_free(m);
+ }
+ 
  int main(void)
- {
-     SlirpConfig config = {
-@@ -111,7 +121,9 @@
+@@ -111,7 +164,13 @@
      Slirp *slirp;
      unsigned i;
  
 -    gboolean wrote = g_file_set_contents(file, "data", -1, NULL);
-+    char contents[1536] = { 0 };
-+    gboolean wrote = g_file_set_contents(file, contents,
-+                                         sizeof(contents), NULL);
++    char contents[1536];
++    gboolean wrote;
++
++    memset(contents, 'A', 512);
++    memset(contents + 512, 'B', 512);
++    memset(contents + 1024, 'C', 512);
++    wrote = g_file_set_contents(file, contents, sizeof(contents), NULL);
      assert(wrote);
      config.tftp_path = dir;
      slirp = slirp_new(&config, &callbacks, reply);
-@@ -129,6 +141,15 @@
+@@ -129,6 +188,16 @@
                 == TFTP_OACK);
      }
  
 +    assert(reply_op(slirp, plain, sizeof(plain)) == TFTP_DATA);
-+    assert(sent_block() == 1);
++    assert_data_block(1, 'A');
++    check_short_ack(slirp);
 +    assert(reply_op(slirp, ack_one, sizeof(ack_one)) == TFTP_DATA);
-+    assert(sent_block() == 2);
++    assert_data_block(2, 'B');
 +    assert(reply_op(slirp, ack_one, sizeof(ack_one)) == TFTP_DATA);
-+    assert(sent_block() == 2);
++    assert_data_block(2, 'B');
 +    assert(reply_op(slirp, ack_two, sizeof(ack_two)) == TFTP_DATA);
-+    assert(sent_block() == 3);
++    assert_data_block(3, 'C');
 +
      slirp_cleanup(slirp);
      g_remove(file);
