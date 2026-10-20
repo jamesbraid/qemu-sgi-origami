@@ -10255,31 +10255,79 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8
  * only for an alpha it is asked for, and the model leaves them zero.
  *
- * Plane selector 2 (op 0xa8001, addr 2) is answered over a direct-colour
- * pixel only. For a TrueColor window whose format has bit 0x4000 clear,
- * the same caller reads selectors 1 and 2 and takes red, green and blue
- * from the second word's bits 31:24, 23:16 and 15:8 (konal.so
- * 0x434070-0x435238, established for the reader); oglsnoop over a GL
- * window sends exactly that pair. The model stores logical RGB, so the
- * word is that value shifted left 8, bits 7:0 zero.
+ * Plane selectors 0, 1 and 2 (op (s << 18) | 0x28001, addr s) are
+ * answered per pixel by sgi_kona_x_read_fb_word(). For a TrueColor
+ * window with a two-word format (bit 0x4000 clear) the reader asks for
+ * selectors 1 and 2 and takes red, green and blue from the first word,
+ * selector 1's, when the window private's byte at +2 is 0 (0x434830);
+ * selector 2's word is read and not used there. When that byte is 1 it
+ * asks for 2 and 3, takes the alpha from bits 15:8 of selector 2's word
+ * and red, green and blue from selector 3's (0x434708).
  *
- * Approximated: only selector 1 over X colour-index pixels and selector 2
- * over direct-colour pixels are answered. What the pipe puts in the low
- * bits, and selector 1's alpha word over a direct pixel, are unknown;
- * selector 1 there stays refused, which answers zeros.
- *
- * Known limit: the reader's pair starts at selector 2, not 1, when the
- * window private's byte at +2 is 1, so it asks for 2 and 3. The model
- * then answers the alpha word (selector 2) with the RGB word, and refuses
- * selector 3, answering zeros. What that byte means is unknown.
+ * Known limit: the model answers selector 2 with the RGB word, so a
+ * reader in the second case would take green as alpha, and refuses
+ * selector 3, answering zeros. What that byte means, and what the pipe
+ * keeps as a direct-colour pixel's alpha, are unknown.
  */
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
-    static const uint32_t form[] = { 0x1008, 0x68001, 1, 6, 0xa, 1, 1 };
-    static const uint32_t rgb_form[] = { 0x1008, 0xa8001, 2, 6, 0xa, 1, 1 };
+    /* Selector s: op (s << 18) | 0x28001 and addr s (kon_loadImpWordGC). */
+    for (uint32_t sel = 0; sel <= 2; sel++) {
+        const uint32_t form[] = {
+            0x1008, (sel << 18) | 0x28001, sel, 6, 0xa, 1, 1,
+        };
 
-    return !memcmp(gc + 6, form, sizeof(form)) ||
-           !memcmp(gc + 6, rgb_form, sizeof(rgb_form));
+        if (!memcmp(gc + 6, form, sizeof(form))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The frame-buffer word for plane selector `sel` over a pixel the model
+ * holds with tag `tag` and stored word `word`, or false where the model
+ * has no answer. From the reader at konal.so 0x434070-0x4353a4, which
+ * picks the selector and the decoding from the window's format word
+ * (established for the reader, not for the pipe):
+ *
+ *   selector 1, 8-bit-component formats (format & 0xf == 1): a
+ *   colour-index pixel's index from the top bits; a TrueColor pixel's
+ *   red, green and blue from bits 31:24, 23:16 and 15:8 (0x4342a0 for a
+ *   one-word format, 0x434860 for a two-word one whose window byte +2 is
+ *   0). So selector 1 over a direct-colour pixel is its RGB shifted left
+ *   8, as selector 2's word is answered.
+ *
+ *   selector 0, 16-bit formats (format & 0xf == 2, read at 0x434c44): a
+ *   TrueColor pixel's 5-bit red, green and blue from bits 31:27, 26:22
+ *   and 21:17, and bit 16 the alpha flag (0x434cb4-0x434d0c). Selector 0
+ *   is also the 2-bit overlay read (format 8, index in bits 15:14,
+ *   0x4352a4); the model answers selector 0 over direct-colour pixels
+ *   only.
+ *
+ * Approximated: the model stores logical RGB8, so selector 0 answers the
+ * top five bits of each component. What the pipe returns in the bits the
+ * reader ignores (7:0 for selector 1 and 2, 15:0 for selector 0) is
+ * unknown and answered zero; that includes selector 0's alpha bit, which
+ * a reader asked for alpha would take as transparent.
+ */
+static bool sgi_kona_x_read_fb_word(uint32_t sel, uint32_t tag,
+                                    uint32_t word, uint32_t *out)
+{
+    if (tag == SGI_KONA_TAG_X_INDEX16 && word <= 0xffff && sel == 1) {
+        *out = word << 16;
+        return true;
+    }
+    if (tag != SGI_KONA_TAG_DIRECT || word > 0xffffff) {
+        return false;
+    }
+    if (sel == 0) {
+        *out = ((word >> 19) & 0x1f) << 27 | ((word >> 11) & 0x1f) << 22 |
+               ((word >> 3) & 0x1f) << 17;
+    } else {
+        *out = word << 8;
+    }
+    return true;
 }
 
 /* Public index values use tightly packed rows; source words stay native. */
@@ -10343,14 +10391,16 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                bool rgb = bytes == 4 &&
-                           (!fb_word || s->x_gc[8] == 2);
+                bool rgb = bytes == 4 && !fb_word;
+                uint32_t fb;
 
                 if (sgi_kona_displayed_bank(s, x + c, py)) {
                     reason = "bank 0 hidden by a displayed bank-1 window";
                     goto refused;
                 }
-                if (tag != (rgb ? SGI_KONA_TAG_DIRECT :
+                if (fb_word ?
+                    !sgi_kona_x_read_fb_word(s->x_gc[8], tag, word, &fb) :
+                    tag != (rgb ? SGI_KONA_TAG_DIRECT :
                                   SGI_KONA_TAG_X_INDEX16) ||
                     word > (rgb ? 0xffffff : 0xffff)) {
                     reason = "source is not supported main-plane colour";
@@ -10361,15 +10411,19 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         data = g_malloc0(pitch * height);
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
+                int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
                 uint32_t word = sgi_plane_load(&s->mem,
-                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
-                    SGI_KONA_FB_HEIGHT - 1 - y - r);
+                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                if (fb_word && s->x_gc[8] == 2) {
-                    /* Selector 2's word: see sgi_kona_x_read_fb_word_gc(). */
-                    stl_be_p(data + r * pitch + c * 4, word << 8);
-                } else if (fb_word) {
-                    stl_be_p(data + r * pitch + c * 4, word << 16);
+                if (fb_word) {
+                    uint32_t tag = sgi_plane_load(&s->mem,
+                        sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, 0)),
+                        x + c, py);
+                    uint32_t fb = 0;
+
+                    /* Checked above: see sgi_kona_x_read_fb_word(). */
+                    sgi_kona_x_read_fb_word(s->x_gc[8], tag, word, &fb);
+                    stl_be_p(data + r * pitch + c * 4, fb);
                 } else if (bytes == 4) {
                     /* The model stores logical RGB, not physical components. */
                     stl_be_p(data + r * pitch + c * 4, word);

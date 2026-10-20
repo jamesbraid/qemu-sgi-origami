@@ -1024,8 +1024,7 @@ static void test_read_fb_word(void)
 
     /*
      * Over direct-colour pixels, as oglsnoop reads a GL window, selector
-     * 2's word carries red, green and blue in bits 31:8; selector 1's
-     * alpha word there stays refused.
+     * 2's word carries red, green and blue in bits 31:8.
      */
     seed_rgb(qts, 454, 700, 0x123456);
     seed_rgb(qts, 455, 700, 0xabcdef);
@@ -1037,8 +1036,47 @@ static void test_read_fb_word(void)
     g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==, 0x12345600);
     g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==, 0xabcdef00);
     g_assert_cmphex(read_guest_word(qts, READ_PAGE + 16), ==, 0xa5a5a5a5);
+
+    /*
+     * Selector 1 over a TrueColor pixel is the reader's RGB word too, red
+     * in bits 31:24 (konal.so 0x4342a0), and over a colour-index pixel
+     * beside it the left-justified index: one 4 by 1 read across both
+     * kinds, as the file manager's edge reads cross windows.
+     */
     x_command(qts, TOKEN_GC, gc, 13);
-    read_refused(qts, 454, 700);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 1, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==, 0x12345600);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==, 0xabcdef00);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 16), ==,
+                    (uint32_t)read_pattern(2, 0) << 24);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 20), ==,
+                    (uint32_t)read_pattern(3, 0) << 24);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 24), ==, 0xa5a5a5a5);
+
+    /*
+     * Selector 0, the 16-bit formats' read, packs five bits of red, green
+     * and blue in bits 31:17 (konal.so 0x434cb4); over a colour-index
+     * pixel it stays refused.
+     */
+    memcpy(other, gc, sizeof(other));
+    other[7] = 0x28001;
+    other[8] = 0;
+    x_command(qts, TOKEN_GC, other, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 2, 1, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==,
+                    (0x12u >> 3) << 27 | (0x34u >> 3) << 22 |
+                    (0x56u >> 3) << 17);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==,
+                    (0xabu >> 3) << 27 | (0xcdu >> 3) << 22 |
+                    (0xefu >> 3) << 17);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 1, 1, 0 }, 7);
+    read_refused(qts, 456, 700);
 }
 
 static void read_supported(QTestState *s)
