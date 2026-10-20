@@ -1611,10 +1611,16 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * Bit 17 of the same register is a computed enable, not a plain mirror of
  * glEnable(GL_BLEND): the library sets it when blending is on and colour
- * logic op, bit 20 below, is off. The library also rewrites 0x0c21 to all
- * zeros whenever this bit is clear, so a draw must not apply that register's
- * factors, equation or colour while the bit is clear -- doing so would
- * overwrite the real blend state with the library's parked zeros.
+ * logic op, bit 20 below, is off. 0x0c21 holds the factors, equation and
+ * colour whatever bit 17 says, and the bit blends with whatever it last
+ * holds. INFERRED from the library's own sequences, OBSERVED on the model:
+ * it sends 0x0c21 while bit 17 is clear and sets the bit later without
+ * sending 0x0c21 again. tex_cube's first frame does that with its
+ * SRC_ALPHA, ONE_MINUS_SRC_ALPHA word 0x639; in four seconds of mirrors,
+ * 3,537 of the 4,862 0x0c21 words came with the bit clear, and each of the
+ * 3,535 times the bit was set, the last 0x0c21 held non-zero factors. The
+ * all-zero word the library also sends with the bit clear was never left
+ * in place for an enable.
  */
 #define ODSY_MODE_BLEND (1u << 17)
 #define ODSY_REG_BLEND 0x0c21        /* 3 operands */
@@ -9872,15 +9878,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         uint32_t args[4];
 
         /*
-         * The X server sends its opaque-stipple background here before the
-         * 0x0404 that sets bit 17, so keep the colour whatever the bit says.
+         * Every operand is kept whatever bit 17 says (ODSY_MODE_BLEND): the
+         * library sends glBlendFunc's factors, and the X server its
+         * opaque-stipple background, before the 0x0404 that sets the bit.
          */
         s->const_colour[0] = s->cmd_operand[1];
         s->const_colour[1] = s->cmd_operand[2];
-        if (!(s->pattern_mode & ODSY_MODE_BLEND)) {
-            /* The library parks this register at zero while blending is off. */
-            break;
-        }
         word = s->cmd_operand[0];
         eq = (word >> ODSY_BLEND_EQ_SHIFT) & ODSY_BLEND_EQ_MASK;
         src = odyssey_blend_factor((word >> ODSY_BLEND_SRC_SHIFT) &
