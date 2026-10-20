@@ -237,8 +237,6 @@ static void aic7880_update_scsi_irq(AIC7880State *s)
         s->regs[REG_INTSTAT] |= 0x04;
         s->regs[REG_HCNTRL] |= HOST_PAUSE;
         timer_del(s->seq_timer);
-    } else if (!s->peer_scsi_irq_latched) {
-        s->regs[REG_INTSTAT] &= ~0x04;
     }
     aic7880_update_irq(s);
 }
