@@ -1035,6 +1035,43 @@ static void test_x_data_run_owner_rules(void)
                                    " height 6 "));
 }
 
+/*
+ * Only the X server's context is expected to send X tokens. If another
+ * context sends one while A's run is held, the shared run takes it, and
+ * the log says so: here B's X data2 adds to A's run and B's X rect ends
+ * it, drawing A's rectangles under B.
+ */
+static void test_x_run_taken_by_other_context_logged(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    context_first_physical(s, SAVE_A, RETURN_A);
+    qtest_writel(s, REG_KICK, 0);
+    x_run_setup(s);
+    kona_command(s, 0x144, x_run_data, ARRAY_SIZE(x_run_data));
+    context_deactivate(s, 1);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    qtest_writel(s, REG_KICK, 0);
+    kona_command(s, 0x142, (uint32_t[]){ 0x00c800c8, 0x00030004 }, 2);
+    kona_command(s, 0x152, x_run_rect, ARRAY_SIZE(x_run_rect));
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "context 0's X run of 4 words is taken by"
+                                   " token 0x142 while context 1 is"
+                                   " current\n"));
+    g_assert_nonnull(strstr(found, "context 0's X run of 6 words is taken by"
+                                   " token 0x152 while context 1 is"
+                                   " current\n"));
+    g_assert_nonnull(strstr(found, "sgi_kona_x_rect (200, 200) width 3"
+                                   " height 4 "));
+}
+
 /* The waiting run and its owner migrate with B current. */
 static void test_migration_of_x_data_run(void)
 {
@@ -3624,6 +3661,9 @@ int main(int argc, char **argv)
                    test_x_data_run_owner_rules);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-x-data-run",
                    test_migration_of_x_data_run);
+    qtest_add_func("sn0/origin2000/kona-context/"
+                   "x-run-taken-by-other-context-logged",
+                   test_x_run_taken_by_other_context_logged);
     qtest_add_func("sn0/origin2000/kona-context/"
                    "privileged-command-cut-by-force",
                    test_privileged_command_cut_by_force);
