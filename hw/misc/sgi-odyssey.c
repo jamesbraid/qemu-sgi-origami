@@ -1536,8 +1536,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * 0x20080080. What either bit does on the board is UNKNOWN.
  */
 #define ODSY_DEST_NO_READ (1u << 29)
-#define ODSY_DEST_FLUSH (1u << 23)
-#define ODSY_DEST_FLAGS (ODSY_DEST_NO_READ | ODSY_DEST_FLUSH)
+#define ODSY_DEST_BIT23 (1u << 23)
+#define ODSY_DEST_FLAGS (ODSY_DEST_NO_READ | ODSY_DEST_BIT23)
 #define ODSY_DEST_SELECT_VALUE_INDEX 2 /* the third operand */
 #define ODSY_DEST_SELECT_BASE_INDEX 0  /* the buffer's base, 0x2000 */
 #define ODSY_PLANE_MASK_SHIFT 12       /* the 0x1023 operand holds mask << 12 */
