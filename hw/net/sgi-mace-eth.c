@@ -566,8 +566,13 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             return;
         case MACE_ETH_TX_POINTER:
         case MACE_ETH_TX_POINTER_ALIAS:
-            s->tx_write = (value & 0x1ff) %
-                (64U << ((s->dma_control >> 2) & 3));
+            if ((value & 0x1ff) >=
+                (64U << ((s->dma_control >> 2) & 3))) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace-eth: TX pointer outside active ring\n");
+                return;
+            }
+            s->tx_write = value & 0x1ff;
             sgi_mace_eth_tx_run(s);
             sgi_mace_eth_update_irq(s);
             return;
