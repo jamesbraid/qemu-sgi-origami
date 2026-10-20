@@ -445,9 +445,26 @@ bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+/*
+ * Whether o's stored table is table: for a volume's record the table
+ * alone, as a volume's levels do not alternate banks from bind bit 28,
+ * and otherwise the table and the first level's bank. The object's own
+ * kind is not compared. A 0x178 that frees a 2D texture while a volume's
+ * record is current gives that texture the volume's size until its own
+ * next record, which must still find it.
+ */
+static bool texture_table_matches(const SGIKonaTextureObject *o,
+                                  const uint32_t table[16], bool volume,
+                                  bool bank_one)
+{
+    return o->native_table_valid &&
+           (volume || o->native_bank_one == bank_one) &&
+           !memcmp(o->native_table, table, sizeof(o->native_table));
+}
+
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
-                                 const uint32_t table[16], bool bank_one,
-                                 uint32_t *handle)
+                                 const uint32_t table[16], bool volume,
+                                 bool bank_one, uint32_t *handle)
 {
     GHashTableIter iter;
     gpointer value;
@@ -457,8 +474,7 @@ bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         const SGIKonaTextureObject *o = value;
 
-        if (o->native_table_valid && o->native_bank_one == bank_one &&
-            !memcmp(o->native_table, table, sizeof(o->native_table))) {
+        if (texture_table_matches(o, table, volume, bank_one)) {
             *handle = o->handle;
             matches++;
         }
@@ -467,12 +483,12 @@ bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
 }
 
 bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
-                                    const uint32_t table[16], bool bank_one)
+                                    const uint32_t table[16], bool volume,
+                                    bool bank_one)
 {
     const SGIKonaTextureObject *o = texture_object(s, handle, false);
 
-    return o && o->native_table_valid && o->native_bank_one == bank_one &&
-           !memcmp(o->native_table, table, sizeof(o->native_table));
+    return o && texture_table_matches(o, table, volume, bank_one);
 }
 
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,

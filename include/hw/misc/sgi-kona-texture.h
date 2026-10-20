@@ -129,15 +129,16 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
 bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
                                   bool bank_one);
 /*
- * The one object whose stored level table equals table and whose first
- * level is in the same bank, if exactly one.
+ * The one object whose stored level table equals table, if exactly one,
+ * with its first level in the same bank unless volume is set.
  */
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
-                                 const uint32_t table[16], bool bank_one,
-                                 uint32_t *handle);
-/* Whether handle's stored level table and first-level bank are these. */
+                                 const uint32_t table[16], bool volume,
+                                 bool bank_one, uint32_t *handle);
+/* Whether handle's stored level table is table, as find_table matches. */
 bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
-                                    const uint32_t table[16], bool bank_one);
+                                    const uint32_t table[16], bool volume,
+                                    bool bank_one);
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
 bool sgi_kona_texture_native_dimensions_1d(SGIKonaTextureState *s,
