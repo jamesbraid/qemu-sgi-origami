@@ -10323,7 +10323,7 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  * and red, green and blue from selector 3's (0x434708).
  *
  * Known limit: the model answers selector 2 with the RGB word, so a
- * reader in the second case would take green as alpha, and refuses
+ * reader in the second case would take blue (bits 15:8) as alpha, and refuses
  * selector 3, answering zeros. What that byte means, and what the pipe
  * keeps as a direct-colour pixel's alpha, are unknown.
  */
