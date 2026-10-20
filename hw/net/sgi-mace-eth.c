@@ -567,8 +567,13 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                 (value & MACE_ETH_TX_ENABLE)) {
                 if (s->tx_reinit_seen == MACE_ETH_TX_REINIT_READY &&
                     !(s->mac_control & MACE_ETH_MAC_RESET)) {
-                    /* Full software reinit is a model policy, not MAC reset. */
-                    s->tx_read = s->tx_write;
+                    /* Full 8 KiB reinit starts a new queue in this model. */
+                    if (!(value & 0x0c)) {
+                        s->tx_read = 0;
+                        s->tx_write = 0;
+                    } else {
+                        s->tx_read = s->tx_write;
+                    }
                 }
                 s->tx_reinit_seen = 0;
             }
