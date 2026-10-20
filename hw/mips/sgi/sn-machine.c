@@ -3707,6 +3707,13 @@ static void sgi_machine_set_module_power(SGIMachineState *s,
 
     modules = sgi_model_module_array(t->modules, &count);
     module_nodes = sgi_model_array_uint32(modules[module]->nodes, &node_count);
+    /*
+     * Each node gates seventeen windows, and every commit renders the flat
+     * view of every address space in the machine, so one transaction defers
+     * them to a single commit. Switching power only gates regions and
+     * re-derives link state; nothing here accesses an address space.
+     */
+    memory_region_transaction_begin();
     for (i = 0; i < node_count; i++) {
         sn0_node_set_power(s->nodes[module_nodes[i]], on);
     }
@@ -3720,6 +3727,7 @@ static void sgi_machine_set_module_power(SGIMachineState *s,
             }
         }
     }
+    memory_region_transaction_commit();
 }
 
 /*
