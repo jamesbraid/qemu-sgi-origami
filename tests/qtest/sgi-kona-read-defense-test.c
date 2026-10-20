@@ -105,6 +105,28 @@ static void assert_unchanged(QTestState *s)
     g_assert_cmpuint(field(s, FIXTURE_READY_WRITES), ==, 0);
 }
 
+/*
+ * A refused read on the context's own page is answered: the whole page
+ * after the header zeroed, then the ready word. The counters are reset
+ * afterwards for the next read.
+ */
+static void assert_answered_zero(QTestState *s)
+{
+    uint8_t actual[FIXTURE_PAGE_BYTES], expected[FIXTURE_PAGE_BYTES];
+
+    memset(expected, 0, sizeof(expected));
+    expected[3] = 1;
+    memset(expected + 4, 0xa5, 4);
+    qtest_memread(s, PAGE, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    g_assert_cmpuint(field(s, FIXTURE_PAYLOAD_BYTES), ==,
+                     FIXTURE_PAGE_BYTES - 8);
+    g_assert_cmpuint(field(s, FIXTURE_READY_WRITES), ==, 1);
+    g_assert_cmpuint(field(s, FIXTURE_READY_SEQUENCE), ==,
+                     field(s, FIXTURE_PAYLOAD_WRITES) + 1);
+    control(s, FIXTURE_PREPARE, 0);
+}
+
 static void assert_payload(QTestState *s, bool ready)
 {
     static const uint8_t expected[] = {
@@ -148,7 +170,7 @@ static void test_bad_source(gconstpointer opaque)
     scene(s);
     control(s, FIXTURE_MUTATE_PIXEL, mutation);
     read_pixels(s);
-    assert_unchanged(s);
+    assert_answered_zero(s);
     control(s, FIXTURE_MUTATE_PIXEL, FIXTURE_PIXEL_VALID);
     read_pixels(s);
     assert_payload(s, true);
@@ -194,10 +216,15 @@ static void test_migration_controls(gconstpointer opaque)
     if (kind != FIXTURE_VALID_STATE) {
         g_assert_cmpuint(field(s, FIXTURE_FLAGS), ==, 0);
         read_pixels(s);
-        assert_unchanged(s);
+        /* A read with no page of the context's own is not answered. */
+        if (kind == FIXTURE_FALSE_MISMATCH) {
+            assert_unchanged(s);
+        } else {
+            assert_answered_zero(s);
+        }
         command(s, 0x1f2, (uint32_t[]){ 0x10000320, 0x9000, 0x4000 }, 3);
         read_pixels(s);
-        assert_unchanged(s);
+        assert_answered_zero(s);
         gc(s);
         setup(s);
     }
