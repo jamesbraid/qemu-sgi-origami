@@ -727,6 +727,20 @@ static void test_bte_memory_route(const void *data)
                 }
             }
         }
+        g_assert_true(qtest_memwrite_cpu(qts, (1 - node) * 2,
+            peer + 0x40000, source, sizeof(source)));
+        memset(bytes, 0xa0 + node, sizeof(source));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            own + 0x50000, bytes, sizeof(source)));
+        bte_cpu_writeq(qts, node * 2, own + 0x60000, UINT64_MAX);
+        g_assert_cmphex(bte_memory_transfer(qts, node, 0,
+            peer + 0x40000, own + 0x50000, own + 0x60000, false, false),
+            ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, node * 2,
+            own + 0x50000, result, sizeof(source)));
+        g_assert_cmpmem(result, sizeof(source), source, sizeof(source));
+        g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+            own + 0x60000), ==, 0);
     }
     /* SELECT2 places the second fitted bank in its own sparse window. */
     for (unsigned node = 0; node < 2; node++) {

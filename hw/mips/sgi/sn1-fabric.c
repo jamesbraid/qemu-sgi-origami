@@ -511,7 +511,7 @@ static const TypeInfo sn1_fabric_types[] = {
 
 DEFINE_TYPES(sn1_fabric_types)
 
-/* CPU mappings are derived from the fixed machine's live fabric state. */
+/* CPU and BTE DMA mappings follow the fixed machine's live fabric state. */
 typedef struct SN1MemoryOrigin {
     SN1MemoryMappings *maps;
     SN1NodeState *node;
@@ -632,14 +632,17 @@ SN1MemoryMappings *sn1_memory_mappings_new(DeviceState **nodes,
             if (node == target) {
                 continue;
             }
-            for (unsigned cpu = 0; cpu < node->nr_cpus; cpu++) {
+            for (unsigned view = 0; view <= node->nr_cpus; view++) {
                 SN1MemoryAlias *alias = g_new0(SN1MemoryAlias, 1);
-                g_autofree char *name = g_strdup_printf(
-                    "sn1.node%u.cpu%u.to%u", i, cpu, j);
+                bool fabric = view == node->nr_cpus;
+                g_autofree char *name = fabric ?
+                    g_strdup_printf("sn1.node%u.fabric.to%u", i, j) :
+                    g_strdup_printf("sn1.node%u.cpu%u.to%u", i, view, j);
 
                 alias->origin = node;
                 alias->target = target;
-                alias->parent = &node->ni_processor[cpu][0].region;
+                alias->parent = fabric ? &node->ni_fabric_memory.region :
+                                         &node->ni_processor[view][0].region;
                 memory_region_init_alias(&alias->region, OBJECT(node), name,
                     &target->ni_target[0], 0,
                     MIN(memory_region_size(&target->ni_target[0]),
