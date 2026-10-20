@@ -5430,7 +5430,7 @@ static void sgi_kona_gl_stipple_rows(SGIKonaState *s, int i)
 static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
                                      uint32_t selector, const uint32_t *args)
 {
-    uint32_t a[5];
+    uint32_t a[6];
     SGIGLCmd cmd = { .args = args };
     SGIGLSink sink;
     float f;
@@ -5568,6 +5568,29 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
                        sgi_kona_gl_int(args[1 + k]);
         }
         cmd = (SGIGLCmd) { SGI_GL_OP_TEX_ENV, 5, a };
+        break;
+    case SGI_KONA_CMD_GL_TEX_GEN:
+        /*
+         * __glkonim_TexGen{i,f,d,iv,fv,dv} (n32 libGLcore 0xda66590-
+         * 0xda66640, 0xd94f000-0xd94f330): the coordinate, the pname,
+         * then for an object or eye plane four single floats, and for
+         * anything else, the mode among them, one integer word.
+         */
+        a[0] = args[0];
+        a[1] = args[1];
+        if (args[1] == SGI_GL_OBJECT_PLANE || args[1] == SGI_GL_EYE_PLANE) {
+            memcpy(&a[2], &args[2], 4 * sizeof(*a));
+        } else if (args[1] == SGI_GL_TEXTURE_GEN_MODE) {
+            a[2] = sgi_kona_gl_int(args[2]);
+            a[3] = a[4] = a[5] = 0;
+        } else {
+            /* The SGIS point and line pnames, 0x81f4 to 0x81f7. */
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: glTexGen of coordinate 0x%"
+                          PRIx32 " parameter 0x%" PRIx32 " is not modelled;"
+                          " ignored\n", args[0], args[1]);
+            return true;
+        }
+        cmd = (SGIGLCmd) { SGI_GL_OP_TEX_GEN, 6, a };
         break;
     case SGI_KONA_CMD_GL_CLIP_PLANE:
         a[0] = args[0] - SGI_GL_CLIP_PLANE0;

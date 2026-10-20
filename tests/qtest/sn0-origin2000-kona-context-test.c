@@ -3277,7 +3277,8 @@ static void test_igloo_interface_framed(void)
  * setting up its texture: an eye-linear mode for S and T, then each eye
  * plane. Unframed, each word is dropped as neither a token nor a sync
  * word, and a plane's float can land on a selector. Framed, nothing is
- * dropped and the enable after them frames whole.
+ * dropped, the enable after them frames whole, and the shared GL takes
+ * all four rather than the model consuming them unmodelled.
  */
 static void test_tex_gen_framed(void)
 {
@@ -3306,7 +3307,8 @@ static void test_tex_gen_framed(void)
     g_assert_false(log_shows_misframing(activated));
     g_assert_cmpuint(count_occurrences(activated,
                                        "token 0x14 argc 9 consumed"),
-                     ==, ARRAY_SIZE(sent));
+                     ==, 0);
+    g_assert_null(strstr(activated, "glTexGen of coordinate"));
     g_assert_nonnull(strstr(activated, "token 0x14 args 0x2001 0x2502 0x0"
                                        " argc 9\n"));
     g_assert_nonnull(strstr(activated, "token 0x24 args 0xc60 0x0 0x0"

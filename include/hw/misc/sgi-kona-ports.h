@@ -426,8 +426,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * parameter name and seven value words, the unused ones zero (established
  * from libGLcore's __glkonim_TexGen senders). A mode goes as one integer
  * word; an object or eye plane as four floats; the two SGIX parameters
- * 0x81f6 and 0x81f7 as seven floats. Texture coordinate generation is not
- * modelled: the model frames and consumes the command.
+ * 0x81f6 and 0x81f7 as seven floats. The mode and the two planes go to
+ * the shared GL's texture coordinate generation; the SGIS point and line
+ * parameters 0x81f4 to 0x81f7 are logged and ignored.
  */
 #define SGI_KONA_CMD_GL_TEX_GEN     0x14
 #define SGI_KONA_GL_TEX_GEN_WORDS   9
