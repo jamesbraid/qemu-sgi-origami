@@ -2242,6 +2242,33 @@ static bool sgi_soft_bounds(const SGISoftDraw *r, int *x0, int *y0, int *x1,
 }
 
 /*
+ * Whether a polygon fragment at (px, py) is drawn under the polygon
+ * stipple, and in *background whether it takes the target's opaque
+ * stipple background (SGIRasterTarget's stipple_opaque).
+ */
+static bool sgi_soft_stipple_pass(const SGISoftDraw *r, int px, int py,
+                                  bool *background)
+{
+    *background = false;
+    if (!r->polygon_stipple ||
+        (r->polygon_stipple[(uint32_t)py & 31] &
+         (1u << ((uint32_t)px & 31)))) {
+        return true;
+    }
+    *background = r->t->stipple_opaque;
+    return *background;
+}
+
+static void sgi_soft_stipple_background(const SGISoftDraw *r,
+                                        SGISoftFrag *frag)
+{
+    for (int k = 0; k < 4; k++) {
+        frag->rgba[k] = r->t->stipple_background[k];
+    }
+    frag->index = r->t->stipple_background_index;
+}
+
+/*
  * A primitive's fragment at normalized depth z, (zd + 1) / 2 for the
  * normalized device z zd: dropped outside [0, 1], the view volume's near
  * and far planes, which clipping has already cut the primitive to, and
@@ -2815,6 +2842,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         for (int px = px0; px <= px1;
              px++, e0 += step0, e1 += step1, e2 += step2) {
             double b1, b2, z, w0, w1, w2, sum, depth_w;
+            bool background;
 
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
                 !sgi_soft_owns(&v[2], &v[0], e1) ||
@@ -2822,9 +2850,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                 continue;
             }
             /* Window phase precedes plane translation and fragment work. */
-            if (r->polygon_stipple &&
-                !(r->polygon_stipple[(uint32_t)py & 31] &
-                  (1u << ((uint32_t)px & 31)))) {
+            if (!sgi_soft_stipple_pass(r, px, py, &background)) {
                 continue;
             }
             frag = flat_frag;
@@ -2892,6 +2918,9 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                     sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
                     out) ?
                     out[4] : NAN;
+            }
+            if (background) {
+                sgi_soft_stipple_background(r, &frag);
             }
             sgi_soft_fragment(r, px, py, z, offset, depth_w, &frag);
         }
@@ -4000,10 +4029,9 @@ static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
             SGISoftVertex fan[3];
             SGISoftFrag frag = flat;
             bool found = false;
+            bool background;
 
-            if (r->polygon_stipple &&
-                !(r->polygon_stipple[(uint32_t)py & 31] &
-                  (1u << ((uint32_t)px & 31)))) {
+            if (!sgi_soft_stipple_pass(r, px, py, &background)) {
                 continue;
             }
             if (sgi_soft_aa_contains_pixel(v, n, px, py, scale,
@@ -4164,6 +4192,9 @@ static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
                             sgi_soft_texture_lod_scale(
                                 r->texture->lod_scale_r) : 0, out) ?
                         out[4] : NAN;
+                }
+                if (background) {
+                    sgi_soft_stipple_background(r, &frag);
                 }
                 sgi_soft_fragment_coverage(r, px, py, z, offset, depth_w,
                                            &frag, coverage, true);
