@@ -7723,17 +7723,22 @@ static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
  * position of its centre, rounded down. With the stipple enabled (0x0404 bits
  * 3 and 4) the k-th covered pixel from the first vertex, k = 1 next to it, is
  * painted only where bit (k & 31) of the 0x0c48 pattern is set, and where it
- * is clear, under an opaque pattern (0x043f bit 4), in the 0x0c21 constant
- * colour (odyssey_pattern_background()): the X server's FillOpaqueStippled
- * spans, which 4Dwm's icons are filled with, arrive so. INFERRED as for the
- * opaque quads.
+ * is clear, with 0x0404 bit 17 set, in the 0x0c21 constant colour
+ * (odyssey_pattern_background()). The X server's stippled-span and dashed-line
+ * routines write no 0x043f, so its shape is whatever an earlier fill left;
+ * they set bit 17 and send 0x0c21 = ONE, ZERO, background exactly for
+ * FillOpaqueStippled spans and LineDoubleDash lines, the two forms whose clear
+ * bits X paints in the background (ESTABLISHED as software behaviour from the
+ * IRIX 6.5.30 odyssey.so). 4Dwm's icon faces and floors are such spans. That
+ * the board then paints the clear bits in the constant colour is INFERRED as
+ * for the opaque quads.
  */
 static void odyssey_gl_segment_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
                                      bool clear)
 {
     if (!clear) {
         odyssey_gl_plot(s, x, y);
-    } else if (s->pattern_shape & ODSY_PATTERN_SHAPE_OPAQUE) {
+    } else if (s->pattern_mode & ODSY_MODE_BLEND) {
         odyssey_paint_integer(s, x, y, s->gl_color_is_index,
                               odyssey_pattern_background(s,
                                   s->gl_color_is_index));
