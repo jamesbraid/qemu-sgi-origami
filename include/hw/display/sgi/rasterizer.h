@@ -125,6 +125,23 @@ typedef struct SGIRasterRules {
     bool depth_row_given;
     double depth_row[4];
     /*
+     * With depth_row, a second row whose product with the eye coordinates
+     * divides the first's: a vertex's window depth is (depth_row . e) /
+     * (depth_divisor . e), each over clip w interpolated linearly in the
+     * window, so their ratio is exact at every fragment whether the
+     * divisor is constant, as under an affine model-view, or varies with
+     * eye-space w. Not given, the divisor is one.
+     */
+    bool depth_divisor_given;
+    double depth_divisor[4];
+    /*
+     * With depth_row, how far outside [0, 1] a fragment's depth may lie and
+     * still be drawn, clamped to the range, rather than dropped as clipped:
+     * room for the rounding of a row the head was given in single
+     * precision. Zero drops every depth outside the range.
+     */
+    double depth_slack;
+    /*
      * Stored depth is a floating-point code, not a fixed-point fraction:
      * the IEEE single-precision bits of the window depth shifted right by
      * 30 - depth_bits, which keeps the order of depths in [0, 1] and their

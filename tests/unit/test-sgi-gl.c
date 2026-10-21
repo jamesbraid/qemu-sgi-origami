@@ -2696,6 +2696,72 @@ static void test_depth_row(void)
 }
 
 /*
+ * A depth divisor row: the window depth is the depth row's product over
+ * the divisor's, each over w interpolated in the window. The row (0, 0,
+ * 0, 0.5) over the divisor (0, 0, 0, 1) is 0.5 at every fragment of a
+ * triangle whose w runs from 2 to 4, where the row alone gives 1 to 2 and
+ * drops the fragments past 1. A depth just past 1 is drawn at 1 within the
+ * rules' slack and dropped without it.
+ */
+static void test_depth_divisor(void)
+{
+    static const float triangle[3][SGI_GL_VERTEX_FLOATS] = {
+        { -1.8f, -1.8f, 0, 2, 1, 1, 1, 1 },
+        { 2.7f, -2.7f, 0, 3, 1, 1, 1, 1 },
+        { 0, 3.6f, 0, 4, 1, 1, 1, 1 },
+    };
+    static const struct {
+        bool divisor;
+        double w_term, slack;
+        uint32_t depth;         /* 0 for a dropped fragment */
+    } cases[] = {
+        { true, 0.5, 0, 0x800000 },
+        { false, 0.5, 0, 0 },
+        { true, 1 + 1.0 / (1 << 30), 1.0 / (1 << 20), 0xffffff },
+        { true, 1 + 1.0 / (1 << 30), 0, 0 },
+    };
+    SGIRasterRules check = rules_supported;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        static Planes p;
+        SGIRasterTarget t = planes_target(&p);
+        SGIRasterRules rules = rules_supported;
+        SGIGLContext c;
+        SGIGLDraw draw = {
+            .mode = SGI_GL_TRIANGLES,
+            .count = 3,
+            .vertices = &triangle[0][0],
+            .state = &c.cur,
+        };
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        c.cur.depth_test = 1;
+        c.cur.depth_func = SGI_GL_ALWAYS;
+        rules.depth_row_given = true;
+        rules.depth_row[3] = cases[i].w_term;
+        rules.depth_divisor_given = cases[i].divisor;
+        rules.depth_divisor[3] = 1;
+        rules.depth_slack = cases[i].slack;
+        g_assert_true(sgi_raster_rules_supported(&rules));
+        sgi_soft_draw(&rules, &t, &draw);
+        g_assert_cmphex(p.depth[planes_index(W / 2, H / 2)], ==,
+                        cases[i].depth);
+    }
+
+    /* A divisor needs the row, finite terms and a slack in [0, 1). */
+    check.depth_divisor_given = true;
+    g_assert_false(sgi_raster_rules_supported(&check));
+    check.depth_row_given = true;
+    g_assert_true(sgi_raster_rules_supported(&check));
+    check.depth_divisor[1] = INFINITY;
+    g_assert_false(sgi_raster_rules_supported(&check));
+    check.depth_divisor[1] = 0;
+    check.depth_slack = -1.0 / (1 << 20);
+    g_assert_false(sgi_raster_rules_supported(&check));
+}
+
+/*
  * The floating-point depth code: a single's bits shifted to depth_bits,
  * which orders depths and keeps two near 0 apart that a fixed-point store
  * makes equal.
@@ -13702,6 +13768,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/depth-range-maps-window-depth",
                     test_depth_range_maps_window_depth);
     g_test_add_func("/sgi-gl/depth-row", test_depth_row);
+    g_test_add_func("/sgi-gl/depth-divisor", test_depth_divisor);
     g_test_add_func("/sgi-gl/depth-float-code", test_depth_float_code);
     g_test_add_func("/sgi-gl/depth-range-maps-the-raster-position",
                     test_depth_range_maps_the_raster_position);
