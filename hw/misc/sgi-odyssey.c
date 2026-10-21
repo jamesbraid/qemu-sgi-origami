@@ -681,6 +681,8 @@
 #define ODSY_CMD_ARITY_SHIFT 10
 #define ODSY_CMD_ARITY_MASK 0xf
 #define ODSY_CMD_ARITY_BURST 16
+/* A GL-class word's operands-follow bit (odyssey_cmd_classify()). */
+#define ODSY_CMD_GL_OPERANDS 0x00800000
 
 /*
  * Every command word carries its own operand count in bits 13:10, the field
@@ -8899,6 +8901,7 @@ enum {
     ODSY_CMD_IMAGE_BURST,    /* painting a pixel burst into the open image */
     ODSY_CMD_MATRIX_LOAD,    /* gathering a board-side matrix's 16 floats */
     ODSY_CMD_GL_RECT,        /* gathering a rectangle's colour and corners */
+    ODSY_CMD_SKIP,           /* passing over an unmodeled word's operands */
 };
 
 /*
@@ -10637,7 +10640,32 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         odyssey_cmd_start(s, reg, operands);
         return;
     }
+    /*
+     * A word this model does not know still carries its operand count in
+     * bits 13:10 (odyssey_cmd_arity()), so pass over that many words and
+     * keep the parser on the stream's command positions. The kernel's
+     * context restore replays words of every class this way: 0x3cf8 to
+     * 0x3cfb and 0x3f41 with 16 zero operands each, 0x0f41 with 3, 0x04b0
+     * and 0xc480c426 with one, 0x2400800a with none. Taking their operands
+     * as commands instead read zeros and floats as command words: amesh's
+     * window logged 0xcc546968 among them.
+     *
+     * A word of the GL classes (a non-zero top byte) with bit 23 clear takes
+     * none, whatever its count field says: the restore's 0x9000bda2, whose
+     * field reads 16, is followed at once by a flush, the window origin
+     * (0x0841) and the clip list, which it would otherwise swallow, leaving
+     * the next client drawing at the previous one's origin. Every bit-23-
+     * clear GL word the model knows has a zero field and no operands, and
+     * every one with operands has the bit set (0x9080bda2, 0x90808800).
+     * INFERRED from that pattern; the bit's meaning on the board is UNKNOWN.
+     */
     odyssey_cmd_unimplemented(s, word);
+    if (odyssey_cmd_arity(word) &&
+        (!(word >> 24) || (word & ODSY_CMD_GL_OPERANDS))) {
+        s->cmd_state = ODSY_CMD_SKIP;
+        s->cmd_operand_count = odyssey_cmd_arity(word);
+        s->cmd_operand_index = 0;
+    }
 }
 
 /* One command-FIFO word, wherever the parser currently is. */
@@ -10667,6 +10695,11 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
         return;
     }
     switch (s->cmd_state) {
+    case ODSY_CMD_SKIP:
+        if (++s->cmd_operand_index == s->cmd_operand_count) {
+            s->cmd_state = ODSY_CMD_IDLE;
+        }
+        break;
     case ODSY_CMD_OPERANDS:
         /* cmd_operand[] holds a whole burst; the bound is belt and braces. */
         if (s->cmd_operand_index < ARRAY_SIZE(s->cmd_operand)) {
