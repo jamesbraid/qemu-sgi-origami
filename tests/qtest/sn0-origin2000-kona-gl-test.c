@@ -742,6 +742,24 @@ static void test_unmapped_window_shows_bank0(void)
 }
 
 /*
+ * A double-buffered window showing bank 1 that the kernel places again
+ * with word 9 all ones and word 10 set, the words for a window with no
+ * display ID, shows nothing: no pixel holds that ID, as it owns none
+ * (unassigned-id-owns-nothing). powerflip's context was left so after
+ * it was killed, and its last frame stayed over the root and the file
+ * manager, though the X server repainted them in bank 0.
+ */
+static void test_unassigned_id_shows_nothing(void)
+{
+    gl_reset();
+    gl_show_bank1(qts);
+    gl_place_window_id(qts, PROBE_X, 640, UINT32_MAX, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0);
+}
+
+/*
  * The X server hands a dead client's display ID to the next window. hist
  * on brick.rgb, traced: ivview was killed showing bank 1 in a window
  * with ID 0xe and sent no teardown; the X server repainted the IDs
@@ -1125,6 +1143,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-gl/"
                    "overlap-shows-bank0-where-covered",
                    test_overlap_shows_bank0_where_covered);
+    qtest_add_func("sn0/origin2000/kona-gl/unassigned-id-shows-nothing",
+                   test_unassigned_id_shows_nothing);
     qtest_add_func("sn0/origin2000/kona-gl/unmapped-window-shows-bank0",
                    test_unmapped_window_shows_bank0);
     qtest_add_func("sn0/origin2000/kona-gl/reused-display-id-shows-new-window",

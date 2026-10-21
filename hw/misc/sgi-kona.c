@@ -312,11 +312,16 @@ static bool sgi_kona_gl_window_owns(SGIKonaState *s,
  * which retires the bank of a client that died without its context
  * being torn down (observed in the runs: a killed client sends no
  * 0x1f8). Inferred, as for sgi_kona_gl_window_owns(); a window whose
- * word 9 is outside the main planes' IDs shows across its rectangle.
+ * word 9 is all ones with word 10 set, the kernel's words for a window
+ * with no display ID, shows no pixel, as it owns none; another word 9
+ * outside the main planes' IDs shows across its rectangle.
  */
 static bool sgi_kona_gl_window_shows(SGIKonaState *s,
                                      const SGIKonaGLWindow *w, int x, int y)
 {
+    if (sgi_kona_gl_window_tests_id(w)) {
+        return sgi_kona_display_id_at(s, x, y) == w->display_id;
+    }
     return w->display_id > SGI_KONA_DISPLAY_ID_MAX ||
            sgi_kona_display_id_at(s, x, y) == w->display_id;
 }
