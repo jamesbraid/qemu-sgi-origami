@@ -75,6 +75,7 @@ typedef struct SGISoftVertex {
     int64_t x, y;         /* window position in subpixels */
     double z;             /* normalized depth; [0, 1] inside the view volume */
     double inv_w;         /* 1 / clip w, for perspective-correct colour */
+    double depth_w;       /* the rules' depth divisor over clip w */
     double rgba[4];
     double texcoord[4];
     double index;         /* the colour index, in colour-index mode */
@@ -135,6 +136,12 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            (!r->depth_row_given ||
             (isfinite(r->depth_row[0]) && isfinite(r->depth_row[1]) &&
              isfinite(r->depth_row[2]) && isfinite(r->depth_row[3]))) &&
+           (!r->depth_divisor_given ||
+            (r->depth_row_given &&
+             isfinite(r->depth_divisor[0]) && isfinite(r->depth_divisor[1]) &&
+             isfinite(r->depth_divisor[2]) &&
+             isfinite(r->depth_divisor[3]))) &&
+           r->depth_slack >= 0 && r->depth_slack < 1 &&
            r->stencil_bits <= 16 && r->alpha_bits <= 10 &&
            r->alpha_test_bits <= 16 &&
            r->rounding <= SGI_ROUND_HALF_AWAY &&
@@ -2243,19 +2250,27 @@ static bool sgi_soft_bounds(const SGISoftDraw *r, int *x0, int *y0, int *x1,
  * window depth, and the sum clamped to [0, 1] (3.5.5).
  */
 static void sgi_soft_fragment_coverage(const SGISoftDraw *r, int px, int py,
-                                       double z, double offset, double inv_w,
+                                       double z, double offset,
+                                       double depth_w,
                                        const SGISoftFrag *frag,
                                        double coverage, bool antialias)
 {
     double zw;
 
     if (r->rules->depth_row_given) {
+        double slack = r->rules->depth_slack;
+
         /*
-         * Depth over w interpolates linearly in the window; over the
-         * interpolated 1 / w it is the eye-linear depth at the fragment.
+         * Depth and its divisor, each over w, interpolate linearly in the
+         * window; their ratio is the row's depth at the fragment.
          */
-        z = (z + offset) / inv_w;
+        z = (z + offset) / depth_w;
         offset = 0;
+        if (z < 0 && z >= -slack) {
+            z = 0;
+        } else if (z > 1 && z <= 1 + slack) {
+            z = 1;
+        }
     }
     if (!(coverage > 0.0) ||
         !sgi_raster_window_depth(r->st, z, offset, &zw)) {
@@ -2265,10 +2280,10 @@ static void sgi_soft_fragment_coverage(const SGISoftDraw *r, int px, int py,
 }
 
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              double offset, double inv_w,
+                              double offset, double depth_w,
                               const SGISoftFrag *frag)
 {
-    sgi_soft_fragment_coverage(r, px, py, z, offset, inv_w, frag, 1, false);
+    sgi_soft_fragment_coverage(r, px, py, z, offset, depth_w, frag, 1, false);
 }
 
 /*
@@ -2545,6 +2560,13 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
                   d[3] * eye[3]) / clip[3];
     }
     out->inv_w = 1.0 / clip[3];
+    out->depth_w = out->inv_w;
+    if (r->rules->depth_divisor_given) {
+        const double *d = r->rules->depth_divisor;
+
+        out->depth_w = (d[0] * eye[0] + d[1] * eye[1] + d[2] * eye[2] +
+                        d[3] * eye[3]) / clip[3];
+    }
     /*
      * The fog coordinate approximates the eye distance by |z|, which
      * 3.10 allows; it is affine in eye space, so interpolating it as a
@@ -2792,7 +2814,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
 
         for (int px = px0; px <= px1;
              px++, e0 += step0, e1 += step1, e2 += step2) {
-            double b1, b2, z, w0, w1, w2, sum;
+            double b1, b2, z, w0, w1, w2, sum, depth_w;
 
             if (!sgi_soft_owns(&v[1], &v[2], e0) ||
                 !sgi_soft_owns(&v[2], &v[0], e1) ||
@@ -2813,6 +2835,8 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
             w1 = b1 * v[1].inv_w;
             w2 = b2 * v[2].inv_w;
             sum = w0 + w1 + w2;
+            depth_w = (1.0 - b1 - b2) * v[0].depth_w + b1 * v[1].depth_w +
+                      b2 * v[2].depth_w;
             /* Only texturing reads the coordinates, only fog the distance. */
             if (r->texture) {
                 for (int k = 0; k < 4; k++) {
@@ -2869,7 +2893,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                     out) ?
                     out[4] : NAN;
             }
-            sgi_soft_fragment(r, px, py, z, offset, sum, &frag);
+            sgi_soft_fragment(r, px, py, z, offset, depth_w, &frag);
         }
     }
 }
@@ -3267,6 +3291,7 @@ static void sgi_soft_line_vertex_at(const SGISoftVertex *a,
     out->y = llround(a->y + t * (b->y - a->y));
     out->z = a->z + t * (b->z - a->z);
     out->inv_w = (1 - t) * a->inv_w + t * b->inv_w;
+    out->depth_w = (1 - t) * a->depth_w + t * b->depth_w;
     for (int k = 0; k < 4; k++) {
         out->rgba[k] = (wa * a->rgba[k] + wb * b->rgba[k]) / sum;
         out->texcoord[k] = (wa * a->texcoord[k] + wb * b->texcoord[k]) / sum;
@@ -3498,7 +3523,8 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                         out[4] / texture_length : NAN;
                 }
                 sgi_soft_fragment_coverage(r, px, py,
-                    a.z + t * (b.z - a.z), offset, wa + wb, &frag, coverage,
+                    a.z + t * (b.z - a.z), offset,
+                    (1 - t) * a.depth_w + t * b.depth_w, &frag, coverage,
                     r->line_smooth);
             }
         }
@@ -3664,7 +3690,7 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
                 double coverage = sgi_soft_circle_coverage(cx, cy, radius,
                                                            x, y);
 
-                sgi_soft_fragment_coverage(r, x, y, v.z, offset, v.inv_w,
+                sgi_soft_fragment_coverage(r, x, y, v.z, offset, v.depth_w,
                                            &frag, coverage, true);
             }
         }
@@ -3672,7 +3698,7 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
     }
     for (int64_t y = y0; y <= y1; y++) {
         for (int64_t x = x0; x <= x1; x++) {
-            sgi_soft_fragment(r, x, y, v.z, offset, v.inv_w, &frag);
+            sgi_soft_fragment(r, x, y, v.z, offset, v.depth_w, &frag);
         }
     }
 }
@@ -4067,6 +4093,9 @@ static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
                 w[1] = bary[1] * v[i].inv_w;
                 w[2] = bary[2] * v[i + 1].inv_w;
                 double sum = w[0] + w[1] + w[2];
+                double depth_w = bary[0] * v[0].depth_w +
+                                 bary[1] * v[i].depth_w +
+                                 bary[2] * v[i + 1].depth_w;
 
                 if (!(sum > 0) || !isfinite(sum)) {
                     continue;
@@ -4136,7 +4165,7 @@ static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
                                 r->texture->lod_scale_r) : 0, out) ?
                         out[4] : NAN;
                 }
-                sgi_soft_fragment_coverage(r, px, py, z, offset, sum,
+                sgi_soft_fragment_coverage(r, px, py, z, offset, depth_w,
                                            &frag, coverage, true);
             }
         }
