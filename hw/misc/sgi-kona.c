@@ -6114,6 +6114,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     uint64_t row, len;
     int64_t px, py, cols;
     bool wide8 = w == 8 && h == 1;
+    uint64_t foreign = 0;
+    bool first_ok = false;
     uint32_t selection;
     int bank;
     bool depth = format == 13, stencil = format == 12;
@@ -6202,24 +6204,37 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
         return false;
     }
     /*
-     * One unsupported tag refuses the whole rectangle before any write;
-     * an 8 by 1 read needs only its first pixel's, the one a 1 by 1 caller
-     * copies, and its other pixels of another kind are answered zero.
+     * Pixels of another kind than the visual reads are answered zero and
+     * the rest with their values, so a rectangle crossing a window's edge,
+     * as oglsnoop's read around the pointer does, keeps its own pixels.
+     * A rectangle with none of the read's kind is refused whole, and so is
+     * an 8 by 1 read, a 1 by 1 caller's, whose first pixel is foreign.
+     * Model policy: what the pipe returns for foreign pixels is unknown.
      */
     for (uint32_t r = 0; !depth && !stencil && r < h; r++) {
-        for (uint32_t c = 0; c < (wide8 ? 1 : cols); c++) {
+        for (uint32_t c = 0; c < cols; c++) {
             if (!sgi_kona_gl_read_tag_ok(s, bank, px + c, py + r,
                                          indexed_visual)) {
-                qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has an"
-                              " unsupported source tag; %s\n", outcome);
-                return false;
+                foreign++;
+            } else if (!r && !c) {
+                first_ok = true;
             }
         }
+    }
+    if (foreign == (uint64_t)cols * h || (wide8 && !first_ok && foreign)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has an"
+                      " unsupported source tag; %s\n", outcome);
+        return false;
+    }
+    if (foreign) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
+                      PRIu32 " answered %" PRIu64 " pixels of another kind"
+                      " with zero\n", w, h, foreign);
     }
     data = g_malloc0(len);
     for (uint32_t r = 0; r < h; r++) {
         for (uint32_t c = 0; c < cols; c++) {
-            if (wide8 && !depth && !stencil &&
+            if (foreign && !depth && !stencil &&
                 !sgi_kona_gl_read_tag_ok(s, bank, px + c, py + r,
                                          indexed_visual)) {
                 continue;
