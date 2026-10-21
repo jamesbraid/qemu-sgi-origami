@@ -4836,9 +4836,42 @@ static float odyssey_gl_fog_factor(void *opaque, float window_z, float eye_z)
     return f >= 1 ? 1 : f > 0 ? f : 0;
 }
 
+/*
+ * An opaque polygon stipple (0x043f bit 4 with shape 0, the GL stipple):
+ * clear bits take the 0x0c21 constant colour, as the 2D path's opaque
+ * patterns do (odyssey_pattern_background()). The X server fills its
+ * FillOpaqueStippled polygons this way -- 4Dwm's desktop icons draw their
+ * two-colour checkered faces so -- sending shape 0x10, the stipple and the
+ * background in 0x0c21 before integer triangles. That the board paints the
+ * clear bits here as it does for the 2D quads is INFERRED, on the same
+ * ground: it is the only reading under which the server's sequence draws an
+ * opaque stipple, and SI draws those icon faces two-coloured.
+ */
+static void odyssey_gl_stipple_background(SGIOdysseyState *s,
+                                          SGIRasterTarget *t)
+{
+    if (!(s->pattern_shape & ODSY_PATTERN_SHAPE_OPAQUE)) {
+        return;
+    }
+    t->stipple_opaque = true;
+    if (odyssey_gl_index_mode(s)) {
+        t->stipple_background_index = odyssey_pattern_background(s, true);
+        odyssey_gl_index_rgba(t->stipple_background_index,
+                              t->stipple_background);
+    } else {
+        uint32_t pixel = odyssey_pattern_background(s, false);
+
+        for (unsigned k = 0; k < 3; k++) {
+            t->stipple_background[k] =
+                ((pixel >> (24 - 8 * k)) & 0xff) / 255.0f;
+        }
+        t->stipple_background[3] = 1;
+    }
+}
+
 static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
 {
-    return (SGIRasterTarget) {
+    SGIRasterTarget t = {
         .store_colour = odyssey_gl_index_mode(s) ?
                         odyssey_gl_store_colour : NULL,
         .store_rgba = odyssey_gl_index_mode(s) ? NULL : odyssey_gl_store_rgba,
@@ -4850,6 +4883,9 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
     };
+
+    odyssey_gl_stipple_background(s, &t);
+    return t;
 }
 
 typedef struct OdysseyTexture {
@@ -6143,7 +6179,7 @@ static void odyssey_gl_apply_polygon_stipple(SGIOdysseyState *s)
 {
     uint32_t cap = SGI_GL_POLYGON_STIPPLE;
     bool enable = (s->pattern_mode & ODSY_GL_RECT_PATTERN_ENABLE) &&
-                  s->pattern_shape == 0;
+                  !(s->pattern_shape & ~ODSY_PATTERN_SHAPE_OPAQUE);
 
     if (s->gl_in_prim) {
         return;
