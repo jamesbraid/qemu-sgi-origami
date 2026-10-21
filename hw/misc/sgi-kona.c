@@ -10799,8 +10799,16 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
                gc->target == SGI_X_GC_MAIN_RGB8 && raw[10] == 8 &&
                !gc->opaque_or_tiled;
     }
+    /*
+     * A second buffer selector of 2 turns cfg 0x2804 into 0x3804 (the
+     * command grammar's GC table); the solid fills already take both, and
+     * so does the glyph form here, drawn where the fills draw. A file
+     * manager's icon labels come this way once its window's X buffer
+     * selection moves to 2.
+     */
     if (pack == SGI_KONA_X_PACK_BITMAP &&
-        (raw[6] == 0x2804 || (raw[6] == 0 && raw[7] == 0x64001))) {
+        (raw[6] == 0x2804 || raw[6] == 0x3804 ||
+         (raw[6] == 0 && raw[7] == 0x64001))) {
         return setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
                !setup[SGI_KONA_X_SETUP_SHIFT] &&
                sgi_kona_x_rgb_glyph_gc(raw) &&
