@@ -2111,7 +2111,12 @@ static void odyssey_unimplemented(SGIOdysseyState *s, hwaddr addr,
                   "; further offsets stay silent" : "");
 }
 
-static void odyssey_cmd_unimplemented(SGIOdysseyState *s, uint32_t word)
+/*
+ * Report an unmodeled command word once. note follows the message: the
+ * parser's framing decision for a word it does not know, or "".
+ */
+static void odyssey_cmd_report(SGIOdysseyState *s, uint32_t word,
+                               const char *note)
 {
     unsigned int i;
 
@@ -2125,9 +2130,14 @@ static void odyssey_cmd_unimplemented(SGIOdysseyState *s, uint32_t word)
     }
     s->reported_cmd[s->reported_cmd_count++] = word;
     qemu_log_mask(LOG_UNIMP, "sgi-odyssey: command FIFO word 0x%08x is not "
-                  "modeled%s\n", word,
+                  "modeled%s%s\n", word, note,
                   s->reported_cmd_count == SGI_ODYSSEY_UNIMP_REPORTS ?
                   "; further words stay silent" : "");
+}
+
+static void odyssey_cmd_unimplemented(SGIOdysseyState *s, uint32_t word)
+{
+    odyssey_cmd_report(s, word, "");
 }
 
 /*
@@ -10727,12 +10737,20 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
      * every one with operands has the bit set (0x9080bda2, 0x90808800).
      * INFERRED from that pattern; the bit's meaning on the board is UNKNOWN.
      */
-    odyssey_cmd_unimplemented(s, word);
     if (odyssey_cmd_arity(word) &&
         (!(word >> 24) || (word & ODSY_CMD_GL_OPERANDS))) {
+        char note[32];
+
+        snprintf(note, sizeof(note), "; skipping %u operands",
+                 odyssey_cmd_arity(word));
+        odyssey_cmd_report(s, word, note);
         s->cmd_state = ODSY_CMD_SKIP;
         s->cmd_operand_count = odyssey_cmd_arity(word);
         s->cmd_operand_index = 0;
+    } else if (odyssey_cmd_arity(word)) {
+        odyssey_cmd_report(s, word, "; bit 23 clear, no operands");
+    } else {
+        odyssey_cmd_report(s, word, "; no operands");
     }
 }
 
