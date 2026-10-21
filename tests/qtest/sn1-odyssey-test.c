@@ -4661,6 +4661,60 @@ static void test_command_fifo_unknown_word_skips_its_operands(void)
     board_quit(qts);
 }
 
+/*
+ * Blending is for RGBA fragments only (OpenGL 1.2.1, 4.1.6): a colour-index
+ * drawable with 0x0404 bit 17 set and glBlendFunc(GL_SRC_ALPHA,
+ * GL_ONE_MINUS_SRC_ALPHA) (0x0c21 0x639) draws its index unchanged and
+ * reports no missing read-back planes.
+ */
+static void test_command_fifo_gl_index_does_not_blend(void)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t draw[] = {
+        0x22008001,
+        0x00010c21, 0x639, 0, 0,
+        0x00010404, 0x20000,
+        0xc580c406, 4,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        0x8080c800, 30, 40,
+        0x8080c800, 70, 50,
+        0x8080c800, 40, 85,
+        ODSY_CMD_GL_END,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-index-blend-XXXXXX.log", &log_path,
+                          &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    for (unsigned i = 0; i < ARRAY_SIZE(draw); i++) {
+        user_cmd_push(qts, draw[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 4);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "need planes that can be read back"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_command_fifo_gl_integer_points_transform(void)
 {
     const uint32_t matrix[16] = {
@@ -20508,6 +20562,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_clip_plane_migration);
     add_case("sn1/odyssey/command-fifo-unknown-word-skips-its-operands",
              test_command_fifo_unknown_word_skips_its_operands);
+    add_case("sn1/odyssey/command-fifo-gl-index-does-not-blend",
+             test_command_fifo_gl_index_does_not_blend);
     add_case("sn1/odyssey/command-fifo-gl-depth-sign",
              test_command_fifo_gl_depth_sign);
     add_case("sn1/odyssey/command-fifo-gl-depth-model-view-perspective",
