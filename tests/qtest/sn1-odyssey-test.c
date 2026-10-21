@@ -4065,8 +4065,16 @@ static void image_begin(QTestState *qts, uint32_t x1, uint32_t y1,
 }
 
 /*
+ * The X server's 24-bit TrueColor pixel for colour 0xRRGGBB: red mask 0xff,
+ * blue mask 0xff0000, so the word 0x00BBGGRR, which source code 0x4c carries
+ * as the bytes A, B, G, R.
+ */
+#define ODSY_X_PIXEL(rgb) \
+    ((((rgb) & 0xffu) << 16) | ((rgb) & 0xff00u) | (((rgb) >> 16) & 0xffu))
+
+/*
  * BEGIN-0xa image raster, format 0x11: the account icons. A small box filled
- * with distinct 0x00RRGGBB pixels pins the raster order -- left to right,
+ * with distinct X pixels pins the raster order -- left to right,
  * wrapping at the box's exclusive right edge one row down -- and that each
  * word paints directly as colour with an opaque alpha, leaving the pixels just
  * past the box untouched.
@@ -4081,10 +4089,10 @@ static void test_command_fifo_image_raster_rgb(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c)); /* first header: unbounded */
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
-    cmd_push(qts, 0x00778899);
-    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
+    cmd_push(qts, ODSY_X_PIXEL(0x778899));
+    cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     /* Raster order across the 2x2 box, each word its own colour, alpha opaque. */
@@ -4112,14 +4120,14 @@ static void test_command_fifo_image_raster_descending(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00778899);
-    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_X_PIXEL(0x778899));
+    cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     g_assert_cmphex(odsy_test_pixel(qts, 19, 19), ==, 0x112233ff);
@@ -4142,10 +4150,10 @@ static void test_command_fifo_image_raster_mixed_directions(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
-    cmd_push(qts, 0x00778899);
-    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
+    cmd_push(qts, ODSY_X_PIXEL(0x778899));
+    cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     g_assert_cmphex(odsy_test_pixel(qts, 29, 30), ==, 0x112233ff);
@@ -4159,10 +4167,10 @@ static void test_command_fifo_image_raster_mixed_directions(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00ddeeff);
-    cmd_push(qts, 0x00123456);
-    cmd_push(qts, 0x00654321);
-    cmd_push(qts, 0x00abcdef);
+    cmd_push(qts, ODSY_X_PIXEL(0xddeeff));
+    cmd_push(qts, ODSY_X_PIXEL(0x123456));
+    cmd_push(qts, ODSY_X_PIXEL(0x654321));
+    cmd_push(qts, ODSY_X_PIXEL(0xabcdef));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     g_assert_cmphex(odsy_test_pixel(qts, 40, 39), ==, 0xddeeffff);
@@ -4184,8 +4192,8 @@ static void test_command_fifo_image_raster_empty_extent(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     image_begin(qts, 55, 55, 57, 55);
@@ -4193,8 +4201,8 @@ static void test_command_fifo_image_raster_empty_extent(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00778899);
-    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_X_PIXEL(0x778899));
+    cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     image_begin(qts, 60, 60, 62, 61);
@@ -4202,8 +4210,8 @@ static void test_command_fifo_image_raster_empty_extent(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00778899);
-    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_X_PIXEL(0x778899));
+    cmd_push(qts, ODSY_X_PIXEL(0xaabbcc));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     g_assert_cmphex(odsy_test_pixel(qts, 50, 50), ==, 0);
@@ -4226,8 +4234,8 @@ static void test_command_fifo_image_raster_clips_descending(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
     cmd_push(qts, ODSY_CMD_GL_END);
 
     g_assert_cmphex(odsy_test_pixel(qts, 1279, 10), ==, 0x445566ff);
@@ -4247,8 +4255,8 @@ static void test_command_fifo_image_raster_window_origin(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 9), ==, 0x112233ff);
     g_assert_cmphex(odsy_test_pixel(qts, 11, 9), ==, 0x445566ff);
@@ -4261,10 +4269,10 @@ static void test_command_fifo_image_raster_window_origin(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00ff0000);
-    cmd_push(qts, 0x0000ff00);
-    cmd_push(qts, 0x000000ff);
-    cmd_push(qts, 0x00ffffff);
+    cmd_push(qts, ODSY_X_PIXEL(0xff0000));
+    cmd_push(qts, ODSY_X_PIXEL(0x00ff00));
+    cmd_push(qts, ODSY_X_PIXEL(0x0000ff));
+    cmd_push(qts, ODSY_X_PIXEL(0xffffff));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0xffffffff);
     g_assert_cmphex(odsy_test_pixel(qts, 0, 1), ==, 0);
@@ -4277,10 +4285,10 @@ static void test_command_fifo_image_raster_window_origin(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00ff0000);
-    cmd_push(qts, 0x0000ff00);
-    cmd_push(qts, 0x000000ff);
-    cmd_push(qts, 0x00ffffff);
+    cmd_push(qts, ODSY_X_PIXEL(0xff0000));
+    cmd_push(qts, ODSY_X_PIXEL(0x00ff00));
+    cmd_push(qts, ODSY_X_PIXEL(0x0000ff));
+    cmd_push(qts, ODSY_X_PIXEL(0xffffff));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 102, 201), ==, 0x00ff00ff);
     g_assert_cmphex(odsy_test_pixel(qts, 101, 201), ==, 0);
@@ -4297,7 +4305,7 @@ static void test_command_fifo_image_raster_window_origin(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00abcdef);
+    cmd_push(qts, ODSY_X_PIXEL(0xabcdef));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 2, 3), ==,
                     0xabcdefff);
@@ -18678,8 +18686,8 @@ static void test_buffers_transfers_follow_mask(void)
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
     cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    cmd_push(qts, 0x00112233);
-    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_X_PIXEL(0x112233));
+    cmd_push(qts, ODSY_X_PIXEL(0x445566));
     cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 100, 100), ==, 0x112233ffu);
     g_assert_cmphex(odsy_buffer_pixel(qts, 1, 101, 100), ==, 0x445566ffu);
@@ -18894,8 +18902,8 @@ static bool readback_dma_done(QTestState *qts)
 
 /*
  * Direction is word 7 bit 24 alone. The X server's 24-bit visual header
- * with the 0x4c format byte reads a screen pixel back as one big-endian
- * 0x00RRGGBB word -- the layout the upload path decodes for that byte --
+ * with the 0x4c format byte reads a screen pixel back as the bytes A, B, G,
+ * R, alpha zero -- the layout the upload path decodes for that byte --
  * and leaves the plane alone. The same header with bit 24 clear paints the
  * host bytes and writes nothing to the guest. With a zero format byte the
  * GL vocabulary applies, where this word 4 (class 2, code 0xb) is not
@@ -18916,9 +18924,9 @@ static void test_readback_direction(void)
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     readback_run(qts, hdr, pte, 1);
     expect[16] = 0x00;
-    expect[17] = 0xc0;
+    expect[17] = 0xee;
     expect[18] = 0xff;
-    expect[19] = 0xee;
+    expect[19] = 0xc0;
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
     g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0xc0ffeeffu);
     /* Bit 31 clear: no DMA-done. */
@@ -18930,7 +18938,7 @@ static void test_readback_direction(void)
     memcpy(&expect[16], seed, sizeof(seed));
     hdr[7] = 0x3201004c;
     readback_run(qts, hdr, pte, 1);
-    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x112233ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x332211ffu);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
     /* A zero format byte with this word 4: refused, nothing written. */
@@ -18938,7 +18946,32 @@ static void test_readback_direction(void)
     hdr[7] = 0x33010000;
     readback_run(qts, hdr, pte, 1);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
-    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x112233ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0x332211ffu);
+
+    board_quit(qts);
+}
+
+/*
+ * The X server's 24-bit TrueColor visuals have red mask 0xff and blue mask
+ * 0xff0000, so an XPutImage pixel is 0x00BBGGRR and the server's DMA put
+ * names it with source code 0x4c, A, B, G, R. clogin's EZsetup icon, traced:
+ * word 4 0x8223305a, word 7 0x3201004c, and an orange pixel (red 0xfd,
+ * green 0x9b, blue 0x01) arriving as the bytes 00 01 9b fd. It must land
+ * orange, not blue.
+ */
+static void test_readback_put_abgr_x_image(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t hdr[8] = {
+        0x2000, (300 << 16) | 200, 0x50, 0x10001, 0x8223305a, 0, 4,
+        0x3201004c,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 4) };
+    const uint8_t pixel[4] = { 0x00, 0x01, 0x9b, 0xfd };
+
+    qtest_memwrite(qts, RB_PAGE_A, pixel, sizeof(pixel));
+    readback_run(qts, hdr, pte, 1);
+    g_assert_cmphex(odsy_test_pixel(qts, 200, 300), ==, 0xfd9b01ffu);
 
     board_quit(qts);
 }
@@ -19445,7 +19478,7 @@ static void test_readback_front_follows_displayed_buffer(void)
 
         /* An address read ignores word 4 and reads the shown buffer. */
         readback_run(qts, address, pte, 1);
-        stl_be_p(&expect[16], shown_word >> 8);
+        stl_be_p(&expect[16], ODSY_X_PIXEL(shown_word >> 8));
         readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
         /* Swap: the drawn frame is now the front. */
@@ -19571,20 +19604,20 @@ static void test_readback_page_crossing(void)
 
     /*
      * An address read with bit 30 set: host row 0 is board row 1. The 0x4c
-     * layout is 0x00RRGGBB a pixel.
+     * layout is the bytes A, B, G, R a pixel, alpha zero.
      */
     {
         uint8_t row0[12], row1[12];
 
         for (c = 0; c < 3; c++) {
             row0[4 * c] = 0;
-            row0[4 * c + 1] = 2;
+            row0[4 * c + 1] = 0x77;
             row0[4 * c + 2] = c + 1;
-            row0[4 * c + 3] = 0x77;
+            row0[4 * c + 3] = 2;
             row1[4 * c] = 0;
-            row1[4 * c + 1] = 1;
+            row1[4 * c + 1] = 0x77;
             row1[4 * c + 2] = c + 1;
-            row1[4 * c + 3] = 0x77;
+            row1[4 * c + 3] = 1;
         }
         memcpy(&expect_a[8], row0, 8);
         memcpy(&expect_b[0], row0 + 8, 4);
@@ -19623,7 +19656,7 @@ static void test_readback_object_source(void)
     unsigned i;
 
     for (i = 0; i < 6; i++) {
-        stl_be_p(&px[4 * i], 0x00102030 + i * 0x010101);
+        stl_be_p(&px[4 * i], ODSY_X_PIXEL(0x102030 + i * 0x010101));
     }
     qtest_memwrite(qts, RB_PAGE_A + 16, px, sizeof(px));
     readback_run(qts, hdr, pte, 1);
@@ -20442,6 +20475,8 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/command-fifo-dma-image",
                    test_command_fifo_dma_image);
     add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
+    add_fresh_case("sn1/odyssey/readback/put-abgr-x-image",
+                   test_readback_put_abgr_x_image);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short",
                    test_draw_sentinel_short_upload);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-abgr",

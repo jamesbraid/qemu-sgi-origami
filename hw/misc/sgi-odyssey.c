@@ -87,7 +87,7 @@
  * greeter's account icons (the pixmaps above root/EZsetup/demos/guest) and
  * the text-field caret. An image opens with BEGIN primitive 0xa, takes its
  * destination box from the 0xcf80a92f floats, and fills it in raster order
- * from the pixel bursts -- fmt 0x11 as direct 0x00RRGGBB colour (the icons),
+ * from the pixel bursts -- fmt 0x11 as direct colour (the icons),
  * fmt 0x10 as four colormap indices per word. Every index is painted,
  * index 0 included. An earlier approximation left index 0 unpainted because
  * the greeter's caret erase arrived as a 6x20 field of zeros, before the
@@ -1874,9 +1874,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * A pixel burst is 0x00014000 | (words - words/16) << 10 | fmt: bit 14 set,
  * the arity in bits 13:10, and the format in the low bits, with bits 9:5
- * clear. Format 0x11 carries one 0x00RRGGBB pixel per word for RGB
- * sources, or one RRGGBBAA word for source code 0x6b. It also carries one
- * 0x00RRGGBB word for the account icons. Format 0x10 packs four colour
+ * clear. Format 0x11 carries one four-byte pixel per word, laid out by the
+ * source code: A, B, G, R for the X server's icons (0x4c), R, G, B, A for
+ * source code 0x6b. Format 0x10 packs four colour
  * indices per word; format 0x12 carries 16-bit components for sources 0x69,
  * 0x6b and 0x6c (see the source codes below). Other formats remain
  * unsupported.
@@ -1892,11 +1892,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * The source pixel format: the transfer header's low byte, and the same code
  * in the low byte of a DMA header's word 7 (section 3; ESTABLISHED from the X
  * server's icons and caret and the GL library's texture uploads). All are
- * big-endian byte streams: 0x4c one 0x00RRGGBB word a pixel, 0x4b one
+ * big-endian byte streams: 0x4c the four bytes A, B, G, R, 0x4b one
  * 0xRRGGBBAA word, 0x49 three bytes R, G, B, 0x42 one luminance byte, 0x41
  * one colour-index byte. The burst tag's own format bits (0x10, 0x11) do not
- * fix the layout: the X server's 0x00RRGGBB icon words and the library's
- * RRGGBBAA texels share the tag 0x7c11.
+ * fix the layout: the X server's icon words and the library's RRGGBBAA
+ * texels share the tag 0x7c11.
+ *
+ * 0x4c is the GL library's 8-bit GL_ABGR_EXT code and the X server's code
+ * for a 24-bit TrueColor image. The server passes the client's pixel values
+ * through, and its 24-bit TrueColor visuals have red mask 0xff, green
+ * 0xff00 and blue 0xff0000 (ESTABLISHED: xdpyinfo on the IRIX 6.5.30 V12
+ * guest), so an X pixel word is 0x00BBGGRR, the same A, B, G, R bytes.
+ * OBSERVED: clogin's DMA put of the EZsetup icon carries the file's orange
+ * (R 0xfd, G 0x9b, B 0x01) as 00 01 9b fd. INFERRED: that the board reads
+ * the bytes in that order; the X server icons the model traced before were
+ * all grey, which every channel order shows alike.
  *
  * The library's texture uploads into a 12-bit texture (GL_RGB12, GL_RGBA12,
  * GL_LUMINANCE16 and friends, and the default formats on this board) use
@@ -1913,9 +1923,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * 0x6b and 0x6c as a stream of halves under format 0x12; 8-bit luminance
  * sources use 0x42 and 0x48 instead. distort's photograph agrees: its 0x6c
  * texels carry the file's blue, green and red bytes repeated into both
- * halves of each 16-bit component. 0x4c, the 8-bit GL_ABGR_EXT code, keeps
- * the X server's 0x00RRGGBB reading here; how the two uses agree is not
- * known.
+ * halves of each 16-bit component.
  *
  * 0x61 is a 16-bit colour index, two big-endian bytes a pixel. OBSERVED in
  * IRIS GL writepixels from mandel: its headers carry 0x61, its pixel counts
@@ -1931,7 +1939,12 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_LUM_ALPHA 0x48
 #define ODSY_IMAGE_CODE_RGB 0x49
 #define ODSY_IMAGE_CODE_RGBA 0x4b
-#define ODSY_IMAGE_CODE_XRGB 0x4c
+#define ODSY_IMAGE_CODE_ABGR 0x4c
+/*
+ * Not a board code: how a pixel of an unmodeled source code is laid out,
+ * one 0x00RRGGBB word, the rule the model used before it read the code.
+ */
+#define ODSY_IMAGE_CODE_FALLBACK_XRGB 0x100
 #define ODSY_IMAGE_CODE_RGBA12 0x6b
 #define ODSY_IMAGE_CODE_LUM12 0x62
 #define ODSY_IMAGE_CODE_LUM_ALPHA12 0x68
@@ -4315,7 +4328,10 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
                                  const uint8_t *b, uint32_t *rgba)
 {
     switch (code) {
-    case ODSY_IMAGE_CODE_XRGB:
+    case ODSY_IMAGE_CODE_ABGR:
+        *rgba = odyssey_pack_pixel(b[3], b[2], b[1]);
+        return true;
+    case ODSY_IMAGE_CODE_FALLBACK_XRGB:
         *rgba = odyssey_pack_pixel(b[1], b[2], b[3]);
         return true;
     case ODSY_IMAGE_CODE_RGBA:
@@ -4358,7 +4374,8 @@ static bool odyssey_code_is_index(uint32_t code)
 static unsigned odyssey_pixel_bytes(uint32_t code)
 {
     switch (code) {
-    case ODSY_IMAGE_CODE_XRGB:
+    case ODSY_IMAGE_CODE_ABGR:
+    case ODSY_IMAGE_CODE_FALLBACK_XRGB:
     case ODSY_IMAGE_CODE_RGBA:
     case ODSY_IMAGE_CODE_RGBA12:
         return 4;
@@ -4463,8 +4480,8 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
                           "is not modeled; laid out by the burst tag\n",
                           code);
         }
-        code = s->image_fmt == ODSY_IMAGE_FMT_RGB ? ODSY_IMAGE_CODE_XRGB :
-               ODSY_IMAGE_CODE_CI;
+        code = s->image_fmt == ODSY_IMAGE_FMT_RGB ?
+               ODSY_IMAGE_CODE_FALLBACK_XRGB : ODSY_IMAGE_CODE_CI;
         n = odyssey_pixel_bytes(code);
     }
     stl_be_p(b, word);
@@ -8145,7 +8162,7 @@ static uint32_t odyssey_dma_code(SGIOdysseyState *s, const uint32_t *hdr,
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA source format 0x%x at %u "
                       "bytes a pixel is not modeled\n", code, bpp);
     }
-    return bpp == 4 ? ODSY_IMAGE_CODE_XRGB : ODSY_IMAGE_CODE_CI;
+    return bpp == 4 ? ODSY_IMAGE_CODE_FALLBACK_XRGB : ODSY_IMAGE_CODE_CI;
 }
 
 /*
@@ -8267,8 +8284,8 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
  * brick.rgb carries bytes ff 7f 80 97 for the image's bottom-left pixel,
  * whose file channels are R 0x97, G 0x80, B 0x7f, and the next pixels match
  * the same way. INFERRED: that the board decodes the word in that order,
- * from the image coming out right. The X server's 0x4c, one 0x00RRGGBB
- * word, is a different layout.
+ * from the image coming out right. 0x4c carries the same bytes; this form
+ * differs in word 4 and the code.
  *
  * Word 7 of the two observed writes is 0x7201016c (ipaste) and 0x7a01016c
  * (bgpaste). Bits 29:25 differ between them or are set with no known
@@ -8286,8 +8303,8 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
  * of 4 * width bytes with the rest of each 1280-byte source row skipped.
  * The first tile sent holds the first source rows and names y 125, the
  * last names y 0. INFERRED from the picture: the A, B, G, R order (a red
- * tie and skin tones; the X server's 0x00RRGGBB reading of 0x4c turns the
- * face blue), that the source's first row is the top of the picture (it
+ * tie and skin tones; a 0x00RRGGBB reading turns the face blue), that the
+ * source's first row is the top of the picture (it
  * comes out upside down otherwise), and that the header's y counts up from
  * the bottom of the window, as GL window coordinates do, with rows sent
  * top to bottom as under a pixel zoom of -1. Only this exact word 4 is
@@ -8512,7 +8529,7 @@ static const OdysseyDMALayout odyssey_dma_gl_rgba8_layout = {
  * invertible and no read of it has been seen, so it is refused.
  */
 static const OdysseyDMALayout odyssey_dma_x_layouts[] = {
-    { ODSY_IMAGE_CODE_XRGB, 4, { ODSY_DMA_BYTE_ZERO, 0, 1, 2 } },
+    { ODSY_IMAGE_CODE_ABGR, 4, { ODSY_DMA_BYTE_ZERO, 2, 1, 0 } },
     { ODSY_IMAGE_CODE_RGBA, 4, { 0, 1, 2, 3 } },
     { ODSY_IMAGE_CODE_RGB, 3, { 0, 1, 2 } },
     { ODSY_IMAGE_CODE_CI, 1, { ODSY_DMA_BYTE_INDEX } },
