@@ -183,6 +183,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-clip-box
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane-eye-space
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-sign
+gl /mips64/sn1/odyssey/command-fifo-gl-depth-model-view-perspective
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-scale
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-eye-linear
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-float
