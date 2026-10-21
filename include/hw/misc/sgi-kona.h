@@ -303,6 +303,12 @@ typedef struct SGIKonaGLWindow {
     uint32_t displayed_bank;    /* 0 or 1 */
     uint32_t display_id;
     uint32_t partial;
+    /*
+     * Order of the window's last placement among all contexts' windows,
+     * larger is later: the window a display ID shows is the one placed
+     * last with it (sgi_kona_bank1_window()).
+     */
+    uint64_t place_serial;
     /* Not migrated: the display-ID generation the drawable was cut at. */
     uint64_t owned_generation;
     /*

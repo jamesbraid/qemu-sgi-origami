@@ -386,9 +386,43 @@ static bool sgi_kona_gl_owned_clip(SGIKonaState *s, const SGIKonaGLWindow *w,
 }
 
 /*
+ * Whether a context other than i placed a window with i's display ID
+ * after i's last placement. The X server hands a dead client's display
+ * ID to the next window it maps: a killed client sends no teardown, so
+ * its context keeps its window (sgi_kona_gl_window_shows()), and hist,
+ * mapped over part of ivview's old rectangle with ivview's ID 0xe,
+ * showed ivview's last frame (observed). Inferred: that the display
+ * table entry for an ID follows its latest window, the only reading under
+ * which the reused ID shows the new window's drawing. Overlay and
+ * unassigned IDs are not compared.
+ */
+static bool sgi_kona_display_id_reused(SGIKonaState *s, unsigned i)
+{
+    const SGIKonaGLWindow *w = &s->state[i]->window;
+
+    if (w->display_id > SGI_KONA_DISPLAY_ID_MAX) {
+        return false;
+    }
+    for (unsigned j = 0; j < SGI_KONA_CONTEXTS; j++) {
+        const SGIKonaGLWindow *o;
+
+        if (j == i || !s->state[j] || !s->contexts[j].valid) {
+            continue;
+        }
+        o = &s->state[j]->window;
+        if (o->placed && o->display_id == w->display_id &&
+            o->place_serial > w->place_serial) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
  * The window of context table entry i if it shows colour bank 1, the
  * bank a double-buffered context's window shows after an odd number of
- * swaps; false otherwise.
+ * swaps; false otherwise, and false once a later window took its display
+ * ID (sgi_kona_display_id_reused()).
  */
 static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
                                   SGIClipRect *r)
@@ -400,7 +434,8 @@ static bool sgi_kona_bank1_window(SGIKonaState *s, unsigned i,
     }
     w = &s->state[i]->window;
     return s->contexts[i].valid && w->double_buffered &&
-           w->displayed_bank && sgi_kona_gl_window_rect(w, r);
+           w->displayed_bank && sgi_kona_gl_window_rect(w, r) &&
+           !sgi_kona_display_id_reused(s, i);
 }
 
 /*
@@ -4530,6 +4565,19 @@ static int sgi_kona_gl_current(SGIKonaState *s, uint32_t selector)
     return s->context_current;
 }
 
+/* One past the latest placement of any context's window. */
+static uint64_t sgi_kona_next_place_serial(SGIKonaState *s)
+{
+    uint64_t serial = 0;
+
+    for (unsigned j = 0; j < SGI_KONA_CONTEXTS; j++) {
+        if (s->state[j]) {
+            serial = MAX(serial, s->state[j]->window.place_serial);
+        }
+    }
+    return serial + 1;
+}
+
 /*
  * 0x1f3 and 0x1ee: the current context's window, as SGIKonaGLWindow
  * reads their words. The context keeps it until the next one, since
@@ -4565,6 +4613,7 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
         w->width = args[6];
         w->height = args[7];
         w->placed = 1;
+        w->place_serial = sgi_kona_next_place_serial(s);
     }
     trace_sgi_kona_gl_window(selector, i, w->x, w->y, w->width, w->height,
                              w->display_id, w->partial);
@@ -15880,8 +15929,8 @@ static const VMStateDescription vmstate_sgi_kona_retrace = {
 
 static const VMStateDescription vmstate_sgi_kona_gl_window = {
     .name = TYPE_SGI_KONA "/gl-window",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(placed, SGIKonaGLWindow),
         VMSTATE_INT32(x, SGIKonaGLWindow),
@@ -15892,6 +15941,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_window = {
         VMSTATE_UINT32(displayed_bank, SGIKonaGLWindow),
         VMSTATE_UINT32(display_id, SGIKonaGLWindow),
         VMSTATE_UINT32(partial, SGIKonaGLWindow),
+        VMSTATE_UINT64(place_serial, SGIKonaGLWindow),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -742,6 +742,41 @@ static void test_unmapped_window_shows_bank0(void)
 }
 
 /*
+ * The X server hands a dead client's display ID to the next window. hist
+ * on brick.rgb, traced: ivview was killed showing bank 1 in a window
+ * with ID 0xe and sent no teardown; the X server repainted the IDs
+ * beneath, then mapped hist's single-buffered window over part of that
+ * rectangle with the same ID 0xe. hist cleared bank 0, but its window
+ * showed ivview's last frame from bank 1. The window placed last with an
+ * ID is the one that ID shows: here a second, single-buffered context
+ * placed with ID 0xd over a dead double-buffered one shows bank 0.
+ */
+static void test_reused_display_id_shows_new_window(void)
+{
+    const uint64_t second_save = UINT64_C(0x360000);
+    const uint32_t top = FB_HEIGHT - 640 - PROBE_SIZE;
+    uint32_t config[10] = { 0, 0xc, 0, 0 };
+
+    gl_reset();
+    gl_show_bank1(qts);
+    x_paint_display_id(qts, PROBE_X, top, PROBE_X + PROBE_SIZE,
+                       top + PROBE_SIZE, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0);
+
+    kona_command_kicked(qts, 0x1fd,
+                        (uint32_t[]){ physical_page_word(second_save),
+                                      tagged_offset_word(second_save),
+                                      0x10000 }, 3);
+    kona_command(qts, 1, config, 10);
+    kona_command(qts, 2, (uint32_t[]){ 0 }, 1);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(qts, F0, F1, F0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0x00ff00);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0x00ff00);
+}
+
+/*
  * The X server's gamma load passes every displayed pixel through its
  * table. With an inverting red table (entry i is 0xfff - i) and no green
  * or blue table, a magenta clear shows as blue on the display: red 0xff
@@ -1021,6 +1056,8 @@ int main(int argc, char **argv)
                    test_overlap_shows_bank0_where_covered);
     qtest_add_func("sn0/origin2000/kona-gl/unmapped-window-shows-bank0",
                    test_unmapped_window_shows_bank0);
+    qtest_add_func("sn0/origin2000/kona-gl/reused-display-id-shows-new-window",
+                   test_reused_display_id_shows_new_window);
     qtest_add_func("sn0/origin2000/kona-gl/gamma-applied-at-scanout",
                    test_gamma_applied_at_scanout);
 
