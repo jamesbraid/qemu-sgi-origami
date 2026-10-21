@@ -4606,6 +4606,61 @@ static void test_command_fifo_gl_integer_triangle(void)
     board_quit(qts);
 }
 
+/*
+ * An unmodeled word still names its operand count in bits 13:10, and the
+ * parser passes over that many words: here 0x3cf8, a 16-operand word the
+ * kernel's context restore sends, whose 16 operands happen to spell a
+ * whole yellow triangle. Read as commands, they drew it; passed over, they
+ * draw nothing, and the same triangle sent next draws. A GL-class word with
+ * bit 23 clear, the restore's 0x9000bda2, takes none: the triangle right
+ * after it draws.
+ */
+static void test_command_fifo_unknown_word_skips_its_operands(void)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t triangle[16] = {
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        0x8080c800, 30, 40,
+        0x8080c800, 70, 50,
+        0x8080c800, 40, 85,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    user_cmd_push(qts, 0x00010405);
+    user_cmd_push(qts, 0x2000);
+    user_cmd_push(qts, 0x00003cf8);
+    for (unsigned i = 0; i < ARRAY_SIZE(triangle); i++) {
+        user_cmd_push(qts, triangle[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(triangle); i++) {
+        user_cmd_push(qts, triangle[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0xffff00ff);
+    board_quit(qts);
+
+    qts = board_start("");
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    user_cmd_push(qts, 0x00010405);
+    user_cmd_push(qts, 0x2000);
+    user_cmd_push(qts, 0x9000bda2);
+    for (unsigned i = 0; i < ARRAY_SIZE(triangle); i++) {
+        user_cmd_push(qts, triangle[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0xffff00ff);
+    board_quit(qts);
+}
+
 static void test_command_fifo_gl_integer_points_transform(void)
 {
     const uint32_t matrix[16] = {
@@ -20451,6 +20506,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_clip_plane_eye_space);
     add_fresh_case("sn1/odyssey/command-fifo-gl-clip-plane-migration",
                    test_command_fifo_gl_clip_plane_migration);
+    add_case("sn1/odyssey/command-fifo-unknown-word-skips-its-operands",
+             test_command_fifo_unknown_word_skips_its_operands);
     add_case("sn1/odyssey/command-fifo-gl-depth-sign",
              test_command_fifo_gl_depth_sign);
     add_case("sn1/odyssey/command-fifo-gl-depth-model-view-perspective",
