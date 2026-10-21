@@ -323,11 +323,13 @@
  * index in bits 27:14, count in bits 13:0) and the colour-index fill word,
  * redeclared here the same way every register offset above already is
  * (hw/misc/sgi-odyssey.c). ODSY_BACKEND_DISPMODE_DID1 selects drawable 1's
- * display-mode register (index 0x2901, count 1); its data word
+ * display-mode register (index 0x2901, count 1), and ODSY_BACKEND_DISPMODE_DID0
+ * drawable 0's, the id every pixel has until an id-plane write; its data word
  * ODSY_DISPMODE_GROUP17 names group 17, the only populated colormap in the
  * trace, at base 0x1100. ODSY_BACKEND_CMAP_HDR opens a three-entry record at
  * that base, and ODSY_BACKEND_PAD is a count-0 no-op record.
  */
+#define ODSY_BACKEND_DISPMODE_DID0 0x3a400001u
 #define ODSY_BACKEND_DISPMODE_DID1 0x3a404001u
 #define ODSY_DISPMODE_GROUP17 0x004b5f10u
 #define ODSY_BACKEND_CMAP_HDR 0x34400003u
@@ -1833,8 +1835,8 @@ static void test_framebuffer_pixel_reaches_display_and_screendump(void)
 {
     QTestState *qts = board_start("");
 
-    /* The screen (id plane 0, shown through drawable 1) in an RGB mode. */
-    display_identity(qts, 1);
+    /* The screen (id plane 0) in an RGB mode. */
+    display_identity(qts, 0);
 
     g_assert_cmphex(odsy_test_pixel(qts, 5, 5), ==, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 5, 5), ==, 0);
@@ -1994,8 +1996,8 @@ static void test_command_fifo_fillrect(void)
 
     g_assert_cmphex(odsy_test_pixel(qts, 10, 20), ==, 0x112233ff);
     g_assert_cmphex(odsy_test_pixel(qts, 39, 59), ==, 0x112233ff);
-    /* RGB shows through an RGB mode (id plane 0 takes drawable 1's). */
-    display_identity(qts, 1);
+    /* RGB shows through an RGB mode (drawable 0, the id plane at reset). */
+    display_identity(qts, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 10, 20), ==, 0x00112233);
     /* Outside the rectangle on every side, and just past its far corner. */
     g_assert_cmphex(odsy_test_pixel(qts, 9, 20), ==, 0);
@@ -2776,7 +2778,7 @@ static void test_command_fifo_dma_image(void)
     reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
 
     /* Drawable 1 -> group 17; index 0 red, 1 green, 2 blue. */
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -2825,7 +2827,7 @@ static void test_command_fifo_dma_image(void)
 
     /*
      * One byte a pixel: colour indices, stored raw and shown through the
-     * pixel's drawable (id plane 0 takes drawable 1's group 17). Index 0 is
+     * pixel's drawable (id plane 0, group 17). Index 0 is
      * written like any other over what was there.
      */
     odsy_test_pixel_write(qts, 202, 310, 1);
@@ -2836,7 +2838,7 @@ static void test_command_fifo_dma_image(void)
     g_assert_cmphex(odsy_test_pixel(qts, 201, 310), ==, 2);
     g_assert_cmphex(odsy_test_pixel(qts, 202, 310), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 204, 310), ==, 0);
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     g_assert_cmphex(odsy_shown(qts, 200, 310), ==, 0x00ff00ff);
     g_assert_cmphex(odsy_shown(qts, 201, 310), ==, 0x0000ffff);
     g_assert_cmphex(odsy_shown(qts, 202, 310), ==, 0xff0000ffu);
@@ -3236,7 +3238,7 @@ static void test_backend_colormap_word_stream(void)
     QTestState *qts = board_start("");
 
     /* Drawable 1's display-mode word selects colormap group 17 (base 0x1100). */
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
 
     /*
      * A count-3 record at index 0x1100: red, green then blue, split across
@@ -3423,7 +3425,7 @@ static void test_command_fifo_pattern_quad(void)
     unsigned int u;
 
     /* Drawable 1 -> group 17 (base 0x1100); index 0 red, 1 green, 2 blue. */
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -3476,7 +3478,7 @@ static void test_command_fifo_pattern_quad_straddles_screen(void)
     QTestState *qts = board_start("");
     uint32_t bitmap[32] = { [1] = 1u << 30 };
 
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -3588,7 +3590,7 @@ static void test_command_fifo_lines(void)
     unsigned int i;
 
     /* Drawable 1 -> group 17 (base 0x1100); index 0 red, 1 green, 2 blue. */
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -3717,7 +3719,7 @@ static void test_command_fifo_opaque_stippled_span(void)
     QTestState *qts = board_start("");
     unsigned int i;
 
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -3850,7 +3852,7 @@ static void test_command_fifo_lines_cross_screen_edge(void)
 {
     QTestState *qts = board_start("");
 
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -4126,8 +4128,8 @@ static void test_command_fifo_image_raster_rgb(void)
     g_assert_cmphex(odsy_test_pixel(qts, 101, 100), ==, 0x445566ff);
     g_assert_cmphex(odsy_test_pixel(qts, 100, 101), ==, 0x778899ff);
     g_assert_cmphex(odsy_test_pixel(qts, 101, 101), ==, 0xaabbccff);
-    /* RGB shows through an RGB mode (id plane 0 takes drawable 1's). */
-    display_identity(qts, 1);
+    /* RGB shows through an RGB mode (drawable 0, the id plane at reset). */
+    display_identity(qts, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 100, 100), ==, 0x00112233);
     /* Just past the right edge and below the bottom edge stay untouched. */
     g_assert_cmphex(odsy_test_pixel(qts, 102, 100), ==, 0);
@@ -4487,7 +4489,7 @@ static void test_command_fifo_image_raster_colour_index(void)
     QTestState *qts = board_start("");
 
     /* Drawable 1 -> group 17; index 0 red, 1 green, 2 blue. */
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -4579,7 +4581,7 @@ static void test_command_fifo_image_raster_colour_index_groups(void)
     QTestState *qts = board_start("");
     unsigned int g, b, w;
 
-    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID0, ODSY_DISPMODE_GROUP17);
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_PAD);
@@ -5378,8 +5380,8 @@ static void test_command_fifo_gl_triangle(void)
 
     /* The centroid (61, 78) is inside, in the plane and on the display. */
     g_assert_cmphex(odsy_test_pixel(qts, 61, 78), ==, 0xffff00ff);
-    /* RGB shows through an RGB mode (id plane 0 takes drawable 1's). */
-    display_identity(qts, 1);
+    /* RGB shows through an RGB mode (drawable 0, the id plane at reset). */
+    display_identity(qts, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 61, 78), ==, 0x00ffff00);
     /* Just under the apex is inside; just under the base is not. */
     g_assert_cmphex(odsy_test_pixel(qts, 56, 20), ==, 0xffff00ff);
@@ -5558,8 +5560,8 @@ static void test_command_fifo_gl_clear_rect(void)
     g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 127, 127), ==, ODSY_PLANE_BLUE);
     g_assert_cmphex(odsy_test_pixel(qts, 64, 100), ==, ODSY_PLANE_BLUE);
-    /* RGB shows through an RGB mode (id plane 0 takes drawable 1's). */
-    display_identity(qts, 1);
+    /* RGB shows through an RGB mode (drawable 0, the id plane at reset). */
+    display_identity(qts, 0);
     g_assert_cmphex(odsy_test_display_pixel(qts, 64, 100), ==, 0x000000ff);
     g_assert_cmphex(odsy_test_pixel(qts, 128, 0), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 0, 128), ==, 0);
@@ -12284,13 +12286,16 @@ static void test_command_fifo_gl_clip_plane_migration(void)
 }
 
 /*
- * A pixel whose id plane is unwritten -- main id 0 -- resolves through
- * drawable 1's display mode, the approximation odyssey_resolve_row()
- * documents (ODSY_DID_ROOT_MODE), not through drawable 0's own mode. Drawable
- * 1 names group 17 (0x1100, index 2 blue) and drawable 0 group 18 (0x1200,
- * index 2 white); an index-2 pixel over a zero id plane shows blue.
+ * Main id 0 is an ordinary drawable id: a pixel whose id byte is 0 shows
+ * through drawable 0's own display mode. The X server allocates id 0 like
+ * any other and gives ids 0 to 3 the modes 0x4b5f00 to 0x4b5f30, groups 16
+ * to 19; after a long session searchbook's StaticColor windows took id 0
+ * with their colormap in group 16, and showed black through drawable 1's
+ * group 17. Here drawable 1 names group 17 (0x1100, index 2 blue) and
+ * drawable 0 group 16 (0x1000, index 2 white); an index-2 pixel over id 0
+ * shows white.
  */
-static void test_scanout_main_id_0_uses_drawable_1_mode(void)
+static void test_scanout_main_id_0_uses_its_own_mode(void)
 {
     QTestState *qts = board_start("");
 
@@ -12298,12 +12303,12 @@ static void test_scanout_main_id_0_uses_drawable_1_mode(void)
     backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
     backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
     backend_push32(qts, ODSY_BACKEND_HDR(0x2900, 1));
-    backend_push32(qts, ODSY_DISPMODE_GROUP18);
-    backend_push32(qts, ODSY_BACKEND_HDR(0x1202, 1));
+    backend_push32(qts, 0x004b5f00);
+    backend_push32(qts, ODSY_BACKEND_HDR(0x1002, 1));
     backend_push32(qts, ODSY_LUT_RED | ODSY_LUT_GREEN | ODSY_LUT_BLUE);
 
     odsy_test_pixel_write(qts, 100, 100, 2);
-    g_assert_cmphex(odsy_shown(qts, 100, 100), ==, ODSY_BLUE);
+    g_assert_cmphex(odsy_shown(qts, 100, 100), ==, 0xffffffff);
 
     board_quit(qts);
 }
@@ -14893,7 +14898,7 @@ static void test_context_save_texture_coordinate(void)
     texture_adapter_upload(qts, 0x180000, pixels);
     texture_adapter_window(qts);
     texture_adapter_bind(qts, 0x180000, 0x13000000, 1);
-    display_identity(qts, 1);
+    display_identity(qts, 0);
     /*
      * slot is the selector the page held before the save. The save writes
      * zero descriptors and the coordinate to slot 0 whatever it was.
@@ -18217,7 +18222,7 @@ static void test_buffers_hold_opposite_colours(void)
 {
     QTestState *qts = board_start("");
 
-    display_identity(qts, 1);
+    display_identity(qts, 0);
     rgb_fill(qts, 0xff, 0, 0, 100, 100, 110, 110);
     draw_mask(qts, ODSY_DRAW_BUFFER1);
     rgb_fill(qts, 0, 0, 0xff, 100, 100, 110, 110);
@@ -18260,7 +18265,7 @@ static void test_buffers_swap_shows_only_complete_frames(void)
     QTestState *qts = board_start("");
     uint32_t shown = 0x00000000;
 
-    display_identity(qts, 1);
+    display_identity(qts, 0);
     route_to_pending(qts);
     for (unsigned i = 0; i < ARRAY_SIZE(frame); i++) {
         uint32_t back = (i & 1) ? 0 : 1;
@@ -20029,8 +20034,8 @@ static void test_readback_gl_rgba8_scratch_copy(void)
 
 /*
  * An X index read (format byte 0x41) takes the plane word as an index only
- * where scanout does: the pixel's drawable (main id 0 here, which takes
- * drawable 1's mode) is in an index group and the word fits eight bits.
+ * where scanout does: the pixel's drawable (main id 0 here) is in an index
+ * group and the word fits eight bits.
  * The same word 0x000000ff is refused under an RGB mode and read as index
  * 0xff under group 17; a 12-bit index 0x1ff under group 0 is refused. An
  * index read of a board-memory object is refused: objects record no
@@ -20063,7 +20068,7 @@ static void test_readback_index_follows_display_mode(void)
     odsy_buffer_pixel_write(qts, 0, 300, 400, 0x000000ff);
 
     /* An RGB mode: the word is a colour, so no index byte is read. */
-    dispmode_write(qts, 1, ODSY_DISPMODE_RGB);
+    dispmode_write(qts, 0, ODSY_DISPMODE_RGB);
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     readback_run(qts, hdr, pte, 1);
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
@@ -20071,13 +20076,13 @@ static void test_readback_index_follows_display_mode(void)
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
     /* An index group: the same word reads as index 0xff. */
-    dispmode_write(qts, 1, ODSY_DISPMODE_GROUP17);
+    dispmode_write(qts, 0, ODSY_DISPMODE_GROUP17);
     readback_run(qts, hdr, pte, 1);
     expect[16] = 0xff;
     readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
 
     /* Group 0's 12-bit index above 0xff does not fit the byte. */
-    dispmode_write(qts, 1, 0);
+    dispmode_write(qts, 0, 0);
     odsy_buffer_pixel_write(qts, 0, 300, 400, 0x1ff);
     readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
     readback_run(qts, hdr, pte, 1);
@@ -20746,8 +20751,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_program_window_local_viewer);
     add_case("sn1/odyssey/command-fifo-gl-combined-carries-modelview",
              test_command_fifo_gl_combined_carries_modelview);
-    add_case("sn1/odyssey/scanout-main-id-0-uses-drawable-1-mode",
-             test_scanout_main_id_0_uses_drawable_1_mode);
+    add_case("sn1/odyssey/scanout-main-id-0-uses-its-own-mode",
+             test_scanout_main_id_0_uses_its_own_mode);
     add_case("sn1/odyssey/command-fifo-gl-flat-shading",
              test_command_fifo_gl_flat_shading);
     add_case("sn1/odyssey/command-fifo-gl-vertex-3i",

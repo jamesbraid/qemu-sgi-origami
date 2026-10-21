@@ -556,17 +556,17 @@
 /* 0x608's bit 31, the software buffer state, beside the drawable's base. */
 #define ODSY_DRAW_WORD_STATE 0x80000000u
 /*
- * APPROXIMATION: a pixel whose main drawable id is 0 resolves through
- * drawable 1's display mode. The X server writes the root window's id
- * planes to 0 (mask 0xff) once its session tiles the root, and paints the
- * root with indices allocated in the default colormap at 0x1100, group 17,
- * which drawable 1's mode names; drawable 0's own mode, 0x004b5f00, names
- * group 16, which the server never loads. So a board that resolved main id
- * 0 through 0x2900 as written would show the root black, which IRIX does
- * not. How the board really treats main id 0 is UNKNOWN; this keeps the
- * root's intended colours until a capture or register map settles it.
+ * Main id 0 is an ordinary drawable id and shows through 0x2900, its own
+ * display mode. From disassembly of the IRIX 6.5.30 X server's odyssey.so
+ * (ESTABLISHED as software behaviour): its free-id search walks the id
+ * table from entry 0. In model runs (OBSERVED) the server gives ids 0 to 3
+ * the modes 0x4b5f00 to 0x4b5f30, colormap groups 16 to 19, and loads a
+ * window's colormap into the group its id names: searchbook's StaticColor
+ * windows took id 3 and group 19 in a fresh session, and id 0 and group 16
+ * after 107 other programs had left group 19 holding another colormap. That
+ * the board reads mode 0 for id 0 is INFERRED: it is the only reading under
+ * which the server's second assignment shows its colours.
  */
-#define ODSY_DID_ROOT_MODE 1
 /* The colour plane word of an index pixel: the index, low 12 bits (model). */
 #define ODSY_INDEX_MASK 0xfff
 
@@ -3221,12 +3221,11 @@ static uint32_t odyssey_main_id(SGIOdysseyState *s, uint32_t x, uint32_t y)
 
 /*
  * The colormap group main drawable main_id shows through: bits 8:4 of its
- * display mode, main id 0 taking drawable 1's (odyssey_resolve_row()).
- * Below ODSY_GAMMA_GROUP the plane word is an index.
+ * display mode. Below ODSY_GAMMA_GROUP the plane word is an index.
  */
 static uint32_t odyssey_display_group(SGIOdysseyState *s, uint32_t main_id)
 {
-    uint32_t mode = s->dispmode[main_id ? main_id : ODSY_DID_ROOT_MODE];
+    uint32_t mode = s->dispmode[main_id];
 
     return (mode >> ODSY_DISPMODE_GROUP_SHIFT) & ODSY_DISPMODE_GROUP_MASK;
 }
@@ -3241,8 +3240,7 @@ static uint32_t odyssey_display_group(SGIOdysseyState *s, uint32_t main_id)
  * 26 is an RGB mode: each channel of the plane word goes through the gamma
  * table. Below it the plane word is an index: lut[256 * group + (index &
  * 0xff)], or lut[index & 0xfff] for group 0, the 4,096-entry case; no second
- * gamma pass. Main id 0 takes drawable 1's mode (ODSY_DID_ROOT_MODE, an
- * approximation). Group 25 (0x1900, the table the server keeps out of its
+ * gamma pass. Group 25 (0x1900, the table the server keeps out of its
  * software gamma) resolves as an index table and is reported once as
  * unverified. Over all of that, a pixel whose overlay id's mode is enabled
  * and whose overlay pixel is not zero shows the overlay colormap entry

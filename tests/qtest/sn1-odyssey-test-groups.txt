@@ -54,7 +54,7 @@ board /mips64/sn1/odyssey/mesa-selector-and-model-did
 board /mips64/sn1/odyssey/buffers-migration
 board /mips64/sn1/odyssey/buffers-transfers-follow-mask
 board /mips64/sn1/odyssey/buffers-captured-copy-preserves-both-sources
-board /mips64/sn1/odyssey/scanout-main-id-0-uses-drawable-1-mode
+board /mips64/sn1/odyssey/scanout-main-id-0-uses-its-own-mode
 board /mips64/sn1/odyssey/unimplemented-reports-independent-budgets
 board /mips64/sn1/odyssey/dma-texture-object
 board /mips64/sn1/odyssey/dma-texture-luminance-alpha
