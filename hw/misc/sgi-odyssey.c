@@ -1336,6 +1336,20 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_GL_TEXCOORD_4F 0xc380d025  /* 4 operands: s, t, r, q */
 #define ODSY_GL_TEXCOORD_SHAPE 0xffffff00
 #define ODSY_GL_TEXCOORD_TAG 0xc380c800
+/*
+ * glTexCoord1i to 4i: the word, then each coordinate as a signed 32-bit
+ * integer (the short forms sign-extend into the same words). ESTABLISHED
+ * from the IRIX 6.5.30 IP30 n32 libGLcore's __glOdyim_TexCoord1i to 4i and
+ * 1s to 4s. That the board takes them as the integer's value, unscaled, as
+ * OpenGL specifies for texture coordinates, is INFERRED. The kernel's
+ * context restore replays the current coordinate as 0xc380c41e, and the
+ * current-value query answers the word and its integers as sent, as it
+ * does the float forms (INFERRED the same way).
+ */
+#define ODSY_GL_TEXCOORD_1I 0xc380c41e
+#define ODSY_GL_TEXCOORD_2I 0xc380c820
+#define ODSY_GL_TEXCOORD_3I 0xc380cc22
+#define ODSY_GL_TEXCOORD_4I 0xc380d024
 #define ODSY_GL_TEX_RECT 0x8f80b968     /* 14 operands */
 
 /* Six retained words: colour, scale, bias and cubic coefficients. */
@@ -9031,6 +9045,17 @@ static void odyssey_query_update(SGIOdysseyState *s, uint32_t tag)
     case 0x3000c02e:
         record = ODSY_QUERY_EDGE;
         break;
+    case ODSY_GL_TEXCOORD_1I:
+    case ODSY_GL_TEXCOORD_2I:
+    case ODSY_GL_TEXCOORD_3I:
+    case ODSY_GL_TEXCOORD_4I:
+        /*
+         * Kept raw like the float forms: the kernel replays the record
+         * through the command FIFO at a context restore, and every integer
+         * survives that unchanged.
+         */
+        record = ODSY_QUERY_TEXCOORD;
+        break;
     default:
         if ((tag & ODSY_GL_TEXCOORD_SHAPE) != ODSY_GL_TEXCOORD_TAG) {
             return;
@@ -9511,9 +9536,23 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
                          s->cmd_operand[3] : ODSY_F32_ONE;
         return;
     }
+    if (tag == ODSY_GL_TEXCOORD_1I || tag == ODSY_GL_TEXCOORD_2I ||
+        tag == ODSY_GL_TEXCOORD_3I || tag == ODSY_GL_TEXCOORD_4I) {
+        unsigned n = odyssey_cmd_arity(tag);
+        uint32_t c[4] = { 0, 0, 0, ODSY_F32_ONE };
+
+        for (unsigned i = 0; i < n; i++) {
+            c[i] = odyssey_f32_bits((float)(int32_t)s->cmd_operand[i]);
+        }
+        s->tex_coord[0] = c[0];
+        s->tex_coord[1] = c[1];
+        s->tex_coord_r = c[2];
+        s->tex_coord_q = c[3];
+        return;
+    }
     if ((tag & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG &&
         tag != ODSY_GL_TEXCOORD_2F) {
-        /* Integer forms remain observable and do not alter coordinates. */
+        /* Other two-coordinate forms remain observable and change nothing. */
         odyssey_cmd_unimplemented(s, tag);
         return;
     }
@@ -10451,6 +10490,9 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     if (word == ODSY_GL_TEXCOORD_1F ||
         word == ODSY_GL_TEXCOORD_3F ||
         word == ODSY_GL_TEXCOORD_4F ||
+        word == ODSY_GL_TEXCOORD_1I ||
+        word == ODSY_GL_TEXCOORD_3I ||
+        word == ODSY_GL_TEXCOORD_4I ||
         (word & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG ||
         word == ODSY_GL_TEX_RECT) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));

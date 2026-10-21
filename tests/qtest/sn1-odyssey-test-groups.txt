@@ -231,6 +231,7 @@ context /mips64/sn1/odyssey/back-material-migration
 context /mips64/sn1/odyssey/back-material-migration-defaults
 context /mips64/sn1/odyssey/texture-current-query-4f-migration
 context /mips64/sn1/odyssey/texture-current-query-4f-migration-defaults
+context /mips64/sn1/odyssey/texture-current-query-1i
 context /mips64/sn1/odyssey/texture-current-query-1f
 context /mips64/sn1/odyssey/texture-current-query-1f-kernel
 context /mips64/sn1/odyssey/texture-current-query-1f-migration
@@ -335,6 +336,7 @@ texture /mips64/sn1/odyssey/texture-adapter/unsupported-missing
 texture-1d-clamp /mips64/sn1/odyssey/texture-adapter/one-dimensional-clamp-nearest
 texture-1d-clamp /mips64/sn1/odyssey/texture-adapter/one-dimensional-clamp-linear
 
+texture-1d-stored /mips64/sn1/odyssey/texture-adapter/one-dimensional-integer-coordinate
 texture-1d-stored /mips64/sn1/odyssey/texture-adapter/one-dimensional-stored-nearest
 texture-1d-stored /mips64/sn1/odyssey/texture-adapter/one-dimensional-stored-linear
 texture-1d-stored /mips64/sn1/odyssey/texture-adapter/one-dimensional-stored-upload
