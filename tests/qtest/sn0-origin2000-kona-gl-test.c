@@ -751,11 +751,29 @@ static void test_unmapped_window_shows_bank0(void)
  * ID is the one that ID shows: here a second, single-buffered context
  * placed with ID 0xd over a dead double-buffered one shows bank 0.
  */
+#define SECOND_SAVE_AREA UINT64_C(0x360000)
+
+/*
+ * A second, single-buffered context, fresh from its own save area, placed
+ * over the probe window with the same display ID 0xd and cleared green.
+ */
+static void gl_second_window_takes_id(QTestState *s)
+{
+    uint32_t config[10] = { 0, 0xc, 0, 0 };
+
+    kona_command_kicked(s, 0x1fd,
+                        (uint32_t[]){ physical_page_word(SECOND_SAVE_AREA),
+                                      tagged_offset_word(SECOND_SAVE_AREA),
+                                      0x10000 }, 3);
+    kona_command(s, 1, config, 10);
+    kona_command(s, 2, (uint32_t[]){ 0 }, 1);
+    gl_place_window(s, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(s, F0, F1, F0);
+}
+
 static void test_reused_display_id_shows_new_window(void)
 {
-    const uint64_t second_save = UINT64_C(0x360000);
     const uint32_t top = FB_HEIGHT - 640 - PROBE_SIZE;
-    uint32_t config[10] = { 0, 0xc, 0, 0 };
 
     gl_reset();
     gl_show_bank1(qts);
@@ -763,17 +781,70 @@ static void test_reused_display_id_shows_new_window(void)
                        top + PROBE_SIZE, 1);
     g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0);
 
-    kona_command_kicked(qts, 0x1fd,
-                        (uint32_t[]){ physical_page_word(second_save),
-                                      tagged_offset_word(second_save),
-                                      0x10000 }, 3);
-    kona_command(qts, 1, config, 10);
-    kona_command(qts, 2, (uint32_t[]){ 0 }, 1);
-    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
-    gl_clear(qts, F0, F1, F0);
+    gl_second_window_takes_id(qts);
     g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0x00ff00);
     g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
                                 640 + PROBE_SIZE - 1), ==, 0x00ff00);
+}
+
+/*
+ * A display ID given to another window and then back. The double-buffered
+ * window showing bank 1 is switched out, a single-buffered window takes its
+ * ID 0xd and shows bank 0, and then the first context is restored and its
+ * 0x1f3 carries 0xd again: the window placed last owns the ID, so the first
+ * window's bank 1 shows once more.
+ */
+static void test_display_id_given_back_shows_bank1(void)
+{
+    gl_reset();
+    gl_show_bank1(qts);
+    kona_command_kicked(qts, 0x1fc, (uint32_t[]){ 1 }, 1);
+
+    gl_second_window_takes_id(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0x00ff00);
+    kona_command_kicked(qts, 0x1fc, (uint32_t[]){ 1 }, 1);
+
+    kona_command_kicked(qts, 0x1f9,
+                        (uint32_t[]){ guest_word(qts, SAVE_AREA),
+                                      physical_page_word(SAVE_AREA),
+                                      tagged_offset_word(SAVE_AREA),
+                                      0xedededed }, 4);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0xff00ff);
+}
+
+/*
+ * Two windows sharing display ID 0xd across a migration: the newer,
+ * single-buffered one still owns the ID after the load, so the older
+ * double-buffered window's bank 1 stays hidden. The order lives in the
+ * windows' placement serials, which must migrate.
+ */
+static void test_shared_display_id_migrates(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-shared-id-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    gl_show_bank1(from);
+    gl_second_window_takes_id(from);
+    g_assert_cmphex(shown_pixel(from, PROBE_X, 640), ==, 0x00ff00);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(shown_pixel(to, PROBE_X, 640), ==, 0x00ff00);
+    g_assert_cmphex(shown_pixel(to, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0x00ff00);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -1058,6 +1129,10 @@ int main(int argc, char **argv)
                    test_unmapped_window_shows_bank0);
     qtest_add_func("sn0/origin2000/kona-gl/reused-display-id-shows-new-window",
                    test_reused_display_id_shows_new_window);
+    qtest_add_func("sn0/origin2000/kona-gl/display-id-given-back-shows-bank1",
+                   test_display_id_given_back_shows_bank1);
+    qtest_add_func("sn0/origin2000/kona-gl/shared-display-id-migrates",
+                   test_shared_display_id_migrates);
     qtest_add_func("sn0/origin2000/kona-gl/gamma-applied-at-scanout",
                    test_gamma_applied_at_scanout);
 
