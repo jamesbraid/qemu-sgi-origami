@@ -504,6 +504,16 @@ typedef struct SGIRasterTarget {
     /* Current binding; resolved once by the family before drawing. */
     const SGIGLTexImage *texture;
     /*
+     * An opaque polygon stipple, for a head that paints a stipple's clear
+     * bits in a background colour where OpenGL discards them: a polygon
+     * fragment whose stipple bit is clear takes stipple_background as its
+     * colour, or stipple_background_index in colour-index mode, and goes on
+     * through the per-fragment operations. Per draw, never migrated.
+     */
+    bool stipple_opaque;
+    float stipple_background[4];
+    uint32_t stipple_background_index;
+    /*
      * Optional complete RGBA stores and reads. Positive alpha_bits requires
      * this store. Destination-dependent RGBA work requires the matching read,
      * which must return in-range components or false. Required reads for all

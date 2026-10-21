@@ -6109,6 +6109,37 @@ static void test_polygon_smooth_stipple(void)
     g_assert_cmphex(frag_pixel(&on, 11, 10), ==, 0);
 }
 
+/*
+ * An opaque stipple paints the clear bits in the target's background
+ * colour, aliased and smoothed alike, and leaves pixels the polygon does
+ * not cover alone.
+ */
+static void test_polygon_stipple_opaque(void)
+{
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t rows[32] = { 0 };
+
+    rows[10] = 1u << 10;
+    smooth_rules.smooth_primitives = true;
+    for (unsigned smooth = 0; smooth < 2; smooth++) {
+        FragScene f;
+
+        frag_init(&f);
+        f.rec.rules = &smooth_rules;
+        f.rec.target.stipple_opaque = true;
+        f.rec.target.stipple_background[2] = 1;
+        f.rec.target.stipple_background[3] = 1;
+        g_assert_true(sgi_gl_polygon_stipple(&f.c, rows));
+        enable(&f.c, SGI_GL_POLYGON_STIPPLE, true);
+        enable(&f.c, SGI_GL_POLYGON_SMOOTH, smooth);
+        frag_window_quad(&f, 8, 8, 16, 16, 1, 1, 1, 1);
+        g_assert_cmphex(frag_pixel(&f, 10, 10), ==, 0xffffff);
+        g_assert_cmphex(frag_pixel(&f, 11, 10), ==, 0x0000ff);
+        g_assert_cmphex(frag_pixel(&f, 12, 12), ==, 0x0000ff);
+        g_assert_cmphex(frag_pixel(&f, 20, 20), ==, 0);
+    }
+}
+
 /* View-volume and scissor clipping bound the polygon coverage area. */
 static void test_polygon_smooth_clipping(void)
 {
@@ -13871,6 +13902,8 @@ int main(int argc, char **argv)
                     test_polygon_smooth_quad_interpolation);
     g_test_add_func("/sgi-gl/polygon-smooth-stipple",
                     test_polygon_smooth_stipple);
+    g_test_add_func("/sgi-gl/polygon-stipple-opaque",
+                    test_polygon_stipple_opaque);
     g_test_add_func("/sgi-gl/polygon-smooth-clipping",
                     test_polygon_smooth_clipping);
     g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);
