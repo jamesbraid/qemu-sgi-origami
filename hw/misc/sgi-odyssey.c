@@ -7712,8 +7712,24 @@ static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
  * last point). Along the major axis pixel i is painted at the minor-axis
  * position of its centre, rounded down. With the stipple enabled (0x0404 bits
  * 3 and 4) the k-th covered pixel from the first vertex, k = 1 next to it, is
- * painted only where bit (k & 31) of the 0x0c48 pattern is set.
+ * painted only where bit (k & 31) of the 0x0c48 pattern is set, and where it
+ * is clear, under an opaque pattern (0x043f bit 4), in the 0x0c21 constant
+ * colour (odyssey_pattern_background()): the X server's FillOpaqueStippled
+ * spans, which 4Dwm's icons are filled with, arrive so. INFERRED as for the
+ * opaque quads.
  */
+static void odyssey_gl_segment_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
+                                     bool clear)
+{
+    if (!clear) {
+        odyssey_gl_plot(s, x, y);
+    } else if (s->pattern_shape & ODSY_PATTERN_SHAPE_OPAQUE) {
+        odyssey_paint_integer(s, x, y, s->gl_color_is_index,
+                              odyssey_pattern_background(s,
+                                  s->gl_color_is_index));
+    }
+}
+
 static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
                                int32_t x2, int32_t y2, bool stippled)
 {
@@ -7769,9 +7785,8 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
             double c = i + 0.5;
             uint32_t k = fabs(c - x1) + 0.5;
 
-            if (!stippled || (pattern >> (k & 31)) & 1) {
-                odyssey_gl_plot(s, i, floor(y1 + (c - x1) * dy / dx));
-            }
+            odyssey_gl_segment_pixel(s, i, floor(y1 + (c - x1) * dy / dx),
+                                     stippled && !((pattern >> (k & 31)) & 1));
         }
     } else {
         lo = MAX(MIN(y1, y2), 0);
@@ -7780,9 +7795,8 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
             double c = i + 0.5;
             uint32_t k = fabs(c - y1) + 0.5;
 
-            if (!stippled || (pattern >> (k & 31)) & 1) {
-                odyssey_gl_plot(s, floor(x1 + (c - y1) * dx / dy), i);
-            }
+            odyssey_gl_segment_pixel(s, floor(x1 + (c - y1) * dx / dy), i,
+                                     stippled && !((pattern >> (k & 31)) & 1));
         }
     }
 }

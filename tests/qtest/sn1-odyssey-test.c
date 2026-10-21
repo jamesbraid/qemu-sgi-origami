@@ -3706,6 +3706,51 @@ static void test_command_fifo_lines(void)
     board_quit(qts);
 }
 
+/*
+ * An opaque stippled span, as the X server fills a FillOpaqueStippled
+ * polygon (4Dwm's icon faces): 0x043f bit 4 with the line stipple on, so
+ * the clear bits take the 0x0c21 constant colour's index, here 2 (blue),
+ * and the set ones the current index 1 (green).
+ */
+static void test_command_fifo_opaque_stippled_span(void)
+{
+    QTestState *qts = board_start("");
+    unsigned int i;
+
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
+    backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
+    backend_push32(qts, ODSY_BACKEND_PAD);
+    index_fill(qts, 0, 200, 300, 232, 332);
+
+    cmd_push(qts, ODSY_CMD_LINE_STIPPLE);
+    cmd_push(qts, 0xaaaa);
+    cmd_push(qts, 0xaaaaaaaa);
+    cmd_push(qts, 0x30f);
+    cmd_push(qts, ODSY_CMD_BLEND);
+    cmd_push(qts, 0x200);
+    cmd_push(qts, 0x2000);
+    cmd_push(qts, 0x1);
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_OPAQUE);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0x10a0018);
+    colour_index(qts, 1);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 212, 305);
+    vertex2i(qts, 204, 305);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    for (i = 205; i <= 211; i += 2) {
+        g_assert_cmphex(odsy_shown(qts, i, 305), ==, ODSY_GREEN);
+    }
+    for (i = 204; i <= 210; i += 2) {
+        g_assert_cmphex(odsy_shown(qts, i, 305), ==, ODSY_BLUE);
+    }
+    g_assert_cmphex(odsy_shown(qts, 212, 305), ==, ODSY_RED);
+    board_quit(qts);
+}
+
 /* Extreme endpoints must finish and keep stipple phase at the first vertex. */
 static void test_command_fifo_lines_cross_screen_edge(void)
 {
@@ -20481,6 +20526,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_triangle);
     add_case("sn1/odyssey/mesa-per-draw-fallback",
              test_mesa_per_draw_fallback);
+    add_case("sn1/odyssey/command-fifo-opaque-stippled-span",
+             test_command_fifo_opaque_stippled_span);
     add_case("sn1/odyssey/command-fifo-lines",
              test_command_fifo_lines);
     add_case("sn1/odyssey/command-fifo-lines-cross-screen-edge",
