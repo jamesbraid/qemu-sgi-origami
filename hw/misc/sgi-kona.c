@@ -10353,7 +10353,7 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
     /* Selector s: op (s << 18) | 0x28001 and addr s (kon_loadImpWordGC). */
-    for (uint32_t sel = 0; sel <= 2; sel++) {
+    for (uint32_t sel = 0; sel <= 3; sel++) {
         const uint32_t form[] = {
             0x1008, (sel << 18) | 0x28001, sel, 6, 0xa, 1, 1,
         };
@@ -10385,6 +10385,18 @@ static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
  *   is also the 2-bit overlay read (format 8, index in bits 15:14,
  *   0x4352a4); the model answers selector 0 over direct-colour pixels
  *   only.
+ *
+ *   selector 3, a two-word TrueColor format whose window byte +2 is 1:
+ *   red, green and blue from bits 31:24, 23:16 and 15:8 (0x434738), so
+ *   over a direct-colour pixel it is answered as selector 1. The model
+ *   keeps one set of RGB a pixel, so what distinguishes the selectors on
+ *   the pipe is not modelled.
+ *
+ * Every selector reads the bank its pixel shows (see
+ * sgi_kona_displayed_bank()), the screen as its caller nfbReadDisplay
+ * names it, rather than refusing a pixel whose double-buffered window
+ * shows bank 1 (inferred from the routine's purpose and oglsnoop's use;
+ * which bank the pipe reads for each selector is unknown).
  *
  * Approximated: the model stores logical RGB8, so selector 0 answers the
  * top five bits of each component. What the pipe returns in the bits the
@@ -10466,16 +10478,19 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
                 int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
+                unsigned bank = fb_word ?
+                                sgi_kona_displayed_bank(s, x + c, py) : 0;
                 uint32_t tag = sgi_plane_load(&s->mem,
-                    sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, 0)),
+                    sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank)),
                     x + c, py);
                 uint32_t word = sgi_plane_load(&s->mem,
-                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
+                    sgi_kona_plane(s, sgi_kona_bank_plane(s, bank)),
+                    x + c, py);
 
                 bool rgb = bytes == 4 && !fb_word;
                 uint32_t fb;
 
-                if (sgi_kona_displayed_bank(s, x + c, py)) {
+                if (bank != sgi_kona_displayed_bank(s, x + c, py)) {
                     reason = "bank 0 hidden by a displayed bank-1 window";
                     goto refused;
                 }
@@ -10493,12 +10508,16 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
                 int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
+                /* A frame-buffer word reads the bank its pixel shows. */
+                unsigned bank = fb_word ?
+                                sgi_kona_displayed_bank(s, x + c, py) : 0;
                 uint32_t word = sgi_plane_load(&s->mem,
-                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
+                    sgi_kona_plane(s, sgi_kona_bank_plane(s, bank)),
+                    x + c, py);
 
                 if (fb_word) {
                     uint32_t tag = sgi_plane_load(&s->mem,
-                        sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, 0)),
+                        sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, bank)),
                         x + c, py);
                     uint32_t fb = 0;
 

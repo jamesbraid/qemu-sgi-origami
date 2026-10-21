@@ -1057,6 +1057,21 @@ static void test_read_fb_word(void)
     g_assert_cmphex(read_guest_word(qts, READ_PAGE + 24), ==, 0xa5a5a5a5);
 
     /*
+     * Selector 3, the RGB word of the pair a window with byte +2 set
+     * reads (konal.so 0x434738), is the same RGB word.
+     */
+    memcpy(other, gc, sizeof(other));
+    other[7] = 0xe8001;
+    other[8] = 3;
+    x_command(qts, TOKEN_GC, other, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 2, 1, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==, 0x12345600);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==, 0xabcdef00);
+
+    /*
      * Selector 0, the 16-bit formats' read, packs five bits of red, green
      * and blue in bits 31:17 (konal.so 0x434cb4); over a colour-index
      * pixel it stays refused.
@@ -1531,6 +1546,22 @@ static void test_read_bank1_window(void)
     read_gl_command(qts, 0x1e7, (uint32_t[]){ 1 }, 1, true);
     qtest_clock_step(qts, 20000000);
     read_refused(qts, 454, 700);
+
+    /*
+     * The frame-buffer word read, oglsnoop's, reads the bank each pixel
+     * shows: the green the GL window cleared bank 1 to, as RGB << 8.
+     */
+    x_command(qts, TOKEN_GC, (uint32_t[]){ 0, 0, 0, 0, 0xffffff, 0xffffff,
+                                           0x1008, 0x68001, 1, 6, 0xa, 1,
+                                           1 }, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 2, 1, 0 }, 7);
+    read_prepare(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 8), ==, 0x00ff0000);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE + 12), ==, 0x00ff0000);
+    read_gc(qts);
+    read_setup(qts, 6, 20);
 
     /* One pixel still showing bank 1 refuses the whole rectangle. */
     read_paint_display_id(qts, 454, 700, 460, 719, 1);
