@@ -6162,6 +6162,22 @@ static void odyssey_gl_apply_polygon_stipple(SGIOdysseyState *s)
                     &cap, 1);
 }
 
+/*
+ * 0x0404 bit 17 (ODSY_MODE_BLEND) blends only into an RGBA drawable: OpenGL
+ * blends RGBA fragments alone (OpenGL 1.2.1, 4.1.6), and the X server sets
+ * the bit with factors ONE, ZERO for its opaque stipples, whose background
+ * is the 0x0c21 constant colour and needs no destination
+ * (ODSY_PATTERN_SHAPE_OPAQUE). Fed again when the colour mode changes.
+ */
+static void odyssey_gl_apply_blend(SGIOdysseyState *s)
+{
+    uint32_t blend = SGI_GL_BLEND;
+
+    odyssey_gl_feed(s, (s->pattern_mode & ODSY_MODE_BLEND) &&
+                    !odyssey_gl_index_mode(s) ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &blend, 1);
+}
+
 static void odyssey_gl_apply_mode(SGIOdysseyState *s)
 {
     uint32_t shade = s->pattern_mode & ODSY_MODE_FLAT_SHADE ?
@@ -6169,7 +6185,6 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     uint32_t depth_test = SGI_GL_DEPTH_TEST;
     uint32_t alpha_test = SGI_GL_ALPHA_TEST;
     uint32_t stencil_test = SGI_GL_STENCIL_TEST;
-    uint32_t blend = SGI_GL_BLEND;
     uint32_t index_logic_op = SGI_GL_INDEX_LOGIC_OP;
     uint32_t color_logic_op = SGI_GL_COLOR_LOGIC_OP;
     uint32_t offset_point = SGI_GL_POLYGON_OFFSET_POINT;
@@ -6207,8 +6222,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &alpha_test, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_STENCIL_TEST ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &stencil_test, 1);
-    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_BLEND ?
-                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &blend, 1);
+    odyssey_gl_apply_blend(s);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_FOG ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &fog, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_INDEX_LOGIC_OP ?
@@ -6901,9 +6915,13 @@ static void odyssey_gl_program(SGIOdysseyState *s)
 static void odyssey_colour_mode(SGIOdysseyState *s, uint32_t cls, uint32_t v)
 {
     uint32_t known = cls == ODSY_PROG_COLOUR_MODE ? 0x1 : 0x3;
+    bool index = odyssey_gl_index_mode(s);
     bool disagree;
 
     s->colour_mode[cls - ODSY_PROG_COLOUR_MODE] = v;
+    if (odyssey_gl_index_mode(s) != index && !s->gl_in_prim) {
+        odyssey_gl_apply_blend(s);
+    }
     disagree = cls == ODSY_PROG_COLOUR_MODE_B &&
                ((s->colour_mode[0] ^ s->colour_mode[1]) &
                 ODSY_COLOUR_MODE_INDEX);
