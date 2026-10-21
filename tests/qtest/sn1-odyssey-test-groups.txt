@@ -184,6 +184,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane
 gl /mips64/sn1/odyssey/command-fifo-gl-clip-plane-eye-space
 gl /mips64/sn1/odyssey/command-fifo-unknown-word-skips-its-operands
 gl /mips64/sn1/odyssey/command-fifo-gl-index-does-not-blend
+gl /mips64/sn1/odyssey/command-fifo-gl-opaque-stipple-index
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-sign
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-model-view-perspective
 gl /mips64/sn1/odyssey/command-fifo-gl-depth-scale

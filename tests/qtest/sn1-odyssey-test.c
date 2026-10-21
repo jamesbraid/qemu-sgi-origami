@@ -4715,6 +4715,62 @@ static void test_command_fifo_gl_index_does_not_blend(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * The X server's FillOpaqueStippled polygon in a colour-index drawable, as
+ * 4Dwm fills its icons' checkered faces (words from a traced xrefresh):
+ * 0x0404 0xa0018 sets the pattern bits, blend and index logic op, 0x0c21
+ * names background index 0xb with factors ONE, ZERO, 0x043f 0x10 selects
+ * the GL stipple, opaque, and a 50% checker is loaded before the integer
+ * triangle in index 4. Set stipple bits take index 4 and clear ones 0xb.
+ */
+static void test_command_fifo_gl_opaque_stipple_index(void)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t setup[] = {
+        0x22008001,
+        0x00010404, 0xa0018,
+        0x00010c21, 0x200, 0xb000, 0x1,
+        0xc580c406, 4,
+        0x00010422, 3,
+        0x0001043f, 0x10,
+    };
+    const uint32_t draw[] = {
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        0x8080c800, 30, 40,
+        0x8080c800, 70, 50,
+        0x8080c800, 40, 85,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+    uint32_t a, b;
+
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    for (unsigned i = 0; i < ARRAY_SIZE(setup); i++) {
+        user_cmd_push(qts, setup[i]);
+    }
+    for (unsigned load = 0; load < 2; load++) {
+        user_cmd_push(qts, load ? 0x00013c4f : 0x00013c4e);
+        for (unsigned i = 0; i < 16; i++) {
+            user_cmd_push(qts, i & 1 ? 0x55555555 : 0xaaaaaaaa);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(draw); i++) {
+        user_cmd_push(qts, draw[i]);
+    }
+    a = odsy_test_pixel(qts, 46, 69);
+    b = odsy_test_pixel(qts, 47, 69);
+    g_assert_true((a == 4 && b == 0xb) || (a == 0xb && b == 4));
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 70), ==, b);
+    g_assert_cmphex(odsy_test_pixel(qts, 30, 80), ==, 0);
+    board_quit(qts);
+}
+
 static void test_command_fifo_gl_integer_points_transform(void)
 {
     const uint32_t matrix[16] = {
@@ -20564,6 +20620,8 @@ int main(int argc, char **argv)
              test_command_fifo_unknown_word_skips_its_operands);
     add_case("sn1/odyssey/command-fifo-gl-index-does-not-blend",
              test_command_fifo_gl_index_does_not_blend);
+    add_case("sn1/odyssey/command-fifo-gl-opaque-stipple-index",
+             test_command_fifo_gl_opaque_stipple_index);
     add_case("sn1/odyssey/command-fifo-gl-depth-sign",
              test_command_fifo_gl_depth_sign);
     add_case("sn1/odyssey/command-fifo-gl-depth-model-view-perspective",
