@@ -4693,21 +4693,47 @@ static uint32_t odyssey_f32_bits(float f);
 static double odyssey_gl_depth_scale(SGIOdysseyState *s);
 
 /*
- * The depth row over the block-16 denominator, in units of the client's
- * [0, 1] depth (odyssey_gl_load_combined()). The shared context's
- * model-view is the identity, so its eye coordinates are the object
- * coordinates the combined matrix takes.
+ * How far past [0, 1] a fragment's depth may round and still be drawn,
+ * clamped: 16 units in the last place of a single near 1. APPROXIMATION:
+ * the depth row and block 16 arrive as singles, and a library that maps the
+ * far plane to 0.99999999 of the range (its combined-matrix validation)
+ * leaves less margin than their rounding takes; amesh's rows, whose depth
+ * is 1 - 5e-9 exactly, come to 1 + 2.5e-8 in double from the singles. A
+ * board does its arithmetic in its own precision and the clip it applies at
+ * the far plane is UNKNOWN; a capture of a primitive drawn at the far plane
+ * under glDepthRange(0, 1) would settle it.
+ */
+#define ODSY_GL_DEPTH_SLACK (1.0 / (1 << 20))
+
+/*
+ * The depth row over the block-16 row, in units of the client's [0, 1]
+ * depth (odyssey_gl_load_combined()). The shared context's model-view is
+ * the identity, so its eye coordinates are the object coordinates the
+ * combined matrix takes. Block 16 is the divisor only when all four of its
+ * words are finite and the fourth is not zero; otherwise the sign-only
+ * fallback divides by a constant, as before the row was read whole.
  */
 static SGIRasterRules odyssey_gl_operation_rules(SGIOdysseyState *s)
 {
     SGIRasterRules rules = odyssey_gl_rules;
     double scale = 2 * ODSY_GL_DEPTH_S * odyssey_gl_depth_scale(s);
+    double block16[4];
+    bool divisor = true;
 
     rules.alpha_bits = odyssey_gl_index_mode(s) ? 0 : 8;
     rules.depth_row_given = true;
     for (unsigned k = 0; k < 4; k++) {
         rules.depth_row[k] = odyssey_f32(s->gl_combined[8 + k]) / scale;
+        block16[k] = odyssey_f32(s->gl_block16[k]);
+        divisor &= isfinite(block16[k]);
     }
+    if (divisor && block16[3] != 0) {
+        rules.depth_divisor_given = true;
+        for (unsigned k = 0; k < 4; k++) {
+            rules.depth_divisor[k] = block16[k] / block16[3];
+        }
+    }
+    rules.depth_slack = ODSY_GL_DEPTH_SLACK;
     return rules;
 }
 
@@ -7178,16 +7204,26 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * reading under which the identity, glOrtho and glFrustum(-1, 1, -1, 1, 1, 3)
  * captures, the native orthographic 1/5, 1/10 and 1/20 controls and
  * Performer town's perspective rows all span the depth range; dividing by w
- * as well puts the town in [0, 0.001]. The model divides by the fourth
- * float, which is d; malformed zero or non-finite words keep the sign-only
- * fallback, and the other three, zero up to rounding, are kept unread.
+ * as well puts the town in [0, 0.001]. That it divides by the whole row,
+ * (row2 . v) / (block16 . v), and not by its fourth float alone is INFERRED
+ * the same way: under an affine model-view the two agree, and under a
+ * model-view that carries the perspective -- amesh and bongo call
+ * gluPerspective in model-view mode -- block 16 is that model-view's w row
+ * times d, (0, -6.84, -2.31, 65.93) in amesh's capture, equal to the
+ * combined matrix's fourth row. Dividing by its fourth float puts amesh's
+ * rows behind the front one at depths 1.03 to 1.88, all clipped, where SI
+ * and KONA draw the receding mesh; the whole row puts every row at 1 - 5e-9,
+ * just inside the far plane. Malformed zero or non-finite words keep the
+ * sign-only fallback, which divides by a constant.
  *
  * The depth reaches the shared rasterizer as its rules' depth row,
- * row2 / (2S block16[3]), applied to the object coordinates and
- * interpolated with perspective correction (odyssey_gl_operation_rules()).
- * Under perspective the shared projection's z row is 0, so no depth is
- * carried as a difference from w, which a float row could not resolve; a
- * fragment outside depth [0, 1] is dropped, which is the near and far clip.
+ * row2 / (2S block16[3]), and depth divisor, block16 / block16[3], each
+ * applied to the object coordinates and interpolated with perspective
+ * correction (odyssey_gl_operation_rules()). Under perspective the shared
+ * projection's z row is 0, so no depth is carried as a difference from w,
+ * which a float row could not resolve; a fragment outside depth [0, 1] by
+ * more than the rounding slack (ODSY_GL_DEPTH_SLACK) is dropped, which is
+ * the near and far clip.
  * Under an orthographic matrix the z row stays row2 / (block16[3] S) - row3,
  * whose window depth is the same. Board depth is floating point in a format
  * of its own (a public statement by an SGI engineer, comp.sys.sgi.graphics,

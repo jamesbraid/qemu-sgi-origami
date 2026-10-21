@@ -6316,6 +6316,47 @@ static void test_command_fifo_gl_depth_sign(void)
     board_quit(qts);
 }
 
+/*
+ * amesh's literal combined matrix and block 16, from a guest trace: it calls
+ * gluPerspective with the model-view selected, so block 16 is the
+ * model-view's w row times d, (-0, -6.84, -2.31, 65.93), the same as the
+ * combined matrix's fourth row. The depth is row 2 over the whole row, 1 -
+ * 2e-9 on the floor of its mesh and just past 1 by single-precision
+ * rounding at y = 2. A wall at z = -25 from the floor to y = 2 then draws
+ * from its base (50, 38) to near its apex (50, 6). Dividing by block 16's
+ * fourth float alone put it at depth 1.67 to 1.88 and clipped all of it.
+ */
+static void test_command_fifo_gl_depth_model_view_perspective(void)
+{
+    static const uint32_t combined[16] = {
+        0x42ab8f80, 0xc3ab0295, 0xc2e74f18, 0x4409e17c,
+        0, 0xc51352bb, 0xc1cafba4, 0x458bae39,
+        0, 0xd15ae45f, 0xd0940984, 0x5303dbf3,
+        0, 0xc0dae496, 0xc01409a9, 0x4283dc14,
+    };
+    static const uint32_t block16[4] = {
+        0x80000000, 0xc0dae496, 0xc01409a9, 0x4283dc14,
+    };
+    static const uint32_t wall[9] = {
+        0, 0, 0xc1c80000,
+        0x427c0000, 0, 0xc1c80000,
+        0x42000000, 0x40000000, 0xc1c80000,
+    };
+    QTestState *qts = board_start("");
+
+    push_window_transform(qts, combined);
+    user_cmd_push(qts, ODSY_GL_MATRIX_SELECT_16);
+    user_cmd_push(qts, ODSY_GL_LOAD_4F);
+    for (unsigned i = 0; i < ARRAY_SIZE(block16); i++) {
+        user_cmd_push(qts, block16[i]);
+    }
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, wall);
+    g_assert_cmphex(odsy_test_pixel(qts, 50, 38), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 50, 6), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 50, 44), ==, 0);
+    board_quit(qts);
+}
+
 /* Native orthographic rows put the depth scale in block 16's fourth word. */
 static void test_command_fifo_gl_depth_scale(void)
 {
@@ -20343,6 +20384,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_clip_plane_migration);
     add_case("sn1/odyssey/command-fifo-gl-depth-sign",
              test_command_fifo_gl_depth_sign);
+    add_case("sn1/odyssey/command-fifo-gl-depth-model-view-perspective",
+             test_command_fifo_gl_depth_model_view_perspective);
     add_case("sn1/odyssey/command-fifo-gl-depth-scale",
              test_command_fifo_gl_depth_scale);
     add_case("sn1/odyssey/command-fifo-gl-depth-eye-linear",
