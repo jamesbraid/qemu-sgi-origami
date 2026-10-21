@@ -106,6 +106,7 @@ fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-zero-default
 fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-zero-not-last
 fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-vertical
 fifo /mips64/sn1/odyssey/command-fifo-x11-line-cap-screen-bounds
+fifo /mips64/sn1/odyssey/command-fifo-opaque-stippled-span
 fifo /mips64/sn1/odyssey/command-fifo-lines
 fifo /mips64/sn1/odyssey/command-fifo-lines-cross-screen-edge
 fifo /mips64/sn1/odyssey/command-fifo-integer-primitives-stream
