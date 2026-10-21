@@ -704,6 +704,8 @@ struct SGIOdysseyState {
      * background there (ODSY_PATTERN_SHAPE_OPAQUE in hw/misc/sgi-odyssey.c).
      */
     uint32_t const_colour[2];
+    /* 0x0c21 operand 0, the factors and equation, as last written. */
+    uint32_t blend_word;
 
     /*
      * The BEGIN-0xa image raster path (the account icons and the text-field
