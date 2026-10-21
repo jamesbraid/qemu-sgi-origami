@@ -417,12 +417,19 @@ static uint32_t widen(uint32_t byte)
  * The GC for a 24-bit TrueColor window, as the Icon Catalog's label GC
  * carried it (cfg 0x2804, op 0x60001), with words 0 to 3 and ifmt given.
  */
+static void load_rgb_gc_op(QTestState *s, uint32_t w0, uint32_t w1,
+                           uint32_t w2, uint32_t w3, uint32_t ifmt,
+                           uint32_t cfg, uint32_t op)
+{
+    x_command(s, TOKEN_GC, (uint32_t[]){ w0, w1, w2, w3, 0xffffff, 0xffffff,
+                                         cfg, op, 1, 6, ifmt, 0, 0 },
+              13);
+}
+
 static void load_rgb_gc(QTestState *s, uint32_t w0, uint32_t w1,
                         uint32_t w2, uint32_t w3, uint32_t ifmt)
 {
-    x_command(s, TOKEN_GC, (uint32_t[]){ w0, w1, w2, w3, 0xffffff, 0xffffff,
-                                         0x2804, 0x60001, 1, 6, ifmt, 0, 0 },
-              13);
+    load_rgb_gc_op(s, w0, w1, w2, w3, ifmt, 0x2804, 0x60001);
 }
 
 /* A solid TrueColor box: the colour as four 13-bit fields, alpha ones. */
@@ -446,8 +453,18 @@ static void fill_rgb_box(QTestState *s, uint32_t rgb, int x1, int y1,
  * clear bit leaves the grey box. A model that took packing 4 only for
  * colour-index windows refused the write and drew no label.
  */
-static void test_packing4_truecolor_glyph(void)
+static void test_packing4_truecolor_glyph(gconstpointer opaque)
 {
+    /*
+     * With the window's second buffer selector 2, kon_parseGC sends cfg
+     * 0x3804 and op 0xa0001, or 0xa0002 with the first selector 2 too,
+     * as the file manager's labels came after oglsnoop ran over it; the
+     * glyph draws as the fills with those selectors do.
+     */
+    static const uint32_t forms[][2] = {
+        { 0x2804, 0x60001 }, { 0x3804, 0xa0001 }, { 0x3804, 0xa0002 },
+    };
+    const uint32_t *form = forms[GPOINTER_TO_UINT(opaque)];
     const uint32_t rgb = 0x2468ac;
     const uint32_t b = widen(rgb & 0xff);
     g_autofree uint8_t *frame = NULL;
@@ -455,9 +472,9 @@ static void test_packing4_truecolor_glyph(void)
     qtest_system_reset(qts);
     full_screen_clip(qts);
     fill_rgb_box(qts, RGB_GREY_192, 250, 300, 300, 330);
-    load_rgb_gc(qts, 0xfff0 | b >> 8,
-                (b & 0xff) << 24 | widen((rgb >> 8) & 0xff) << 12 |
-                widen(rgb >> 16), 0, 0, 0);
+    load_rgb_gc_op(qts, 0xfff0 | b >> 8,
+                   (b & 0xff) << 24 | widen((rgb >> 8) & 0xff) << 12 |
+                   widen(rgb >> 16), 0, 0, 0, form[0], form[1]);
     x_command(qts, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ 0, 4, 2, 0, 32, 20, 0 }, 7);
     pixel_write(qts, 260, 304, glyph_h, 20);
@@ -1615,8 +1632,14 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/kona-glyph/packing4-help-glyph",
                    test_packing4_help_glyph);
-    qtest_add_func("sn0/origin2000/kona-glyph/packing4-truecolor-glyph",
-                   test_packing4_truecolor_glyph);
+    qtest_add_data_func("sn0/origin2000/kona-glyph/packing4-truecolor-glyph",
+                        GUINT_TO_POINTER(0), test_packing4_truecolor_glyph);
+    qtest_add_data_func("sn0/origin2000/kona-glyph/"
+                        "packing4-truecolor-glyph-buffer2",
+                        GUINT_TO_POINTER(1), test_packing4_truecolor_glyph);
+    qtest_add_data_func("sn0/origin2000/kona-glyph/"
+                        "packing4-truecolor-glyph-both-buffer2",
+                        GUINT_TO_POINTER(2), test_packing4_truecolor_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/rgb30-box-and-glyph",
                    test_rgb30_box_and_glyph);
     qtest_add_func("sn0/origin2000/kona-glyph/mirrored-selector-fill",
