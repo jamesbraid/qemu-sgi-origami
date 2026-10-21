@@ -1648,6 +1648,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_BLEND_COLOUR_MASK 0xfff
 #define ODSY_BLEND_COLOUR_SHIFT 12
 #define ODSY_BLEND_COLOUR_SCALE 4096.0f
+/*
+ * The X server's opaque-span 0x0c21 operand 0: source ONE (0x08 << 6),
+ * destination ZERO, equation ADD (odyssey_gl_segment_pixel()).
+ */
+#define ODSY_BLEND_X_OPAQUE 0x200
 
 /*
  * Bits 19 and 20 of the same register are GL_INDEX_LOGIC_OP and
@@ -7741,21 +7746,24 @@ static void odyssey_gl_plot(SGIOdysseyState *s, int64_t x, int64_t y)
  * 3 and 4) the k-th covered pixel from the first vertex, k = 1 next to it, is
  * painted only where bit (k & 31) of the 0x0c48 pattern is set, and where it
  * is clear, with 0x0404 bit 17 set, in the 0x0c21 constant colour
- * (odyssey_pattern_background()). The X server's stippled-span and dashed-line
- * routines write no 0x043f, so its shape is whatever an earlier fill left;
- * they set bit 17 and send 0x0c21 = ONE, ZERO, background exactly for
- * FillOpaqueStippled spans and LineDoubleDash lines, the two forms whose clear
- * bits X paints in the background (ESTABLISHED as software behaviour from the
- * IRIX 6.5.30 odyssey.so). 4Dwm's icon faces and floors are such spans. That
- * the board then paints the clear bits in the constant colour is INFERRED as
- * for the opaque quads.
+ * (odyssey_pattern_background()), when 0x0c21's factors are ONE, ZERO. The
+ * X server's stippled-span and dashed-line routines write no 0x043f, so its
+ * shape is whatever an earlier fill left; they set bit 17 and send 0x0c21 =
+ * ONE, ZERO, background exactly for FillOpaqueStippled spans and
+ * LineDoubleDash lines, the two forms whose clear bits X paints in the
+ * background (ESTABLISHED as software behaviour from the IRIX 6.5.30
+ * odyssey.so). 4Dwm's icon faces and floors are such spans. Requiring ONE,
+ * ZERO keeps a GL client's blended integer stippled line, bit 17 with its
+ * own factors, from painting clear bits. That the board then paints the
+ * clear bits in the constant colour is INFERRED as for the opaque quads.
  */
 static void odyssey_gl_segment_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
                                      bool clear)
 {
     if (!clear) {
         odyssey_gl_plot(s, x, y);
-    } else if (s->pattern_mode & ODSY_MODE_BLEND) {
+    } else if ((s->pattern_mode & ODSY_MODE_BLEND) &&
+               s->blend_word == ODSY_BLEND_X_OPAQUE) {
         odyssey_paint_integer(s, x, y, s->gl_color_is_index,
                               odyssey_pattern_background(s,
                                   s->gl_color_is_index));
@@ -10096,6 +10104,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          */
         s->const_colour[0] = s->cmd_operand[1];
         s->const_colour[1] = s->cmd_operand[2];
+        s->blend_word = s->cmd_operand[0];
         word = s->cmd_operand[0];
         eq = (word >> ODSY_BLEND_EQ_SHIFT) & ODSY_BLEND_EQ_MASK;
         src = odyssey_blend_factor((word >> ODSY_BLEND_SRC_SHIFT) &
@@ -11581,6 +11590,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->pattern_buffer, 0, sizeof(s->pattern_buffer));
     s->pattern_shape = 0;
     memset(s->const_colour, 0, sizeof(s->const_colour));
+    s->blend_word = 0;
     s->pattern_mode = 0;
     s->pattern_load_offset = 0;
     s->image_active = false;
@@ -12397,16 +12407,17 @@ static bool odyssey_const_colour_needed(void *opaque)
 {
     SGIOdysseyState *s = opaque;
 
-    return s->const_colour[0] || s->const_colour[1];
+    return s->const_colour[0] || s->const_colour[1] || s->blend_word;
 }
 
 static const VMStateDescription vmstate_odyssey_const_colour = {
     .name = "sgi-odyssey/const-colour",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = odyssey_const_colour_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(const_colour, SGIOdysseyState, 2),
+        VMSTATE_UINT32(blend_word, SGIOdysseyState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -12449,6 +12460,7 @@ static int odyssey_pre_load(void *opaque)
     odyssey_back_material_reset(opaque);
     s->gl_colour_material = 0;
     memset(s->const_colour, 0, sizeof(s->const_colour));
+    s->blend_word = 0;
     s->gl_begin_open = false;
     s->gl_integer_prim = false;
     s->gl_open_r = s->gl_open_c = 0;

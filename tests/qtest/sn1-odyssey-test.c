@@ -3753,12 +3753,14 @@ static void test_command_fifo_opaque_stippled_span(void)
 
 /*
  * The X server's stippled-span routine never writes 0x043f: it marks a
- * FillOpaqueStippled span by 0x0404 bit 17 and the 0x0c21 constant colour
- * alone, and leaves bit 17 clear for FillStippled. 4Dwm's Welcome_to_SGI
+ * FillOpaqueStippled span by 0x0404 bit 17 and a 0x0c21 of ONE, ZERO with
+ * the background as constant colour, and leaves bit 17 clear for
+ * FillStippled. 4Dwm's Welcome_to_SGI
  * floor arrives under shape 0x5, left by an earlier pattern fill: index 8
  * over background 0xb. A stale shape without the opaque bit and bit 17 set
  * must paint the clear bits in the background (index 2, blue); a stale
- * opaque shape with bit 17 clear must leave them alone.
+ * opaque shape with bit 17 clear must leave them alone, and so must bit 17
+ * with any blend factors but ONE, ZERO.
  */
 static void test_command_fifo_opaque_span_ignores_shape(void)
 {
@@ -3815,6 +3817,30 @@ static void test_command_fifo_opaque_span_ignores_shape(void)
     }
     for (i = 204; i <= 210; i += 2) {
         g_assert_cmphex(odsy_shown(qts, i, 307), ==, ODSY_RED);
+    }
+
+    /*
+     * Bit 17 with a real blend function, SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+     * (0x639), as a GL client blending integer stippled lines would send
+     * it: not the X server's ONE, ZERO opaque span, so clear bits stay.
+     */
+    cmd_push(qts, ODSY_CMD_BLEND);
+    cmd_push(qts, 0x639);
+    cmd_push(qts, 0x2000);
+    cmd_push(qts, 0x1);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0x10a0018);
+    colour_index(qts, 1);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 212, 309);
+    vertex2i(qts, 204, 309);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    for (i = 205; i <= 211; i += 2) {
+        g_assert_cmphex(odsy_shown(qts, i, 309), ==, ODSY_GREEN);
+    }
+    for (i = 204; i <= 210; i += 2) {
+        g_assert_cmphex(odsy_shown(qts, i, 309), ==, ODSY_RED);
     }
     board_quit(qts);
 }
