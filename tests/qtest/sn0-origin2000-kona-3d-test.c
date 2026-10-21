@@ -2059,12 +2059,17 @@ static void place_indexed_probe_pixel(void)
     qobject_unref(reply);
 }
 
-static void test_read_indexed_source_refused(void)
+static void test_read_indexed_source_zeroed(void)
 {
     gl_reset();
     gl_make_current(qts);
     gl_window_cleared(qts, 0, 0, 1);
     place_indexed_probe_pixel();
+    /*
+     * A rectangle crossing into the indexed pixel at (2, 1) answers it
+     * zero and its own direct pixels with their values (RGB unsigned
+     * bytes, rows bottom first); every format and type is answered.
+     */
     for (unsigned format = 4; format <= 5; format++) {
         static const uint32_t types[] = { 1, 3, 6 };
 
@@ -2072,9 +2077,27 @@ static void test_read_indexed_source_refused(void)
             prepare_refused_reply(qts);
             kona_command(qts, 0x39,
                          (uint32_t[]) { 0, 0, 3, 2, format, types[k], 0 }, 7);
-            assert_read_answered_zero(qts); /* Last source pixel is indexed. */
+            if (format == 4 && types[k] == 1) {
+                uint8_t got[19];
+
+                g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 1);
+                qtest_memread(qts, RETURN_PAGE + 8, got, sizeof(got));
+                for (unsigned p = 0; p < 6; p++) {
+                    g_assert_cmphex(got[3 * p], ==, 0);
+                    g_assert_cmphex(got[3 * p + 1], ==, 0);
+                    g_assert_cmphex(got[3 * p + 2], ==, p == 5 ? 0 : 0xff);
+                }
+                g_assert_cmphex(got[18], ==, 0xa5);
+                qtest_memset(qts, RETURN_PAGE, 0, 4);
+            } else {
+                assert_reply_posted(qts);
+            }
         }
     }
+    /* A rectangle with no pixel of the read's kind is refused whole. */
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]) { 2, 1, 1, 1, 4, 1, 0 }, 7);
+    assert_read_answered_zero(qts);
     assert_read_buffer(qts, 0x404);
 }
 
@@ -8862,10 +8885,17 @@ static void test_native_index_state(gconstpointer opaque)
         kona_command(s, 1,
                      (uint32_t[]) { 0, 0, 12, 0, 0, 0, 24, 0, 0, 0 }, 10);
         native_index_draw(s, 18, 52);
-        /* The final untouched pixel still has an RGB tag. */
+        /*
+         * The final untouched pixel still has an RGB tag: it is answered
+         * zero and the two indexed pixels with their indices.
+         */
         prepare_refused_reply(s);
         kona_command(s, 0x39, (uint32_t[]) { 64, 64, 3, 1, 11, 5, 0 }, 7);
-        assert_read_answered_zero(s);
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 18);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 52);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 16), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 20), ==, 0xa5a5a5a5);
     }
     assert_native_index_pixels(s, 64, expected, 2);
     qtest_quit(s);
@@ -17253,8 +17283,8 @@ int main(int argc, char **argv)
              test_read_reply_order);
     add_case("sn0/origin2000/kona-3d/read-coordinates",
              test_read_coordinates);
-    add_case("sn0/origin2000/kona-3d/read-indexed-source-refused",
-             test_read_indexed_source_refused);
+    add_case("sn0/origin2000/kona-3d/read-indexed-source-zeroed",
+             test_read_indexed_source_zeroed);
     add_case("sn0/origin2000/kona-3d/read-double-buffers",
              test_read_double_buffers);
     add_case("sn0/origin2000/kona-3d/read-selection",
