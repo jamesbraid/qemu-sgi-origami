@@ -8602,6 +8602,23 @@ static void texture_current_query_short(bool three, bool replay)
     board_quit(qts);
 }
 
+/*
+ * An integer texture coordinate is a current-value record like the float
+ * ones: the query answers 0xc380c41e and its integer as sent, so the
+ * kernel can replay it. Refusing it left the snapshot unanswered, and the
+ * guest waited on it for good.
+ */
+static void test_texture_current_query_1i(void)
+{
+    static const uint32_t record[] = { 0xc380c41e, 0xfffffffb };
+    QTestState *qts = board_start("");
+
+    push_user_words(qts, query_texture_4f[0], 5);
+    push_user_words(qts, record, ARRAY_SIZE(record));
+    texture_current_query(qts, record, ARRAY_SIZE(record), 2, 5, 1);
+    board_quit(qts);
+}
+
 static void test_texture_current_query_1f(void)
 {
     texture_current_query_short(false, false);
@@ -13041,6 +13058,58 @@ static void texture_one_dimensional_clamp(bool linear, bool stored, bool wide)
     }
     board_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
+}
+
+/*
+ * glTexCoord1i sends 0xc380c41e and s as a signed integer, which selects a
+ * texel as the float s does: the two-texel zero-border texture's nearest
+ * texel at s = 0 and 1 (texture_one_dimensional_clamp()'s nearest[0] and
+ * nearest[3]), and a negative s clamps to the first. Each quad follows a
+ * glTexCoord1f to the other end, so a word that changed nothing would draw
+ * that end's texel.
+ */
+static void test_texture_one_dimensional_integer_coordinate(void)
+{
+    static const uint32_t texels[2] = { 0xe02060ff, 0x4040e0ff };
+    static const struct {
+        uint32_t before, s, expected;
+    } cases[] = {
+        { ODSY_F_ONE, 0, 0xe02060ff },
+        { 0, 1, 0x4040e0ff },
+        { ODSY_F_ONE, 0xffffffff, 0xe02060ff },
+    };
+    static const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2408,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, 0x41100002, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00011c16, 0x08000400, 2, 1, 1, 0x13002000, 0x00101505, 0x00f0ffff,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start("");
+
+    upload_begin_at(qts, 0x16a800, 2, 0x080024d0, 0, 2, 1);
+    push_user_words(qts, (uint32_t[]) {
+        0x00004570, 0x0f21104b, 0x00000071, 0x00014811,
+    }, 4);
+    push_user_words(qts, texels, 2);
+    upload_end(qts);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        push_user_words(qts, (uint32_t[]) {
+            0xc380c41f, cases[i].before,
+            0x00014400, 7, 0xc380c41e, cases[i].s,
+            0x8080c800, 40, 48,
+            0x8080c800, 56, 48,
+            0x8080c800, 56, 80,
+            0x8080c800, 40, 80, 0x00014001,
+        }, 19);
+        g_assert_cmphex(odsy_test_pixel(qts, 48, 64), ==, cases[i].expected);
+    }
+    board_quit(qts);
 }
 
 static void test_texture_one_dimensional_clamp_nearest(void)
@@ -20522,6 +20591,8 @@ int main(int argc, char **argv)
     }
     add_case("sn1/odyssey/texture-adapter/one-dimensional-clamp-linear",
              test_texture_one_dimensional_clamp_linear);
+    add_case("sn1/odyssey/texture-adapter/one-dimensional-integer-coordinate",
+             test_texture_one_dimensional_integer_coordinate);
     add_case("sn1/odyssey/texture-adapter/one-dimensional-stored-nearest",
              test_texture_one_dimensional_stored_nearest);
     if (g_test_slow()) {
@@ -20734,6 +20805,8 @@ int main(int argc, char **argv)
                    test_texture_current_query_4f_migration);
     add_fresh_case("sn1/odyssey/texture-current-query-4f-migration-defaults",
                    test_texture_current_query_4f_migration_defaults);
+    add_fresh_case("sn1/odyssey/texture-current-query-1i",
+                   test_texture_current_query_1i);
     add_fresh_case("sn1/odyssey/texture-current-query-1f",
                    test_texture_current_query_1f);
     add_fresh_case("sn1/odyssey/texture-current-query-1f-kernel",
