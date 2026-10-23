@@ -403,6 +403,56 @@ static void irouter_expect_text(QTestState *s, uint64_t base,
     g_assert_cmpmem(inner + 36, text_length, expected, text_length);
 }
 
+static void irouter_expect_exact_brick_reply(QTestState *s, uint64_t base,
+                                             uint32_t destination,
+                                             uint32_t source,
+                                             const char *text)
+{
+    uint8_t inner[IROUTER_FRAGMENT_MAX] = { 0 };
+    uint8_t first[10 + 113] = { 0 };
+    uint8_t continuation[10 + 113] = { 0 };
+    uint8_t reply[131];
+    size_t text_length = strlen(text) + 1;
+    size_t inner_length = 36 + text_length;
+    size_t first_data_length = MIN(inner_length, 113);
+    size_t continuation_data_length = inner_length - first_data_length;
+
+    g_assert_cmpuint(inner_length, <=, sizeof(inner));
+    g_assert_cmpuint(continuation_data_length, >, 0);
+    g_assert_cmpuint(continuation_data_length, <=, 113);
+    stw_be_p(inner, inner_length);
+    inner[2] = 2;
+    inner[5] = 0x81;
+    inner[6] = 1;
+    stl_be_p(inner + 8, destination);
+    stl_be_p(inner + 12, source);
+    inner[16] = 2;
+    inner[28] = 0x0a;
+    inner[29] = 1;
+    stw_be_p(inner + 30, text_length);
+    stl_be_p(inner + 32, 0x34);
+    memcpy(inner + 36, text, text_length);
+
+    first[0] = continuation[0] = 0x30;
+    first[5] = continuation[5] = 0x30;
+    first[6] = 1;
+    first[7] = 1;
+    stw_be_p(first + 8, inner_length);
+    continuation[6] = 3;
+    memcpy(first + 10, inner, first_data_length);
+    memcpy(continuation + 10, inner + first_data_length,
+           continuation_data_length);
+
+    g_assert_cmpuint(receive_at(s, base, reply, sizeof(reply)), ==,
+                     10 + first_data_length);
+    g_assert_cmpmem(reply, 10 + first_data_length, first,
+                    10 + first_data_length);
+    g_assert_cmpuint(receive_at(s, base, reply, sizeof(reply)), ==,
+                     10 + continuation_data_length);
+    g_assert_cmpmem(reply, 10 + continuation_data_length, continuation,
+                    10 + continuation_data_length);
+}
+
 static void test_irouter_fragment_channel_transport(void)
 {
     uint8_t request[53];
@@ -3954,7 +4004,8 @@ static void assert_machine_irouter_brick(QTestState *s, bool selected,
             "serial:(null), source: OTHER\n\n", type_names[type_code]);
 
         send_frame_at(s, BASE, request, sizeof(request));
-        irouter_expect_text(s, BASE, 0x30, 0x00041215, 0x00041003, text);
+        irouter_expect_exact_brick_reply(s, BASE, 0x00041215, 0x00041003,
+                                         text);
     } else {
         send_frame_at(s, BASE, request, sizeof(request));
         expect_router_error(s, 16);
