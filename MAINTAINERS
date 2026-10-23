@@ -1543,6 +1543,7 @@ F: tests/data/kona/
 F: tests/functional/mips64/
 F: tests/qtest/fixtures/
 F: tests/qtest/mips64-*.c
+F: tests/qtest/mips-cpu-exception-fixture.c
 F: tests/qtest/qlogic-isp-test.c
 F: tests/qtest/libqos/libqos-sgi-bridge.c
 F: tests/qtest/libqos/libqos-sgi-bridge.h

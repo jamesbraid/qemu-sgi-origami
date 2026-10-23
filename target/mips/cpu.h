@@ -39,6 +39,8 @@ typedef struct MIPSCPUConfig {
      * and Cause is left untouched by either.
      */
     bool warm_reset_reports_sr;
+    /* Selected CPU models keep WatchLo across Soft Reset. */
+    bool soft_reset_preserves_watch;
     /*
      * A Cache Error exception is error-level: it loads ErrorEPC, sets ERL,
      * writes no exception code, and is ignored entirely while ERL is already
