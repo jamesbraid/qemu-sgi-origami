@@ -130,6 +130,9 @@ static void serial_xmit_backend_gave_up(SerialState *s);
 static void serial_update_tx_ready(SerialState *s)
 {
     qemu_set_irq(s->tx_ready, !!(s->lsr & UART_LSR_THRE));
+    if (s->service_notify) {
+        s->service_notify(s->service_opaque);
+    }
 }
 
 static inline void recv_fifo_put(SerialState *s, uint8_t chr)
@@ -169,6 +172,9 @@ static void serial_update_irq(SerialState *s)
         qemu_irq_raise(s->irq);
     } else {
         qemu_irq_lower(s->irq);
+    }
+    if (s->service_notify) {
+        s->service_notify(s->service_opaque);
     }
 }
 
@@ -424,6 +430,26 @@ static void serial_update_tiocm(SerialState *s)
     qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_TIOCM, &flags);
 }
 
+static void serial_write_thr(SerialState *s, uint8_t val)
+{
+    s->thr = (uint8_t) val;
+    if (s->fcr & UART_FCR_FE) {
+        /* xmit overruns overwrite data, so make space if needed */
+        if (fifo8_is_full(&s->xmit_fifo)) {
+            fifo8_pop(&s->xmit_fifo);
+        }
+        fifo8_push(&s->xmit_fifo, s->thr);
+    }
+    s->thr_ipending = 0;
+    s->lsr &= ~UART_LSR_THRE;
+    s->lsr &= ~UART_LSR_TEMT;
+    serial_update_irq(s);
+    serial_update_tx_ready(s);
+    if (s->tsr_retry == 0) {
+        serial_xmit(s);
+    }
+}
+
 static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
@@ -438,22 +464,7 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
             s->divider = deposit32(s->divider, 8 * addr, 8, val);
             serial_update_parameters(s);
         } else {
-            s->thr = (uint8_t) val;
-            if(s->fcr & UART_FCR_FE) {
-                /* xmit overruns overwrite data, so make space if needed */
-                if (fifo8_is_full(&s->xmit_fifo)) {
-                    fifo8_pop(&s->xmit_fifo);
-                }
-                fifo8_push(&s->xmit_fifo, s->thr);
-            }
-            s->thr_ipending = 0;
-            s->lsr &= ~UART_LSR_THRE;
-            s->lsr &= ~UART_LSR_TEMT;
-            serial_update_irq(s);
-            serial_update_tx_ready(s);
-            if (s->tsr_retry == 0) {
-                serial_xmit(s);
-            }
+            serial_write_thr(s, val);
         }
         break;
     case 1:
@@ -563,6 +574,33 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
+static uint8_t serial_read_rbr(SerialState *s)
+{
+    uint8_t ret;
+
+    if (s->fcr & UART_FCR_FE) {
+        ret = fifo8_is_empty(&s->recv_fifo) ?
+                    0 : fifo8_pop(&s->recv_fifo);
+        if (fifo8_is_empty(&s->recv_fifo)) {
+            s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
+        } else {
+            timer_mod(s->fifo_timeout_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->char_transmit_time * 4);
+        }
+        s->timeout_ipending = 0;
+    } else {
+        ret = s->rbr;
+        s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
+    }
+    serial_update_irq(s);
+    if (!(s->mcr & UART_MCR_LOOP)) {
+        /* in loopback mode, don't receive any data */
+        qemu_chr_fe_accept_input(&s->chr);
+    }
+    return ret;
+}
+
 static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
 {
     SerialState *s = opaque;
@@ -575,24 +613,7 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
         if (s->lcr & UART_LCR_DLAB) {
             ret = extract16(s->divider, 8 * addr, 8);
         } else {
-            if(s->fcr & UART_FCR_FE) {
-                ret = fifo8_is_empty(&s->recv_fifo) ?
-                            0 : fifo8_pop(&s->recv_fifo);
-                if (fifo8_is_empty(&s->recv_fifo)) {
-                    s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
-                } else {
-                    timer_mod(s->fifo_timeout_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->char_transmit_time * 4);
-                }
-                s->timeout_ipending = 0;
-            } else {
-                ret = s->rbr;
-                s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
-            }
-            serial_update_irq(s);
-            if (!(s->mcr & UART_MCR_LOOP)) {
-                /* in loopback mode, don't receive any data */
-                qemu_chr_fe_accept_input(&s->chr);
-            }
+            ret = serial_read_rbr(s);
         }
         break;
     case 1:
@@ -647,6 +668,66 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
     }
     trace_serial_read(addr, ret);
     return ret;
+}
+
+void serial_set_service_notify(SerialState *s, void (*notify)(void *),
+                               void *opaque)
+{
+    s->service_notify = notify;
+    s->service_opaque = opaque;
+}
+
+bool serial_dma_tx_ready(SerialState *s)
+{
+    return (s->fcr & UART_FCR_FE) ? !fifo8_is_full(&s->xmit_fifo) :
+                                 !!(s->lsr & UART_LSR_THRE);
+}
+
+bool serial_dma_write(SerialState *s, uint8_t byte)
+{
+    if (!serial_dma_tx_ready(s)) {
+        return false;
+    }
+    serial_write_thr(s, byte);
+    return true;
+}
+
+uint8_t serial_dma_line_status(SerialState *s)
+{
+    return s->lsr;
+}
+
+bool serial_dma_read(SerialState *s, uint8_t *byte, uint8_t *status)
+{
+    if (!(s->lsr & UART_LSR_DR)) {
+        return false;
+    }
+    *status = serial_ioport_read(s, 5, 1);
+    *byte = serial_read_rbr(s);
+    return true;
+}
+
+void serial_dma_modem_control(SerialState *s, uint8_t value)
+{
+    serial_ioport_write(s, 4, value, 1);
+}
+
+bool serial_modem_irq_pending(SerialState *s)
+{
+    return (s->ier & UART_IER_MSI) && (s->msr & UART_MSR_ANY_DELTA);
+}
+
+bool serial_pio_irq_pending(SerialState *s, bool dma_rx, bool dma_tx)
+{
+    unsigned reason = s->iir & 0x0f;
+
+    if ((dma_rx || dma_tx) && serial_modem_irq_pending(s)) {
+        return true;
+    }
+    return reason != UART_IIR_NO_INT &&
+           !(dma_tx && reason == UART_IIR_THRI) &&
+           !(dma_rx && (reason == UART_IIR_RDI || reason == UART_IIR_CTI ||
+                        reason == UART_IIR_RLSI));
 }
 
 static int serial_can_receive(SerialState *s)

@@ -56,6 +56,8 @@ struct SerialState {
     int thr_ipending;
     qemu_irq irq;
     qemu_irq tx_ready;
+    void (*service_notify)(void *opaque);
+    void *service_opaque;
     CharFrontend chr;
     int last_break_enable;
     uint32_t baudbase;
@@ -104,6 +106,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SerialState, SERIAL)
 
 void serial_reset_device(SerialState *s);
 void serial_set_rx_discard(SerialState *s, bool discard);
+
+/* Service notifications must defer work: the UART is still updating state. */
+void serial_set_service_notify(SerialState *s, void (*notify)(void *),
+                               void *opaque);
+bool serial_dma_tx_ready(SerialState *s);
+bool serial_dma_write(SerialState *s, uint8_t byte);
+uint8_t serial_dma_line_status(SerialState *s);
+bool serial_dma_read(SerialState *s, uint8_t *byte, uint8_t *status);
+void serial_dma_modem_control(SerialState *s, uint8_t value);
+bool serial_modem_irq_pending(SerialState *s);
+bool serial_pio_irq_pending(SerialState *s, bool dma_rx, bool dma_tx);
 
 #define SERIAL_GPIO_TX_READY "tx-ready"
 

@@ -13,8 +13,10 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 mips_ss.add(when: 'CONFIG_SGI_O2_ROM', if_true: files('sgi/o2-rom.c'))
 mips_ss.add(when: 'CONFIG_SGI_OCTANE', if_true: files('sgi/octane.c'))
 mips_ss.add(when: 'CONFIG_SGI_CRIME', if_true: files('sgi/crime.c'))
-mips_ss.add(when: 'CONFIG_SGI_MACE', if_true: files('sgi/mace.c',
-                                                  'sgi/mace-id.c'))
+mips_ss.add(when: 'CONFIG_SGI_MACE',
+            if_true: files('sgi/mace.c', 'sgi/mace-serial-dma.c', 'sgi/mace-id.c'))
+mips_ss.add(when: ['CONFIG_SGI_MACE', 'CONFIG_SGI_TEST_FIXTURES'],
+            if_true: files('../../tests/qtest/fixtures/sgi-serial-peer.c'))
 mips_ss.add(when: 'CONFIG_SGI_O2_TEST', if_true: files('sgi/o2.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn0.c'))
 # These qtest-only fixtures live under tests/qtest, beside the qtest

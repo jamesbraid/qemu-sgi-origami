@@ -932,3 +932,7 @@ tests/qtest/sgi-mace-dma-test.c
 tests/qtest/sgi-mace-eth-test.c
 tests/qtest/sgi-mace-id-test.c
 tests/qtest/sgi-o2-id-test.c
+hw/mips/sgi/mace-serial-dma.c
+hw/mips/sgi/mace-serial-dma.h
+tests/qtest/fixtures/sgi-serial-peer.c
+tests/qtest/sgi-mace-serial-dma-test.c
