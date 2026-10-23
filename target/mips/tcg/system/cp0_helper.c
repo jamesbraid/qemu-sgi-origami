@@ -1181,7 +1181,11 @@ void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
     /* If the ASID changes, flush qemu's TLB.  */
     if ((old & env->CP0_EntryHi_ASID_mask) !=
         (val & env->CP0_EntryHi_ASID_mask)) {
-        tlb_flush(env_cpu(env));
+        if (env->r10k) {
+            r10k_asid_changed(env);
+        } else {
+            tlb_flush(env_cpu(env));
+        }
     }
 }
 

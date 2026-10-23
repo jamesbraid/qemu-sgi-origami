@@ -1296,11 +1296,6 @@ static void r10k_helper_tlbr(CPUMIPSState *env)
     idx = (env->CP0_Index & ~0x80000000) % env->tlb->nb_tlb;
     tlb = &env->tlb->mmu.r4k.tlb[idx];
 
-    /* If this will change the current ASID, flush qemu's TLB.  */
-    if (ASID != tlb->ASID) {
-        cpu_mips_tlb_flush(env);
-    }
-
     r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
 
     if (tlb->EHINV) {
@@ -1339,17 +1334,215 @@ static void r10k_helper_tlbr(CPUMIPSState *env)
         env->CP0_PageMask = tlb->PageMask;
         r4k_tlbr_load_entrylo(env, tlb);
     }
+
+    /* The read replaces EntryHi, ASID included, as a write to it would. */
+    if ((env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask) != ASID) {
+        r10k_asid_changed(env);
+    }
+}
+
+/*
+ * ASID changes without flushing QEMU's whole TLB.
+ *
+ * QEMU's own TLB caches each translation under the mmu index of the mode
+ * that made the reference, not under the ASID that selected the guest TLB
+ * entry. The shared MIPS code therefore discards the whole cache whenever
+ * EntryHi.ASID changes, and whenever a Status segment enable (UX, SX, KX)
+ * clears. Most of what that throws away is still right: references through
+ * kseg0, kseg1 and xkphys, and through global entries, translate the same
+ * way under every ASID, and only a few pages depend on an enable that just
+ * cleared. IRIX changes ASID at every context switch, and also briefly
+ * around TLB maintenance on another process's behalf, so on a multiprocessor
+ * Origin the full flushes come about once a millisecond and each of them
+ * also empties the translated-code jump cache.
+ *
+ * This family discards only the translations that can have changed. Each
+ * fill that the guest TLB answered from a non-global entry is listed with
+ * its page and mmu index (r10k_note_fill()); an ASID change flushes exactly
+ * those pages (r10k_asid_changed()), or every index that holds one if the
+ * list overflowed. The guest TLB entries themselves are untouched, and no
+ * translation survives that the processor would not make under the new
+ * ASID: one from a non-global entry is always listed, and one from a global
+ * entry or an unmapped segment does not depend on the ASID. Changes to the
+ * guest TLB keep their own flushes in the shared helpers, which still find
+ * only current-ASID and global pages in QEMU's TLB.
+ *
+ * Status segment enables are handled the same way at index granularity: a
+ * fill records which enable made its address reachable, and clearing an
+ * enable flushes only the indexes that hold such a page
+ * (r10k_segments_disabled()).
+ */
+
+/*
+ * The Status enable that makes @address reachable, as get_physical_address()
+ * checks it, or zero for the 32-bit compatibility segments that need none.
+ * xkphys follows the access mode SegCtl gives it, which on a processor
+ * without segment control is always the kernel mode KX selects; any other
+ * mode is answered with all three enables, the conservative choice.
+ */
+static uint32_t r10k_segment_enables(CPUMIPSState *env, target_ulong address)
+{
+#if defined(TARGET_MIPS64)
+    if (address <= USEG_LIMIT) {
+        return 0;
+    } else if (address < 0x4000000000000000ULL) {
+        return 1 << CP0St_UX;
+    } else if (address < 0x8000000000000000ULL) {
+        return 1 << CP0St_SX;
+    } else if (address < 0xC000000000000000ULL) {
+        unsigned int xr = (env->CP0_SegCtl2 & CP0SC2_XR_MASK) >> CP0SC2_XR;
+
+        if (xr & (1 << ((address >> 59) & 0x7))) {
+            return (1 << CP0St_UX) | (1 << CP0St_SX) | (1 << CP0St_KX);
+        }
+        return 1 << CP0St_KX;
+    } else if (address < 0xFFFFFFFF80000000ULL) {
+        return 1 << CP0St_KX;
+    }
+#endif
+    return 0;
+}
+
+/*
+ * The family's TLB lookup: the shared R4000 one, noting for the fill that
+ * follows whether the matching entry was global.
+ */
+static int r10k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
+                            target_ulong address, MMUAccessType access_type,
+                            MemTxAttrs *attrs)
+{
+    int ret = r4k_map_address(env, physical, prot, address, access_type,
+                              attrs);
+
+    if (ret == TLBRET_MATCH &&
+        !env->tlb->mmu.r4k.tlb[env->tlb_last_match].G) {
+        env->r10k->fill_asid_dependent = true;
+    }
+    return ret;
+}
+
+/*
+ * Record a translation about to enter QEMU's TLB at @address under
+ * @mmu_idx. A lookup outside a fill (a debugger read, a prefetch) can leave
+ * fill_asid_dependent set for a later fill through an unmapped segment;
+ * that only lists a page that did not need listing.
+ */
+void r10k_note_fill(CPUMIPSState *env, vaddr address, int mmu_idx)
+{
+    R10KState *r10k = env->r10k;
+    uint64_t page = address & TARGET_PAGE_MASK;
+    uint32_t enables = r10k_segment_enables(env, address);
+    uint32_t i;
+
+    if (enables & (1 << CP0St_UX)) {
+        r10k->ux_idxmap |= BIT(mmu_idx);
+    }
+    if (enables & (1 << CP0St_SX)) {
+        r10k->sx_idxmap |= BIT(mmu_idx);
+    }
+    if (enables & (1 << CP0St_KX)) {
+        r10k->kx_idxmap |= BIT(mmu_idx);
+    }
+
+    if (!r10k->fill_asid_dependent) {
+        return;
+    }
+    r10k->fill_asid_dependent = false;
+    r10k->asid_idxmap |= BIT(mmu_idx);
+    if (r10k->asid_pages_overflow) {
+        return;
+    }
+    for (i = 0; i < r10k->asid_npages; i++) {
+        if ((r10k->asid_pages[i] & TARGET_PAGE_MASK) == page) {
+            r10k->asid_pages[i] |= BIT(mmu_idx);
+            return;
+        }
+    }
+    if (r10k->asid_npages == R10K_ASID_PAGES) {
+        r10k->asid_pages_overflow = true;
+        return;
+    }
+    r10k->asid_pages[r10k->asid_npages++] = page | BIT(mmu_idx);
+}
+
+/* Forget what a flush of the indexes in @idxmap has just removed. */
+static void r10k_forget_idxmap(R10KState *r10k, uint32_t idxmap)
+{
+    r10k->ux_idxmap &= ~idxmap;
+    r10k->sx_idxmap &= ~idxmap;
+    r10k->kx_idxmap &= ~idxmap;
+}
+
+/* QEMU's whole TLB has been flushed: nothing listed is left in it. */
+void r10k_tlb_flushed(CPUMIPSState *env)
+{
+    R10KState *r10k = env->r10k;
+
+    r10k->asid_npages = 0;
+    r10k->asid_pages_overflow = false;
+    r10k->asid_idxmap = 0;
+    r10k_forget_idxmap(r10k, UINT32_MAX);
+}
+
+/* EntryHi.ASID has changed: discard every translation that depended on it. */
+void r10k_asid_changed(CPUMIPSState *env)
+{
+    R10KState *r10k = env->r10k;
+    CPUState *cs = env_cpu(env);
+    uint32_t i;
+
+    if (r10k->asid_pages_overflow) {
+        tlb_flush_by_mmuidx(cs, r10k->asid_idxmap);
+        r10k_forget_idxmap(r10k, r10k->asid_idxmap);
+    } else {
+        for (i = 0; i < r10k->asid_npages; i++) {
+            uint64_t entry = r10k->asid_pages[i];
+
+            tlb_flush_page_by_mmuidx(cs, entry & TARGET_PAGE_MASK,
+                                     entry & ~TARGET_PAGE_MASK);
+        }
+    }
+    r10k->asid_npages = 0;
+    r10k->asid_pages_overflow = false;
+    r10k->asid_idxmap = 0;
+}
+
+/*
+ * Status UX, SX or KX, named in @cleared, has just gone from one to zero:
+ * the segments it enabled now raise address errors, so discard the indexes
+ * holding pages in them.
+ */
+void r10k_segments_disabled(CPUMIPSState *env, uint32_t cleared)
+{
+    R10KState *r10k = env->r10k;
+    uint32_t idxmap = 0;
+
+    if (cleared & (1 << CP0St_UX)) {
+        idxmap |= r10k->ux_idxmap;
+    }
+    if (cleared & (1 << CP0St_SX)) {
+        idxmap |= r10k->sx_idxmap;
+    }
+    if (cleared & (1 << CP0St_KX)) {
+        idxmap |= r10k->kx_idxmap;
+    }
+    if (idxmap) {
+        tlb_flush_by_mmuidx(env_cpu(env), idxmap);
+        r10k_forget_idxmap(r10k, idxmap);
+    }
 }
 
 /*
  * The R4000-style MMU with this family's own TLB writes and reads. The
  * lookup and the fill stay shared: their differences are a few lines apiece
  * inside long functions, and a private copy of either would drift. Wire the
- * shared R4000 helpers first, then replace the three the family redefines.
+ * shared R4000 helpers first, then replace the three the family redefines
+ * and wrap the lookup to feed the fill bookkeeping above.
  */
 void r10k_mmu_init(CPUMIPSState *env, const mips_def_t *def)
 {
     r4k_mmu_init(env, def);
+    env->tlb->map_address = r10k_map_address;
     env->tlb->helper_tlbwi = r10k_helper_tlbwi;
     env->tlb->helper_tlbwr = r10k_helper_tlbwr;
     env->tlb->helper_tlbr = r10k_helper_tlbr;

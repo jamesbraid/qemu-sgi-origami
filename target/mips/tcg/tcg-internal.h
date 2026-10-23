@@ -94,6 +94,9 @@ int r4k_tlbwi_prepare(CPUMIPSState *env);
 bool r4k_shadow_covers_staged(CPUMIPSState *env);
 void r4k_tlbr_load_entrylo(CPUMIPSState *env, const struct r4k_tlb_t *tlb);
 void r4k_mmu_init(CPUMIPSState *env, const mips_def_t *def);
+int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
+                    target_ulong address, MMUAccessType access_type,
+                    MemTxAttrs *attrs);
 
 bool mips_io_recompile_replay_branch(CPUState *cs, const TranslationBlock *tb);
 
@@ -115,6 +118,10 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra);
 void r10k_invalidate_conflicts(CPUMIPSState *env, int idx);
 void r10k_mmu_init(CPUMIPSState *env, const mips_def_t *def);
+void r10k_note_fill(CPUMIPSState *env, vaddr address, int mmu_idx);
+void r10k_tlb_flushed(CPUMIPSState *env);
+void r10k_asid_changed(CPUMIPSState *env);
+void r10k_segments_disabled(CPUMIPSState *env, uint32_t cleared);
 void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
                           vaddr address, hwaddr physical);
 void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written);

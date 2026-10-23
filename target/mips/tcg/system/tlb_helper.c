@@ -637,9 +637,9 @@ static inline bool r4k_tlb_entry_match(const r4k_tlb_t *tlb,
 }
 
 /* MIPS32/MIPS64 R4000-style MMU emulation */
-static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
-                           target_ulong address, MMUAccessType access_type,
-                           MemTxAttrs *attrs)
+int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
+                    target_ulong address, MMUAccessType access_type,
+                    MemTxAttrs *attrs)
 {
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
@@ -776,6 +776,9 @@ void cpu_mips_tlb_flush(CPUMIPSState *env)
     tlb_flush(env_cpu(env));
     env->tlb->tlb_in_use = env->tlb->nb_tlb;
     mips_tlb_flush_caches(env);
+    if (env->r10k) {
+        r10k_tlb_flushed(env);
+    }
 }
 
 static void raise_mmu_exception(CPUMIPSState *env, target_ulong address,
@@ -1259,6 +1262,9 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                      (env->CP0_WatchLo[0] &
                       (CP0WL_R10K_R | CP0WL_R10K_W)))) {
             mips_r10k_watch_fill(cs, env, address, physical);
+        }
+        if (env->r10k) {
+            r10k_note_fill(env, address, mmu_idx);
         }
         tlb_set_page_with_attrs(cs, address & TARGET_PAGE_MASK,
                                 physical & TARGET_PAGE_MASK, attrs, prot,

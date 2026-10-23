@@ -86,7 +86,11 @@ static void mips_store_status(CPUMIPSState *env, target_ulong val)
 #if defined(TARGET_MIPS64)
     if ((env->CP0_Status ^ old) & (old & (7 << CP0St_UX))) {
         /* Access to at least one of the 64-bit segments has been disabled */
-        tlb_flush(env_cpu(env));
+        if (env->r10k) {
+            r10k_segments_disabled(env, old & ~env->CP0_Status);
+        } else {
+            tlb_flush(env_cpu(env));
+        }
     }
 #endif
     if (ase_mt_available(env)) {

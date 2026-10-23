@@ -110,6 +110,12 @@ static inline uint32_t r10k_scache_capacity(uint32_t configured_size,
 #define R12K_BPT_ENTRIES  2048
 #define R10K_BPT_LINE     8
 
+/*
+ * How many pages filled from non-global TLB entries r10k_note_fill() lists
+ * between ASID changes before it gives up and lets the change flush whole
+ * mmu indexes instead.
+ */
+#define R10K_ASID_PAGES   256
 
 enum {
     R12000_PRID,
@@ -219,6 +225,29 @@ typedef struct R10KState {
     uint8_t dcache_lru[R10K_DCACHE_SETS];
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
+
+    /*
+     * What QEMU's own TLB holds that an ASID change or a cleared Status
+     * segment enable would make wrong; r10k_helper.c explains the
+     * bookkeeping. Not migrated: an incoming migration starts from an empty
+     * QEMU TLB, and a stale record costs only flushes that find nothing.
+     *
+     * asid_pages lists the pages filled from a non-global TLB entry since
+     * the last ASID change, each page address carrying in its low bits the
+     * mmu indexes it was filled under; asid_idxmap is the union of those
+     * indexes and stays exact after the list overflows. ux_idxmap,
+     * sx_idxmap and kx_idxmap name the indexes holding a page that only
+     * Status UX, SX or KX makes reachable. fill_asid_dependent carries the
+     * TLB lookup's answer from r10k_map_address() to r10k_note_fill().
+     */
+    uint64_t asid_pages[R10K_ASID_PAGES];
+    uint32_t asid_npages;
+    bool asid_pages_overflow;
+    bool fill_asid_dependent;
+    uint32_t asid_idxmap;
+    uint32_t ux_idxmap;
+    uint32_t sx_idxmap;
+    uint32_t kx_idxmap;
 
     /* Board links survive reset. */
     R10KBusSystemRequestFn bus_request;
