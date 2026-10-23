@@ -52,6 +52,12 @@ const char rom_name[] = "diagregs";
 #define DIAG_BPIDX_MASK   (0x1ffull << 3)
 #define DIAG_BPOP_MASK    (3ull << 0)
 #define DIAG_BIT26        (1ull << 26)
+#define DIAG_BPSTATE(s)   ((uint64_t)(s) << 14)
+#define DIAG_BPIDX(i)     ((uint64_t)(i) << 3)
+#define DIAG_BPOP_READ   0ull
+#define DIAG_BPOP_WRITE  1ull
+#define DIAG_BPOP_ZEROES 2ull
+#define DIAG_BPOP_ONES   3ull
 
 /* Reserved bits must read zero after writes. */
 #define DIAG_RESERVED (0xfff0ffff00000000ull | (0x1full << 23) | \
@@ -84,6 +90,18 @@ void rom_main(void)
      * zero would pass the latter but fail the mode checks; treating the whole
      * register as scratch would fail reserved-bit checks. Accesses are 64-bit.
      */
+    if (r16000) {
+        rom_assert_eq(33, 0, rom_get_brdiag());
+
+        /* A cold-reset table read must return zero at both ends. */
+        rom_set_brdiag(DIAG_BPIDX(0) | DIAG_BPOP_READ);
+        rom_assert_eq(34, 0,
+                      rom_get_brdiag() & DIAG_BPSTATE_MASK);
+        rom_set_brdiag(DIAG_BPIDX(511) | DIAG_BPOP_READ);
+        rom_assert_eq(35, 0,
+                      rom_get_brdiag() & DIAG_BPSTATE_MASK);
+    }
+
     rom_assert_eq(4, 0, rom_get_brdiag() & diag_reserved);
     rom_assert_eq(5, 0, rom_get_brdiag() & DIAG_BPMODE_MASK);
 
@@ -107,11 +125,15 @@ void rom_main(void)
                       rom_get_brdiag() & DIAG_BIT26);
         rom_assert_eq(30, diagnostic & DIAG_BPMODE_MASK,
                       rom_get_brdiag() & DIAG_BPMODE_MASK);
+        rom_assert_eq(36, diagnostic & ~DIAG_BIT26,
+                      rom_get_brdiag() & ~DIAG_BIT26);
         rom_set_brdiag(diagnostic);
         rom_assert_eq(31, diagnostic & DIAG_BIT26,
                       rom_get_brdiag() & DIAG_BIT26);
         rom_assert_eq(32, diagnostic & DIAG_BPMODE_MASK,
                       rom_get_brdiag() & DIAG_BPMODE_MASK);
+        rom_assert_eq(37, diagnostic & ~DIAG_BIT26,
+                      rom_get_brdiag() & ~DIAG_BIT26);
     }
 
     /*
@@ -124,6 +146,12 @@ void rom_main(void)
     rom_set_brdiag(~0ull);
     rom_assert_eq(10, 0, rom_get_brdiag() & diag_reserved);
     rom_assert_eq(11, DIAG_BPMODE_MASK, rom_get_brdiag() & DIAG_BPMODE_MASK);
+    if (r16000) {
+        rom_assert_eq(38, 0x0403cffbull, rom_get_brdiag());
+        rom_set_brdiag(diagnostic);
+        rom_assert_eq(39, diagnostic & DIAG_BPMODE_MASK,
+                      rom_get_brdiag() & DIAG_BPMODE_MASK);
+    }
 
     rom_set_brdiag(0);
     rom_assert_eq(12, 0, rom_get_brdiag() & DIAG_BPMODE_MASK);
@@ -134,13 +162,6 @@ void rom_main(void)
      * 512 two-bit entries. The test checks these explicit operations only;
      * conditional-branch prediction does not update entries in this model.
      */
-#define DIAG_BPSTATE(s) ((uint64_t)(s) << 14)
-#define DIAG_BPIDX(i)   ((uint64_t)(i) << 3)
-#define DIAG_BPOP_READ   0ull
-#define DIAG_BPOP_WRITE  1ull
-#define DIAG_BPOP_ZEROES 2ull
-#define DIAG_BPOP_ONES   3ull
-
     /*
      * A table write keeps every written field in the register.
      */
