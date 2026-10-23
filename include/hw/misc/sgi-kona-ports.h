@@ -68,6 +68,11 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GET_CONFIG     0x1e9
 #define SGI_KONA_CMD_DISPLAY_MODE   0x1e6
 /*
+ * The flash EEPROM operation, from ireeprom: the operation number, then
+ * that operation's words, framed by sgi-kona.c (see SGI_KONA_FLASH_BASE).
+ */
+#define SGI_KONA_CMD_EEPROM         0x1ec
+/*
  * The context deactivate KONApcxswap sends when it switches away from a
  * context: the token, then the outgoing context's index in the kernel's
  * rendering-context table.

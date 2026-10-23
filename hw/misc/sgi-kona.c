@@ -2580,6 +2580,331 @@ static void sgi_kona_answer_config(SGIKonaState *s)
 }
 
 /*
+ * The flash EEPROM operation, SGI_KONA_CMD_EEPROM ("The flash EEPROM
+ * operation, 0x1ec, and ireeprom" in the command grammar datasheet). The
+ * operation number arrives as the command's one framed word; the words
+ * each operation takes after it come here. Established from the pipe's
+ * ARM handler: a write takes a type, an offset for the boot image only,
+ * a count and the data; a read an offset and a byte length; op 3 the
+ * reply buffer; ops 4 and 5 one unused word; op 6 none; any other number
+ * nothing more.
+ */
+#define SGI_KONA_FLASH_OP_WRITE        1
+#define SGI_KONA_FLASH_OP_READ         2
+#define SGI_KONA_FLASH_OP_REPLY_BUFFER 3
+#define SGI_KONA_FLASH_OP_CHECK        4
+#define SGI_KONA_FLASH_OP_IDENTIFY     5
+#define SGI_KONA_FLASH_OP_ERASE_COMBO  6
+
+#define SGI_KONA_FLASH_TYPE_IMAGE  0
+#define SGI_KONA_FLASH_TYPE_COMBO  1
+#define SGI_KONA_FLASH_TYPE_HEADER 2
+
+/* Words after the operation number, before any data. */
+static const uint8_t sgi_kona_flash_op_words[] = {
+    [SGI_KONA_FLASH_OP_WRITE] = 1,  /* the type; it decides the rest */
+    [SGI_KONA_FLASH_OP_READ] = 2,
+    [SGI_KONA_FLASH_OP_REPLY_BUFFER] = 3,
+    [SGI_KONA_FLASH_OP_CHECK] = 1,
+    [SGI_KONA_FLASH_OP_IDENTIFY] = 1,
+};
+
+/* The starting image: zero, with the header state the PROM accepts. */
+static void sgi_kona_flash_init(SGIKonaState *s)
+{
+    memset(s->flash, 0, sizeof(s->flash));
+    stl_be_p(&s->flash[SGI_KONA_FLASH_STATE], SGI_KONA_FLASH_STATE_GOOD);
+    s->flash_written = false;
+}
+
+/* The big-endian word at flash offset `offset`, or 0 past the end. */
+static uint32_t sgi_kona_flash_load(SGIKonaState *s, uint32_t offset)
+{
+    if (offset > SGI_KONA_FLASH_SIZE - 4) {
+        return 0;
+    }
+    return ldl_be_p(&s->flash[offset]);
+}
+
+/*
+ * Program one word at the open write's address and advance it. Bytes past
+ * the 512 KiB are dropped, and logged once per write. The address does not
+ * wrap: what the ARM's own address arithmetic does there is unknown.
+ */
+static void sgi_kona_flash_store(SGIKonaState *s, uint32_t word)
+{
+    SGIKonaFlashOp *f = &s->flash_op;
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, word);
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        uint64_t at = f->flash_addr + i;
+
+        if (at < SGI_KONA_FLASH_SIZE) {
+            s->flash[at] = bytes[i];
+        } else if (!f->outside) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM write reaches"
+                          " flash offset 0x%" PRIx64 ", past its 512 KiB;"
+                          " the bytes past it are dropped\n", at);
+            f->outside = true;
+        }
+    }
+    f->flash_addr += 4;
+    s->flash_written = true;
+}
+
+/*
+ * Post a reply: the word count, then the words, from word 1 of the reply
+ * buffer, and word 0 last, as the ARM's reply routines write it.
+ * Approximated: at once, where the ARM first programs the part.
+ */
+static void sgi_kona_flash_reply(SGIKonaState *s, const uint32_t *words,
+                                 uint32_t count)
+{
+    g_autofree uint8_t *reply = g_malloc(4 + 4 * (size_t)count);
+
+    stl_be_p(reply, count);
+    for (uint32_t i = 0; i < count; i++) {
+        stl_be_p(reply + 4 + 4 * i, words[i]);
+    }
+    sgi_kona_post_return(s, SGI_KONA_CMD_EEPROM, 4, reply, 4 + 4 * count);
+}
+
+static void sgi_kona_flash_status(SGIKonaState *s, uint32_t status)
+{
+    sgi_kona_flash_reply(s, &status, 1);
+}
+
+/*
+ * Op 3: the reply buffer, which the pipe keeps in the same place 0x1f2
+ * sets, so later answers to either land there. Unlike 0x1f2 it keeps the
+ * offset word's low 12 bits.
+ */
+static void sgi_kona_flash_reply_buffer(SGIKonaState *s, uint32_t page,
+                                        uint32_t offset)
+{
+    uint64_t addr;
+    bool mapped;
+
+    if (!sgi_kona_command_page(s, "EEPROM reply", page, offset, &addr,
+                               &mapped)) {
+        return;
+    }
+    s->return_page = addr;
+    s->return_page_valid = true;
+    trace_sgi_kona_flash_reply_buffer(addr, mapped);
+    if (!sgi_kona_x_read_current(s)) {
+        sgi_kona_x_read_invalidate(s);
+    }
+}
+
+/*
+ * Op 2: `bytes` bytes of flash from `offset`, rounded down to a word as
+ * the ARM's word index does. A length that is not whole words would keep
+ * the ARM's copy loop from ending, and a reply longer than the buffer
+ * would run past it: both are logged and answered with nothing.
+ * Approximated: words past the 512 KiB are answered zero, and the read is
+ * logged. The ARM would read whatever its bus returns past the part.
+ */
+static void sgi_kona_flash_read(SGIKonaState *s, uint32_t offset,
+                                uint32_t bytes)
+{
+    g_autofree uint32_t *words = NULL;
+    uint32_t count = bytes / 4;
+
+    trace_sgi_kona_flash_read(offset, bytes);
+    if (bytes % 4) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM read of 0x%" PRIx32
+                      " bytes, not whole words; nothing posted\n", bytes);
+        return;
+    }
+    if (8 + (uint64_t)bytes > SGI_KONA_FLASH_REPLY_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM read of 0x%" PRIx32
+                      " bytes is longer than the reply buffer; nothing"
+                      " posted\n", bytes);
+        return;
+    }
+    offset &= ~3u;
+    if ((uint64_t)offset + bytes > SGI_KONA_FLASH_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM read at flash"
+                      " offset 0x%" PRIx32 " runs past its 512 KiB; read"
+                      " as zero there\n", offset);
+    }
+    words = g_new(uint32_t, MAX(count, 1));
+    for (uint32_t i = 0; i < count; i++) {
+        words[i] = sgi_kona_flash_load(s, offset + 4 * i);
+    }
+    sgi_kona_flash_reply(s, words, count);
+}
+
+/* Op 6: four zero bytes over the combination's marker. Nothing posted. */
+static void sgi_kona_flash_erase_combo(SGIKonaState *s)
+{
+    s->flash_op.flash_addr = SGI_KONA_FLASH_COMBO;
+    sgi_kona_flash_store(s, 0);
+    memset(&s->flash_op, 0, sizeof(s->flash_op));
+}
+
+static void sgi_kona_flash_open(SGIKonaState *s, uint32_t op)
+{
+    trace_sgi_kona_flash_op(op);
+    memset(&s->flash_op, 0, sizeof(s->flash_op));
+    if (op == SGI_KONA_FLASH_OP_ERASE_COMBO) {
+        sgi_kona_flash_erase_combo(s);
+        return;
+    }
+    if (op == 0 || op >= ARRAY_SIZE(sgi_kona_flash_op_words)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM operation %" PRIu32
+                      " is not one of 1 to 6; it takes no more words\n", op);
+        return;
+    }
+    s->flash_op.op = op;
+    s->flash_op.need = sgi_kona_flash_op_words[op];
+}
+
+/*
+ * A write's fixed words are in: a count above SGI_KONA_FLASH_MAX_WORDS
+ * fails before any data word is taken, so the next word opens a command.
+ * Otherwise max(count, 1) data words follow (the ARM always reads a last
+ * word), stored from the type's place: the image at its offset, the
+ * combination behind its marker and count, the header at its own place.
+ * An unknown type takes its data and stores none.
+ */
+static void sgi_kona_flash_write_open(SGIKonaState *s)
+{
+    SGIKonaFlashOp *f = &s->flash_op;
+    uint32_t type = f->args[0];
+    uint32_t count = f->args[f->need - 1];
+
+    if (count > SGI_KONA_FLASH_MAX_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM write of %" PRIu32
+                      " words, more than %u; refused\n", count,
+                      SGI_KONA_FLASH_MAX_WORDS);
+        trace_sgi_kona_flash_write(type, 0, count, 0);
+        memset(f, 0, sizeof(*f));
+        sgi_kona_flash_status(s, 0);
+        return;
+    }
+    f->data = MAX(count, 1);
+    f->store = true;
+    switch (type) {
+    case SGI_KONA_FLASH_TYPE_IMAGE:
+        f->flash_addr = f->args[1];
+        break;
+    case SGI_KONA_FLASH_TYPE_COMBO:
+        f->flash_addr = SGI_KONA_FLASH_COMBO;
+        sgi_kona_flash_store(s, SGI_KONA_FLASH_COMBO_MARKER);
+        sgi_kona_flash_store(s, count);
+        break;
+    case SGI_KONA_FLASH_TYPE_HEADER:
+        f->flash_addr = SGI_KONA_FLASH_HEADER;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: EEPROM write of unknown"
+                      " type %" PRIu32 "; its words are stored nowhere\n",
+                      type);
+        f->store = false;
+    }
+}
+
+/* An operation's fixed words are all in. */
+static void sgi_kona_flash_ready(SGIKonaState *s)
+{
+    SGIKonaFlashOp *f = &s->flash_op;
+    SGIKonaFlashOp done = *f;
+
+    if (f->op == SGI_KONA_FLASH_OP_WRITE) {
+        sgi_kona_flash_write_open(s);
+        return;
+    }
+    memset(f, 0, sizeof(*f));
+    switch (done.op) {
+    case SGI_KONA_FLASH_OP_READ:
+        sgi_kona_flash_read(s, done.args[0], done.args[1]);
+        break;
+    case SGI_KONA_FLASH_OP_REPLY_BUFFER:
+        sgi_kona_flash_reply_buffer(s, done.args[0], done.args[1]);
+        break;
+    case SGI_KONA_FLASH_OP_CHECK:
+        /*
+         * Approximated: the ARM sends a value round the transaction bus
+         * and answers 1 when it comes back intact. The model has no such
+         * bus; a working pipe's check passes.
+         */
+        sgi_kona_flash_status(s, 1);
+        break;
+    case SGI_KONA_FLASH_OP_IDENTIFY:
+        sgi_kona_flash_status(s, SGI_KONA_FLASH_IDENTITY);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+/* A word on the command page while an EEPROM operation is open. */
+static void sgi_kona_flash_word(SGIKonaState *s, uint32_t word)
+{
+    SGIKonaFlashOp *f = &s->flash_op;
+
+    if (f->have < f->need) {
+        f->args[f->have++] = word;
+        if (f->op == SGI_KONA_FLASH_OP_WRITE && f->have == 1) {
+            /* An offset and a count for the image, a count otherwise. */
+            f->need = word == SGI_KONA_FLASH_TYPE_IMAGE ? 3 : 2;
+        }
+        if (f->have == f->need) {
+            sgi_kona_flash_ready(s);
+        }
+        return;
+    }
+    if (f->store) {
+        sgi_kona_flash_store(s, word);
+    }
+    if (--f->data == 0) {
+        uint32_t type = f->args[0];
+        uint32_t status = f->store;
+        uint32_t start = type == SGI_KONA_FLASH_TYPE_IMAGE ? f->args[1] :
+                         type == SGI_KONA_FLASH_TYPE_COMBO ?
+                         SGI_KONA_FLASH_COMBO : SGI_KONA_FLASH_HEADER;
+
+        trace_sgi_kona_flash_write(type, start, f->args[f->need - 1], status);
+        memset(f, 0, sizeof(*f));
+        sgi_kona_flash_status(s, status);
+    }
+}
+
+/*
+ * Whether `f` is a state sgi_kona_flash_word() could hold: nothing open,
+ * an operation short of its fixed words, or a write taking at most the
+ * data words its count allows.
+ */
+static bool sgi_kona_flash_op_valid(const SGIKonaFlashOp *f)
+{
+    uint32_t need;
+
+    if (!f->op) {
+        return !f->need && !f->have && !f->data;
+    }
+    if (f->op >= ARRAY_SIZE(sgi_kona_flash_op_words) ||
+        f->op == SGI_KONA_FLASH_OP_ERASE_COMBO) {
+        return false;
+    }
+    need = sgi_kona_flash_op_words[f->op];
+    if (f->op == SGI_KONA_FLASH_OP_WRITE && f->have >= 1) {
+        need = f->args[0] == SGI_KONA_FLASH_TYPE_IMAGE ? 3 : 2;
+    }
+    if (f->need != need || f->have > f->need) {
+        return false;
+    }
+    if (f->have < f->need) {
+        return !f->data;
+    }
+    return f->op == SGI_KONA_FLASH_OP_WRITE && f->data &&
+           f->args[f->need - 1] <= SGI_KONA_FLASH_MAX_WORDS &&
+           f->data <= MAX(f->args[f->need - 1], 1);
+}
+
+/*
  * 0x128 W H D, X initialise: write W, H and D to words 2, 3 and 4 of the
  * return page, then word 0 = 1. kon_InitHW waits for word 0, then
  * compares words 2 to 4 with the width, height and depth code it sent
@@ -12653,6 +12978,9 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GET_CONFIG:
         sgi_kona_answer_config(s);
         break;
+    case SGI_KONA_CMD_EEPROM:
+        sgi_kona_flash_open(s, args[0]);
+        break;
     case SGI_KONA_CMD_X_INIT:
         sgi_kona_x_initialise(s, args);
         break;
@@ -12932,6 +13260,10 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         sgi_kona_video_word(s, word);
         return;
     }
+    if (s->flash_op.op) {
+        sgi_kona_flash_word(s, word);
+        return;
+    }
     /*
      * Kernel commands only start where a textport command could, between
      * packets, so the two framings never interleave.
@@ -13082,7 +13414,8 @@ static bool sgi_kona_user_command_open(SGIKonaState *s)
     return (s->kernel_port.framing && !s->kernel_port_privileged) ||
            s->kernel_port_suspended.framing ||
            s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
-           s->video_open || s->color_map_remaining || s->gamma_remaining ||
+           s->video_open || s->flash_op.op || s->color_map_remaining ||
+           s->gamma_remaining ||
            s->cursor_remaining || s->gl_tex_table_remaining ||
            s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
            (s->x_pixel_remaining && sgi_kona_x_pixel_owned(s)) ||
@@ -13192,6 +13525,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->video_have = s->video_have;
     v->video_first = s->video_first;
     v->video_tail_sum = s->video_tail_sum;
+    v->flash_op = s->flash_op;
     v->color_map_start = s->color_map_start;
     v->color_map_count = s->color_map_count;
     v->color_map_remaining = s->color_map_remaining;
@@ -13264,6 +13598,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     s->gl_sync_held = false;
     s->gl_token_high = 0;
     s->video_open = false;
+    memset(&s->flash_op, 0, sizeof(s->flash_op));
     s->color_map_remaining = 0;
     s->gamma_remaining = 0;
     s->cursor_remaining = 0;
@@ -13338,6 +13673,7 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
     s->video_have = v->video_have;
     s->video_first = v->video_first;
     s->video_tail_sum = v->video_tail_sum;
+    s->flash_op = v->flash_op;
     s->color_map_start = v->color_map_start;
     s->color_map_count = v->color_map_count;
     s->color_map_remaining = v->color_map_remaining;
@@ -13563,7 +13899,8 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_user_input(s);
     }
     if (s->kernel_port.framing || s->gl_port.framing || s->gl_sync_held ||
-        s->video_open || s->color_map_remaining || s->gamma_remaining ||
+        s->video_open || s->flash_op.op || s->color_map_remaining ||
+        s->gamma_remaining ||
         s->cursor_remaining || s->gl_tex_table_remaining ||
         s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
         s->x_pixel_remaining || s->x_stipple_store_remaining) {
@@ -13617,6 +13954,14 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                           s->video_command, length + 1 - s->video_have);
         }
         s->video_open = false;
+    }
+    if (s->flash_op.op) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: token 0x%" PRIx32 " stored at command page"
+                      " offset 0x%" PRIx32 " while EEPROM operation %"
+                      PRIu32 " is still taking words; partial operation"
+                      " dropped\n", token, offset, s->flash_op.op);
+        memset(&s->flash_op, 0, sizeof(s->flash_op));
     }
     if (s->color_map_remaining) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -13781,8 +14126,8 @@ static uint32_t sgi_kona_internal_read(SGIKonaState *s, uint32_t addr)
 {
     uint32_t *word;
 
-    if (addr == SGI_KONA_EEPROM_CHECKED_ADDR) {
-        return SGI_KONA_EEPROM_CHECKED_VALUE;
+    if (addr - SGI_KONA_FLASH_BASE < SGI_KONA_FLASH_SIZE && !(addr & 3)) {
+        return sgi_kona_flash_load(s, addr - SGI_KONA_FLASH_BASE);
     }
     if (addr == SGI_KONA_ICU_CONTROL) {
         return s->icu_control;
@@ -14436,6 +14781,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->map_ram_count = SGI_KONA_MAPRAM_ENTRIES;
 
     s->arm_high = g_new0(uint32_t, SGI_KONA_ARM_HIGH_WORDS);
+    sgi_kona_flash_init(s);
     s->arm_high_count = SGI_KONA_ARM_HIGH_WORDS;
 
     sgi_kona_board_memory_init(s);
@@ -15257,6 +15603,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->video_first = 0;
     s->video_tail_sum = 0;
     s->video_blanked = false;
+    /* The flash keeps its contents: only an operation in progress ends. */
+    memset(&s->flash_op, 0, sizeof(s->flash_op));
     s->color_map_start = 0;
     s->color_map_count = 0;
     s->color_map_remaining = 0;
@@ -16180,6 +16528,43 @@ static const VMStateDescription vmstate_sgi_kona_saved_gl_run = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_flash_op = {
+    .name = TYPE_SGI_KONA "/flash-operation",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(op, SGIKonaFlashOp),
+        VMSTATE_UINT32(need, SGIKonaFlashOp),
+        VMSTATE_UINT32(have, SGIKonaFlashOp),
+        VMSTATE_UINT32_ARRAY(args, SGIKonaFlashOp, 3),
+        VMSTATE_UINT32(data, SGIKonaFlashOp),
+        VMSTATE_UINT64(flash_addr, SGIKonaFlashOp),
+        VMSTATE_BOOL(store, SGIKonaFlashOp),
+        VMSTATE_BOOL(outside, SGIKonaFlashOp),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* A saved context's EEPROM operation, only while one is open. */
+static bool sgi_kona_saved_flash_op_needed(void *opaque)
+{
+    SGIKonaSavedInput *v = opaque;
+
+    return v->flash_op.op;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_flash_op = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/flash-op",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_flash_op_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(flash_op, SGIKonaSavedInput, 1,
+                       vmstate_sgi_kona_flash_op, SGIKonaFlashOp),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .name = TYPE_SGI_KONA "/saved-input-entry",
     .version_id = 3,
@@ -16243,6 +16628,7 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_saved_gl_run,
+        &vmstate_sgi_kona_saved_flash_op,
         NULL
     },
 };
@@ -16372,10 +16758,14 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
         if (!v->valid) {
             /* An empty slot owns no buffer. */
             if (v->bitmap_state != SGI_KONA_BITMAP_IDLE ||
-                v->bitmap_payload_expected || v->gl_data_remaining) {
+                v->bitmap_payload_expected || v->gl_data_remaining ||
+                v->flash_op.op) {
                 return -EINVAL;
             }
             continue;
+        }
+        if (!sgi_kona_flash_op_valid(&v->flash_op)) {
+            return -EINVAL;
         }
         if (i == SGI_KONA_CONTEXT_TRANSIENT ?
             !s->state[SGI_KONA_CONTEXT_TRANSIENT] : i >= s->context_count) {
@@ -18161,6 +18551,62 @@ static const VMStateDescription vmstate_sgi_kona_video_blank = {
     },
 };
 
+/* The flash, only once something may have changed it. */
+static bool sgi_kona_flash_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->flash_written;
+}
+
+static int sgi_kona_flash_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    s->flash_written = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_flash = {
+    .name = TYPE_SGI_KONA "/flash-contents",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_flash_needed,
+    .post_load = sgi_kona_flash_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(flash, SGIKonaState, SGI_KONA_FLASH_SIZE),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* An EEPROM operation still taking words. */
+static bool sgi_kona_flash_op_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->flash_op.op;
+}
+
+static int sgi_kona_flash_op_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    return sgi_kona_flash_op_valid(&s->flash_op) ? 0 : -EINVAL;
+}
+
+static const VMStateDescription vmstate_sgi_kona_flash_op_open = {
+    .name = TYPE_SGI_KONA "/flash-op",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_flash_op_needed,
+    .post_load = sgi_kona_flash_op_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(flash_op, SGIKonaState, 1, vmstate_sgi_kona_flash_op,
+                       SGIKonaFlashOp),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 6,
@@ -18344,6 +18790,8 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_x_read,
         &vmstate_sgi_kona_gl_read_dma,
         &vmstate_sgi_kona_video_blank,
+        &vmstate_sgi_kona_flash,
+        &vmstate_sgi_kona_flash_op_open,
         NULL
     },
 };
