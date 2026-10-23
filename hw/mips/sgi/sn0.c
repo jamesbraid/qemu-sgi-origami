@@ -184,11 +184,12 @@ const SN0ModelMemory *sn0_model_board_memory(const SN0ModelMemory *board,
 /*
  * The Origin 2000 node board (IP27) wires eight banks, each a DIMM pair.
  * 16-Mb parts make 64 or 128 MB banks, and 64-Mb parts make 512 MB banks
- * (SGI 007-3439-002, page 35). No part makes a 256 MB bank.
- * The stock IP27 PROM disables one ("256 MB dimm banks not allowed on IP27
- * node boards").
- * The bank-zero limit is the Origin 200's, carried over unestablished for
- * this board; no accepted Origin 2000 total reaches it.
+ * (SGI 007-3439-002, page 35), up to 4 GB a node, intermixed in pairs, so
+ * bank 0 may be 512 MB too. The stock IP27 PROM disables a 256 MB bank ("256
+ * MB dimm banks not allowed on IP27 node boards") at 180 MHz, the only clock
+ * offered here, and the later IP31 boards that carry them are not modelled.
+ * As on the Origin 200, bank 0 stays at 128 MiB whenever the other seven
+ * banks can hold the rest.
  */
 static const uint64_t sn0_ip27_memory_sizes_mib[] = {
     0x200ULL, 0x80ULL, 0x40ULL,
@@ -200,8 +201,8 @@ const SN0ModelMemory sn0_ip27_memory = {
     .architectural_banks = 8,
     .supported_mib = sn0_ip27_memory_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_ip27_memory_sizes_mib),
-    .first_bank_preferred_mib = 0x100ULL,
-    .first_bank_max_mib = 0x100ULL,
+    .first_bank_preferred_mib = 0x80ULL,
+    .first_bank_max_mib = 0x200ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
     .interleave_slots_per_bank = 4,

@@ -359,23 +359,23 @@ Onyx2 deskside:
      - ``origin2000``
      - 1 to 4; two Crossbows, and two Routers from two nodes on
      - 1 or 2 per node
-     - 64 MiB (fixed)
+     - 64 to 4096 MiB, as banks (see below)
    * - ``origin2000-deskside``
      - ``origin2000``
      - 1 to 4; two Crossbows, a Null Router for two nodes, two Routers
        for three or four
      - 1 or 2 per node
-     - 64 or 256 MiB
+     - as ``origin2000-rack``
    * - ``onyx2-rack`` (default)
      - ``onyx2``
      - 1 to 4, wired as ``origin2000-rack``
      - 1 or 2 per node
-     - 64 MiB (fixed)
+     - as ``origin2000-rack``
    * - ``onyx2-deskside``
      - ``onyx2``
      - 1 or 2, a Null Router for two, one Crossbow
      - 1 or 2 per node
-     - 64 MiB (fixed)
+     - as ``origin2000-rack``
    * - ``origin300`` (default)
      - ``origin300``
      - 1
@@ -410,9 +410,9 @@ one of the topology's own accepted populations. ``-m`` splits evenly
 across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 4096 MiB, while
-``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
-size. The fixed, fingerprinted IP53 Bedrock assembly also accepts
-descriptor-sized unequal node spans when each absolute bank total is
+a four-node ``origin2000-rack`` takes from 256 MiB to 16 GiB. The fixed,
+fingerprinted IP53 Bedrock assembly also accepts descriptor-sized unequal
+node spans when each absolute bank total is
 accepted by the selected processor option, the descriptor processor
 population is selected, and their sum matches ``-m``; its bank positions
 stay unchanged. Other heterogeneous layouts are refused.
@@ -581,6 +581,23 @@ address ``0x1fc0_0000`` names the reader's own flash on every node,
 whereas with a smaller bank 0 an uncached reference there goes through
 the claim layer to whichever node holds number 0. Smaller banks leave
 the reset address to the flash in every view, as before.
+
+An Origin 2000 or Onyx2 node board (IP27) wires eight banks of DIMM
+pairs. SGI's Theory of Operations (007-3439-002, printed page 35) gives
+64 or 128 MB banks from 16-Mb parts and 512 MB banks from 64-Mb parts,
+up to 4 GB a node, with sizes intermixed as long as each bank is a
+pair, so bank 0 may be 512 MB too. That manual is the whole basis for
+the IP27 sizes here. Held inventories of 250 MHz and faster machines
+show eight 512 MB banks, a 512 MB bank 0 and 256 MB banks, but those
+nodes are the later IP31 board on the same Hub, so they corroborate
+the Hub's bank decode, not the IP27 board's population. QEMU builds no
+256 MB IP27 bank: the stock PROM disables one at 180 MHz, the only
+processor these products offer. Every Origin 2000
+and Onyx2 chassis accepts the same 55 per-node sizes from 64 to
+4096 MiB, laid out as on the Origin 200: bank 0 stays at 128 MiB when
+the other seven banks hold the rest (1024 MiB is 128, 512, 128, 128 and
+128 MiB), and only 3072, 3584 and 4096 MiB get a 512 MiB bank 0, which
+splits the reset address the same way.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within

@@ -1101,6 +1101,21 @@ static void test_dual_2048m_split_on_both_nodes(const void *data)
 }
 
 /*
+ * The largest IP27 node: eight 512 MiB banks, 4 GiB, the most SGI
+ * 007-3439-002 (printed page 35) gives a node. Bank 0 reaches the
+ * boot flash's reset address, which a device or cached access sees as RAM.
+ */
+static void test_origin2000_4096m_memory(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 4G");
+
+    check_512m_banks(qts, 8, 0x4096000000000000ULL);
+    check_ram(qts, FLASH_RESET + CONFIG_MAGIC_OFF, BANK0_FLASH_RAM_PATTERN);
+    qtest_quit(qts);
+}
+
+/*
  * 512 MiB is four 128 MiB banks, with the boot flash's own addresses left
  * out of the RAM map.
  */
@@ -2070,6 +2085,8 @@ int main(int argc, char **argv)
                         test_2048m_memory_reaches_flash_offset);
     qtest_add_data_func("sn0/address-map/dual-2048m-split-on-both-nodes",
                         NULL, test_dual_2048m_split_on_both_nodes);
+    qtest_add_data_func("sn0/address-map/origin2000-memory-4096m", NULL,
+                        test_origin2000_4096m_memory);
     qtest_add_data_func("sn0/address-map/origin2000-memory-256m", NULL,
                         test_origin2000_256m_memory);
     qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,

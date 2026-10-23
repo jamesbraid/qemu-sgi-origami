@@ -1426,6 +1426,83 @@ static void test_onyx2_accepts_256_mib_per_node(const void *data)
     }
 }
 
+/* Every node's banks-mb, as QOM reports them, against @expected. */
+static void assert_node_banks(QTestState *qts, unsigned int nodes,
+                              const unsigned int *expected,
+                              unsigned int count)
+{
+    unsigned int node;
+
+    for (node = 0; node < nodes; node++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+        QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                             "{'path': %s, 'property': 'banks-mb'}}", path);
+        QList *banks = qdict_get_qlist(r, "return");
+        QListEntry *entry;
+        unsigned int bank = 0;
+
+        g_assert_nonnull(banks);
+        QLIST_FOREACH_ENTRY(banks, entry) {
+            g_assert_cmpuint(bank, <, count);
+            g_assert_cmpuint(qnum_get_uint(
+                                 qobject_to(QNum, qlist_entry_obj(entry))),
+                             ==, expected[bank]);
+            bank++;
+        }
+        g_assert_cmpuint(bank, ==, count);
+        qobject_unref(r);
+    }
+}
+
+/*
+ * An IP27 node board takes up to eight banks of 64, 128 or 512 MB, 4 GB in
+ * all, mixed freely in DIMM pairs (SGI 007-3439-002, printed page 35).
+ * 1 GiB fits on one node with a 128 MiB bank 0; 3, 3.5 and
+ * 4 GiB need a 512 MiB bank 0. Every Origin 2000 and Onyx2 chassis takes
+ * the same sizes.
+ */
+static void test_ip27_nodes_take_up_to_4_gib(const void *data)
+{
+    static const unsigned int one_gib[] = { 128, 512, 128, 128, 128 };
+    static const unsigned int three_gib[] = { 512, 512, 512, 512, 512, 512 };
+    static const unsigned int four_gib[] = {
+        512, 512, 512, 512, 512, 512, 512, 512
+    };
+    static const struct {
+        const char *machine;
+        unsigned int nodes;
+        const unsigned int *banks;
+        unsigned int count;
+    } cases[] = {
+        { "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 1G",
+          1, one_gib, G_N_ELEMENTS(one_gib) },
+        { "-M origin2000,nodes=1 -smp 2 -m 3G",
+          1, three_gib, G_N_ELEMENTS(three_gib) },
+        { "-M onyx2,topology=onyx2-deskside,nodes=1 -smp 2 -m 1G",
+          1, one_gib, G_N_ELEMENTS(one_gib) },
+        { "-M onyx2,topology=onyx2-deskside,nodes=1 -smp 2 -m 4G",
+          1, four_gib, G_N_ELEMENTS(four_gib) },
+        { "-M onyx2,nodes=2 -smp 4 -m 8G",
+          2, four_gib, G_N_ELEMENTS(four_gib) },
+    };
+    const char *beyond[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "origin2000,topology=origin2000-deskside,nodes=1", "-smp", "2",
+        "-m", "4160M", "-display", "none", NULL
+    };
+    size_t i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_initf("%s -display none", cases[i].machine);
+
+        assert_node_banks(qts, cases[i].nodes, cases[i].banks,
+                          cases[i].count);
+        qtest_quit(qts);
+    }
+    assert_qemu_rejects(beyond, "topology 'origin2000-deskside' does not "
+                        "accept 4160 MiB per node");
+}
+
 /*
  * origin2000-deskside's own node/CPU-count contract: the topology builds
  * exactly the one node and two CPUs its own supported-cpu-populations entry
@@ -9674,6 +9751,8 @@ int main(int argc, char **argv)
         test_origin2000_one_node_has_two_cpus_on_node_zero);
     qtest_add_data_func("sn/builder/onyx2-accepts-256-mib-per-node", NULL,
                         test_onyx2_accepts_256_mib_per_node);
+    qtest_add_data_func("sn/builder/ip27-nodes-take-up-to-4-gib", NULL,
+                        test_ip27_nodes_take_up_to_4_gib);
     qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",
                         NULL, test_origin200_onboard_board_is_ip29_preset);
     qtest_add_data_func("sn/builder/origin2000-onboard-board-is-xio-baseio",

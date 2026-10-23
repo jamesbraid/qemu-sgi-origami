@@ -16,9 +16,11 @@ layer:
     directory_memory_slots_per_node: 8
     memory_banks_per_node: 8
     dimms_per_bank: 2
-    # 16-Mb parts give 64 or 128 MB banks, 64-Mb parts 512 MB ones; no part
-    # gives a 256 MB bank, and the stock IP27 PROM disables one ("256 MB dimm
-    # banks not allowed on IP27 node boards", PROM 6.156 string table).
+    # 16-Mb parts give 64 or 128 MB banks, 64-Mb parts 512 MB ones, up to
+    # 4 GB a node, intermixed in pairs. 256 MB banks are seen only on the
+    # later IP31 boards (250 MHz and faster), and the stock IP27 PROM
+    # disables one at 180 and 195 MHz ("256 MB dimm banks not allowed on
+    # IP27 node boards", PROM 6.156 string table).
     supported_bank_sizes_mib: [64, 128, 512]
     provenance: vendor-document
     sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted", "007-3439-002 printed p.35: 16-Mb parts support up to 1 GB per node in increments of 64 or 128 MB, 64-Mb parts up to 4 GB in increments of 512 MB, always in DIMM pairs", "firmware:ip27-prom-6.156 string \"256 MB dimm banks not allowed on IP27 node boards\", printed as it disables such a bank"]

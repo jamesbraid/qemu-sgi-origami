@@ -121,13 +121,13 @@ layer:
         profile: onyx2-deskside
         lifecycle: implemented
         emulator_constraints:
-          # Per-node totals -m may select. The node board is the Origin
-          # 2000's, whose 16-Mb DIMM pairs make 64 or 128 MB banks (SGI
-          # 007-3439-002, printed page 35). QEMU lays 256 MiB out as two
-          # 128 MB banks, as on the Origin 2000 deskside.
-          accepted_bank_sizes_mib:
-          - 64
-          - 256
+          # Per-node totals -m may select: every sum of up to eight banks of
+          # 64, 128 or 512 MiB, to the 4 GB a node board takes (SGI
+          # 007-3439-002, printed page 35). 256 MB banks are left out
+          # because the stock PROM disables them at 180 MHz. QEMU keeps
+          # bank 0 at 128 MiB unless the total needs a 512 MiB bank 0
+          # (3072, 3584 and 4096 MiB), so 256 MiB is two 128 MB banks.
+          accepted_bank_sizes_mib: [64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, 1472, 1536, 1600, 1664, 1728, 1792, 1856, 1920, 1984, 2048, 2112, 2176, 2240, 2304, 2368, 2432, 2496, 2560, 2624, 2688, 2752, 2816, 2880, 2944, 3072, 3136, 3200, 3264, 3328, 3584, 3648, 3712, 4096]
         initial_module_numbers:
         - component: compute-module
           number: 1
