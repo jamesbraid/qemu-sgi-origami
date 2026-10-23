@@ -1254,6 +1254,23 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * can then draw into different windows. The board's behaviour after such
  * an error is unknown either way.
  */
+/*
+ * The overlay planes as a colour target, a bit beside the bank and slot
+ * bits. The IRIX 6.5.30 IP27GR532 libGLcore.so's draw-buffer routine
+ * (__glMgrasDrawBuffer, 0xd95f810) sends 0x48 as the triple's first word
+ * for GL_FRONT and GL_BACK, and 0x43 for GL_FRONT_AND_BACK, when a flag in
+ * its context (offset 0xce4) is set, and 1 to 0xf otherwise; established
+ * from that listing. SceneViewer's logo context, the only context of that
+ * program's overlay scene graph (SoXtRenderArea::setOverlaySceneGraph on
+ * a level-1 colour-index visual; it sets glViewport(0, 0, 80, 80) and
+ * draws index 1 lines), sends 0x48 (run irix-20261023T080205-6dc9ca), and
+ * the other programs that send it, ivview and pointblank, also draw in
+ * the overlay. That bit 6 names the overlay planes is inferred from those
+ * observations; what bits 3:0 add beside it is unknown, and the model
+ * draws such a word into the overlay alone.
+ */
+#define MGRAS_GL_OVERLAY_TARGET  0x10
+
 static void mgras_gl_bind(SGIMgrasState *s)
 {
     uint32_t origin = s->context[MGRAS_GL_IMAGE_ORIGIN];
@@ -1280,6 +1297,7 @@ static void mgras_gl_bind(SGIMgrasState *s)
          * which is bank 0 only while the token is 1.
          */
         .extra = { s->slot[0] ? (back ? 4 : 1) : 0, s->slot[1] ? 8 : 0 },
+        .overlay = MGRAS_GL_OVERLAY_TARGET,
     };
 
     for (int i = 0; mode == MGRAS_GL_CLIP_INSIDE && i < MGRAS_GL_CLIP_RECTS;
@@ -3246,6 +3264,11 @@ static uint32_t *mgras_gl_depth(SGIMgrasState *s, int x, int y)
 static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
                                   int x, int y, uint32_t colour)
 {
+    if (target & MGRAS_GL_OVERLAY_TARGET) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: direct colour into the overlay "
+                      "planes is not modelled; fragment dropped\n");
+        return;
+    }
     mgras_gl_put(opaque, target, x, y, colour);
 }
 
@@ -3258,6 +3281,10 @@ static void mgras_gl_store_rgba(void *opaque, SGIColourTarget target,
     uint32_t rgb = colour->component[0] << 16 |
                    colour->component[1] << 8 | colour->component[2];
 
+    if (target & MGRAS_GL_OVERLAY_TARGET) {
+        mgras_gl_store_colour(s, target, x, y, rgb);
+        return;
+    }
     if (!mgras_gl_owns(s, x, y)) {
         return;
     }
@@ -3285,6 +3312,9 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
+    if (target & MGRAS_GL_OVERLAY_TARGET) {
+        return s->overlay[idx];
+    }
     if (target & 1) {
         return s->front[idx] & 0xffffff;
     }
@@ -3359,6 +3389,10 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
                                              MGRAS_GL_INDEX_BITS));
 
     if (!(mask & planes) || !mgras_gl_owns(s, x, y)) {
+        return;
+    }
+    if (target & MGRAS_GL_OVERLAY_TARGET) {
+        s->overlay[idx] = (s->overlay[idx] & ~mask) | (index & mask);
         return;
     }
     if (target & 1) {
@@ -4088,7 +4122,8 @@ static SGIRenderRefusal mgras_gl_mesa_preflight(const SGIMgrasState *s,
         (s->context[MGRAS_GL_IMAGE_CLIP_ID] >> 4) & 0xf) {
         return SGI_RENDER_REFUSAL_WINDOW;
     }
-    if (st->drawable.front != 1 && st->drawable.front != 2) {
+    if ((st->drawable.front != 1 && st->drawable.front != 2) ||
+        (st->draw_buffers & SGI_GL_DRAW_OVERLAY)) {
         return SGI_RENDER_REFUSAL_BUFFERS;
     }
     if (st->clip_planes) {
