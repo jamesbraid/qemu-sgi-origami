@@ -1873,6 +1873,10 @@ static bool aic7880_dindir_equal_target_supported(uint8_t reg)
 
 static void aic7880_run(AIC7880State *s)
 {
+    if (s->error_pending) {
+        aic7880_stop_diagnostic(s);
+        return;
+    }
     if (s->running) {
         return;
     }
