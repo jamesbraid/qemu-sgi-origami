@@ -3842,6 +3842,108 @@ static void test_gl_line_point_state_answers(void)
     g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
 }
 
+#define GL_POINT_SMOOTH_HDR   0x00006c04
+
+/* White, alpha 1, blended over the black window by its alpha. */
+static void gl_smooth_start(QTestState *s)
+{
+    gl_transform_start(s);
+    gl_width_clear(s);
+    gl_one(s, GL_BLEND_HDR, 1);
+    gl_blend(s, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_FUNC_ADD);
+    gl_color4f(s, 1, 1, 1, 1);
+}
+
+/*
+ * The Octane Technical Report (4.4.3) draws an antialiased point over the
+ * 2x2 pixels about it, weighted by distance; the model weights them
+ * bilinearly. A point of size 1 a quarter pixel right of pixel (20, 20)'s
+ * centre leaves alpha 3/4 there and 1/4 in (21, 20), and nothing beyond:
+ * drawn aliased it is pixel (20, 20) in white. Larger, the model widens
+ * the box the filter smooths: size 3 a quarter pixel right of (60, 60)'s
+ * centre is full over the three pixels about it and 3/4 and 1/4 in the
+ * next columns out, where an aliased point stops at three pixels.
+ */
+static void test_gl_smooth_point_filters_over_four_pixels(void)
+{
+    gl_smooth_start(qts);
+    gl_one(qts, GL_POINT_SMOOTH_HDR, 1);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_vertex2f(qts, 20.75f, 20.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    g_assert_cmphex(gl_window_pixel(qts, 20, 20), ==, 0xbfbfbf);
+    g_assert_cmphex(gl_window_pixel(qts, 21, 20), ==, 0x404040);
+    g_assert_cmphex(gl_window_pixel(qts, 19, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 22, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 21), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 19), ==, 0);
+
+    gl_word(qts, GL_POINT_SIZE_HDR);
+    gl_float(qts, 3);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_vertex2f(qts, 60.75f, 60.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    g_assert_cmphex(gl_window_pixel(qts, 60, 60), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 61, 61), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 60, 59), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 59, 60), ==, 0xbfbfbf);
+    g_assert_cmphex(gl_window_pixel(qts, 62, 60), ==, 0x404040);
+    g_assert_cmphex(gl_window_pixel(qts, 60, 62), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 58, 60), ==, 0);
+
+    /* Disabled again, the same size is the aliased square. */
+    gl_one(qts, GL_POINT_SMOOTH_HDR, 0);
+    gl_word(qts, GL_BEGIN_POINTS);
+    gl_vertex2f(qts, 100.5f, 100.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_POINTS));
+    g_assert_cmphex(gl_window_pixel(qts, 99, 99), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 101, 101), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 102, 100), ==, 0);
+}
+
+/*
+ * The report (4.4.4) draws an antialiased line two pixels wide, weighted
+ * by minor-axis distance, slope-corrected, its endpoints faded by their
+ * subpixel position. A width-1 line on the boundary of rows 60 and 61
+ * gives each half; its left end, three quarters into pixel 40, a quarter
+ * less. A diagonal through pixel centres lights them fully and nothing
+ * beside them. Width 3, on the boundary of rows 20 and 21, is full in
+ * those rows and half in the next out. Drawn aliased, the first is one
+ * white row and the last three.
+ */
+static void test_gl_smooth_line_filters_over_two_pixels(void)
+{
+    gl_smooth_start(qts);
+    gl_one(qts, GL_LINE_SMOOTH_HDR, 1);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 40.25f, 61);
+    gl_vertex2f(qts, 60, 61);
+    gl_vertex2f(qts, 80.5f, 60.5f);
+    gl_vertex2f(qts, 100.5f, 80.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x808080);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 61), ==, 0x808080);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 59), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 62), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 40, 61), ==, 0x606060);
+    g_assert_cmphex(gl_window_pixel(qts, 90, 70), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 90, 71), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 90, 69), ==, 0);
+
+    gl_word(qts, GL_LINE_WIDTH_HDR);
+    gl_float(qts, 3);
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex2f(qts, 40, 21);
+    gl_vertex2f(qts, 60, 21);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    g_assert_cmphex(gl_window_pixel(qts, 50, 20), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 21), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 19), ==, 0x808080);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 22), ==, 0x808080);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 18), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 23), ==, 0);
+}
+
 /* Analytical OpenGL footprints in window pixels, including a black border. */
 static void gl_width_check_rect(QTestState *qts, int x0, int y0,
                                 int x1, int y1, uint32_t colour)
@@ -4967,6 +5069,12 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-line-point-state-answers",
         test_gl_line_point_state_answers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-smooth-point-filters-over-four-pixels",
+        test_gl_smooth_point_filters_over_four_pixels, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-smooth-line-filters-over-two-pixels",
+        test_gl_smooth_line_filters_over_two_pixels, true);
 
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-stipple/parameters",

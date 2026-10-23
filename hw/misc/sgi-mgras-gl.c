@@ -3483,6 +3483,27 @@ static void mgras_gl_store_stencil(void *opaque, int x, int y,
  *   rasterizer's sgi_soft_triangle()).
  * - The stencil buffer holds 8 bits, as every visual with a depth buffer
  *   has (above, with the stencil packets).
+ * - Smoothed points and lines take the board's own filter, not OpenGL's
+ *   area coverage. The Octane Technical Report (4.4.3 and 4.4.4) draws an
+ *   antialiased point over a 2x2 grid of pixels weighted by their
+ *   distance from the subpixel point, and an antialiased line two pixels
+ *   wide, weighted higher nearer the line in the minor axis, corrected
+ *   for slope and with its endpoints faded by their major-axis subpixel
+ *   position; for a colour-index line the weight replaces the index's
+ *   low 4 bits, which the model does for points too, inferred. The
+ *   weights themselves are not published: the bilinear point
+ *   weight, the linear minor-axis weight, the sqrt(1 + slope^2) slope
+ *   correction and the endpoint fade by covered column length are the
+ *   model's choices (SGI_SMOOTH_TWO_PIXEL_FILTER). The report says
+ *   nothing of size, but the IRIX 6.4 and 6.5.30 client libraries send
+ *   the board every point size and line width, smoothed or not, unless
+ *   SOFT_WIDE_AA_LINES or (6.5.30) SOFT_WIDE_AA_POINTS is set, when they
+ *   draw large smoothed lines or points on the host. Both are unset by
+ *   default, so the board draws them; the model widens the filtered box
+ *   to the size, which is the report's filter at size 1. The
+ *   discriminating tests are
+ *   gl-smooth-point-filters-over-four-pixels and
+ *   gl-smooth-line-filters-over-two-pixels.
  */
 static const SGIRasterRules mgras_gl_raster_rules = {
     .subpixel_bits = 8,
@@ -3494,8 +3515,11 @@ static const SGIRasterRules mgras_gl_raster_rules = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+    .smooth_primitives = true,
+    .smooth_rule = SGI_SMOOTH_TWO_PIXEL_FILTER,
     .evidence = "MGRAS: 8 subpixel and 24 depth bits from the Octane "
-                "Technical Report 4.2.3; the rest the model's choices, "
+                "Technical Report 4.2.3, the two-pixel smoothing filter "
+                "from 4.4.3 and 4.4.4; the rest the model's choices, "
                 "tested",
 };
 

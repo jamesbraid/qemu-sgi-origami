@@ -21,8 +21,10 @@ head sgi-mgras-ssi
 # slot 2 and frame B in bank 0, so that the set bit shows slot 2 and the
 # clear bit bank 0. Before the first swap the window shows bank 0, which
 # nothing has drawn; after each swap the grey 0x333333 clear and a clock
-# tick (0xe5e5e5) must show, and a model that scans out banks 0 and 1 only
-# shows black after the first.
+# tick must show, and a model that scans out banks 0 and 1 only shows black
+# after the first. The tick is a smoothed line blended by its alpha, so its
+# value (0xe0e0e0) is the model's two-pixel smoothing filter's, not a
+# reading from a board.
 write 4 0x72038 0x1e000400
 write 4 0x72038 0x4050000
 write 1 0x71c88 0x0
@@ -6416,7 +6418,7 @@ write 4 0x71d80 0x20000
 write 1 0x71c88 0x4
 write 4 0x71d80 0x0
 display-pixel 40 40 0x333333
-display-pixel 84 36 0xe5e5e5
+display-pixel 84 36 0xe0e0e0
 display-pixel 20 40 0
 write 1 0x71c88 0x0
 write 1 0x71c88 0x0
@@ -7030,7 +7032,7 @@ write 4 0x71d80 0x0
 write 1 0x71c88 0x4
 write 4 0x71d80 0x0
 display-pixel 40 40 0x333333
-display-pixel 84 36 0xe5e5e5
+display-pixel 84 36 0xe0e0e0
 display-pixel 20 40 0
 write 1 0x71c88 0x0
 write 1 0x71c88 0x0
