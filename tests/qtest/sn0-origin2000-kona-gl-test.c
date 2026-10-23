@@ -35,6 +35,11 @@
 #define REG_KICK            KONA_REG(0xc00108)
 #define REG_COMMAND         KONA_REG(0xc10000)
 #define REG_RETRACE_TAG     KONA_REG(0x800248)
+#define REG_COMMAND_DATA    KONA_REG(0xc1000c)
+#define REG_COMMAND_SLOT(t) KONA_REG(0xc1000c + 0x20 * (uint64_t)(t))
+
+/* x-test-plane's id for the first overlay plane, after the seven banks. */
+#define OVERLAY_PLANE 8
 
 /*
  * Virtual time from one retrace to just past the next: the model's 60 Hz
@@ -372,6 +377,20 @@ static void assert_window_shows(QTestState *s, uint32_t x, uint32_t y,
         g_assert_cmpmem(frame + (top + PROBE_SIZE) * row + (x + r) * 3, 3,
                         black, 3);
     }
+}
+
+/*
+ * The X server's loads that make overlay index 1 show grey: colour-map
+ * entry 0x2e01, then display-ID map entry 0x40 (the overlay planes'
+ * entry) with base 0x2e00 and mode 7, through the address-encoded
+ * command slots as konal.so sends them.
+ */
+static void x_overlay_map(QTestState *s)
+{
+    qtest_writel(s, REG_COMMAND_SLOT(0x12e), 0x2e01);
+    qtest_writel(s, REG_COMMAND_DATA, 1);
+    qtest_writel(s, REG_COMMAND_DATA, 0x304c1304);
+    kona_command(s, 0x132, (uint32_t[]){ 0x40, (0x2e00 << 7) | (7 << 3) }, 2);
 }
 
 /* A clean machine for each case. */
@@ -915,6 +934,35 @@ static void test_destroy_releases_window(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
 }
 
+/*
+ * The kernel's kona_unblank sends textport command 1 as 1 1 0, and
+ * kernel commands share the port, so a 1 1 0 may be followed by the
+ * kernel's destroy, 0x1f8 0x103, while a context is still current. The
+ * destroy must reach the kernel framer and release the window, both
+ * unbracketed and in the kernel's bracket; read as a level-1 buffer
+ * configuration with index size 0x1f8 it would be swallowed and the
+ * window would keep showing bank 1 over the X server's repaint.
+ */
+static void test_unblank_then_destroy(void)
+{
+    for (int kicked = 0; kicked < 2; kicked++) {
+        gl_reset();
+        gl_show_bank1(qts);
+        x_repaint(qts);
+        g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+        qtest_writel(qts, REG_COMMAND, 1);
+        qtest_writel(qts, REG_COMMAND, 1);
+        qtest_writel(qts, REG_COMMAND, 0);
+        if (kicked) {
+            kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+        } else {
+            kona_command(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+        }
+        x_repaint(qts);
+        g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
+    }
+}
+
 /* A switched-out context still owns its displayed window. */
 static void test_deactivate_keeps_window(void)
 {
@@ -1095,6 +1143,114 @@ static void test_migration_of_gl_state(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * A context on an overlay visual draws into the overlay planes. The IRIX
+ * 6.5.30 n32 libGLcore.so's buffer configuration (0xd949e50) sends the
+ * visual's level, context word 0xce4, as its first word, and
+ * SceneViewer's logo context sent 1 1 0 8 0 0 0 0 0 0 0, level 1 and
+ * eight index bits, before its window came with display ID 0x44 (run
+ * irix-20261023T111222-0467d9). Its clear to index 1 must land in the
+ * overlay plane and show through the overlay map, leaving the colour
+ * bank alone. A model that reads the 1 1 as the textport's command 1
+ * loses the configuration and clears bank 0 in RGB instead.
+ */
+static void test_overlay_context_draws_the_overlay(void)
+{
+    const uint32_t y = 640;
+
+    gl_reset();
+    x_overlay_map(qts);
+    kona_command_kicked(qts, 0x1fd,
+                        (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                      tagged_offset_word(SAVE_AREA),
+                                      0x10000 }, 3);
+    kona_command_kicked(qts, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    kona_command(qts, 1, (uint32_t[]){ 1, 0, 8, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    kona_command(qts, 2, (uint32_t[]){ 0 }, 1);
+    gl_place_window_id(qts, PROBE_X, y, 0x44, 0);
+    kona_command(qts, 0xe3, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    kona_command(qts, 0xc, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    kona_command(qts, 0x1c, (uint32_t[]){ F1 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    gl_flush_and_check_error(qts);
+
+    g_assert_cmphex(bank_word(qts, OVERLAY_PLANE, PROBE_X, y), ==, 1);
+    g_assert_cmphex(bank_word(qts, OVERLAY_PLANE, PROBE_X + PROBE_SIZE - 1,
+                              y + PROBE_SIZE - 1), ==, 1);
+    g_assert_cmphex(bank_word(qts, OVERLAY_PLANE, PROBE_X + PROBE_SIZE, y),
+                    ==, 0);
+    g_assert_cmphex(bank_word(qts, 0, PROBE_X, y), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xc0c0c0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X - 1, y), ==, 0);
+
+    /* Index 0, the transparent one, shows the main planes again. */
+    kona_command(qts, 0x1c, (uint32_t[]){ F0 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    g_assert_cmphex(bank_word(qts, OVERLAY_PLANE, PROBE_X, y), ==, 0);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0);
+}
+
+/*
+ * A held 1 1, or 1 1 and the word after it, migrates: the overlay
+ * context's configuration split at either point before the decision
+ * finishes on the destination and its clear lands in the overlay plane.
+ * A model that dropped the held words would frame the rest as fresh
+ * words and lose the configuration.
+ */
+static void test_held_level1_migrates(gconstpointer opaque)
+{
+    static const uint32_t record[] = { 1, 1, 0, 8, 0, 0, 0, 0, 0, 0, 0 };
+    const unsigned split = GPOINTER_TO_UINT(opaque);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    const uint32_t y = 640;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-gl-level1-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    x_overlay_map(from);
+    kona_command_kicked(from, 0x1fd,
+                        (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                      tagged_offset_word(SAVE_AREA),
+                                      0x10000 }, 3);
+    kona_command_kicked(from, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    for (unsigned i = 0; i < split; i++) {
+        qtest_writel(from, REG_COMMAND, record[i]);
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    for (unsigned i = split; i < ARRAY_SIZE(record); i++) {
+        qtest_writel(to, REG_COMMAND, record[i]);
+    }
+    kona_command(to, 2, (uint32_t[]){ 0 }, 1);
+    gl_place_window_id(to, PROBE_X, y, 0x44, 0);
+    kona_command(to, 0xe3, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    kona_command(to, 0xc, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    kona_command(to, 0x1c, (uint32_t[]){ F1 }, 1);
+    kona_command(to, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    g_assert_cmphex(bank_word(to, OVERLAY_PLANE, PROBE_X, y), ==, 1);
+    g_assert_cmphex(bank_word(to, 0, PROBE_X, y), ==, 0);
+    g_assert_cmphex(shown_pixel(to, PROBE_X, y), ==, 0xc0c0c0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1127,6 +1283,8 @@ int main(int argc, char **argv)
                    test_destroy_releases_window);
     qtest_add_func("sn0/origin2000/kona-gl/deactivate-keeps-window",
                    test_deactivate_keeps_window);
+    qtest_add_func("sn0/origin2000/kona-gl/unblank-then-destroy",
+                   test_unblank_then_destroy);
     qtest_add_data_func("sn0/origin2000/kona-gl/destroy-after-migration",
                         GINT_TO_POINTER(false), test_destroy_window_migrates);
     qtest_add_data_func("sn0/origin2000/kona-gl/destroy-before-migration",
@@ -1155,6 +1313,12 @@ int main(int argc, char **argv)
                    test_shared_display_id_migrates);
     qtest_add_func("sn0/origin2000/kona-gl/gamma-applied-at-scanout",
                    test_gamma_applied_at_scanout);
+    qtest_add_func("sn0/origin2000/kona-gl/overlay-context-draws-the-overlay",
+                   test_overlay_context_draws_the_overlay);
+    qtest_add_data_func("sn0/origin2000/kona-gl/held-1-1-migrates",
+                        GUINT_TO_POINTER(2), test_held_level1_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-gl/held-1-1-arg-migrates",
+                        GUINT_TO_POINTER(3), test_held_level1_migrates);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
