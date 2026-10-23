@@ -122,7 +122,7 @@ static void test_transaction_fixture(gconstpointer data)
     QTestState *qts;
     QDict *response;
     const char *bad[] = {
-        "read -1 0 3", "read 99 0 4", "read -2 0 4",
+        "read -1 0 3", "read 99 0 4", "read -3 0 4",
         "write -1 0 xyz", "write -1 0 001122", "read -1 0 4 extra",
     };
 
@@ -142,6 +142,16 @@ static void test_transaction_fixture(gconstpointer data)
     g_assert_cmpstr(qdict_get_str(response, "return"), ==,
                     "0x00000000 0000000000000000");
     qobject_unref(response);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/memtx',"
+        "'property':'request','value':'read -2 0 4'}}");
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/memtx',"
+        "'property':'result'}}");
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "0x00000000 00000000");
+    qobject_unref(response);
+
 
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/memtx',"
