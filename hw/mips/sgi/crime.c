@@ -690,6 +690,16 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
                 return MEMTX_OK;
             }
             break;
+        case 0x0050:
+            if (!value) {
+                /* Public evidence leaves the legacy enable bits unknown. */
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-crime: legacy CPU error enable "
+                              "%u-byte zero write at 0x14000050 "
+                              "accepted as a no-op approximation\n", size);
+                return MEMTX_OK;
+            }
+            break;
         default:
             break;
         }
