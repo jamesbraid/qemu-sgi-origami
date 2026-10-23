@@ -1004,15 +1004,13 @@ static void test_memory_configuration_follows_properties(void)
 }
 
 /*
- * "profile" is a named preset for the generation/capacity pairs the family
- * evidence record supports: v12 and v10 share the second-generation revision
- * nibble 0xa, v8 and v6 the first generation's 0x1; v12 and v8 report 128 MB,
- * v10 and v6 32 MB. Only the v12 pair -- a measured live board
- * (odyssey-octane2-v12-registers-20260926.md) -- is independently grounded
- * hardware evidence; the other three are the same bit-field rules applied to
- * generation and capacity values the evidence record establishes separately,
- * not a second measured board, so this still checks them for a regression,
- * not as a hardware-accuracy claim.
+ * "profile" presents each marketed board's identity. The IRIX 6.5.30
+ * kernel turns widget revision 1-3 into BUZZ A and 9-15 into BUZZ B, and
+ * gfxinfo prints the minor number as the revision's offset less one, so
+ * revision 2 is "A.1" and revision 10 is "B.1". Public captures show A.1
+ * on a V6, B.1 on a V10 and on a V12 (the measured 0xa), and PB&J 1 on
+ * each; the V8's A.1 is inferred from its generation. The 128 MB boards
+ * report four banks and the 32 MB boards two, the kernel's bit 29.
  */
 static void test_profile_selects_identity_and_memory(void)
 {
@@ -1022,9 +1020,9 @@ static void test_profile_selects_identity_and_memory(void)
         uint32_t memory_config;
     } cases[] = {
         { "v12", IDENTITY_DEFAULT, 0xa1000000 },
-        { "v10", IDENTITY_DEFAULT, 0x21000000 },
-        { "v8",  0x1c013047,       0xa1000000 },
-        { "v6",  0x1c013047,       0x21000000 },
+        { "v10", IDENTITY_DEFAULT, 0x01000000 },
+        { "v8",  0x2c013047,       0xa1000000 },
+        { "v6",  0x2c013047,       0x01000000 },
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
@@ -1100,14 +1098,14 @@ static void test_reset_control_accepts_six_writes(void)
 }
 
 /*
- * gfxinfo's "PB&J version" is bits 2:0 of 0x23380c. A captured 128 MB V12
- * printed 1, so the default and the v12 profile answer 1; the v8 profile,
- * which no capture covers, keeps 0 (see the model's ODSY_BACKEND_VERSION
- * comment). A write is a guest error, the same as every other read-only
- * register in this block, and changes nothing.
+ * gfxinfo's "PB&J version" is bits 2:0 of 0x23380c. Captured V6, V10 and
+ * V12 boards all print 1, so every profile answers 1. A write is a guest
+ * error, the same as every other read-only register in this block, and
+ * changes nothing.
  */
 static void test_backend_version_is_pinned(void)
 {
+    static const char *const profiles[] = { "v12", "v10", "v8", "v6" };
     g_autofree char *log_path = NULL;
     g_autoptr(GError) error = NULL;
     g_autofree char *log = NULL;
@@ -1131,12 +1129,15 @@ static void test_backend_version_is_pinned(void)
     g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 1);
     board_quit(qts);
 
-    qts = board_start(" -global sgi-odyssey.profile=v12");
-    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 1);
-    board_quit(qts);
-    qts = board_start(" -global sgi-odyssey.profile=v8");
-    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
-    board_quit(qts);
+    for (size_t i = 0; i < ARRAY_SIZE(profiles); i++) {
+        g_autofree char *profile =
+            g_strdup_printf(" -global sgi-odyssey.profile=%s", profiles[i]);
+
+        qts = board_start(profile);
+        g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION),
+                        ==, 1);
+        board_quit(qts);
+    }
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);

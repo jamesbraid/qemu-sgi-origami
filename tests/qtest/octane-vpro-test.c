@@ -103,9 +103,9 @@ typedef struct VProProfileCase {
 } VProProfileCase;
 
 static const VProProfileCase profile_cases[] = {
-    { "v6", 1, 0, false }, { "v8", 1, 2, false },
+    { "v6", 2, 0, false }, { "v8", 2, 2, false },
     { "v10", 0xa, 0, false }, { "v12", 0xa, 2, false },
-    { "v6", 1, 0, true }, { "v8", 1, 2, true },
+    { "v6", 2, 0, true }, { "v8", 2, 2, true },
     { "v10", 0xa, 0, true }, { "v12", 0xa, 2, true },
 };
 

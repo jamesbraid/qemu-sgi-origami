@@ -581,15 +581,14 @@
 /*
  * The back-end (PB&J) version, bits 2:0. The kernel's board-information
  * gather reads this word, masks it with 7 and reports it as gfxinfo's "PB&J
- * version" (ESTABLISHED as driver behaviour). A 128 MB V12 (030-1611-001 rev
- * C, BUZZ B.1) printed "PB&J version 1" in a published gfxinfo capture, and
- * a first-party odydiags listing of a 128 MB board with BUZZ revision 10
- * reports PB&J version 1 too. The value comes from the backend-version
- * property: 1 for the v12 profile and the default, 0 for the other profiles,
- * whose value no capture gives (an approximation). The kernel's display
- * back-end initialisation also reads this word and branches on bit 10,
- * returning early when it is set (ESTABLISHED as driver behaviour). The
- * model answers 0 in bit 10, as it always has; what bit 10 means is unknown.
+ * version" (ESTABLISHED as driver behaviour). Published gfxinfo captures of
+ * a V6, a V10 and a V12 all print "PB&J version 1", and a first-party
+ * odydiags listing of a 128 MB board with BUZZ revision 10 reports 1 too, so
+ * every profile answers 1 through the backend-version property. The
+ * kernel's display back-end initialisation also reads this word and
+ * branches on bit 10, returning early when it is set (ESTABLISHED as driver
+ * behaviour). The model answers 0 in bit 10, as it always has; what bit 10
+ * means is unknown.
  */
 #define ODSY_BACKEND_VERSION 0x23380c
 
@@ -11615,24 +11614,28 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
 }
 
 /*
- * The generation/capacity pairs the family evidence supports: v12 is the
- * measured 128 MB board odyssey_properties' defaults already describe; v10 is
- * the same second-generation part cut down to 32 MB; v8 and v6 are the first
- * generation (revision nibble 1) at 128 MB and 32 MB. No profile offers 64
- * MB, size code 3, or a revision nibble other than 0x1 and 0xa: the evidence
- * record does not establish them. Only the 128 MB second-generation board's
- * back-end version (1) is captured; the others keep 0 (ODSY_BACKEND_VERSION).
+ * The four marketed boards. The IRIX 6.5.30 kernel turns widget revision
+ * 1-3 into a BUZZ A part and 9-15 into BUZZ B, and gfxinfo prints the minor
+ * number as the revision's offset less one: revision 2 is "A.1", 10 is
+ * "B.1". hinv names the board from those two facts and the size: A at 32 or
+ * 128 MB is V6 or V8, B is V10 or V12 (established from the shipped
+ * binaries). Public gfxinfo captures give BUZZ A.1 and PB&J 1 for a 32 MB V6,
+ * B.1 and PB&J 1 for a 32 MB V10 and a 128 MB V12, and four banks for the
+ * V12. The V8's A.1, four banks and PB&J 1 are inferred from its generation
+ * and size; the 32 MB boards' two banks are inferred, since gfxinfo prints a
+ * fixed "Banks: 2" line for any 32 MB board. Every profile is CAS latency 3.
  */
 static const struct {
     const char *name;
     uint32_t revision;
     uint32_t memory_size;
+    uint32_t memory_banks;
     uint32_t backend_version;
 } odyssey_profiles[] = {
-    { "v12", 0xa, 128, 1 },
-    { "v10", 0xa, 32, 0 },
-    { "v8",  0x1, 128, 0 },
-    { "v6",  0x1, 32, 0 },
+    { "v12", 0xa, 128, 4, 1 },
+    { "v10", 0xa, 32, 2, 1 },
+    { "v8",  0x2, 128, 4, 1 },
+    { "v6",  0x2, 32, 2, 1 },
 };
 
 static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
@@ -11646,6 +11649,7 @@ static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
         if (!strcmp(s->profile, odyssey_profiles[i].name)) {
             s->revision = odyssey_profiles[i].revision;
             s->memory_size = odyssey_profiles[i].memory_size;
+            s->memory_banks = odyssey_profiles[i].memory_banks;
             s->backend_version = odyssey_profiles[i].backend_version;
             return true;
         }
@@ -12180,10 +12184,10 @@ static void odyssey_instance_init(Object *obj)
  * defaults to the public owner record of the 128 MB board; the serial is
  * synthetic and says so.
  *
- * "profile" is a named preset for the generation/capacity pairs the family
- * evidence supports: v12 (default, the measured board above), v10, v8 and v6.
- * Selecting one overrides "revision", "memory-size" and "backend-version";
- * left unset, each keeps its own default or override.
+ * "profile" selects one marketed board, v12 (the measured board above), v10,
+ * v8 or v6 (odyssey_profiles). Selecting one overrides "revision",
+ * "memory-size", "memory-banks" and "backend-version"; left unset, each
+ * keeps its own default or override.
  */
 static const Property odyssey_properties[] = {
     DEFINE_PROP_LINK("pi", SGIOdysseyState, pi, TYPE_SGI_PI_GFX, Object *),

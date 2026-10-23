@@ -131,7 +131,7 @@ typedef struct FuelVProProfileCase {
 
 /* V6 and V8 here exercise synthetic profiles, not Fuel hardware support. */
 static const FuelVProProfileCase profile_cases[] = {
-    { "v6", 1, 0 }, { "v8", 1, 2 },
+    { "v6", 2, 0 }, { "v8", 2, 2 },
     { "v10", 0xa, 0 }, { "v12", 0xa, 2 },
 };
 
