@@ -495,12 +495,9 @@ typedef struct SGIKonaPendingSwap {
  * The indirect port into a pipe-internal 32-bit address space: the
  * address port selects a word, the data port reads or writes it, and
  * SGI_KONA_PORT_WRITE_NEXT writes it and advances the address by 4.
- * The firmware and driver read the identity EEPROM through it; a
- * user-space loader writes the pipe's firmware through it.
- *
- * Only EEPROM address SGI_KONA_EEPROM_CHECKED_ADDR is established (value
- * SGI_KONA_EEPROM_CHECKED_VALUE); it answers on top of whatever the
- * internal space holds there. Every other EEPROM address reads zero.
+ * The firmware and driver read the flash EEPROM's header through it (see
+ * SGI_KONA_FLASH_BASE); a user-space loader writes the pipe's firmware
+ * through it.
  *
  * Approximated: SGI_KONA_EEPROM_DATA does not advance the address. Every
  * reader selects a new address before each access, so no evidence says
@@ -512,8 +509,46 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_EEPROM_ADDR 0x8003e8
 #define SGI_KONA_EEPROM_DATA 0x8003f0
 #define SGI_KONA_PORT_WRITE_NEXT 0x8003f8
-#define SGI_KONA_EEPROM_CHECKED_ADDR  0x87ff1c
-#define SGI_KONA_EEPROM_CHECKED_VALUE 2
+
+/*
+ * The pipe's flash EEPROM, which IRIX's ireeprom programs with
+ * SGI_KONA_CMD_EEPROM ("The flash EEPROM operation, 0x1ec, and ireeprom"
+ * in the command grammar datasheet). 512 KiB, inferred from the erase
+ * length and the header's place in the last 256-byte group: the boot
+ * image from offset 0, the video combination at SGI_KONA_FLASH_COMBO
+ * behind its marker and word count, and a twelve-word header at
+ * SGI_KONA_FLASH_HEADER whose word 7 is the state the PROM and kernel
+ * accept only as 2. The indirect port reads it big-endian at internal
+ * SGI_KONA_FLASH_BASE plus the flash offset (inferred: the PROM's header
+ * address is that sum); the ARM's own byte-wide programming accesses are
+ * not modelled, so host writes there are dropped.
+ *
+ * Approximated: no factory image was ever captured, so the model starts
+ * the flash zero with header state 2. It keeps its contents across
+ * system reset and migration, as flash does.
+ */
+#define SGI_KONA_FLASH_BASE         0x800000
+#define SGI_KONA_FLASH_SIZE         0x80000
+#define SGI_KONA_FLASH_COMBO        0x20000
+#define SGI_KONA_FLASH_COMBO_MARKER 0xfacefeed
+#define SGI_KONA_FLASH_HEADER       0x7ff00
+#define SGI_KONA_FLASH_STATE        (SGI_KONA_FLASH_HEADER + 7 * 4)
+#define SGI_KONA_FLASH_STATE_GOOD   2
+/*
+ * The identification word op 5 answers: the manufacturer and device codes
+ * in bytes 0 and 1, from the example readout in SGI's InfiniteReality
+ * upgrade manual (108-0132-002, page A-4), which is documentation, not a
+ * capture. Bytes 2 and 3 are unknown and answered zero.
+ */
+#define SGI_KONA_FLASH_IDENTITY     0x1fc40000
+/* The largest count op 1 accepts; a larger one fails before its data. */
+#define SGI_KONA_FLASH_MAX_WORDS    0x7ffb
+/*
+ * The longest reply the model posts, in bytes from word 0: the 16 KiB
+ * buffer both of ireeprom's paths name. What the pipe does past the
+ * buffer it was given is unknown.
+ */
+#define SGI_KONA_FLASH_REPLY_MAX    0x4000
 
 /*
  * The two internal ranges the loader writes: the ARM's reset code at
@@ -880,6 +915,26 @@ enum {
 };
 
 /*
+ * An EEPROM operation (SGI_KONA_CMD_EEPROM) still taking words after the
+ * command port framed its operation number: op is that number, 0 when
+ * none is open; args holds its fixed words, have of the need it takes;
+ * then, for a write, data more words go to the flash from flash_addr,
+ * stored only when the type is known. See sgi_kona_flash_word().
+ */
+typedef struct SGIKonaFlashOp {
+    uint32_t op;
+    uint32_t need;
+    uint32_t have;
+    uint32_t args[3];
+    uint32_t data;
+    /* 64 bits, so a write near 2^32 runs off the end rather than wrapping. */
+    uint64_t flash_addr;
+    bool store;
+    /* A word of this write fell past the flash, and that has been logged. */
+    bool outside;
+} SGIKonaFlashOp;
+
+/*
  * A user command a context left open when the kernel switched it out:
  * the command-page framers' partial packets and the plain counted runs,
  * copied out of SGIKonaState while another context's words are framed and
@@ -956,6 +1011,7 @@ typedef struct SGIKonaSavedInput {
     SGIKonaGLImageUpload gl_image_upload;
     SGIKonaGLBitmapUpload gl_bitmap_upload;
     SGIKonaGLPixelMapUpload gl_map_upload;
+    SGIKonaFlashOp flash_op;
 } SGIKonaSavedInput;
 
 struct SGIKonaState {
@@ -1242,6 +1298,15 @@ struct SGIKonaState {
      * display; see sgi_kona_video_temp_blank().
      */
     bool video_blanked;
+
+    /*
+     * The flash EEPROM (SGI_KONA_FLASH_BASE), and an operation on it still
+     * taking words. flash_written says the contents may differ from the
+     * starting image, so migration carries them.
+     */
+    uint8_t flash[SGI_KONA_FLASH_SIZE];
+    bool flash_written;
+    SGIKonaFlashOp flash_op;
 
     /*
      * The X colour map, and a load (SGI_KONA_CMD_X_COLOR_MAP) still taking

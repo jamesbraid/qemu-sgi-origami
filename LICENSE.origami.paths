@@ -840,6 +840,7 @@ tests/qtest/sn0-origin2000-kona-3d-test.c
 tests/qtest/sn0-origin2000-kona-bringup-test.c
 tests/qtest/sn0-origin2000-kona-context-test.c
 tests/qtest/sn0-origin2000-kona-dma-test.c
+tests/qtest/sn0-origin2000-kona-eeprom-test.c
 tests/qtest/sn0-origin2000-kona-fill-test.c
 tests/qtest/sn0-origin2000-kona-gl-test.c
 tests/qtest/sn0-origin2000-kona-glyph-test.c

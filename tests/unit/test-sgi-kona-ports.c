@@ -228,11 +228,14 @@ static void test_doorbell_excluded_selectors(void)
  * 0x13d its entry, width and height only, and 0x1a6 its command number only.
  * The device frames the colour-map and gamma entries, the cursor image
  * and colours, the stipple rows and the video command's data words itself.
+ * 0x1ec counts its operation number only; the device frames the words each
+ * operation takes.
  */
 static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1f1, 3 }, { 0x1f2, 3 }, { 0x1fd, 3 }, { 0x1f8, 1 }, { 0x1dd, 1 },
-    { 0x1e9, 1 }, { 0x1e6, 3 }, { 0x128, 3 }, { 0x129, 13 }, { 0x12a, 4 },
-    { 0x12b, 5 }, { 0x12e, 2 }, { 0x12f, 2 }, { 0x130, 1 }, { 0x132, 2 },
+    { 0x1e9, 1 }, { 0x1ec, 1 }, { 0x1e6, 3 }, { 0x128, 3 }, { 0x129, 13 },
+    { 0x12a, 4 }, { 0x12b, 5 }, { 0x12e, 2 }, { 0x12f, 2 }, { 0x130, 1 },
+    { 0x132, 2 },
     { 0x133, 1 }, { 0x136, 7 }, { 0x139, 2 }, { 0x13a, 1 }, { 0x154, 2 },
     { 0x155, 12 }, { 0x1ff, 1 }, { 0x1a6, 1 }, { 0x142, 2 }, { 0x144, 4 },
     { 0x147, 6 }, { 0x149, 8 }, { 0x14b, 10 }, { 0x145, 4 }, { 0x152, 2 },

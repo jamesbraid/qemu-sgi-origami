@@ -72,6 +72,11 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_POST_REASON, 1 },
     { SGI_KONA_CMD_CHECK_PIPE, 1 },
     { SGI_KONA_CMD_GET_CONFIG, 1 },
+    /*
+     * The operation number only; its words, up to a write's 0x7ffb data
+     * words, follow and are framed by sgi-kona.c.
+     */
+    { SGI_KONA_CMD_EEPROM, 1 },
     { SGI_KONA_CMD_DISPLAY_MODE, 3 },
     { SGI_KONA_CMD_CONTEXT_DEACTIVATE, 1 },
     /*

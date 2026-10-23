@@ -533,6 +533,7 @@ sn0_machine_qtests = \
                                                    'sn0-origin2000-kona-dma-test',
                                                    'sn0-origin2000-kona-bringup-test',
                                                    'sn0-origin2000-kona-config-test',
+                                                   'sn0-origin2000-kona-eeprom-test',
                                                    'sn0-origin2000-kona-video-test',
                                                    'sn0-origin2000-kona-scanout-test',
                                                    'sn0-origin2000-kona-fill-test',

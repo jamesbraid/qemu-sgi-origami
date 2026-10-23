@@ -30,6 +30,8 @@
 #define REG_KICK            KONA_REG(0xc00108)
 #define REG_COMMAND         KONA_REG(0xc10000)
 #define REG_COMMAND_DATA    KONA_REG(0xc1000c)
+#define REG_PORT_ADDR       KONA_REG(0x8003e8)
+#define REG_PORT_DATA       KONA_REG(0x8003f0)
 /* The slot store that opens token t: offset 0xc + 0x20 * t. */
 #define REG_COMMAND_SLOT(t) KONA_REG(0xc1000c + 0x20 * (uint64_t)(t))
 
@@ -1239,6 +1241,65 @@ static void test_migration_of_saved_command(void)
     g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
     qtest_writel(to, REG_COMMAND, 0);
     g_assert_cmphex(guest_word(to, RETURN_A), !=, 0);
+    assert_textport_in_step(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/*
+ * An EEPROM write (0x1ec 1 0 offset 2 and two words) context A leaves one
+ * word short when the kernel switches it out stays A's. Context B's own
+ * EEPROM check frames and answers on B's page meanwhile. The saved
+ * operation crosses migration, and A's last word on the destination
+ * finishes it: status 1 on A's page and both words in the flash, which
+ * the indirect port reads at internal 0x800000 plus the flash offset.
+ */
+static void test_migration_of_saved_flash_op(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    guest_fill_word(from, REASON_PAGE, 0);
+    guest_fill_word(from, RETURN_A, 0);
+    guest_fill_word(from, RETURN_B, 0);
+    kona_register_reason_page(from, REASON_PAGE);
+    context_first_physical(from, SAVE_A, RETURN_A);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x1ec,
+                 (uint32_t[]){ 1, 0, 0x200, 2, 0x5a5a1111 }, 5);
+    context_deactivate(from, 1);
+    context_first_physical(from, SAVE_B, RETURN_B);
+    qtest_writel(from, REG_KICK, 0);
+    kona_command(from, 0x1ec, (uint32_t[]){ 4, 0 }, 2);
+    g_assert_cmphex(guest_word(from, RETURN_B), ==, 1);
+    g_assert_cmphex(guest_word(from, RETURN_B + 8), ==, 1);
+    g_assert_cmphex(guest_word(from, RETURN_A), ==, 0);
+    context_deactivate(from, 2);
+
+    sgi_migrate_stopped(from, uri);
+
+    context_restore_physical(to, SAVE_A);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 0);
+    qtest_writel(to, REG_COMMAND, 0x5a5a2222);
+    g_assert_cmphex(guest_word(to, RETURN_A), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A + 4), ==, 1);
+    g_assert_cmphex(guest_word(to, RETURN_A + 8), ==, 1);
+    qtest_writel(to, REG_PORT_ADDR, 0x800200);
+    g_assert_cmphex(qtest_readl(to, REG_PORT_DATA), ==, 0x5a5a1111);
+    qtest_writel(to, REG_PORT_ADDR, 0x800204);
+    g_assert_cmphex(qtest_readl(to, REG_PORT_DATA), ==, 0x5a5a2222);
     assert_textport_in_step(to);
 
     qtest_quit(to);
@@ -3647,6 +3708,8 @@ int main(int argc, char **argv)
                    test_suspended_gl_run_survives_other_context);
     qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-command",
                    test_migration_of_saved_command);
+    qtest_add_func("sn0/origin2000/kona-context/migration-of-saved-flash-op",
+                   test_migration_of_saved_flash_op);
     qtest_add_func("sn0/origin2000/kona-context/list-call-split-by-switch",
                    test_list_call_split_by_switch);
     qtest_add_func("sn0/origin2000/kona-context/x-command-split-by-switch",
