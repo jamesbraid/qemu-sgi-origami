@@ -121,6 +121,12 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
  */
 #define SGI_KONA_GL_STORAGE_RGB4 0x10
 #define SGI_KONA_GL_STORAGE_RGB5 0x14
+/*
+ * The storage code of a texture copy the library reads back and loads
+ * again (sgi-kona.c, sgi_kona_gl_read_texels()), observed only for 0x30
+ * storage; it shares 0x30's ordinary layout.
+ */
+#define SGI_KONA_GL_STORAGE_COPY 0x28
 
 /* Validate native storage families, dimensional mode and transport. */
 bool sgi_kona_gl_texture_native_layout(const uint32_t header[20]);

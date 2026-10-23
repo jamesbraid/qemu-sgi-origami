@@ -7303,6 +7303,16 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
     uint64_t io, pitch, row, total;
     uint32_t lines;
 
+    if (selector == SGI_KONA_CMD_GL_READ_TEXELS) {
+        /* h[0] and h[1]: the region's width and height, four bytes each. */
+        row = (uint64_t)h[0] * 4;
+        total = row * h[1];
+        return row && h[1] &&
+               sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) &&
+               d->descriptor[2] == total &&
+               ((d->descriptor[3] == total && !d->descriptor[4]) ||
+                d->descriptor[3] == row);
+    }
     if (selector == SGI_KONA_CMD_X_PIXEL_READ) {
         if ((h[4] != 1 && h[4] != 2 && h[4] != 4) || h[5] || h[6]) {
             return false;
@@ -7399,6 +7409,118 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 
         sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 8, zeros,
                              SGI_KONA_RETURN_PAGE_BYTES - 8);
+    }
+}
+
+/*
+ * A texture copy: the format, type and storage code a texel readback
+ * writes and a later load reads back, for a texture stored as
+ * SGI_KONA_TEXTURE_COPIED_STORAGE (see sgi_kona_gl_read_texels()).
+ */
+#define SGI_KONA_TEXTURE_COPY_FORMAT    7
+#define SGI_KONA_TEXTURE_COPY_TYPE      3
+#define SGI_KONA_TEXTURE_COPY_STORAGE   SGI_KONA_GL_STORAGE_COPY
+#define SGI_KONA_TEXTURE_COPIED_STORAGE 0x30
+
+/*
+ * 0x52, a texel readback (__glkonReadTexels3D): before the library gives a
+ * resident texture's pipe memory to another, it copies the texture to host
+ * memory with this command inside a select-feed bracket, and loads the
+ * copy back later with 0x174 when the texture is used again. Its words,
+ * from the reader's descriptor in libGLcore: 0 the target, 1 and 2 the
+ * width and height, 3 and 4 the format and type the copy is written in,
+ * 5 the copy's storage code, 7 to 12 the region's first and last texel,
+ * 14 the geometry word and 16 and 17 the two bank addresses a texel load
+ * names the texture's destination by (load header words 16, 18 and 19).
+ * Established from the library and a guest trace: a 1024x1024 texture
+ * stored as 0x30 was read back as format 7, type 3, copy storage 0x28,
+ * and loaded back with those same three codes. Outside a bracket the
+ * library waits on the return page.
+ *
+ * Inferred: bit 3 of word 15 is the bank, as bit 3 of a load's word 17
+ * is; every readback observed named bank 0 and carried 0x43. Words 13
+ * and the rest of word 15 are not read: what they carry is unknown.
+ *
+ * Approximated: the model keeps a texture as 32-bit RGBA texels, not in
+ * the pipe's memory layout, and the copy it writes is those words,
+ * big-endian. The library treats the copy as opaque and loads the same
+ * bytes back (see sgi_kona_texture_copy()), so a texture survives the
+ * round trip; what a real pipe writes is unknown, and a client that read
+ * the copy itself would see the model's encoding. Only the observed copy
+ * of 0x30 storage is accepted; any other is refused and logged.
+ */
+static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    const SGIKonaTextureLevel *image = NULL;
+    uint32_t handle = UINT32_MAX, width, height, found = 0;
+    g_autofree uint8_t *data = NULL;
+    uint64_t bytes;
+
+    width = args[10] - args[7] + 1;
+    height = args[11] - args[8] + 1;
+    if (args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+        args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+        args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) {
+        found = sgi_kona_texture_find_native(&s->textures, args[0],
+                                             SGI_KONA_TEXTURE_COPIED_STORAGE,
+                                             args[14], args[15] & 8,
+                                             args[16], args[17],
+                                             args[10] + 1, args[11] + 1,
+                                             &handle, &image);
+    }
+    trace_sgi_kona_gl_read_texels(args[0], width, height, args[15],
+                                  args[16], args[17],
+                                  found == 1 ? handle : UINT32_MAX);
+    bytes = (uint64_t)width * height * 4;
+    if (found != 1 || args[0] != SGI_GL_TEXTURE_2D || args[9] || args[12] ||
+        args[10] < args[7] || args[11] < args[8] ||
+        bytes > SGI_KONA_TEXTURE_BYTES) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of %u textures "
+                      "matching banks 0x%x 0x%x storage 0x%x; refused\n",
+                      found, args[16], args[17], args[5]);
+        if (d->active) {
+            sgi_kona_gl_read_dma_refuse(s);
+        }
+        return;
+    }
+    data = g_malloc(bytes);
+    for (uint32_t y = 0; y < height; y++) {
+        const uint32_t *row = image->pixels +
+                              (uint64_t)(args[8] + y) * image->width + args[7];
+
+        for (uint32_t x = 0; x < width; x++) {
+            stl_be_p(data + ((uint64_t)y * width + x) * 4, row[x]);
+        }
+    }
+    if (d->active) {
+        if (d->refused || d->count || d->context != s->context_current ||
+            !sgi_kona_context_owner(s, d->context, d->generation)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
+                          "refused\n");
+            sgi_kona_gl_read_dma_refuse(s);
+            return;
+        }
+        memset(d->header, 0, sizeof(d->header));
+        d->header[0] = width;
+        d->header[1] = height;
+        if (!sgi_kona_gl_read_dma_layout(d, d->header,
+                                         SGI_KONA_CMD_GL_READ_TEXELS)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback DMA "
+                          "refused\n");
+            sgi_kona_gl_read_dma_refuse(s);
+            return;
+        }
+        d->selector = SGI_KONA_CMD_GL_READ_TEXELS;
+        d->count = bytes;
+        d->data = g_steal_pointer(&data);
+    } else if (bytes <= SGI_KONA_SMALL_RETURN_BYTES &&
+               sgi_kona_x_read_current(s)) {
+        trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_TEXELS, handle, bytes);
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_TEXELS, 8, data, bytes);
+    } else {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of 0x%" PRIx64
+                      " bytes outside a DMA bracket; not answered\n", bytes);
     }
 }
 
@@ -8088,8 +8210,23 @@ static uint32_t sgi_kona_texture_buffer_words(const SGIKonaTextureUpload *u)
     return u->count * (u->complete ? 1 : sgi_kona_texture_source_words(u));
 }
 
+/*
+ * Whether a texel load reads back a texture copy (see
+ * sgi_kona_gl_read_texels()): its words are the model's own texels, which
+ * the load keeps as they are, under the storage the copy was taken from.
+ */
+static bool sgi_kona_texture_copy(const uint32_t *h)
+{
+    return h[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+           h[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+           h[9] == SGI_KONA_TEXTURE_COPY_STORAGE && (h[17] & 1);
+}
+
 static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
 {
+    if (sgi_kona_texture_copy(h)) {
+        return SGI_GL_RGBA;
+    }
     if (h[3] == 13) {
         return h[9] == 0xd && !(h[17] & 1) ? SGI_GL_DEPTH_COMPONENT : 0;
     }
@@ -8270,6 +8407,10 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
     const SGIKonaGLPixelTransfer *t = u->transfer_captured ?
                                      &u->transfer : &identity;
 
+    if (sgi_kona_texture_copy(u->header)) {
+        /* The copy's words are already the model's texels. */
+        return true;
+    }
     for (uint32_t at = 0; at < u->count; at++) {
         double values[4];
         uint8_t bytes[4];
@@ -8805,8 +8946,13 @@ static void sgi_kona_texture_upload_publish(SGIKonaState *s)
 {
     const SGIKonaTextureUpload *u = &s->texture_upload;
     uint32_t base = sgi_kona_texture_storage_base(u->header);
+    uint32_t header[SGI_KONA_GL_TEX_LOAD_WORDS];
 
-    if (!sgi_kona_texture_native_upload(&s->textures, u->header, u->pixels,
+    memcpy(header, u->header, sizeof(header));
+    if (sgi_kona_texture_copy(header)) {
+        header[9] = SGI_KONA_TEXTURE_COPIED_STORAGE;
+    }
+    if (!sgi_kona_texture_native_upload(&s->textures, header, u->pixels,
                                         base, base)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture publication"
                       " refused for handle 0x%" PRIx32 "\n", u->header[10]);
@@ -10239,6 +10385,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_READ_PIXELS:
         sgi_kona_gl_read_pixels(s, args);
+        return;
+    case SGI_KONA_CMD_GL_READ_TEXELS:
+        sgi_kona_gl_read_texels(s, args);
+        return;
+    case SGI_KONA_CMD_GL_MODE_STATE:
+        /*
+         * Consumed whole so the readback after it frames. What the two
+         * words select on the pipe is unknown.
+         */
+        trace_sgi_kona_command_unmodelled(selector, 2);
         return;
     case SGI_KONA_CMD_GL_GET:
         sgi_kona_gl_get(s, args[0]);

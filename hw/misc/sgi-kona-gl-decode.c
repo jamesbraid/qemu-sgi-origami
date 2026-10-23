@@ -490,6 +490,13 @@ bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
         layout = volume ? 0x1141 : 0x2181;
         single = 0x9a1;
         break;
+    case SGI_KONA_GL_STORAGE_COPY:
+        if (volume) {
+            return false;
+        }
+        layout = 0x2181;
+        single = 0x9a1;
+        break;
     default:
         return false;
     }

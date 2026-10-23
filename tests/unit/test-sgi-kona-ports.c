@@ -416,7 +416,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x34, 4 }, { 0x35, 4 }, { 0x36, 4 },
     /* Pixels, queries and the attribute stack. */
     { 0x5, 8 }, { 0x6, 9 },
-    { 0x3a, 8 }, { 0x39, 7 }, { 0x38, 7 }, { 0x110, 4 }, { 0x115, 4 },
+    { 0x3a, 8 }, { 0x39, 7 }, { 0x38, 7 }, { 0x110, 4 }, { 0x52, 18 },
+    { 0x111, 2 }, { 0x115, 4 },
     { 0x4c, 1 }, { 0xc9, 1 }, { 0xc8, 1 },
     { 0x119, 1 },
     /* Textures. */

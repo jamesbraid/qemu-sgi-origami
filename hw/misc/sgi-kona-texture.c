@@ -302,6 +302,39 @@ static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
            a[18] == b[18] && a[19] == b[19];
 }
 
+unsigned sgi_kona_texture_find_native(SGIKonaTextureState *s, uint32_t target,
+                                      uint32_t storage, uint32_t geometry,
+                                      bool bank_one, uint32_t bank_a,
+                                      uint32_t bank_b, uint32_t width,
+                                      uint32_t height, uint32_t *handle,
+                                      const SGIKonaTextureLevel **image)
+{
+    GHashTableIter iter;
+    gpointer value;
+    unsigned found = 0;
+
+    g_hash_table_iter_init(&iter, s->objects);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        SGIKonaTextureObject *o = value;
+
+        for (unsigned k = 0; k < o->native_count; k++) {
+            const SGIKonaTextureNativeImage *n = &o->native[k];
+
+            if (n->header[0] == target && n->header[9] == storage &&
+                n->header[16] == geometry &&
+                !!(n->header[17] & 8) == bank_one &&
+                n->header[18] == bank_a && n->header[19] == bank_b &&
+                n->image.width >= width && n->image.height >= height) {
+                found++;
+                *handle = o->handle;
+                *image = &n->image;
+                break;
+            }
+        }
+    }
+    return found;
+}
+
 bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
                                    const uint32_t h[20], const uint32_t *rgba,
                                    uint32_t base_format,

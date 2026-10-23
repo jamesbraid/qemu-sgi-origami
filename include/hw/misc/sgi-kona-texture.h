@@ -147,6 +147,19 @@ bool sgi_kona_texture_native_bank(SGIKonaTextureState *s, uint32_t handle,
 bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
                                  const uint32_t table[16], bool volume,
                                  bool bank_one, uint32_t *handle);
+/*
+ * The native images whose destination a texel readback names: a target,
+ * a storage code (header word 9), the geometry word (16), the bank (bit
+ * 3 of word 17) and the two bank addresses (words 18 and 19), at least
+ * width x height. Returns how many objects hold one; when exactly one
+ * does, *handle and *image name it.
+ */
+unsigned sgi_kona_texture_find_native(SGIKonaTextureState *s, uint32_t target,
+                                      uint32_t storage, uint32_t geometry,
+                                      bool bank_one, uint32_t bank_a,
+                                      uint32_t bank_b, uint32_t width,
+                                      uint32_t height, uint32_t *handle,
+                                      const SGIKonaTextureLevel **image);
 /* Whether handle's stored level table is table, as find_table matches. */
 bool sgi_kona_texture_table_matches(SGIKonaTextureState *s, uint32_t handle,
                                     const uint32_t table[16], bool volume,
