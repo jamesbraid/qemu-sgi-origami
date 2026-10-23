@@ -44,4 +44,24 @@ void rom_main(void)
                   "1:\tnop\n\tb 1b\n\tnop");
     SLOT_PHASE(9, "nop\n\tnop\n"
                   "1:\tnop\n\tb 1b\n\tnop");
+
+    if (rom_get_prid() == 0x00000f50u) {
+        uint32_t before, after;
+
+        /*
+         * Under shift=3, 100 instructions advance virtual time by 800 ns.
+         * Malta's 320 MHz CPU and R16000 CCRes=2 yield 128 Count ticks.
+         */
+        __asm__ __volatile__(".set push\n\t.set noreorder\n\t"
+                             "mfc0 %0, $9\n\t"
+                             ".rept 99\n\t"
+                             "nop\n\t"
+                             ".endr\n\t"
+                             "mfc0 %1, $9\n\t"
+                             ".set pop"
+                             : "=&r"(before), "=&r"(after)
+                             :
+                             : "memory");
+        rom_assert_eq(11, 128, after - before);
+    }
 }
