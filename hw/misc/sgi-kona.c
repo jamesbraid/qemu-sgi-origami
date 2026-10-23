@@ -14885,6 +14885,8 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->cursor_offset = 0;
     s->cursor_position = 0;
     s->cursor_mode = 0;
+    /* The video-blank subsection is sent only while the source is blank. */
+    s->video_blanked = false;
     return 0;
 }
 
