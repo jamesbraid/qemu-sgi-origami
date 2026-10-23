@@ -807,6 +807,170 @@ static void test_cpu(gconstpointer opaque)
     qtest_quit(qts);
 }
 
+/* A BREAK must clear either reservation before the general handler's SC. */
+#define R16_LLSC_TARGET_REG        17
+#define R16_LLSC_TARGET_ADDR       0x1000
+#define R16_LLSC_BASELINE_RESULT   0x300
+#define R16_LLSC_BASELINE_VALUE    0x308
+#define R16_LLSC_HANDLER_STATUS   0x310
+#define R16_LLSC_HANDLER_CAUSE    0x318
+#define R16_LLSC_HANDLER_RESULT   0x320
+#define R16_LLSC_HANDLER_VALUE    0x328
+#define R16_LLSC_INITIAL_STATUS   0x330
+#define R16_LLSC_DONE_OFF         0x338
+#define R16_LLSC_FAULT_OFF        0x340
+#define R16_LLSC_DONE_MAGIC       0x5343
+#define OPC_LL                    (0x30u << 26)
+#define OPC_SC                    (0x38u << 26)
+#define OPC_BREAK                 (0x0du | OPC_SPECIAL)
+#define R16_LLSC_CP0_CAUSE        13
+#define R16_LLSC_CAUSE_BREAK      (9u << 2)
+#define R16_LLSC_CAUSE_CODE_MASK  (0x1fu << 2)
+#define R16_LLSC_STATUS_EXL       (1u << 1)
+
+typedef struct R16000LLSCCase {
+    const char *path;
+    bool doubleword;
+} R16000LLSCCase;
+
+static const R16000LLSCCase r16000_llsc_cases[] = {
+    { "/r16000/llsc/sc-after-break/word", false },
+    { "/r16000/llsc/sc-after-break/doubleword", true },
+};
+
+static void emit_r16000_ll(GuestImage *img, bool doubleword, int rt, int off)
+{
+    uint32_t opcode = doubleword ? OPC_LLD : OPC_LL;
+
+    emit(img, opcode | (R16_LLSC_TARGET_REG << 21) | (rt << 16) |
+         (uint16_t)off);
+}
+
+static void emit_r16000_sc(GuestImage *img, bool doubleword, int rt, int off)
+{
+    uint32_t opcode = doubleword ? OPC_SCD : OPC_SC;
+
+    emit(img, opcode | (R16_LLSC_TARGET_REG << 21) | (rt << 16) |
+         (uint16_t)off);
+}
+
+static void emit_r16000_llsc_store(GuestImage *img, bool doubleword, int rt,
+                                   int off)
+{
+    if (doubleword) {
+        emit_sd(img, rt, R16_LLSC_TARGET_REG, off);
+    } else {
+        emit(img, MIPS_OPC_SW | (R16_LLSC_TARGET_REG << 21) |
+             (rt << 16) | (uint16_t)off);
+    }
+}
+
+static void emit_r16000_llsc_load(GuestImage *img, bool doubleword, int rt,
+                                  int off)
+{
+    if (doubleword) {
+        emit_ld(img, rt, R16_LLSC_TARGET_REG, off);
+    } else {
+        emit(img, MIPS_OPC_LW | (R16_LLSC_TARGET_REG << 21) |
+             (rt << 16) | (uint16_t)off);
+    }
+}
+
+static void r16000_llsc_write_guest_image(int fd, bool doubleword)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+    img.pos = VEC_TLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_XTLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_CACHE_ERROR;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_GENERAL;
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_HANDLER_STATUS);
+    emit_mfc0(&img, R_T0, R16_LLSC_CP0_CAUSE);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_HANDLER_CAUSE);
+    emit_r16000_sc(&img, doubleword, R_T1, 0);
+    emit_sd(&img, R_T1, R_S0, R16_LLSC_HANDLER_RESULT);
+    emit_r16000_llsc_load(&img, doubleword, R_T0, 0);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_HANDLER_VALUE);
+    emit_report_and_spin(&img, R16_LLSC_DONE_MAGIC, R16_LLSC_DONE_OFF);
+
+    img.pos = CODE_START;
+    emit_lui(&img, R_S0, STATE_KSEG1_HI);
+    emit_lui(&img, R16_LLSC_TARGET_REG, 0x8000);
+    emit_addiu(&img, R16_LLSC_TARGET_REG, R16_LLSC_TARGET_REG,
+               R16_LLSC_TARGET_ADDR);
+    emit_clear_status_bit(&img, STATUS_ERL_CLEAR);
+    emit_clear_status_bit(&img, STATUS_EXL_CLEAR);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_INITIAL_STATUS);
+
+    emit_addiu(&img, R_T0, R_ZERO, OLD_VALUE);
+    emit_r16000_llsc_store(&img, doubleword, R_T0, 0);
+    emit_addiu(&img, R_T1, R_ZERO, NEW_VALUE);
+    emit_r16000_ll(&img, doubleword, R_T2, 0);
+    emit_r16000_sc(&img, doubleword, R_T1, 0);
+    emit_sd(&img, R_T1, R_S0, R16_LLSC_BASELINE_RESULT);
+    emit_r16000_llsc_load(&img, doubleword, R_T0, 0);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_BASELINE_VALUE);
+
+    emit_addiu(&img, R_T0, R_ZERO, OLD_VALUE);
+    emit_r16000_llsc_store(&img, doubleword, R_T0, 0);
+    emit_addiu(&img, R_T1, R_ZERO, NEW_VALUE);
+    emit_r16000_ll(&img, doubleword, R_T2, 0);
+    emit(&img, OPC_BREAK);
+    emit_addiu(&img, R_T0, R_ZERO, FAULT_MAGIC);
+    emit_sd(&img, R_T0, R_S0, R16_LLSC_FAULT_OFF);
+    emit_report_and_spin(&img, R16_LLSC_DONE_MAGIC, R16_LLSC_DONE_OFF);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void test_r16000_llsc_sc_in_exception(gconstpointer opaque)
+{
+    const R16000LLSCCase *test_case = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint64_t status, cause;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r16000-llsc-exception-XXXXXX", &image,
+                         NULL);
+    g_assert_cmpint(fd, >=, 0);
+    r16000_llsc_write_guest_image(fd, test_case->doubleword);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", R16000_CPU, image);
+    unlink(image);
+    wait_for_state(qts, R16_LLSC_DONE_OFF, R16_LLSC_DONE_MAGIC);
+
+    status = state_word(qts, R16_LLSC_INITIAL_STATUS);
+    g_assert_cmphex(status & (STATUS_ERL | R16_LLSC_STATUS_EXL), ==, 0);
+    g_assert_cmphex(status & STATUS_BEV, ==, STATUS_BEV);
+    g_assert_cmphex(state_word(qts, R16_LLSC_BASELINE_RESULT), ==, 1);
+    g_assert_cmphex(state_word(qts, R16_LLSC_BASELINE_VALUE), ==, NEW_VALUE);
+
+    status = state_word(qts, R16_LLSC_HANDLER_STATUS);
+    g_assert_cmphex(status & R16_LLSC_STATUS_EXL, ==,
+                    R16_LLSC_STATUS_EXL);
+    cause = state_word(qts, R16_LLSC_HANDLER_CAUSE);
+    g_assert_cmphex(cause & R16_LLSC_CAUSE_CODE_MASK, ==,
+                    R16_LLSC_CAUSE_BREAK);
+    g_assert_cmphex(state_word(qts, R16_LLSC_HANDLER_RESULT), ==, 0);
+    g_assert_cmphex(state_word(qts, R16_LLSC_HANDLER_VALUE), ==, OLD_VALUE);
+    g_assert_cmphex(state_word(qts, R16_LLSC_FAULT_OFF), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* ---------------------------------------------------------------- */
 /* Indirect branch cache and unmapped cross-page chaining           */
 /* ---------------------------------------------------------------- */
@@ -2571,6 +2735,11 @@ int main(int argc, char **argv)
     qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
     for (unsigned int i = 0; i < ARRAY_SIZE(cpu_cases); i++) {
         g_test_add_data_func(cpu_cases[i].path, &cpu_cases[i], test_cpu);
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(r16000_llsc_cases); i++) {
+        qtest_add_data_func(r16000_llsc_cases[i].path,
+                             &r16000_llsc_cases[i],
+                             test_r16000_llsc_sc_in_exception);
     }
     qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
                    test_indirect_and_unmapped_chaining);
