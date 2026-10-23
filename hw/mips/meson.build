@@ -13,6 +13,8 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 mips_ss.add(when: 'CONFIG_SGI_O2_ROM', if_true: files('sgi/o2-rom.c'))
 mips_ss.add(when: 'CONFIG_SGI_OCTANE', if_true: files('sgi/octane.c'))
 mips_ss.add(when: 'CONFIG_SGI_CRIME', if_true: files('sgi/crime.c'))
+mips_ss.add(when: ['CONFIG_SGI_CRIME', 'CONFIG_SGI_TEST_FIXTURES'],
+            if_true: files('sgi/crime-test.c'))
 mips_ss.add(when: 'CONFIG_SGI_MACE',
             if_true: files('sgi/mace.c', 'sgi/mace-serial-dma.c', 'sgi/mace-id.c'))
 mips_ss.add(when: ['CONFIG_SGI_MACE', 'CONFIG_SGI_TEST_FIXTURES'],

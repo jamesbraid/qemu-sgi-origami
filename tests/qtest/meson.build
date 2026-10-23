@@ -637,6 +637,9 @@ sgi_qtests = \
 qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['o2-r10k-cache-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_CRIME') ? ['sgi-crime-test', 'sgi-crime-mte-test', 'sgi-crime-legacy-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_CRIME') and
+   config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
+    ['sgi-crime-error-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['sgi-mace-test'] : []) + \
