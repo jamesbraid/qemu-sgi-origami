@@ -1170,6 +1170,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     case SGI_MGRAS_DAC_LUT_DATA_2:
         s->dac_lut_data[1] = value;
         s->dac_reg[s->dac_lut_index & 0xffff] = value;
+        if ((s->dac_lut_index & 0xffff) == SGI_MGRAS_DAC_REG_PIXEL_MASK) {
+            s->dirty = true;
+        }
         return;
     case SGI_MGRAS_DAC_CONFIG: s->dac_config = value; return;
     /*
@@ -1527,6 +1530,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->dac_lut_load_pos = 0;
     s->dac_lut_load_channel = 0;
     memset(s->dac_reg, 0, sizeof(s->dac_reg));
+    s->dac_reg[SGI_MGRAS_DAC_REG_PIXEL_MASK] = 0xff;
     for (int i = 0; i < 256; i++) {
         s->dac_gamma[0][i] = s->dac_gamma[1][i] = s->dac_gamma[2][i] = i;
     }

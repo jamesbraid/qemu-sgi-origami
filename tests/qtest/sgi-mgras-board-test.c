@@ -1001,6 +1001,38 @@ static void test_dac_gamma_curve_applies_to_scanout(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0x00868686);
 }
 
+/*
+ * The IRIX 6.5.30 X server's screen saver (mgrasBlankScreen in
+ * impactsr.so) blanks by writing 0 to DAC register 4, the pixel mask,
+ * through the byte ports, and unblanks by writing 0xff there. A traced
+ * desktop session makes exactly those two writes when its saver fires
+ * and when the pointer next moves.
+ */
+static void test_dac_pixel_mask_blanks_scanout(void)
+{
+    mgras_reset();
+    mgras_enter_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(qts, 29, 0x40, 0x11223300);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0x00112233);
+
+    mgras_dac_reg_write(qts, 0x04, 0x00);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0);
+
+    mgras_dac_reg_write(qts, 0x04, 0xff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0x00112233);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 
 static void test_write_path_fixes_dont_raise_the_sticky_error(void)
 {
@@ -2025,6 +2057,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dac-gamma-curve-applies-to-scanout",
         test_dac_gamma_curve_applies_to_scanout, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-pixel-mask-blanks-scanout",
+        test_dac_pixel_mask_blanks_scanout, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
         test_write_path_fixes_dont_raise_the_sticky_error, true);

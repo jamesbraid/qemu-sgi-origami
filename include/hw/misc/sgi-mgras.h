@@ -120,9 +120,25 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /*
  * One byte per DAC register address the address halfword can select, all
- * plain storage: an approximation of a DAC whose register map is unknown.
+ * plain storage apart from the pixel mask below: an approximation of a DAC
+ * whose register map is unknown.
  */
 #define SGI_MGRAS_DAC_REGS 0x10000
+
+/*
+ * The DAC's pixel mask. The IRIX 6.5.30 X server's screen saver
+ * (mgrasBlankScreen in impactsr.so) blanks the display by writing 0 here
+ * and unblanks it by writing 0xff, and SGI's IDE DAC reset programs 0xff.
+ * Inferred, as for a common RAMDAC pixel read mask: the scanout ANDs each
+ * 8-bit colour component with the mask before the gamma table, so 0 shows
+ * gamma entry 0, black under every table IRIX loads. The model resets it
+ * to 0xff so a display the guest has not programmed shows its pixels. The
+ * cursor's ink, which the model already passes through the gamma table,
+ * is masked too; its fixed white outline is not. The part is unidentified;
+ * its power-up value, what other masks do, and what reaches the cursor
+ * are unknown.
+ */
+#define SGI_MGRAS_DAC_REG_PIXEL_MASK 0x0400
 
 #define SGI_MGRAS_DAC_LUT_INDEX_LOW 0x071811
 
