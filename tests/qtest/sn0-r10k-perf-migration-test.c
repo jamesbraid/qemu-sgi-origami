@@ -42,18 +42,34 @@
 #define CAPACITY_COMMAND_OFF 0x228
 #define CAPACITY_DONE_OFF   0x230
 #define CAPACITY_CONFIG_OFF 0x240
+#define CAPACITY_RESET_REQUEST_OFF 0x248
+#define CAPACITY_RESET_DONE_OFF 0x250
 #define CAPACITY_START      0x900
+#define CAPACITY_SEED       0x400
 #define CAPACITY_LOOP       0xb00
 #define CAPACITY_READ       0xb40
+#define CAPACITY_PRIMARY_READ 0x100
 #define CAPACITY_HALT       0xf00
 #define CAPACITY_TAG_OFF    0x300
 #define CAPACITY_TAG_STRIDE 0x10
 #define CAPACITY_DATA_OFF   0x380
 #define CAPACITY_DATA_STRIDE 0x30
 #define CAPACITY_INVALID_TAG_OFF 0x500
+#define CAPACITY_PRIMARY_RESULTS_OFF 0x600
+#define CAPACITY_RESET_RESULTS_OFF 0x800
+#define CAPACITY_PRIMARY_TAG_RESULT_OFF 0x00
+#define CAPACITY_PRIMARY_DATA_RESULT_OFF 0x40
+#define CAPACITY_DIAGNOSTIC_RESULT_OFF 0xa0
+#define CAPACITY_BPT_RESULT_OFF 0xa8
+#define CAPACITY_RESULTS_SIZE 0xc0
+#define PRIMARY_TAG_STRIDE  0x10
+#define PRIMARY_DATA_STRIDE 0x18
+#define BPT_RESULT_STRIDE   0x08
 #define READY_MAGIC         0x1400
 #define CACHE_READY_MAGIC   0x14ca
 #define CACHE_DONE_MAGIC    0x14cb
+#define CACHE_RESET_REQUEST_MAGIC 0x14cc
+#define CACHE_RESET_DONE_MAGIC 0x14cd
 #define INITIAL_COUNT       0x12340000u
 #define CACHE_TAGLO         0x1234c5aau
 #define CACHE_TAGHI         0x0000000du
@@ -75,6 +91,8 @@
 #define R_T1                9
 #define R_T2                10
 #define R_T3                11
+#define R_T4                12
+#define R_T5                13
 
 #define CP0_STATUS          12
 #define CP0_CONFIG0         16
@@ -82,7 +100,37 @@
 #define CP0_ERRCTL          26
 #define CP0_TAGLO           28
 #define CP0_TAGHI           29
+#define CP0_DIAGNOSTIC      22
 #define PERF_KERNEL         (1u << 1)
+
+#define ICACHE_TAGLO_MASK   0xffffff4du
+#define ICACHE_TAGHI_MASK   0x0000000fu
+#define DCACHE_TAGLO_MASK   0xffffffcfu
+#define DCACHE_TAGHI_MASK   0xe000000fu
+#define PCACHE_TAGLO_LRU    (1u << 3)
+
+typedef struct {
+    uint16_t address_hi;
+    int16_t address_off;
+    uint32_t taglo;
+    uint32_t taghi;
+    uint32_t data_lo;
+    uint32_t data_hi;
+    uint32_t ecc;
+} PrimaryCacheProbe;
+
+typedef struct {
+    unsigned int index;
+    unsigned int state;
+    unsigned int read_poison;
+} BranchProbe;
+
+static const BranchProbe r16000_bpt_probes[] = {
+    /* The selector poison differs from both seeded and reset entry values. */
+    { 5, 1, 2 },
+    { 255, 2, 1 },
+    { 511, 3, 1 },
+};
 
 typedef struct {
     const char *machine;
@@ -168,6 +216,16 @@ static void emit_mtc0(GuestImage *img, int rt, int rd, int sel)
     emit(img, mips_mtc0(rt, rd) | sel);
 }
 
+static void emit_dmfc0(GuestImage *img, int rt, int rd)
+{
+    emit(img, MIPS_OPC_CP0 | (1u << 21) | (rt << 16) | (rd << 11));
+}
+
+static void emit_dmtc0(GuestImage *img, int rt, int rd)
+{
+    emit(img, mips_dmtc0(rt, rd));
+}
+
 static void emit_load_u32(GuestImage *img, int rt, uint32_t value)
 {
     emit(img, mips_lui(rt, value >> 16));
@@ -185,6 +243,152 @@ static void cache_address(uint32_t paddr, uint16_t *hi, int16_t *off)
 
     *hi = (vaddr + 0x8000) >> 16;
     *off = (int16_t)vaddr;
+}
+
+static void primary_cache_probes(PrimaryCacheProbe probes[4])
+{
+    uint16_t address_hi;
+    int16_t address_off;
+
+    cache_address(0x200, &address_hi, &address_off);
+    probes[0] = (PrimaryCacheProbe) {
+        .address_hi = address_hi,
+        .address_off = address_off,
+        .taglo = 0x12345645,
+        .taghi = 0xffffffff,
+        .data_lo = 0x01234567,
+        .data_hi = 0xffffffff,
+        .ecc = 1,
+    };
+    probes[1] = (PrimaryCacheProbe) {
+        .address_hi = address_hi,
+        .address_off = address_off | 1,
+        .taglo = 0xfedcba4d,
+        .taghi = 0xdeadbeef,
+        .data_lo = 0x89abcdef,
+        .data_hi = 0x00000005,
+        .ecc = 0,
+    };
+    probes[2] = (PrimaryCacheProbe) {
+        .address_hi = address_hi,
+        .address_off = address_off,
+        .taglo = 0x13579b46,
+        .taghi = 0xffffffff,
+        .data_lo = 0xcafebabe,
+        .data_hi = 0,
+        .ecc = 0x5,
+    };
+    probes[3] = (PrimaryCacheProbe) {
+        .address_hi = address_hi,
+        .address_off = address_off | 1,
+        .taglo = 0x2468acef,
+        .taghi = 0xa5a5a5a5,
+        .data_lo = 0x0badf00d,
+        .data_hi = 0,
+        .ecc = 0xa,
+    };
+}
+
+static uint32_t bpt_diagnostic_value(unsigned int index, unsigned int state,
+                                     unsigned int operation)
+{
+    return (state << 14) | (index << 3) | operation;
+}
+
+static void emit_primary_cache_seed(GuestImage *img,
+                                   const PrimaryCacheProbe probes[4])
+{
+    /* These are the complete CACHE op encodings used by the ROM fixtures. */
+    for (unsigned int i = 0; i < 4; i++) {
+        int tag_op = i < 2 ? 0x08 : 0x09;
+        int data_op = i < 2 ? 0x1c : 0x1d;
+
+        emit(img, mips_lui(R_T1, probes[i].address_hi));
+        emit_load_u32(img, R_T0, probes[i].taglo);
+        emit_mtc0(img, R_T0, CP0_TAGLO, 0);
+        emit_load_u32(img, R_T0, probes[i].taghi);
+        emit_mtc0(img, R_T0, CP0_TAGHI, 0);
+        emit_cache(img, tag_op, R_T1, probes[i].address_off);
+
+        emit_load_u32(img, R_T0, probes[i].data_lo);
+        emit_mtc0(img, R_T0, CP0_TAGLO, 0);
+        emit_load_u32(img, R_T0, probes[i].data_hi);
+        emit_mtc0(img, R_T0, CP0_TAGHI, 0);
+        emit_load_u32(img, R_T0, probes[i].ecc);
+        emit_mtc0(img, R_T0, CP0_ERRCTL, 0);
+        emit_cache(img, data_op, R_T1, probes[i].address_off);
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(r16000_bpt_probes); i++) {
+        emit_load_u32(img, R_T0,
+                      bpt_diagnostic_value(r16000_bpt_probes[i].index,
+                                           r16000_bpt_probes[i].state, 1));
+        emit_dmtc0(img, R_T0, CP0_DIAGNOSTIC);
+    }
+}
+
+static void emit_primary_cache_read(GuestImage *img,
+                                    const PrimaryCacheProbe probes[4])
+{
+    emit_dmfc0(img, R_T0, CP0_DIAGNOSTIC);
+    emit(img, mips_sd(R_T0, R_T3, CAPACITY_DIAGNOSTIC_RESULT_OFF));
+
+    for (unsigned int i = 0; i < 4; i++) {
+        int tag_op = i < 2 ? 0x04 : 0x05;
+        uint16_t result = CAPACITY_PRIMARY_TAG_RESULT_OFF +
+                          i * PRIMARY_TAG_STRIDE;
+
+        emit(img, mips_lui(R_T1, probes[i].address_hi));
+        emit_load_u32(img, R_T0, 0xdeadbeef);
+        emit_mtc0(img, R_T0, CP0_TAGLO, 0);
+        emit_mtc0(img, R_T0, CP0_TAGHI, 0);
+        emit_cache(img, tag_op, R_T1, probes[i].address_off);
+        emit_mfc0(img, R_T0, CP0_TAGLO, 0);
+        emit(img, mips_sd(R_T0, R_T3, result));
+        emit_mfc0(img, R_T0, CP0_TAGHI, 0);
+        emit(img, mips_sd(R_T0, R_T3, result + 8));
+    }
+
+    for (unsigned int i = 0; i < 4; i++) {
+        int data_op = i < 2 ? 0x18 : 0x19;
+        uint16_t result = CAPACITY_PRIMARY_DATA_RESULT_OFF +
+                          i * PRIMARY_DATA_STRIDE;
+
+        emit(img, mips_lui(R_T1, probes[i].address_hi));
+        emit_load_u32(img, R_T0, 0xdeadbeef);
+        emit_mtc0(img, R_T0, CP0_TAGLO, 0);
+        emit_mtc0(img, R_T0, CP0_TAGHI, 0);
+        emit_load_u32(img, R_T0, 0x3ff);
+        emit_mtc0(img, R_T0, CP0_ERRCTL, 0);
+        emit_cache(img, data_op, R_T1, probes[i].address_off);
+        emit_mfc0(img, R_T0, CP0_TAGLO, 0);
+        emit(img, mips_sd(R_T0, R_T3, result));
+        if (i < 2) {
+            emit_mfc0(img, R_T0, CP0_TAGHI, 0);
+            emit(img, mips_sd(R_T0, R_T3, result + 8));
+        }
+        emit_mfc0(img, R_T0, CP0_ERRCTL, 0);
+        emit(img, mips_sd(R_T0, R_T3, result + 16));
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(r16000_bpt_probes); i++) {
+        uint16_t result = CAPACITY_BPT_RESULT_OFF + i * BPT_RESULT_STRIDE;
+
+        emit_load_u32(img, R_T0,
+                      bpt_diagnostic_value(
+                          r16000_bpt_probes[i].index,
+                          r16000_bpt_probes[i].read_poison, 0));
+        emit_dmtc0(img, R_T0, CP0_DIAGNOSTIC);
+        emit_dmfc0(img, R_T0, CP0_DIAGNOSTIC);
+        emit(img, mips_sd(R_T0, R_T3, result));
+    }
+    emit(img, mips_daddu(R_T1, R_T2, R_T5));
+    emit(img, mips_sd(R_T4, R_T1, 0));
+    emit(img, mips_sync());
+    g_assert_cmpuint(img->pos, <=, CAPACITY_SEED);
+    img->pos = CAPACITY_HALT;
+    emit_branch(img, CAPACITY_HALT);
+    emit(img, 0);
 }
 
 static void cache_capacity_probes(uint32_t capacity, CacheTagProbe tags[4],
@@ -255,15 +459,30 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
 {
     CacheTagProbe tags[4];
     CacheDataProbe data[6] = { };
+    PrimaryCacheProbe primary[4];
     uint8_t image[IMAGE_SIZE] = { };
     GuestImage img = { .code = image, .pos = 0 };
     ssize_t written;
 
     cache_capacity_probes(capacity, tags, data);
+    primary_cache_probes(primary);
     emit_branch(&img, CACHE_START);
     emit(&img, 0);
     img.pos = CAPACITY_START;
     emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
+    emit(&img, mips_ld(R_T0, R_T2, CAPACITY_RESET_REQUEST_OFF));
+    emit_load_u32(&img, R_T1, CACHE_RESET_REQUEST_MAGIC);
+    emit_bne(&img, R_T0, R_T1, CAPACITY_SEED);
+    emit(&img, 0);
+    emit(&img, mips_sd(R_ZERO, R_T2, CAPACITY_RESET_REQUEST_OFF));
+    emit(&img, mips_daddiu(R_T3, R_T2, CAPACITY_RESET_RESULTS_OFF));
+    emit(&img, mips_addiu(R_T4, R_ZERO, CACHE_RESET_DONE_MAGIC));
+    emit(&img, mips_addiu(R_T5, R_ZERO, CAPACITY_RESET_DONE_OFF));
+    emit_branch(&img, CAPACITY_PRIMARY_READ);
+    emit(&img, 0);
+
+    g_assert_cmpuint(img.pos, <=, CAPACITY_LOOP);
+    img.pos = CAPACITY_SEED;
     emit_mfc0(&img, R_T0, CP0_CONFIG0, 0);
     emit(&img, mips_sd(R_T0, R_T2, CAPACITY_CONFIG_OFF));
 
@@ -285,10 +504,14 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_mtc0(&img, R_T0, CP0_ERRCTL, 0);
         emit_cache(&img, 0x1f, R_T1, data[i].address_off);
     }
+    emit_primary_cache_seed(&img, primary);
     emit_load_u32(&img, R_T0, CACHE_READY_MAGIC);
     emit(&img, mips_sd(R_T0, R_T2, CAPACITY_READY_OFF));
     emit(&img, mips_sync());
 
+    g_assert_cmpuint(img.pos, <=, CAPACITY_START);
+    emit_branch(&img, CAPACITY_LOOP);
+    emit(&img, 0);
     img.pos = CAPACITY_LOOP;
     emit(&img, mips_ld(R_T0, R_T2, CAPACITY_COMMAND_OFF));
     emit_bne(&img, R_T0, R_ZERO, CAPACITY_READ);
@@ -296,6 +519,7 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
     emit_branch(&img, CAPACITY_LOOP);
     emit(&img, 0);
 
+    g_assert_cmpuint(img.pos, <=, CAPACITY_READ);
     img.pos = CAPACITY_READ;
     for (unsigned int i = 0; i < ARRAY_SIZE(tags); i++) {
         emit(&img, mips_lui(R_T1, tags[i].address_hi));
@@ -328,15 +552,18 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_cache(&img, 0x07, R_T1, tags[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
         emit(&img, mips_sd(R_T0, R_T2,
-                           CAPACITY_INVALID_TAG_OFF + i * CACHE_TAG_STRIDE));
+                           CAPACITY_INVALID_TAG_OFF +
+                           i * CACHE_TAG_STRIDE));
     }
-    emit_load_u32(&img, R_T0, CACHE_DONE_MAGIC);
-    emit(&img, mips_sd(R_T0, R_T2, CAPACITY_DONE_OFF));
-    emit(&img, mips_sync());
-
-    img.pos = CAPACITY_HALT;
-    emit_branch(&img, CAPACITY_HALT);
+    emit(&img, mips_daddiu(R_T3, R_T2, CAPACITY_PRIMARY_RESULTS_OFF));
+    emit(&img, mips_addiu(R_T4, R_ZERO, CACHE_DONE_MAGIC));
+    emit(&img, mips_addiu(R_T5, R_ZERO, CAPACITY_DONE_OFF));
+    emit_branch(&img, CAPACITY_PRIMARY_READ);
     emit(&img, 0);
+
+    g_assert_cmpuint(img.pos, <=, CAPACITY_HALT);
+    img.pos = CAPACITY_PRIMARY_READ;
+    emit_primary_cache_read(&img, primary);
     written = write(fd, image, sizeof(image));
     g_assert_cmpint(written, ==, sizeof(image));
 }
@@ -547,6 +774,72 @@ static uint64_t state_word(QTestState *qts, uint64_t off)
     return qtest_readq(qts, STATE_PHYS + off);
 }
 
+static void poison_capacity_results(QTestState *qts, uint64_t off,
+                                    uint64_t size)
+{
+    for (uint64_t pos = 0; pos < size; pos += sizeof(uint64_t)) {
+        qtest_writeq(qts, STATE_PHYS + off + pos, UINT64_MAX);
+    }
+}
+
+static uint64_t sign_extend_u32(uint32_t value)
+{
+    return (uint64_t)(int64_t)(int32_t)value;
+}
+
+static void assert_primary_cache_state(QTestState *qts,
+                                      const PrimaryCacheProbe probes[4],
+                                      uint64_t results, bool reset)
+{
+    uint64_t diagnostic = reset ? 0 :
+        bpt_diagnostic_value(r16000_bpt_probes[
+                                 ARRAY_SIZE(r16000_bpt_probes) - 1].index,
+                             r16000_bpt_probes[
+                                 ARRAY_SIZE(r16000_bpt_probes) - 1].state,
+                             1);
+
+    g_assert_cmphex(state_word(qts, results + CAPACITY_DIAGNOSTIC_RESULT_OFF),
+                    ==, diagnostic);
+    for (unsigned int i = 0; i < 4; i++) {
+        uint64_t tag_result = results + CAPACITY_PRIMARY_TAG_RESULT_OFF +
+                              i * PRIMARY_TAG_STRIDE;
+        uint64_t data_result = results + CAPACITY_PRIMARY_DATA_RESULT_OFF +
+                               i * PRIMARY_DATA_STRIDE;
+        uint32_t taglo_mask = i < 2 ? ICACHE_TAGLO_MASK : DCACHE_TAGLO_MASK;
+        uint32_t taghi_mask = i < 2 ? ICACHE_TAGHI_MASK : DCACHE_TAGHI_MASK;
+        uint32_t taglo = reset ? 0 :
+            (probes[i].taglo & (taglo_mask & ~PCACHE_TAGLO_LRU)) |
+            PCACHE_TAGLO_LRU;
+        uint32_t taghi = reset ? 0 : probes[i].taghi & taghi_mask;
+        uint32_t data_lo = reset ? 0 : probes[i].data_lo;
+        uint32_t data_hi = reset ? 0 : probes[i].data_hi & 0xf;
+        uint32_t ecc = reset ? 0 : probes[i].ecc & (i < 2 ? 1 : 0xf);
+
+        g_assert_cmphex(state_word(qts, tag_result), ==,
+                        sign_extend_u32(taglo));
+        g_assert_cmphex(state_word(qts, tag_result + 8), ==,
+                        sign_extend_u32(taghi));
+        g_assert_cmphex(state_word(qts, data_result), ==,
+                        sign_extend_u32(data_lo));
+        if (i < 2) {
+            g_assert_cmphex(state_word(qts, data_result + 8), ==,
+                            sign_extend_u32(data_hi));
+        }
+        g_assert_cmphex(state_word(qts, data_result + 16), ==,
+                        sign_extend_u32(ecc));
+    }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(r16000_bpt_probes); i++) {
+        uint64_t result = results + CAPACITY_BPT_RESULT_OFF +
+                          i * BPT_RESULT_STRIDE;
+        uint32_t expected = bpt_diagnostic_value(
+            r16000_bpt_probes[i].index,
+            reset ? 0 : r16000_bpt_probes[i].state, 0);
+
+        g_assert_cmphex(state_word(qts, result), ==, expected);
+    }
+}
+
 static void assert_cache_tags(QTestState *qts, const CacheTagProbe *probes,
                               size_t nprobes)
 {
@@ -613,7 +906,8 @@ static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
 {
     SgiWait w;
 
-    sgi_wait_start(&w, "guest state");
+    sgi_wait_start(&w, "guest state at 0x%" PRIx64 " = 0x%" PRIx64,
+                   off, expected);
     for (;;) {
         if (state_word(qts, off) == expected) {
             return;
@@ -823,6 +1117,7 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     const CacheCapacity *capacity = opaque;
     CacheTagProbe tags[4];
     CacheDataProbe data[6] = { };
+    PrimaryCacheProbe primary[4];
     g_autofree char *image = NULL;
     g_autofree char *directory = NULL;
     g_autofree char *socket = NULL;
@@ -841,6 +1136,7 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     }
 
     cache_capacity_probes(capacity->bytes, tags, data);
+    primary_cache_probes(primary);
     fd = g_file_open_tmp("sn0-r16000-capacity-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
@@ -853,11 +1149,11 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     uri = g_strdup_printf("unix:%s", socket);
     source_args = g_strdup_printf(
         "-M malta -m 64M -cpu %s -bios %s "
-        "-accel tcg,thread=single -nodefaults -no-reboot -no-shutdown",
+        "-accel tcg,thread=single -nodefaults -no-shutdown",
         cpu_args, image);
     dest_args = g_strdup_printf(
         "-M malta -m 64M -cpu %s -bios %s "
-        "-accel tcg,thread=single -nodefaults -no-reboot -no-shutdown "
+        "-accel tcg,thread=single -nodefaults -no-shutdown "
         "-incoming defer", cpu_args, image);
     from = qtest_init(source_args);
     to = qtest_init(dest_args);
@@ -878,6 +1174,13 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     sgi_wait_migration(to, "completed");
     assert_r16000_properties(to, capacity, capacity->reset_mode);
     sgi_migrate_resume(to);
+    poison_capacity_results(to, CAPACITY_TAG_OFF,
+                            CAPACITY_INVALID_TAG_OFF +
+                            ARRAY_SIZE(tags) * CACHE_TAG_STRIDE -
+                            CAPACITY_TAG_OFF);
+    poison_capacity_results(to, CAPACITY_PRIMARY_RESULTS_OFF,
+                            CAPACITY_RESULTS_SIZE);
+    qtest_writeq(to, STATE_PHYS + CAPACITY_DONE_OFF, UINT64_MAX);
     qtest_writeq(to, STATE_PHYS + CAPACITY_COMMAND_OFF, 1);
     wait_for_state(to, CAPACITY_DONE_OFF, CACHE_DONE_MAGIC);
 
@@ -924,6 +1227,21 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     g_assert_cmphex(state_word(to, CAPACITY_INVALID_TAG_OFF +
                                3 * CAPACITY_TAG_STRIDE), ==,
                     tags[3].taglo);
+
+    assert_primary_cache_state(to, primary, CAPACITY_PRIMARY_RESULTS_OFF,
+                               false);
+
+    qtest_qmp_assert_success(to, "{'execute':'stop'}");
+    poison_capacity_results(to, CAPACITY_RESET_RESULTS_OFF,
+                            CAPACITY_RESULTS_SIZE);
+    qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_DONE_OFF, UINT64_MAX);
+    qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_REQUEST_OFF,
+                 CACHE_RESET_REQUEST_MAGIC);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    wait_for_state(to, CAPACITY_RESET_DONE_OFF, CACHE_RESET_DONE_MAGIC);
+    g_assert_cmphex(state_word(to, CAPACITY_RESET_REQUEST_OFF), ==, 0);
+    assert_primary_cache_state(to, primary, CAPACITY_RESET_RESULTS_OFF, true);
 
     qtest_quit(from);
     qtest_quit(to);
