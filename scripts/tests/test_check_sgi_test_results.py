@@ -221,7 +221,12 @@ class CheckSgiTestResults(unittest.TestCase):
         identities = rom_identities(manifest)
         self.assertIn('SGIRoms.test_llscscale_R10000_default', identities)
         self.assertIn('SGIRoms.test_llscscale_R10000_4cpu_2node', identities)
-        self.assertEqual(len(identities), 176)
+        for rom in ('scachetags', 'scachedata', 'icountslot'):
+            config = 'icount' if rom == 'icountslot' else 'default'
+            for size in ('4m', '8m', '16m'):
+                self.assertIn(f'SGIRoms.test_{rom}_R16000_{size}_{config}',
+                              identities)
+        self.assertEqual(len(identities), 185)
         self.assertEqual(len(identities), len(set(identities)))
 
     def test_rejects_invalid_and_duplicate_rom_rows(self):
@@ -285,7 +290,7 @@ class CheckSgiTestResults(unittest.TestCase):
                 '--list-rom-identities', str(suite),
                 '--require-rom-target', 'build'])
         self.assertEqual(status, 0)
-        self.assertEqual(len(output.getvalue().splitlines()), 176)
+        self.assertEqual(len(output.getvalue().splitlines()), 185)
         with mock.patch.object(checker.subprocess, 'check_output',
                                return_value='[]'), \
                 redirect_stdout(StringIO()), redirect_stderr(StringIO()):
