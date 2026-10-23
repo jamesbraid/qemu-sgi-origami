@@ -358,6 +358,9 @@ typedef struct SGIMgrasGLPixels {
     uint32_t ncomponent;
     uint32_t dma_only;          /* 0x8d20 marked the image as DMA: 0 or 1 */
     uint32_t apart;             /* a header came after its last word: 0/1 */
+    /* A pixel-texture pass: its first row, and rows apart (0 means 1). */
+    uint32_t pass;
+    uint32_t row_step;
 } SGIMgrasGLPixels;
 
 /*

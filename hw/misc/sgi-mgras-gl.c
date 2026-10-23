@@ -2965,6 +2965,49 @@ const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags = {
     }
 };
 
+/*
+ * Each context's pixel-texture pass, sent only while some waiting draw is
+ * one RE's pass of a two-RE board's pixel-texture draw. A binary without
+ * it would draw the pass's rows one after another from the box's bottom.
+ */
+static bool mgras_gl_pixel_pass_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIMgrasGLPixels *px = &s->gl_context[i].pixels;
+
+        if (px->active && (px->pass || px->row_step > 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_pixel_pass = {
+    .name = TYPE_SGI_MGRAS "/gl-context-pixel-pass",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pixels.pass, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.row_step, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription vmstate_sgi_mgras_gl_pixel_pass = {
+    .name = TYPE_SGI_MGRAS "/gl-pixel-pass",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_pixel_pass_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                             1, vmstate_sgi_mgras_gl_context_pixel_pass,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /* Whether a migrated pixel draw is one mgras_gl_pixels_start() makes. */
 static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
 {
@@ -2979,7 +3022,9 @@ static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
         px->w < 1 || px->w > MGRAS_GL_PIXELS_MAX || px->h < 1 ||
         px->h > MGRAS_GL_PIXELS_MAX || px->row >= px->h ||
         px->col > px->w || px->skip > 3 || px->dma_only > 1 ||
-        px->apart > 1 || px->x < -MGRAS_GL_PIXELS_FAR ||
+        px->apart > 1 || px->row_step > 2 ||
+        px->pass >= MAX(px->row_step, 1u) ||
+        px->x < -MGRAS_GL_PIXELS_FAR ||
         px->x > MGRAS_GL_PIXELS_FAR || px->y < -MGRAS_GL_PIXELS_FAR ||
         px->y > MGRAS_GL_PIXELS_FAR) {
         return false;
@@ -4627,6 +4672,32 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
     return MGRAS_GL_PIXELS_FORMATS;
 }
 
+/*
+ * A pixel-texture draw's GE box: the client draws one pass per RE, and
+ * __glMgrInitPixelTexture (libGLcore.so 0xd964aa0) appends, after the
+ * corners, a size word with the pass's row count in its high half, 1, an
+ * x and a y direction of +1 or -1, and the pass number. Each pass's
+ * corners are the whole image's, the top one at y0 + n * rows for n REs;
+ * pass k carries source rows k, k + n, ... (__glMgrFastSendPixels). The
+ * client takes this path only with pixel texgen on, which it brackets
+ * with MDDMA_CNTRL bit 0, and with a 3-D or 4-D texture bound
+ * (__glMgrim_DrawPixels 0xd969fa8). docs/datasheets/mgras-mxi.md.
+ */
+static bool mgras_gl_pixels_texture_box(SGIMgrasState *s, bool dma_only,
+                                        uint32_t *rows, uint32_t *pass)
+{
+    const uint32_t *box = &s->ge_param[MGRAS_GE_PIXEL_BOX];
+    uint32_t passes = s->board->re_count;
+
+    *rows = box[4] >> 16;
+    *pass = box[8];
+    return dma_only && (s->gl_context[s->gl_current].tex.mddma_cntrl & 1) &&
+           box[5] == 1 && box[6] == 1 && box[7] == 1 && *pass < passes &&
+           *rows && *rows <= MGRAS_GL_PIXELS_MAX &&
+           (int64_t)(int32_t)box[3] - (int32_t)box[1] ==
+           (int64_t)*rows * passes;
+}
+
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                     bool dma_only, SGIMgrasGLPixels *px)
@@ -4637,13 +4708,9 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     /* The guest's words, so the differences are taken in 64 bits. */
     int64_t w = (int64_t)(int32_t)box[2] - (int32_t)box[0] + 1;
     int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
-    bool captured_2x2 = dma_only && row_words == 2 &&
-        (s->gl_context[s->gl_current].tex.mddma_cntrl & 1) &&
-        box[0] == 0 && box[1] == 0 && box[2] == 1 && box[3] == 2 &&
-        box[4] == 0x00020002 && box[5] == 1 &&
-        ge[MGRAS_GE_PIXEL_BOX + 6] == 1 &&
-        ge[MGRAS_GE_PIXEL_BOX + 7] == 1 &&
-        ge[MGRAS_GE_PIXEL_BOX + 8] == 0;
+    uint32_t pass_rows, pass;
+    bool pixel_texture = mgras_gl_pixels_texture_box(s, dma_only, &pass_rows,
+                                                     &pass);
     uint32_t pairs, format;
 
     /*
@@ -4657,15 +4724,22 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         .w = MGRAS_GL_PIXELS_MAX,
         .h = 1,
     };
+    if (pixel_texture) {
+        h = pass_rows;
+    }
     if (w <= 0 || h <= 0 || w > MGRAS_GL_PIXELS_MAX ||
         h > MGRAS_GL_PIXELS_MAX || (uint32_t)w != (box[4] & 0xffff) ||
-        ((uint32_t)h != box[4] >> 16 && !captured_2x2)) {
+        (uint32_t)h != box[4] >> 16) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel rectangle %d,%d to %d,%d "
                       "(size word 0x%x) is not modelled\n", box[0], box[1],
                       box[2], box[3], box[4]);
         return false;
     }
-    px->h = captured_2x2 ? box[4] >> 16 : h;
+    px->h = h;
+    if (pixel_texture) {
+        px->pass = pass;
+        px->row_step = s->board->re_count;
+    }
     format = mgras_gl_pixels_float_signature(ge, w, h, row_words,
                                              dma_only);
     if (format == MGRAS_GL_PIXELS_FORMATS) {
@@ -4673,9 +4747,9 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     } else {
         pairs = 0;
     }
-    if (captured_2x2 && format != MGRAS_GL_PIXELS_ABGR8) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: captured 2x2 pixel box with "
-                      "GE program %u is not modelled\n", format);
+    if (pixel_texture && format != MGRAS_GL_PIXELS_ABGR8) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel-texture draw with GE "
+                      "program %u is not modelled\n", format);
         return false;
     }
     if (format >= ARRAY_SIZE(mgras_gl_pixel_programs)) {
@@ -4891,6 +4965,17 @@ static void mgras_gl_pixels_put(SGIMgrasState *s,
     sink.raster(sink.opaque, &op);
 }
 
+/*
+ * The window row of the current image row: in order, or, for one RE's
+ * pixel-texture pass, every row_step-th row from the pass's own. Which
+ * rows an RE owns is the dual-RE row split; that pass k's row i lands on
+ * row k + n * i is inferred from it (docs/datasheets/mgras-mxi.md).
+ */
+static int32_t mgras_gl_pixels_y(const SGIMgrasGLPixels *px)
+{
+    return px->y + (int32_t)(px->pass + px->row * MAX(px->row_step, 1u));
+}
+
 static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
                                   uint32_t v)
 {
@@ -4922,7 +5007,8 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px, px->x + px->col, px->y + px->row, rgba, v);
+    mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
+                        rgba, v);
 }
 
 /* Take n image bytes of the current row; bytes past its last pixel drop. */
@@ -4957,7 +5043,8 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px, px->x + px->col, px->y + px->row, rgba, 0);
+    mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
+                        rgba, 0);
     px->ncomponent = 0;
     px->col++;
     return true;
