@@ -2707,6 +2707,60 @@ static void test_or_return_pauses_at_caller(void)
     qtest_quit(qts);
 }
 
+static void test_sequencer_interrupt_code(void)
+{
+    for (unsigned pci_reset = 0; pci_reset < 2; pci_reset++) {
+        uint8_t program[8 * 4];
+        QTestState *qts = start_aic();
+        size_t n = 0;
+
+        qtest_irq_intercept_in(qts, "ioapic");
+        qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+        qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+        emit_or(program, &n, 0xa1, 0x91);
+        emit_or(program, &n, 0x11, 0x40);
+        emit_or(program, &n, 5, 0x9d);
+        emit_or(program, &n, 0x32, 0x91);
+        emit_or(program, &n, 0x22, 0x41);
+        emit(program, &n, branch_word(8, 0, 0x65, 5));
+        emit_or(program, &n, 0xb1, 0x91);
+        emit_or(program, &n, 0x33, 0x42);
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0xa1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x40), ==, 0);
+        g_assert_true(qtest_get_irq(qts, 11));
+
+        qtest_writeb(qts, REG_BASE + 0x92, 1);
+        qtest_writeb(qts, REG_BASE + 0x87, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0xa2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x40), ==, 0x11);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x41), ==, 0x22);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+        qtest_writeb(qts, REG_BASE + 0x87, 6);
+        qtest_writeb(qts, REG_BASE + 0x62, 6);
+        qtest_writeb(qts, REG_BASE + 0x87, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0xb3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 7);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x42), ==, 0);
+        qtest_writeb(qts, REG_BASE + 0x92, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0xb1);
+        g_assert_true(qtest_get_irq(qts, 11));
+        if (pci_reset) {
+            qobject_unref(qtest_qmp(qts, "{'execute': 'system_reset'}"));
+            qtest_qmp_eventwait(qts, "RESET");
+            config_writel(qts, 0x14, REG_BASE);
+            config_writew(qts, 0x04, 0x0006);
+        } else {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+        g_assert_false(qtest_get_irq(qts, 11));
+        qtest_quit(qts);
+    }
+}
+
 static void test_or_return_without_call(void)
 {
     static const uint8_t program[] = { 0x5a, 0x6a, 0x20, 0x01 };
@@ -7679,7 +7733,7 @@ static void test_independent_functions(void)
 
 static void test_paused_state_migrates(void)
 {
-    static const uint8_t program[] = { 0x01, 0x6a, 0x91, 0x00 };
+    static const uint8_t program[] = { 0xb1, 0x6a, 0x91, 0x00 };
     uint8_t pre_program[8];
     uint8_t queue_program[12];
     g_autoptr(GError) error = NULL;
@@ -7718,7 +7772,7 @@ static void test_paused_state_migrates(void)
     qtest_writeb(from, REG_BASE + 0x60, 0x90);
     qtest_writeb(from, REG_BASE + 0x62, 0);
     qtest_writeb(from, REG_BASE + 0x87, 0x02);
-    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x91) & 1, ==, 1);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x91), ==, 0xb1);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -7730,7 +7784,7 @@ static void test_paused_state_migrates(void)
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0xa0), ==, 0x35);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x9c), ==, 1);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x65), ==, 0x30);
-    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x91) & 1, ==, 1);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x91), ==, 0xb1);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x87) & 4, ==, 4);
     qtest_writeb(to, REG_BASE + 0x60, 0x91);
     qtest_writeb(to, REG_BASE + 0x62, 0);
@@ -8283,6 +8337,8 @@ int main(int argc, char **argv)
                    test_sequencer_quantum_migrates);
     qtest_add_func("aic7880/old-branch-high-address",
                    test_old_branch_high_address);
+    qtest_add_func("aic7880/sequencer-interrupt-code",
+                   test_sequencer_interrupt_code);
     qtest_add_func("aic7880/or-return", test_or_return);
     qtest_add_func("aic7880/or-return-pauses", test_or_return_pauses_at_caller);
     qtest_add_func("aic7880/or-return-without-call",

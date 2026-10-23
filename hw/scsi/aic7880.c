@@ -1715,6 +1715,10 @@ static void aic7880_run(AIC7880State *s)
         error_before = s->error_serial;
         return_depth_before = s->return_depth;
         if (dst == REG_INTSTAT) {
+            if (result & 1) {
+                s->regs[REG_INTSTAT] = (s->regs[REG_INTSTAT] & 0x0f) |
+                                       (result & 0xf0);
+            }
             s->regs[REG_INTSTAT] |= result & 0x0f;
             if (result & 0x0d) {
                 s->regs[REG_HCNTRL] |= HOST_PAUSE;
