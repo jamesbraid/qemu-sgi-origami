@@ -2405,6 +2405,277 @@
       ],
       "description": "SGI Onyx2 rack, one InfiniteReality pipe cabled from IO3",
       "generation": "sn0",
+      "graphics": {
+        "headless": false,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": true,
+            "description": "Xtown in XIO slot 3, cabled to the graphics module's Ktown",
+            "modelled": true,
+            "name": "io3",
+            "options": [
+              {
+                "assembly": "030-1398-001",
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": true,
+                "fidelity": "approximated",
+                "limitations": [
+                  "presents the IRIX name InfiniteReality2 and a 64 MiB texture pool",
+                  "presents no RM, TM or DG board record",
+                  "configuration reply carries 0 RM records",
+                  "one display channel at 1280x1024"
+                ],
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2 with GVO",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1-gvo",
+                  "options": [
+                    "gvo"
+                  ],
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 2 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm2",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 2,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 4 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm4",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 4,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16, 1 RM9, 64 MB texture",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge16-rm1",
+                  "parameters": {
+                    "geometry-board": "GE16",
+                    "raster-manager": "RM9",
+                    "raster-manager-count": 1,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16, 2 RM9, 64 MB texture",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge16-rm2",
+                  "parameters": {
+                    "geometry-board": "GE16",
+                    "raster-manager": "RM9",
+                    "raster-manager-count": 2,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16, 4 RM9, 64 MB texture",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge16-rm4",
+                  "parameters": {
+                    "geometry-board": "GE16",
+                    "raster-manager": "RM9",
+                    "raster-manager-count": 4,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM11, 1024 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir4-ge16-4-rm1",
+                  "parameters": {
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM11",
+                    "raster-manager-count": 1,
+                    "texture-mib": 1024
+                  },
+                  "product": "InfiniteReality4"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 2 RM11, 1024 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir4-ge16-4-rm2",
+                  "parameters": {
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM11",
+                    "raster-manager-count": 2,
+                    "texture-mib": 1024
+                  },
+                  "product": "InfiniteReality4"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 4 RM11, 1024 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir4-ge16-4-rm4",
+                  "parameters": {
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM11",
+                    "raster-manager-count": 4,
+                    "texture-mib": 1024
+                  },
+                  "product": "InfiniteReality4"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io2",
+            "options": [],
+            "reason": "the model builds one pipe"
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io4",
+            "options": [],
+            "reason": "the model builds one pipe"
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io5",
+            "options": [],
+            "reason": "the model builds one pipe"
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io6",
+            "options": [],
+            "reason": "the model builds one pipe"
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io7",
+            "options": [],
+            "reason": "the model builds one pipe"
+          },
+          {
+            "built-in": false,
+            "description": "an Xtown slot for a further pipe",
+            "modelled": false,
+            "name": "io8",
+            "options": [],
+            "reason": "the model builds one pipe"
+          }
+        ]
+      },
       "io-boards": [
         {
           "attachment": 1,

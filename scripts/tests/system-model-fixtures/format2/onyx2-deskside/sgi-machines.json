@@ -810,6 +810,215 @@
       ],
       "description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
       "generation": "sn0",
+      "graphics": {
+        "headless": false,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": true,
+            "description": "XIO slot 4, Crossbow widget 8",
+            "modelled": true,
+            "name": "io4",
+            "options": [
+              {
+                "assembly": "030-1129-002",
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14-4, 2 RM7, 64 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge14-4-rm2",
+                  "parameters": {
+                    "geometry-board": "GE14-4",
+                    "raster-manager": "RM7",
+                    "raster-manager-count": 2,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2 (technical report: InfiniteReality)"
+                },
+                "default": true,
+                "fidelity": "approximated",
+                "limitations": [
+                  "presents no RM, TM or DG board record",
+                  "configuration reply carries 0 RM records",
+                  "one display channel at 1280x1024"
+                ],
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14-4, 1 RM7, 64 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge14-4-rm1",
+                  "parameters": {
+                    "geometry-board": "GE14-4",
+                    "raster-manager": "RM7",
+                    "raster-manager-count": 1,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2 (technical report: InfiniteReality)"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14-2, 1 RM7, 64 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge14-2-rm1",
+                  "parameters": {
+                    "geometry-board": "GE14-2",
+                    "raster-manager": "RM7",
+                    "raster-manager-count": 1,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2 (technical report: InfiniteReality)"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14-2, 2 RM7, 64 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge14-2-rm2",
+                  "parameters": {
+                    "geometry-board": "GE14-2",
+                    "raster-manager": "RM7",
+                    "raster-manager-count": 2,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2 (technical report: InfiniteReality)"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16, 1 RM9, 64 MB texture",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge16-rm1",
+                  "parameters": {
+                    "geometry-board": "GE16",
+                    "raster-manager": "RM9",
+                    "raster-manager-count": 1,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16, 2 RM9, 64 MB texture",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir2-ge16-rm2",
+                  "parameters": {
+                    "geometry-board": "GE16",
+                    "raster-manager": "RM9",
+                    "raster-manager-count": 2,
+                    "texture-mib": 64
+                  },
+                  "product": "InfiniteReality2"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14, 1 RM8",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "reality-ge14-rm1",
+                  "parameters": {
+                    "geometry-board": "GE14",
+                    "raster-manager": "RM8",
+                    "raster-manager-count": 1
+                  },
+                  "product": "Onyx2 Reality"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE14, 2 RM8",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "reality-ge14-rm2",
+                  "parameters": {
+                    "geometry-board": "GE14",
+                    "raster-manager": "RM8",
+                    "raster-manager-count": 2
+                  },
+                  "product": "Onyx2 Reality"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM11, 1024 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir4-ge16-4-rm1",
+                  "parameters": {
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM11",
+                    "raster-manager-count": 1,
+                    "texture-mib": 1024
+                  },
+                  "product": "InfiniteReality4"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              },
+              {
+                "change": "at-creation",
+                "configuration": {
+                  "configuration": "GE16-4, 2 RM11, 1024 MB texture per RM",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir4-ge16-4-rm2",
+                  "parameters": {
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM11",
+                    "raster-manager-count": 2,
+                    "texture-mib": 1024
+                  },
+                  "product": "InfiniteReality4"
+                },
+                "default": false,
+                "refused": "the model presents one configuration",
+                "selectable": false
+              }
+            ]
+          }
+        ]
+      },
       "io-boards": [
         {
           "attachment": 1,

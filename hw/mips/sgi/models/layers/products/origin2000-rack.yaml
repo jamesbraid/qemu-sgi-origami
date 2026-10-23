@@ -66,6 +66,25 @@ layer:
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
       node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
   memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - names: [io2, io3, io4, io5, io6, io7, io8, io9, io10, io11, io12]
+        description: "XIO slot"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: established}
+          - {id: si-t, fidelity: implemented, pairing: established}
+          - {id: esi, fidelity: implemented, pairing: established}
+          - {id: ssi, fidelity: implemented, pairing: established}
+          - {id: essi, fidelity: implemented, pairing: established}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: ir3-ge16-4-rm1, refused: "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack."}
   data:
     machine:
       name: Origin 2000 rack module

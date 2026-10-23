@@ -29,6 +29,63 @@ layer:
     - cpu0
   memory_kits_per_node:
   - kit-256
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - names: [widget-9, widget-10]
+        description: "Crossbow port of an XIO graphics slot"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: inferred}
+          - {id: si-t, fidelity: implemented, pairing: inferred}
+          - {id: esi, fidelity: implemented, pairing: inferred}
+          - {id: ssi, fidelity: implemented, pairing: inferred}
+          - {id: essi, fidelity: implemented, pairing: inferred}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+      - name: widget-11
+        description: "Crossbow port 11, the default graphics port"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: inferred}
+          - {id: si-t, fidelity: implemented, pairing: inferred}
+          - {id: esi, fidelity: implemented, pairing: inferred}
+          - {id: ssi, fidelity: implemented, pairing: inferred}
+          - {id: essi, fidelity: implemented, pairing: inferred}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+          - id: v12
+            fidelity: implemented
+            pairing: established
+            requires:
+              - {kind: crossbow-revision, value: "1.4", evidence: "007-4210-003 preface", met: true}
+              - {kind: power-supply, value: "060-0035-00x, x >= 1", evidence: "007-4210-003 preface", met: true}
+              - {kind: prom-revision, value: "4.5", evidence: "007-4210-003 preface"}
+              - {kind: guest-release, value: "IRIX 6.5.10", evidence: "007-4210-003 preface"}
+          - {id: v6, refused: "these profiles present identity only."}
+          - {id: v8, refused: "these profiles present identity only."}
+          - {id: v10, refused: "these profiles present identity only."}
+      - name: widget-12
+        description: "Crossbow port of an XIO graphics slot"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: inferred}
+          - {id: si-t, fidelity: implemented, pairing: inferred}
+          - {id: esi, fidelity: implemented, pairing: inferred}
+          - {id: ssi, fidelity: implemented, pairing: inferred}
+          - {id: essi, fidelity: implemented, pairing: inferred}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+      - name: pci-cage
+        description: "the PCI cage at Crossbow port 13"
+        modelled: false
+        reason: "the model has no Octane PCI cage"
   data:
     machine:
       name: Octane2 serial profile

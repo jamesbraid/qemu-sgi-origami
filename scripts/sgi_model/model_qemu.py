@@ -18,6 +18,7 @@ import json
 import pathlib
 
 from .model_compile import compile_model
+from .model_graphics import check_one_configuration_per_id
 from .model_emit import default_topology, render_catalogue_json, render_manifest
 from .model_shared import install_generated_outputs
 
@@ -114,6 +115,7 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
         and model["machine"].get("model_role") == "reference"
     }
     _check_default_topology(topologies, machine_names, product_models)
+    check_one_configuration_per_id(topologies)
     catalogue = render_catalogue_json(
         list(source_models.values()), product_models=product_models,
         references=references)

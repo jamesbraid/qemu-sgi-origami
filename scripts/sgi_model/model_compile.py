@@ -20,6 +20,7 @@ same way, naming the missing fact, rather than inventing a value.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 
 from .model_composition import (
@@ -3234,6 +3235,8 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
                 nodes[0]["cpu_slots"][0]["assembly"])
     if generation == "SN1":
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
+    if machine.get("graphics"):
+        topology["graphics"] = copy.deepcopy(machine["graphics"])
     if pci_host_bridges:
         topology["pci_host_bridges"] = pci_host_bridges
     return topology

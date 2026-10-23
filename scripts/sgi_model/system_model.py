@@ -14,6 +14,7 @@ import yaml
 
 from .exceptions import ResolutionError
 from . import model_composition
+from . import model_graphics
 
 
 def _cpu_variant_pair(value: Any, label: str) -> dict[str, int]:
@@ -1130,6 +1131,12 @@ def resolve_system_model(
         resolved, resolved.get("processors", []),
         selected["product"].get("cpu_selection"),
     )
+    graphics = selected["product"].get("graphics")
+    if graphics is not None:
+        resolved.setdefault("machine", {})["graphics"] = (
+            model_graphics.resolve_graphics(
+                selected["product"]["id"], graphics,
+                model_graphics.load_graphics_configurations(path.parent)))
     machine = resolved.get("machine", {})
     routed = model_composition.reject_routed_firmware_graphs(resolved)
     population = selected["product"]["population"]

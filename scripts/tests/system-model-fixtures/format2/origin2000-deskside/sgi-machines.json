@@ -2421,6 +2421,2080 @@
       ],
       "description": "SGI Origin 2000 deskside",
       "generation": "sn0",
+      "graphics": {
+        "headless": true,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io2",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io3",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io4",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io5",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io6",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io7",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io8",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io9",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io10",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io11",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "XIO slot",
+            "modelled": true,
+            "name": "io12",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "Solid IMPACT (SI)"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "si-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "SI with texture"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1
+                  },
+                  "product": "ESI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "ssi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "SSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, no texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "essi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2
+                  },
+                  "product": "ESSI"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "esi-t",
+                  "parameters": {
+                    "geometry-engines": 1,
+                    "raster-engines": 1,
+                    "texture-mib": 4
+                  },
+                  "product": "ESI with texture"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "mxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "MXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                  "family": "mgras",
+                  "family-name": "IMPACT",
+                  "id": "emxi",
+                  "parameters": {
+                    "geometry-engines": 2,
+                    "raster-engines": 2,
+                    "texture-mib": 8
+                  },
+                  "product": "EMXI"
+                },
+                "default": false,
+                "refused": "the model lacks the texture paths this board needs",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                  "family": "kona",
+                  "family-name": "InfiniteReality",
+                  "id": "ir3-ge16-4-rm1",
+                  "parameters": {
+                    "display-channels": 2,
+                    "display-generator": "DG5-2",
+                    "geometry-board": "GE16-4",
+                    "raster-manager": "RM10",
+                    "raster-manager-count": 1,
+                    "texture-mib": 256
+                  },
+                  "product": "InfiniteReality3"
+                },
+                "default": false,
+                "refused": "An Origin 2000 with an InfiniteReality pipe is an Onyx2; use onyx2-rack.",
+                "selectable": false
+              }
+            ]
+          }
+        ]
+      },
       "io-boards": [
         {
           "attachment": 1,

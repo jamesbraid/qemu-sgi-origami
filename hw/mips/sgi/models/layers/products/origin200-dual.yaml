@@ -29,6 +29,32 @@ layer:
       - {part: r10000, clock_mhz: 225, cache_mib: 2, processors_per_node: [2]}
       - {part: r12000, clock_mhz: 270, cache_mib: 4, processors_per_node: [2]}
   memory_kits_per_node: [kit-64, kit-64]
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - name: m0-pci-5
+        description: "PCI option slot, device 5"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: rad4, fidelity: validated, pairing: established}
+          - {id: rad4-km, fidelity: implemented, pairing: established}
+          - {id: rad4c-km, refused: "no published PCI identity"}
+          - {id: rad1, refused: "the model sits at device 4, which is not an option slot"}
+      - names: [m0-pci-6, m0-pci-7]
+        description: "PCI option slot, devices 6 and 7"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: rad4, fidelity: implemented, pairing: established}
+          - {id: rad4-km, fidelity: implemented, pairing: established}
+          - {id: rad4c-km, refused: "no published PCI identity"}
+          - {id: rad1, refused: "the model sits at device 4, which is not an option slot"}
+      - names: [m1-pci-5, m1-pci-6, m1-pci-7]
+        description: "the second module's PCI option slots"
+        modelled: false
+        reason: "the model fits PCI heads on the first module only"
   data:
     machine:
       name: Dual-module Origin 200

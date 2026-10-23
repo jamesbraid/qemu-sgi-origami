@@ -73,6 +73,7 @@ hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
 hw/mips/sgi/models/fuel-vpro.yaml
 hw/mips/sgi/models/fuel.yaml
+hw/mips/sgi/models/graphics-heads.yaml
 hw/mips/sgi/models/layers/architectures/ip30.yaml
 hw/mips/sgi/models/layers/architectures/sn0.yaml
 hw/mips/sgi/models/layers/architectures/sn1.yaml
@@ -382,6 +383,7 @@ scripts/sgi_model/exceptions.py
 scripts/sgi_model/model_compile.py
 scripts/sgi_model/model_composition.py
 scripts/sgi_model/model_emit.py
+scripts/sgi_model/model_graphics.py
 scripts/sgi_model/model_ip30.py
 scripts/sgi_model/model_qemu.py
 scripts/sgi_model/model_shared.py

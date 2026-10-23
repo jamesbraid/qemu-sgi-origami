@@ -1394,6 +1394,279 @@
             'cpu-mode-word': 'uint32' } }
 
 ##
+# @SGIModelGraphicsFamily:
+#
+# The chip set a graphics head belongs to, which QEMU models with one
+# device type.
+#
+# @none: no head; the position is empty
+#
+# @mgras: IMPACT (sgi-mgras)
+#
+# @odyssey: VPro (sgi-odyssey)
+#
+# @kona: InfiniteReality (sgi-kona)
+#
+# @psitech: PsiTech RAD boards (psitech-rad4)
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGraphicsFamily',
+  'data': ['none', 'mgras', 'odyssey', 'kona', 'psitech'] }
+
+##
+# @SGIModelGraphicsParameters:
+#
+# The configuration parameters of a graphics product; each is present
+# only where the product has it.
+#
+# @geometry-engines: geometry engines fitted
+#
+# @raster-engines: raster engines fitted
+#
+# @texture-mib: texture memory, per Raster Manager where the product
+#     has them
+#
+# @board-memory-mib: memory on the board itself
+#
+# @geometry-board: geometry board designation (GE14-4, GE16)
+#
+# @raster-manager: Raster Manager type (RM7, RM10)
+#
+# @raster-manager-count: Raster Managers fitted
+#
+# @display-generator: display generator (DG5-2, DG5-8)
+#
+# @display-channels: display channels the head drives
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsParameters',
+  'data': { '*geometry-engines': 'uint32',
+            '*raster-engines': 'uint32',
+            '*texture-mib': 'uint32',
+            '*board-memory-mib': 'uint32',
+            '*geometry-board': 'str',
+            '*raster-manager': 'str',
+            '*raster-manager-count': 'uint32',
+            '*display-generator': 'str',
+            '*display-channels': 'uint32' } }
+
+##
+# @SGIModelGraphicsConfiguration:
+#
+# One graphics product configuration.  The same @id names the same
+# product, parameters and options in every topology that lists it.
+#
+# @id: the value `heads.<position>=` selects; frozen once listed
+#
+# @family: the chip set
+#
+# @family-name: the family's marketing name (IMPACT, VPro,
+#     InfiniteReality, PsiTech)
+#
+# @product: the product's name
+#
+# @configuration: a one-line human summary of the configuration
+#
+# @parameters: the configuration's parameters
+#
+# @options: fitted options (gvo, dcd, ...), absent when none
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsConfiguration',
+  'data': { 'id': 'str',
+            'family': 'SGIModelGraphicsFamily',
+            'family-name': 'str',
+            'product': 'str',
+            'configuration': 'str',
+            'parameters': 'SGIModelGraphicsParameters',
+            '*options': ['str'] } }
+
+##
+# @SGIModelGraphicsFidelity:
+#
+# How closely a selectable head matches the product it names.
+#
+# @validated: a stated guest acceptance passed on this machine and
+#     position
+#
+# @implemented: built and register-tested without that acceptance
+#
+# @approximated: a disclosed stand-in; see @SGIModelGraphicsOption's
+#     limitations
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGraphicsFidelity',
+  'data': ['validated', 'implemented', 'approximated'] }
+
+##
+# @SGIModelGraphicsEvidence:
+#
+# How the pairing of a product with a machine is known.
+#
+# @established: a cited document or capture shows it
+#
+# @inferred: reasoned from matching components
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGraphicsEvidence',
+  'data': ['established', 'inferred'] }
+
+##
+# @SGIModelGraphicsChange:
+#
+# When a head selection may change.
+#
+# @at-creation: fixed when the machine is created
+#
+# @between-boots: may change between cold starts
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGraphicsChange',
+  'data': ['at-creation', 'between-boots'] }
+
+##
+# @SGIModelGraphicsRequirementKind:
+#
+# What a graphics requirement constrains.
+#
+# @crossbow-revision: the machine's Crossbow revision
+#
+# @power-supply: the machine's power supply part
+#
+# @prom-revision: the machine's PROM revision
+#
+# @guest-release: the guest operating system release
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGraphicsRequirementKind',
+  'data': ['crossbow-revision', 'power-supply', 'prom-revision',
+           'guest-release'] }
+
+##
+# @SGIModelGraphicsRequirement:
+#
+# One condition a head needs of its machine.
+#
+# @kind: what it constrains
+#
+# @value: the condition
+#
+# @evidence: where it is stated
+#
+# @met: whether this topology's model meets it; absent when unknown
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsRequirement',
+  'data': { 'kind': 'SGIModelGraphicsRequirementKind',
+            'value': 'str',
+            'evidence': 'str',
+            '*met': 'bool' } }
+
+##
+# @SGIModelGraphicsOption:
+#
+# One configuration a position lists.
+#
+# @configuration: the configuration
+#
+# @default: this is what the position holds when `heads.` does not
+#     name it; exactly one option of a modelled position
+#
+# @selectable: `heads.` may select it
+#
+# @refused: why it is not selectable; present exactly when
+#     @selectable is false
+#
+# @fidelity: present exactly when @selectable is true
+#
+# @limitations: each stated approximation
+#
+# @pairing: how it is known this machine takes this product
+#
+# @assembly: the board part this position presents
+#
+# @change: when the selection may change
+#
+# @accepted-memory-mib: per-node memory sizes this head allows,
+#     intersected with the offering's; absent means no narrowing
+#
+# @processors: processor-option ids this head allows; absent means
+#     any
+#
+# @requires: conditions the head needs of the machine
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsOption',
+  'data': { 'configuration': 'SGIModelGraphicsConfiguration',
+            'default': 'bool',
+            'selectable': 'bool',
+            '*refused': 'str',
+            '*fidelity': 'SGIModelGraphicsFidelity',
+            '*limitations': ['str'],
+            '*pairing': 'SGIModelGraphicsEvidence',
+            '*assembly': 'str',
+            'change': 'SGIModelGraphicsChange',
+            '*accepted-memory-mib': ['uint64'],
+            '*processors': ['str'],
+            '*requires': ['SGIModelGraphicsRequirement'] } }
+
+##
+# @SGIModelGraphicsPosition:
+#
+# One place a graphics head can go.
+#
+# @name: the `heads.<name>=` key: an XIO slot label, `widget-N` or
+#     `pci-N`, prefixed `m<module>-` when two modules share it
+#
+# @description: where this is on the real machine
+#
+# @built-in: the topology itself fits the head
+#
+# @modelled: QEMU can build a head here
+#
+# @reason: why not, present exactly when @modelled is false
+#
+# @options: the configurations listed here
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsPosition',
+  'data': { 'name': 'str',
+            'description': 'str',
+            'built-in': 'bool',
+            'modelled': 'bool',
+            '*reason': 'str',
+            'options': ['SGIModelGraphicsOption'] } }
+
+##
+# @SGIModelGraphics:
+#
+# The graphics heads a topology takes, which `heads.<position>=<id>`
+# selects.
+#
+# @headless: the machine may run with no head
+#
+# @max-heads: most positions that may hold a head at once
+#
+# @positions: every position the machine has, modelled or not
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphics',
+  'data': { 'headless': 'bool',
+            'max-heads': 'uint32',
+            'positions': ['SGIModelGraphicsPosition'] } }
+
+##
 # @SGIModelTopology:
 #
 # One chassis a product ships in: its wiring with every node slot
@@ -1464,6 +1737,9 @@
 #     the nodes' own part first; absent where the topology offers no
 #     choice
 #
+# @graphics: the graphics heads `heads.<position>=` may select; absent
+#     where the topology has no graphics position
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -1489,7 +1765,8 @@
             'node-populations': ['SGIModelNodePopulation'],
             '*ip27-firmware': 'SGIModelIp27FirmwareConfig',
             '*ip35-firmware': 'SGIModelIp35FirmwareConfig',
-            '*processor-options': ['SGIModelProcessorOption'] } }
+            '*processor-options': ['SGIModelProcessorOption'],
+            '*graphics': 'SGIModelGraphics' } }
 
 ##
 # @SGIModelConsole:
