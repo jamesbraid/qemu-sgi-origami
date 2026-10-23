@@ -73,6 +73,7 @@ struct SGICrimeState {
     uint8_t interface_revision;
     uint8_t transfer_policy;
     uint8_t profile_id;
+    uint8_t configuration;
     bool legacy_software;
     bool profile_state_received;
     CrimeProfileState incoming_profile;

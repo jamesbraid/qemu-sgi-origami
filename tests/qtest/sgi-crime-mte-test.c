@@ -126,6 +126,7 @@ static void test_invalid_translation(void)
     QDict *status;
 
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_memset(s, 0, 0x9b, 64);
     qtest_memset(s, 0x3000, 0x6a, 64);
     qtest_writel(s, MTE, CLEAR_A);
     qtest_writel(s, MTE + 8, UINT32_MAX);
@@ -134,6 +135,7 @@ static void test_invalid_translation(void)
     status = qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, "internal-error");
     qobject_unref(status);
+    assert_bytes(s, 0, 64, 0x9b);
     assert_bytes(s, 0x3000, 64, 0x6a);
     g_assert_cmphex(qtest_readl(s, MTE), ==, CLEAR_A);
     page_pair(s, 0, 0, 3, 9);
@@ -604,15 +606,19 @@ static void test_migration_invalid_state(gconstpointer data)
     g_autofree char *stream = NULL;
     gsize size;
     char *state;
-    QTestState *from = start(), *to = start_options("-incoming defer");
+    bool functional = fault != 5;
+    QTestState *from = start_profile(functional, "");
+    QTestState *to = start_profile(functional, "-incoming defer");
 
     g_assert_no_error(error);
     path = g_build_filename(directory, "synthetic.migration", NULL);
     quoted = g_shell_quote(path);
     outgoing = g_strdup_printf("exec:cat > %s", quoted);
     incoming = g_strdup_printf("exec:cat %s", quoted);
-    page_pair(from, 0, 0, 3, 9);
-    page_pair(to, 0, 0, 11, 15);
+    if (functional) {
+        page_pair(from, 0, 0, 3, 9);
+        page_pair(to, 0, 0, 11, 15);
+    }
     qtest_writeq(to, BASE + 0x18, 1U << 4);
     sgi_migrate_stopped(from, outgoing);
     g_assert_true(g_file_get_contents(path, &stream, &size, &error));
@@ -628,7 +634,7 @@ static void test_migration_invalid_state(gconstpointer data)
         state = memmem(stream, size, subsection, sizeof(subsection) - 1);
         g_assert_nonnull(state);
         state += sizeof(subsection) - 1 + 4;
-        g_assert_cmphex((uint8_t)state[0], ==, 1);
+        g_assert_cmphex((uint8_t)state[0], ==, functional ? 1 : 0);
         switch (fault) {
         case 1: /* Policy identity precedes the saved programming. */
             state[0] = 2;
@@ -639,7 +645,8 @@ static void test_migration_invalid_state(gconstpointer data)
         case 3:
             stq_be_p(state + 2 + 256 + 40, 2);
             break;
-        case 4: {
+        case 4:
+        case 5: {
             char *first = state - 4 - (sizeof(subsection) - 1) - 2;
             size_t length = 2 + sizeof(subsection) - 1 + 4 + 314;
 
@@ -657,7 +664,9 @@ static void test_migration_invalid_state(gconstpointer data)
         "{'execute':'migrate-incoming','arguments':{'uri':%s,'exit-on-error':false}}",
         incoming);
     wait_migration_failed(to);
-    g_assert_cmphex(qtest_readq(to, TLB), ==, 0x8000000b8000000fULL);
+    if (functional) {
+        g_assert_cmphex(qtest_readq(to, TLB), ==, 0x8000000b8000000fULL);
+    }
     g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, 1U << 4);
     qtest_quit(from);
     qtest_quit(to);
@@ -794,6 +803,8 @@ int main(int argc, char **argv)
           test_migration_invalid_state, GUINT_TO_POINTER(3), NULL },
         { "migration-absent-section", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(4), NULL },
+        { "migration-absent-disabled-section", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(5), NULL },
     };
     const char *profiles[] = { "1.5", "legacy-software" };
 

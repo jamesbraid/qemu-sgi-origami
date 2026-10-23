@@ -809,8 +809,7 @@ static int crime_post_load(void *opaque, int version_id)
     uint32_t software_mask = crime_software_mask(s);
     uint32_t hardware;
 
-    if ((s->functional_memory_transfer && !s->transfer_state_received) ||
-        !s->profile_state_received) {
+    if (!s->transfer_state_received || !s->profile_state_received) {
         return -EINVAL;
     }
     if ((incoming->hardware & software_mask) ||
@@ -825,9 +824,8 @@ static int crime_post_load(void *opaque, int version_id)
     hardware = (profile->inputs & ~software_mask & ~latch_mask) |
                profile->latched;
     if (hardware != incoming->hardware ||
-        (s->functional_memory_transfer &&
-         (profile->memory_error_status != s->incoming_memory_error_status ||
-          profile->memory_error_address != s->incoming_memory_error_address))) {
+        profile->memory_error_status != s->incoming_memory_error_status ||
+        profile->memory_error_address != s->incoming_memory_error_address) {
         return -EINVAL;
     }
     s->inputs = profile->inputs;
@@ -841,18 +839,11 @@ static int crime_post_load(void *opaque, int version_id)
     s->software = incoming->software;
     s->timer_base = incoming->timer_base;
     s->timer_fraction = incoming->timer_fraction;
-    if (s->functional_memory_transfer) {
-        s->transfer = s->incoming_transfer;
-        s->healthy_memory_reported = false;
-    }
+    s->transfer = s->incoming_transfer;
+    s->healthy_memory_reported = false;
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     crime_update_irq(s);
     return 0;
-}
-
-static bool crime_transfer_needed(void *opaque)
-{
-    return SGI_CRIME(opaque)->functional_memory_transfer;
 }
 
 static bool crime_transfer_pre_save(void *opaque, Error **errp)
@@ -865,25 +856,29 @@ static bool crime_transfer_pre_save(void *opaque, Error **errp)
     return true;
 }
 
-static int crime_transfer_pre_load(void *opaque)
-{
-    return SGI_CRIME(opaque)->functional_memory_transfer ? 0 : -EINVAL;
-}
-
 static int crime_transfer_post_load(void *opaque, int version_id)
 {
     SGICrimeState *s = opaque;
     CrimeTransferState *incoming = &s->incoming_transfer;
 
     if (incoming->ecc_enable > 1 || incoming->parameter[2] ||
+        (!s->functional_memory_transfer && incoming->ecc_enable) ||
         (s->incoming_memory_error_status &
          ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE | CRIME_ERROR_RMW)) ||
         s->incoming_memory_error_address > 0x3fffffff) {
         return -EINVAL;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(incoming->tlb); i++) {
-        if (!crime_tlb_word_valid(incoming->tlb[i])) {
+        if (!crime_tlb_word_valid(incoming->tlb[i]) ||
+            (!s->functional_memory_transfer && incoming->tlb[i])) {
             return -EINVAL;
+        }
+    }
+    if (!s->functional_memory_transfer) {
+        for (unsigned i = 0; i < ARRAY_SIZE(incoming->parameter); i++) {
+            if (incoming->parameter[i]) {
+                return -EINVAL;
+            }
         }
     }
     s->transfer_state_received = true;
@@ -894,9 +889,7 @@ static const VMStateDescription vmstate_crime_transfer = {
     .name = TYPE_SGI_CRIME "/linear-transfer",
     .version_id = 1,
     .minimum_version_id = 1,
-    .needed = crime_transfer_needed,
     .pre_save_errp = crime_transfer_pre_save,
-    .pre_load = crime_transfer_pre_load,
     .post_load = crime_transfer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(transfer_policy, SGICrimeState),
@@ -909,11 +902,6 @@ static const VMStateDescription vmstate_crime_transfer = {
         VMSTATE_END_OF_LIST()
     },
 };
-
-static bool crime_profile_needed(void *opaque)
-{
-    return true;
-}
 
 static bool crime_profile_pre_save(void *opaque, Error **errp)
 {
@@ -951,12 +939,12 @@ static const VMStateDescription vmstate_crime_profile = {
     .name = TYPE_SGI_CRIME "/profile",
     .version_id = 1,
     .minimum_version_id = 1,
-    .needed = crime_profile_needed,
     .pre_save_errp = crime_profile_pre_save,
     .post_load = crime_profile_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(profile_id, SGICrimeState),
         VMSTATE_UINT8_EQUAL(transfer_policy, SGICrimeState),
+        VMSTATE_UINT8_EQUAL(configuration, SGICrimeState),
         VMSTATE_UINT32(incoming_profile.inputs, SGICrimeState),
         VMSTATE_UINT32(incoming_profile.latched, SGICrimeState),
         VMSTATE_UINT64(incoming_profile.cpu_error_address, SGICrimeState),
@@ -1009,6 +997,9 @@ static void crime_realize(DeviceState *dev, Error **errp)
     uint64_t ram_size;
 
     s->profile_id = s->legacy_software ? 1 : 0;
+    s->configuration = s->empty_renderer_status | (s->prom_id_word << 1) |
+                       (s->eight_128m_banks << 2) |
+                       (s->reset_low_ram_approx << 3);
     s->transfer_policy = s->functional_memory_transfer ? 1 : 0;
     if (s->functional_memory_transfer && s->empty_renderer_status) {
         error_setg(errp, "sgi-crime functional-memory-transfer conflicts with "
