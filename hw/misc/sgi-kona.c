@@ -1897,20 +1897,392 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
 }
 
 /*
+ * Configurations.
+ *
+ * With "product" set, the pipe presents one InfiniteReality configuration
+ * whole: the board set and the inventory class the IRIX 6.5 driver
+ * derives at attach, the raster managers, texture memory and display
+ * channels its 0x1e9 answer reports, and an identity record for every
+ * board in that answer. Without it the pipe answers as it always has,
+ * which matches no real configuration (see sgi_kona_answer_config()).
+ *
+ * The products are named as IRIX's hinv names an Onyx2 pipe. The driver's
+ * attach (kona_attach in the 6.5.30 IP27 kona.a) reads two words through
+ * the indirect port at +0x8003c0/+0x8003d0: after selecting 0x8800, a low
+ * two bits of 1 makes the pipe an InfiniteReality3 (board set 5) and 2 an
+ * InfiniteReality4 (board set 6); after selecting 0xb00, bit 10 makes it a
+ * Reality (board set 2). Otherwise it looks for "GE16-" in the geometry
+ * board's one-wire text: present, InfiniteReality2E (board set 4); absent,
+ * InfiniteReality2 (board set 1). It records that class for hinv and
+ * never reports the InfiniteReality name on this machine. All of that is
+ * established by the disassembly; the indirect words' meaning on the pipe
+ * is not. SGI's own answer (Usenet, comp.sys.sgi.graphics, 16 November
+ * 1998) matches: InfiniteReality for Onyx2 prints InfiniteReality2, and
+ * InfiniteReality2 for Onyx2 prints InfiniteReality2E.
+ *
+ * Every board below is one a real capture or owner's list names, with the
+ * part, name and revision recorded there; a field no source gives is left
+ * blank rather than chosen. The chip identity words gfxinfo -v prints
+ * (ge:, rm0:, dg:) are the same on all three captured pipes and are
+ * repeated for each configuration. The two words that differ between
+ * captures, the board word gfxinfo prints after "brd:" and the one after
+ * the raster managers, follow the geometry board here: that the first
+ * does is inferred from two GE16-4 pipes sharing it, and the second is
+ * approximated, as the two GE16-4 pipes differ there.
+ */
+typedef struct SGIKonaBoardSpec {
+    const char *name;
+    const char *part;
+    const char *revision;
+} SGIKonaBoardSpec;
+
+typedef struct SGIKonaGeometry {
+    const char *id;
+    SGIKonaBoardSpec board;
+    uint32_t engines;
+    uint32_t occupancy;
+    uint32_t board_word;
+    uint32_t trailing_word;
+} SGIKonaGeometry;
+
+typedef struct SGIKonaRaster {
+    const char *id;
+    SGIKonaBoardSpec board;
+    uint32_t board_word;
+} SGIKonaRaster;
+
+typedef struct SGIKonaTexture {
+    uint32_t mb;
+    uint32_t code;
+    SGIKonaBoardSpec board;
+} SGIKonaTexture;
+
+typedef struct SGIKonaDisplay {
+    SGIKonaBoardSpec board;
+    uint32_t channels;
+    uint32_t external_gamma;
+} SGIKonaDisplay;
+
+typedef struct SGIKonaOption {
+    const char *id;
+    SGIKonaBoardSpec board;
+    uint32_t code;
+} SGIKonaOption;
+
+#define SGI_KONA_PRODUCT_CHOICES 2
+
+typedef struct SGIKonaProduct {
+    const char *id;
+    const char *refused;
+    uint32_t board_set;
+    uint32_t inventory_select;
+    const SGIKonaGeometry *geometry[SGI_KONA_PRODUCT_CHOICES];
+    const SGIKonaRaster *raster;
+    const SGIKonaTexture *texture[SGI_KONA_PRODUCT_CHOICES];
+} SGIKonaProduct;
+
+/*
+ * GE14-4: whole-tetra's board and hinv revision. GE14-2: fancy-akita's
+ * owner list (030-1051-002 rev K) and gfxinfo (2 GEs, occupancy 0x03);
+ * its board words are whole-tetra's GE14-4 ones, approximated. GE16-4:
+ * true-wombat's board, hinv revision and words.
+ */
+static const SGIKonaGeometry sgi_kona_ge14_2 = {
+    "ge14-2", { "GE14-2", "030-1051-002", "K" }, 2, 0x3,
+    0x80160a04, 0x51bf1002,
+};
+static const SGIKonaGeometry sgi_kona_ge14_4 = {
+    "ge14-4", { "GE14-4", "030-1129-002", "F" }, 4, 0xf,
+    0x80160a04, 0x51bf1002,
+};
+static const SGIKonaGeometry sgi_kona_ge16_4 = {
+    "ge16-4", { "GE16-4", "030-1398-001", "E" }, 4, 0xf,
+    0x80f61806, 0xf9311002,
+};
+
+/*
+ * RM7: whole-tetra's part and board word, fancy-akita's name and
+ * revision. RM9: true-wombat's board (configmon names it RM9, revision E)
+ * and board word. gfxinfo names an RM9 only by that name, right-justified
+ * in the record.
+ */
+static const SGIKonaRaster sgi_kona_rm7 = {
+    "rm7", { "RM7", "030-1054-001", "G" }, 0x3020c06,
+};
+static const SGIKonaRaster sgi_kona_rm9 = {
+    "rm9", { "RM9", "030-1402-001", "E" }, 0x3041606,
+};
+
+/*
+ * Texture boards and the size code gfxinfo turns into its "Texture
+ * Memory" text (2 is 64MB, 4 is 256MB). TM7 64 MB: whole-tetra's part,
+ * fancy-akita's name and revision; an RM9-64 is "030-1402-00x +
+ * 030-1053-00x" (comp.sys.sgi.marketplace, 2 August 2004), so the RM9's
+ * 64 MB board is taken to be the same TM7, inferred. 256 MB:
+ * true-wombat's 030-1588-001, whose name and revision no source gives.
+ */
+static const SGIKonaTexture sgi_kona_tm7_64 = {
+    64, 2, { "TM7", "030-1053-001", "F" },
+};
+static const SGIKonaTexture sgi_kona_tm_256 = {
+    256, 4, { "", "030-1588-001", "" },
+};
+
+/*
+ * Display generators. 030-1087-001: whole-tetra's deskside board, whose
+ * gfxinfo reports eight channels and 64K of external gamma; its name and
+ * revision are not given, and that it is a DG5-2 is not established.
+ * 030-1055-001: fancy-akita's DG5-2 (owner list, revision unreadable),
+ * two channels. 030-1242-001: true-wombat's DG5-2, revision D, two
+ * channels.
+ */
+static const SGIKonaDisplay sgi_kona_displays[] = {
+    { { "", "030-1087-001", "" }, 8, 1 },
+    { { "DG5-2", "030-1055-001", "" }, 2, 0 },
+    { { "DG5-2", "030-1242-001", "D" }, 2, 0 },
+};
+
+/*
+ * true-wombat's GVO option, configmon revision B, and the code gfxinfo
+ * prints "GVO option detected" for. The option's identity only: the model
+ * has no GVO video output.
+ */
+static const SGIKonaOption sgi_kona_gvo = {
+    "gvo", { "GVO", "030-1184-002", "B" }, 6,
+};
+
+static const SGIKonaProduct sgi_kona_products[] = {
+    { .id = "ir", .refused = "IRIX 6.5 never names an Onyx2 pipe "
+      "InfiniteReality: it calls the GE14 and RM7 pipe InfiniteReality2, "
+      "product ir2; InfiniteReality is the Onyx name, a machine QEMU does "
+      "not model" },
+    { .id = "ir2", .board_set = 1, .inventory_select = 0,
+      .geometry = { &sgi_kona_ge14_4, &sgi_kona_ge14_2 },
+      .raster = &sgi_kona_rm7, .texture = { &sgi_kona_tm7_64 } },
+    { .id = "ir2e", .board_set = 4, .inventory_select = 0,
+      .geometry = { &sgi_kona_ge16_4 },
+      .raster = &sgi_kona_rm9, .texture = { &sgi_kona_tm7_64 } },
+    { .id = "ir3", .board_set = 5, .inventory_select = 1,
+      .geometry = { &sgi_kona_ge16_4 },
+      .raster = &sgi_kona_rm9, .texture = { &sgi_kona_tm_256 } },
+    { .id = "ir4", .refused = "no Onyx2 InfiniteReality4 has been captured: "
+      "the only captured pipe is an Onyx 350's, whose Ktown2 host board "
+      "this model cannot attach, so the Onyx2 pipe's host and display "
+      "boards are unknown" },
+};
+
+/* The indirect-port selectors kona_attach reads its class from. */
+#define SGI_KONA_SELECT_PRODUCT 0x8800
+#define SGI_KONA_SELECT_REDUCED 0xb00
+
+/*
+ * Instances for the synthetic serials of the boards the 0x1e9 answer
+ * names; the geometry board and Ktown keep 0 and 1.
+ */
+#define SGI_KONA_SERIAL_RM(i)   (2 + (i))
+#define SGI_KONA_SERIAL_TM(i)   (6 + (i))
+#define SGI_KONA_SERIAL_DG      10
+#define SGI_KONA_SERIAL_DGOPT   11
+
+/* The Ktown record a rack pipe carries; a deskside pipe has none. */
+#define SGI_KONA_KTOWN_PART "030-1067-001"
+
+static bool sgi_kona_has_ktown(SGIXioBoardState *board)
+{
+    strList *p;
+
+    for (p = board->other_identity_parts; p; p = p->next) {
+        if (g_str_equal(p->value, SGI_KONA_KTOWN_PART)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool sgi_kona_unset(const char *value)
+{
+    return !value || !*value;
+}
+
+/*
+ * Check the configuration properties and resolve them into s->config.
+ * Every value a product does not offer is refused with the reason, so a
+ * configuration whose fields have no source is never presented.
+ */
+static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
+{
+    SGIKonaConfig *c = &s->config;
+    bool ktown = sgi_kona_has_ktown(SGI_XIO_BOARD(s));
+    const char *dg_part;
+    size_t i;
+
+    memset(c, 0, sizeof(*c));
+    if (sgi_kona_unset(s->product)) {
+        if (!sgi_kona_unset(s->geometry) || !sgi_kona_unset(s->rm_type) ||
+            s->rm_count || s->texture_mb || s->channels ||
+            !sgi_kona_unset(s->display_generator) ||
+            !sgi_kona_unset(s->video_option)) {
+            error_setg(errp, "sgi-kona: set product to configure the pipe");
+            return false;
+        }
+        return true;
+    }
+    for (i = 0; i < ARRAY_SIZE(sgi_kona_products); i++) {
+        if (g_str_equal(s->product, sgi_kona_products[i].id)) {
+            c->product = &sgi_kona_products[i];
+        }
+    }
+    if (!c->product) {
+        error_setg(errp, "sgi-kona: unknown product '%s'; the products are "
+                   "ir2, ir2e and ir3", s->product);
+        return false;
+    }
+    if (c->product->refused) {
+        error_setg(errp, "sgi-kona: product %s is refused: %s",
+                   c->product->id, c->product->refused);
+        c->product = NULL;
+        return false;
+    }
+
+    for (i = 0; i < SGI_KONA_PRODUCT_CHOICES; i++) {
+        const SGIKonaGeometry *g = c->product->geometry[i];
+
+        if (g && (sgi_kona_unset(s->geometry) ? i == 0 :
+                  g_str_equal(s->geometry, g->id))) {
+            c->geometry = g;
+        }
+    }
+    if (!c->geometry) {
+        error_setg(errp, "sgi-kona: product %s has no geometry board '%s'; "
+                   "it takes %s%s%s", c->product->id, s->geometry,
+                   c->product->geometry[0]->id,
+                   c->product->geometry[1] ? " or " : "",
+                   c->product->geometry[1] ?
+                   c->product->geometry[1]->id : "");
+        goto refused;
+    }
+
+    c->raster = c->product->raster;
+    if (!sgi_kona_unset(s->rm_type) &&
+        !g_str_equal(s->rm_type, c->raster->id)) {
+        error_setg(errp, "sgi-kona: product %s has %s raster managers, "
+                   "not '%s'", c->product->id, c->raster->id, s->rm_type);
+        goto refused;
+    }
+
+    c->rm_count = s->rm_count ? s->rm_count : 1;
+    if (c->rm_count != 1 && c->rm_count != 2 && c->rm_count != 4) {
+        error_setg(errp, "sgi-kona: rm-count %u: a pipe has 1, 2 or 4 "
+                   "raster managers", s->rm_count);
+        goto refused;
+    }
+    if (c->rm_count == 4 && !ktown) {
+        error_setg(errp, "sgi-kona: rm-count 4: a pipe with no Ktown is an "
+                   "Onyx2 deskside pipe, which holds at most two raster "
+                   "managers");
+        goto refused;
+    }
+
+    for (i = 0; i < SGI_KONA_PRODUCT_CHOICES; i++) {
+        const SGIKonaTexture *t = c->product->texture[i];
+
+        if (t && (s->texture_mb ? t->mb == s->texture_mb : i == 0)) {
+            c->texture = t;
+        }
+    }
+    if (!c->texture) {
+        error_setg(errp, "sgi-kona: product %s with %u MB of texture per "
+                   "raster manager has no known texture board; it takes "
+                   "%u MB", c->product->id, s->texture_mb,
+                   c->product->texture[0]->mb);
+        goto refused;
+    }
+
+    dg_part = sgi_kona_unset(s->display_generator) ?
+              (ktown ? "030-1242-001" : "030-1087-001") :
+              s->display_generator;
+    for (i = 0; i < ARRAY_SIZE(sgi_kona_displays); i++) {
+        if (g_str_equal(dg_part, sgi_kona_displays[i].board.part)) {
+            c->display = &sgi_kona_displays[i];
+        }
+    }
+    if (!c->display) {
+        error_setg(errp, "sgi-kona: display generator '%s' is not one a "
+                   "capture names: 030-1087-001, 030-1055-001 or "
+                   "030-1242-001", dg_part);
+        goto refused;
+    }
+    if (s->channels && s->channels != c->display->channels) {
+        error_setg(errp, "sgi-kona: channels %u: display generator %s "
+                   "reports %u", s->channels, dg_part,
+                   c->display->channels);
+        goto refused;
+    }
+
+    if (!sgi_kona_unset(s->video_option) &&
+        !g_str_equal(s->video_option, "none")) {
+        if (!g_str_equal(s->video_option, sgi_kona_gvo.id)) {
+            error_setg(errp, "sgi-kona: video option '%s': only gvo has "
+                       "been captured", s->video_option);
+            goto refused;
+        }
+        if (!g_str_equal(dg_part, "030-1242-001")) {
+            error_setg(errp, "sgi-kona: video option gvo has been captured "
+                       "only beside display generator 030-1242-001");
+            goto refused;
+        }
+        c->option = &sgi_kona_gvo;
+    }
+    sgi_kona_texture_set_memory(&s->textures, (uint64_t)c->texture->mb * MiB);
+    return true;
+
+refused:
+    memset(c, 0, sizeof(*c));
+    return false;
+}
+
+/*
+ * A configured pipe's geometry board and Ktown carry their real names and
+ * revisions, the geometry board its configured part too: the driver reads
+ * "GE16-" in that text to tell an InfiniteReality2E from an
+ * InfiniteReality2, and hinv prints the record.
+ */
+static void sgi_kona_identity_record(SGIXioBoardState *board,
+                                     const SGIXioBoardIdentityPart *part,
+                                     SGIBridgeBoardRecord *record)
+{
+    SGIKonaState *s = SGI_KONA(board);
+    const SGIKonaConfig *c = &s->config;
+
+    if (!c->product) {
+        return;
+    }
+    if (part->record == &sgi_kona_geometry_record) {
+        record->name = c->geometry->board.name;
+        record->part = c->geometry->board.part;
+        record->revision = c->geometry->board.revision;
+    } else if (part->record == &sgi_kona_ktown_record) {
+        /* true-wombat's Ktown: hinv and configmon name it KTOWN, rev F. */
+        record->name = "KTOWN";
+        record->revision = "F";
+    }
+}
+
+/*
  * The board configuration the pipe answers 0x1e9 with. gfxinit hands the
  * 0x778 bytes from return page + 8 to the kernel, which copies them over
  * its board information; every later process reads them back from there.
  * Offsets are from page + 8.
  *
- * Approximated: every value is the model's own choice for the one
- * configuration it emulates, one pipe with one raster manager driving one
- * 1280x1024 channel, and not read from a real pipe. Readers are known
- * for these seven fields and the pool descriptors below only;
- * every other byte is unknown and written zero. Each field is written as
- * a 32-bit big-endian word, which the readers' widths do not establish.
- * The guest test that tells a working block from a wrong one is gfxinfo
- * or gfxinit -v reporting one channel and occupancy mask 0xf, with no
- * "return area did not go valid".
+ * An unconfigured pipe (no "product") answers with the seven fields of
+ * sgi_kona_config_fields[] and the pool descriptors below, every other
+ * byte zero: the model's own choice for one pipe driving one 1280x1024
+ * channel, which matches no real configuration (gfxinfo reports board set
+ * 0's "0 RM6 board (of 0)"). A configured pipe answers with
+ * sgi_kona_config_block(). Each field is written as a 32-bit big-endian
+ * word, which the readers' widths do not establish. The guest test that
+ * tells a working block from a wrong one is gfxinfo or gfxinit -v
+ * reporting the configuration, with no "return area did not go valid".
  */
 #define SGI_KONA_CONFIG_OFFSET 8
 #define SGI_KONA_CONFIG_SIZE   0x778
@@ -1940,6 +2312,8 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
  */
 #define SGI_KONA_POOL_OFFSET  0x90
 #define SGI_KONA_POOL_CLASSES 4
+#define SGI_KONA_POOL_GEOMETRY 2
+#define SGI_KONA_POOL_TEXTURE  3
 
 typedef struct SGIKonaPoolDescriptor {
     uint32_t max_key;    /* largest key accepted */
@@ -1983,6 +2357,148 @@ static const struct {
 };
 
 /*
+ * A configured pipe's answer, every field at the offset gfxinit's report
+ * (kona_info and the routines it calls, 6.5.30 gfxinit) reads it from;
+ * see the InfiniteReality command grammar datasheet's configuration
+ * request section for the readers. Fields no reader is known for stay
+ * zero, as do the geometry board's and Ktown's identity records, which
+ * the driver keeps from its own one-wire reading whatever the pipe sends.
+ * The pixel depth stays small (0) and the size 1280x1024: they follow the
+ * video format combination, and the model draws only that one.
+ */
+#define SGI_KONA_CFG_BOARD_SET      0x00
+#define SGI_KONA_CFG_ENGINES        0x04
+#define SGI_KONA_CFG_RMS            0x08
+#define SGI_KONA_CFG_FIFO_RAM       0x0c
+#define SGI_KONA_CFG_CHANNELS       0x14
+#define SGI_KONA_CFG_VIDEO_OPTION   0x18
+#define SGI_KONA_CFG_GAMMA          0x20
+#define SGI_KONA_CFG_RM_PRESENT(i)  (0x24 + 8 * (i))
+#define SGI_KONA_CFG_RM_TEXTURE(i)  (0x28 + 8 * (i))
+#define SGI_KONA_CFG_ACTIVE_ENGINES 0x54
+#define SGI_KONA_CFG_ACTIVE_RMS     0x58
+#define SGI_KONA_CFG_OCCUPANCY      0x5c
+#define SGI_KONA_CFG_WIDTH          0x84
+#define SGI_KONA_CFG_HEIGHT         0x88
+#define SGI_KONA_CFG_BOARD_WORD     0x100
+#define SGI_KONA_CFG_GE_WORDS       0x104
+#define SGI_KONA_CFG_RM_CHIPS(i)    (0x114 + 0x8c * (i))
+#define SGI_KONA_CFG_TRAILING_WORD  0x344
+#define SGI_KONA_CFG_DG_WORDS       0x348
+#define SGI_KONA_CFG_DG_CHANNELS    0x35c
+#define SGI_KONA_CFG_NIC_RM(i)      (0x3e8 + 0x4c * (i))
+#define SGI_KONA_CFG_NIC_TM(i)      (0x564 + 0x4c * (i))
+#define SGI_KONA_CFG_NIC_DG         0x6e0
+#define SGI_KONA_CFG_NIC_DGOPT      0x72c
+
+/* "4MB external" BEF RAM, as every captured pipe reports. */
+#define SGI_KONA_FIFO_RAM_4MB_EXTERNAL 1
+
+/*
+ * Write `text` right-justified in a `width`-byte field of spaces, as the
+ * driver stores the one-wire text it parses and as gfxinfo's RM9 test
+ * (the last three bytes of the name field) needs.
+ */
+static void sgi_kona_put_text(uint8_t *field, size_t width, const char *text)
+{
+    size_t len = MIN(strlen(text), width);
+
+    memset(field, ' ', width);
+    memcpy(field + width - len, text, len);
+}
+
+/*
+ * One 0x4c-byte identity record in the layout kona_extract_nic_info
+ * builds and gfxinit's nic_report prints: flags (0, both pages present),
+ * the six-byte one-wire number, family 0x0b, a good CRC, page format 1,
+ * then serial, part, revision, the three flag bytes and the name. The
+ * serial and number are the model's marked synthetic ones; the flag
+ * bytes are unprogrammed, like the model's one-wire records.
+ */
+static void sgi_kona_put_record(uint8_t *rec, const SGIKonaBoardSpec *b,
+                                unsigned instance)
+{
+    uint64_t serial = SGI_SYNTHETIC_ONEWIRE_SERIAL('G', instance);
+    char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
+
+    sgi_synthetic_barcode(barcode, 'G', serial);
+    for (int i = 0; i < 6; i++) {
+        rec[0x04 + i] = serial >> (40 - 8 * i);
+    }
+    rec[0x0a] = 0x0b;
+    rec[0x0b] = 1;
+    rec[0x0c] = 1;
+    sgi_kona_put_text(rec + 0x0d, 10, barcode);
+    sgi_kona_put_text(rec + 0x17, 19, b->part);
+    memset(rec + 0x2c, ' ', 6);
+    sgi_kona_put_text(rec + 0x32, 4, b->revision);
+    memset(rec + 0x36, 0xff, 6);
+    sgi_kona_put_text(rec + 0x3c, 14, b->name);
+}
+
+/* Fill `count` words from `at` with `word`. */
+static void sgi_kona_put_words(uint8_t *at, unsigned count, uint32_t word)
+{
+    for (unsigned i = 0; i < count; i++) {
+        stl_be_p(at + 4 * i, word);
+    }
+}
+
+static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
+{
+    static const uint32_t ge_words[] = {
+        0, 0x14832057, 0x24731057, 0x14231057,
+    };
+    uint32_t channels = c->display->channels;
+
+    stl_be_p(block + SGI_KONA_CFG_BOARD_SET, c->product->board_set);
+    stl_be_p(block + SGI_KONA_CFG_ENGINES, c->geometry->engines);
+    stl_be_p(block + SGI_KONA_CFG_RMS, c->rm_count);
+    stl_be_p(block + SGI_KONA_CFG_FIFO_RAM, SGI_KONA_FIFO_RAM_4MB_EXTERNAL);
+    stl_be_p(block + SGI_KONA_CFG_CHANNELS, channels);
+    stl_be_p(block + SGI_KONA_CFG_VIDEO_OPTION,
+             c->option ? c->option->code : 0);
+    stl_be_p(block + SGI_KONA_CFG_GAMMA, c->display->external_gamma);
+    stl_be_p(block + SGI_KONA_CFG_ACTIVE_ENGINES, c->geometry->engines);
+    stl_be_p(block + SGI_KONA_CFG_ACTIVE_RMS, c->rm_count);
+    stl_be_p(block + SGI_KONA_CFG_OCCUPANCY, c->geometry->occupancy);
+    stl_be_p(block + SGI_KONA_CFG_WIDTH, SGI_KONA_FB_WIDTH);
+    stl_be_p(block + SGI_KONA_CFG_HEIGHT, SGI_KONA_FB_HEIGHT);
+
+    stl_be_p(block + SGI_KONA_CFG_BOARD_WORD, c->geometry->board_word);
+    for (unsigned i = 0; i < ARRAY_SIZE(ge_words); i++) {
+        stl_be_p(block + SGI_KONA_CFG_GE_WORDS + 4 * i, ge_words[i]);
+    }
+    for (unsigned i = 0; i < c->rm_count; i++) {
+        uint8_t *chips = block + SGI_KONA_CFG_RM_CHIPS(i);
+
+        stl_be_p(block + SGI_KONA_CFG_RM_PRESENT(i), 1);
+        stl_be_p(block + SGI_KONA_CFG_RM_TEXTURE(i), c->texture->code);
+        stl_be_p(chips, c->raster->board_word);
+        stl_be_p(chips + 0x04, 0x15032057);
+        stl_be_p(chips + 0x08, 0x15431057);
+        sgi_kona_put_words(chips + 0x0c, 4, 0x24631057);
+        sgi_kona_put_words(chips + 0x1c, 8, 0x24d31057);
+        sgi_kona_put_words(chips + 0x3c, 20, 0x54938057);
+        sgi_kona_put_record(block + SGI_KONA_CFG_NIC_RM(i),
+                            &c->raster->board, SGI_KONA_SERIAL_RM(i));
+        sgi_kona_put_record(block + SGI_KONA_CFG_NIC_TM(i),
+                            &c->texture->board, SGI_KONA_SERIAL_TM(i));
+    }
+    stl_be_p(block + SGI_KONA_CFG_TRAILING_WORD, c->geometry->trailing_word);
+    stl_be_p(block + SGI_KONA_CFG_DG_WORDS, 0x05532057);
+    sgi_kona_put_words(block + SGI_KONA_CFG_DG_WORDS + 4, 4, 0x15838057);
+    sgi_kona_put_words(block + SGI_KONA_CFG_DG_CHANNELS, channels,
+                       0x15631057);
+    sgi_kona_put_record(block + SGI_KONA_CFG_NIC_DG, &c->display->board,
+                        SGI_KONA_SERIAL_DG);
+    if (c->option) {
+        sgi_kona_put_record(block + SGI_KONA_CFG_NIC_DGOPT, &c->option->board,
+                            SGI_KONA_SERIAL_DGOPT);
+    }
+}
+
+/*
  * Post a return-page answer: `len` bytes at `offset`, none when `len` is
  * 0, then a non-zero word 0, the only thing the waiting process polls. The
  * order is inferred: gfxinit hands the page to the kernel as soon as word
@@ -2016,22 +2532,38 @@ static bool sgi_kona_post_return(SGIKonaState *s, uint32_t token,
 static void sgi_kona_answer_config(SGIKonaState *s)
 {
     uint8_t block[SGI_KONA_CONFIG_SIZE] = { 0 };
+    const SGIKonaConfig *c = &s->config;
 
-    for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_config_fields); i++) {
-        stl_be_p(block + sgi_kona_config_fields[i].offset,
-                 sgi_kona_config_fields[i].value);
+    if (c->product) {
+        sgi_kona_config_block(c, block);
+    } else {
+        for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_config_fields); i++) {
+            stl_be_p(block + sgi_kona_config_fields[i].offset,
+                     sgi_kona_config_fields[i].value);
+        }
     }
     for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_pools); i++) {
-        const SGIKonaPoolDescriptor *pool = &sgi_kona_pools[i];
-        uint8_t *p = block + SGI_KONA_POOL_OFFSET + sizeof(*pool) * i;
+        SGIKonaPoolDescriptor pool = sgi_kona_pools[i];
+        uint8_t *p = block + SGI_KONA_POOL_OFFSET + sizeof(pool) * i;
 
-        stl_be_p(p + 0x00, pool->max_key);
-        stl_be_p(p + 0x04, pool->max_align);
-        stl_be_p(p + 0x08, pool->copies);
-        stl_be_p(p + 0x0c, pool->shared);
-        stl_be_p(p + 0x10, pool->copy_down);
-        stl_be_p(p + 0x14, pool->granule);
-        stl_be_p(p + 0x18, pool->capacity);
+        /*
+         * A configured pipe sizes the geometry-engine class by its
+         * engines and the texture class by one raster manager's texture
+         * memory, which every raster manager holds a copy of.
+         */
+        if (c->product && i == SGI_KONA_POOL_GEOMETRY) {
+            pool.copies = c->geometry->engines;
+        }
+        if (c->product && i == SGI_KONA_POOL_TEXTURE) {
+            pool.capacity = c->texture->mb * MiB / pool.granule;
+        }
+        stl_be_p(p + 0x00, pool.max_key);
+        stl_be_p(p + 0x04, pool.max_align);
+        stl_be_p(p + 0x08, pool.copies);
+        stl_be_p(p + 0x0c, pool.shared);
+        stl_be_p(p + 0x10, pool.copy_down);
+        stl_be_p(p + 0x14, pool.granule);
+        stl_be_p(p + 0x18, pool.capacity);
     }
     sgi_kona_post_return(s, SGI_KONA_CMD_GET_CONFIG, SGI_KONA_CONFIG_OFFSET,
                          block, sizeof(block));
@@ -13297,6 +13829,30 @@ static void sgi_kona_port_write_next(SGIKonaState *s, uint32_t value)
     s->eeprom_addr += 4;
 }
 
+/*
+ * The two words kona_attach reads through the indirect port to class the
+ * pipe (see "Configurations" above): the product's low bits after
+ * SGI_KONA_SELECT_PRODUCT, and no Reality bit after
+ * SGI_KONA_SELECT_REDUCED. An unconfigured pipe answers neither, so its
+ * reads stay the logged zero they always were.
+ */
+static bool sgi_kona_class_word(SGIKonaState *s, uint64_t *value)
+{
+    if (!s->config.product) {
+        return false;
+    }
+    switch (s->cursor_selector) {
+    case SGI_KONA_SELECT_PRODUCT:
+        *value = s->config.product->inventory_select;
+        return true;
+    case SGI_KONA_SELECT_REDUCED:
+        *value = 0;
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
                                    unsigned size)
 {
@@ -13383,6 +13939,11 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
     case SGI_KONA_ACTIVITY:
         value = s->activity ? SGI_KONA_ACTIVITY_BUS : 0;
         break;
+    case 0x8003d0:
+        if (sgi_kona_class_word(s, &value)) {
+            break;
+        }
+        /* fall through */
     default:
         if (addr >= SGI_KONA_MAPRAM_BASE &&
             addr < SGI_KONA_MAPRAM_BASE + SGI_KONA_MAPRAM_ENTRIES * 4) {
@@ -13698,6 +14259,9 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
     if (!s->fabric) {
         error_setg(errp, "sgi-kona requires the fabric its "
                   "packets travel");
+        return false;
+    }
+    if (!sgi_kona_configure(s, errp)) {
         return false;
     }
 
@@ -14808,6 +15372,21 @@ static const Property sgi_kona_properties[] = {
      */
     DEFINE_PROP_UINT32("list-memory-size", SGIKonaState, list_memory_size,
                        SGI_KONA_LIST_DEFAULT),
+    /*
+     * The configuration the pipe presents; see sgi_kona_configure().
+     * Without "product" the pipe answers as it always has, and setting
+     * any of the others is refused. Zero and empty values take the
+     * product's own board, one raster manager, and the channel count of
+     * the display generator.
+     */
+    DEFINE_PROP_STRING("product", SGIKonaState, product),
+    DEFINE_PROP_STRING("geometry", SGIKonaState, geometry),
+    DEFINE_PROP_STRING("rm-type", SGIKonaState, rm_type),
+    DEFINE_PROP_UINT32("rm-count", SGIKonaState, rm_count, 0),
+    DEFINE_PROP_UINT32("texture-mb", SGIKonaState, texture_mb, 0),
+    DEFINE_PROP_UINT32("channels", SGIKonaState, channels, 0),
+    DEFINE_PROP_STRING("display-generator", SGIKonaState, display_generator),
+    DEFINE_PROP_STRING("video-option", SGIKonaState, video_option),
 };
 
 static int sgi_kona_pre_save(void *opaque)
@@ -17788,6 +18367,7 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_kona_properties);
     bc->build_widget = sgi_kona_build_widget;
     bc->finish_realize = sgi_kona_finish_realize;
+    bc->identity_record = sgi_kona_identity_record;
     rc->phases.hold = sgi_kona_reset_hold;
 
     sgi_xio_board_class_set_identity(oc, &sgi_kona_identity);

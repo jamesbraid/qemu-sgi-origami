@@ -1470,6 +1470,39 @@ static void test_onewire_board_part_configures_geometry_record(void)
 }
 
 /*
+ * A configured pipe's records carry the boards' real names and revisions,
+ * which hinv prints and kona_attach searches for "GE16-": true-wombat's
+ * GE16-4 rev E and KTOWN rev F for an InfiniteReality3, and whole-tetra's
+ * GE14-4 030-1129-002 rev F for an InfiniteReality2, whatever board-part
+ * the board was given.
+ */
+static void test_onewire_product_names_records(void)
+{
+    QTestState *s;
+    uint8_t identity[8];
+
+    s = qtest_init("-M origin2000 -device sgi-kona,id=kona3,slot=io4,"
+                   "product=ir3");
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "EMUG00", "030-1398-001",
+                                 "E", "GE16-4");
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "EMUG01", "030-1067-001",
+                                 "F", "KTOWN");
+    qtest_quit(s);
+
+    s = qtest_init("-M origin2000 -device sgi-kona,id=kona4,slot=io4,"
+                   "product=ir2");
+    kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
+    kona_match_rom(s, REG_ONEWIRE, identity);
+    kona_assert_onewire_identity(s, REG_ONEWIRE, "EMUG00", "030-1129-002",
+                                 "F", "GE14-4");
+    qtest_quit(s);
+}
+
+/*
  * board-part shares its check, sgi_bridge_board_part_error()
  * (include/hw/pci-host/sgi-bridge.h), with hw/pci-host/sgi-bridge.c: a
  * malformed value must still be refused at realize, and the message KONA
@@ -1872,6 +1905,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/"
                    "onewire-board-part-configures-geometry-record",
                    test_onewire_board_part_configures_geometry_record);
+    qtest_add_func("sn0/origin2000/kona/onewire-product-names-records",
+                   test_onewire_product_names_records);
     qtest_add_func("sn0/origin2000/kona/board-part-invalid-is-rejected",
                    test_board_part_invalid_is_rejected);
     qtest_add_func("sn0/origin2000/kona/"

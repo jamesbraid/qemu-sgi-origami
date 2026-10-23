@@ -29,6 +29,22 @@
 #include "qom/object.h"
 
 #define TYPE_SGI_KONA "sgi-kona"
+
+/*
+ * A pipe's configuration once realize has checked its properties: the
+ * product and the boards it is built from, each an entry of one of the
+ * tables in sgi-kona.c. A NULL product is the unconfigured pipe, which
+ * answers as it always has.
+ */
+typedef struct SGIKonaConfig {
+    const struct SGIKonaProduct *product;
+    const struct SGIKonaGeometry *geometry;
+    const struct SGIKonaRaster *raster;
+    const struct SGIKonaTexture *texture;
+    const struct SGIKonaDisplay *display;
+    const struct SGIKonaOption *option;
+    uint32_t rm_count;
+} SGIKonaConfig;
 OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
 typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 
@@ -1464,6 +1480,21 @@ struct SGIKonaState {
      */
     uint64_t display_id_generation;
     uint32_t list_memory_size;
+
+    /*
+     * The configuration properties ("product" and the boards that fill
+     * it in) and what realize resolved them to; see sgi_kona_configure()
+     * in sgi-kona.c.
+     */
+    char *product;
+    char *geometry;
+    char *rm_type;
+    uint32_t rm_count;
+    uint32_t texture_mb;
+    uint32_t channels;
+    char *display_generator;
+    char *video_option;
+    SGIKonaConfig config;
     uint32_t plane_front;
     uint32_t plane_back;
     uint32_t plane_front_tag;
