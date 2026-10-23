@@ -13,6 +13,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
 #include "hw/mips/sgi/mace-timer.h"
+#include "mace-serial-dma.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
 #include "hw/core/qdev-properties.h"
@@ -78,12 +79,19 @@ struct SGIMACEState {
     MemoryRegion cpu_pci_high_view;
     MemoryRegion cpu_pci_pio_low;
     MemoryRegion cpu_pci_pio_high;
+    MACESerialDMA serial_dma;
+    bool migration_loading;
+    AddressSpace serial_dma_as;
+    MemoryRegion peripheral_dma;
+    MemoryRegion peripheral_native_ram;
+    MemoryRegion peripheral_no_ecc_ram;
     AddressSpace pci_dma_as;
     AddressSpace pci_ram_as;
     MemoryRegion *ram;
     DS1685State rtc;
     SerialState uart[2];
     MACEUARTPort uart_port[2];
+    MACEUARTPort serial_dma_port[2];
     qemu_irq crime[16];
     qemu_irq isa_reset;
     QEMUTimer *timer;
@@ -159,13 +167,36 @@ static void mace_rtc_irq(void *opaque, int n, int level)
     mace_update_irqs(s);
 }
 
+static void mace_serial_update_irq(void *opaque, uint32_t status)
+{
+    SGIMACEState *s = opaque;
+
+    s->istat = (s->istat & ~0xfbe00000U) | status;
+    for (unsigned p = 0; p < 2; p++) {
+        uint32_t bit = 1U << (20 + 6 * p);
+        bool rx = (s->serial_dma.channel[2 * p + 1].control & 0x600) == 0x200;
+        bool tx = (s->serial_dma.channel[2 * p].control & 0x600) == 0x200;
+
+        s->istat = (s->istat & ~bit) |
+                   (serial_pio_irq_pending(&s->uart[p], rx, tx) ? bit : 0);
+    }
+    mace_update_irqs(s);
+}
+
 static void mace_uart_irq(void *opaque, int n, int level)
 {
     SGIMACEState *s = opaque;
     uint32_t bit = 1U << (20 + 6 * n);
 
-    s->istat = (s->istat & ~bit) | (level ? bit : 0);
-    mace_update_irqs(s);
+    if (s->migration_loading) {
+        return;
+    }
+    if (s->serial_dma.bh) {
+        mace_serial_update_irq(s, s->istat & 0xfbe00000U);
+    } else {
+        s->istat = (s->istat & ~bit) | (level ? bit : 0);
+        mace_update_irqs(s);
+    }
 }
 
 static void mace_update_pci_irqs(SGIMACEState *s)
@@ -687,6 +718,9 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
         case MACE_RING_BASE: {
             bool assert_reset = !(s->ring_base & 1) && (value & 1);
 
+            if (!mace_serial_dma_base_allowed(&s->serial_dma, value)) {
+                return;
+            }
             s->ring_base = value & MACE_RING_WRITABLE;
             if (assert_reset) {
                 serial_reset_device(&s->uart[0]);
@@ -695,6 +729,7 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
             serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
             serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
             qemu_set_irq(s->isa_reset, s->ring_base & 1);
+            mace_serial_dma_service(&s->serial_dma);
             return;
         }
         case MACE_IMASK:
@@ -706,10 +741,11 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "sgi-mace: timer status clears through compare writes\n");
             }
-            if (value & ~0x0000e000U) {
+            if (value & 0x000f1fffU) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-mace: peripheral status write is unsupported\n");
             }
+            mace_serial_dma_ack(&s->serial_dma, value);
             return;
         }
     }
@@ -756,6 +792,33 @@ static void mace_uart_write(void *opaque, hwaddr offset, uint64_t value,
     serial_io_ops.write(&s->uart[port->index], reg, value, 1);
 }
 
+static uint64_t mace_serial_read(void *opaque, hwaddr offset, unsigned size)
+{
+    MACEUARTPort *port = opaque;
+
+    return mace_serial_dma_read(&port->mace->serial_dma, port->index,
+                                 offset / 8);
+}
+
+static void mace_serial_write(void *opaque, hwaddr offset, uint64_t value,
+                              unsigned size)
+{
+    MACEUARTPort *port = opaque;
+
+    mace_serial_dma_write(&port->mace->serial_dma, port->index,
+                          offset / 8, value);
+}
+
+static const MemoryRegionOps mace_serial_ops = {
+    .read = mace_serial_read,
+    .write = mace_serial_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 8,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 8,
+    .impl.max_access_size = 8,
+};
+
 static const MemoryRegionOps mace_uart_ops = {
     .read = mace_uart_read,
     .write = mace_uart_write,
@@ -784,6 +847,7 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->saved_elapsed_ns = 0;
     s->ring_base = 1;
+    mace_serial_dma_reset(&s->serial_dma);
     s->istat = 0;
     s->imask = 0;
     s->pci_control = 0;
@@ -813,6 +877,14 @@ static int mace_pre_save(void *opaque)
 
     s->saved_elapsed_ns = MAX(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                               s->epoch_ns, 0);
+    return mace_serial_dma_pre_save(&s->serial_dma);
+}
+
+static int mace_pre_load(void *opaque)
+{
+    SGIMACEState *s = opaque;
+
+    s->migration_loading = true;
     return 0;
 }
 
@@ -820,6 +892,10 @@ static int mace_post_load(void *opaque, int version_id)
 {
     SGIMACEState *s = opaque;
 
+    if (s->ring_base & ~MACE_RING_WRITABLE) {
+        return -EINVAL;
+    }
+    s->migration_loading = false;
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                   s->saved_elapsed_ns;
     mace_update_irqs(s);
@@ -828,7 +904,7 @@ static int mace_post_load(void *opaque, int version_id)
     serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
     mace_schedule_compare(s);
-    return 0;
+    return mace_serial_dma_post_load(&s->serial_dma);
 }
 
 static const VMStateDescription vmstate_mace = {
@@ -836,6 +912,7 @@ static const VMStateDescription vmstate_mace = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_save = mace_pre_save,
+    .pre_load = mace_pre_load,
     .post_load = mace_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_INT64(saved_elapsed_ns, SGIMACEState),
@@ -853,6 +930,8 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT8(pci_bus_level, SGIMACEState),
         VMSTATE_STRUCT_ARRAY(uart, SGIMACEState, 2, 0, vmstate_serial,
                              SerialState),
+        VMSTATE_STRUCT(serial_dma, SGIMACEState, 0,
+                       vmstate_mace_serial_dma, MACESerialDMA),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -883,6 +962,10 @@ static void mace_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), mace_pci_wire_irq, "pci", 8);
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
     memory_region_init(&s->eth_dma, obj, "sgi-mace-eth-dma", 1ULL << 32);
+    memory_region_init(&s->peripheral_dma, obj, "sgi-mace-peripheral-dma",
+                       1ULL << 32);
+    address_space_init(&s->serial_dma_as, &s->peripheral_dma,
+                       "sgi-mace-serial-dma");
     object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
     object_property_add_alias(obj, "phy-ics1890", OBJECT(&s->eth),
@@ -976,6 +1059,14 @@ static void mace_realize(DeviceState *dev, Error **errp)
     if (s->ram) {
         uint64_t size = MIN(memory_region_size(s->ram), 1ULL << 30);
 
+        memory_region_init_alias(&s->peripheral_native_ram, OBJECT(dev),
+                                 "sgi-mace-peripheral-native", s->ram, 0, size);
+        memory_region_init_alias(&s->peripheral_no_ecc_ram, OBJECT(dev),
+                                 "sgi-mace-peripheral-no-ecc", s->ram, 0, size);
+        memory_region_add_subregion(&s->peripheral_dma, 0x40000000,
+                                    &s->peripheral_native_ram);
+        memory_region_add_subregion(&s->peripheral_dma, 0x80000000,
+                                    &s->peripheral_no_ecc_ram);
         if (s->eth_low_dma_compat) {
             memory_region_init_alias(&s->eth_low_ram, OBJECT(dev),
                                      "sgi-mace-eth-low-ram", s->ram, 0,
@@ -1026,6 +1117,20 @@ static void mace_realize(DeviceState *dev, Error **errp)
                               0x800);
         memory_region_add_subregion_overlap(&s->aperture,
                                             i ? MACE_UART_B : MACE_UART_A,
+                                            &port->mmio, 1);
+    }
+
+    mace_serial_dma_init(&s->serial_dma, s->uart, &s->serial_dma_as,
+                         &s->ring_base, mace_serial_update_irq, s);
+    for (unsigned p = 0; p < 2; p++) {
+        MACEUARTPort *port = &s->serial_dma_port[p];
+
+        port->mace = s;
+        port->index = p;
+        memory_region_init_io(&port->mmio, OBJECT(dev), &mace_serial_ops, port,
+                              p ? "sgi-mace-serial-b" : "sgi-mace-serial-a",
+                              0x40);
+        memory_region_add_subregion_overlap(&s->aperture, 0x318000 + p * 0x4000,
                                             &port->mmio, 1);
     }
 
@@ -1147,6 +1252,8 @@ static void mace_unrealize(DeviceState *dev)
         object_unparent(OBJECT(identity));
         SGI_MACE(dev)->identity = NULL;
     }
+    mace_serial_dma_cleanup(&SGI_MACE(dev)->serial_dma);
+    address_space_destroy(&SGI_MACE(dev)->serial_dma_as);
     address_space_destroy(&SGI_MACE(dev)->pci_dma_as);
     if (SGI_MACE(dev)->ram && !SGI_MACE(dev)->aic_pci_diagnostic &&
         SGI_MACE(dev)->pci_native_word_swap) {
