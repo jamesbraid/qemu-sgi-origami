@@ -1403,14 +1403,21 @@ static char *r16000_identity_image(void)
     user_i(image, 43, 26, 8, 0);
     user_mfc0(image, 8, 16);       /* Config0 */
     user_i(image, 43, 26, 8, 4);
+    user_li(image, 9, UINT32_MAX);
+    user_mtc0(image, 9, 16);
+    user_mfc0(image, 8, 16);
+    user_i(image, 43, 26, 8, 8);
+    user_mtc0(image, 0, 16);
+    user_mfc0(image, 8, 16);
+    user_i(image, 43, 26, 8, 12);
     user_li(image, 9, 0x20000000); /* Enable the FPU for CFC1. */
     user_mfc0(image, 8, 12);
     user_emit(image, (8u << 21) | (9u << 16) | (8u << 11) | 0x25);
     user_mtc0(image, 8, 12);
     user_cfc1(image, 8, 0);        /* FCR0 */
-    user_i(image, 43, 26, 8, 8);
+    user_i(image, 43, 26, 8, 16);
     user_li(image, 9, 1);
-    user_i(image, 43, 26, 9, 12);
+    user_i(image, 43, 26, 9, 20);
     user_park(image);
 
     fd = g_file_open_tmp("r16000-identity-XXXXXX", &path, NULL);
@@ -1450,7 +1457,7 @@ static void test_r16000_identity_and_immutable_inputs(void)
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
         g_autofree char *cpu_path = NULL;
-        uint8_t mailbox[16];
+        uint8_t mailbox[24];
         QTestState *qts = qtest_initf(
             "-M malta -m 64M -cpu %s -bios %s -accel tcg,thread=single -S",
             cases[i].profile, image);
@@ -1459,7 +1466,7 @@ static void test_r16000_identity_and_immutable_inputs(void)
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
         sgi_wait_start(&w, "R16000 profile mailbox");
         do {
-            qtest_memread(qts, R16000_MAILBOX + 12, mailbox, 4);
+            qtest_memread(qts, R16000_MAILBOX + 20, mailbox, 4);
             if (ldl_be_p(mailbox) == 1) {
                 break;
             }
@@ -1469,7 +1476,11 @@ static void test_r16000_identity_and_immutable_inputs(void)
         g_assert_cmphex(ldl_be_p(mailbox), ==, 0x00000F50);
         g_assert_cmphex(ldl_be_p(mailbox + 4), ==,
                         cases[i].expected_config0);
-        g_assert_cmphex(ldl_be_p(mailbox + 8), ==, 0x00000900);
+        g_assert_cmphex(ldl_be_p(mailbox + 8), ==,
+                        (cases[i].expected_config0 & ~7u) | 7u);
+        g_assert_cmphex(ldl_be_p(mailbox + 12), ==,
+                        cases[i].expected_config0 & ~7u);
+        g_assert_cmphex(ldl_be_p(mailbox + 16), ==, 0x00000900);
 
         cpu_path = r16000_qom_path(qts);
         for (unsigned int property = 0; property < 3; property++) {
@@ -1494,6 +1505,29 @@ static void test_r16000_identity_and_immutable_inputs(void)
                                     "cannot change after CPU realization"));
             qobject_unref(response);
         }
+
+        qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        stl_be_p(mailbox, 0);
+        qtest_memwrite(qts, R16000_MAILBOX + 20, mailbox, 4);
+        qtest_system_reset(qts);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        sgi_wait_start(&w, "R16000 profile mailbox after cold reset");
+        do {
+            qtest_memread(qts, R16000_MAILBOX + 20, mailbox, 4);
+            if (ldl_be_p(mailbox) == 1) {
+                break;
+            }
+        } while (sgi_wait_continue(&w, 1000));
+        g_assert_cmphex(ldl_be_p(mailbox), ==, 1);
+        qtest_memread(qts, R16000_MAILBOX, mailbox, sizeof(mailbox));
+        g_assert_cmphex(ldl_be_p(mailbox), ==, 0x00000F50);
+        g_assert_cmphex(ldl_be_p(mailbox + 4), ==,
+                        cases[i].expected_config0);
+        g_assert_cmphex(ldl_be_p(mailbox + 8), ==,
+                        (cases[i].expected_config0 & ~7u) | 7u);
+        g_assert_cmphex(ldl_be_p(mailbox + 12), ==,
+                        cases[i].expected_config0 & ~7u);
+        g_assert_cmphex(ldl_be_p(mailbox + 16), ==, 0x00000900);
         qtest_quit(qts);
     }
 }

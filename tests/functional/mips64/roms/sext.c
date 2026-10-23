@@ -22,6 +22,8 @@ static volatile uint32_t v_mem_neg = 0x80000000u;
 void rom_main(void)
 {
     uint64_t a, b, r, hi, lo;
+    uint64_t store_value = 0x000000001234abcdull;
+    uint32_t word;
 
     /*
      * A zero shift truncates to 32 bits and sign-extends: 0x89abcdef is
@@ -154,4 +156,42 @@ void rom_main(void)
     rom_assert_eq(18, 0x89abcdef00000000ull, r);
     __asm__("dsra32 %0, %1, 0" : "=r"(r) : "r"(a));
     rom_assert_eq(19, 0x0000000001234567ull, r);
+
+    /* Big-endian byte stores use the low eight source bits at each lane. */
+    v_mem_neg = 0;
+    __asm__ volatile("sb %1, 0(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(20, 0xcd000000u, word);
+
+    v_mem_neg = 0;
+    __asm__ volatile("sb %1, 1(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(21, 0x00cd0000u, word);
+
+    v_mem_neg = 0;
+    __asm__ volatile("sb %1, 2(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(22, 0x0000cd00u, word);
+
+    v_mem_neg = 0;
+    __asm__ volatile("sb %1, 3(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(23, 0x000000cdu, word);
+
+    /* Halfword stores use the low sixteen source bits at aligned lanes. */
+    v_mem_neg = 0;
+    __asm__ volatile("sh %1, 0(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(24, 0xabcd0000u, word);
+
+    v_mem_neg = 0;
+    __asm__ volatile("sh %1, 2(%0)" : : "r"(&v_mem_neg), "r"(store_value)
+                     : "memory");
+    word = v_mem_neg;
+    rom_assert_eq(25, 0x0000abcdu, word);
 }

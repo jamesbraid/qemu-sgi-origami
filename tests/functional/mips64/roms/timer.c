@@ -22,6 +22,7 @@ void rom_main(void)
 {
     uint32_t first, second, cause;
     uint32_t status;
+    uint32_t prid;
     int i;
 
     rom_exc_reset();
@@ -81,8 +82,9 @@ void rom_main(void)
 
     rom_assert_eq(12, 0, rom_exc.count);
 
-    /* R10000 equality writes set IP[7]; other models retain QEMU behavior. */
-    if (((rom_get_prid() >> 8) & 0xff) == 0x09) {
+    /* R10000 and the selected R16000 policy set IP[7] on equality. */
+    prid = rom_get_prid();
+    if (((prid >> 8) & 0xff) == 0x09 || prid == 0x00000f50) {
         /* Establish a nonmatching baseline before the equality write. */
         rom_set_count(0);
         rom_set_compare(0x40000000u);
