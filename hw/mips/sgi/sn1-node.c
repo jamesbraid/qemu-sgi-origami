@@ -2171,6 +2171,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
            g_strcmp0(topology, "tezro-rack-base") == 0)) ||
          (g_strcmp0(product, "onyx4-host") == 0 &&
           g_strcmp0(topology, "onyx4-host-serial-compat") == 0))) {
+        qdev_prop_set_bit(node->l1, "irouter-compat", true);
         qdev_prop_set_uint32(node->l1, "port-speed-first", 1);
     }
     if (node->l1_mac_eeprom) {

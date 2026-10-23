@@ -3932,6 +3932,35 @@ static void assert_machine_port_speed(QTestState *s, uint32_t first)
     g_assert_cmpmem(reply, sizeof(zero_reply), expected, sizeof(zero_reply));
 }
 
+static void assert_machine_irouter_brick(QTestState *s, bool selected,
+                                         uint32_t type_code)
+{
+    static const char *const type_names[256] = {
+        [0x37] = "Chimera Server",
+        [0x39] = "Chimera WS",
+        [0x51] = "Rackmount WS",
+    };
+    uint8_t request[53];
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':"
+        "{'path':'/machine/node0/l1','property':'irouter-compat'}}");
+
+    g_assert_cmpint(qdict_get_bool(result, "return"), ==, selected);
+    qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+    g_assert_cmpuint(irouter_brick_request(request), ==, sizeof(request));
+    if (selected) {
+        g_autofree char *text = g_strdup_printf(
+            "rack: 001, slot: 01, partition: none, type: %s [?MB flash], "
+            "serial:(null), source: OTHER\n\n", type_names[type_code]);
+
+        send_frame_at(s, BASE, request, sizeof(request));
+        irouter_expect_text(s, BASE, 0x30, 0x00041215, 0x00041003, text);
+    } else {
+        send_frame_at(s, BASE, request, sizeof(request));
+        expect_router_error(s, 16);
+    }
+}
+
 static bool identity_area_contains(const uint8_t *area, size_t length,
                                    const char *text)
 {
@@ -4222,20 +4251,23 @@ static void test_machine_port_speed_profiles(void)
         const char *reset_mode;
         const char *scache_bytes;
         uint32_t first;
+        uint32_t brick_type;
+        bool irouter_compat;
     } profiles[] = {
-        { "origin350", "2G", 4, "0x009cad85", "0x800000", 1 },
+        { "origin350", "2G", 4, "0x009cad85", "0x800000", 1,
+          0x37, true },
         { "onyx350,topology=onyx350-compat", "8G", 4,
-          "0x009caf85", "0x800000", 1 },
+          "0x009caf85", "0x800000", 1, 0x37, true },
         { "tezro,topology=tezro-tower-one", "4G", 1,
-          "0x009bad85", "0x400000", 1 },
+          "0x009bad85", "0x400000", 1, 0x39, true },
         { "tezro,topology=tezro-tower-multi", "4G", 4,
-          "0x009bad85", "0x400000", 1 },
+          "0x009bad85", "0x400000", 1, 0x39, true },
         { "tezro,topology=tezro-rack-base", "4G", 1,
-          "0x009bad85", "0x400000", 1 },
+          "0x009bad85", "0x400000", 1, 0x51, true },
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
-          "0x009dad85", "0x1000000", 1 },
+          "0x009dad85", "0x1000000", 1, 0x37, true },
         { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
-          "0x009bad85", "0x400000", 0 },
+          "0x009bad85", "0x400000", 0, 0x39, false },
     };
     int fd;
 
@@ -4269,12 +4301,15 @@ static void test_machine_port_speed_profiles(void)
                         profiles[i].cpus,
                         profiles[i].reset_mode, profiles[i].scache_bytes,
                         flash, data, clock);
+        assert_machine_irouter_brick(s, profiles[i].irouter_compat,
+                                     profiles[i].brick_type);
         assert_machine_port_speed(s, profiles[i].first);
         qtest_quit(s);
     }
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
                     "-bios %s -S", prom);
+    assert_machine_irouter_brick(s, false, 0x34);
     assert_machine_port_speed(s, 0);
     qtest_quit(s);
     g_unlink(flash);
