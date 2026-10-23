@@ -16,6 +16,7 @@
 #include "qemu/log.h"
 #include "qemu/cutils.h"
 #include "qemu/bswap.h"
+#include "qemu/host-utils.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
@@ -40,6 +41,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 /* Model scheduling delay; no AIC-7880 instruction timing is established. */
 #define AIC_SEQ_QUANTUM_US 500
 #define AIC_SCB_PAGES 16
+#define AIC_SCB_EXTERNAL_PAGES 256
 #define AIC_SCB_PAGE_BYTES 32
 
 #define REG_SCSISEQ  0x00
@@ -71,6 +73,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define REG_ALLONES  0x69
 #define REG_ALLZEROS 0x6a
 #define REG_FLAGS    0x6b
+#define REG_DSCOMMAND 0x84
 #define REG_DSPCISTATUS 0x86
 #define REG_HCNTRL   0x87
 #define REG_HCNT_RSVD 0x8f
@@ -142,7 +145,13 @@ struct AIC7880State {
     QEMUTimer *bus_free_timer;
     uint8_t regs[AIC_REG_SPACE];
     uint8_t seqram[AIC_SEQ_BYTES];
-    uint8_t scb_ram[AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES];
+    uint8_t scb_ram[AIC_SCB_EXTERNAL_PAGES * AIC_SCB_PAGE_BYTES];
+    uint8_t scb_parity[AIC_SCB_EXTERNAL_PAGES * AIC_SCB_PAGE_BYTES];
+    bool parity_break_pending;
+    bool external_scb_ram;
+    bool external_scb_shared;
+    uint32_t external_scb_size;
+    uint8_t external_scb_width;
     uint16_t seqaddr;
     uint8_t seqbyte;
     uint8_t error;
@@ -154,8 +163,8 @@ struct AIC7880State {
     uint8_t lun;
     uint8_t phase;
     uint8_t expected_phase;
-    uint8_t qout[16];
-    uint8_t qin[16];
+    uint8_t qout[256];
+    uint8_t qin[256];
     uint8_t qin_head;
     uint8_t qin_tail;
     uint8_t qin_count;
@@ -263,7 +272,8 @@ static void aic7880_update_irq(AIC7880State *s)
                    (PCI_COMMAND_IO | PCI_COMMAND_MEMORY);
     bool swint = (s->regs[REG_HCNTRL] & HOST_SWINT) && decoded;
     bool exception = (s->regs[REG_INTSTAT] & 0x08) &&
-                     (!s->maskable_break_pending || (s->error & 0x04) ||
+                     (!s->maskable_break_pending || s->parity_break_pending ||
+                      (s->error & 0x04) ||
                       (s->regs[REG_SEQCTL] & SEQ_BRKINTEN));
     bool scsiint = (s->regs[REG_INTSTAT] & 0x04) &&
                    (!s->peer_scsi_irq_latched || decoded);
@@ -291,24 +301,40 @@ static void aic7880_update_scsi_irq(AIC7880State *s)
     aic7880_update_irq(s);
 }
 
+static void aic7880_error(AIC7880State *s, const char *reason);
+
 static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
                                   uint32_t val, int len)
 {
+    AIC7880State *s = AIC7880(pci);
     uint16_t before = pci_get_word(pci->config + PCI_COMMAND);
 
+    if (s->external_scb_ram) {
+        for (unsigned i = 0; i < len; i++) {
+            uint8_t byte = val >> (i * 8);
+
+            if ((addr + i == 0x40 && (byte & 0x10) &&
+                 s->external_scb_width != 9) ||
+                (addr + i == 0x42 && (byte & 1))) {
+                aic7880_error(s,
+                              "unsupported external SRAM configuration");
+                return;
+            }
+        }
+    }
     pci_default_write_config(pci, addr, val, len);
     if (pci_get_word(pci->config + PCI_COMMAND) != before) {
         trace_aic7880_pci_command(pci->devfn, before,
             pci_get_word(pci->config + PCI_COMMAND),
-            ldl_le_p(&AIC7880(pci)->regs[0x88]),
-            ldl_le_p(&AIC7880(pci)->regs[0x8c]) & 0xffffff,
-            AIC7880(pci)->regs[REG_DFCNTRL]);
-        aic7880_update_irq(AIC7880(pci));
-        aic7880_host_dma(AIC7880(pci));
-        if (!AIC7880(pci)->error_pending &&
+            ldl_le_p(&s->regs[0x88]),
+            ldl_le_p(&s->regs[0x8c]) & 0xffffff,
+            s->regs[REG_DFCNTRL]);
+        aic7880_update_irq(s);
+        aic7880_host_dma(s);
+        if (!s->error_pending &&
             !(pci_get_word(pci->config + PCI_STATUS) &
               (PCI_STATUS_REC_MASTER_ABORT | PCI_STATUS_REC_TARGET_ABORT))) {
-            aic7880_process_scsi_data(AIC7880(pci));
+            aic7880_process_scsi_data(s);
         }
     }
 }
@@ -915,6 +941,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     memset(s->regs, 0, sizeof(s->regs));
     memset(s->cdb, 0, sizeof(s->cdb));
     s->error = 0;
+    s->parity_break_pending = false;
     s->error_serial = 0;
     s->cdb_len = s->cdb_need = s->target = 0;
     s->phase = AIC_PHASE_BUS_FREE;
@@ -962,6 +989,9 @@ static void aic7880_reset_hold(Object *obj, ResetType type)
 
     memset(s->seqram, 0, sizeof(s->seqram));
     memset(s->scb_ram, 0, sizeof(s->scb_ram));
+    if (s->external_scb_ram) {
+        pci_set_long(PCI_DEVICE(s)->config + 0x40, 0x600);
+    }
     aic7880_chip_reset(s);
 }
 
@@ -1019,6 +1049,47 @@ static void aic7880_nexus_message_done(AIC7880State *s)
     if (message != 4) {
         aic7880_process_scsi_data(s);
     }
+}
+
+static unsigned aic7880_queue_slots(AIC7880State *s)
+{
+    return s->external_scb_ram ? 256 : AIC_SCB_PAGES;
+}
+
+static unsigned aic7880_queue_limit(AIC7880State *s)
+{
+    return s->external_scb_ram ? 255 : AIC_SCB_PAGES;
+}
+
+static unsigned aic7880_scb_index(AIC7880State *s, unsigned offset)
+{
+    unsigned pages = s->external_scb_ram ?
+                     s->external_scb_size / AIC_SCB_PAGE_BYTES : AIC_SCB_PAGES;
+
+    return (s->regs[REG_SCBPTR] % pages) * AIC_SCB_PAGE_BYTES + offset;
+}
+
+static uint8_t aic7880_scb_parity(uint8_t value)
+{
+    return 1 ^ parity8(value);
+}
+
+static void aic7880_check_scb_parity(AIC7880State *s, unsigned index)
+{
+    if (s->external_scb_width != 9 ||
+        !(PCI_DEVICE(s)->config[0x40] & 0x10) ||
+        !(s->regs[REG_DSCOMMAND] & 0x20) ||
+        s->scb_parity[index] == aic7880_scb_parity(s->scb_ram[index])) {
+        return;
+    }
+    s->error |= 0x20;
+    if (!(s->regs[REG_SEQCTL] & SEQ_FAILDIS)) {
+        s->parity_break_pending = true;
+        s->regs[REG_INTSTAT] |= 8;
+        s->regs[REG_HCNTRL] |= HOST_PAUSE;
+        timer_del(s->seq_timer);
+    }
+    aic7880_update_irq(s);
 }
 
 static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
@@ -1093,16 +1164,20 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (addr >= REG_SCB_BASE &&
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
+        if (!s->external_scb_ram &&
+            s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
             qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
             aic7880_stop_diagnostic(s);
             return 0xff;
         }
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
                           s->regs[REG_SCBCNT] & 0x1f : addr - REG_SCB_BASE;
-        uint8_t data = s->scb_ram[s->regs[REG_SCBPTR] *
-                                   AIC_SCB_PAGE_BYTES + offset];
+        unsigned index = aic7880_scb_index(s, offset);
+        uint8_t data = s->scb_ram[index];
 
+        if (s->external_scb_ram) {
+            aic7880_check_scb_parity(s, index);
+        }
         if (s->regs[REG_SCBCNT] & 0x80) {
             s->regs[REG_SCBCNT] = 0x80 | ((offset + 1) & 0x1f);
         }
@@ -1121,6 +1196,9 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
                                ldl_le_p(&s->regs[0x88]),
                                aic7880_count(s, 0x8c),
                                s->regs[REG_DFCNTRL], s->regs[REG_INTSTAT]);
+        return s->regs[addr];
+    }
+    if (addr == REG_DSCOMMAND && s->external_scb_ram) {
         return s->regs[addr];
     }
     switch (addr) {
@@ -1198,7 +1276,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
         if (s->qout_count) {
             uint8_t id = s->qout[s->qout_head];
 
-            s->qout_head = (s->qout_head + 1) % ARRAY_SIZE(s->qout);
+            s->qout_head = (s->qout_head + 1) % aic7880_queue_slots(s);
             s->qout_count--;
             return id;
         }
@@ -1245,7 +1323,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
 
     if (addr >= REG_SCB_BASE &&
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
+        if (!s->external_scb_ram &&
+            s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
             qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
             aic7880_stop_diagnostic(s);
             return;
@@ -1253,7 +1332,12 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
                           s->regs[REG_SCBCNT] & 0x1f : addr - REG_SCB_BASE;
 
-        s->scb_ram[s->regs[REG_SCBPTR] * AIC_SCB_PAGE_BYTES + offset] = val;
+        unsigned index = aic7880_scb_index(s, offset);
+
+        s->scb_ram[index] = val;
+        if (s->external_scb_ram && s->external_scb_width == 9) {
+            s->scb_parity[index] = aic7880_scb_parity(val);
+        }
         if (s->regs[REG_SCBCNT] & 0x80) {
             s->regs[REG_SCBCNT] = 0x80 | ((offset + 1) & 0x1f);
         }
@@ -1273,6 +1357,14 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         if (addr >= 0x8c && addr <= 0x8e) {
             s->regs[REG_DFSTATUS] &= ~0x08;
+        }
+        return;
+    }
+    if (addr == REG_DSCOMMAND && s->external_scb_ram) {
+        if (val & ~0x20) {
+            aic7880_error(s, "unsupported DSCOMMAND control");
+        } else {
+            s->regs[addr] = val;
         }
         return;
     }
@@ -1504,8 +1596,12 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         unsigned int count_before = s->qin_count;
         bool paused = s->regs[REG_HCNTRL] & HOST_PAUSE;
 
-        if (s->running || val >= AIC_SCB_PAGES ||
-            s->qin_count == ARRAY_SIZE(s->qin)) {
+        if (s->external_scb_ram &&
+            s->qin_count == aic7880_queue_limit(s)) {
+            break;
+        }
+        if (s->running || (!s->external_scb_ram && val >= AIC_SCB_PAGES) ||
+            s->qin_count == aic7880_queue_limit(s)) {
             trace_aic7880_qinfifo(PCI_DEVICE(s)->devfn, true, val,
                                   count_before, count_before, paused,
                                   s->running, false);
@@ -1513,7 +1609,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         s->qin[s->qin_tail] = val;
-        s->qin_tail = (s->qin_tail + 1) % ARRAY_SIZE(s->qin);
+        s->qin_tail = (s->qin_tail + 1) % aic7880_queue_slots(s);
         s->qin_count++;
         trace_aic7880_qinfifo(PCI_DEVICE(s)->devfn, true, val,
                               count_before, s->qin_count, paused,
@@ -1649,7 +1745,18 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         break;
     case REG_CLRINT:
+        if (s->external_scb_ram && (val & 0x10)) {
+            s->error &= ~0x20;
+            if (s->parity_break_pending && !(s->error & 4) &&
+                !aic7880_pci_status(s) && !s->maskable_break_pending) {
+                s->regs[REG_INTSTAT] &= ~8;
+            }
+            s->parity_break_pending = false;
+        }
         s->regs[REG_INTSTAT] &= ~(val & 0x0f);
+        if (s->parity_break_pending) {
+            s->regs[REG_INTSTAT] |= 8;
+        }
         if ((val & 0x04) &&
             !(s->regs[REG_SSTAT0] & s->regs[REG_SIMODE0] & 0x20) &&
             !(s->regs[REG_SSTAT1] & s->regs[REG_SIMODE1] & 0x04)) {
@@ -1727,11 +1834,13 @@ static uint8_t aic7880_seq_read(AIC7880State *s, uint8_t reg)
                                   count_before, count_before,
                                   s->regs[REG_HCNTRL] & HOST_PAUSE,
                                   s->running, false);
-            aic7880_error(s, "sequencer read of empty queue-in FIFO");
+            if (!s->external_scb_ram) {
+                aic7880_error(s, "sequencer read of empty queue-in FIFO");
+            }
             return 0xff;
         }
         id = s->qin[s->qin_head];
-        s->qin_head = (s->qin_head + 1) % ARRAY_SIZE(s->qin);
+        s->qin_head = (s->qin_head + 1) % aic7880_queue_slots(s);
         s->qin_count--;
         trace_aic7880_qinfifo(PCI_DEVICE(s)->devfn, false, id,
                               count_before, s->qin_count,
@@ -1834,7 +1943,7 @@ static bool aic7880_dindir_target_supported(AIC7880State *s, uint8_t reg)
         return true;
     }
     if (reg >= REG_SCB_BASE && reg < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        return s->regs[REG_SCBPTR] < AIC_SCB_PAGES;
+        return s->external_scb_ram || s->regs[REG_SCBPTR] < AIC_SCB_PAGES;
     }
     /* Pointer aliases and unselected write paths remain unsupported. */
     switch (reg) {
@@ -1897,6 +2006,9 @@ static void aic7880_run(AIC7880State *s)
         AICShiftKind shift_kind = AIC_SHIFT_INVALID;
         unsigned shift_count = 0;
         bool indirect_dest = false;
+        bool scb_rmw;
+        uint8_t scb_counter;
+        uint8_t source;
 
         if ((s->regs[REG_HCNTRL] & HOST_PAUSE) ||
             (s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
@@ -2029,6 +2141,13 @@ static void aic7880_run(AIC7880State *s)
             dst = target;
             indirect_dest = true;
         }
+        source = src == REG_SINDIR ? s->regs[REG_SINDEX] : src;
+        scb_counter = s->regs[REG_SCBCNT];
+        scb_rmw = s->external_scb_ram && (scb_counter & 0x80) &&
+                  source >= REG_SCB_BASE &&
+                  source < REG_SCB_BASE + AIC_SCB_PAGE_BYTES &&
+                  dst >= REG_SCB_BASE &&
+                  dst < REG_SCB_BASE + AIC_SCB_PAGE_BYTES;
         result = aic7880_seq_read(s, src);
         if (s->regs[REG_HCNTRL] & HOST_PAUSE) {
             goto done;
@@ -2069,18 +2188,25 @@ static void aic7880_run(AIC7880State *s)
             }
             aic7880_update_irq(s);
         } else if (dst == REG_QOUTFIFO) {
-            if (result >= AIC_SCB_PAGES) {
+            if (!s->external_scb_ram && result >= AIC_SCB_PAGES) {
                 aic7880_error(s, "unsupported completion identifier");
                 goto done;
             }
-            if (s->qout_count == ARRAY_SIZE(s->qout)) {
-                aic7880_error(s, "completion queue full");
-                goto done;
+            if (s->qout_count == aic7880_queue_limit(s)) {
+                if (!s->external_scb_ram) {
+                    aic7880_error(s, "completion queue full");
+                    goto done;
+                }
+            } else {
+                s->qout[s->qout_tail] = result;
+                s->qout_tail = (s->qout_tail + 1) % aic7880_queue_slots(s);
+                s->qout_count++;
             }
-            s->qout[s->qout_tail] = result;
-            s->qout_tail = (s->qout_tail + 1) % ARRAY_SIZE(s->qout);
-            s->qout_count++;
         } else {
+            if (scb_rmw) {
+                /* One logical access reads and writes the selected byte. */
+                s->regs[REG_SCBCNT] = scb_counter;
+            }
             aic7880_write(s, dst, result, 1);
         }
         if (indirect_dest && s->error_serial == error_before) {
@@ -2146,6 +2272,54 @@ static const MemoryRegionOps aic7880_dspc_ops = {
     .valid.max_access_size = 2,
     .impl.min_access_size = 1,
     .impl.max_access_size = 2,
+};
+
+static MemTxResult aic7880_external_read(void *opaque, hwaddr addr,
+                                        uint64_t *value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    if (size != 1) {
+        aic7880_error(opaque, "unsupported register read width");
+        *value = UINT64_MAX;
+        return MEMTX_ERROR;
+    }
+    *value = aic7880_read(opaque, addr, 1);
+    return MEMTX_OK;
+}
+
+static MemTxResult aic7880_external_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    AIC7880State *s = opaque;
+    unsigned reg = addr & (AIC_REG_SPACE - 1);
+
+    if (size == 1) {
+        aic7880_write(s, addr, value, 1);
+        return MEMTX_OK;
+    }
+    if (size != 4 || (addr & 3) || reg < REG_SCB_BASE ||
+        reg > REG_SCB_BASE + AIC_SCB_PAGE_BYTES - 4 ||
+        !(s->regs[REG_SCBCNT] & 0x80)) {
+        aic7880_error(s, "unsupported register write width");
+        return MEMTX_ERROR;
+    }
+    for (unsigned lane = 0; lane < 4; lane++) {
+        aic7880_write(s, addr, value >> (lane * 8), 1);
+    }
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps aic7880_external_ops = {
+    .read_with_attrs = aic7880_external_read,
+    .write_with_attrs = aic7880_external_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+    .impl.unaligned = true,
 };
 
 static const MemoryRegionOps aic7880_regs_ops = {
@@ -2347,18 +2521,18 @@ static int aic7880_post_load(void *opaque, int version_id)
         s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 7 ||
         s->cdb_len > sizeof(s->cdb) ||
         s->cdb_need > sizeof(s->cdb) ||
-        s->qout_count > ARRAY_SIZE(s->qout) ||
-        s->qout_head >= ARRAY_SIZE(s->qout) ||
-        s->qout_tail >= ARRAY_SIZE(s->qout)) {
+        s->qout_count > aic7880_queue_limit(s) ||
+        s->qout_head >= aic7880_queue_slots(s) ||
+        s->qout_tail >= aic7880_queue_slots(s)) {
         return -EINVAL;
     }
     if (s->selection_pending &&
         (s->selected || s->req || !(s->regs[REG_SCSISEQ] & 0x40))) {
         return -EINVAL;
     }
-    if (s->qin_count > ARRAY_SIZE(s->qin) ||
-        s->qin_head >= ARRAY_SIZE(s->qin) ||
-        s->qin_tail >= ARRAY_SIZE(s->qin)) {
+    if (s->qin_count > aic7880_queue_limit(s) ||
+        s->qin_head >= aic7880_queue_slots(s) ||
+        s->qin_tail >= aic7880_queue_slots(s)) {
         return -EINVAL;
     }
     if (s->return_depth > ARRAY_SIZE(s->return_pc)) {
@@ -2404,8 +2578,13 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_PCI_DEVICE(parent_obj, AIC7880State),
         VMSTATE_UINT8_ARRAY(regs, AIC7880State, AIC_REG_SPACE),
         VMSTATE_UINT8_ARRAY(seqram, AIC7880State, AIC_SEQ_BYTES),
+        VMSTATE_UINT32_EQUAL(external_scb_size, AIC7880State),
+        VMSTATE_UINT8_EQUAL(external_scb_width, AIC7880State),
         VMSTATE_UINT8_ARRAY(scb_ram, AIC7880State,
-                            AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES),
+                            AIC_SCB_EXTERNAL_PAGES * AIC_SCB_PAGE_BYTES),
+        VMSTATE_UINT8_ARRAY(scb_parity, AIC7880State,
+                            AIC_SCB_EXTERNAL_PAGES * AIC_SCB_PAGE_BYTES),
+        VMSTATE_BOOL(parity_break_pending, AIC7880State),
         VMSTATE_UINT16(seqaddr, AIC7880State),
         VMSTATE_TIMER_PTR(seq_timer, AIC7880State),
         VMSTATE_TIMER_PTR(selection_timer, AIC7880State),
@@ -2425,11 +2604,11 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_BOOL(message_resume_command, AIC7880State),
         VMSTATE_UINT8(phase, AIC7880State),
         VMSTATE_UINT8(expected_phase, AIC7880State),
-        VMSTATE_UINT8_ARRAY(qout, AIC7880State, 16),
+        VMSTATE_UINT8_ARRAY(qout, AIC7880State, 256),
         VMSTATE_UINT8(qout_head, AIC7880State),
         VMSTATE_UINT8(qout_tail, AIC7880State),
         VMSTATE_UINT8(qout_count, AIC7880State),
-        VMSTATE_UINT8_ARRAY(qin, AIC7880State, 16),
+        VMSTATE_UINT8_ARRAY(qin, AIC7880State, 256),
         VMSTATE_UINT8(qin_head, AIC7880State),
         VMSTATE_UINT8(qin_tail, AIC7880State),
         VMSTATE_UINT8(qin_count, AIC7880State),
@@ -2477,10 +2656,47 @@ static void aic7880_test_pci_error_set(Object *obj, const char *value,
     aic7880_update_irq(s);
 }
 
+static void aic7880_test_scb_parity_set(Object *obj, const char *value,
+                                        Error **errp)
+{
+    AIC7880State *s = AIC7880(obj);
+    unsigned page, offset;
+    char extra;
+    unsigned pages = s->external_scb_size / AIC_SCB_PAGE_BYTES;
+
+    if (sscanf(value, "invert:%u:%u%c", &page, &offset, &extra) != 2 ||
+        page > 255 || offset >= AIC_SCB_PAGE_BYTES) {
+        error_setg(errp, "expected invert:page:offset within SCB space");
+        return;
+    }
+    s->scb_parity[(page % pages) * AIC_SCB_PAGE_BYTES + offset] ^= 1;
+}
+
 static void aic7880_realize(PCIDevice *pci, Error **errp)
 {
     AIC7880State *s = AIC7880(pci);
     unsigned dspc_windows;
+
+    if (s->external_scb_ram) {
+        if (s->external_scb_size != KiB && s->external_scb_size != 2 * KiB &&
+            s->external_scb_size != 4 * KiB &&
+            s->external_scb_size != 8 * KiB) {
+            error_setg(errp, "external SCB SRAM requires 1, 2, 4 or 8 KiB");
+            return;
+        }
+        if (s->external_scb_width != 8 && s->external_scb_width != 9) {
+            error_setg(errp, "external SCB SRAM requires 8 or 9 data bits");
+            return;
+        }
+        if (s->external_scb_shared) {
+            error_setg(errp, "shared external SCB SRAM is unsupported");
+            return;
+        }
+    } else if (s->external_scb_size || s->external_scb_width != 8 ||
+               s->external_scb_shared) {
+        error_setg(errp, "external SCB parameters require external-scb-ram");
+        return;
+    }
 
     if (s->o2_pci_diagnostic && s->o2_storage_diagnostic) {
         error_setg(errp, "AIC PCI and storage diagnostics are exclusive");
@@ -2503,6 +2719,10 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
         object_property_add_str(OBJECT(s), "x-test-peer-event", NULL,
                                 aic7880_peer_event_set);
     }
+    if (qtest_enabled() && s->external_scb_ram && s->external_scb_width == 9) {
+        object_property_add_str(OBJECT(s), "x-test-scb-parity", NULL,
+                                aic7880_test_scb_parity_set);
+    }
     if (qtest_enabled()) {
         object_property_add_str(OBJECT(s), "x-test-pci-error", NULL,
                                 aic7880_test_pci_error_set);
@@ -2514,13 +2734,22 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
     s->bus_free_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     aic7880_bus_free_timer_cb, s);
     pci->config[PCI_INTERRUPT_PIN] = 1;
+    if (s->external_scb_ram) {
+        memset(pci->wmask + 0x40, 0, 4);
+        pci->wmask[0x40] = 0x30;
+    }
+    pci->wmask[0x41] &= ~0x06;
     /* The selected AIC-7870 sibling policy covers readback only. */
     pci_word_test_and_set_mask(pci->wmask + PCI_COMMAND,
                                PCI_COMMAND_PARITY);
-    memory_region_init_io(&s->io, OBJECT(s), &aic7880_regs_ops, s,
+    memory_region_init_io(&s->io, OBJECT(s),
+                          s->external_scb_ram ? &aic7880_external_ops :
+                                                &aic7880_regs_ops, s,
                           "aic7880-io", AIC_REG_SPACE);
     /* The fitted AIC-7880 BAR1 mask is unknown; use the selected sibling. */
-    memory_region_init_io(&s->mem, OBJECT(s), &aic7880_regs_ops, s,
+    memory_region_init_io(&s->mem, OBJECT(s),
+                          s->external_scb_ram ? &aic7880_external_ops :
+                                                &aic7880_regs_ops, s,
                           "aic7880-mmio", 4 * KiB);
     /* Keep a word at 0x86 intact for byte-only validation. */
     memory_region_init_io(&s->dspc_io, OBJECT(s), &aic7880_dspc_ops, s,
@@ -2550,6 +2779,12 @@ static void aic7880_exit(PCIDevice *pci)
 }
 
 static const Property aic7880_properties[] = {
+    DEFINE_PROP_BOOL("external-scb-ram", AIC7880State, external_scb_ram, false),
+    DEFINE_PROP_UINT32("external-scb-size", AIC7880State, external_scb_size, 0),
+    DEFINE_PROP_UINT8("external-scb-width", AIC7880State,
+                      external_scb_width, 8),
+    DEFINE_PROP_BOOL("external-scb-shared", AIC7880State,
+                     external_scb_shared, false),
     DEFINE_PROP_BOOL("x-test-peer", AIC7880State, test_peer, false),
     DEFINE_PROP_BOOL("o2-pci-diagnostic", AIC7880State,
                      o2_pci_diagnostic, false),
