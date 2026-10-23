@@ -712,11 +712,11 @@ static const OctaneVariant variants[] = {
     { "si", 11, true, 0x45, "GM10" },
     { "si-t", 10, false, 0x45, "GM10" },
     { "ssi", 9, true, 0x46, "GM20" },
-    { "mxi", 12, false, 0x46, "GM20" },
+    { "mxi", 12, false, 0x66, "GM20" },
     { "esi", 10, true, 0x51, "MOT10" },
     { "esi-t", 11, false, 0x51, "MOT10" },
     { "essi", 12, true, 0x52, "MOT20" },
-    { "emxi", 12, false, 0x52, "MOT20" },
+    { "emxi", 12, false, 0x72, "MOT20" },
 };
 
 /*
