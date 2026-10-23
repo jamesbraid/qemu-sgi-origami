@@ -107,7 +107,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SerialState, SERIAL)
 void serial_reset_device(SerialState *s);
 void serial_set_rx_discard(SerialState *s, bool discard);
 
-/* Service notifications must defer work: the UART is still updating state. */
+/* Notifications may observe state, but must defer UART register service. */
 void serial_set_service_notify(SerialState *s, void (*notify)(void *),
                                void *opaque);
 bool serial_dma_tx_ready(SerialState *s);

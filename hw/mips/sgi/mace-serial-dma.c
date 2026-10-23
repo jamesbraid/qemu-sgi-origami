@@ -189,13 +189,6 @@ static void channel_fault(MACESerialChannel *c)
                   c->port + 1, c->receive ? "RX" : "TX");
 }
 
-static void serial_notify(void *opaque)
-{
-    MACESerialDMA *s = opaque;
-
-    qemu_bh_schedule(s->bh);
-}
-
 static void delay_update(MACESerialChannel *c)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -213,6 +206,24 @@ static void delay_update(MACESerialChannel *c)
         c->delay_deadline = now + c->delay_remaining;
         timer_mod(c->timer, c->delay_deadline);
     }
+}
+
+static void serial_notify(void *opaque)
+{
+    MACESerialDMA *s = opaque;
+
+    if (!s->loading) {
+        for (unsigned p = 0; p < 2; p++) {
+            bool paused = serial_modem_irq_pending(s->uart[p]);
+
+            if (paused != s->modem_pause[p]) {
+                s->modem_pause[p] = paused;
+                /* Preserve event time even when service is deferred. */
+                delay_update(&s->channel[2 * p]);
+            }
+        }
+    }
+    qemu_bh_schedule(s->bh);
 }
 
 static void tx_service(MACESerialChannel *c)
@@ -365,7 +376,7 @@ static void rx_service(MACESerialChannel *c)
 
 void mace_serial_dma_service(MACESerialDMA *s)
 {
-    if (s->servicing) {
+    if (s->servicing || s->loading) {
         return;
     }
     s->servicing = true;
@@ -401,7 +412,6 @@ void mace_serial_dma_init(MACESerialDMA *s, SerialState *uart,
     s->bh = qemu_bh_new(serial_service_bh, s);
     for (unsigned p = 0; p < 2; p++) {
         s->uart[p] = &uart[p];
-        serial_set_service_notify(s->uart[p], serial_notify, s);
     }
     for (unsigned i = 0; i < 4; i++) {
         MACESerialChannel *c = &s->channel[i];
@@ -412,10 +422,14 @@ void mace_serial_dma_init(MACESerialDMA *s, SerialState *uart,
         c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, delay_expired, c);
         channel_reset(c);
     }
+    for (unsigned p = 0; p < 2; p++) {
+        serial_set_service_notify(s->uart[p], serial_notify, s);
+    }
 }
 
 void mace_serial_dma_reset(MACESerialDMA *s)
 {
+    s->loading = false;
     qemu_bh_cancel(s->bh);
     for (unsigned i = 0; i < 4; i++) {
         channel_reset(&s->channel[i]);
@@ -461,6 +475,7 @@ int mace_serial_dma_post_load(MACESerialDMA *s)
         timer_del(c->timer);
         c->delay_deadline = 0;
     }
+    s->loading = false;
     /* Parent post-load runs after the embedded UART state has loaded. */
     for (unsigned p = 0; p < 2; p++) {
         s->modem_pause[p] = serial_modem_irq_pending(s->uart[p]);

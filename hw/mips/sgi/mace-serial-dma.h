@@ -38,6 +38,7 @@ struct MACESerialDMA {
     void *opaque;
     QEMUBH *bh;
     bool servicing;
+    bool loading;
     bool modem_pause[2];
 };
 
