@@ -8,6 +8,8 @@
 #include "libqtest.h"
 #include "memtx.h"
 #include "qobject/qjson.h"
+#include "qobject/qlist.h"
+#include "qobject/qstring.h"
 #include "qapi/error.h"
 #include "sgi-migrate.h"
 
@@ -1653,6 +1655,350 @@ static void check_internal_scb_canaries(QTestState *qts)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x22);
     g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
     g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+}
+
+static void test_function_constants(void)
+{
+    for (unsigned reset = 0; reset < 3; reset++) {
+        g_autofree char *dir = g_dir_make_tmp("aic7880-constants-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
+        QTestState *qts = start_aic_logged(path);
+        uint8_t program[16];
+        size_t n = 0;
+
+        if (reset == 1) {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        } else if (reset == 2) {
+            qtest_system_reset(qts);
+            config_writel(qts, 0x14, REG_BASE);
+            config_writew(qts, 4, 6);
+        }
+        mark_internal_scb_canaries(qts);
+        qtest_writeb(qts, REG_BASE + 0x47, 0xa5);
+        emit(program, &n, alu_word(3, 1, 0x69, 0x6a, false));
+        emit_or(program, &n, 1, 0x91);
+        start_program(qts, program, n);
+        qtest_writeb(qts, REG_BASE + 0x92, 1);
+        for (unsigned i = 0; i < 8; i++) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x69), ==, 0xff);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+            qtest_writeb(qts, REG_BASE + 0x6a, 0x80 + i);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, 3);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x47), ==, 0xa5);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+            g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
+            g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+        }
+        /* Also prove host constant reads did not latch diagnostic stop. */
+        qtest_writeb(qts, REG_BASE + 0x20, 0xa5);
+        qtest_writeb(qts, REG_BASE + 0x21, 0xc3);
+        n = 0;
+        emit(program, &n, alu_word(1, 0xff, 0x69, 0x20, false));
+        emit(program, &n, alu_word(1, 0xff, 0x6a, 0x21, false));
+        emit_or(program, &n, 1, 0x91);
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0xff);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x21), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, 3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x47), ==, 0xa5);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        check_internal_scb_canaries(qts);
+        qtest_quit(qts);
+        assert_no_aic_log(path);
+        unlink(path);
+        g_rmdir(dir);
+    }
+}
+
+static void test_function1_selectors(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t program[16];
+
+    qtest_writeb(qts, REG_BASE + 0x64, 0);
+    qtest_writeb(qts, REG_BASE + 0x47, 0xa5);
+    for (unsigned selector = 0; selector < 8; selector++) {
+        for (unsigned outside = 0; outside < 32; outside++) {
+            unsigned input = (selector << 4) | (outside & 15) |
+                             ((outside & 16) << 3);
+            unsigned expected = 1 << selector;
+            size_t n = 0;
+
+            qtest_writeb(qts, REG_BASE + 0x6e, input);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, expected);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, expected);
+            emit_or(program, &n, input, 0x6e);
+            emit(program, &n, alu_word(1, 0xff, 0x6e, 0x20, false));
+            emit(program, &n, alu_word(1, 0xff, 0x6e, 0x21, false));
+            emit_or(program, &n, 1, 0x91);
+            start_program(qts, program, n);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, expected);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x21), ==, expected);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, expected);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x47), ==, 0xa5);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, 0);
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_function1_alu(void)
+{
+    for (unsigned carry = 0; carry < 2; carry++) {
+        QTestState *qts = start_aic();
+        uint8_t program[16];
+        size_t n = 0;
+
+        qtest_writeb(qts, REG_BASE + 0x6e, 0x30);
+        emit(program, &n, alu_word(3, carry ? 0xf8 : 0x10,
+                                   0x6e, 0x6e, false));
+        emit(program, &n, alu_word(1, 0xff, 0x6e, 0x20, false));
+        emit(program, &n, alu_word(1, 0xff, 0x6b, 0x21, false));
+        emit_or(program, &n, 1, 0x91);
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, carry ? 1 : 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x21), ==, carry ? 3 : 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, carry ? 1 : 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
+static void test_function_none_return(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t program[20];
+    size_t n = 0;
+
+    mark_internal_scb_canaries(qts);
+    qtest_writeb(qts, REG_BASE + 0x23, 0xa5);
+    emit(program, &n, branch_word(0x0b, 0, 0x6a, 3));
+    emit_or(program, &n, 0x55, 0x22);
+    emit_or(program, &n, 1, 0x91);
+    emit(program, &n, alu_word(3, 1, 0x69, 0x6a, true));
+    emit_or(program, &n, 0xee, 0x23);
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x22), ==, 0x55);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, 3);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    check_internal_scb_canaries(qts);
+    qtest_quit(qts);
+}
+
+static void test_function_access(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t program[20];
+    uint8_t flags;
+    size_t n = 0;
+
+    qtest_writeb(qts, REG_BASE + 0x47, 0xa5);
+    emit(program, &n, branch_word(8, 0, 0x6a, 0));
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+    flags = qtest_readb(qts, REG_BASE + 0x6b);
+    qtest_writeb(qts, REG_BASE + 0x6e, 0xaf);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x69), ==, 0xff);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x6a, 0xff);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x47), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, flags);
+    qtest_writeb(qts, REG_BASE + 0x87, 4);
+
+    config_writel(qts, 0x10, 0x1001);
+    config_writew(qts, 4, 7);
+    qtest_outb(qts, 0x106e, 0x5f);
+    g_assert_cmphex(qtest_inb(qts, 0x106e), ==, 0x20);
+    g_assert_cmphex(qtest_inb(qts, 0x1069), ==, 0xff);
+    g_assert_cmphex(qtest_inb(qts, 0x106a), ==, 0);
+    /* The existing byte-only region rejects typed word I/O in the core. */
+    g_assert_cmphex(qtest_inw(qts, 0x1069), ==, 0);
+    g_assert_cmphex(qtest_inw(qts, 0x106e), ==, 0);
+    qtest_outw(qts, 0x106e, 0x00e0);
+    g_assert_cmphex(qtest_inb(qts, 0x106e), ==, 0x20);
+
+    n = 0;
+    emit_or(program, &n, 0x6e, 0x66);
+    emit_or(program, &n, 0xbf, 0x6d);
+    emit_or(program, &n, 0x6e, 0x65);
+    emit(program, &n, alu_word(1, 0xff, 0x6c, 0x20, false));
+    emit_or(program, &n, 1, 0x91);
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 8);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, 8);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x6f);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x66), ==, 0x6f);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_function_refusals(void)
+{
+    for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+        QTestState *qts = start_aic();
+        uint8_t program[12];
+        size_t n = 0;
+
+        mark_internal_scb_canaries(qts);
+        qtest_writeb(qts, REG_BASE + 0x47, 0xa5);
+        qtest_writeb(qts, REG_BASE + 0x6e, 0x5f);
+        if (sequencer) {
+            emit_or(program, &n, 0xa5, 0x69);
+        } else {
+            qtest_writeb(qts, REG_BASE + 0x69, 0xa5);
+        }
+        emit_or(program, &n, 0x5a, 0x47);
+        emit_or(program, &n, 1, 0x91);
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x47), ==, 0xa5);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x69), ==, 0xff);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, 0x20);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        check_internal_scb_canaries(qts);
+        qtest_quit(qts);
+    }
+    for (unsigned access = 0; access < 4; access++) {
+        QTestState *qts = start_external_scb(1024, 8, MEMTX_TEST_DEVICE);
+        uint64_t ignored;
+
+        qtest_writeb(qts, REG_BASE + 0x6e, 0x5f);
+        if (access < 2) {
+            g_assert_cmpint(memtx_read(qts, REG_BASE + (access ? 0x6e : 0x69),
+                                      &ignored, access ? 4 : 2), !=, MEMTX_OK);
+        } else {
+            g_assert_cmpint(memtx_write(qts, REG_BASE + (access == 2 ? 0x6e :
+                                                        0x6a),
+                                       0xffff, access == 2 ? 2 : 4),
+                            !=, MEMTX_OK);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, 0x20);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x69), ==, 0xff);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
+static void check_function1_stream(const char *stream, uint8_t input)
+{
+    g_auto(GStrv) argv = g_new0(char *, 5);
+    g_autofree char *output = NULL, *errors = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autoptr(QDict) state = NULL;
+    const QDictEntry *section;
+    unsigned found = 0;
+    int status;
+    bool spawned;
+
+    g_assert_nonnull(g_getenv("PYTHON"));
+    g_assert_nonnull(g_getenv("G_TEST_SRCDIR"));
+    argv[0] = g_strdup(g_getenv("PYTHON"));
+    argv[1] = g_build_filename(g_getenv("G_TEST_SRCDIR"), "..", "..",
+                              "scripts", "analyze-migration.py", NULL);
+    argv[2] = g_strdup("-f");
+    argv[3] = g_strdup(stream);
+    spawned = g_spawn_sync(NULL, argv, NULL, 0, NULL, NULL, &output, &errors,
+                           &status, &error);
+    g_assert_no_error(error);
+    g_assert_true(spawned);
+    if (!g_spawn_check_exit_status(status, &error)) {
+        g_test_message("migration analyzer: %s", errors);
+    }
+    g_assert_no_error(error);
+    state = qobject_to(QDict, qobject_from_json(output, &error_abort));
+    g_assert_nonnull(state);
+    for (section = qdict_first(state); section;
+         section = qdict_next(state, section)) {
+        QDict *device;
+        QList *regs;
+        const QListEntry *reg;
+        unsigned index = 0;
+
+        if (!strstr(qdict_entry_key(section), "aic7880")) {
+            continue;
+        }
+        device = qobject_to(QDict, qdict_entry_value(section));
+        g_assert_nonnull(device);
+        regs = qdict_get_qlist(device, "regs");
+        g_assert_cmpuint(qlist_size(regs), ==, 256);
+        QLIST_FOREACH_ENTRY(regs, reg) {
+            if (index == 0x69 || index == 0x6a || index == 0x6e) {
+                QString *text = qobject_to(QString, qlist_entry_obj(reg));
+                uint64_t value;
+
+                g_assert_nonnull(text);
+                g_assert_cmpint(qemu_strtou64(qstring_get_str(text), NULL, 0,
+                                             &value), ==, 0);
+                g_assert_cmphex(value, ==, index == 0x6e ? input : 0);
+            }
+            index++;
+        }
+        found++;
+    }
+    g_assert_cmpuint(found, ==, 1);
+}
+
+static void test_function1_state(void)
+{
+    g_autofree char *dir = g_dir_make_tmp(
+        "aic7880-function-state-XXXXXX", NULL);
+    g_autofree char *first = g_build_filename(dir, "first", NULL);
+    g_autofree char *second = g_build_filename(dir, "second", NULL);
+    g_autofree char *first_uri = g_strdup_printf("file:%s", first);
+    g_autofree char *second_uri = g_strdup_printf("file:%s", second);
+    QTestState *from = start_aic_with_options("-S");
+    QTestState *to = start_aic_with_options("-S -incoming defer");
+
+    qtest_writeb(from, REG_BASE + 0x6e, 0xdf);
+    qtest_writeb(from, REG_BASE + 0x6a, 0xff);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x6e), ==, 0x20);
+    sgi_migrate_stopped(from, first_uri);
+    check_function1_stream(first, 0xdf);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", first_uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x6e), ==, 0x20);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x69), ==, 0xff);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x6a), ==, 0);
+    sgi_migrate_stopped(to, second_uri);
+    check_function1_stream(second, 0xdf);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(first);
+    unlink(second);
+    for (unsigned pci_reset = 0; pci_reset < 2; pci_reset++) {
+        QTestState *qts = start_aic_with_options("-S");
+
+        qtest_writeb(qts, REG_BASE + 0x6e, 0xdf);
+        if (pci_reset) {
+            qtest_system_reset(qts);
+            config_writel(qts, 0x14, REG_BASE);
+            config_writew(qts, 4, 6);
+        } else {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6e), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x69), ==, 0xff);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6a), ==, 0);
+        sgi_migrate_stopped(qts, first_uri);
+        check_function1_stream(first, 0);
+        qtest_quit(qts);
+        unlink(first);
+    }
+    g_rmdir(dir);
 }
 
 static void test_internal_scb_pointer_migrates(void)
@@ -10737,6 +11083,17 @@ static void test_o2_diagnostics_are_exclusive(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("aic7880/function-registers/constants",
+                   test_function_constants);
+    qtest_add_func("aic7880/function-registers/selectors",
+                   test_function1_selectors);
+    qtest_add_func("aic7880/function-registers/alu", test_function1_alu);
+    qtest_add_func("aic7880/function-registers/none-return",
+                   test_function_none_return);
+    qtest_add_func("aic7880/function-registers/access", test_function_access);
+    qtest_add_func("aic7880/function-registers/refusals",
+                   test_function_refusals);
+    qtest_add_func("aic7880/function-registers/state", test_function1_state);
     qtest_add_func("aic7880/internal-scb-pointer/migrates",
                    test_internal_scb_pointer_migrates);
     qtest_add_func("aic7880/internal-scb-pointer/reset",
