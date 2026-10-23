@@ -40,11 +40,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define AIC_SEQ_QUANTUM_US 500
 #define AIC_SCB_PAGES 16
 #define AIC_SCB_PAGE_BYTES 32
-#define AIC_PCI_ERROR_MASK (PCI_STATUS_PARITY | PCI_STATUS_SIG_TARGET_ABORT | \
-                            PCI_STATUS_REC_TARGET_ABORT | \
-                            PCI_STATUS_REC_MASTER_ABORT | \
-                            PCI_STATUS_SIG_SYSTEM_ERROR | \
-                            PCI_STATUS_DETECTED_PARITY)
 
 #define REG_SCSISEQ  0x00
 #define REG_SXFRCTL0 0x01
@@ -216,7 +211,7 @@ static void aic7880_update_irq(AIC7880State *s)
                    (PCI_COMMAND_IO | PCI_COMMAND_MEMORY);
     bool swint = (s->regs[REG_HCNTRL] & HOST_SWINT) && decoded;
     bool exception = (s->regs[REG_INTSTAT] & 0x08) &&
-                     (!s->maskable_break_pending || s->error_pending ||
+                     (!s->maskable_break_pending || (s->error & 0x04) ||
                       (s->regs[REG_SEQCTL] & SEQ_BRKINTEN));
     bool scsiint = (s->regs[REG_INTSTAT] & 0x04) &&
                    (!s->peer_scsi_irq_latched || decoded);
@@ -313,16 +308,24 @@ static void aic7880_fifo_status(AIC7880State *s)
     s->regs[REG_DFSTATUS] = status;
 }
 
-static void aic7880_error(AIC7880State *s, const char *reason)
+static void aic7880_stop_diagnostic(AIC7880State *s)
 {
-    qemu_log_mask(LOG_GUEST_ERROR, "aic7880: %s\n", reason);
     s->error_serial++;
-    s->error |= 0x40;
     s->error_pending = true;
-    s->regs[REG_INTSTAT] |= 0x08;
     s->regs[REG_HCNTRL] |= HOST_PAUSE;
     timer_del(s->seq_timer);
     aic7880_update_irq(s);
+}
+
+static void aic7880_error(AIC7880State *s, const char *reason)
+{
+    if (s->running) {
+        qemu_log_mask(LOG_GUEST_ERROR, "aic7880: %s at pc 0x%03x\n",
+                      reason, s->seqaddr - 1);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "aic7880: %s\n", reason);
+    }
+    aic7880_stop_diagnostic(s);
 }
 
 static void aic7880_bad_opcode(AIC7880State *s, uint8_t opcode)
@@ -812,6 +815,18 @@ static void aic7880_reset_hold(Object *obj, ResetType type)
     aic7880_chip_reset(s);
 }
 
+static uint8_t aic7880_pci_status(AIC7880State *s)
+{
+    uint16_t status = pci_get_word(PCI_DEVICE(s)->config + PCI_STATUS);
+
+    return ((status >> 11) & 0x1f) | ((status >> 3) & 0x20);
+}
+
+static uint8_t aic7880_error_status(AIC7880State *s)
+{
+    return s->error | (aic7880_pci_status(s) ? 0x40 : 0);
+}
+
 static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
 {
     AIC7880State *s = opaque;
@@ -819,9 +834,11 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     addr &= AIC_REG_SPACE - 1;
     if (addr == REG_HCNTRL || addr == REG_INTSTAT ||
         addr == REG_ERROR || addr == REG_QOUTCNT) {
-        trace_aic7880_host_reg(PCI_DEVICE(s)->devfn, false, addr,
-                               addr == REG_QOUTCNT ? s->qout_count :
-                               s->regs[addr],
+        uint8_t value = addr == REG_QOUTCNT ? s->qout_count :
+                        addr == REG_ERROR ? aic7880_error_status(s) :
+                        s->regs[addr];
+
+        trace_aic7880_host_reg(PCI_DEVICE(s)->devfn, false, addr, value,
                                ldl_le_p(&s->regs[0x88]),
                                aic7880_count(s, 0x8c),
                                s->regs[REG_DFCNTRL], s->regs[REG_INTSTAT]);
@@ -868,6 +885,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
         if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
             qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
+            aic7880_stop_diagnostic(s);
             return 0xff;
         }
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
@@ -923,7 +941,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_INTSTAT:
         return s->regs[addr];
     case REG_DSPCISTATUS:
-        return s->regs[addr] & 0xc0;
+        return (s->regs[addr] & 0xc0) | aic7880_pci_status(s);
     case REG_SEQRAM:
         if (!(s->regs[REG_SEQCTL] & SEQ_LOADRAM) ||
             s->seqaddr >= AIC_SEQ_INSNS) {
@@ -940,9 +958,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_SEQADDR1:
         return (s->seqaddr >> 8) & 1;
     case REG_ERROR:
-        return s->error |
-               ((pci_get_word(PCI_DEVICE(s)->config + PCI_STATUS) &
-                 AIC_PCI_ERROR_MASK) ? 0x40 : 0);
+        return aic7880_error_status(s);
     case REG_HCNT_RSVD:
         return 0;
     case REG_DFDAT:
@@ -977,10 +993,12 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_DINDIR:
         qemu_log_mask(LOG_UNIMP,
                       "aic7880: host read of DINDIR is unsupported\n");
+        aic7880_stop_diagnostic(s);
         return 0xff;
     default:
         qemu_log_mask(LOG_UNIMP, "aic7880: read of unsupported register "
                       "0x%02" HWADDR_PRIx "\n", addr);
+        aic7880_stop_diagnostic(s);
         return 0xff;
     }
 }
@@ -1012,6 +1030,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
         if (s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
             qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
+            aic7880_stop_diagnostic(s);
             return;
         }
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
@@ -1214,6 +1233,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
     case REG_DINDIR:
         qemu_log_mask(LOG_UNIMP,
                       "aic7880: host write to DINDIR is unsupported\n");
+        aic7880_stop_diagnostic(s);
         break;
     case REG_FLAGS:
         aic7880_error(s, "FLAGS is read-only");
@@ -1325,6 +1345,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             qemu_log_mask(LOG_UNIMP,
                           "aic7880: unsupported host SEQCTL control 0x%02x\n",
                           val);
+            aic7880_stop_diagnostic(s);
             break;
         }
         if (val & SEQ_LOADRAM) {
@@ -1387,7 +1408,6 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         if (val & 0x08) {
             s->maskable_break_pending = false;
-            s->error_pending = false;
         }
         aic7880_update_scsi_irq(s);
         break;
@@ -1397,6 +1417,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         } else {
             qemu_log_mask(LOG_UNIMP, "aic7880: write to unsupported register "
                           "0x%02" HWADDR_PRIx "\n", addr);
+            aic7880_stop_diagnostic(s);
         }
         break;
     }
@@ -1440,9 +1461,7 @@ static uint8_t aic7880_seq_read(AIC7880State *s, uint8_t reg)
             qemu_log_mask(LOG_UNIMP,
                           "aic7880: unsupported sequencer read at pc 0x%03x "
                           "of host-only register 0x%02x\n", at, reg);
-            s->error_serial++;
-            s->regs[REG_HCNTRL] |= HOST_PAUSE;
-            timer_del(s->seq_timer);
+            aic7880_stop_diagnostic(s);
         } else {
             aic7880_error(s, "sequencer read of host-only register");
         }
@@ -1841,32 +1860,38 @@ static void aic7880_seq_timer_cb(void *opaque)
     aic7880_run(opaque);
 }
 
-static uint64_t aic7880_dspc_read(void *opaque, hwaddr addr, unsigned size)
+static MemTxResult aic7880_dspc_read(void *opaque, hwaddr addr,
+                                    uint64_t *value, unsigned size,
+                                    MemTxAttrs attrs)
 {
-    return aic7880_read(opaque, REG_DSPCISTATUS + addr, size);
+    if (size != 1) {
+        aic7880_error(opaque, "unsupported DSPCISTATUS width");
+        *value = 0xffff;
+        return MEMTX_ERROR;
+    }
+    *value = aic7880_read(opaque, REG_DSPCISTATUS + addr, size);
+    return MEMTX_OK;
 }
 
-static void aic7880_dspc_write(void *opaque, hwaddr addr, uint64_t value,
-                               unsigned size)
+static MemTxResult aic7880_dspc_write(void *opaque, hwaddr addr, uint64_t value,
+                                     unsigned size, MemTxAttrs attrs)
 {
+    if (size != 1) {
+        aic7880_error(opaque, "unsupported DSPCISTATUS width");
+        return MEMTX_ERROR;
+    }
     aic7880_write(opaque, REG_DSPCISTATUS + addr, value, size);
-}
-
-static bool aic7880_dspc_accepts(void *opaque, hwaddr addr, unsigned size,
-                                 bool is_write, MemTxAttrs attrs)
-{
-    return size == 1;
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps aic7880_dspc_ops = {
-    .read = aic7880_dspc_read,
-    .write = aic7880_dspc_write,
+    .read_with_attrs = aic7880_dspc_read,
+    .write_with_attrs = aic7880_dspc_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 2,
-    .valid.accepts = aic7880_dspc_accepts,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 1,
+    .impl.max_access_size = 2,
 };
 
 static const MemoryRegionOps aic7880_regs_ops = {
