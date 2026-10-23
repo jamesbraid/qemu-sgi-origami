@@ -36,6 +36,33 @@ static void ctc1_fsr(uint32_t v)
                          "ctc1 %0, $31\n\t.set pop" : : "r"(v));
 }
 
+static void check_rounding_pair(uint32_t mode, uint32_t positive,
+                                uint32_t negative, int id)
+{
+    uint32_t positive_result, negative_result;
+
+    ctc1_fsr(mode);
+    __asm__ __volatile__(".set push\n\t.set mips4\n\t.set hardfloat\n\t"
+                         "mtc1 %[one], $f0\n\t"
+                         "mtc1 %[delta], $f2\n\t"
+                         "add.s $f4, $f0, $f2\n\t"
+                         "mfc1 %[positive], $f4\n\t"
+                         "mtc1 %[negative_one], $f0\n\t"
+                         "mtc1 %[negative_delta], $f2\n\t"
+                         "add.s $f4, $f0, $f2\n\t"
+                         "mfc1 %[negative], $f4\n\t"
+                         ".set pop"
+                         : [positive] "=&r"(positive_result),
+                           [negative] "=&r"(negative_result)
+                         : [one] "r"(0x3f800000u),
+                           [delta] "r"(0x33c00000u),
+                           [negative_one] "r"(0xbf800000u),
+                           [negative_delta] "r"(0xb3c00000u));
+    rom_assert_eq(id, positive, positive_result);
+    rom_assert_eq(id + 1, negative, negative_result);
+    rom_assert_eq(id + 2, mode, cfc1_fsr() & 3);
+}
+
 void rom_main(void)
 {
     uint32_t taken;
@@ -466,6 +493,28 @@ void rom_main(void)
     ROM_TRY(".word 0x44600000");
     rom_assert_eq(63, 1, rom_exc.count);
     rom_assert_eq(64, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
+
+    /*
+     * Writing every FCR31 bit sets the Unimplemented cause and traps.
+     * The readback still exposes every writable bit and clears the reserved
+     * ones; the reserved-only write above checks those bits independently.
+     */
+    rom_exc_reset();
+    ROM_TRY(".set mips4\n\t.set hardfloat\n\t"
+            "ctc1 %[value], $31",
+            [value] "r"(0xffffffffu));
+    rom_assert_eq(65, 1, rom_exc.count);
+    rom_assert_eq(66, ROM_EXC_FPE, ROM_CAUSE_EXC(rom_exc.cause));
+    rom_assert_eq(67, 0xff83ffffu, cfc1_fsr());
+
+    /* Three quarters of an ulp at one, with both signs, distinguishes RM. */
+    ctc1_fsr(0);
+    rom_exc_reset();
+    check_rounding_pair(0, 0x3f800001u, 0xbf800001u, 68);
+    check_rounding_pair(1, 0x3f800000u, 0xbf800000u, 71);
+    check_rounding_pair(2, 0x3f800001u, 0xbf800000u, 74);
+    check_rounding_pair(3, 0x3f800000u, 0xbf800001u, 77);
+    rom_assert_eq(80, 0, rom_exc.count);
 
     ctc1_fsr(0);
     rom_set_status((rom_get_status() & ~ROM_ST_FR) & ~ROM_ST_CU1);
