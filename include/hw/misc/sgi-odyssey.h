@@ -122,6 +122,7 @@ struct SGIOdysseyState {
     bool mesa_renderer_enabled;
 
     /* Composed at realize from the properties above. */
+    const char *profile_record; /* the profile's record, if nic-record unset */
     uint32_t memory_config;
 
     /* Modeled registers. */

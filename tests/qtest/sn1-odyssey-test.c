@@ -1193,6 +1193,21 @@ static void test_board_memory_bound_is_a_guest_error(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/* Run presence, skip-ROM and a read of the identity part's first page. */
+static void nic_read_page(QTestState *qts, uint8_t page[32])
+{
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));         /* pulled low: the part answers */
+    nic_write_byte(qts, 0xcc);              /* one part on the bus: skip ROM */
+    nic_write_byte(qts, 0xf0);              /* read memory, address 0 */
+    nic_write_byte(qts, 0x00);
+    nic_write_byte(qts, 0x00);
+    for (i = 0; i < 32; i++) {
+        page[i] = nic_read_byte(qts);
+    }
+}
+
 /*
  * A real one-wire bus behind the access register, not a status bit: the
  * stock firmware runs presence, selection and a memory read, and stops
@@ -1203,16 +1218,8 @@ static void test_board_identity_part_answers(void)
 {
     QTestState *qts = board_start("");
     uint8_t page[32];
-    unsigned int i;
 
-    g_assert_false(NIC_RESET(qts));         /* pulled low: the part answers */
-    nic_write_byte(qts, 0xcc);              /* one part on the bus: skip ROM */
-    nic_write_byte(qts, 0xf0);              /* read memory, address 0 */
-    nic_write_byte(qts, 0x00);
-    nic_write_byte(qts, 0x00);
-    for (i = 0; i < sizeof(page); i++) {
-        page[i] = nic_read_byte(qts);
-    }
+    nic_read_page(qts, page);
 
     /*
      * A format byte, four spaces and the delimiter a scanning reader
@@ -1223,6 +1230,37 @@ static void test_board_identity_part_answers(void)
     g_assert_cmpmem(&page[6], 20, "Name:ODY128VERSIONB;", 20);
 
     board_quit(qts);
+}
+
+/*
+ * Each profile's identity record names its Octane board, the name hinv -mv
+ * prints for it: ODY32 (a V6, 030-1403), ODY128 (a V8, 030-1404),
+ * ODY32VERSIONB (a V10, 030-1655) and ODY128VERSIONB (a V12, 030-1611).
+ * An explicit nic-record still wins.
+ */
+static void test_profile_names_its_board(void)
+{
+    static const struct {
+        const char *extra;
+        const char *record;
+    } cases[] = {
+        { " -global sgi-odyssey.profile=v12", "Name:ODY128VERSIONB;" },
+        { " -global sgi-odyssey.profile=v10", "Name:ODY32VERSIONB;" },
+        { " -global sgi-odyssey.profile=v8", "Name:ODY128;" },
+        { " -global sgi-odyssey.profile=v6", "Name:ODY32;" },
+        { " -global sgi-odyssey.profile=v6"
+          " -global sgi-odyssey.nic-record=Name:TEST", "Name:TEST;" },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = board_start(cases[i].extra);
+        size_t length = strlen(cases[i].record);
+        uint8_t page[32];
+
+        nic_read_page(qts, page);
+        g_assert_cmpmem(&page[6], length, cases[i].record, length);
+        board_quit(qts);
+    }
 }
 
 /*
@@ -20441,6 +20479,8 @@ int main(int argc, char **argv)
                    test_board_memory_bound_is_a_guest_error);
     add_fresh_case("sn1/odyssey/board-identity-part-answers",
                    test_board_identity_part_answers);
+    add_fresh_case("sn1/odyssey/profile-names-its-board",
+                   test_profile_names_its_board);
     add_fresh_case("sn1/odyssey/interrupt-registers",
                    test_interrupt_registers);
     add_fresh_case("sn1/odyssey/interrupt-enable-set-and-clear",

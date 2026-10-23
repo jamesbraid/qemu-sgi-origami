@@ -15,6 +15,7 @@ board /mips64/sn1/odyssey/reset-control-accepts-six-writes
 board /mips64/sn1/odyssey/backend-version-is-pinned
 board /mips64/sn1/odyssey/board-memory-bound-is-a-guest-error
 board /mips64/sn1/odyssey/board-identity-part-answers
+board /mips64/sn1/odyssey/profile-names-its-board
 board /mips64/sn1/odyssey/interrupt-registers
 board /mips64/sn1/odyssey/interrupt-enable-set-and-clear
 board /mips64/sn1/odyssey/interrupt-clear-acknowledges-flags
