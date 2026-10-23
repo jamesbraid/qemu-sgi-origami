@@ -40,16 +40,16 @@ class MatrixTables(unittest.TestCase):
         for key in ('mxi', 'emxi'):
             names = [f.name for f in m.features_for(m.BOARDS[key])]
             self.assertEqual(sorted(names), sorted(every))
-            self.assertIn('x-unimplemented-board=on',
-                          m.device_args(m.BOARDS[key])[1])
+            self.assertEqual(m.device_args(m.BOARDS[key]),
+                             ('-device', f'sgi-mgras,slot=io3,board={key}'))
 
     def test_device_args(self):
         self.assertEqual(m.device_args(m.BOARDS['si']),
                          ('-device', 'sgi-mgras,slot=io3,board=si'))
         self.assertEqual(m.device_args(m.BOARDS['si-t']),
                          ('-device', 'sgi-mgras,slot=io3,board=si-t'))
-        self.assertIn('x-unimplemented-board=on',
-                      m.device_args(m.BOARDS['esi-t'])[1])
+        self.assertEqual(m.device_args(m.BOARDS['esi-t']),
+                         ('-device', 'sgi-mgras,slot=io3,board=esi-t'))
 
 
 class Statistics(unittest.TestCase):

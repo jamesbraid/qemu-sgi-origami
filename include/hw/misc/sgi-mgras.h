@@ -321,8 +321,6 @@ typedef struct SGIMgrasBoard {
     const char *record_name;
     const char *record_part;
     const char *record_revision;
-    /* The model renders everything IRIX drives on this board. */
-    bool implemented;
 } SGIMgrasBoard;
 
 /*

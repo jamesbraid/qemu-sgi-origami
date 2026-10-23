@@ -66,9 +66,7 @@ class Board:
     """One sgi-mgras board= value and what hinv prints for it."""
     option: str
     hinv_name: str
-    # Extra -device properties. esi-t, mxi and emxi are not in the model's
-    # implemented set (they have texture hardware the model does not fully
-    # draw), so they need x-unimplemented-board to be presented at all.
+    # Extra -device properties.
     properties: tuple = ()
     textured: bool = False
     double_buffered: bool = False
@@ -78,19 +76,12 @@ BOARDS = {
     'si': Board('si', 'SI'),
     'si-t': Board('si-t', 'SI with texture option', textured=True),
     'esi': Board('esi', 'ESI'),
-    'esi-t': Board('esi-t', 'ESI with texture option',
-                   properties=('x-unimplemented-board=on',), textured=True),
+    'esi-t': Board('esi-t', 'ESI with texture option', textured=True),
     'ssi': Board('ssi', 'SSI', double_buffered=True),
     'essi': Board('essi', 'ESSI', double_buffered=True),
-    'mxi': Board('mxi', 'MXI', properties=('x-unimplemented-board=on',),
-                 textured=True, double_buffered=True),
-    'emxi': Board('emxi', 'EMXI', properties=('x-unimplemented-board=on',),
-                  textured=True, double_buffered=True),
+    'mxi': Board('mxi', 'MXI', textured=True, double_buffered=True),
+    'emxi': Board('emxi', 'EMXI', textured=True, double_buffered=True),
 }
-
-# mxi and emxi are refused by the model unless x-unimplemented-board is
-# set, like esi-t: their texture and per-RE pixel-texture paths are only
-# partly modelled.
 
 
 def device_args(board):
