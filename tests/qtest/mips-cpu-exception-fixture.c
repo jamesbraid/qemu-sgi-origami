@@ -5,6 +5,7 @@
 #include "qemu/module.h"
 #include "accel/tcg/cpu-ops.h"
 #include "hw/core/cpu.h"
+#include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "system/qtest.h"
@@ -18,6 +19,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(MipsCpuExceptionFixtureState,
 struct MipsCpuExceptionFixtureState {
     DeviceState parent_obj;
     CPUState *cpu;
+    qemu_irq cache_error_complete;
     uint32_t cpu_index;
 };
 
@@ -39,6 +41,29 @@ static void mips_cpu_exception_fixture_soft_reset(void *opaque, int n,
         async_run_on_cpu(s->cpu,
                          mips_cpu_exception_fixture_soft_reset_work,
                          RUN_ON_CPU_NULL);
+    }
+}
+
+static void mips_cpu_exception_fixture_cache_error_work(CPUState *cs,
+                                                        run_on_cpu_data data)
+{
+    MipsCpuExceptionFixtureState *s = data.host_ptr;
+
+    cs->exception_index = EXCP_CACHE;
+    CPU_GET_CLASS(cs)->tcg_ops->do_interrupt(cs);
+    /* Let qtest distinguish a completed injection from an unchanged mailbox. */
+    qemu_irq_pulse(s->cache_error_complete);
+}
+
+static void mips_cpu_exception_fixture_cache_error(void *opaque, int n,
+                                                   int level)
+{
+    MipsCpuExceptionFixtureState *s = opaque;
+
+    if (level) {
+        async_run_on_cpu(s->cpu,
+                         mips_cpu_exception_fixture_cache_error_work,
+                         RUN_ON_CPU_HOST_PTR(s));
     }
 }
 
@@ -65,9 +90,16 @@ static const Property mips_cpu_exception_fixture_properties[] = {
 
 static void mips_cpu_exception_fixture_instance_init(Object *obj)
 {
+    MipsCpuExceptionFixtureState *s = MIPS_CPU_EXCEPTION_FIXTURE(obj);
+
     qdev_init_gpio_in_named(DEVICE(obj),
                             mips_cpu_exception_fixture_soft_reset,
                             "soft-reset", 1);
+    qdev_init_gpio_in_named(DEVICE(obj),
+                            mips_cpu_exception_fixture_cache_error,
+                            "cache-error", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->cache_error_complete,
+                             "cache-error-complete", 1);
 }
 
 static void mips_cpu_exception_fixture_class_init(ObjectClass *oc,

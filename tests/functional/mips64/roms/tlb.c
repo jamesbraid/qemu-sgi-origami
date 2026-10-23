@@ -149,8 +149,11 @@ static const struct {
 void rom_main(void)
 {
     uint32_t index, probe;
+    uint32_t prid;
     unsigned i;
+    unsigned uc;
     int id;
+    int r10000, r16000;
 
     rom_tlb_park(ROM_TLB_ENTRIES);
     rom_set_wired(0);
@@ -367,12 +370,15 @@ void rom_main(void)
     rom_set_wired(0);
     rom_set_entryhi(0);
 
-    /* The following register assertions are specific to R10000. */
-    if (((rom_get_prid() >> 8) & 0xff) != 0x09) {
+    prid = rom_get_prid();
+    r10000 = ((prid >> 8) & 0xff) == 0x09;
+    r16000 = prid == 0x00000f50;
+
+    if (!r10000 && !r16000) {
         return;
     }
 
-    /* PageMask bits 24:13 are defined (R10000 manual, section 14.3). */
+    /* The selected R10000 and R16000 policies use the same PageMask field. */
     rom_set_pagemask(0xffffffffu);
     rom_assert_eq(id++, ROM_PAGEMASK_16M, rom_get_pagemask());
 
@@ -382,6 +388,28 @@ void rom_main(void)
 
     rom_set_pagemask(ROM_PAGEMASK_4K);
     rom_assert_eq(id++, ROM_PAGEMASK_4K, rom_get_pagemask());
+
+    if (r16000) {
+        /* Exercise the full 40-bit PFN and both uncached-attribute bits. */
+        for (uc = ROM_UC_HUB; uc <= ROM_UC_MEMORY; uc++) {
+            uint64_t lo0 = rom_entrylo_in(0x0000008000000000ull, MAP_RW,
+                                          ROM_CACHE_NONCOHERENT, uc);
+            uint64_t lo1 = rom_entrylo_in(0x0000008000001000ull, MAP_RW,
+                                          ROM_CACHE_NONCOHERENT, uc);
+
+            rom_set_entrylo0(lo0);
+            rom_assert_eq(id++, lo0, rom_get_entrylo0());
+            rom_set_entrylo1(lo1);
+            rom_assert_eq(id++, lo1, rom_get_entrylo1());
+        }
+        rom_set_entrylo0(0);
+        rom_set_entrylo1(0);
+    }
+
+    /* The remaining register assertions below are R10000-specific. */
+    if (!r10000) {
+        return;
+    }
 
     /* TLBR clears masked EntryHi bits (R10000 manual, section 14.35). */
     tlb_write_index(4, VIRT_BIG | 0x01ffe000ull, 0, 0, ROM_PAGEMASK_16M);

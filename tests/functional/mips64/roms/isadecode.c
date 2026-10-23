@@ -121,4 +121,16 @@ void rom_main(void)
     ROM_TRY(".word 0x42000020");
     rom_assert_eq(42, 1, rom_exc.count);
     rom_assert_eq(43, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
+
+    /* R10000-family MIPS IV CPUs reserve the MIPS32 SYNCI encoding. */
+    rom_exc_reset();
+    ROM_TRY(".word 0x041f0000");        /* SYNCI 0($zero), REGIMM rt=0x1f */
+    rom_assert_eq(44, 1, rom_exc.count);
+    rom_assert_eq(45, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
+
+    /* Config1 is internal; its nonzero CP0 select is Reserved Instruction. */
+    rom_exc_reset();
+    ROM_TRY(".word 0x401b8001");        /* mfc0 $27, $16, select 1 */
+    rom_assert_eq(46, 1, rom_exc.count);
+    rom_assert_eq(47, ROM_EXC_RI, ROM_CAUSE_EXC(rom_exc.cause));
 }

@@ -2126,6 +2126,223 @@ static void test_r10k_soft_reset(gconstpointer opaque)
     qtest_quit(qts);
 }
 
+#define CACHEERR_VECTOR_PC_OFF       0x100
+#define CACHEERR_READY_OFF           0x108
+#define CACHEERR_ENTRY_COUNT_OFF     0x110
+#define CACHEERR_STATUS_OFF          0x118
+#define CACHEERR_ERROREPC_OFF        0x120
+#define CACHEERR_EPC_OFF             0x128
+#define CACHEERR_CAUSE_OFF           0x130
+#define CACHEERR_INITIAL_STATUS_OFF  0x138
+#define CACHEERR_SEEDED_STATUS_OFF   0x140
+#define CACHEERR_INITIAL_ERROREPC_OFF 0x148
+#define CACHEERR_INITIAL_EPC_OFF     0x150
+#define CACHEERR_INITIAL_CAUSE_OFF   0x158
+#define CACHEERR_HEARTBEAT_OFF       0x160
+#define CACHEERR_READY_MAGIC         0x4345
+#define CACHEERR_EPC_CANARY          0x1234
+#define CACHEERR_ERROREPC_CANARY     0x5678
+#define CACHEERR_HANDLER             0x700
+#define CACHEERR_SETUP               0x500
+#define CACHEERR_CP0_CAUSE           13
+#define CACHEERR_CP0_EPC             14
+#define CACHEERR_STATUS_EXL          (1u << 1)
+#define CACHEERR_STATUS_IM           (0xffu << 8)
+
+static unsigned int cacheerr_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    unsigned int park_pc;
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+
+    /* BEV CacheErr enters at BFC00300, in the uncached KSeg1 boot window. */
+    img.pos = VEC_CACHE_ERROR;
+    emit(&img, (0x03u << 26) |
+         (((0x0fc00000u | CACHEERR_HANDLER) >> 2) & 0x03ffffff));
+    emit_nop(&img);
+
+    img.pos = CODE_START;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CACHEERR_SETUP);
+    emit_nop(&img);
+
+    img.pos = CACHEERR_SETUP;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_INITIAL_STATUS_OFF);
+    emit_li32(&img, R_T1, ~(STATUS_ERL | CACHEERR_STATUS_EXL |
+                            CACHEERR_STATUS_IM | STATUS_KSU));
+    emit_and(&img, R_T1, R_T0, R_T1);
+    emit_li32(&img, R_T2, STATUS_BEV);
+    emit_or(&img, R_T1, R_T1, R_T2);
+    emit_mtc0(&img, R_T1, CP0_STATUS);
+
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_SEEDED_STATUS_OFF);
+    emit_li32(&img, R_T0, CACHEERR_EPC_CANARY);
+    emit_mtc0(&img, R_T0, CACHEERR_CP0_EPC);
+    emit_li32(&img, R_T0, CACHEERR_ERROREPC_CANARY);
+    emit_mtc0(&img, R_T0, CP0_ERROREPC);
+    emit_mfc0(&img, R_T0, CP0_ERROREPC);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_INITIAL_ERROREPC_OFF);
+    emit_mfc0(&img, R_T0, CACHEERR_CP0_EPC);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_INITIAL_EPC_OFF);
+    emit_mfc0(&img, R_T0, CACHEERR_CP0_CAUSE);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_INITIAL_CAUSE_OFF);
+    emit_addiu(&img, R_T0, R_ZERO, READY_MAGIC);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_READY_OFF);
+    park_pc = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, park_pc);
+    emit_nop(&img);
+
+    img.pos = CACHEERR_HANDLER;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_sd(&img, 31, R_T2, CACHEERR_VECTOR_PC_OFF);
+    emit_ld(&img, R_T0, R_T2, CACHEERR_ENTRY_COUNT_OFF);
+    emit_addiu(&img, R_T0, R_T0, 1);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_ENTRY_COUNT_OFF);
+    emit_addiu(&img, R_T0, R_ZERO, CACHEERR_READY_MAGIC);
+    emit_sd(&img, R_T0, R_T2, CACHEERR_READY_OFF);
+    {
+        unsigned int snapshot_pc = img.pos;
+
+        emit_mfc0(&img, R_T0, CP0_STATUS);
+        emit_sd(&img, R_T0, R_T2, CACHEERR_STATUS_OFF);
+        emit_mfc0(&img, R_T0, CP0_ERROREPC);
+        emit_sd(&img, R_T0, R_T2, CACHEERR_ERROREPC_OFF);
+        emit_mfc0(&img, R_T0, CACHEERR_CP0_EPC);
+        emit_sd(&img, R_T0, R_T2, CACHEERR_EPC_OFF);
+        emit_mfc0(&img, R_T0, CACHEERR_CP0_CAUSE);
+        emit_sd(&img, R_T0, R_T2, CACHEERR_CAUSE_OFF);
+        emit(&img, OPC_SYNC);
+        emit_ld(&img, R_T0, R_T2, CACHEERR_HEARTBEAT_OFF);
+        emit_addiu(&img, R_T0, R_T0, 1);
+        emit_sd(&img, R_T0, R_T2, CACHEERR_HEARTBEAT_OFF);
+        emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, snapshot_pc);
+        emit_nop(&img);
+    }
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+    return park_pc;
+}
+
+static void wait_for_cache_error_completion(QTestState *qts,
+                                            uint64_t expected)
+{
+    SgiWait w;
+
+    sgi_wait_start(&w, "CacheErr fixture completion count %" PRIu64,
+                   expected);
+    while (qtest_get_irq_raise_count(qts, 0) < expected) {
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
+    }
+}
+
+static uint64_t wait_for_cache_error_heartbeat(QTestState *qts,
+                                               uint64_t previous)
+{
+    SgiWait w;
+    uint64_t heartbeat;
+
+    sgi_wait_start(&w, "CacheErr handler heartbeat after %" PRIu64,
+                   previous);
+    do {
+        heartbeat = state_word(qts, CACHEERR_HEARTBEAT_OFF);
+        if (heartbeat == previous) {
+            sgi_wait_pause(&w, POLL_INTERVAL_US);
+        }
+    } while (heartbeat == previous);
+    return heartbeat;
+}
+
+static void test_r16000_cache_error_entry_and_nested_suppression(void)
+{
+    static const char fixture_path[] = "/machine/peripheral/exception-fixture";
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint64_t initial_status, seeded_status, status;
+    uint64_t first_error_epc, first_epc, first_cause, first_status;
+    uint64_t heartbeat;
+    unsigned int park_pc;
+    int fd;
+
+    if (!qtest_has_accel("tcg") ||
+        !qtest_has_device("mips-cpu-exception-fixture")) {
+        g_test_skip("MIPS CPU exception fixture requires TCG");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-r16000-cache-error-image-XXXXXX",
+                         &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    park_pc = cacheerr_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+                      "-device mips-cpu-exception-fixture,id=exception-fixture,"
+                      "cpu-index=0 -no-reboot -no-shutdown",
+                      R16000_CPU, image);
+    unlink(image);
+    qtest_irq_intercept_out_named(qts, fixture_path, "cache-error-complete");
+    wait_for_state(qts, CACHEERR_READY_OFF, READY_MAGIC);
+    g_usleep(10 * POLL_INTERVAL_US);
+
+    initial_status = state_word(qts, CACHEERR_INITIAL_STATUS_OFF);
+    seeded_status = state_word(qts, CACHEERR_SEEDED_STATUS_OFF);
+    g_assert_cmphex(initial_status & STATUS_KSU, ==, 0);
+    g_assert_cmphex(seeded_status & (STATUS_ERL | CACHEERR_STATUS_EXL), ==, 0);
+    g_assert_cmphex(seeded_status & STATUS_BEV, ==, STATUS_BEV);
+    g_assert_cmphex(state_word(qts, CACHEERR_INITIAL_EPC_OFF), ==,
+                    CACHEERR_EPC_CANARY);
+    g_assert_cmphex(state_word(qts, CACHEERR_INITIAL_ERROREPC_OFF), ==,
+                    CACHEERR_ERROREPC_CANARY);
+
+    qtest_set_irq_in(qts, fixture_path, "cache-error", 0, 1);
+    qtest_set_irq_in(qts, fixture_path, "cache-error", 0, 0);
+    wait_for_cache_error_completion(qts, 1);
+    wait_for_state(qts, CACHEERR_READY_OFF, CACHEERR_READY_MAGIC);
+    wait_for_cache_error_heartbeat(qts, 0);
+
+    g_assert_cmphex(state_word(qts, CACHEERR_VECTOR_PC_OFF), ==,
+                    0xffffffffbfc00308ULL);
+    g_assert_cmphex(state_word(qts, CACHEERR_ENTRY_COUNT_OFF), ==, 1);
+    status = state_word(qts, CACHEERR_STATUS_OFF);
+    g_assert_cmphex(status & (STATUS_ERL | STATUS_BEV), ==,
+                    STATUS_ERL | STATUS_BEV);
+    g_assert_cmphex(status & CACHEERR_STATUS_EXL, ==,
+                    seeded_status & CACHEERR_STATUS_EXL);
+    g_assert_cmphex(state_word(qts, CACHEERR_ERROREPC_OFF), ==,
+                    0xffffffffbfc00000ULL + park_pc);
+    g_assert_cmphex(state_word(qts, CACHEERR_EPC_OFF), ==,
+                    state_word(qts, CACHEERR_INITIAL_EPC_OFF));
+    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF), ==,
+                    state_word(qts, CACHEERR_INITIAL_CAUSE_OFF));
+    first_error_epc = state_word(qts, CACHEERR_ERROREPC_OFF);
+    first_epc = state_word(qts, CACHEERR_EPC_OFF);
+    first_cause = state_word(qts, CACHEERR_CAUSE_OFF);
+    first_status = status;
+
+    qtest_set_irq_in(qts, fixture_path, "cache-error", 0, 1);
+    qtest_set_irq_in(qts, fixture_path, "cache-error", 0, 0);
+    wait_for_cache_error_completion(qts, 2);
+    heartbeat = state_word(qts, CACHEERR_HEARTBEAT_OFF);
+    wait_for_cache_error_heartbeat(qts, heartbeat);
+
+    g_assert_cmphex(state_word(qts, CACHEERR_ENTRY_COUNT_OFF), ==, 1);
+    g_assert_cmphex(state_word(qts, CACHEERR_STATUS_OFF), ==, first_status);
+    g_assert_cmphex(state_word(qts, CACHEERR_ERROREPC_OFF), ==,
+                    first_error_epc);
+    g_assert_cmphex(state_word(qts, CACHEERR_EPC_OFF), ==, first_epc);
+    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF), ==, first_cause);
+
+    qtest_quit(qts);
+}
+
 static void scache_write_guest_image(int fd)
 {
     uint8_t image[IMAGE_SIZE] = { };
@@ -2348,6 +2565,8 @@ int main(int argc, char **argv)
                    test_r16000_nmi_entry_and_retrigger);
     qtest_add_func("/r16000/nmi/cold-reset-control",
                    test_r16000_nmi_reset_rearms);
+    qtest_add_func("/r16000/cache-error/entry-and-nested-suppression",
+                   test_r16000_cache_error_entry_and_nested_suppression);
     qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
     qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
     for (unsigned int i = 0; i < ARRAY_SIZE(cpu_cases); i++) {
