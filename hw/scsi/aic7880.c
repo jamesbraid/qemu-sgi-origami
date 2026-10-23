@@ -105,6 +105,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define DFS_FIFOQWDEMP 0x20
 #define DFS_HDONE 0x08
 #define DFS_MREQPEND 0x10
+#define DFS_DFTHRSH 0x04
 #define DFS_FIFOFULL 0x02
 #define DFS_FIFOEMP 0x01
 #define SBLK_AUTOFLUSHDIS 0x20
@@ -163,6 +164,7 @@ struct AIC7880State {
     uint8_t host_fifo_write;
     uint16_t host_fifo_len;
     bool host_dma_active;
+    bool host_request_pending;
     uint8_t qout_head;
     uint8_t qout_tail;
     uint8_t qout_count;
@@ -277,29 +279,43 @@ static void aic7880_set_count(AIC7880State *s, unsigned offset,
 
 static void aic7880_fifo_status(AIC7880State *s)
 {
+    /* The selected default follows the sibling's three-word example. */
+    static const unsigned thresholds[] = { 3, 16, 24, 32 };
     unsigned fifo_len = s->host_fifo_len;
-    uint8_t status = s->regs[REG_DFSTATUS] &
-                     ~(DFS_FIFOQWDEMP | DFS_FIFOFULL | DFS_FIFOEMP);
-
     unsigned read = s->host_fifo_read;
     unsigned head = (8 - (read & 7)) & 7;
+    unsigned capacity_words = sizeof(s->host_fifo) / 8;
+    unsigned complete_words = fifo_len == sizeof(s->host_fifo) ?
+                              capacity_words :
+                              fifo_len >= head ? (fifo_len - head) / 8 : 0;
+    unsigned occupied_words = fifo_len ?
+        MIN(capacity_words, DIV_ROUND_UP((read & 7) + fifo_len, 8)) : 0;
+    unsigned threshold = thresholds[s->regs[REG_DSPCISTATUS] >> 6];
+    uint8_t control = s->regs[REG_DFCNTRL];
+    bool from_memory = control & 0x04;
+    bool ready = from_memory ? capacity_words - occupied_words >= threshold :
+                              complete_words >= threshold;
+    uint8_t status = s->regs[REG_DFSTATUS] &
+        ~(DFS_FIFOQWDEMP | DFS_FIFOFULL | DFS_FIFOEMP | DFS_DFTHRSH |
+          DFS_MREQPEND);
 
-    if (fifo_len != sizeof(s->host_fifo) && fifo_len < head + 8) {
+    if (!complete_words) {
         status |= DFS_FIFOQWDEMP;
     }
-    bool from_memory = s->regs[REG_DFCNTRL] & 0x04;
-    bool ready = from_memory ?
-        s->host_fifo_len < sizeof(s->host_fifo) :
-        s->host_fifo_len &&
-        (s->host_fifo_len == sizeof(s->host_fifo) ||
-         (s->regs[REG_DFCNTRL] & DFC_FIFOFLUSH));
-
-    status &= ~DFS_MREQPEND;
-    if ((s->regs[REG_DFCNTRL] & 0x08) &&
-        aic7880_count(s, 0x8c) && !s->error_pending && ready) {
+    if (ready) {
+        status |= DFS_DFTHRSH;
+    }
+    if (!(control & 0x08) || !aic7880_count(s, 0x8c) || s->error_pending ||
+        (from_memory ? fifo_len == sizeof(s->host_fifo) : !fifo_len)) {
+        s->host_request_pending = false;
+    } else if (ready || (!from_memory && (control & DFC_FIFOFLUSH))) {
+        s->host_request_pending = true;
+    }
+    /* A started request survives falling below its start threshold. */
+    if (s->host_request_pending) {
         status |= DFS_MREQPEND;
     }
-    if (s->host_fifo_len == sizeof(s->host_fifo)) {
+    if (fifo_len == sizeof(s->host_fifo)) {
         status |= DFS_FIFOFULL;
     }
     if (!fifo_len) {
@@ -378,8 +394,8 @@ static void aic7880_host_dma(AIC7880State *s)
     uint32_t len;
     bool success;
 
-    if (!(control & 0x08) || !count ||
-        s->error_pending ||
+    aic7880_fifo_status(s);
+    if (!s->host_request_pending ||
         (pci_get_word(pci->config + PCI_STATUS) &
          (PCI_STATUS_REC_MASTER_ABORT | PCI_STATUS_REC_TARGET_ABORT)) ||
         !(pci_get_word(pci->config + PCI_COMMAND) & PCI_COMMAND_MASTER) ||
@@ -414,10 +430,6 @@ static void aic7880_host_dma(AIC7880State *s)
         }
         s->host_fifo_len += len;
     } else {
-        if (s->host_fifo_len != sizeof(s->host_fifo) &&
-            !(control & DFC_FIFOFLUSH)) {
-            return;
-        }
         len = MIN(count, s->host_fifo_len);
         if (!len) {
             return;
@@ -785,6 +797,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->host_fifo_write = 0;
     s->host_fifo_len = 0;
     s->host_dma_active = false;
+    s->host_request_pending = false;
     s->selected = false;
     s->initiator_atn = false;
     s->identify_seen = false;
@@ -1181,6 +1194,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->host_fifo_read = s->regs[0x88] & 7;
             s->host_fifo_write = s->host_fifo_read;
             s->host_fifo_len = 0;
+            s->host_request_pending = false;
             s->regs[REG_DFSTATUS] =
                 (s->regs[REG_DFSTATUS] & ~DFS_HDONE) |
                 DFS_FIFOQWDEMP | DFS_FIFOEMP;
@@ -1224,6 +1238,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         s->regs[addr] = val & 0xc0;
+        aic7880_host_dma(s);
+        aic7880_process_scsi_data(s);
         break;
     case REG_HCNT_RSVD:
         if (s->running) {
@@ -2060,6 +2076,13 @@ static int aic7880_post_load(void *opaque, int version_id)
         s->host_fifo_write) {
         return -EINVAL;
     }
+    if (s->host_request_pending &&
+        (!(s->regs[REG_DFCNTRL] & 8) || !aic7880_count(s, 0x8c) ||
+         s->error_pending ||
+         ((s->regs[REG_DFCNTRL] & 4) ?
+          s->host_fifo_len == sizeof(s->host_fifo) : !s->host_fifo_len))) {
+        return -EINVAL;
+    }
     for (unsigned i = 0; i < s->return_depth; i++) {
         if (s->return_pc[i] > AIC_SEQ_INSNS) {
             return -EINVAL;
@@ -2072,6 +2095,7 @@ static int aic7880_post_load(void *opaque, int version_id)
     if (version_id < 2) {
         s->expected_phase = 0xff;
     }
+    aic7880_fifo_status(s);
     aic7880_update_scsi_irq(s);
     if ((s->regs[REG_HCNTRL] & HOST_PAUSE) ||
         (s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
@@ -2119,6 +2143,7 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(host_fifo_read, AIC7880State),
         VMSTATE_UINT8(host_fifo_write, AIC7880State),
         VMSTATE_UINT16(host_fifo_len, AIC7880State),
+        VMSTATE_BOOL(host_request_pending, AIC7880State),
         VMSTATE_BOOL(selected, AIC7880State),
         VMSTATE_BOOL(maskable_break_pending, AIC7880State),
         VMSTATE_BOOL(error_pending, AIC7880State),
