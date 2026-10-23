@@ -78,14 +78,17 @@ static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual,
  * programming routine as the responsible code; see the header comment above
  * SGI_MGRAS_DAC_LUT_INDEX in sgi-mgras.h for the captured load protocol. Apply
  * the table as a final stage over any resolved colour, so indexed and, once
- * modeled, direct-colour pixels see the same correction. Operates on
+ * modeled, direct-colour pixels see the same correction. Each component
+ * passes the DAC's pixel mask first (see SGI_MGRAS_DAC_REG_PIXEL_MASK),
+ * which is how the X server's screen saver blanks the display. Operates on
  * mgras_cmap_rgb()'s native 0x00BBGGRR order.
  */
 static uint32_t mgras_gamma_apply(SGIMgrasState *s, uint32_t bgr)
 {
-    uint32_t b = s->dac_gamma[2][(bgr >> 16) & 0xff];
-    uint32_t g = s->dac_gamma[1][(bgr >> 8) & 0xff];
-    uint32_t r = s->dac_gamma[0][bgr & 0xff];
+    uint8_t mask = s->dac_reg[SGI_MGRAS_DAC_REG_PIXEL_MASK];
+    uint32_t b = s->dac_gamma[2][(bgr >> 16) & mask];
+    uint32_t g = s->dac_gamma[1][(bgr >> 8) & mask];
+    uint32_t r = s->dac_gamma[0][bgr & mask];
 
     return (b << 16) | (g << 8) | r;
 }
