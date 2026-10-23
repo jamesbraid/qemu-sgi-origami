@@ -2297,6 +2297,7 @@ static void test_r10k_soft_reset(gconstpointer opaque)
 #define CACHEERR_ERROREPC_OFF        0x120
 #define CACHEERR_EPC_OFF             0x128
 #define CACHEERR_CAUSE_OFF           0x130
+#define CACHEERR_CAUSE_HW_IP_MASK    0xfc00ULL
 #define CACHEERR_INITIAL_STATUS_OFF  0x138
 #define CACHEERR_SEEDED_STATUS_OFF   0x140
 #define CACHEERR_INITIAL_ERROREPC_OFF 0x148
@@ -2484,8 +2485,10 @@ static void test_r16000_cache_error_entry_and_nested_suppression(void)
                     0xffffffffbfc00000ULL + park_pc);
     g_assert_cmphex(state_word(qts, CACHEERR_EPC_OFF), ==,
                     state_word(qts, CACHEERR_INITIAL_EPC_OFF));
-    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF), ==,
-                    state_word(qts, CACHEERR_INITIAL_CAUSE_OFF));
+    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF) &
+                    ~CACHEERR_CAUSE_HW_IP_MASK, ==,
+                    state_word(qts, CACHEERR_INITIAL_CAUSE_OFF) &
+                    ~CACHEERR_CAUSE_HW_IP_MASK);
     first_error_epc = state_word(qts, CACHEERR_ERROREPC_OFF);
     first_epc = state_word(qts, CACHEERR_EPC_OFF);
     first_cause = state_word(qts, CACHEERR_CAUSE_OFF);
@@ -2502,7 +2505,10 @@ static void test_r16000_cache_error_entry_and_nested_suppression(void)
     g_assert_cmphex(state_word(qts, CACHEERR_ERROREPC_OFF), ==,
                     first_error_epc);
     g_assert_cmphex(state_word(qts, CACHEERR_EPC_OFF), ==, first_epc);
-    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF), ==, first_cause);
+    /* Asynchronous Malta IRQs can change hardware IP bits between reads. */
+    g_assert_cmphex(state_word(qts, CACHEERR_CAUSE_OFF) &
+                    ~CACHEERR_CAUSE_HW_IP_MASK, ==,
+                    first_cause & ~CACHEERR_CAUSE_HW_IP_MASK);
 
     qtest_quit(qts);
 }
