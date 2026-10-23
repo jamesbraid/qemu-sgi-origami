@@ -2026,7 +2026,7 @@ static void test_host_pausedis_refusal(void)
             g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
             g_autofree char *log = NULL;
             QTestState *qts = start_aic_logged(path);
-            uint8_t program[4];
+            uint8_t program[8];
             uint8_t control = 0x90 | (faildis << 5);
             size_t n = 0;
 
@@ -2038,10 +2038,17 @@ static void test_host_pausedis_refusal(void)
             qtest_writeb(qts, REG_BASE + 0x60, control | controls[i] | 4);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x60), ==, control);
             qtest_writeb(qts, REG_BASE + 0x87, 2);
-            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
             qtest_writeb(qts, REG_BASE + 0x87, 4);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+            n = 0;
+            emit_or(program, &n, 0x5a, 0x20);
+            emit_or(program, &n, 1, 0x91);
+            start_program(qts, program, n);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0x5a);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 1, ==, 1);
             qtest_quit(qts);
             g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
             g_assert_nonnull(strstr(log, "unsupported host SEQCTL control"));
@@ -2217,7 +2224,8 @@ static void test_sequencer_host_completion_memory(void)
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, id);
             }
         }
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24), ==, (index + 1) & 0xff);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24),
+                        ==, (index + 1) & 0xff);
     }
     /* With PCI admission inhibited, the firmware waits before publishing. */
     config_writew(qts, 0x04, 2);
@@ -5730,17 +5738,18 @@ static void test_scb_pages_and_sequencer_access(void)
     qtest_writeb(qts, REG_BASE + 0x90, 2);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x35);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x79);
-    qtest_writeb(qts, REG_BASE + 0x90, 16);
-    qtest_writeb(qts, REG_BASE + 0xa0, 0xee);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0xff);
-    qtest_writeb(qts, REG_BASE + 0x90, 2);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x35);
 
     /* Copy an SCB byte through the sequencer's register bus. */
     emit(program, &n, alu_word(0, 0, 0xa0, 0x20, false));
     emit_or(program, &n, 1, 0x91);
     start_program(qts, program, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0x35);
+
+    qtest_writeb(qts, REG_BASE + 0x90, 16);
+    qtest_writeb(qts, REG_BASE + 0xa0, 0xee);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0xff);
+    qtest_writeb(qts, REG_BASE + 0x90, 2);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x35);
     qtest_quit(qts);
 }
 
@@ -5859,8 +5868,6 @@ static void test_indirect_source_advances_index(void)
     qtest_writeb(qts, REG_BASE + 0x31, 0x34);
     qtest_writeb(qts, REG_BASE + 0x65, 0x30);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x30);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6c), ==, 0xff);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x30);
     emit(program, &n, alu_word(0, 0, 0x6c, 0x40, false));
     emit(program, &n, alu_word(0, 0, 0x6c, 0x41, false));
     emit(program, &n, alu_word(0, 1, 0x6a, 0x91, false));
@@ -5869,6 +5876,9 @@ static void test_indirect_source_advances_index(void)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x41), ==, 0x34);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x32);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x65, 0x30);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6c), ==, 0xff);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x30);
     qtest_quit(qts);
 }
 
@@ -5896,6 +5906,7 @@ static void test_indirect_sequencer_sources(void)
     qtest_writeb(qts, REG_BASE + 0x65, 0xff);
     start_program(qts, program, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
     qtest_writeb(qts, REG_BASE + 0x65, 0x6c);
     start_program(qts, program, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x6d);
@@ -6746,6 +6757,7 @@ static void test_failed_return_keeps_subroutine_pc(void)
         qtest_writeb(qts, REG_BASE + 0x11, 0x40);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
         qtest_writeb(qts, REG_BASE + 0x92, 8);
+        qtest_writeb(qts, REG_BASE + 0x87, 1);
         emit(program, &n, branch_word(0xb, 0, 0x65, 3));
         emit_or(program, &n, 0x11, 0x40);
         emit_or(program, &n, 1, 0x91);
