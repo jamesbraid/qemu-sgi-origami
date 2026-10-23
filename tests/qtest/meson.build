@@ -1056,7 +1056,9 @@ foreach dir : target_dirs
          is_parallel: not test.startswith('sgi-mgras-') and
                       test != 'sgi-replay-test',
          protocol: 'tap',
-         timeout: slow_qtests.get(test, 60),
+         # The expanded 246-case AIC suite took 83-85s in completed runs.
+         timeout: test == 'aic7880-test' ? 300 :
+                  slow_qtests.get(test, 60),
          priority: test == 'sgi-replay-test' ? 1100 :
                    slow_qtests.get(test, 60),
          suite: groups.keys().length() > 0 ? [] : test_suites)
