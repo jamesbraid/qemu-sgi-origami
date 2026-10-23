@@ -1454,10 +1454,9 @@ static void o2_init(MachineState *machine)
                      "prom-sb64-reset=on and complete ROM settings");
         exit(1);
     }
-    if (s->gbe_one_tile_diagnostic && !s->gbe11_registers) {
-        error_report("o2-test gbe-one-tile-diagnostic requires "
-                     "gbe11-registers=on and its 1 GiB PROM diagnostic "
-                     "prerequisites");
+    if (s->gbe_one_tile_diagnostic) {
+        error_report("o2-test gbe-one-tile-diagnostic is superseded by "
+                     "the programmed display selected by gbe11-registers");
         exit(1);
     }
     if (s->prom_sb64_reset &&
@@ -1675,17 +1674,19 @@ static void o2_init(MachineState *machine)
     if (s->gbe11_registers) {
         gbe = qdev_new("sgi-o2-gbe");
         object_property_add_child(OBJECT(machine), "gbe", OBJECT(gbe));
-        if (s->gbe_one_tile_diagnostic) {
-            qdev_prop_set_bit(gbe, "synthetic-single-tile", true);
-            object_property_set_link(
-                OBJECT(gbe), "ram",
-                OBJECT(&SGI_CRIME(crime)->decoded_ram), &error_fatal);
-        }
+        qdev_prop_set_bit(gbe, "functional-display", true);
+        object_property_set_link(
+            OBJECT(gbe), "ram",
+            OBJECT(&SGI_CRIME(crime)->decoded_ram), &error_fatal);
         if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(gbe), &err)) {
             error_report_err(err);
             exit(1);
         }
         sysbus_mmio_map(SYS_BUS_DEVICE(gbe), 0, O2_GBE_BASE);
+        for (unsigned i = 0; i < 4; i++) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(gbe), i,
+                                qdev_get_gpio_in_named(crime, "external", i));
+        }
     }
 
     if (s->rom_image && !s->password_clear_input) {
