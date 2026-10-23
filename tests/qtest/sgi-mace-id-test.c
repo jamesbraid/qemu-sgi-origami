@@ -734,6 +734,47 @@ static void test_missing_and_wrong_size_input(void)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+static void test_password_clear_input(void)
+{
+    g_autofree char *image = id_image_file();
+
+    for (unsigned initial = 0; initial < 2; initial++) {
+        QTestState *qts = qtest_initf("-M none -cpu R10000 "
+            "-device sgi-mace-id,id=identity,test-serial=1032547698ba,"
+            "eprom-file=%s,status=0123456789abcd,misc-word-pio=on,"
+            "password-clear-input=%s", image, initial ? "on" : "off");
+
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/identity", 0,
+                              MACE_ID_REG);
+        g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==,
+                         0x20 | (initial << 1));
+        for (unsigned level = 0; level < 2; level++) {
+            qtest_set_irq_in(qts, "/machine/peripheral/identity",
+                              "password-clear-input", 0, level);
+            for (unsigned writable = 0; writable < 64; writable++) {
+                uint64_t expected = (writable & 0x35) | (level << 1) |
+                                    ((writable & 4) ? 8 : 0);
+
+                /* Writes to both input positions must leave them intact. */
+                qtest_writeq(qts, MACE_ID_REG, writable);
+                g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==, expected);
+                g_assert_cmphex(qtest_readl(qts, MACE_ID_REG), ==, 0);
+                g_assert_cmphex(qtest_readl(qts, MACE_ID_REG + 4), ==,
+                                 expected);
+                qtest_writel(qts, MACE_ID_REG, UINT32_MAX);
+                g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==, expected);
+                qtest_writel(qts, MACE_ID_REG + 4, writable ^ 0x0a);
+                g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==, expected);
+            }
+            qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+            g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==,
+                             0x20 | (level << 1));
+        }
+        qtest_quit(qts);
+    }
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -765,5 +806,7 @@ int main(int argc, char **argv)
                    test_absent_device_has_no_identity_blocker);
     qtest_add_func("/sgi/mace-id/input-validation",
                    test_missing_and_wrong_size_input);
+    qtest_add_func("/sgi/mace-id/password-clear-input",
+                   test_password_clear_input);
     return g_test_run();
 }

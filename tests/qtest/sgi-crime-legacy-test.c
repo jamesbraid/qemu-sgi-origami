@@ -548,7 +548,8 @@ static void test_machine_admission(void)
     reject_machine(selected, "1G", "R10000", "-bios", "unused",
                    "does not support -bios");
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
-    partial = g_strdup_printf("%s,rom-image=%s,rom-size=524288,rom-offset=0,"
+    partial = g_strdup_printf("%s,password-clear-input=0,rom-image=%s,"
+                              "rom-size=524288,rom-offset=0,"
                               "rom-pad-byte=238", selected, path);
     reject_machine(partial, "1G", "R10000", NULL, NULL,
                    "legacy-software ROM requires");

@@ -51,7 +51,7 @@ static QTestState *start_o2(const char *image, const char *machine_extra,
                             const char *qemu_extra)
 {
     return qtest_initf(
-        "-M o2-test,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "-M o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=255%s -cpu R10000 -m 64M -nic none "
         MEMTX_TEST_DEVICE " %s",
         image, machine_extra, qemu_extra);
@@ -955,10 +955,10 @@ static void test_invalid_configuration(void)
             "sgi-o2-rom,id=rom,flash-size=524288,image=%s,image-offset=0,"
             "pad-byte=255,at29c040a-protection=disabled", path);
         g_autofree char *machine_missing = g_strdup_printf(
-            "o2-test,rom-image=%s,rom-size=524288,rom-offset=0,"
+            "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
             "rom-pad-byte=255,rom-at29c040a=on", path);
         g_autofree char *machine_implicit = g_strdup_printf(
-            "o2-test,rom-image=%s,rom-size=524288,rom-offset=0,"
+            "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
             "rom-pad-byte=255,rom-at29c040a-protection=disabled", path);
 
         expect_startup_error(missing_state, "requires protection");

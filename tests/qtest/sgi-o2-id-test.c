@@ -590,7 +590,7 @@ static void test_misc_word_session_without_timer_service(void)
 static void test_misc_word_pio_selected(void)
 {
     static const uint8_t reset_raw[8] = {
-        0, 0, 0, 0, 0, 0, 0, 0x20
+        0, 0, 0, 0, 0, 0, 0, 0x22
     };
     const uint64_t ring_base = UINT64_C(0x1f310000);
     const uint64_t irq_status = UINT64_C(0x1f310010);
@@ -605,29 +605,30 @@ static void test_misc_word_pio_selected(void)
     uint16_t half;
     uint8_t byte;
     QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,identity-diagnostic=on,"
+        MEMTX_TEST_DEVICE "-M o2-test,password-clear-input=1,"
+        "identity-diagnostic=on,"
         "identity-test-serial=1032547698ba,identity-eprom-file=%s,"
         "identity-status=0123456789abcd,mace-misc-word-pio=on "
         "-nic none -d unimp -D %s", image, log_path);
 
     g_assert_cmpint(memtx_readq(qts, ID_REG, &wide), ==, MEMTX_OK);
-    g_assert_cmphex(wide, ==, 0x20);
+    g_assert_cmphex(wide, ==, 0x22);
     g_assert_cmpint(memtx_readl(qts, ID_REG, &high), ==, MEMTX_OK);
     g_assert_cmpint(memtx_readl(qts, ID_REG + 4, &low), ==, MEMTX_OK);
     g_assert_cmphex(high, ==, 0);
-    g_assert_cmphex(low, ==, 0x20);
+    g_assert_cmphex(low, ==, 0x22);
     g_assert_cmphex(((uint64_t)high << 32) | low, ==, wide);
     qtest_memread(qts, ID_REG, raw, sizeof(raw));
     g_assert_cmpmem(raw, sizeof(raw), reset_raw, sizeof(reset_raw));
 
     g_assert_cmpint(memtx_writeq(qts, ID_REG, 0x34), ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3e);
     g_assert_cmpint(memtx_writel(qts, ID_REG, 0), ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3e);
     g_assert_cmpint(memtx_writel(qts, ID_REG, 0xa5c30042), ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x3e);
     g_assert_cmpint(memtx_writel(qts, ID_REG + 4, ID_RELEASE), ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0e);
 
     g_assert_cmpint(memtx_writel(qts, ID_REG + 4, ID_SAMPLE), ==, MEMTX_OK);
     g_assert_cmpint(memtx_readl(qts, ID_REG + 4, &low), ==, MEMTX_OK);
@@ -657,7 +658,7 @@ static void test_misc_word_pio_selected(void)
     g_assert_cmpint(memtx_readw(qts, ID_REG + 4, &half), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeb(qts, ID_REG + 4, 0), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writew(qts, ID_REG + 4, 0), !=, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0e);
 
     g_assert_cmphex(qtest_readq(qts, ring_base), ==, 1);
     g_assert_cmpint(memtx_readl(qts, ring_base, &low), ==, MEMTX_OK);
@@ -668,14 +669,14 @@ static void test_misc_word_pio_selected(void)
     g_assert_cmpint(memtx_writel(qts, irq_mask, 0), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(qts, irq_mask), ==, 1);
     g_assert_cmpint(memtx_readl(qts, ID_REG + 0x20, &low), ==, MEMTX_OK);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0c);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x0e);
 
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x20);
+    g_assert_cmphex(qtest_readq(qts, ID_REG), ==, 0x22);
     g_assert_cmpint(memtx_readl(qts, ID_REG, &high), ==, MEMTX_OK);
     g_assert_cmpint(memtx_readl(qts, ID_REG + 4, &low), ==, MEMTX_OK);
     g_assert_cmphex(high, ==, 0);
-    g_assert_cmphex(low, ==, 0x20);
+    g_assert_cmphex(low, ==, 0x22);
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log_text, NULL, NULL));
     g_assert_nonnull(strstr(log_text,

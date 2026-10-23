@@ -114,6 +114,7 @@ struct SGIMACEState {
     bool pio_byte_test;
     bool identity_diagnostic;
     bool misc_word_pio;
+    bool password_clear_input;
     bool eth_low_dma_compat;
     bool pci_native_word_swap;
     char *identity_test_serial;
@@ -979,6 +980,9 @@ static void mace_init(Object *obj)
     object_property_add_alias(obj, "phy-address", OBJECT(&s->eth),
                               "phy-address");
     object_initialize_child(obj, "rtc", &s->rtc, TYPE_DS1685);
+    object_property_add_alias(obj, "drive", OBJECT(&s->rtc), "drive");
+    object_property_add_alias(obj, "clock-drive", OBJECT(&s->rtc),
+                              "clock-drive");
     object_initialize_child(obj, "uart-a", &s->uart[0], TYPE_SERIAL);
     object_initialize_child(obj, "uart-b", &s->uart[1], TYPE_SERIAL);
     object_property_add_alias(obj, "chardev-a", OBJECT(&s->uart[0]),
@@ -1231,12 +1235,15 @@ static void mace_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_string(identity, "status", s->identity_status);
     }
     qdev_prop_set_bit(identity, "misc-word-pio", s->misc_word_pio);
+    qdev_prop_set_bit(identity, "password-clear-input",
+                      s->password_clear_input);
     if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(identity), errp)) {
         object_unparent(OBJECT(identity));
         return;
     }
     s->identity = identity;
     qdev_pass_gpios(identity, dev, "flash-write-enable");
+    qdev_pass_gpios(identity, dev, "password-clear-input");
     memory_region_add_subregion_overlap(&s->aperture, MACE_ID_BASE,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(identity), 0), 1);
 }
@@ -1278,6 +1285,8 @@ static void mace_unrealize(DeviceState *dev)
 }
 
 static const Property mace_properties[] = {
+    DEFINE_PROP_BOOL("password-clear-input", SGIMACEState,
+                     password_clear_input, false),
     DEFINE_PROP_LINK("ram", SGIMACEState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_BOOL("aic-pci-diagnostic", SGIMACEState,
