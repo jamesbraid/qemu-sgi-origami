@@ -349,8 +349,7 @@ Onyx2 deskside:
      - ``origin200``
      - 1
      - 1 or 2
-     - 64 to 1664 MiB, or 1792 with a faster module, as banks (see
-       below)
+     - 64 to 2048 MiB, as banks (see below)
    * - ``origin200-dual``
      - ``origin200``
      - 2, direct-linked
@@ -410,8 +409,7 @@ of two cores each; naming sockets and cores explicitly must still match
 one of the topology's own accepted populations. ``-m`` splits evenly
 across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same per-node sizes
-``origin200`` does, so its total ranges from 128 MiB to 3328 MiB (3584
-MiB with a 225 or 270 MHz module), while
+``origin200`` does, so its total ranges from 128 MiB to 4096 MiB, while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
 size. The fixed, fingerprinted IP53 Bedrock assembly also accepts
 descriptor-sized unequal node spans when each absolute bank total is
@@ -546,19 +544,43 @@ still lets the remaining banks hold the rest. The board takes 64, 128,
 256 and 512 MB banks, but the stock IP27 PROM 6.156 disables a 256 MB
 bank whenever the configuration block gives a processor clock of 180
 or 195 MHz (*established*, from disassembly of the PROM's memory test).
-So with a 180 MHz module QEMU builds no 256 MB bank: bank 0 holds 64 or
-128 MiB and banks 1 to 3 hold 64, 128 or 512 MiB, which gives 20
-accepted sizes from 64 to 1664 MiB (1664 MiB is 128, 512, 512 and
-512 MiB). With a 225 or 270 MHz module bank 0 may hold 256 MiB and the
-others 256 MiB too, which gives 26 sizes from 64 to 1792 MiB; 512 MiB
-is then two 256 MiB banks, as on a real 270 MHz machine whose PROM
-inventory shows 256 MB banks 0 and 1 (Nekochan thread 16726704). A
-512 MB bank 0 is real hardware too, but it is an unsupported
-configuration here: the PROM fails its memory test at the boot flash's
-reset address, where QEMU's flash overlay covers the RAM. The cause is
-*inferred*: real firmware appears to expect RAM behind a cached access
-there. 1024, 1536 and 2048 MiB need such a bank at 180 MHz, and 2048 MiB
-at any clock, and are refused.
+So with a 180 MHz module QEMU builds no 256 MB bank: banks hold 64, 128
+or 512 MiB, which gives 23 accepted sizes from 64 to 2048 MiB. With a
+225 or 270 MHz module banks may hold 256 MiB too, which gives 27 sizes;
+512 MiB is then two 256 MiB banks, as on a real 270 MHz machine whose
+PROM inventory shows 256 MB banks 0 and 1 (Nekochan thread 16726704).
+
+Bank 0 stays at 128 MiB (256 MiB with a faster module) whenever the
+other banks can hold the rest, so 1664 MiB is 128, 512, 512 and 512 MiB.
+Only the totals that cannot be built that way -- 1024, 1536 and
+2048 MiB at 180 MHz, 2048 MiB at the faster clocks -- get a 512 MiB
+bank 0, as on a held 225 MHz Origin 200 whose inventory reports four
+512 MB banks. This preference is the model's choice; a real machine's
+banks follow the DIMMs fitted.
+
+A 512 MiB bank 0 covers the boot flash's reset address, node offset
+``0x1fc0_0000``. There a cached processor reference reaches the bank
+and an uncached processor reference reaches the flash: the reset
+vector's fetch through ``0xffff_ffff_bfc0_0000`` is an uncached memory
+reference (a compatibility-segment address carries uncached attribute
+3), and the flash is mapped into each processor's uncached space alone,
+at the node-less address and at the node's own. That split is
+*inferred*: the stock PROM's memory test covers the offset through the
+cached space, and on this model's old overlay it reported
+``MEMORY FAILURE (miscompare)`` at ``0xa800_0000_1fc0_0000`` reading
+flash, while real machines with a 512 MB bank 0 pass the same test. No
+register selects it. A capture on a machine with a 512 MB bank 0 would
+settle the processor split: write a pattern through a cached address at
+the offset, read it back cached and then uncached.
+
+Three further choices are the model's own, with the hardware behaviour
+*unknown* and not settled by that capture. Devices (inbound DMA, the
+block transfer engines) reach the bank. An uncached reference from
+another node to this node's offset reaches the bank. And the node-less
+address ``0x1fc0_0000`` names the reader's own flash on every node,
+whereas with a smaller bank 0 an uncached reference there goes through
+the claim layer to whichever node holds number 0. Smaller banks leave
+the reset address to the flash in every view, as before.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within

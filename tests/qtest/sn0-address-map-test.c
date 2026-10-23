@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "qobject/qnum.h"
 #include "sgi-prom-container.h"
 #include "sgi-test.h"
 #include "sgi-mips-emit.h"
@@ -891,8 +892,9 @@ static void test_192m_memory(const void *data)
 }
 
 /*
- * The largest total the model lays out: a 128 MiB bank 0 and three 512 MiB
- * banks, each interleaved over all four of its 128 MiB slots.
+ * The largest total with a 128 MiB bank 0: three 512 MiB banks, each
+ * interleaved over all four of its 128 MiB slots. A total that fits this
+ * way keeps it, so the reset address stays flash.
  */
 static void test_1664m_memory(const void *data)
 {
@@ -901,6 +903,7 @@ static void test_1664m_memory(const void *data)
 
     check_ram(qts, NODE0 + 128 * MiB - 8, 0x1664000000000000ULL);
     check_not_ram(qts, NODE0 + 128 * MiB);
+    check_not_ram(qts, FLASH_RESET + CONFIG_MAGIC_OFF);
     for (bank = 1; bank < 4; bank++) {
         for (slot = 0; slot < 4; slot++) {
             uint64_t base = NODE0 + bank * MEM_BANK_SIZE +
@@ -912,6 +915,188 @@ static void test_1664m_memory(const void *data)
         }
     }
 
+    qtest_quit(qts);
+}
+
+/*
+ * Check that banks 0 to @count - 1 each hold 512 MiB interleaved over all
+ * four of their 128 MiB slots.
+ */
+static void check_512m_banks(QTestState *qts, unsigned int count,
+                             uint64_t tag)
+{
+    unsigned int bank, slot;
+
+    for (bank = 0; bank < count; bank++) {
+        for (slot = 0; slot < 4; slot++) {
+            uint64_t base = NODE0 + bank * MEM_BANK_SIZE +
+                            slot * MEM_SLOT_SIZE;
+
+            check_ram(qts, base, tag + bank * 4 + slot);
+            check_ram(qts, base + MEM_SLOT_SIZE - 8,
+                      tag + 0xffffff00ULL + bank * 4 + slot);
+        }
+    }
+}
+
+/*
+ * The largest Origin 200: four 512 MiB banks, bank 0 included (a real
+ * 225 MHz machine reports 2048 MB this way). Bank 0 then reaches the boot
+ * flash's reset address. The processor's uncached reset fetch still finds
+ * the flash there, while a cached reference, a device and this test's own
+ * accesses reach the bank: the PROM's memory test writes and reads that
+ * offset through the cached space and expects RAM.
+ */
+#define BANK0_FLASH_RAM_PATTERN 0x0b0a4e4b305241ULL
+
+static void test_2048m_memory_reaches_flash_offset(const void *data)
+{
+    uint8_t image[FLASH_CPU_IMAGE_SIZE] = { 0 };
+    uint8_t state[24];
+    g_autofree char *path = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    unsigned int at = 0;
+    int fd;
+    SgiWait w;
+    gint64 deadline;
+
+    flash_cpu_emit(image, &at,
+                   0x08000000 | ((0xbfc00000 + FLASH_CPU_CODE) >> 2 &
+                                 0x03ffffff));
+    flash_cpu_emit(image, &at, 0);
+
+    /* An exception reports itself instead of running on through RAM. */
+    at = FLASH_CPU_HANDLER;
+    flash_cpu_emit(image, &at, mips_lui(26, 0xa020)); /* lui k0, 0xa020 */
+    flash_cpu_emit(image, &at, mips_ori(27, 0, 0xdead));
+    flash_cpu_emit(image, &at, mips_sd(27, 26, 0)); /* sd k1, 0(k0) */
+    flash_cpu_emit(image, &at, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
+    flash_cpu_emit(image, &at, 0);
+
+    at = FLASH_CPU_CODE;
+    /* Status.KX, so xkphys may be used: mfc0/ori/mtc0 t4. */
+    flash_cpu_emit(image, &at, mips_mfc0(12, 12));
+    flash_cpu_emit(image, &at, mips_ori(12, 12, 0x80));
+    flash_cpu_emit(image, &at, mips_mtc0(12, 12));
+    flash_cpu_emit(image, &at, mips_nop());
+    flash_cpu_emit(image, &at, mips_nop());
+    /* Uncached, through the reset vector's segment: ld t1, 0xbfc00068. */
+    flash_cpu_emit(image, &at, mips_lui(8, 0xbfc0));
+    flash_cpu_emit(image, &at, mips_ld(9, 8, CONFIG_MAGIC_OFF));
+    /* Cached, through xkphys: ld t3, 0xa800000000000000 + 0x1fc00068. */
+    flash_cpu_emit(image, &at, mips_lui(10, 0xa800));
+    flash_cpu_emit(image, &at, mips_dsll32(10, 10));
+    flash_cpu_emit(image, &at, mips_lui(11, 0x1fc0));
+    flash_cpu_emit(image, &at, mips_daddu(10, 10, 11));
+    flash_cpu_emit(image, &at, mips_ld(11, 10, CONFIG_MAGIC_OFF));
+    flash_cpu_emit(image, &at, mips_lui(26, 0xa020)); /* lui k0, 0xa020 */
+    flash_cpu_emit(image, &at, mips_sd(9, 26, 8));
+    flash_cpu_emit(image, &at, mips_sd(11, 26, 16));
+    flash_cpu_emit(image, &at, mips_ori(27, 0, 0x55)); /* ori k1, zero, 0x55 */
+    flash_cpu_emit(image, &at, mips_sd(27, 26, 0)); /* sd k1, 0(k0) */
+    flash_cpu_emit(image, &at, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
+    flash_cpu_emit(image, &at, 0);
+
+    stq_be_p(image + CONFIG_OFFSET + FIELD_MAGIC, CONFIG_MAGIC);
+
+    fd = g_file_open_tmp("sn0-bank0-flash-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    qts = qtest_initf("-M origin200 -m 2048M "
+                      "-cpu R10000 -bios %s -accel tcg,thread=single -S",
+                      path);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    check_512m_banks(qts, 4, 0x2048000000000000ULL);
+    check_ram(qts, FLASH_RESET + CONFIG_MAGIC_OFF, BANK0_FLASH_RAM_PATTERN);
+    /* The flash itself stays where the Hub's boot window puts it. */
+    g_assert_cmphex(qtest_readq(qts, FLASH_HUB + CONFIG_MAGIC_OFF), ==,
+                    CONFIG_MAGIC);
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    /*
+     * A bounded wait: a processor that cannot fetch the flash runs through
+     * RAM and never reports, which this turns into an assertion.
+     */
+    deadline = g_get_monotonic_time() + 30 * G_USEC_PER_SEC;
+    sgi_wait_start(&w, "guest bank 0 and flash reads");
+    for (;;) {
+        qtest_memread(qts, FLASH_CPU_STATE, state, sizeof(state));
+        if (ldq_be_p(state) != 0 || g_get_monotonic_time() > deadline) {
+            break;
+        }
+        sgi_wait_pause(&w, 1000);
+    }
+    qtest_quit(qts);
+
+    if (ldq_be_p(state) == 0) {
+        g_test_message("the processor never ran the flash's code through "
+                       "the reset segment within 30 s");
+    }
+
+    g_assert_cmphex(ldq_be_p(state), ==, 0x55);
+    g_assert_cmphex(ldq_be_p(state + 8), ==, CONFIG_MAGIC);
+    g_assert_cmphex(ldq_be_p(state + 16), ==, BANK0_FLASH_RAM_PATTERN);
+}
+
+/* A QOM integer property of @path, read through QMP. */
+static uint64_t qom_get_u64(QTestState *qts, const char *path,
+                            const char *property)
+{
+    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': %s, 'property': %s}}", path, property);
+    uint64_t value;
+
+    g_assert(qdict_haskey(r, "return"));
+    value = qnum_get_uint(qobject_to(QNum, qdict_get(r, "return")));
+    qobject_unref(r);
+    return value;
+}
+
+/*
+ * On a second node the split is built the same way: each of its processors'
+ * uncached spaces holds the flash at the node-less address and at the
+ * node's own. The node-less
+ * alias names the reader's own flash, a model choice (docs/specs/sgi-sn.rst).
+ */
+static void test_dual_2048m_split_on_both_nodes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200,topology=origin200-dual "
+                                 "-smp 4 -m 4096M");
+    unsigned int node, slice;
+
+    for (node = 0; node < 2; node++) {
+        g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+        uint64_t nasid = qom_get_u64(qts, path, "nasid");
+        uint64_t own = (nasid << 32) + 0x1fc00000;
+
+        /*
+         * qtest reaches memory through the first processor's view, where
+         * another node's stride waits on the Hub's claim walk; only node 0's
+         * own bank is checkable from here.
+         */
+        if (nasid == 0) {
+            check_ram(qts, own + CONFIG_MAGIC_OFF, BANK0_FLASH_RAM_PATTERN);
+        }
+        for (slice = 0; slice < 2; slice++) {
+            g_autofree char *nodeless = g_strdup_printf(
+                "%s/sn0.node%" PRIu64 ".cpu%u.flash.reset.uncached0[0]",
+                path, nasid, slice);
+            g_autofree char *named = g_strdup_printf(
+                "%s/sn0.node%" PRIu64 ".cpu%u.flash.reset.uncached1[0]",
+                path, nasid, slice);
+
+            g_assert_cmphex(qom_get_u64(qts, nodeless, "addr"), ==,
+                            0x1fc00000);
+            if (nasid) {
+                g_assert_cmphex(qom_get_u64(qts, named, "addr"), ==, own);
+            }
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -1881,6 +2066,10 @@ int main(int argc, char **argv)
                         test_512m_memory);
     qtest_add_data_func("sn0/address-map/memory-1664m", NULL,
                         test_1664m_memory);
+    qtest_add_data_func("sn0/address-map/memory-2048m-bank0-at-flash", NULL,
+                        test_2048m_memory_reaches_flash_offset);
+    qtest_add_data_func("sn0/address-map/dual-2048m-split-on-both-nodes",
+                        NULL, test_dual_2048m_split_on_both_nodes);
     qtest_add_data_func("sn0/address-map/origin2000-memory-256m", NULL,
                         test_origin2000_256m_memory);
     qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,

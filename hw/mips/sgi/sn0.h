@@ -67,6 +67,12 @@ typedef struct SN0ModelMemory {
     unsigned int architectural_banks;
     const uint64_t *supported_mib;
     unsigned int supported_size_count;
+    /*
+     * Bank 0 is laid out no larger than first_bank_preferred_mib whenever
+     * the rest of the total fits in the other banks, and up to
+     * first_bank_max_mib only when it does not.
+     */
+    uint64_t first_bank_preferred_mib;
     uint64_t first_bank_max_mib;
     uint64_t bank_stride_mib;
     uint64_t interleave_slot_stride_mib;
@@ -243,6 +249,12 @@ typedef struct SN0NodeState {
     uint8_t elsc_nvram_clock;
     uint64_t flash_size;
     MemoryRegion flash_reset_view;
+    /*
+     * The reset view in each processor's uncached space alone, used when
+     * bank 0 reaches the reset address: at the node-less address the reset
+     * vector fetches from, and at this node's own.
+     */
+    MemoryRegion flash_reset_uncached[SN0_MAX_CPUS_PER_NODE][2];
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
     MemoryRegion flash_hub_fast;

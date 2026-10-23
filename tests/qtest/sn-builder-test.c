@@ -8823,9 +8823,9 @@ static void test_origin200_processor_choices(const void *data)
         "processor=r10000-180mhz-1mb", "-smp", "2", "-m", "256M",
         "-display", "none", NULL
     };
-    const char *bank0_512[] = {
+    const char *beyond_four_banks[] = {
         qtest_qemu_binary(NULL), "-M", "origin200,processor=r10000-225mhz-2mb",
-        "-smp", "2", "-m", "2048M", "-display", "none", NULL
+        "-smp", "2", "-m", "2112M", "-display", "none", NULL
     };
     QTestState *qts;
 
@@ -8841,11 +8841,11 @@ static void test_origin200_processor_choices(const void *data)
                         "'r10000-225mhz-2mb' is known");
     assert_qemu_rejects(no_choice, "topology 'origin2000-deskside' offers no "
                         "processor choice");
-    assert_qemu_rejects(bank0_512, "topology 'origin200' does not accept "
-                        "2048 MiB per node, only 64, 128, 192, 256, 320, "
-                        "384, 448, 512, 576, 640, 704, 768, 832, 896, 960, "
-                        "1024, 1088, 1152, 1216, 1280, 1344, 1408, 1536, "
-                        "1600, 1664 or 1792 MiB");
+    assert_qemu_rejects(beyond_four_banks, "topology 'origin200' does not "
+                        "accept 2112 MiB per node, only 64, 128, 192, 256, "
+                        "320, 384, 448, 512, 576, 640, 704, 768, 832, 896, "
+                        "960, 1024, 1088, 1152, 1216, 1280, 1344, 1408, "
+                        "1536, 1600, 1664, 1792 or 2048 MiB");
 
     qts = qtest_init("-M origin200,processor=r10000-225mhz-2mb -smp 2 "
                      "-m 1024M -display none");
@@ -8859,20 +8859,21 @@ static void test_origin200_processor_choices(const void *data)
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
- * -m 1024M (single node, default topology) needs a 512 MiB bank 0, which
- * QEMU does not build, so it is not in the accepted list. The refusal
- * names the totals that are.
+ * -m 1792M (single node, default topology, 180 MHz) needs a 256 MB bank,
+ * which the stock PROM disables at that clock, so it is not in the
+ * accepted list. The refusal names the totals that are.
  */
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "1024M",
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "1792M",
         "-display", "none", NULL
     };
 
     assert_qemu_rejects(args,
-                        "topology 'origin200' does not accept 1024 "
+                        "topology 'origin200' does not accept 1792 "
                         "MiB per node, only 64, 128, 192, 256, 320, 384, "
-                        "448, 512, 576, 640, 704, 768, 832, 896, 1088, "
-                        "1152, 1216, 1280, 1600 or 1664 MiB");
+                        "448, 512, 576, 640, 704, 768, 832, 896, 1024, "
+                        "1088, 1152, 1216, 1280, 1536, 1600, 1664 or "
+                        "2048 MiB");
 }
 
 /*
