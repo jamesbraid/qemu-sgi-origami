@@ -2065,6 +2065,9 @@ static const SGIKonaProduct sgi_kona_products[] = {
     { .id = "ir3", .board_set = 5, .inventory_select = 1,
       .geometry = { &sgi_kona_ge16_4 },
       .raster = &sgi_kona_rm9, .texture = { &sgi_kona_tm_256 } },
+    { .id = "reality", .refused = "no capture gives the Reality pipe's "
+      "board parts or chip words, so its configuration cannot be "
+      "presented" },
     { .id = "ir4", .refused = "no Onyx2 InfiniteReality4 has been captured: "
       "the only captured pipe is an Onyx 350's, whose Ktown2 host board "
       "this model cannot attach, so the Onyx2 pipe's host and display "
