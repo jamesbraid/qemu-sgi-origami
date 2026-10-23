@@ -10125,38 +10125,54 @@ static void test_empty_fifo_flush_during_request(void)
     };
     static const uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, 18, 0 };
     uint8_t program[128] = { 0 };
-    g_autofree char *path = NULL;
-    QTestState *qts;
-    int fd;
+    uint8_t guard[528], after[sizeof(guard)];
+    QTestState *qts = start_peer_disk();
 
-    fd = g_file_open_tmp("aic7880-empty-flush-XXXXXX", &path, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
-    close(fd);
-    qts = start_throttled_disk(path);
     g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
                                   0x10000, 512, false), ==, 2);
     g_assert_cmphex(run_disk_cdb(qts, sense_cdb, sizeof(sense_cdb),
                                   0x11000, 18, false), ==, 0);
 
+    /* Retain the real request before delivered data reaches the FIFO. */
+    peer_event(qts, "hold-data-in");
+    memset(guard, 0xa5, sizeof(guard));
+    qtest_memwrite(qts, 0x12000, guard, sizeof(guard));
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
     qtest_writeb(qts, REG_BASE + 0x88, 0x03);
     qtest_writeb(qts, REG_BASE + 0x89, 0x20);
     qtest_writeb(qts, REG_BASE + 0x8a, 0x01);
+    qtest_writeb(qts, REG_BASE + 0x8b, 0);
     qtest_writeb(qts, REG_BASE + 0x8c, 0);
     qtest_writeb(qts, REG_BASE + 0x8d, 2);
+    qtest_writeb(qts, REG_BASE + 0x8e, 0);
     qtest_writeb(qts, REG_BASE + 0x08, 0);
     qtest_writeb(qts, REG_BASE + 0x09, 2);
+    qtest_writeb(qts, REG_BASE + 0x0a, 0);
     start_program(qts, program,
                   build_command_program(program, read_cdb,
                                         sizeof(read_cdb), false));
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+    for (unsigned i = 0; i < 1000; i++) {
+        if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe0) == 0x40) {
+            break;
+        }
+        qtest_clock_step(qts, 1000);
+    }
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe0, ==, 0x40);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x08), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x09), ==, 2);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 1, ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 2, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x3a);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 2, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 1, ==, 1);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 512);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 512);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_memread(qts, 0x12000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), guard, sizeof(guard));
     qtest_quit(qts);
-    unlink(path);
 }
 
 static void check_reset_cancels_busy_request(bool pci_reset)
