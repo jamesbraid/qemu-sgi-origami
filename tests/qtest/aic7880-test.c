@@ -1693,6 +1693,40 @@ static void test_external_scb_parity(void)
     qtest_quit(qts);
 }
 
+static void test_external_scb_parity_holds_pause(void)
+{
+    QTestState *qts = start_external_scb(8192, 9, "");
+    uint8_t program[8];
+    size_t n = 0;
+
+    external_scb_write(qts, 255, 31, 0x73);
+    config_writel(qts, 0x40, 0x10);
+    qtest_writeb(qts, REG_BASE + 0x84, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x20, 0xa5);
+    emit_or(program, &n, 0x5a, 0x20);
+    emit_or(program, &n, 1, 0x91);
+    qtest_writeb(qts, REG_BASE + 0x60, 0x91);
+    for (size_t i = 0; i < n; i++) {
+        qtest_writeb(qts, REG_BASE + 0x61, program[i]);
+    }
+    qtest_writeb(qts, REG_BASE + 0x60, 0x90);
+    qtest_writeb(qts, REG_BASE + 0x62, 0);
+    invert_scb_parity(qts, 255, 31);
+    external_scb_read(qts, 255, 31);
+    qtest_writeb(qts, REG_BASE + 0x87, 2);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 1, ==, 0);
+    invert_scb_parity(qts, 255, 31);
+    qtest_writeb(qts, REG_BASE + 0x92, 0x10);
+    qtest_writeb(qts, REG_BASE + 0x87, 2);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 1, ==, 1);
+    qtest_quit(qts);
+}
+
 static void test_external_scb_parity_other_errors(void)
 {
     static const uint8_t invalid_opcode[] = { 0, 0, 0, 0x0e };
@@ -10170,6 +10204,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/external-scb-queues", test_external_scb_queues);
     qtest_add_func("aic7880/external-scb-auto", test_external_scb_auto);
     qtest_add_func("aic7880/external-scb-parity", test_external_scb_parity);
+    qtest_add_func("aic7880/external-scb-parity-holds-pause",
+                   test_external_scb_parity_holds_pause);
     qtest_add_func("aic7880/external-scb-parity-other-errors",
                    test_external_scb_parity_other_errors);
     qtest_add_func("aic7880/external-scb-widths", test_external_scb_widths);
