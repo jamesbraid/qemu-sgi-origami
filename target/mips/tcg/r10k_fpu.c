@@ -2,7 +2,8 @@
 /*
  * R10000-family floating-point behaviours split out of the shared FP helpers:
  * Unimplemented Operation for denormalized results, denormal inputs to
- * R10000/R12000 ADD.S and DIV.S with FS clear, and out-of-range CVT.L.
+ * ADD.S and DIV.S with FS clear when selected by the CPU policy, and
+ * out-of-range CVT.L.
  * Arithmetic ABS.fmt and NEG.fmt signal Invalid for NaN operands.
  *
  * gen_farith() emits the ABS/NEG variants for every MIPS target, linux-user
