@@ -53,6 +53,7 @@ static int cpu_pre_load(void *opaque)
     }
 
     cpu->env.timer_adjacent_pending = false;
+    cpu->env.timer_window_pending = false;
     mips_r10k_profile_pre_load(opaque);
     return 0;
 }

@@ -978,6 +978,14 @@ typedef struct CPUArchState {
     uint32_t timer_adjacent_count;
     uint64_t timer_adjacent_start_ticks;
     uint64_t timer_adjacent_migration_age_ticks;
+    /*
+     * The Count-sample window (MIPSCPU::count_sample_window): the value
+     * and clock of the last guest Count read or write, pending until the
+     * next Compare write, exception entry or reset.
+     */
+    bool timer_window_pending;
+    uint32_t timer_window_count;
+    uint64_t timer_window_start_ticks;
 /*
  * CP0 Register 12
  */
@@ -1578,6 +1586,13 @@ struct ArchCPU {
      */
     MemoryRegion *uncached_memory;
     bool cache_data_visibility;
+    /*
+     * Recover a Compare target that virtual time passed between a guest
+     * Count read or write and the next Compare write
+     * (cpu_mips_store_compare()).
+     * A machine whose guest arms its timer that way selects it.
+     */
+    bool count_sample_window;
 #ifndef CONFIG_USER_ONLY
     MemoryRegion cache_memory;
     AddressSpace cache_backing_as;

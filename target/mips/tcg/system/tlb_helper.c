@@ -1381,6 +1381,7 @@ void mips_cpu_do_interrupt(CPUState *cs)
     uint64_t last_pc = env->active_tc.PC;
 
     env->timer_adjacent_pending = false;
+    env->timer_window_pending = false;
 
     if (qemu_loglevel_mask(CPU_LOG_INT)
         && cs->exception_index != EXCP_EXT_INTERRUPT) {

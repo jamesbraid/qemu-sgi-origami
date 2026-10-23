@@ -824,6 +824,16 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 
         qdev_connect_clock_in(dev, "clk-in", cpuclk);
         /*
+         * IRIX's IP30 kernel arms its scheduler clock a few register
+         * instructions after reading or writing Count; the Count-sample
+         * window keeps a host delay between the two from costing a full
+         * Count wrap (docs/specs/sgi-ip30.rst).
+         */
+        if (!object_property_set_bool(OBJECT(dev), "count-sample-window",
+                                      true, errp)) {
+            return false;
+        }
+        /*
          * The catalogue's processor part: PRId, inferred from kernel
          * inventory records, and on the R12000 the FPU identification and
          * the approximated reset word with the cache it selects
