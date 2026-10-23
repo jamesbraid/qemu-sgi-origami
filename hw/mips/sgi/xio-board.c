@@ -310,10 +310,15 @@ static bool sgi_xio_board_attach_part(SGIXioBoardState *board,
                                       const SGIBridgeBoardRecord *record,
                                       Error **errp)
 {
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_GET_CLASS(board);
+    SGIBridgeBoardRecord stored = *record;
     uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
     DeviceState *part;
 
-    sgi_bridge_onewire_build_record(rom, record);
+    if (bc->identity_record) {
+        bc->identity_record(board, known, &stored);
+    }
+    sgi_bridge_onewire_build_record(rom, &stored);
     part = qdev_new(TYPE_ONEWIRE_DS2502);
     object_property_add_child(OBJECT(board), known->child_name, OBJECT(part));
     qdev_prop_set_uint8(part, "family", identity->family);

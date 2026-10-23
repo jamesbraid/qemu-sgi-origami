@@ -128,6 +128,8 @@ struct SGIXioBoardState {
     QTAILQ_ENTRY(SGIXioBoardState) node;
 };
 
+struct SGIXioBoardIdentityPart;
+
 struct SGIXioBoardClass {
     /* < private > */
     SysBusDeviceClass parent_class;
@@ -163,6 +165,17 @@ struct SGIXioBoardClass {
 
     /* The class's one-wire identity chain, or NULL for a board with none. */
     const struct SGIXioBoardIdentity *identity;
+
+    /*
+     * Optional. Called for each identity part before its record is
+     * stored, with the record the class and "board-part" give it, so a
+     * board whose configuration decides what its boards are named can
+     * change the name and revision. build_widget() has already run, so
+     * the board's own properties are checked by then.
+     */
+    void (*identity_record)(SGIXioBoardState *board,
+                            const struct SGIXioBoardIdentityPart *part,
+                            SGIBridgeBoardRecord *record);
 };
 
 /*
