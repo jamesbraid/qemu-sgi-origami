@@ -22,10 +22,22 @@
 #define CACHE_READ          0xa40
 #define CACHE_DONE          0xb00
 
+#define PERF_ENTRY          0x100
+#define PERF_POLL           0x1a0
+#define PERF_CAPTURE        0x200
+#define PERF_RESET          0x300
+#define PERF_HALT           0x380
+
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010
 #define READY_OFF           0x00
 #define COUNT_OFF           0x08
+#define PERF_RESET_MODE_OFF 0x258
+#define PERF_COMMAND_OFF    0x260
+#define PERF_MIGRATED_OFF   0x268
+#define PERF_RESET_DONE_OFF 0x270
+#define PERF_RESULTS_OFF    0x280
+#define PERF_RESULT_STRIDE  0x08
 #define CACHE_READY_OFF     0x120
 #define CACHE_COMMAND_OFF   0x128
 #define CACHE_DONE_OFF      0x130
@@ -70,6 +82,14 @@
 #define CACHE_DONE_MAGIC    0x14cb
 #define CACHE_RESET_REQUEST_MAGIC 0x14cc
 #define CACHE_RESET_DONE_MAGIC 0x14cd
+#define PERF_COMMAND_MAGIC  0x14d0
+#define PERF_MIGRATED_MAGIC 0x14d1
+#define PERF_RESET_MAGIC    0x14d2
+#define PERF_CONTROL_KERNEL (1u << 1)
+#define PERF_EVENT_SHIFT    5
+#define PERF_PAIR_COUNT     4
+#define PERF_CONTROL_MASK   0x3fbu
+#define PERF_COUNTER_SEED   0x10203040u
 #define INITIAL_COUNT       0x12340000u
 #define CACHE_TAGLO         0x1234c5aau
 #define CACHE_TAGHI         0x0000000du
@@ -672,6 +692,90 @@ static void write_guest_image(int fd, const TestConfig *config)
     g_assert_cmpint(written, ==, sizeof(image));
 }
 
+static void emit_perf_capture(GuestImage *img, bool reset)
+{
+    unsigned int i;
+
+    for (i = 0; i < PERF_PAIR_COUNT; i++) {
+        emit_mfc0(img, R_T0, CP0_PERFORMANCE, i * 2);
+        emit(img, mips_sd(R_T0, R_T2,
+                          PERF_RESULTS_OFF + i * 2 * PERF_RESULT_STRIDE));
+        emit_mfc0(img, R_T0, CP0_PERFORMANCE, i * 2 + 1);
+        emit(img, mips_sd(R_T0, R_T2,
+                          PERF_RESULTS_OFF + (i * 2 + 1) *
+                          PERF_RESULT_STRIDE));
+    }
+    emit_load_u32(img, R_T0,
+                  reset ? PERF_RESET_MAGIC : PERF_MIGRATED_MAGIC);
+    emit(img, mips_sd(R_T0, R_T2,
+                      reset ? PERF_RESET_DONE_OFF : PERF_MIGRATED_OFF));
+    emit_branch(img, PERF_HALT);
+    emit(img, 0);
+}
+
+static void write_r16000_perf_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+    unsigned int i;
+
+    g_assert_cmpuint(PERF_ENTRY, <, PERF_POLL);
+    g_assert_cmpuint(PERF_POLL, <, PERF_CAPTURE);
+    g_assert_cmpuint(PERF_CAPTURE, <, PERF_RESET);
+    g_assert_cmpuint(PERF_RESET, <, PERF_HALT);
+    g_assert_cmpuint(PERF_HALT, <, IMAGE_SIZE);
+
+    emit_branch(&img, PERF_ENTRY);
+    emit(&img, 0);
+
+    img.pos = PERF_ENTRY;
+    emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
+    emit(&img, mips_ld(R_T0, R_T2, PERF_RESET_MODE_OFF));
+    emit_bne(&img, R_T0, R_ZERO, PERF_RESET);
+    emit(&img, 0);
+    for (i = 0; i < PERF_PAIR_COUNT; i++) {
+        uint32_t control = ((i + 1) << PERF_EVENT_SHIFT) |
+                           PERF_CONTROL_KERNEL;
+
+        g_assert_cmphex(control & ~PERF_CONTROL_MASK, ==, 0);
+        emit_load_u32(&img, R_T0, PERF_COUNTER_SEED + i * 0x01010101u);
+        emit_mtc0(&img, R_T0, CP0_PERFORMANCE, i * 2 + 1);
+        emit_load_u32(&img, R_T0, control);
+        emit_mtc0(&img, R_T0, CP0_PERFORMANCE, i * 2);
+    }
+    emit_load_u32(&img, R_T0, READY_MAGIC);
+    emit(&img, mips_sd(R_T0, R_T2, READY_OFF));
+    emit_branch(&img, PERF_POLL);
+    emit(&img, 0);
+    g_assert_cmpuint(img.pos, <=, PERF_POLL);
+
+    img.pos = PERF_POLL;
+    emit(&img, mips_ld(R_T0, R_T2, PERF_COMMAND_OFF));
+    emit_load_u32(&img, R_T1, PERF_COMMAND_MAGIC);
+    emit_bne(&img, R_T0, R_T1, PERF_POLL);
+    emit(&img, 0);
+    emit_branch(&img, PERF_CAPTURE);
+    emit(&img, 0);
+    g_assert_cmpuint(img.pos, <=, PERF_CAPTURE);
+
+    img.pos = PERF_CAPTURE;
+    emit_perf_capture(&img, false);
+    g_assert_cmpuint(img.pos, <=, PERF_RESET);
+
+    img.pos = PERF_RESET;
+    emit(&img, mips_lui(R_T2, STATE_KSEG1_HI));
+    emit_perf_capture(&img, true);
+    g_assert_cmpuint(img.pos, <=, PERF_HALT);
+
+    img.pos = PERF_HALT;
+    emit_branch(&img, PERF_HALT);
+    emit(&img, 0);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
 static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
                                     size_t nprobes)
 {
@@ -774,8 +878,7 @@ static uint64_t state_word(QTestState *qts, uint64_t off)
     return qtest_readq(qts, STATE_PHYS + off);
 }
 
-static void poison_capacity_results(QTestState *qts, uint64_t off,
-                                    uint64_t size)
+static void poison_results(QTestState *qts, uint64_t off, uint64_t size)
 {
     for (uint64_t pos = 0; pos < size; pos += sizeof(uint64_t)) {
         qtest_writeq(qts, STATE_PHYS + off + pos, UINT64_MAX);
@@ -982,6 +1085,90 @@ static void test_active_counter(const void *opaque)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void test_r16000_all_perf_pairs_migration_reset(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+    int fd;
+    unsigned int i;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    fd = g_file_open_tmp("sn0-r10k-perf-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    write_r16000_perf_guest_image(fd);
+    close(fd);
+    directory = g_dir_make_tmp("sn0-r10k-perf-pairs-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    source_args = g_strdup_printf(
+        "-M malta -m 64M -cpu %s -bios %s -accel tcg -no-shutdown",
+        configurations[1].cpu, image);
+    dest_args = g_strdup_printf(
+        "-M malta -m 64M -cpu %s -bios %s -accel tcg -no-shutdown "
+        "-incoming defer", configurations[1].cpu, image);
+    from = qtest_init(source_args);
+    to = qtest_init(dest_args);
+    wait_for_ready(from);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(from, "completed");
+    sgi_wait_migration(to, "completed");
+    poison_results(to, PERF_RESULTS_OFF,
+                   PERF_PAIR_COUNT * 2 * PERF_RESULT_STRIDE);
+    qtest_writeq(to, STATE_PHYS + PERF_MIGRATED_OFF, UINT64_MAX);
+    qtest_writeq(to, STATE_PHYS + PERF_COMMAND_OFF, PERF_COMMAND_MAGIC);
+    sgi_migrate_resume(to);
+    wait_for_state(to, PERF_MIGRATED_OFF, PERF_MIGRATED_MAGIC);
+    for (i = 0; i < PERF_PAIR_COUNT; i++) {
+        uint32_t control = ((i + 1) << PERF_EVENT_SHIFT) |
+                           PERF_CONTROL_KERNEL;
+        uint32_t counter = PERF_COUNTER_SEED + i * 0x01010101u;
+
+        g_assert_cmphex(state_word(to, PERF_RESULTS_OFF +
+                                   (i * 2) * PERF_RESULT_STRIDE), ==,
+                        control);
+        g_assert_cmphex(state_word(to, PERF_RESULTS_OFF +
+                                   (i * 2 + 1) * PERF_RESULT_STRIDE), ==,
+                        counter);
+    }
+
+    qtest_qmp_assert_success(to, "{'execute':'stop'}");
+    poison_results(to, PERF_RESULTS_OFF,
+                   PERF_PAIR_COUNT * 2 * PERF_RESULT_STRIDE);
+    qtest_writeq(to, STATE_PHYS + PERF_RESET_DONE_OFF, UINT64_MAX);
+    qtest_writeq(to, STATE_PHYS + PERF_RESET_MODE_OFF, 1);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    wait_for_state(to, PERF_RESET_DONE_OFF, PERF_RESET_MAGIC);
+    for (i = 0; i < PERF_PAIR_COUNT * 2; i++) {
+        g_assert_cmphex(state_word(to, PERF_RESULTS_OFF +
+                                   i * PERF_RESULT_STRIDE), ==, 0);
+    }
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(image);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_stream_representation(const void *opaque)
 {
     const TestConfig *config = opaque;
@@ -1174,12 +1361,12 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     sgi_wait_migration(to, "completed");
     assert_r16000_properties(to, capacity, capacity->reset_mode);
     sgi_migrate_resume(to);
-    poison_capacity_results(to, CAPACITY_TAG_OFF,
-                            CAPACITY_INVALID_TAG_OFF +
-                            ARRAY_SIZE(tags) * CACHE_TAG_STRIDE -
-                            CAPACITY_TAG_OFF);
-    poison_capacity_results(to, CAPACITY_PRIMARY_RESULTS_OFF,
-                            CAPACITY_RESULTS_SIZE);
+    poison_results(to, CAPACITY_TAG_OFF,
+                   CAPACITY_INVALID_TAG_OFF +
+                   ARRAY_SIZE(tags) * CACHE_TAG_STRIDE -
+                   CAPACITY_TAG_OFF);
+    poison_results(to, CAPACITY_PRIMARY_RESULTS_OFF,
+                   CAPACITY_RESULTS_SIZE);
     qtest_writeq(to, STATE_PHYS + CAPACITY_DONE_OFF, UINT64_MAX);
     qtest_writeq(to, STATE_PHYS + CAPACITY_COMMAND_OFF, 1);
     wait_for_state(to, CAPACITY_DONE_OFF, CACHE_DONE_MAGIC);
@@ -1232,8 +1419,7 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
                                false);
 
     qtest_qmp_assert_success(to, "{'execute':'stop'}");
-    poison_capacity_results(to, CAPACITY_RESET_RESULTS_OFF,
-                            CAPACITY_RESULTS_SIZE);
+    poison_results(to, CAPACITY_RESET_RESULTS_OFF, CAPACITY_RESULTS_SIZE);
     qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_DONE_OFF, UINT64_MAX);
     qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_REQUEST_OFF,
                  CACHE_RESET_REQUEST_MAGIC);
@@ -1521,6 +1707,8 @@ int main(int argc, char **argv)
                         &configurations[0], test_active_counter);
     qtest_add_data_func("sn0/r10k-perf-migration/r16000",
                         &configurations[1], test_active_counter);
+    qtest_add_func("sn0/r16000-perf-migration/all-pairs-reset",
+                   test_r16000_all_perf_pairs_migration_reset);
     qtest_add_data_func("sn0/r10k-perf-stream/r10000",
                         &configurations[0], test_stream_representation);
     qtest_add_func("sn0/r10000-scache-migration/stock",
