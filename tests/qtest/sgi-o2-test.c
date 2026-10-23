@@ -28,13 +28,6 @@
 #define GBE 0x16000000ULL
 #define GBE_APERTURE_SIZE (16 * MiB)
 #define GBE_VT_1 0x010004
-#define GBE_VT_0 0x010000
-#define GBE_FRM_0 0x030000
-#define GBE_FRM_1 0x030004
-#define GBE_FRM_2 0x030008
-#define GBE_LIST (RAM_FULL + 0x10000)
-#define GBE_TILE_LOGICAL (RAM_FULL + RAM_BANK_SIZE + 0x20000)
-#define GBE_FRAME_NS 16667000
 #define MACE_PCI 0x1f080000ULL
 #define MACE_ETH 0x1f280000ULL
 #define AIC_PCI_VIEW 0x1a000000ULL
@@ -3125,208 +3118,26 @@ static void test_configuration(void)
                            "rom-pad-byte");
 }
 
-static QTestState *o2_gbe_one_tile_start(const char *image, bool selected,
-                                         const char *extra)
+static void test_gbe_one_tile_retired(void)
 {
-    return qtest_initf(
-        MEMTX_TEST_DEVICE "-M o2-test,bank-profile=8x128m-synthetic,"
+    g_autofree char *dir = g_dir_make_tmp("o2-gbe-retired-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "synthetic.bin", NULL);
+    g_autofree char *selected = NULL;
+
+    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
+    selected = g_strdup_printf(
+        "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
-        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238%s "
-        "-cpu R10000 -m 1G -nodefaults %s",
-        image, selected ? ",gbe-one-tile-diagnostic=on" : "", extra);
-}
-
-static uint64_t o2_gbe_one_tile_frames(QTestState *qts)
-{
-    g_autoptr(QDict) reply = qtest_qmp(qts,
-        "{'execute':'qom-get','arguments':{'path':'/machine/gbe',"
-        "'property':'x-test-frame-count'}}");
-
-    return qdict_get_int(reply, "return");
-}
-
-static void o2_gbe_fill_tile(QTestState *qts, uint64_t address,
-                             uint32_t pixel)
-{
-    g_autofree uint8_t *bytes = g_malloc(64 * KiB);
-
-    for (size_t i = 0; i < 64 * KiB; i += 4) {
-        stl_be_p(bytes + i, pixel);
-    }
-    qtest_memwrite(qts, address, bytes, 64 * KiB);
-    g_assert_cmphex(qtest_readl(qts, address + 4), ==, pixel);
-}
-
-static uint32_t o2_gbe_surface_pixel(QTestState *qts, const char *dir,
-                                     const char *name)
-{
-    g_autofree char *path = g_build_filename(dir, name, NULL);
-    g_autofree char *ppm = NULL;
-    static const char header[] = "P6\n128 128\n255\n";
-    const uint8_t *pixel;
-    gsize len;
-
-    qtest_qmp_assert_success(qts,
-        "{'execute':'screendump','arguments':{'filename':%s}}", path);
-    g_assert_true(g_file_get_contents(path, &ppm, &len, NULL));
-    g_assert_cmpuint(len, ==, strlen(header) + 128 * 128 * 3);
-    g_assert_cmpmem(ppm, strlen(header), header, strlen(header));
-    pixel = (const uint8_t *)ppm + strlen(header) + (10 * 128 + 10) * 3;
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    return pixel[0] << 16 | pixel[1] << 8 | pixel[2];
-}
-
-static void o2_gbe_set_entry(QTestState *qts, uint16_t upper_address)
-{
-    uint8_t entry[2];
-
-    stw_be_p(entry, upper_address);
-    qtest_memwrite(qts, GBE_LIST, entry, sizeof(entry));
-    g_assert_cmphex(qtest_readw(qts, GBE_LIST), ==, upper_address);
-}
-
-static void test_gbe_one_tile_machine(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("o2-gbe-tile-XXXXXX", NULL);
-    g_autofree char *image = g_build_filename(dir, "empty-image", NULL);
-    g_autofree char *log = g_build_filename(dir, "gbe-errors.txt", NULL);
-    g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
-    g_autofree char *contents = NULL;
-    g_autoptr(QDict) crime_target = NULL;
-    g_autoptr(QDict) gbe_target = NULL;
-    g_autoptr(QDict) migrate = NULL;
-    uint8_t value;
-    QTestState *qts;
-
-    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
-    qts = o2_gbe_one_tile_start(image, true, extra);
-    crime_target = qtest_qmp(qts,
-        "{'execute':'qom-get','arguments':{'path':'/machine/crime',"
-        "'property':'sgi-crime.decoded-ram[0]'}}");
-    gbe_target = qtest_qmp(qts,
-        "{'execute':'qom-get','arguments':{'path':'/machine/gbe',"
-        "'property':'ram'}}");
-    g_assert_cmpstr(qdict_get_str(gbe_target, "return"), ==,
-                    qdict_get_str(crime_target, "return"));
-
-    o2_program_banks(qts);
-    o2_gbe_fill_tile(qts, GBE_LIST, 0x000000ff);
-    o2_gbe_fill_tile(qts, GBE_TILE_LOGICAL, 0x00ff0000);
-    o2_gbe_fill_tile(qts, RAM_FULL + 2 * RAM_BANK_SIZE + 0x20000,
-                     0x0000ff00);
-    o2_gbe_set_entry(qts, GBE_TILE_LOGICAL >> 16);
-    qtest_writel(qts, GBE + GBE_FRM_0, 0x4010);
-    qtest_writel(qts, GBE + GBE_FRM_1, 128u << 16);
-    qtest_writel(qts, GBE + GBE_FRM_2, GBE_LIST | 1);
-    qtest_clock_step(qts, 2 * GBE_FRAME_NS);
-    g_assert_cmpuint(o2_gbe_one_tile_frames(qts), ==, 0);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "frozen.ppm"), ==, 0);
-
-    qtest_writel(qts, GBE + GBE_VT_0, 0);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmpuint(o2_gbe_one_tile_frames(qts), ==, 1);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "bank1.ppm"), ==,
-                    0x00ff0000);
-
-    /* Bank 0 keeps the list while banks 1 and 2 trade one tile address. */
-    qtest_writeq(qts, CRIME + 0x208 + 8, 0x100 | (2 << 2));
-    qtest_writeq(qts, CRIME + 0x208 + 16, 0x100 | (1 << 2));
-    g_assert_cmphex(qtest_readl(qts, GBE_TILE_LOGICAL + 4), ==, 0x0000ff00);
-    g_assert_cmphex(qtest_readw(qts, GBE_LIST), ==,
-                    GBE_TILE_LOGICAL >> 16);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "bank2.ppm"), ==,
-                    0x0000ff00);
-
-    /* Bank 7's 32 MiB guard leaves the next 32 MiB unmatched. */
-    qtest_writeq(qts, CRIME + 0x208 + 7 * 8, 0x1c);
-    g_assert_cmpint(memtx_readb(qts, RAM_FULL + 0x38020000, &value),
-                    !=, MEMTX_OK);
-    g_assert_cmpint(memtx_readb(qts, RAM_FULL + 0x3a020000, &value),
-                    !=, MEMTX_OK);
-    o2_gbe_set_entry(qts, 0x7802);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "geometry.ppm"), ==, 0);
-    o2_gbe_set_entry(qts, 0x7a02);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "no-match.ppm"), ==, 0);
-    o2_gbe_set_entry(qts, 0x8002);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "out-of-fit.ppm"), ==, 0);
-    o2_gbe_set_entry(qts, 0x0002);
-    qtest_clock_step(qts, GBE_FRAME_NS);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "low-alias.ppm"), ==, 0);
-
-    migrate = qtest_qmp(qts,
-        "{'execute':'migrate','arguments':{'uri':'unix:/nonexistent'}}");
-    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(migrate, "error"),
-                                         "desc"),
-                            "o2-test/eight-bank-profile"));
-
-    qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readl(qts, GBE + GBE_VT_0) & 0x80000000u,
-                    ==, 0x80000000u);
-    g_assert_cmpuint(o2_gbe_one_tile_frames(qts), ==, 0);
-    qtest_clock_step(qts, 2 * GBE_FRAME_NS);
-    g_assert_cmpuint(o2_gbe_one_tile_frames(qts), ==, 0);
-    g_assert_cmphex(o2_gbe_surface_pixel(qts, dir, "reset.ppm"), ==, 0);
-    qtest_quit(qts);
-    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
-    g_assert_nonnull(strstr(contents, "tile DMA failed at 0x78020000"));
-    g_assert_nonnull(strstr(contents, "tile DMA failed at 0x7a020000"));
-    g_assert_nonnull(strstr(contents,
-                            "tile address 0x80020000 outside the linked"));
-    g_assert_nonnull(strstr(contents,
-                            "tile address 0x00020000 outside the linked"));
-    g_assert_cmpint(g_unlink(log), ==, 0);
-    g_assert_cmpint(g_unlink(image), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-static void test_gbe_one_tile_off_and_invalid(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("o2-gbe-off-XXXXXX", NULL);
-    g_autofree char *image = g_build_filename(dir, "empty-image", NULL);
-    g_autofree char *log = g_build_filename(dir, "gbe-unimp.txt", NULL);
-    g_autofree char *extra = g_strdup_printf("-d unimp -D %s", log);
-    g_autofree char *contents = NULL;
-    QTestState *qts;
-
-    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
-    qts = o2_gbe_one_tile_start(image, false, extra);
-    qtest_writel(qts, GBE + GBE_FRM_2, GBE_LIST | 1);
-    qtest_writel(qts, GBE + GBE_VT_0, 0);
-    g_assert_cmphex(qtest_readl(qts, GBE + GBE_FRM_2) & 0xffffffe1, ==, 0);
-    g_assert_cmphex(qtest_readl(qts, GBE + GBE_VT_0) & 0x80000000u,
-                    ==, 0x80000000u);
-    qtest_clock_step(qts, 2 * GBE_FRAME_NS);
-    g_assert_cmpuint(o2_gbe_one_tile_frames(qts), ==, 0);
-    qtest_quit(qts);
-    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
-    g_assert_nonnull(strstr(contents, "FRM_2 scanout control is unsupported"));
-    g_assert_nonnull(strstr(contents, "VT_0 clock is unsupported"));
-    g_assert_cmpint(g_unlink(log), ==, 0);
-
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "rom-pad-byte=238,gbe-one-tile-diagnostic=on", image);
+    assert_o2_banked_rejected(selected, "1G", NULL, NULL,
+                              "gbe-one-tile-diagnostic is superseded");
     assert_o2_banked_rejected("o2-test,gbe-one-tile-diagnostic=on", "64M",
-                              NULL, NULL, "gbe-one-tile-diagnostic requires");
-    assert_o2_banked_rejected("o2-test,gbe-one-tile-diagnostic=on", "128M",
-                              NULL, NULL, "gbe-one-tile-diagnostic requires");
-    assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,"
-        "gbe-one-tile-diagnostic=on", "1G", NULL, NULL,
-        "gbe-one-tile-diagnostic requires");
-    assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,"
-        "gbe11-registers=on,gbe-one-tile-diagnostic=on", "1G", NULL,
-        NULL, "gbe11-registers requires");
-    assert_o2_banked_rejected(
-        "o2-test,gbe11-registers=on,gbe-one-tile-diagnostic=on", "128M",
-        NULL, NULL, "gbe11-registers requires");
-    assert_o2_banked_rejected("origin200,gbe-one-tile-diagnostic=on", "64M",
-                              NULL, NULL, "gbe-one-tile-diagnostic");
-    g_assert_cmpint(g_unlink(image), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
+                              NULL, NULL,
+                              "gbe-one-tile-diagnostic is superseded");
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 static uint32_t o2_aic_config_read(QTestState *qts, unsigned slot,
@@ -7452,7 +7263,6 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/prom-sb64-reset", test_prom_sb64_reset);
     qtest_add_func("/o2/gbe11-registers", test_gbe11_registers);
-    qtest_add_func("/o2/gbe-one-tile-machine", test_gbe_one_tile_machine);
     qtest_add_func("/o2/aic-pci-diagnostic", test_aic_pci_diagnostic);
     qtest_add_func("/o2/aic-pci-low-dma-policy-off",
                    test_aic_pci_low_dma_policy_off);
@@ -7560,8 +7370,7 @@ int main(int argc, char **argv)
                    test_storage_second_segment_dma_failure);
     qtest_add_func("/o2/storage-diagnostic-rejections",
                    test_storage_diagnostic_rejections);
-    qtest_add_func("/o2/gbe-one-tile-off-invalid",
-                   test_gbe_one_tile_off_and_invalid);
+    qtest_add_func("/o2/gbe-one-tile-retired", test_gbe_one_tile_retired);
     qtest_add_func("/o2/prom-id-word", test_prom_id_word);
     qtest_add_func("/o2/prom-id-word-configuration",
                    test_prom_id_word_configuration);

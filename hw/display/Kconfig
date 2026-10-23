@@ -89,6 +89,7 @@ config SGI_O2_GBE
     bool
     default y if SGI_DEVICES
     select SGI_DISPLAY
+    select BITBANG_I2C
 
 config FRAMEBUFFER
     bool
