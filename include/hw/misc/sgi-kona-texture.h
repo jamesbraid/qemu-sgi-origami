@@ -9,24 +9,27 @@
 #define SGI_KONA_TEXTURE_BYTES (64u * 1024u * 1024u)
 
 /*
- * The texture memory the model's pipe reports to the library: 64 MB, as
- * on each RM7 board of the InfiniteReality2 capture. The library places
- * resident textures in that pool (class 3), so it keeps them within it.
+ * The texture memory a pipe with no configured product reports to the
+ * library: 64 MB, as on each RM7 board of the InfiniteReality2 capture. A
+ * configured pipe reports its raster managers' size instead. The library
+ * places resident textures in that pool (class 3), so it keeps them
+ * within it.
  */
 #define SGI_KONA_TEXTURE_MEMORY (64u * 1024u * 1024u)
 
 /*
- * The host memory the model may spend on all resident textures. It keeps
- * every texel as 32 bits plus a coverage bit, whatever the native texel
- * size, and each texture's own record. A texture memory full of 4-bit
- * texels, the narrowest the library's formats name (inferred; the native
- * sizes are not read), takes eight times its size in texels and a
- * quarter of it in coverage; the ninth share is for the records, about
- * 4,000 resident textures. So the worst-case host cost is about 576 MiB
- * for each KONA pipe. A budget of only the reported size refused textures
- * pfCity keeps resident.
+ * The host memory the model may spend on all resident textures, for a
+ * pipe that reports `memory` bytes of texture memory. It keeps every
+ * texel as 32 bits plus a coverage bit, whatever the native texel size,
+ * and each texture's own record. A texture memory full of 4-bit texels,
+ * the narrowest the library's formats name (inferred; the native sizes
+ * are not read), takes eight times its size in texels and a quarter of
+ * it in coverage; the ninth share is for the records, about 4,000
+ * resident textures per 64 MB. So the worst-case host cost is about
+ * 576 MiB for a 64 MB pipe and 2.25 GiB for a 256 MB one. A budget of
+ * only the reported size refused textures pfCity keeps resident.
  */
-#define SGI_KONA_TEXTURE_BUDGET (9ull * SGI_KONA_TEXTURE_MEMORY)
+#define SGI_KONA_TEXTURE_BUDGET(memory) (9ull * (memory))
 
 typedef struct SGIKonaTextureParams {
     uint32_t min_filter, mag_filter, wrap_s, wrap_t, wrap_r;
@@ -96,6 +99,8 @@ typedef struct SGIKonaTextureObject {
 } SGIKonaTextureObject;
 
 typedef struct SGIKonaTextureState {
+    /* SGI_KONA_TEXTURE_BUDGET of the pipe's texture memory; not migrated. */
+    uint64_t budget;
     bool bound;
     uint32_t bound_handle;
     uint64_t bytes;
@@ -106,6 +111,8 @@ typedef struct SGIKonaTextureState {
 } SGIKonaTextureState;
 
 void sgi_kona_texture_init(SGIKonaTextureState *s);
+/* Size the host budget for a pipe reporting `memory` bytes of texture. */
+void sgi_kona_texture_set_memory(SGIKonaTextureState *s, uint64_t memory);
 void sgi_kona_texture_reset(SGIKonaTextureState *s);
 void sgi_kona_texture_cleanup(SGIKonaTextureState *s);
 void sgi_kona_texture_defaults(SGIKonaTextureParams *p);

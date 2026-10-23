@@ -39,9 +39,15 @@ void sgi_kona_texture_defaults(SGIKonaTextureParams *p)
 void sgi_kona_texture_init(SGIKonaTextureState *s)
 {
     memset(s, 0, sizeof(*s));
+    s->budget = SGI_KONA_TEXTURE_BUDGET(SGI_KONA_TEXTURE_MEMORY);
     s->objects = g_hash_table_new(g_direct_hash, g_direct_equal);
     s->filter_curves = g_hash_table_new_full(g_direct_hash, g_direct_equal,
                                              NULL, g_free);
+}
+
+void sgi_kona_texture_set_memory(SGIKonaTextureState *s, uint64_t memory)
+{
+    s->budget = SGI_KONA_TEXTURE_BUDGET(memory);
 }
 
 static uint64_t level_bytes(const SGIKonaTextureLevel *l)
@@ -134,7 +140,7 @@ static SGIKonaTextureObject *texture_object(SGIKonaTextureState *s,
     }
     o = g_hash_table_lookup(s->objects, GUINT_TO_POINTER(handle));
     if (!o && create &&
-        TEXTURE_OBJECT_BYTES <= SGI_KONA_TEXTURE_BUDGET - s->bytes) {
+        TEXTURE_OBJECT_BYTES <= s->budget - s->bytes) {
         o = g_try_new0(SGIKonaTextureObject, 1);
         if (o) {
             o->handle = handle;
@@ -203,7 +209,7 @@ bool sgi_kona_texture_upload(SGIKonaTextureState *s, uint32_t handle,
     }
     if ((!replace && count == SGI_GL_TEX_LEVELS_MAX) ||
         bytes + (o ? 0 : TEXTURE_OBJECT_BYTES) >
-        SGI_KONA_TEXTURE_BUDGET - (s->bytes - old)) {
+        s->budget - (s->bytes - old)) {
         return false;
     }
     pixels = g_try_malloc(bytes);
@@ -352,7 +358,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     count = (uint64_t)width * height * depth;
     bytes = count * sizeof(*pixels) + (count + 7) / 8;
     if (bytes + (o ? 0 : TEXTURE_OBJECT_BYTES) >
-        SGI_KONA_TEXTURE_BUDGET - (s->bytes - old)) {
+        s->budget - (s->bytes - old)) {
         return false;
     }
     pixels = g_try_malloc0(count * sizeof(*pixels));
@@ -1403,8 +1409,9 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t curves, detail_valid;
 
     sgi_kona_texture_init(&tmp);
+    tmp.budget = s->budget;
     if (version != TEXTURE_STREAM_VERSION || bound > 1 ||
-        count > SGI_KONA_TEXTURE_BUDGET / TEXTURE_OBJECT_BYTES) {
+        count > s->budget / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
     for (uint32_t i = 0; i < count; i++) {
@@ -1437,7 +1444,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 goto invalid;
             }
             bytes = level_bytes(l);
-            if (bytes > SGI_KONA_TEXTURE_BUDGET - tmp.bytes ||
+            if (bytes > tmp.budget - tmp.bytes ||
                 qemu_file_get_error(f)) {
                 goto invalid;
             }
@@ -1508,7 +1515,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 }
             }
             bytes = native_bytes(n);
-            if (bytes > SGI_KONA_TEXTURE_BUDGET - tmp.bytes ||
+            if (bytes > tmp.budget - tmp.bytes ||
                 qemu_file_get_error(f)) {
                 goto invalid;
             }
@@ -1684,7 +1691,7 @@ bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
     memcpy(next.words, words, sizeof(next.words));
     curve = g_hash_table_lookup(s->filter_curves, GUINT_TO_POINTER(slot));
     if (!curve) {
-        if (TEXTURE_CURVE_BYTES > SGI_KONA_TEXTURE_BUDGET - s->bytes) {
+        if (TEXTURE_CURVE_BYTES > s->budget - s->bytes) {
             return false;
         }
         curve = g_try_new(SGIKonaTextureCurve, 1);
