@@ -794,6 +794,37 @@ static void test_migration_carries_temp_blank(void)
     g_rmdir(dir);
 }
 
+/*
+ * A stream from a display that is not blanked carries no blank subsection,
+ * and loading it into a machine whose display is blanked shows the frame:
+ * the loaded state, not the destination's own, decides the blank.
+ */
+static void test_migration_without_blank_unblanks(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    g_autofree uint8_t *shown = NULL;
+    QTestState *from, *to;
+
+    from = qtest_init(MIGRATION_ARGS);
+    kona_load_colour(from, 6, 0x10, 0x20, 0x30);
+    kona_textport_push(from, 0x2, (uint32_t[]){ 6 }, 1);
+    kona_textport_push(from, 0x6, (uint32_t[]){ 200, 300 }, 2);
+
+    dest_args = g_strdup_printf("%s -incoming %s", MIGRATION_ARGS, uri);
+    to = qtest_init(dest_args);
+    kona_temp_blank(to, 1);
+    sgi_migrate_stopped(from, uri);
+
+    shown = kona_screendump(to, dir, "shown.ppm");
+    g_assert_cmphex(ppm_pixel(shown, 200, wire_line(300)), ==, 0x102030);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -838,6 +869,9 @@ int main(int argc, char **argv)
                    test_temp_blank_hides_and_restores);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-temp-blank",
                    test_migration_carries_temp_blank);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "migration-without-blank-unblanks",
+                   test_migration_without_blank_unblanks);
 
     ret = g_test_run();
     qtest_quit(qts);
