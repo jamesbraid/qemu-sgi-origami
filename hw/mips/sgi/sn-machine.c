@@ -2718,6 +2718,33 @@ static unsigned int sgi_machine_kona_hub_widget(
 }
 
 /*
+ * The rack topology's pipe records are true-wombat's (GE16-4 030-1398-001
+ * under a Ktown), so that pipe presents true-wombat's InfiniteReality3
+ * configuration: one RM with 256 MB of texture memory. A product given
+ * with -global sgi-kona.product wins. The catalogue has no configuration
+ * field yet, and the deskside keeps the pipe's unconfigured answer.
+ */
+static void sgi_machine_kona_rack_product(DeviceState *dev,
+                                          const SGIModelIoBoard *record)
+{
+    g_autofree char *product = NULL;
+    bool ktown = false;
+    const strList *part;
+
+    if (!record->has_other_identity_parts ||
+        !g_str_equal(record->part, "030-1398-001")) {
+        return;
+    }
+    for (part = record->other_identity_parts; part; part = part->next) {
+        ktown |= g_str_equal(part->value, "030-1067-001");
+    }
+    product = object_property_get_str(OBJECT(dev), "product", &error_abort);
+    if (ktown && (!product || !*product)) {
+        qdev_prop_set_string(dev, "product", "ir3");
+    }
+}
+
+/*
  * The Origin 2000/Onyx2 InfiniteReality graphics pipe's KONA widget:
  * Crossbow-attached like the BaseIO card above, but an sgi-kona instance
  * carries no PCI function, IOC3 or onewire-serial property of its own,
@@ -2755,6 +2782,7 @@ static bool sgi_machine_instantiate_kona(
         }
         qdev_prop_set_array(dev, "other-identity-parts", parts);
     }
+    sgi_machine_kona_rack_product(dev, record);
     /*
      * The pipe's DMA transfers and reason-page writes name no destination
      * widget of their own, so the board sends them to its node's Hub.

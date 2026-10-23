@@ -530,10 +530,19 @@ Established from the captures (``web:irixnet-post-32192``,
 ``web:sgistuff-collection-2200``, ``web:nekonomicon-16285``). IRIX lists the
 rack's Ktown record at ``/hw/module/1/slot/io3/kona``, the Xtown's XIO slot,
 beside the GE record, and lists only the GE record at the deskside's
-``io4/kona``. The QEMU device presents its own geometry record whatever part
-the model layer names (``hw/misc/sgi-kona.c``); serials are placeholders, so
-the part numbers above are the captured identity and the serials are an
-approximation.
+``io4/kona``. The driver keeps the GE and KT records from its own one-wire
+reading; the pipe reports the RM, TM, DG and DGOPT records in its answer to
+the configuration request. Serials are placeholders, so the part numbers
+above are the captured identity and the serials are an approximation.
+
+The rack's pipe presents true-wombat's configuration, ``sgi-kona``
+``product=ir3``: hinv prints ``Graphics board: InfiniteReality3`` and
+``gfxinfo -v`` prints one RM10 board with 256MB of texture memory and the
+records above. The deskside's pipe passes the model layer's part through
+under the placeholder name ``GEOM-BD`` and keeps the unconfigured answer
+(no RM records) until the catalogue can name its configuration; ``-global
+sgi-kona.product=ir2`` presents whole-tetra's. The ``product`` property and
+the boards it takes are described in ``hw/misc/sgi-kona.c``.
 
 .. _sgi-onyx2-unknowns:
 
