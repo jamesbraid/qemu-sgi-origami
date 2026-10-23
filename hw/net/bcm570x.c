@@ -225,7 +225,8 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 /* ENABLE reads back set only after buffer-manager startup completes. */
 #define BCM570X_BUFMGR_MODE_ENABLE  0x00000002u
 #define BCM570X_BUFMGR_STATUS       0x4404
-#define BCM570X_BUFMGR_START_NS     1000000
+/* Functional timing approximation within the 10 ms host polling budget. */
+#define BCM570X_BUFMGR_START_NS     8000000
 
 /*
  * The firmware-ready handshake. The driver writes the magic to on-chip SRAM
