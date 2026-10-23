@@ -3757,6 +3757,38 @@ static void test_nonzero_rate_refuses_data(void)
     qtest_quit(qts);
 }
 
+static void test_rate_change_refuses_pending_data(void)
+{
+    static const uint8_t rates[] = { 1, 0x80, 0x81 };
+
+    for (unsigned rate = 0; rate < ARRAY_SIZE(rates); rate++) {
+        QTestState *qts = start_selected_disk(NULL);
+        uint8_t program[128], guard[35], got[35];
+
+        host_dma_program(qts, 0x10008, 17);
+        qtest_writeb(qts, REG_BASE + 0x08, 17);
+        start_program(qts, program, build_selected_inquiry_program(program));
+        qtest_writeb(qts, REG_BASE + 0x93, 0x38);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x10019);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x30);
+        memset(guard, 0xa5, sizeof(guard));
+        qtest_memwrite(qts, 0x10200, guard, sizeof(guard));
+        host_dma_program(qts, 0x10208, 19);
+        qtest_writeb(qts, REG_BASE + 0x08, 19);
+        qtest_writeb(qts, REG_BASE + 0x04, rates[rate]);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x38);
+        qtest_memread(qts, 0x10200, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), guard, sizeof(guard));
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x10208);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 19);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 19);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
 static void test_attention_selection_phase(void)
 {
     static const uint8_t controls[] = { 0x40, 0x48 };
@@ -9673,6 +9705,8 @@ int main(int argc, char **argv)
                    test_pci_error_mask_migrates);
     qtest_add_func("aic7880/status-message-phases",
                    test_status_message_phases);
+    qtest_add_func("aic7880/rate-change-refuses-pending-data",
+                   test_rate_change_refuses_pending_data);
     qtest_add_func("aic7880/pio-wrong-direction", test_pio_wrong_direction);
     qtest_add_func("aic7880/nonzero-rate-refuses-data",
                    test_nonzero_rate_refuses_data);

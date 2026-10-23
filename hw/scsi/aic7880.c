@@ -5,8 +5,9 @@
  *
  * The downloaded sequencer controls selection, command delivery, status,
  * and Command Complete. This subset accepts one asynchronous narrow command
- * at a time. Manual host PIO, disconnect/reselection, and target mode
- * are unsupported.
+ * at a time. Paused host PIO supports bounded message exchanges. Isolated
+ * qtest peer events exercise disconnect/reselection; ordinary targets stay
+ * connected. Host command/data PIO and target mode are unsupported.
  * Reset values transferred from the AIC-7870 manual are provisional.
  * The O2 qtest policy selects its sibling's BAR1 size and SWINT gating.
  */
@@ -599,6 +600,11 @@ static void aic7880_process_scsi_data(AIC7880State *s)
 
     if (!req || !s->scsi_data_len || s->phase != AIC_PHASE_DATA ||
         s->peer_nexus_disconnected) {
+        return;
+    }
+    if (s->regs[REG_SCSIRATE] & 0x8f) {
+        aic7880_error(s, "synchronous or wide DATA is unsupported");
+        scsi_req_cancel(req);
         return;
     }
     from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
