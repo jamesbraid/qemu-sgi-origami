@@ -5172,9 +5172,9 @@ static void test_call_transfer(void)
     check_unconditional_branch_transfer(0x0b);
 }
 
-static void test_unconditional_branch_host_only_source(void)
+static void test_branch_host_only_source(void)
 {
-    static const uint8_t ops[] = { 8, 0x0b };
+    static const uint8_t ops[] = { 8, 0x0a, 0x0b };
 
     for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
         uint8_t program[4 * 4];
@@ -5267,6 +5267,87 @@ static void test_call_pointer_arithmetic(void)
     }
 }
 
+static void load_seq_word(QTestState *qts, uint16_t pc, uint32_t word)
+{
+    qtest_writeb(qts, REG_BASE + 0x60, 0x91);
+    qtest_writeb(qts, REG_BASE + 0x62, pc);
+    qtest_writeb(qts, REG_BASE + 0x63, pc >> 8);
+    for (unsigned byte = 0; byte < 4; byte++) {
+        qtest_writeb(qts, REG_BASE + 0x61, word >> (byte * 8));
+    }
+    qtest_writeb(qts, REG_BASE + 0x60, 0x90);
+}
+
+static void test_jnc_branch_transfer(void)
+{
+    static const struct JncCase {
+        bool carry;
+        bool zero_before;
+        uint8_t source;
+        uint8_t source_value;
+        uint8_t immediate;
+        uint8_t index_before;
+        uint8_t index_after;
+        bool taken;
+    } cases[] = {
+        { false, true,  0x31, 0x5a, 0,    0x12, 0x5a, true  },
+        { true,  false, 0x31, 0,    0,    0x12, 0,    false },
+        { false, false, 0x31, 0,    0,    0x12, 0,    true  },
+        { true,  false, 0x31, 0x30, 0x04, 0x12, 0x34, false },
+        { false, true,  0x65, 0,    0,    0x7d, 0x7d, true  },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        const struct JncCase *test = &cases[i];
+        QTestState *qts = start_aic();
+        uint8_t flags_before = (test->carry ? 1 : 0) |
+                               (test->zero_before ? 2 : 0);
+        uint8_t flags_after = (test->carry ? 1 : 0) |
+                              (test->index_after == 0 ? 2 : 0);
+
+        qtest_writeb(qts, REG_BASE + 0x30, 0x5a);
+        qtest_writeb(qts, REG_BASE + 0x31, test->source_value);
+        qtest_writeb(qts, REG_BASE + 0x64, 0x7e);
+        qtest_writeb(qts, REG_BASE + 0x65, test->index_before);
+        run_old_alu(qts, 3, (test->carry ? 1 : 0xff),
+                    (test->carry ? 0x69 : 0x6a), 0x54);
+        run_old_alu(qts, 2, (test->zero_before ? 0x5a : 1),
+                    0x30, 0x55);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==,
+                        flags_before);
+
+        load_seq_word(qts, 255, branch_word(0x0a, test->immediate,
+                                           test->source, 259));
+        load_seq_word(qts, 256, alu_word(0, 0xa1, 0x6a, 0x40, false));
+        load_seq_word(qts, 257, alu_word(0, 1, 0x6a, 0x91, false));
+        load_seq_word(qts, 259, alu_word(0, 0xb2, 0x6a, 0x41, false));
+        load_seq_word(qts, 260, alu_word(0, 1, 0x6a, 0x91, false));
+        qtest_writeb(qts, REG_BASE + 0x92, 1);
+        qtest_writeb(qts, REG_BASE + 0x62, 255);
+        qtest_writeb(qts, REG_BASE + 0x63, 0);
+        qtest_writeb(qts, REG_BASE + 0x87, 2);
+
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x40), ==,
+                        (test->taken ? 0 : 0xa1));
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x41), ==,
+                        (test->taken ? 0xb2 : 0));
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==,
+                        (test->taken ? 5 : 2));
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x63), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==,
+                        test->index_after);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x6b), ==,
+                        flags_after);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x64), ==, 0x7e);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x31), ==,
+                        test->source_value);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 4, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 9, ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+        qtest_quit(qts);
+    }
+}
+
 static void test_conditional_branches(void)
 {
     uint8_t program[13 * 4];
@@ -5324,25 +5405,22 @@ static void test_accumulator_immediate_source(void)
 
 static void test_rejected_branch_does_not_read_source(void)
 {
-    for (unsigned op = 9; op <= 0x0a; op++) {
-        uint8_t program[4];
-        QTestState *qts = start_aic();
-        uint32_t word = branch_word(op, 1,
-                                    op == 9 ? 0x9b : 0x6c, 0);
+    uint8_t program[4];
+    QTestState *qts = start_aic();
+    uint32_t word = branch_word(9, 1, 0x9b, 0);
 
-        for (unsigned byte = 0; byte < sizeof(program); byte++) {
-            program[byte] = word >> (byte * 8);
-        }
-        qtest_writeb(qts, REG_BASE + 0x9b, 2);
-        qtest_writeb(qts, REG_BASE + 0x65, 0x30);
-        start_program(qts, program, sizeof(program));
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x30);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 4, ==, 4);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 8, ==, 8);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
-        qtest_quit(qts);
+    for (unsigned byte = 0; byte < sizeof(program); byte++) {
+        program[byte] = word >> (byte * 8);
     }
+    qtest_writeb(qts, REG_BASE + 0x9b, 2);
+    qtest_writeb(qts, REG_BASE + 0x65, 0x30);
+    start_program(qts, program, sizeof(program));
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x65), ==, 0x30);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 4, ==, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 8, ==, 8);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+    qtest_quit(qts);
 }
 
 static void test_return_write_pauses_at_caller(void)
@@ -8139,6 +8217,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/queue-reset", test_queue_reset_and_reuse);
     qtest_add_func("aic7880/conditional-branches",
                    test_conditional_branches);
+    qtest_add_func("aic7880/jnc-branch-transfer",
+                   test_jnc_branch_transfer);
     qtest_add_func("aic7880/accumulator-immediate",
                    test_accumulator_immediate_source);
     qtest_add_func("aic7880/rejected-branch-source",
@@ -8159,8 +8239,8 @@ int main(int argc, char **argv)
                    test_assembler_return_to_none);
     qtest_add_func("aic7880/jmp-transfer", test_jmp_transfer);
     qtest_add_func("aic7880/call-transfer", test_call_transfer);
-    qtest_add_func("aic7880/unconditional-branch-host-only-source",
-                   test_unconditional_branch_host_only_source);
+    qtest_add_func("aic7880/branch-host-only-source",
+                   test_branch_host_only_source);
     qtest_add_func("aic7880/call-pointer-arithmetic",
                    test_call_pointer_arithmetic);
     qtest_add_func("aic7880/four-nested-calls", test_four_nested_calls);
