@@ -3,7 +3,8 @@
 /*
  * SGI CRIME 1.5 revision-1 processor interface and MACE interrupts.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
- * ECC, watchdog, graphics, GBE and VICE are not modeled.
+ * An opt-in synchronous linear transfer approximation uses healthy RAM.
+ * Physical ECC, watchdog, rasterization, GBE and VICE are not modeled.
  * Unsupported register operations fail visibly.
  */
 #include "qemu/osdep.h"
@@ -19,6 +20,7 @@
 #include "qemu/timer.h"
 #include "qemu/units.h"
 #include "system/address-spaces.h"
+#include "system/runstate.h"
 
 #define CRIME_REGISTER_SIZE 0x2000000
 #define CRIME_RENDER_STATUS 0x01004000
@@ -48,6 +50,253 @@
 #define CRIME_IP6_MASK (1U << 7)
 #define CRIME_ID_REVISION 0xb1U
 #define CRIME_TIMER_HZ 66666666U
+
+#define CRIME_LINEAR_TLB 0x1001700
+#define CRIME_TRANSFER 0x1003000
+#define CRIME_TLB_ENTRY_MASK 0x800fffffU
+#define CRIME_TRANSFER_PARAMETERS 10
+
+typedef struct CrimeTransferSpan {
+    uint64_t physical;
+    uint64_t offset;
+    unsigned length;
+} CrimeTransferSpan;
+
+static MemTxResult crime_transfer_fail(hwaddr offset, const char *reason)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-crime: rejected access at 0x%" HWADDR_PRIx ": %s\n",
+                  (hwaddr)(0x14000000ULL + offset), reason);
+    vm_stop(RUN_STATE_INTERNAL_ERROR);
+    return MEMTX_ERROR;
+}
+
+static void crime_healthy_memory_notice(SGICrimeState *s)
+{
+    if (!s->healthy_memory_reported) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: healthy-memory approximation: coherent "
+                      "RAM without ECC check bits or correction\n");
+        s->healthy_memory_reported = true;
+    }
+}
+
+static bool crime_tlb_word_valid(uint64_t word)
+{
+    return !(((uint32_t)word | (uint32_t)(word >> 32)) & ~CRIME_TLB_ENTRY_MASK);
+}
+
+static bool crime_transfer_parameter(unsigned offset, unsigned *index)
+{
+    switch (offset) {
+    case 0x00: case 0x08: case 0x18: case 0x20: case 0x28:
+    case 0x30: case 0x38: case 0x40: case 0x48:
+        *index = offset / 8;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Resolve the existing decoder's FlatView without invoking its error MMIO. */
+static bool crime_transfer_resolve(SGICrimeState *s, uint64_t physical,
+                                    unsigned length, CrimeTransferSpan *span)
+{
+    uint64_t available;
+    MemoryRegionSection section;
+    bool valid;
+
+    if (!(physical < CRIME_LOW_RAM_SIZE ||
+          (physical >= CRIME_HIGH_RAM && physical < CRIME_FULL_RAM) ||
+          (physical >= CRIME_FULL_RAM && physical < 0xc0000000ULL))) {
+        return false;
+    }
+    section = memory_region_find(get_system_memory(), physical, length);
+    available = int128_get64(section.size);
+    valid = section.mr == s->ram && !section.readonly && available >= length;
+    if (valid) {
+        span->physical = physical;
+        span->offset = section.offset_within_region;
+        span->length = length;
+    }
+    memory_region_unref(section.mr);
+    return valid;
+}
+
+static bool crime_transfer_spans(SGICrimeState *s, unsigned bank,
+                                  uint32_t first, uint32_t last,
+                                  CrimeTransferSpan *spans, unsigned *count,
+                                  uint64_t *length)
+{
+    uint64_t position = first;
+
+    if (last < first) {
+        return false;
+    }
+    *length = (uint64_t)last - first + 1;
+    if (*length > 0x20000 - (first & 0xfff)) {
+        return false;
+    }
+    *count = 0;
+    while (position <= last) {
+        unsigned entry_index = (position >> 12) & 31;
+        uint64_t word = s->transfer.tlb[bank * 16 + entry_index / 2];
+        uint32_t entry = entry_index & 1 ? word : word >> 32;
+        unsigned bytes = MIN((uint64_t)(4096 - (position & 0xfff)),
+                             (uint64_t)last - position + 1);
+        uint64_t physical = ((uint64_t)(entry & 0xfffff) << 12) |
+                            (position & 0xfff);
+
+        if (!(entry & 0x80000000U) ||
+            !crime_transfer_resolve(s, physical, bytes, &spans[*count])) {
+            return false;
+        }
+        (*count)++;
+        position += bytes;
+    }
+    return true;
+}
+
+static bool crime_transfer_overlap(const CrimeTransferSpan *a,
+                                    const CrimeTransferSpan *b)
+{
+    return a->offset < b->offset + b->length &&
+           b->offset < a->offset + a->length;
+}
+
+static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
+                                          unsigned index, uint32_t value)
+{
+    uint32_t parameter[CRIME_TRANSFER_PARAMETERS];
+    CrimeTransferSpan source[32], destination[32];
+    unsigned source_count = 0, destination_count;
+    uint64_t source_length, destination_length;
+    uint32_t mode, src, dst;
+    bool copy;
+    g_autofree uint8_t *buffer = NULL;
+    unsigned position;
+
+    memcpy(parameter, s->transfer.parameter, sizeof(parameter));
+    parameter[index] = value;
+    mode = parameter[0];
+    copy = mode & (1U << 11);
+    src = (mode >> 5) & 7;
+    dst = (mode >> 2) & 7;
+    if ((mode & ~0x8ffU) || (dst != 4 && dst != 5) ||
+        (copy && src != 4 && src != 5) || parameter[1] != UINT32_MAX) {
+        return crime_transfer_fail(offset, "unsupported transfer mode or mask");
+    }
+    if (!crime_transfer_spans(s, dst - 4, parameter[6], parameter[7],
+                              destination, &destination_count,
+                              &destination_length)) {
+        return crime_transfer_fail(offset,
+                                           "invalid destination translation or bounds");
+    }
+    if (copy &&
+        (!crime_transfer_spans(s, src - 4, parameter[4], parameter[5],
+                               source, &source_count, &source_length) ||
+         source_length != destination_length)) {
+        return crime_transfer_fail(offset,
+                                           "invalid source translation or bounds");
+    }
+    for (unsigned i = 0; i < destination_count; i++) {
+        for (unsigned j = 0; j < i; j++) {
+            if (crime_transfer_overlap(&destination[i], &destination[j])) {
+                return crime_transfer_fail(offset,
+                                           "destination aliases itself");
+            }
+        }
+        for (unsigned j = 0; j < source_count; j++) {
+            if (crime_transfer_overlap(&destination[i], &source[j])) {
+                return crime_transfer_fail(offset,
+                                           "source and destination overlap");
+            }
+        }
+    }
+    if ((mode & 1) || (copy && (mode & 2))) {
+        crime_healthy_memory_notice(s);
+    }
+    buffer = g_malloc(destination_length);
+    if (copy) {
+        position = 0;
+        for (unsigned i = 0; i < source_count; i++) {
+            CrimeTransferSpan *span = &source[i];
+
+            if (address_space_read(&address_space_memory, span->physical,
+                                   MEMTXATTRS_UNSPECIFIED, buffer + position,
+                                   span->length) != MEMTX_OK) {
+                return crime_transfer_fail(offset, "validated RAM read failed");
+            }
+            position += span->length;
+        }
+    } else {
+        memset(buffer, parameter[3] & 0xff, destination_length);
+    }
+    position = 0;
+    for (unsigned i = 0; i < destination_count; i++) {
+        CrimeTransferSpan *span = &destination[i];
+
+        if (address_space_write(&address_space_memory, span->physical,
+                                MEMTXATTRS_UNSPECIFIED, buffer + position,
+                                span->length) != MEMTX_OK) {
+            return crime_transfer_fail(offset, "validated RAM write failed");
+        }
+        position += span->length;
+    }
+    s->transfer.parameter[index] = value;
+    return MEMTX_OK;
+}
+
+static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
+                                       uint64_t *value, unsigned size)
+{
+    unsigned index;
+
+    if (offset >= CRIME_LINEAR_TLB && offset < CRIME_LINEAR_TLB + 256 &&
+        size == 8 && !(offset & 7)) {
+        *value = s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8];
+        return MEMTX_OK;
+    }
+    if (offset == CRIME_RENDER_STATUS && size == 4) {
+        *value = CRIME_EMPTY_RENDER_STATUS;
+        return MEMTX_OK;
+    }
+    if (offset >= CRIME_TRANSFER && offset < CRIME_TRANSFER + 0x50 &&
+        size == 4 &&
+        crime_transfer_parameter(offset - CRIME_TRANSFER, &index) &&
+        index != 6 && index != 7) {
+        *value = s->transfer.parameter[index];
+        return MEMTX_OK;
+    }
+    return crime_transfer_fail(offset, "unsupported transfer register read");
+}
+
+static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    unsigned index;
+
+    if (offset >= CRIME_LINEAR_TLB && offset < CRIME_LINEAR_TLB + 256 &&
+        size == 8 && !(offset & 7)) {
+        if (!crime_tlb_word_valid(value)) {
+            return crime_transfer_fail(offset, "reserved translation bits");
+        }
+        s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8] = value;
+        return MEMTX_OK;
+    }
+    if ((offset == CRIME_TRANSFER + 0x800 ||
+         offset == CRIME_TRANSFER + 0x838) && size == 4) {
+        index = (offset - CRIME_TRANSFER - 0x800) / 8;
+        return crime_transfer_commit(s, offset, index, value);
+    }
+    if (offset >= CRIME_TRANSFER && offset < CRIME_TRANSFER + 0x50 &&
+        size == 4 &&
+        crime_transfer_parameter(offset - CRIME_TRANSFER, &index)) {
+        s->transfer.parameter[index] = value;
+        return MEMTX_OK;
+    }
+    return crime_transfer_fail(offset, "unsupported transfer register write");
+}
 
 static void crime_update_irq(SGICrimeState *s)
 {
@@ -211,6 +460,9 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
 {
     SGICrimeState *s = opaque;
 
+    if (s->functional_memory_transfer && offset >= 0x1000000) {
+        return crime_transfer_read(s, offset, value, size);
+    }
     if (s->empty_renderer_status && offset == CRIME_RENDER_STATUS &&
         size == 4) {
         *value = CRIME_EMPTY_RENDER_STATUS;
@@ -224,7 +476,9 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte read at 0x%" HWADDR_PRIx
                       "\n", size, offset);
-        return MEMTX_ERROR;
+        return s->functional_memory_transfer ?
+            crime_transfer_fail(offset, "invalid register width or alignment") :
+            MEMTX_ERROR;
     }
     if (offset >= 0x208 && offset <= 0x240) {
         unsigned bank = (offset - 0x208) / 8;
@@ -253,21 +507,30 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         break;
     case 0x0030: /* Watchdog remains disabled. */
     case 0x0040: /* No CPU error producer is modeled. */
-    case 0x0200: /* ECC control remains disabled. */
     case 0x4048: /* No CPU error producer is modeled. */
         *value = 0;
         break;
     case 0x0038:
         *value = crime_timer_value(s);
         break;
+    case 0x0200:
+        *value = s->functional_memory_transfer ? s->transfer.ecc_enable : 0;
+        break;
+    case 0x0260:
+    case 0x0270:
+        if (s->functional_memory_transfer) {
+            *value = 0;
+            break;
+        }
+        goto unsupported;
     case 0x0250:
-        if (s->eight_128m_banks) {
+        if (s->eight_128m_banks || s->functional_memory_transfer) {
             *value = s->memory_error_status;
             break;
         }
         goto unsupported;
     case 0x0258:
-        if (s->eight_128m_banks) {
+        if (s->eight_128m_banks || s->functional_memory_transfer) {
             *value = s->memory_error_address;
             break;
         }
@@ -277,7 +540,9 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         qemu_log_mask(LOG_UNIMP,
                       "sgi-crime: unsupported read at 0x%" HWADDR_PRIx
                       "\n", offset);
-        return MEMTX_ERROR;
+        return s->functional_memory_transfer ?
+            crime_transfer_fail(offset, "unsupported register read") :
+            MEMTX_ERROR;
     }
     return MEMTX_OK;
 }
@@ -287,11 +552,16 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
 {
     SGICrimeState *s = opaque;
 
+    if (s->functional_memory_transfer && offset >= 0x1000000) {
+        return crime_transfer_write(s, offset, value, size);
+    }
     if (size != 8 || offset & 7) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte write at 0x%" HWADDR_PRIx
                       "\n", size, offset);
-        return MEMTX_ERROR;
+        return s->functional_memory_transfer ?
+            crime_transfer_fail(offset, "invalid register width or alignment") :
+            MEMTX_ERROR;
     }
     if (offset >= 0x208 && offset <= 0x240 && s->eight_128m_banks) {
         unsigned bank = (offset - 0x208) / 8;
@@ -309,6 +579,27 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
             }
             crime_update_bank_mapping(s);
             return MEMTX_OK;
+        }
+    }
+    if (s->functional_memory_transfer) {
+        switch (offset) {
+        case 0x0200:
+            if (value <= 1) {
+                s->transfer.ecc_enable = value;
+                if (value) {
+                    crime_healthy_memory_notice(s);
+                }
+                return MEMTX_OK;
+            }
+            break;
+        case 0x0250:
+        case 0x0270:
+            if (!value) {
+                return MEMTX_OK;
+            }
+            break;
+        default:
+            break;
         }
     }
     switch (offset) {
@@ -340,7 +631,8 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
     qemu_log_mask(LOG_UNIMP,
                   "sgi-crime: unsupported write at 0x%" HWADDR_PRIx
                   " value 0x%" PRIx64 "\n", offset, value);
-    return MEMTX_ERROR;
+    return s->functional_memory_transfer ?
+        crime_transfer_fail(offset, "unsupported register write") : MEMTX_ERROR;
 }
 
 static const MemoryRegionOps crime_ops = {
@@ -357,6 +649,8 @@ static void crime_reset_enter(Object *obj, ResetType type)
 {
     SGICrimeState *s = SGI_CRIME(obj);
 
+    memset(&s->transfer, 0, sizeof(s->transfer));
+    s->healthy_memory_reported = false;
     s->enable = 0;
     s->software = 0;
     s->timer_base = 0;
@@ -394,26 +688,117 @@ static bool crime_pre_save(void *opaque, Error **errp)
     s->timer_base = count;
     s->timer_fraction = fraction;
     s->timer_epoch_ns = now;
+    s->incoming.hardware = s->hardware;
+    s->incoming.enable = s->enable;
+    s->incoming.software = s->software;
+    s->incoming.timer_base = s->timer_base;
+    s->incoming.timer_fraction = s->timer_fraction;
     return true;
 }
 
 static int crime_post_load(void *opaque, int version_id)
 {
     SGICrimeState *s = opaque;
+    CrimeMigrationState *incoming = &s->incoming;
 
-    if ((s->hardware & ~CRIME_MACE_MASK) ||
-        (s->enable & ~CRIME_ENABLE_MASK) ||
-        (s->software & ~CRIME_SOFTWARE_MASK)) {
+    if (s->functional_memory_transfer && !s->transfer_state_received) {
+        return -EINVAL;
+    }
+    if ((incoming->hardware & ~CRIME_MACE_MASK) ||
+        (incoming->enable & ~CRIME_ENABLE_MASK) ||
+        (incoming->software & ~CRIME_SOFTWARE_MASK)) {
         return -EINVAL;
     }
     if (version_id == 1) {
-        s->timer_base = 0;
-        s->timer_fraction = 0;
-    } else if (s->timer_fraction >= NANOSECONDS_PER_SECOND) {
+        incoming->timer_base = 0;
+        incoming->timer_fraction = 0;
+    } else if (incoming->timer_fraction >= NANOSECONDS_PER_SECOND) {
         return -EINVAL;
+    }
+    s->hardware = incoming->hardware;
+    s->enable = incoming->enable;
+    s->software = incoming->software;
+    s->timer_base = incoming->timer_base;
+    s->timer_fraction = incoming->timer_fraction;
+    if (s->functional_memory_transfer) {
+        s->transfer = s->incoming_transfer;
+        s->memory_error_status = s->incoming_memory_error_status;
+        s->memory_error_address = s->incoming_memory_error_address;
+        s->healthy_memory_reported = false;
     }
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     crime_update_irq(s);
+    return 0;
+}
+
+static bool crime_transfer_needed(void *opaque)
+{
+    return SGI_CRIME(opaque)->functional_memory_transfer;
+}
+
+static bool crime_transfer_pre_save(void *opaque, Error **errp)
+{
+    SGICrimeState *s = opaque;
+
+    s->incoming_transfer = s->transfer;
+    s->incoming_memory_error_status = s->memory_error_status;
+    s->incoming_memory_error_address = s->memory_error_address;
+    return true;
+}
+
+static int crime_transfer_pre_load(void *opaque)
+{
+    return SGI_CRIME(opaque)->functional_memory_transfer ? 0 : -EINVAL;
+}
+
+static int crime_transfer_post_load(void *opaque, int version_id)
+{
+    SGICrimeState *s = opaque;
+    CrimeTransferState *incoming = &s->incoming_transfer;
+
+    if (incoming->ecc_enable > 1 || incoming->parameter[2] ||
+        (s->incoming_memory_error_status &
+         ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE)) ||
+        s->incoming_memory_error_address > 0x3fffffff ||
+        (s->incoming.hardware & ~CRIME_MACE_MASK) ||
+        (s->incoming.enable & ~CRIME_ENABLE_MASK) ||
+        (s->incoming.software & ~CRIME_SOFTWARE_MASK)) {
+        return -EINVAL;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(incoming->tlb); i++) {
+        if (!crime_tlb_word_valid(incoming->tlb[i])) {
+            return -EINVAL;
+        }
+    }
+    s->transfer_state_received = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_crime_transfer = {
+    .name = TYPE_SGI_CRIME "/linear-transfer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = crime_transfer_needed,
+    .pre_save_errp = crime_transfer_pre_save,
+    .pre_load = crime_transfer_pre_load,
+    .post_load = crime_transfer_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(transfer_policy, SGICrimeState),
+        VMSTATE_UINT8_EQUAL(interface_revision, SGICrimeState),
+        VMSTATE_UINT64_ARRAY(incoming_transfer.tlb, SGICrimeState, 32),
+        VMSTATE_UINT32_ARRAY(incoming_transfer.parameter, SGICrimeState, 10),
+        VMSTATE_UINT64(incoming_transfer.ecc_enable, SGICrimeState),
+        VMSTATE_UINT32(incoming_memory_error_status, SGICrimeState),
+        VMSTATE_UINT32(incoming_memory_error_address, SGICrimeState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static int crime_pre_load(void *opaque)
+{
+    SGICrimeState *s = opaque;
+
+    s->transfer_state_received = false;
     return 0;
 }
 
@@ -422,14 +807,19 @@ static const VMStateDescription vmstate_crime = {
     .version_id = 2,
     .minimum_version_id = 1,
     .pre_save_errp = crime_pre_save,
+    .pre_load = crime_pre_load,
     .post_load = crime_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(hardware, SGICrimeState),
-        VMSTATE_UINT32(enable, SGICrimeState),
-        VMSTATE_UINT32(software, SGICrimeState),
-        VMSTATE_UINT32_V(timer_base, SGICrimeState, 2),
-        VMSTATE_UINT32_V(timer_fraction, SGICrimeState, 2),
+        VMSTATE_UINT32(incoming.hardware, SGICrimeState),
+        VMSTATE_UINT32(incoming.enable, SGICrimeState),
+        VMSTATE_UINT32(incoming.software, SGICrimeState),
+        VMSTATE_UINT32_V(incoming.timer_base, SGICrimeState, 2),
+        VMSTATE_UINT32_V(incoming.timer_fraction, SGICrimeState, 2),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_crime_transfer,
+        NULL
     },
 };
 
@@ -443,6 +833,16 @@ static void crime_realize(DeviceState *dev, Error **errp)
     SGICrimeState *s = SGI_CRIME(dev);
     uint64_t ram_size;
 
+    s->transfer_policy = s->functional_memory_transfer ? 1 : 0;
+    if (s->functional_memory_transfer && s->empty_renderer_status) {
+        error_setg(errp, "sgi-crime functional-memory-transfer conflicts with "
+                   "empty-renderer-status");
+        return;
+    }
+    if (s->functional_memory_transfer && !s->ram) {
+        error_setg(errp, "sgi-crime functional-memory-transfer requires RAM");
+        return;
+    }
     if (s->interface_revision != 1) {
         error_setg(errp, "sgi-crime supports only interface revision 1");
         return;
@@ -740,6 +1140,24 @@ static void crime_set_empty_renderer_status(Object *obj, bool value,
     s->empty_renderer_status = value;
 }
 
+static bool crime_get_functional_memory_transfer(Object *obj, Error **errp)
+{
+    return SGI_CRIME(obj)->functional_memory_transfer;
+}
+
+static void crime_set_functional_memory_transfer(Object *obj, bool value,
+                                                 Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME(obj);
+
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime functional-memory-transfer cannot change "
+                   "after initial realization");
+        return;
+    }
+    s->functional_memory_transfer = value;
+}
+
 static void crime_init(Object *obj)
 {
     SGICrimeState *s = SGI_CRIME(obj);
@@ -759,6 +1177,9 @@ static void crime_init(Object *obj)
     object_property_add_bool(obj, "reset-low-ram-approx",
                              crime_get_reset_low_ram_approx,
                              crime_set_reset_low_ram_approx);
+    object_property_add_bool(obj, "functional-memory-transfer",
+                             crime_get_functional_memory_transfer,
+                             crime_set_functional_memory_transfer);
     object_property_add_bool(obj, "empty-renderer-status",
                              crime_get_empty_renderer_status,
                              crime_set_empty_renderer_status);
