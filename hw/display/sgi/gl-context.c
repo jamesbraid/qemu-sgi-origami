@@ -743,6 +743,10 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
     };
     uint32_t n = 0;
 
+    if ((st->draw_buffers & SGI_GL_DRAW_OVERLAY) && st->drawable.overlay) {
+        out[0] = st->drawable.overlay;
+        return 1;
+    }
     for (int bit = 0; bit < SGI_GL_MAX_TARGETS; bit++) {
         bool dup = false;
 
@@ -4307,6 +4311,25 @@ static const VMStateDescription vmstate_sgi_gl_drawable_extra = {
     },
 };
 
+static bool sgi_gl_drawable_overlay_needed(void *opaque)
+{
+    SGIGLDrawable *d = opaque;
+
+    return d->overlay != 0;
+}
+
+/* Sent only while the family gives the drawable an overlay target. */
+static const VMStateDescription vmstate_sgi_gl_drawable_overlay = {
+    .name = "sgi-gl-drawable/overlay",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_drawable_overlay_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(overlay, SGIGLDrawable),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_gl_drawable_extent_needed(void *opaque)
 {
     SGIGLDrawable *d = opaque;
@@ -4334,6 +4357,7 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
         &vmstate_sgi_gl_clip_empty,
         &vmstate_sgi_gl_drawable_extra,
         &vmstate_sgi_gl_drawable_extent,
+        &vmstate_sgi_gl_drawable_overlay,
         NULL
     },
     .fields = (const VMStateField[]) {

@@ -275,6 +275,11 @@ enum {
 #define SGI_GL_DRAW_BACK        0x2
 #define SGI_GL_DRAW_EXTRA0      0x4
 #define SGI_GL_DRAW_EXTRA1      0x8
+/*
+ * The family's overlay planes, a layer of their own: set, the draw goes
+ * to the drawable's overlay target alone and the other bits name nothing.
+ */
+#define SGI_GL_DRAW_OVERLAY     0x40
 #define SGI_GL_NEVER_ENUM       0x0200
 #define SGI_GL_CURRENT_COLOR    0x0b00
 #define SGI_GL_CURRENT_INDEX    0x0b01
@@ -563,6 +568,11 @@ typedef struct SGIGLDrawable {
      * The bits have no fixed front or back meaning.
      */
     SGIColourTarget extra[2];
+    /*
+     * The target SGI_GL_DRAW_OVERLAY names, for a family whose board has
+     * overlay planes; zero where it has none, and the bit is then ignored.
+     */
+    SGIColourTarget overlay;
 } SGIGLDrawable;
 
 /* The GL state a draw is made under. */

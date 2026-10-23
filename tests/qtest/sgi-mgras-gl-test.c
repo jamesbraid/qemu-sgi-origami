@@ -1618,6 +1618,57 @@ static void test_gl_colour_index_draws_through_the_colour_map(void)
 }
 
 /*
+ * A colour-index context whose draw-buffer triple's first word has bit 6
+ * set, as the IRIX 6.5.30 client sends for a context on an overlay visual
+ * (0x48 for GL_FRONT, 0x43 for GL_FRONT_AND_BACK), draws its clear and its
+ * primitives into the overlay planes and leaves the main planes as they
+ * were. SceneViewer's Open Inventor logo is drawn this way.
+ */
+static void test_gl_overlay_draw_buffer_draws_the_overlay(void)
+{
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_color3f(qts, 1, 0.5f, 0);
+    gl_window_rect(qts, 10, 10, 20, 30);
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 0xff8000);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_one(qts, GL_INIT_CI_HDR, 8);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_word(qts, GL_DRAW_BUFFER_HDR);
+    gl_word(qts, 0x48);
+    gl_word(qts, 0x48);
+    gl_word(qts, 1);
+    gl_word(qts, GL_CLEAR_INDEX_HDR);
+    gl_float(qts, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_overlay(qts, 256 + 15, 383 - 20), ==, 0);
+    gl_indexs(qts, 1);
+    gl_window_rect(qts, 40, 10, 50, 30);
+    g_assert_cmphex(mgras_test_overlay(qts, 256 + 45, 383 - 20), ==, 1);
+    g_assert_cmphex(mgras_test_overlay(qts, 256 + 55, 383 - 20), ==, 0);
+
+    gl_word(qts, GL_DRAW_BUFFER_HDR);
+    gl_word(qts, 0x43);
+    gl_word(qts, 0x43);
+    gl_word(qts, 1);
+    gl_indexs(qts, 3);
+    gl_window_rect(qts, 60, 10, 70, 30);
+    g_assert_cmphex(mgras_test_overlay(qts, 256 + 65, 383 - 20), ==, 3);
+
+    /* The main planes keep the RGBA context's pixels. */
+    g_assert_cmphex(gl_window_pixel(qts, 15, 20), ==, 0xff8000);
+    g_assert_cmphex(gl_window_pixel(qts, 45, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 65, 20), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * glIndexMask(0) leaves the colour buffer unchanged (OpenGL 1.2.1, 4.2.2):
  * a colour-index rectangle under it keeps the direct-colour pixel an RGBA
  * context drew there, its value and its format.
@@ -2544,6 +2595,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-colour-index-draws-through-the-colour-map",
         test_gl_colour_index_draws_through_the_colour_map, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-overlay-draw-buffer-draws-the-overlay",
+        test_gl_overlay_draw_buffer_draws_the_overlay, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-colour-index-zero-mask-keeps-the-pixel",
