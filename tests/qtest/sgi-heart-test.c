@@ -38,16 +38,22 @@ static uint32_t heart_descriptor(unsigned index)
            0x80000000U | (index << 16) | (0x100 + index * 0x10);
 }
 
-static QTestState *heart_start(unsigned mib, const char *extra)
+static QTestState *heart_start_revision(unsigned mib, unsigned revision,
+                                        const char *extra)
 {
     QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
-        "sgi-heart,id=heart,bank0-size=%" PRIu64 ",widget-revision=4 -S %s",
-        (uint64_t)mib * 1024 * 1024, extra);
+        "sgi-heart,id=heart,bank0-size=%" PRIu64 ",widget-revision=%u -S %s",
+        (uint64_t)mib * 1024 * 1024, revision, extra);
 
     qtest_sysbus_mmio_map(s, HEART_PATH, 0, HEART_REGS);
     qtest_sysbus_mmio_map(s, HEART_PATH, 1, HEART_WIDGET);
     qtest_sysbus_mmio_map(s, HEART_PATH, 2, HEART_PACKET);
     return s;
+}
+
+static QTestState *heart_start(unsigned mib, const char *extra)
+{
+    return heart_start_revision(mib, 4, extra);
 }
 
 #define HEART_ECC_ENABLE ((1ULL << 15) | 1)
@@ -904,6 +910,139 @@ static void test_projection(gconstpointer data)
     qtest_quit(s);
 }
 
+/*
+ * The bank capacity table of the 6.5.30 IP30 PROM (the 879,312-byte
+ * image with SHA-256 ee4722ca...a49972, file offset 0xa2d58), indexed
+ * by the probe's readback bits divided by four. Each word lacks the
+ * valid bit and carries the temporary base 0x40.
+ */
+static const uint32_t prom_capacity_table[16] = {
+    0x00000040, 0x00010040, 0x00430040, 0x00470040,
+    0x008f0040, 0x009f0040, 0x00000040, 0x00000040,
+    0x01010040, 0x01030040, 0x01470040, 0x014f0040,
+    0x019f0040, 0x01bf0040, 0x00000040, 0x00000040,
+};
+
+/* One written pattern survives a complement written at @base + @step. */
+static bool prom_distinct(QTestState *s, uint64_t base, uint64_t step,
+                          uint64_t pattern)
+{
+    qtest_writeq(s, base, pattern);
+    qtest_writeq(s, base + step, ~pattern);
+    return qtest_readq(s, base) == pattern;
+}
+
+/*
+ * The PROM's capacity routine at 0x1fc319e0: +0x100, then +128 MiB, and
+ * only if that aliases, +32 MiB; the last test is +1 GiB, or +64 MiB on
+ * the +32 MiB path from HEART revision 6.
+ */
+static uint32_t prom_capacity(QTestState *s, uint64_t base, bool newer)
+{
+    uint64_t pattern = 0x1111111111111111ULL;
+    uint64_t fourth = 32 * UNIT;
+    unsigned bits = 0;
+
+    qtest_writeq(s, base + 0x100, pattern);
+    qtest_writeq(s, base, ~pattern);
+    if (qtest_readq(s, base + 0x100) == pattern) {
+        bits |= 0x20;
+    }
+    if (prom_distinct(s, base, 4 * UNIT, pattern << 1)) {
+        bits |= 0x10;
+    } else {
+        fourth = newer ? 2 * UNIT : fourth;
+        if (prom_distinct(s, base, UNIT, pattern << 2)) {
+            bits |= 0x08;
+        }
+    }
+    if (prom_distinct(s, base, fourth, pattern << 3)) {
+        bits |= 0x04;
+    }
+    return prom_capacity_table[bits / 4];
+}
+
+/*
+ * The PROM's bank-0 probe at 0x1fc316e0 under its temporary 2 GiB
+ * descriptor, followed by the revision-specific check: before revision 6
+ * an odd density compares +0x80 with +32 MiB + 0x80 and drops the bank on
+ * a match; from revision 6 a nonzero read after writing at half the
+ * provisional size halves the descriptor. Returns the final descriptor.
+ */
+static uint32_t prom_probe_bank0(QTestState *s)
+{
+    bool newer = qtest_readl(s, HEART_WIDGET + 4) >> 28 >= 6;
+    uint32_t word;
+    uint64_t units;
+
+    qtest_writeq(s, HEART_REGS + 0x20, 0);
+    qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    qtest_writeq(s, PROBE_RAM, 0x5555555555555555ULL);
+    qtest_writeq(s, PROBE_RAM + 8, 0xaaaaaaaaaaaaaaaaULL);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM), ==, 0x5555555555555555ULL);
+    g_assert_cmphex(qtest_readq(s, PROBE_RAM + 8), ==, 0xaaaaaaaaaaaaaaaaULL);
+    word = prom_capacity(s, PROBE_RAM, newer);
+    g_assert_cmphex(prom_capacity(s, PROBE_RAM + 8, newer), ==, word);
+    word |= 0x80000000U;
+    qtest_writel(s, HEART_REGS + 0x20, word);
+    units = ((word >> 16) & 0x3f) + 1;
+    if (!newer && (word >> 22) & 1) {
+        qtest_writeq(s, PROBE_RAM + 0x80, 0);
+        qtest_writeq(s, PROBE_RAM + UNIT + 0x80, ~0ULL);
+        g_assert_cmphex(qtest_readq(s, PROBE_RAM + 0x80), !=,
+                        qtest_readq(s, PROBE_RAM + UNIT + 0x80));
+    } else if (newer) {
+        qtest_writeq(s, PROBE_RAM, 0);
+        qtest_writeq(s, PROBE_RAM + units * UNIT / 2, ~0ULL);
+        if (qtest_readq(s, PROBE_RAM)) {
+            word = (word & 0xffc0ffffU) | ((word & 0x003f0000U) >> 17 << 16);
+            qtest_writel(s, HEART_REGS + 0x20, word);
+        }
+    }
+    return word;
+}
+
+/*
+ * Every bank capacity the Octane guides allow reaches the same final
+ * descriptor on both PROM revision paths: the size the fitted bank holds,
+ * with the density code of the table row that names it. Fitted RAM then
+ * keeps a distinct word in each 32 MiB unit.  The 512 MiB revision-6
+ * value is a model choice: the PROM's own revision-6 halving would end
+ * on 0x818f0040, and the kernel reads only the size and base, so either
+ * is functionally the same.
+ */
+static void test_prom_probe(gconstpointer data)
+{
+    unsigned mib = GPOINTER_TO_UINT(data) & 0xffff;
+    unsigned revision = GPOINTER_TO_UINT(data) >> 16;
+    static const struct {
+        unsigned mib;
+        uint32_t descriptor;
+    } expected[] = {
+        { 64, 0x81010040 }, { 128, 0x81030040 }, { 256, 0x81470040 },
+        { 512, 0x814f0040 }, { 1024, 0x819f0040 }, { 2048, 0x81bf0040 },
+    };
+    QTestState *s = heart_start_revision(mib, revision, "");
+    uint32_t final = 0;
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(expected); i++) {
+        if (expected[i].mib == mib) {
+            final = expected[i].descriptor;
+        }
+    }
+    g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 4) >> 28, ==, revision);
+    g_assert_cmphex(prom_probe_bank0(s), ==, final);
+    for (uint64_t unit = 0; unit < mib / 32; unit++) {
+        qtest_writeq(s, PROBE_RAM + unit * UNIT + 0x100, 0x1021324354657687ULL
+                     + unit);
+    }
+    for (uint64_t unit = 0; unit < mib / 32; unit++) {
+        g_assert_cmphex(qtest_readq(s, PROBE_RAM + unit * UNIT + 0x100), ==,
+                        0x1021324354657687ULL + unit);
+    }
+    qtest_quit(s);
+}
+
 static void test_two_64m_banks(void)
 {
     QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
@@ -928,7 +1067,8 @@ static void test_invalid_bank_capacity(void)
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*capacity must be 0, 64M, 128M or 256M*");
+        g_test_trap_assert_stderr(
+            "*capacity must be 0, 64M, 128M, 256M, 512M, 1G or 2G*");
         return;
     }
     s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
@@ -1918,6 +2058,15 @@ int main(int argc, char **argv)
                          test_projection);
     g_test_add_data_func("/heart/projection-256m", GUINT_TO_POINTER(256),
                          test_projection);
+    for (unsigned mib = 64; mib <= 2048; mib *= 2) {
+        for (unsigned revision = 4; revision <= 6; revision += 2) {
+            g_autofree char *path = g_strdup_printf(
+                "/heart/prom-probe/rev%u-%um", revision, mib);
+
+            qtest_add_data_func(path, GUINT_TO_POINTER(revision << 16 | mib),
+                                test_prom_probe);
+        }
+    }
     g_test_add_func("/heart/wide-descriptor-clear",
                     test_wide_descriptor_clear);
     g_test_add_func("/heart/widget-id", test_widget_id);

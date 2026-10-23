@@ -15,6 +15,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qemu/host-utils.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -358,7 +359,10 @@ static const MemoryRegionOps heart_absent_ops = {
 static uint64_t heart_bank_offset(uint32_t descriptor, uint64_t capacity,
                                   uint64_t offset)
 {
-    /* Functional probe projection; physical HEART wiring is not established. */
+    /*
+     * Functional probe projection; physical HEART wiring is not established.
+     * 1 GiB and 2 GiB banks keep the plain modulo below.
+     */
     if ((descriptor & 0x803f0000U) == 0x803f0000U &&
         ((descriptor >> 22) & 7) == 6) {
         switch (capacity) {
@@ -372,6 +376,10 @@ static uint64_t heart_bank_offset(uint32_t descriptor, uint64_t capacity,
         case 256 * MiB:
             return (offset & (128 * MiB - 1)) |
                    ((offset & (256 * MiB)) >> 1);
+        case 512 * MiB:
+            return (offset & (128 * MiB - 1)) |
+                   ((offset & (256 * MiB)) >> 1) |
+                   ((offset & (1 * GiB)) >> 2);
         }
     }
     return offset % capacity;
@@ -1119,11 +1127,11 @@ static void heart_realize(DeviceState *dev, Error **errp)
         uint64_t capacity = s->capacity[bank];
         g_autofree char *bank_name = g_strdup_printf("heart.bank%u", bank);
 
-        if (capacity != 0 && capacity != 64 * MiB &&
-            capacity != 128 * MiB && capacity != 256 * MiB) {
-            error_setg(errp,
-                       "HEART bank %u capacity must be 0, 64M, 128M or 256M",
-                       bank);
+        /* Two DIMMs of 32 MB to 1 GB: a power of two, 64M to 2G. */
+        if (capacity != 0 && (capacity < 64 * MiB || capacity > 2 * GiB ||
+                              !is_power_of_2(capacity))) {
+            error_setg(errp, "HEART bank %u capacity must be 0, 64M, 128M, "
+                       "256M, 512M, 1G or 2G", bank);
             return;
         }
         if (capacity && !memory_region_init_ram(&s->backing[bank],
