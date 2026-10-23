@@ -1074,12 +1074,17 @@ static uint8_t aic7880_scb_parity(uint8_t value)
     return 1 ^ parity8(value);
 }
 
+static bool aic7880_scb_parity_bad(AIC7880State *s, unsigned index)
+{
+    return s->external_scb_width == 9 &&
+           (PCI_DEVICE(s)->config[0x40] & 0x10) &&
+           (s->regs[REG_DSCOMMAND] & 0x20) &&
+           s->scb_parity[index] != aic7880_scb_parity(s->scb_ram[index]);
+}
+
 static void aic7880_check_scb_parity(AIC7880State *s, unsigned index)
 {
-    if (s->external_scb_width != 9 ||
-        !(PCI_DEVICE(s)->config[0x40] & 0x10) ||
-        !(s->regs[REG_DSCOMMAND] & 0x20) ||
-        s->scb_parity[index] == aic7880_scb_parity(s->scb_ram[index])) {
+    if (!aic7880_scb_parity_bad(s, index)) {
         return;
     }
     s->error |= 0x20;
@@ -2153,6 +2158,13 @@ static void aic7880_run(AIC7880State *s)
                   source < REG_SCB_BASE + AIC_SCB_PAGE_BYTES &&
                   dst >= REG_SCB_BASE &&
                   dst < REG_SCB_BASE + AIC_SCB_PAGE_BYTES;
+        if (scb_rmw && aic7880_scb_parity_bad(s,
+                          aic7880_scb_index(s, scb_counter & 0x1f))) {
+            /* Fault-time RMW ordering is unqualified; start neither half. */
+            aic7880_error(s, "parity-faulting automatic SCB read-modify-write "
+                            "is unsupported");
+            goto done;
+        }
         result = aic7880_seq_read(s, src);
         if (s->regs[REG_HCNTRL] & HOST_PAUSE) {
             goto done;
