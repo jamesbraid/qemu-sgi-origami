@@ -220,14 +220,32 @@ board model and configuration therefore stay separate values: a stock-software
 acceptance requirement is that unknown configuration is an attachment failure,
 not a silent generic V12.
 
-The device (``hw/misc/sgi-odyssey.c``) takes widget revision 10 by default and
-accepts a memory size and bank count. Revision 10 is the device's selected
-default, an emulator choice with no measurement of a particular board behind
-it. An observed Fuel carries a V10 board with 32 MB of memory, and the
-IRIX ``gfxinfo`` on it calls the board ``ODYSSEY``
-(``web:tingo-fuel-irix-console``); the model fits the device's default V12
-memory configuration, and that a Fuel V12 uses the same slot is inferred.
-The board's one-wire records and display output are not verified.
+The device (``hw/misc/sgi-odyssey.c``) takes widget revision 10, 128 MB and
+four banks by default, the values a measured V12 answers, and accepts a memory
+size and bank count. Its ``profile`` property selects one marketed board. The
+IRIX 6.5.30 kernel turns revisions 1 to 3 into BUZZ A and 9 to 15 into BUZZ B,
+``gfxinfo`` prints the minor number as the offset less one, and ``hinv`` names
+the board from the generation and the size (established from those shipped
+binaries):
+
+======= ======== ====== ===== ===== ================ ===================
+Profile Revision Memory Banks PB&J  ``gfxinfo`` BUZZ Identity record
+======= ======== ====== ===== ===== ================ ===================
+v6      2        32 MB  2     1     A.1              ``ODY32``
+v8      2        128 MB 4     1     A.1              ``ODY128``
+v10     10       32 MB  2     1     B.1              ``ODY32VERSIONB``
+v12     10       128 MB 4     1     B.1              ``ODY128VERSIONB``
+======= ======== ====== ===== ===== ================ ===================
+
+Published ``gfxinfo`` captures establish A.1 and PB&J 1 on a 32 MB V6, B.1
+and PB&J 1 on a 32 MB V10 and on a 128 MB V12 with four banks, and published
+``hinv -mv`` captures name the four Octane boards. The V8's revision and banks
+are inferred from its generation and size, and the 32 MB boards' two banks
+are inferred, since ``gfxinfo`` prints a fixed two-bank line for any 32 MB
+board. A second Fuel V10 board reported B.2 (revision 11), so revision is not
+fixed per marketed board. Fuel and Tezro boards are other assemblies
+(``ASTODY``, ``ASTODYB``), and the profiles' records name the Octane boards.
+Display output is not verified.
 
 .. _sgi-graphics-odyssey-attachment:
 
