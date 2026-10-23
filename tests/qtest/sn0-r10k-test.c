@@ -155,6 +155,8 @@ static void emit_report_and_spin(GuestImage *img, uint16_t magic,
 #define STATUS_NMI          (1u << 19)
 #define STATUS_ERL          (1u << 2)
 #define STATUS_BEV          (1u << 22)
+#define STATUS_TS           (1u << 21)
+#define STATUS_KX           (1u << 7)
 
 static void nmi_write_guest_image(int fd)
 {
@@ -1946,6 +1948,184 @@ static void emit_li32(GuestImage *img, int rt, uint32_t value)
     emit_ori(img, rt, rt, value & 0xffff);
 }
 
+#define SOFT_READY_OFF          0x40
+#define SOFT_DONE_OFF           0x48
+#define SOFT_STATUS_OFF         0x50
+#define SOFT_ERROREPC_OFF       0x58
+#define SOFT_CONFIG_OFF         0x60
+#define SOFT_WATCHLO_OFF        0x68
+#define SOFT_WATCHHI_OFF        0x70
+#define SOFT_EXPECT_CONFIG_OFF  0x78
+#define SOFT_EXPECT_WATCHLO_OFF 0x80
+#define SOFT_EXPECT_WATCHHI_OFF 0x88
+#define SOFT_INITIAL_CONFIG_OFF 0x90
+#define SOFT_INITIAL_STATUS_OFF 0x98
+#define SOFT_SEEDED_STATUS_OFF  0xa0
+#define SOFT_DONE_MAGIC         0x5352
+#define SOFT_HANDLER            0x700
+#define SOFT_SETUP              0x500
+#define SOFT_CONFIG_K0          3
+#define SOFT_WATCHLO            0x12345000u
+#define SOFT_WATCHHI            0x30u
+#define CP0_WATCHLO             18
+#define CP0_WATCHHI             19
+#define STATUS_KSU              (3u << 3)
+
+static void emit_andi(GuestImage *img, int rt, int rs, uint16_t imm)
+{
+    emit(img, MIPS_OPC_ANDI | (rs << 21) | (rt << 16) | imm);
+}
+
+static unsigned int soft_reset_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    unsigned int park_pc;
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+
+    img.pos = CODE_START;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_ld(&img, R_T0, R_T2, SOFT_READY_OFF);
+    emit_addiu(&img, R_T1, R_ZERO, READY_MAGIC);
+    emit_branch(&img, OPC_BNE, R_T0, R_T1, SOFT_SETUP);
+    emit_nop(&img);
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, SOFT_HANDLER);
+    emit_nop(&img);
+
+    img.pos = SOFT_SETUP;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_CONFIG);
+    emit_sd(&img, R_T0, R_T2, SOFT_INITIAL_CONFIG_OFF);
+    emit_andi(&img, R_T1, R_T0, 0xfff8);
+    emit_ori(&img, R_T1, R_T1, SOFT_CONFIG_K0);
+    emit_mtc0(&img, R_T1, CP0_CONFIG);
+    emit_mfc0(&img, R_T0, CP0_CONFIG);
+    emit_sd(&img, R_T0, R_T2, SOFT_EXPECT_CONFIG_OFF);
+
+    emit_li32(&img, R_T0, SOFT_WATCHLO);
+    emit_mtc0(&img, R_T0, CP0_WATCHLO);
+    emit_li32(&img, R_T0, SOFT_WATCHHI);
+    emit_mtc0(&img, R_T0, CP0_WATCHHI);
+    emit_mfc0(&img, R_T0, CP0_WATCHLO);
+    emit_sd(&img, R_T0, R_T2, SOFT_EXPECT_WATCHLO_OFF);
+    emit_mfc0(&img, R_T0, CP0_WATCHHI);
+    emit_sd(&img, R_T0, R_T2, SOFT_EXPECT_WATCHHI_OFF);
+
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_T2, SOFT_INITIAL_STATUS_OFF);
+    emit_li32(&img, R_T1, ~(STATUS_SR | STATUS_ERL | STATUS_BEV));
+    emit_and(&img, R_T1, R_T0, R_T1);
+    emit_li32(&img, R_T2, STATUS_NMI | STATUS_TS | STATUS_KX);
+    emit_or(&img, R_T1, R_T1, R_T2);
+    emit_mtc0(&img, R_T1, CP0_STATUS);
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_T2, SOFT_SEEDED_STATUS_OFF);
+
+    emit_addiu(&img, R_T0, R_ZERO, READY_MAGIC);
+    emit_sd(&img, R_T0, R_T2, SOFT_READY_OFF);
+    park_pc = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, park_pc);
+    emit_nop(&img);
+
+    img.pos = SOFT_HANDLER;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_sd(&img, R_T0, R_T2, SOFT_STATUS_OFF);
+    emit_mfc0(&img, R_T0, CP0_ERROREPC);
+    emit_sd(&img, R_T0, R_T2, SOFT_ERROREPC_OFF);
+    emit_mfc0(&img, R_T0, CP0_CONFIG);
+    emit_sd(&img, R_T0, R_T2, SOFT_CONFIG_OFF);
+    emit_mfc0(&img, R_T0, CP0_WATCHLO);
+    emit_sd(&img, R_T0, R_T2, SOFT_WATCHLO_OFF);
+    emit_mfc0(&img, R_T0, CP0_WATCHHI);
+    emit_sd(&img, R_T0, R_T2, SOFT_WATCHHI_OFF);
+    emit_addiu(&img, R_T0, R_ZERO, SOFT_DONE_MAGIC);
+    emit_sd(&img, R_T0, R_T2, SOFT_DONE_OFF);
+    emit(&img, OPC_ERET);
+    emit_nop(&img);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+    return park_pc;
+}
+
+static void test_r10k_soft_reset(gconstpointer opaque)
+{
+    const char *cpu = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint64_t status, config, watchlo, watchhi, error_epc;
+    uint64_t initial_config;
+    unsigned int park_pc;
+    int fd;
+
+    if (!qtest_has_accel("tcg") ||
+        !qtest_has_device("mips-cpu-exception-fixture")) {
+        g_test_skip("MIPS CPU exception fixture requires TCG");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-r10k-soft-reset-image-XXXXXX", &image,
+                         NULL);
+    g_assert_cmpint(fd, >=, 0);
+    park_pc = soft_reset_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+                      "-device mips-cpu-exception-fixture,id=reset-fixture,"
+                      "cpu-index=0 -no-reboot -no-shutdown", cpu, image);
+    unlink(image);
+    wait_for_state(qts, SOFT_READY_OFF, READY_MAGIC);
+    g_usleep(10 * POLL_INTERVAL_US);
+
+    qtest_set_irq_in(qts, "/machine/peripheral/reset-fixture", "soft-reset",
+                     0, 1);
+    qtest_set_irq_in(qts, "/machine/peripheral/reset-fixture", "soft-reset",
+                     0, 0);
+    wait_for_state(qts, SOFT_DONE_OFF, SOFT_DONE_MAGIC);
+
+    status = state_word(qts, SOFT_STATUS_OFF);
+    g_assert_cmphex(status & (STATUS_SR | STATUS_NMI | STATUS_ERL |
+                              STATUS_BEV | STATUS_TS),
+                    ==, STATUS_SR | STATUS_ERL | STATUS_BEV);
+    g_assert_cmphex(status & STATUS_KX, ==, STATUS_KX);
+    g_assert_cmphex(state_word(qts, SOFT_SEEDED_STATUS_OFF) & STATUS_KX,
+                    ==, STATUS_KX);
+    error_epc = state_word(qts, SOFT_ERROREPC_OFF);
+    g_assert_cmphex(error_epc, ==,
+                    0xffffffffbfc00000ULL + park_pc);
+
+    status = state_word(qts, SOFT_INITIAL_STATUS_OFF);
+    g_assert_cmphex(status & STATUS_KSU, ==, 0);
+    status = state_word(qts, SOFT_SEEDED_STATUS_OFF);
+    g_assert_cmphex(status & (STATUS_SR | STATUS_ERL | STATUS_BEV), ==, 0);
+    g_assert_cmphex(status & (STATUS_NMI | STATUS_TS), ==,
+                    STATUS_NMI | STATUS_TS);
+    g_assert_cmphex(status & STATUS_KSU, ==, 0);
+
+    config = state_word(qts, SOFT_CONFIG_OFF);
+    initial_config = state_word(qts, SOFT_INITIAL_CONFIG_OFF);
+    g_assert_cmphex(config, ==,
+                    state_word(qts, SOFT_EXPECT_CONFIG_OFF));
+    g_assert_cmphex(initial_config & 7, ==, 5);
+    g_assert_cmphex(config & 7, ==, SOFT_CONFIG_K0);
+    watchlo = state_word(qts, SOFT_WATCHLO_OFF);
+    watchhi = state_word(qts, SOFT_WATCHHI_OFF);
+    g_assert_cmphex(watchlo, ==,
+                    state_word(qts, SOFT_EXPECT_WATCHLO_OFF));
+    g_assert_cmphex(watchhi, ==,
+                    state_word(qts, SOFT_EXPECT_WATCHHI_OFF));
+    g_assert_cmphex(watchlo, ==, SOFT_WATCHLO);
+    g_assert_cmphex(watchhi, ==, SOFT_WATCHHI);
+    g_assert_cmphex(watchlo & 7, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void scache_write_guest_image(int fd)
 {
     uint8_t image[IMAGE_SIZE] = { };
@@ -2191,6 +2371,11 @@ int main(int argc, char **argv)
                    test_r10k_fpu_fast_path);
     qtest_add_func("/r10k/scache/reset-mode-capacity",
                    test_r10k_scache_reset_mode_capacity);
+    qtest_add_data_func("/r10k/soft-reset/retains-config-watch-state",
+                        "R10000,reset-mode=0x3a005",
+                        test_r10k_soft_reset);
+    qtest_add_data_func("/r16000/soft-reset/retains-config-watch-state",
+                        R16000_CPU, test_r10k_soft_reset);
     for (unsigned int i = 0; i < ARRAY_SIZE(scache_line_cases); i++) {
         g_test_add_data_func(scache_line_cases[i].path,
                              &scache_line_cases[i],

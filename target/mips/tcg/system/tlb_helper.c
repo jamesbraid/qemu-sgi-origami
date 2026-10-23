@@ -1477,8 +1477,11 @@ void mips_cpu_do_interrupt(CPUState *cs)
              */
             env->CP0_Status &= ~((1 << CP0St_NMI) | (1 << CP0St_TS));
         }
-        /* R10000 soft reset preserves CP0, including disabled watchpoints. */
-        if (strcmp(env->cpu_model->name, "R10000")) {
+        /*
+         * R10000 preserves WatchLo across Soft Reset. R16000 selects the
+         * same behavior as a compatibility policy.
+         */
+        if (!env->cfg.soft_reset_preserves_watch) {
             memset(env->CP0_WatchLo, 0, sizeof(env->CP0_WatchLo));
         }
         goto set_error_EPC;
