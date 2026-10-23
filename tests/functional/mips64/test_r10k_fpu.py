@@ -21,6 +21,7 @@ MAILBOX = 0x200000
 DESTINATION = 0x40400000
 FCSR_UNDERFLOW_ENABLED = 0x100
 FCSR_CAUSE_UNIMPLEMENTED = 1 << 17
+FCSR_FLUSH_SUBNORMAL = 1 << 24
 DONE_EXCEPTION = 1
 DONE_NO_EXCEPTION = 2
 
@@ -72,10 +73,10 @@ def fp_s(operation, destination, numerator, divisor):
             numerator << 11 | destination << 6 | operation)
 
 
-def rom(operation, numerator, divisor):
+def rom(operation, numerator, divisor, fcsr=FCSR_UNDERFLOW_ENABLED):
     code = constant(8, 0x20410080) + mtc0(8, 12)  # CU1, BEV, DE, KX
     code += [instruction(0x0f, 0, 16, 0xa020)]  # KSEG1 mailbox
-    code += constant(8, FCSR_UNDERFLOW_ENABLED) + [ctc1(8)]
+    code += constant(8, fcsr) + [ctc1(8)]
     code += constant(8, numerator) + [mtc1(8, 0)]
     code += constant(8, divisor) + [mtc1(8, 2)]
     code += constant(8, DESTINATION) + [mtc1(8, 4)]
@@ -103,9 +104,13 @@ def rom(operation, numerator, divisor):
 
 
 class R10KFPU(QemuSystemTest):
-    def check_vector(self, cpu, operation, numerator, divisor):
+    def check_vector(self, cpu, operation, numerator, divisor,
+                     flushed_result=None, flushed_fcsr=None):
         image = self.scratch_file(f'fpu-{cpu.split(",")[0]}.bin')
-        data, fault_pc = rom(operation, numerator, divisor)
+        fcsr = FCSR_UNDERFLOW_ENABLED
+        if flushed_result is not None:
+            fcsr |= FCSR_FLUSH_SUBNORMAL
+        data, fault_pc = rom(operation, numerator, divisor, fcsr)
         Path(image).write_bytes(data)
         vm = self.get_vm(name=cpu.split(',')[0])
         vm.set_machine('malta')
@@ -125,6 +130,12 @@ class R10KFPU(QemuSystemTest):
             if time.monotonic() >= deadline:
                 self.fail(f'FPU ROM did not complete: {output}')
             time.sleep(0.05)
+
+        if flushed_result is not None:
+            self.assertEqual(words[4], DONE_NO_EXCEPTION, output)
+            self.assertEqual(words[2], flushed_fcsr, output)
+            self.assertEqual(words[3], flushed_result, output)
+            return
 
         self.assertEqual(words[4], DONE_EXCEPTION, output)
         self.assertEqual((words[0] >> 2) & 0x1f, 15, output)
@@ -152,11 +163,26 @@ class R10KFPU(QemuSystemTest):
     def test_r12000_add_subnormal_input(self):
         self.check_vector(R12000, 0, 0x3f800000, 0x00000001)
 
+    def test_r16000_add_subnormal_input(self):
+        self.check_vector(R16000, 0, 0x3f800000, 0x00000001)
+
     def test_r10000_div_subnormal_input(self):
         self.check_vector('R10000', 3, 0, 0x00000001)
 
     def test_r12000_div_subnormal_input(self):
         self.check_vector(R12000, 3, 0, 0x00000001)
+
+    def test_r16000_div_subnormal_input(self):
+        self.check_vector(R16000, 3, 0, 0x00000001)
+
+    def test_r16000_add_subnormal_input_fs(self):
+        self.check_vector(R16000, 0, 0x3f800000, 0x00000001,
+                          flushed_result=0x3f800000,
+                          flushed_fcsr=0x01001104)
+
+    def test_r16000_div_subnormal_input_fs(self):
+        self.check_vector(R16000, 3, 0, 0x00000001,
+                          flushed_result=0, flushed_fcsr=0x01000100)
 
 
 if __name__ == '__main__':

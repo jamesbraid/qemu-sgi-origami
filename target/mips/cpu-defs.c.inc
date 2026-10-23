@@ -948,6 +948,7 @@ const mips_def_t mips_defs[] =
             .exception_breaks_ll_link = true,
             .lladdr_is_scratch = true,
             .fp_traps_denormal_result = true,
+            .fp_traps_denormal_input = true,
             .fp_cvt_l_limited_to_51_bits = true,
             .stores_are_posted = true,
             .has_cache_diagnostics = true,
