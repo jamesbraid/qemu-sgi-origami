@@ -28,6 +28,7 @@ struct SGIMACEEthState {
     uint16_t tx_write;
     uint8_t tx_reinit_seen;
     bool tx_stopped;
+    bool rx_stopped;
     uint8_t rx_reinit_seen;
     uint32_t rx_fifo[16];
     uint8_t rx_read;
