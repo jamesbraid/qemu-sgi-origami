@@ -145,10 +145,12 @@ const SN0ModelMemory sn0_hub_memory = {
     .supported_mib = sn0_hub_memory_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_hub_memory_sizes_mib),
     /*
-     * Not 512: the PROM tests RAM under the boot flash's reset address,
-     * which a 512 MiB bank 0 would put behind the flash overlay.
+     * A 512 MiB bank 0 reaches the boot flash's reset address; QEMU builds
+     * one only for the totals that need it (1024, 1536 and 2048 MiB), so
+     * every smaller total keeps the layout it always had.
      */
-    .first_bank_max_mib = 0x80ULL,
+    .first_bank_preferred_mib = 0x80ULL,
+    .first_bank_max_mib = 0x200ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
     .interleave_slots_per_bank = 4,
@@ -162,7 +164,8 @@ const SN0ModelMemory sn0_hub_memory_256mb = {
     .supported_mib = sn0_hub_memory_256mb_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_hub_memory_256mb_sizes_mib),
     /* A 256 MiB bank 0 ends well below the boot flash's reset address. */
-    .first_bank_max_mib = 0x100ULL,
+    .first_bank_preferred_mib = 0x100ULL,
+    .first_bank_max_mib = 0x200ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
     .interleave_slots_per_bank = 4,
@@ -197,6 +200,7 @@ const SN0ModelMemory sn0_ip27_memory = {
     .architectural_banks = 8,
     .supported_mib = sn0_ip27_memory_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_ip27_memory_sizes_mib),
+    .first_bank_preferred_mib = 0x100ULL,
     .first_bank_max_mib = 0x100ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
@@ -240,6 +244,7 @@ uint64_t sn0_model_region_address(const SN0ModelAddressMap *map,
 }
 
 static bool sn0_model_layout_from(const SN0ModelMemory *memory,
+                                  uint64_t first_bank_max_mib,
                                   uint64_t remaining_mb, unsigned int bank,
                                   uint16_t *bank_mb)
 {
@@ -256,12 +261,13 @@ static bool sn0_model_layout_from(const SN0ModelMemory *memory,
          size_index++) {
         uint64_t size_mb = memory->supported_mib[size_index];
 
-        if ((bank == 0 && size_mb > memory->first_bank_max_mib) ||
+        if ((bank == 0 && size_mb > first_bank_max_mib) ||
             size_mb > remaining_mb) {
             continue;
         }
         bank_mb[bank] = size_mb;
-        if (sn0_model_layout_from(memory, remaining_mb - size_mb, bank + 1,
+        if (sn0_model_layout_from(memory, first_bank_max_mib,
+                                  remaining_mb - size_mb, bank + 1,
                                   bank_mb)) {
             return true;
         }
@@ -277,8 +283,13 @@ bool sn0_model_memory_layout(const SN0ModelMemory *memory, uint64_t ram_size,
     unsigned int bank;
 
     memset(bank_mb, 0, sizeof(*bank_mb) * memory->architectural_banks);
-    if (ram_size == 0 || ram_size % MiB != 0 ||
-        !sn0_model_layout_from(memory, ram_size / MiB, 0, bank_mb)) {
+    if (ram_size == 0 || ram_size % MiB != 0) {
+        return false;
+    }
+    if (!sn0_model_layout_from(memory, memory->first_bank_preferred_mib,
+                               ram_size / MiB, 0, bank_mb) &&
+        !sn0_model_layout_from(memory, memory->first_bank_max_mib,
+                               ram_size / MiB, 0, bank_mb)) {
         return false;
     }
 
@@ -954,6 +965,62 @@ static void sn0_node_map_memory(SN0NodeState *node)
     }
 }
 
+/* Whether bank 0 holds RAM at the boot flash's reset address. */
+static bool sn0_node_bank0_reaches_flash(const SN0NodeState *node)
+{
+    const SN0ModelAddressMap *map = sn0_node_address_map();
+
+    return node->populated_banks > 0 &&
+           (uint64_t)node->bank_mb[0] * MiB > map->flash_reset.offset;
+}
+
+/*
+ * A 512 MB bank 0 covers the boot flash's reset address. Real machines run
+ * with one, and the stock PROM's memory test covers that offset through the
+ * cached space and reports a miscompare there when it reads flash, while the
+ * reset fetch through the compatibility segment is an uncached memory
+ * reference that must reach the flash. So a cached processor reference
+ * reaches the bank and an uncached one the flash: each processor's uncached
+ * space alone keeps the flash, at the node-less address the reset vector
+ * names and at this node's own.
+ *
+ * Model choices, with the hardware behaviour unknown: devices (inbound DMA,
+ * the block transfer engines) reach the bank, and so does an uncached
+ * reference from another node. The node-less alias always names the
+ * reader's own flash, where with a smaller bank 0 the claim layer routes
+ * that address to whichever node holds number 0.
+ */
+static void sn0_node_map_flash_reset_uncached(SN0NodeState *node,
+                                              MemoryRegion *chip)
+{
+    const SN0ModelAddressMap *map = sn0_node_address_map();
+    const SN0ModelRegion *flash_reset = &map->flash_reset;
+    hwaddr own = sn0_model_node_address(map, &map->memory, node->nasid,
+                                        flash_reset->offset);
+    hwaddr nodeless = sn0_model_node_address(map, &map->memory, 0,
+                                             flash_reset->offset);
+    unsigned int slice, view;
+
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        for (view = 0; view < 2; view++) {
+            hwaddr addr = view ? own : nodeless;
+            g_autofree char *name = g_strdup_printf(
+                "sn0.node%u.cpu%u.flash.reset.uncached%u", node->nasid,
+                slice, view);
+
+            if (view && own == nodeless) {
+                break;
+            }
+            memory_region_init_alias(&node->flash_reset_uncached[slice][view],
+                                     OBJECT(node), name, chip, 0,
+                                     flash_reset->size);
+            memory_region_add_subregion_overlap(
+                &node->cpu_uncached[slice], addr,
+                &node->flash_reset_uncached[slice][view], 1);
+        }
+    }
+}
+
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     const SN0ModelAddressMap *map = sn0_node_address_map();
@@ -1043,13 +1110,18 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     /*
      * The reset-vector view aliases the flash chip directly. Writes through
      * it land on the chip's byte decode, not the controller's strided command
-     * port. It overlaps RAM and wins.
+     * port. Where bank 0 is too small to reach it, it overlaps whatever is
+     * there and wins.
      */
-    memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
-                             reset_name, chip, 0, flash_reset->size);
-    memory_region_add_subregion_overlap(system,
-                                        node_base + flash_reset->offset,
-                                        &node->flash_reset_view, 1);
+    if (sn0_node_bank0_reaches_flash(node)) {
+        sn0_node_map_flash_reset_uncached(node, chip);
+    } else {
+        memory_region_init_alias(&node->flash_reset_view, OBJECT(node),
+                                 reset_name, chip, 0, flash_reset->size);
+        memory_region_add_subregion_overlap(system,
+                                            node_base + flash_reset->offset,
+                                            &node->flash_reset_view, 1);
+    }
 
     /* RBOOT is a maintenance path, never a fetch path: no romd overlay. */
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),

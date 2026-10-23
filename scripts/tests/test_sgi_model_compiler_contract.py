@@ -3222,7 +3222,7 @@ class OriginTwoHundredMatchesTheHandWrittenEntryTests(unittest.TestCase):
         self.assertEqual(node["bank_mib"], [64, 0, 0, 0, 0, 0, 0, 0])
         self.assertEqual(node["accepted_memory_mib"], [
             64, 128, 192, 256, 320, 384, 448, 512, 576, 640, 704, 768, 832,
-            896, 1088, 1152, 1216, 1280, 1600, 1664])
+            896, 1024, 1088, 1152, 1216, 1280, 1536, 1600, 1664, 2048])
 
     def test_flash(self):
         self.assertEqual(
@@ -3761,18 +3761,20 @@ class CatalogueJsonTests(unittest.TestCase):
         )
 
     def test_origin_200_memory_follows_the_processor_clock(self):
-        # 256 MB banks, and with them 1024 and 1792 MiB, only where the
-        # PROM keeps them: not at 180 MHz, whatever the cache.
+        # 256 MB banks, and with them 960 and 1792 MiB, only where the
+        # PROM keeps them: not at 180 MHz, whatever the cache. Four
+        # 512 MB banks make 2048 MiB at every clock.
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
         accepted = {o["processor"]["id"]: o["memory-per-node-mib"]["accepted"]
                     for o in catalogue["offerings"]}
         for slow in ("r10000-180mhz-1mb", "r10000-180mhz-2mb"):
-            self.assertNotIn(1024, accepted[slow])
-            self.assertEqual(max(accepted[slow]), 1664)
+            self.assertNotIn(960, accepted[slow])
+            self.assertNotIn(1792, accepted[slow])
+            self.assertEqual(max(accepted[slow]), 2048)
         for fast in ("r10000-225mhz-2mb", "r12000-270mhz-4mb"):
-            self.assertIn(1024, accepted[fast])
-            self.assertEqual(max(accepted[fast]), 1792)
-            self.assertNotIn(2048, accepted[fast])
+            self.assertIn(960, accepted[fast])
+            self.assertIn(1792, accepted[fast])
+            self.assertEqual(max(accepted[fast]), 2048)
 
     def test_origin_200_processor_options_carry_each_mode_word(self):
         # Expected words assembled by hand from the SysAD fields: tap,
