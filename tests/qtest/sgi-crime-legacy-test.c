@@ -877,13 +877,356 @@ static void test_feature_mismatch(gconstpointer data)
     }
 }
 
+#define RENDERER 0x15000000ULL
+#define LINEAR_TLB (RENDERER + 0x1700)
+#define TRANSFER (RENDERER + 0x3000)
+
+static void assert_run_status(QTestState *s, const char *expected)
+{
+    g_autoptr(QDict) status =
+        qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, expected);
+}
+
+static void seed_renderer_state(QTestState *s)
+{
+    const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
+
+    qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+    qtest_writeq(s, BASE + 0x18, 1U << 4);
+    cause(s, 4, 1);
+    for (unsigned i = 0; i < 32; i++) {
+        qtest_writeq(s, LINEAR_TLB + 8 * i, 0x8000000380000009ULL + i);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(parameters); i++) {
+        qtest_writel(s, TRANSFER + parameters[i], 0x12340000 + i);
+    }
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-address','value':305419896}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-status','value':5}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-address','value':124076833}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-status','value':234881024}}");
+    qtest_writel(s, TRANSFER + 0x30, 7);
+    qtest_writel(s, TRANSFER + 0x38, 15);
+    qtest_memset(s, 0x3000, 0x5a, 64);
+}
+
+static void assert_renderer_state(QTestState *s)
+{
+    const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
+
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmphex(qtest_readq(s, LINEAR_TLB + 8 * i),
+                        ==, 0x8000000380000009ULL + i);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(parameters); i++) {
+        g_assert_cmphex(qtest_readl(s, TRANSFER + parameters[i]),
+                        ==, 0x12340000 + i);
+    }
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmphex(qtest_readb(s, 0x3000 + i), ==, 0x5a);
+    }
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x40), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x48), ==, 5);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 7U << 25);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x7654321);
+    assert_outputs(s, 1);
+}
+
+typedef struct RendererAccess {
+    unsigned offset;
+    unsigned size;
+    bool write;
+} RendererAccess;
+
+/* A valid clear exposes any change to the two write-only bounds. */
+static void assert_renderer_bounds(QTestState *s)
+{
+    qtest_writel(s, TRANSFER + 8, UINT32_MAX);
+    qtest_writel(s, TRANSFER + 0x18, 0x6b);
+    g_assert_cmpint(memtx_writel(s, TRANSFER + 0x800, 4U << 2), ==, MEMTX_OK);
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmphex(qtest_readb(s, 0x3000 + i),
+                        ==, i >= 7 && i <= 15 ? 0x6b : 0x5a);
+    }
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+}
+
+static void test_renderer_refusal(void)
+{
+    const RendererAccess accesses[] = {
+        { 0x408, 4, true }, { 0x600, 8, true },
+        { 0x2080, 8, true }, { 0x2081, 4, true },
+        { 0x2080, 4, false }, { 0x20d0, 1, true },
+        { 0x2400, 4, true }, { 0x400, 4, false },
+        { 0x21f0, 4, false }, { 0x21f8, 4, false },
+        { 0x16fc, 4, true }, { 0x27fc, 4, true },
+        { 0x3080, 4, true }, { 0x37fc, 4, true },
+    };
+    g_autofree char *directory = g_dir_make_tmp("crime-renderer-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-crime.functional-memory-transfer=on -D %s "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH, path);
+    QTestState *s = start_profile(true, options);
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned count = 0;
+
+    seed_renderer_state(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
+        const RendererAccess *a = &accesses[i];
+        uint64_t value;
+        MemTxResult result = a->write ?
+            memtx_write(s, RENDERER + a->offset, 0x12345678, a->size) :
+            memtx_read(s, RENDERER + a->offset, &value, a->size);
+
+        g_assert_cmpint(result, ==, MEMTX_ERROR);
+        assert_run_status(s, "running");
+        assert_renderer_state(s);
+    }
+    assert_renderer_bounds(s);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const RendererAccess *a;
+        g_autofree char *address = NULL;
+        g_autofree char *width = NULL;
+
+        if (!strstr(lines[i], "sgi-crime: unsupported renderer")) {
+            continue;
+        }
+        g_assert_cmpuint(count, <, ARRAY_SIZE(accesses));
+        a = &accesses[count++];
+        address = g_strdup_printf("0x%" PRIx64,
+                                  (uint64_t)(RENDERER + a->offset));
+        width = g_strdup_printf("%u-byte", a->size);
+        g_assert_nonnull(strstr(lines[i], address));
+        g_assert_nonnull(strstr(lines[i], width));
+        g_assert_nonnull(strstr(lines[i], a->write ? "write" : "read"));
+        if (a->write) {
+            g_autofree char *supplied = g_strdup_printf("value 0x%x",
+                a->size == 1 ? 0x78 : 0x12345678);
+
+            g_assert_nonnull(strstr(lines[i], supplied));
+        }
+    }
+    g_assert_cmpuint(count, ==, ARRAY_SIZE(accesses));
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
+static void check_renderer_hard_stop(const RendererAccess *a)
+{
+    QTestState *s = start_profile(true,
+        "-global sgi-crime.functional-memory-transfer=on "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+    uint64_t value;
+    MemTxResult result;
+
+    seed_renderer_state(s);
+    g_test_message("renderer %u-byte %s at +0x%x", a->size,
+                   a->write ? "write" : "read", a->offset);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    result = a->write ?
+        memtx_write(s, RENDERER + a->offset, 0x12345678, a->size) :
+        memtx_read(s, RENDERER + a->offset, &value, a->size);
+    g_assert_cmpint(result, ==, MEMTX_ERROR);
+    assert_stopped(s);
+    assert_renderer_state(s);
+    assert_renderer_bounds(s);
+    qtest_quit(s);
+}
+
+static void test_renderer_hard_stop(void)
+{
+    const RendererAccess accesses[] = {
+        { 0x400, 4, true }, { 0x2880, 4, true },
+        { 0x21f0, 4, true }, { 0x21f8, 4, true },
+        { 0x3070, 4, true }, { 0x3078, 4, true },
+        { 0x3808, 4, true }, { 0x3800, 4, true },
+        { 0x3838, 4, true },
+        { 0x3000, 8, true }, { 0x3001, 4, true },
+        { 0x1700, 4, true }, { 0x16ff, 4, true },
+        { 0x3030, 4, false }, { 0x4000, 4, true },
+        { 0x2fff, 8, true }, { 0x3fff, 8, true },
+        { 0x287f, 4, true }, { 0x3ff, 2, true },
+        { 0x5000, 4, true }, { 0x4fff, 2, true },
+        { 0x4ff8, 8, true }, { 0x4004, 4, false },
+        { 0x3010, 1, true }, { 0x3050, 4, true },
+        { 0x3810, 4, true }, { 0x3818, 4, true },
+        { 0x3820, 4, true }, { 0x3828, 4, true },
+        { 0x3830, 4, true }, { 0x3840, 4, true },
+        { 0x3848, 4, true }, { 0x281c, 8, true },
+        { 0x3804, 8, true }, { 0x3fc, 8, true },
+        { 0x2804, 4, true }, { 0x29f0, 4, true },
+        { 0x29f8, 4, true }, { 0x3870, 4, true },
+        { 0x3878, 4, true }, { 0x2ffc, 4, true },
+        { 0x2880, 4, false }, { 0x3808, 4, false },
+        { 0x3800, 4, false }, { 0x3838, 4, false },
+        { 0x2804, 4, false }, { 0x29f0, 4, false },
+        { 0x3870, 4, false },
+        { 0x27ff, 2, true }, { 0x37ff, 2, true },
+    };
+    const unsigned pixel_go[] = {
+        0x000, 0x008, 0x010, 0x018, 0x020, 0x028, 0x030, 0x038,
+        0x040, 0x048, 0x050, 0x058, 0x060, 0x070, 0x074, 0x078,
+        0x080, 0x084, 0x088, 0x08c, 0x090, 0x094, 0x0a0, 0x0a8,
+        0x0ac, 0x0b0, 0x0b4, 0x0c0, 0x0c4, 0x0d0, 0x0d8, 0x0e0,
+        0x0e4, 0x0e8, 0x0ec, 0x0f0, 0x0f4, 0x0f8, 0x0fc, 0x100,
+        0x104, 0x108, 0x10c, 0x110, 0x118, 0x120, 0x128, 0x130,
+        0x138, 0x140, 0x148, 0x150, 0x158, 0x15c, 0x160, 0x168,
+        0x170, 0x178, 0x180, 0x188, 0x190, 0x194, 0x198, 0x1a0,
+        0x1a8, 0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0,
+        0x1e8,
+    };
+    const unsigned pixel_wide[] = {
+        0x020, 0x028, 0x030, 0x038, 0x040, 0x048, 0x118, 0x120,
+        0x128, 0x138, 0x140, 0x148, 0x150, 0x1c8, 0x1d0, 0x1d8,
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
+        check_renderer_hard_stop(&accesses[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(pixel_go); i++) {
+        RendererAccess a = { .offset = 0x2800 + pixel_go[i],
+                             .size = 4, .write = true };
+
+        for (unsigned j = 0; j < ARRAY_SIZE(pixel_wide); j++) {
+            if (pixel_go[i] == pixel_wide[j]) {
+                a.size = 8;
+            }
+        }
+        check_renderer_hard_stop(&a);
+    }
+}
+
+static void test_renderer_profile_policy(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            QTestState *s = start_profile(legacy, functional ?
+                "-global sgi-crime.functional-memory-transfer=on" : "");
+
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x408, 0),
+                            ==, MEMTX_ERROR);
+            assert_run_status(s, legacy != functional ?
+                              "internal-error" : "running");
+            qtest_quit(s);
+        }
+    }
+}
+
+static void test_renderer_cpu(gconstpointer data)
+{
+    unsigned kind = GPOINTER_TO_UINT(data);
+    bool read = kind == 1;
+    bool hard = kind >= 2;
+    unsigned offset = kind == 2 ? 0x400 : kind == 3 ? 0x2880 :
+                      kind == 4 ? 0x3000 : 0x408;
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-render-cpu-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *contents = NULL;
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE
+        "-M o2-test,crime-profile=legacy-software,"
+        "bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
+        "functional-memory-transfer=on -cpu R10000 -m 1G -nodefaults "
+        "-accel tcg,thread=single -S -d unimp,guest_errors -D %s "
+        "-device loader,addr=0xffffffffa0001000,cpu-num=0", path);
+    uint32_t instructions[] = {
+        mips_mtc0(0, 12), 0, 0, 0, 0,
+        mips_lui(8, 0xb500), mips_lui(10, 0xa000),
+        mips_addiu(9, 0, 0x55),
+        read ? mips_lw(11, 8, offset) : kind == 4 ?
+            mips_sd(9, 8, offset) : mips_sw(9, 8, offset),
+        mips_sw(9, 10, 0x200), mips_branch(MIPS_OPC_BEQ, 0, 0, -1), 0,
+    };
+    uint32_t handler[] = {
+        mips_lui(10, 0xa000), mips_mfc0(11, 13), mips_sw(11, 10, 0x210),
+        mips_mfc0(11, 14), mips_sw(11, 10, 0x218),
+        mips_addiu(11, 0, 0x66), mips_sw(11, 10, 0x220),
+        mips_branch(MIPS_OPC_BEQ, 0, 0, -1), 0,
+    };
+    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(instructions); i++) {
+        qtest_writel(s, 0x1000 + 4 * i, instructions[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(handler); i++) {
+        qtest_writel(s, 0x180 + 4 * i, handler[i]);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    for (;;) {
+        g_autoptr(QDict) status =
+            qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+
+        if (!strcmp(qdict_get_str(status, "status"), "internal-error")) {
+            g_assert_true(hard);
+            break;
+        }
+        if (qtest_readl(s, read ? 0x220 : 0x200)) {
+            g_assert_false(hard);
+            break;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    if (hard) {
+        assert_stopped(s);
+    } else {
+        assert_run_status(s, "running");
+    }
+    g_assert_cmphex(qtest_readl(s, 0x200), ==, !hard && !read ? 0x55 : 0);
+    g_assert_cmphex(qtest_readl(s, 0x220), ==, read ? 0x66 : 0);
+    if (read) {
+        g_assert_cmphex(qtest_readl(s, 0x210) & 0x7c, ==, 7 << 2);
+        g_assert_cmphex(qtest_readl(s, 0x218), ==, 0xa0001020);
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    if (!hard) {
+        g_assert_nonnull(strstr(contents, "sgi-crime: unsupported renderer"));
+        g_assert_nonnull(strstr(contents, "0x15000408"));
+    }
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
 int main(int argc, char **argv)
 {
     const char *faults[] = {
         "missing-section", "profile-id", "functional-policy", "latch-mask",
         "cpu-error", "memory-address", "hardware", "timer-fraction", "version",
     };
+    const char *renderer_cpu[] = {
+        "posted-store", "read-bus-error", "control-stop", "go-stop",
+        "malformed-stop",
+    };
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/crime/renderer/refusal", test_renderer_refusal);
+    qtest_add_func("/sgi/crime/renderer/hard-stop", test_renderer_hard_stop);
+    qtest_add_func("/sgi/crime/renderer/profiles",
+                   test_renderer_profile_policy);
+    for (unsigned i = 0; i < ARRAY_SIZE(renderer_cpu); i++) {
+        g_autofree char *name = g_strdup_printf("/sgi/crime/renderer/cpu/%s",
+                                               renderer_cpu[i]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(i), test_renderer_cpu);
+    }
     qtest_add_func("/sgi/crime/legacy/identity", test_identity);
     qtest_add_func("/sgi/crime/legacy/controls", test_controls);
     qtest_add_func("/sgi/crime/legacy/error-enable-zero",
