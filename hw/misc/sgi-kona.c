@@ -2365,6 +2365,13 @@ static const struct {
  * the driver keeps from its own one-wire reading whatever the pipe sends.
  * The pixel depth stays small (0) and the size 1280x1024: they follow the
  * video format combination, and the model draws only that one.
+ *
+ * Approximated: the channel count reported here (two, or eight for
+ * 030-1087-001) is presentation only. The video commands, the cursor and
+ * the gamma maps model channel 0 alone: GetBoardConfig answers the same
+ * single-channel reply as an unconfigured pipe, and GetChannelConfig or
+ * command 0x15 for any other channel is logged and answered with nothing
+ * (sgi_kona_video_complete()). Only channel 0 scans out.
  */
 #define SGI_KONA_CFG_BOARD_SET      0x00
 #define SGI_KONA_CFG_ENGINES        0x04
