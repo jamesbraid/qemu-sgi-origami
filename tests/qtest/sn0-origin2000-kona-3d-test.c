@@ -1907,8 +1907,14 @@ static void test_read_visual_records(void)
     assert_read_colour(qts, 0x0000ff);
 }
 
-/* The existing PROM/GL discriminator does not frame level 1 as GL data. */
-static void test_read_ambiguous_level_preserves_source(void)
+/*
+ * While a context is current, 1 1 a b with b not 1 is a buffer
+ * configuration at level 1, an overlay visual, not textport command 1:
+ * the whole record frames, nothing is read as textport, and the stream
+ * stays in step. The model does not draw a level-1 RGB visual, and
+ * refuses reads from it.
+ */
+static void test_read_overlay_level_config(void)
 {
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
@@ -1916,13 +1922,66 @@ static void test_read_ambiguous_level_preserves_source(void)
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 1);
     kona_command(s, 1, (uint32_t[]){ 1, 12, 0, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    kona_command(s, 4, (uint32_t[]){ 1, 12, 0, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    assert_source_refused(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found,
+                    "sgi_kona_gl_buffer_config token 0x1 "), ==, 2);
+    g_assert_nonnull(strstr(found, "visual at level 1"));
+    g_assert_null(strstr(found, "textport expected a sync word"));
+}
+
+/*
+ * The kernel's kona_unblank sends textport command 1 as 1 1 0
+ * (kona_tport.o 0x688-0x690), and every kernel textport packet after it
+ * opens with the sync word. With a context still current, 1 1 0 then
+ * 1 9 0 must be textport command 1 and the sync probe, not a buffer
+ * configuration that swallows the probe; the context's configuration
+ * and read source are as they were.
+ */
+static void test_read_unblank_keeps_source(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    qtest_writel(s, REG_COMMAND, 1);
+    qtest_writel(s, REG_COMMAND, 1);
+    qtest_writel(s, REG_COMMAND, 0);
+    assert_textport_in_step(s);
     assert_read_buffer(s, 0x404);
     assert_read_colour(s, 0x0000ff);
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found,
                     "sgi_kona_gl_buffer_config token 0x1 "), ==, 1);
-    g_assert_nonnull(strstr(found, "textport expected a sync word"));
+    g_assert_null(strstr(found, "visual at level 1"));
+    g_assert_null(strstr(found, "textport expected a sync word"));
+}
+
+/*
+ * With no context current after the GL grammar began, 1 1 is the
+ * textport's command 1 at once: its argument is taken, and the sync
+ * probe after it is answered.
+ */
+static void test_textport_one_without_context(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command_kicked(s, 0x1fc, (uint32_t[]){ 1 }, 1);
+    qtest_writel(s, REG_COMMAND, 1);
+    qtest_writel(s, REG_COMMAND, 1);
+    qtest_writel(s, REG_COMMAND, 0);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found,
+                    "sgi_kona_gl_buffer_config token 0x1 "), ==, 1);
+    g_assert_null(strstr(found, "textport expected a sync word"));
 }
 
 /* A slot command aborts partial GL framing, preserving complete records. */
@@ -17423,8 +17482,12 @@ int main(int argc, char **argv)
              test_read_pixels_capacity);
     add_case("sn0/origin2000/kona-3d/read-visual-records",
              test_read_visual_records);
-    add_case("sn0/origin2000/kona-3d/read-ambiguous-level",
-             test_read_ambiguous_level_preserves_source);
+    add_case("sn0/origin2000/kona-3d/read-overlay-level-config",
+             test_read_overlay_level_config);
+    add_case("sn0/origin2000/kona-3d/read-unblank-keeps-source",
+             test_read_unblank_keeps_source);
+    add_case("sn0/origin2000/kona-3d/textport-one-without-context",
+             test_textport_one_without_context);
     add_case("sn0/origin2000/kona-3d/read-partial-records",
              test_read_partial_records);
     add_case("sn0/origin2000/kona-3d/read-reply-order",

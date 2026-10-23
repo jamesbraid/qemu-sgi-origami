@@ -960,6 +960,8 @@ typedef struct SGIKonaSavedInput {
     SGIKonaSavedPort kernel_port;
     bool textport_expect_sync;
     bool gl_sync_held;
+    uint8_t gl_level1_held;
+    uint32_t gl_level1_arg;
     uint32_t gl_token_high;
     bool video_open;
     uint32_t video_command;
@@ -1181,12 +1183,18 @@ struct SGIKonaState {
      * reset. gl_sync_held says a 1 arrived between packets in that
      * grammar, and the next word decides whether it was the textport's
      * sync word or the buffer configuration. See sgi_kona_textport_push().
+     * gl_level1_held counts the words after a held 1 followed by another
+     * 1 while a context is current: 1 once that second 1 arrived, 2 once
+     * gl_level1_arg, the word after it, did. The next word decides
+     * between textport command 1 and a level-1 buffer configuration.
      * gl_token_high is the top half of the word that opened the GL
      * command being framed, the data of a packed attribute form.
      */
     SGICommandPort gl_port;
     bool gl_grammar;
     bool gl_sync_held;
+    uint8_t gl_level1_held;
+    uint32_t gl_level1_arg;
     uint32_t gl_token_high;
     bool reason_page_valid;
     uint64_t reason_page;

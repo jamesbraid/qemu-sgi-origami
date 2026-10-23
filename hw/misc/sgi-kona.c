@@ -3599,6 +3599,43 @@ static const SGIRasterRules sgi_kona_gl_rules = {
 };
 
 /*
+ * The first overlay planes as a GL colour target, beside the colour
+ * banks' plane ids: the target of a context whose visual is an overlay
+ * one (sgi_kona_gl_overlay_config()). Its indices are stored in the
+ * desktop's first overlay plane, which the X server's overlay GC writes
+ * and the scanout shows through display-ID map entry 0x40 with index 0
+ * transparent (sgi_kona_desktop_compose()).
+ */
+#define SGI_KONA_GL_OVERLAY_TARGET 0x100
+
+/*
+ * A buffer configuration for an overlay visual: level 1, colour index
+ * of 2, 4 or 8 bits, single-buffered, nothing else.
+ *
+ * Established: the IRIX 6.5.30 n32 libGLcore.so's configuration routine
+ * (0xd949e50-0xd949f18) sends the context's level, its word 0xce4 (the
+ * library's GLDEBUG print names it "lvl"), as the first word, and
+ * SceneViewer's logo context sent 1 0 8 0 0 0 0 0 0 0 (run
+ * irix-20261023T111222-0467d9), whose window the kernel then placed with
+ * display ID 0x44, an overlay ID. Inferred: that level 1 draws into the
+ * overlay planes the X server's overlay visuals use, the planes at the
+ * same level; the 2-, 4- and 8-bit sizes are those visuals' depths
+ * (konavis.so's small visual table). Only 8 bits has been seen from a GL
+ * client. A double-buffered overlay, an RGB one and level 2 (the popup
+ * planes) are not modelled: such a context draws nothing.
+ */
+static bool sgi_kona_gl_overlay_config(const uint32_t *v)
+{
+    return v[0] == 1 && !v[1] && (v[2] == 2 || v[2] == 4 || v[2] == 8) &&
+           !v[3] && !v[4] && !v[5] && !v[6] && !v[7] && !v[8] && !v[9];
+}
+
+static const SGIPlane *sgi_kona_overlay_plane(SGIKonaState *s)
+{
+    return sgi_board_memory_plane(&s->desktop_mem, 1);
+}
+
+/*
  * The colour targets a drawable names are colour bank plane ids. A GL
  * pixel is direct colour, so its tag is too, and the scanout shows its
  * word as stored. Any other target, such as the back buffer of a
@@ -3638,6 +3675,11 @@ static void sgi_kona_gl_store_colour(void *opaque, SGIColourTarget target,
     int bank = sgi_kona_target_bank(s, target);
     const SGIPlane *p;
 
+    if (target == SGI_KONA_GL_OVERLAY_TARGET) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: direct colour into the overlay "
+                      "planes is not modelled; fragment dropped\n");
+        return;
+    }
     if (bank < 0 || !sgi_kona_gl_pixel_owned(s, x, y)) {
         return;
     }
@@ -3659,6 +3701,24 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
     const SGIPlane *p;
     uint32_t old, shift;
 
+    if (target == SGI_KONA_GL_OVERLAY_TARGET) {
+        /*
+         * An overlay index sits in the plane word's low bits, as the X
+         * server's overlay GC writes it; bits above the visual's depth
+         * are left alone.
+         */
+        mask &= (1u << bits) - 1;
+        if (!bits || !mask || !sgi_kona_gl_pixel_owned(s, x, y)) {
+            return;
+        }
+        p = sgi_kona_overlay_plane(s);
+        old = sgi_plane_load(&s->desktop_mem, p, x, y);
+        sgi_plane_store(&s->desktop_mem, p, x, y,
+                        (old & ~mask) | (index & mask));
+        s->desktop_state_used = true;
+        sgi_scanout_invalidate_plane(&s->scanout, p, y, y);
+        return;
+    }
     if (bank < 0 || (bits != 8 && bits != 12) ||
         !sgi_kona_gl_pixel_owned(s, x, y)) {
         return;
@@ -3684,6 +3744,13 @@ static uint32_t sgi_kona_gl_load_colour(void *opaque, SGIColourTarget target,
     SGIKonaState *s = opaque;
     int bank = sgi_kona_target_bank(s, target);
 
+    if (target == SGI_KONA_GL_OVERLAY_TARGET) {
+        uint32_t bits = s->context_current == SGI_KONA_CONTEXT_NONE ? 0 :
+                        s->state[s->context_current]->gl.cur.index_bits;
+
+        return sgi_plane_load(&s->desktop_mem, sgi_kona_overlay_plane(s),
+                              x, y) & ((1u << bits) - 1);
+    }
     if (bank >= 0 && s->context_current != SGI_KONA_CONTEXT_NONE) {
         uint32_t bits = s->state[s->context_current]->gl.cur.index_bits;
 
@@ -5377,6 +5444,7 @@ static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
 static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
 {
     SGIKonaGLWindow *w = &s->state[i]->window;
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
     unsigned front = w->double_buffered ? w->displayed_bank : 0;
     SGIGLDrawable d = {
         .bound = w->placed,
@@ -5386,6 +5454,13 @@ static void sgi_kona_gl_set_drawable(SGIKonaState *s, unsigned i)
                                      SGI_PLANE_NONE,
     };
     SGIClipRect r;
+
+    /* A visual above the main planes draws into its level's planes. */
+    if (p->draw_config_received && p->draw_config[0]) {
+        d.front = sgi_kona_gl_overlay_config(p->draw_config) ?
+                  SGI_KONA_GL_OVERLAY_TARGET : SGI_PLANE_NONE;
+        d.back = SGI_PLANE_NONE;
+    }
 
     w->owned_generation = s->display_id_generation;
     w->owned_by_pixel = false;
@@ -5599,7 +5674,14 @@ static void sgi_kona_gl_buffer_config(SGIKonaState *s, const uint32_t *args)
     }
     sgi_kona_gl_config(&s->state[i]->pipe, false, args);
     sgi_gl_set_index_mode(&s->state[i]->gl,
-                           sgi_kona_gl_index_config(args) ? args[2] : 0);
+                           sgi_kona_gl_index_config(args) ||
+                           sgi_kona_gl_overlay_config(args) ? args[2] : 0);
+    if (args[0] && !sgi_kona_gl_overlay_config(args)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: context %d's visual at level %d"
+                      " (index %u, RGB %u, double %u) is not modelled; it"
+                      " draws nothing\n", i, (int32_t)args[0], args[2],
+                      args[1], args[3]);
+    }
     s->state[i]->window.double_buffered =
         args[SGI_KONA_GL_BUFFER_CONFIG_DOUBLE] != 0;
     s->state[i]->pipe.depth_bits = args[SGI_KONA_GL_BUFFER_CONFIG_DEPTH];
@@ -13351,6 +13433,19 @@ static const SGICommandPortOps sgi_kona_kernel_ops = {
     .packet = sgi_kona_kernel_packet,
 };
 
+/* The level word of an overlay visual's buffer configuration. */
+#define SGI_KONA_GL_OVERLAY_LEVEL 1
+
+/*
+ * The index sizes a level-1 visual's buffer configuration can carry in
+ * its fourth word: konavis.so's level-1 visuals are PseudoColor of depth
+ * 2, 4 and 8 and TrueColor of depth 15, whose index size is 0.
+ */
+static bool sgi_kona_gl_level1_index_size(uint32_t word)
+{
+    return word == 0 || word == 2 || word == 4 || word == 8;
+}
+
 /*
  * The textport's own bulk-transfer framing, layered in front of the
  * generic command-port framer: strip the wire protocol's leading sync
@@ -13379,10 +13474,31 @@ static const SGICommandPortOps sgi_kona_kernel_ops = {
  * first. So a kernel textport write after the X server starts still
  * reaches the textport.
  * The rule misreads a buffer configuration whose level is a textport
- * command number, an overlay level of 1 or 2 for example, and takes a
- * stray word whose low half is a GL selector as that command. A trace
- * of a client choosing an overlay visual, or of the PROM's textport
- * after an X session, would constrain it.
+ * command number, and takes a stray word whose low half is a GL
+ * selector as that command.
+ *
+ * Level 1, an overlay visual, is told apart by looking two words further
+ * on. Both readings of 1 1 occur: SceneViewer's overlay context sent the
+ * configuration 1 1 0 8 and seven more words (run
+ * irix-20261023T111222-0467d9), and the IRIX 6.5.30 kernel's kona_unblank
+ * sends textport command 1 as 1 1 0 (kona_tport.o 0x688-0x690), which it
+ * may do once a graphics client detaches, perhaps with a context still
+ * current in the model. The configuration's fourth word is the visual's
+ * index size: konavis.so's visual tables hold level-1 visuals of depth 2,
+ * 4 and 8 (PseudoColor) and 15 (TrueColor, index size 0), and nothing
+ * else at level 1. What follows the kernel's 1 1 0 is not so bounded:
+ * its next textport packet opens with the sync word, but kernel commands
+ * such as 0x1f8 share the same port. So while a context is current,
+ * 1 1 a b is the configuration 1 a b ... only when b is 0, 2, 4 or 8;
+ * any other b ends the textport's command 1 with argument a and is then
+ * read afresh. With no context current 1 1 is the textport's at once, as
+ * before. Approximated: a command 1 with nothing after it waits for the
+ * next word; the model draws nothing for command 1, so only its credit
+ * is late; and a kernel 1 1 0 followed, while a context is current, by a
+ * word of 0, 2, 4 or 8 from outside the textport would be misread as a
+ * configuration. How the pipe itself tells the grammars apart is
+ * unknown. Level 2 stays read as the textport's command 2, which
+ * kona_setcolor sends.
  */
 static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
 {
@@ -13480,8 +13596,40 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         s->textport_expect_sync = false;
         return;
     }
+    if (s->gl_level1_held == 1) {
+        s->gl_level1_arg = word;
+        s->gl_level1_held = 2;
+        return;
+    }
+    if (s->gl_level1_held == 2) {
+        s->gl_level1_held = 0;
+        if (!sgi_kona_gl_level1_index_size(word)) {
+            /*
+             * Textport command 1 and its argument, then the word again:
+             * the next packet's sync word, a kernel token or anything
+             * else, read as on a stream with no 1 1 before it.
+             */
+            sgi_command_port_write(&s->textport, SGI_KONA_GL_OVERLAY_LEVEL,
+                                   4);
+            sgi_command_port_write(&s->textport, s->gl_level1_arg, 4);
+            sgi_kona_textport_push(s, word);
+            return;
+        }
+        s->textport_expect_sync = true;
+        s->gl_token_high = 0;
+        sgi_command_port_write(&s->gl_port, SGI_KONA_CMD_GL_BUFFER_CONFIG, 4);
+        sgi_command_port_write(&s->gl_port, SGI_KONA_GL_OVERLAY_LEVEL, 4);
+        sgi_command_port_write(&s->gl_port, s->gl_level1_arg, 4);
+        sgi_command_port_write(&s->gl_port, word, 4);
+        return;
+    }
     if (s->gl_sync_held) {
         s->gl_sync_held = false;
+        if (word == SGI_KONA_GL_OVERLAY_LEVEL &&
+            s->context_current != SGI_KONA_CONTEXT_NONE) {
+            s->gl_level1_held = 1;
+            return;
+        }
         if (!sgi_kona_textport_selector_known(word)) {
             s->textport_expect_sync = true;
             s->gl_token_high = 0;
@@ -13579,6 +13727,7 @@ static bool sgi_kona_user_command_open(SGIKonaState *s)
     return (s->kernel_port.framing && !s->kernel_port_privileged) ||
            s->kernel_port_suspended.framing ||
            s->textport.framing || s->gl_port.framing || s->gl_sync_held ||
+           s->gl_level1_held ||
            s->video_open || s->flash_op.op || s->color_map_remaining ||
            s->gamma_remaining ||
            s->cursor_remaining || s->gl_tex_table_remaining ||
@@ -13684,6 +13833,8 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->kernel_port = s->kernel_port_suspended;
     v->textport_expect_sync = s->textport_expect_sync;
     v->gl_sync_held = s->gl_sync_held;
+    v->gl_level1_held = s->gl_level1_held;
+    v->gl_level1_arg = s->gl_level1_arg;
     v->gl_token_high = s->gl_token_high;
     v->video_open = s->video_open;
     v->video_command = s->video_command;
@@ -13761,6 +13912,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     memset(&s->kernel_port_suspended, 0, sizeof(s->kernel_port_suspended));
     s->textport_expect_sync = true;
     s->gl_sync_held = false;
+    s->gl_level1_held = 0;
     s->gl_token_high = 0;
     s->video_open = false;
     memset(&s->flash_op, 0, sizeof(s->flash_op));
@@ -13832,6 +13984,8 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
     sgi_kona_kernel_port_resume(s, &v->kernel_port);
     s->textport_expect_sync = v->textport_expect_sync;
     s->gl_sync_held = v->gl_sync_held;
+    s->gl_level1_held = v->gl_level1_held;
+    s->gl_level1_arg = v->gl_level1_arg;
     s->gl_token_high = v->gl_token_high;
     s->video_open = v->video_open;
     s->video_command = v->video_command;
@@ -14064,6 +14218,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_user_input(s);
     }
     if (s->kernel_port.framing || s->gl_port.framing || s->gl_sync_held ||
+        s->gl_level1_held ||
         s->video_open || s->flash_op.op || s->color_map_remaining ||
         s->gamma_remaining ||
         s->cursor_remaining || s->gl_tex_table_remaining ||
@@ -14098,6 +14253,14 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                       " offset 0x%" PRIx32 " after a held 1; the 1 is"
                       " dropped\n", token, offset);
         s->gl_sync_held = false;
+        s->textport_expect_sync = true;
+    }
+    if (s->gl_level1_held) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: token 0x%" PRIx32 " stored at command page"
+                      " offset 0x%" PRIx32 " after a held 1 1; the words"
+                      " are dropped\n", token, offset);
+        s->gl_level1_held = 0;
         s->textport_expect_sync = true;
     }
     if (s->video_open) {
@@ -15745,6 +15908,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_command_port_reset(&s->gl_port);
     s->gl_grammar = false;
     s->gl_sync_held = false;
+    s->gl_level1_held = 0;
     s->kernel_input = false;
     s->suspended_owner = SGI_KONA_CONTEXT_NONE;
     s->kernel_port_privileged = false;
@@ -15989,6 +16153,9 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->cursor_mode = 0;
     /* The video-blank subsection is sent only while the source is blank. */
     s->video_blanked = false;
+    /* The same for a held 1 1. */
+    s->gl_level1_held = 0;
+    s->gl_level1_arg = 0;
     return 0;
 }
 
@@ -16267,6 +16434,12 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
     }
     if (s->gl_sync_held &&
         (!s->gl_grammar || s->gl_port.framing || s->textport_expect_sync)) {
+        return -EINVAL;
+    }
+    if (s->gl_level1_held > 2 ||
+        (s->gl_level1_held &&
+         (s->gl_sync_held || !s->gl_grammar || s->gl_port.framing ||
+          s->textport_expect_sync))) {
         return -EINVAL;
     }
     sgi_scanout_invalidate_all(&s->scanout);
@@ -16643,6 +16816,24 @@ static const VMStateDescription vmstate_sgi_kona_saved_gl_bitmap = {
     },
 };
 
+/* A held 1 1 and the word after it, only while the decision is open. */
+static bool sgi_kona_saved_level1_needed(void *opaque)
+{
+    return ((SGIKonaSavedInput *)opaque)->gl_level1_held != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_level1 = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/gl-level1",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_level1_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(gl_level1_held, SGIKonaSavedInput),
+        VMSTATE_UINT32(gl_level1_arg, SGIKonaSavedInput),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_kona_saved_map_needed(void *opaque)
 {
     return ((SGIKonaSavedInput *)opaque)->gl_map_upload.header[1] != 0;
@@ -16794,6 +16985,7 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_saved_gl_run,
         &vmstate_sgi_kona_saved_flash_op,
+        &vmstate_sgi_kona_saved_level1,
         NULL
     },
 };
@@ -16945,7 +17137,11 @@ static int sgi_kona_saved_input_post_load(void *opaque, int version_id)
                                        sgi_kona_command_tokens,
                                        sgi_kona_command_num_tokens) ||
             (v->gl_sync_held &&
-             (v->gl_port.framing || v->textport_expect_sync))) {
+             (v->gl_port.framing || v->textport_expect_sync)) ||
+            v->gl_level1_held > 2 ||
+            (v->gl_level1_held &&
+             (v->gl_sync_held || v->gl_port.framing ||
+              v->textport_expect_sync))) {
             return -EINVAL;
         }
         if (v->calls_need &&
@@ -18699,6 +18895,24 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
     },
 };
 
+/* A held 1 1 and the word after it, only while the decision is open. */
+static bool sgi_kona_gl_level1_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->gl_level1_held != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_level1 = {
+    .name = TYPE_SGI_KONA "/gl-level1",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_level1_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(gl_level1_held, SGIKonaState),
+        VMSTATE_UINT32(gl_level1_arg, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* A display blanked by TempBlankAllChannels, only while it is blanked. */
 static bool sgi_kona_video_blank_needed(void *opaque)
 {
@@ -18957,6 +19171,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_video_blank,
         &vmstate_sgi_kona_flash,
         &vmstate_sgi_kona_flash_op_open,
+        &vmstate_sgi_kona_gl_level1,
         NULL
     },
 };
