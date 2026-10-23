@@ -125,7 +125,7 @@ enum {
     TLBRET_MATCH = 0
 };
 
-int get_physical_address(const CPUMIPSState *env, hwaddr *physical,
+int get_physical_address(CPUMIPSState *env, hwaddr *physical,
                          int *prot, target_ulong real_address,
                          MMUAccessType access_type, int mmu_idx,
                          MemTxAttrs *attrs);
@@ -169,7 +169,7 @@ struct r4k_tlb_t {
 struct CPUMIPSTLBContext {
     uint32_t nb_tlb;
     uint32_t tlb_in_use;
-    int (*map_address)(const CPUMIPSState *env, hwaddr *physical, int *prot,
+    int (*map_address)(CPUMIPSState *env, hwaddr *physical, int *prot,
                        target_ulong address, MMUAccessType access_type,
                        MemTxAttrs *attrs);
     void (*helper_tlbwi)(CPUMIPSState *env);

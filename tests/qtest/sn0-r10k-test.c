@@ -2724,6 +2724,685 @@ static const ScacheLineCase scache_line_cases[] = {
     },
 };
 
+/*
+ * tlb-asid: an ASID change must leave behind no translation the processor
+ * would not make under the new ASID, while global entries and the unmapped
+ * segments keep translating. QEMU's own TLB caches translations per mode,
+ * not per ASID, so each case below is one a stale cached translation would
+ * get wrong. Every load lands in a result slot; a recording handler at
+ * every exception vector logs each fault and resumes after the faulting
+ * instruction, so one guest walks all the cases. The address space
+ * identifier, global bit and TLB instruction semantics come from the
+ * R10000 User's Manual version 2.0, chapter 14 (EntryHi, EntryLo, Status,
+ * PageMask, Wired) and the TLB instruction descriptions.
+ */
+#define ASID_IMAGE_SIZE      0x2000
+#define ASID_MAIN            0x400
+#define ASID_DONE_OFF        0x00
+#define ASID_FCOUNT_OFF      0x08
+#define ASID_RESULT_OFF      0x100
+#define ASID_FAULT_OFF       0x400
+#define ASID_FAULT_STRIDE    0x20
+#define ASID_DONE_MAGIC      0x41534944 /* "ASID" */
+#define ASID_SENTINEL        0x0dea
+
+#define OPC_TLBP             0x42000008u
+#define OPC_TLBR             0x42000001u
+#define CP0_BADVADDR         8
+#define R_V0                 2
+#define R_S3                 19
+#define R_S4                 20
+#define R_T9                 25
+#define R_K1                 27
+#define STATUS_UX            (1u << 5)
+#define STATUS_KX            (1u << 7)
+
+/*
+ * EntryLo: cacheable noncoherent (C=3), dirty, valid; global adds G. Not
+ * uncached: a mapped uncached reference carries the uncached attribute out
+ * to a window Malta does not decode.
+ */
+#define ASID_LO(pfn)         (((uint32_t)(pfn) << 6) | 0x1e)
+#define ASID_LO_G(pfn)       (ASID_LO(pfn) | 1)
+#define ASID_PAGEMASK_1M     0x001fe000u
+
+/* Physical pages, each holding its own tag in its first doubleword. */
+#define ASID_P1              0x200000u  /* ASID 1 at VA_A */
+#define ASID_P2              0x202000u  /* ASID 2 at VA_A */
+#define ASID_P3              0x204000u  /* global at VA_G, xuseg at VA_X */
+#define ASID_P4              0x206000u  /* ASID 1 at VA_A after remap */
+#define ASID_P5              0x208000u  /* ASID 2 at VA_B, then replaced */
+#define ASID_P6              0x20a000u  /* ASID 1 code at VA_CODE */
+#define ASID_P7              0x20c000u  /* ASID 2 code at VA_CODE */
+#define ASID_P8              0x20e000u  /* ASID 1 and 2 user code */
+#define ASID_BIG1            0x400000u  /* ASID 1 1 MiB pair at VA_BIG */
+#define ASID_BIG2            0x600000u  /* ASID 2 1 MiB pair at VA_BIG */
+
+#define ASID_TAG_P1          0x1111
+#define ASID_TAG_P2          0x2222
+#define ASID_TAG_P3          0x3333
+#define ASID_TAG_P4          0x4444
+#define ASID_TAG_P5          0x5555
+#define ASID_TAG_STORE       0x7777
+#define ASID_TAG_BIG1        0x1000
+#define ASID_TAG_BIG2        0x2000
+
+#define ASID_VA_A            0x00020000u
+#define ASID_VA_B            0x00060000u
+#define ASID_VA_G            0x00040000u
+#define ASID_VA_CODE         0x00100000u
+#define ASID_VA_USER         0x00300000u
+#define ASID_VA_BIG          0x01000000u
+#define ASID_VA_X            0x0000000100000000ULL  /* xuseg, needs UX */
+#define ASID_VA_K            0xc000000000010000ULL  /* xkseg, needs KX */
+#define ASID_BIG_PAGES       300  /* more than the model lists per ASID */
+#define ASID_SMALL_PAGES     100
+#define ASID_CODE_ROUNDS     8
+
+enum {
+    ASID_R_A1, ASID_R_A2, ASID_R_A1_AGAIN,
+    ASID_R_G_A1, ASID_R_G_A2,
+    ASID_R_A1_AFTER_STORE, ASID_R_P2_PHYS, ASID_R_LOOP_SUM,
+    ASID_R_REMAP_A1, ASID_R_REMAP_A2,
+    ASID_R_REPLACED, ASID_R_WIRED_A1, ASID_R_WIRED_A2,
+    ASID_R_TLBP_HIT, ASID_R_TLBP_MISS, ASID_R_TLBR, ASID_R_NO_ENTRY,
+    ASID_R_BIG_A1, ASID_R_BIG_A2, ASID_R_BIG_A1_AGAIN,
+    ASID_R_SMALL_A2, ASID_R_SMALL_A1, ASID_R_SMALL_A2_AGAIN,
+    ASID_R_UX_SET, ASID_R_UX_CLEAR, ASID_R_UX_RESET,
+    ASID_R_KX_SET, ASID_R_KX_CLEAR, ASID_R_KX_RESET,
+    ASID_R_CODE_A1, ASID_R_CODE_A2, ASID_R_CODE_LOOP,
+    ASID_R_USER_A1, ASID_R_USER_A2,
+    ASID_R_COUNT
+};
+
+static uint32_t mips_dmfc0(int rt, int rd)
+{
+    return MIPS_OPC_CP0 | (0x01u << 21) | (rt << 16) | (rd << 11);
+}
+
+/*
+ * Log the vector, Cause, BadVAddr and EPC, then resume after EPC. At the
+ * general vector a system call is not logged: it is how the user-mode leg
+ * comes back, to the kernel address s7 holds.
+ */
+static void emit_asid_fault_handler(GuestImage *img, uint16_t vec_id)
+{
+    if (vec_id == 4) {
+        unsigned int branch, record;
+
+        emit_mfc0(img, R_K0, CP0_CAUSE);
+        emit(img, mips_andi(R_K0, R_K0, 0x7c));
+        emit_addiu(img, R_K1, R_ZERO, 8 << 2);
+        branch = img->pos;
+        emit_nop(img);
+        emit_nop(img);
+        emit(img, mips_dmtc0(R_S7, CP0_EPC));
+        emit_mfc0(img, R_K0, CP0_STATUS);
+        emit_addiu(img, R_K1, R_ZERO, ~0x18);
+        emit_and(img, R_K0, R_K0, R_K1);
+        emit_mtc0(img, R_K0, CP0_STATUS);
+        emit(img, OPC_ERET);
+        record = img->pos;
+        img->pos = branch;
+        emit_branch(img, OPC_BNE, R_K0, R_K1, record);
+        img->pos = record;
+    }
+    emit_lui(img, R_K0, STATE_KSEG1_HI);
+    emit_ld(img, R_K1, R_K0, ASID_FCOUNT_OFF);
+    emit(img, mips_daddiu(R_K1, R_K1, 1));
+    emit_sd(img, R_K1, R_K0, ASID_FCOUNT_OFF);
+    emit(img, mips_dsll(R_K1, R_K1, 5));
+    emit(img, mips_daddu(R_K1, R_K1, R_K0));
+    emit_addiu(img, R_K0, R_ZERO, vec_id);
+    emit_sd(img, R_K0, R_K1, ASID_FAULT_OFF - ASID_FAULT_STRIDE);
+    emit_mfc0(img, R_K0, CP0_CAUSE);
+    emit_sd(img, R_K0, R_K1, ASID_FAULT_OFF - ASID_FAULT_STRIDE + 8);
+    emit(img, mips_dmfc0(R_K0, CP0_BADVADDR));
+    emit_sd(img, R_K0, R_K1, ASID_FAULT_OFF - ASID_FAULT_STRIDE + 16);
+    emit(img, mips_dmfc0(R_K0, CP0_EPC));
+    emit_sd(img, R_K0, R_K1, ASID_FAULT_OFF - ASID_FAULT_STRIDE + 24);
+    emit(img, mips_daddiu(R_K0, R_K0, 4));
+    emit(img, mips_dmtc0(R_K0, CP0_EPC));
+    emit_ehb(img);
+    emit(img, OPC_ERET);
+    emit_nop(img);
+}
+
+static void emit_asid_result(GuestImage *img, int rt, int slot)
+{
+    emit_lui(img, R_T9, STATE_KSEG1_HI);
+    emit_sd(img, rt, R_T9, ASID_RESULT_OFF + 8 * slot);
+}
+
+/* EntryHi with a zero page number: only its ASID matters here. */
+static void emit_asid_set(GuestImage *img, uint16_t asid)
+{
+    emit_addiu(img, R_T0, R_ZERO, asid);
+    emit_mtc0(img, R_T0, CP0_ENTRYHI);
+    emit_ehb(img);
+}
+
+/* Load the doubleword at @va into @rt, which first holds the sentinel. */
+static void emit_asid_load(GuestImage *img, int rt, uint64_t va)
+{
+    emit_addiu(img, rt, R_ZERO, ASID_SENTINEL);
+    emit_li64(img, R_T1, va);
+    emit_ld(img, rt, R_T1, 0);
+}
+
+static void emit_asid_poke(GuestImage *img, uint32_t phys, uint32_t value)
+{
+    emit_li64(img, R_T0, 0xffffffffa0000000ULL | phys);
+    emit_li32(img, R_T1, value);
+    emit_sd(img, R_T1, R_T0, 0);
+}
+
+static void emit_asid_poke_word(GuestImage *img, uint32_t phys,
+                                uint32_t insn)
+{
+    emit_li64(img, R_T0, 0xffffffffa0000000ULL | phys);
+    emit_li32(img, R_T1, insn);
+    emit(img, mips_sw(R_T1, R_T0, 0));
+}
+
+static void emit_asid_tlb_entry(GuestImage *img, int index, uint64_t entryhi,
+                                uint32_t lo0, uint32_t lo1,
+                                uint32_t pagemask)
+{
+    emit_li32(img, R_T0, pagemask);
+    emit_mtc0(img, R_T0, CP0_PAGEMASK);
+    emit_li64(img, R_T0, entryhi);
+    emit(img, mips_dmtc0(R_T0, CP0_ENTRYHI));
+    emit_li32(img, R_T0, lo0);
+    emit_mtc0(img, R_T0, CP0_ENTRYLO0);
+    emit_li32(img, R_T0, lo1);
+    emit_mtc0(img, R_T0, CP0_ENTRYLO1);
+    emit_addiu(img, R_T0, R_ZERO, index);
+    emit_mtc0(img, R_T0, CP0_INDEX);
+    emit_ehb(img);
+    emit(img, OPC_TLBWI);
+    emit_ehb(img);
+}
+
+static void emit_asid_status(GuestImage *img, bool set, uint32_t bits)
+{
+    emit_mfc0(img, R_T0, CP0_STATUS);
+    if (set) {
+        emit_ori(img, R_T0, R_T0, bits);
+    } else {
+        emit_addiu(img, R_T1, R_ZERO, (int16_t)~bits);
+        emit_and(img, R_T0, R_T0, R_T1);
+    }
+    emit_mtc0(img, R_T0, CP0_STATUS);
+    emit_ehb(img);
+}
+
+/* Tag the first doubleword of @count pages from @phys with base + i. */
+static void emit_asid_tag_pages(GuestImage *img, uint32_t phys, int count,
+                                int16_t base)
+{
+    unsigned int loop;
+
+    emit_li64(img, R_T0, 0xffffffffa0000000ULL | phys);
+    emit_addiu(img, R_T1, R_ZERO, 0);
+    emit_addiu(img, R_T2, R_ZERO, count);
+    loop = img->pos;
+    emit(img, mips_daddiu(R_T3, R_T1, base));
+    emit_sd(img, R_T3, R_T0, 0);
+    emit(img, mips_daddiu(R_T0, R_T0, 0x1000));
+    emit(img, mips_daddiu(R_T1, R_T1, 1));
+    emit_branch(img, OPC_BNE, R_T1, R_T2, loop);
+    emit_nop(img);
+}
+
+/*
+ * Sum the first doubleword of @count pages from @va into result @slot,
+ * last page first: a run longer than QEMU's TLB leaves its last pages
+ * resident, so a stale one is met before anything evicts it.
+ */
+static void emit_asid_sum_pages(GuestImage *img, uint64_t va, int count,
+                                int slot)
+{
+    unsigned int loop;
+
+    emit_li64(img, R_T0, va + (uint64_t)(count - 1) * 0x1000);
+    emit_addiu(img, R_T1, R_ZERO, 0);
+    emit_addiu(img, R_T2, R_ZERO, count);
+    emit_addiu(img, R_S0, R_ZERO, 0);
+    loop = img->pos;
+    emit_ld(img, R_T3, R_T0, 0);
+    emit(img, mips_daddu(R_S0, R_S0, R_T3));
+    emit(img, mips_daddiu(R_T0, R_T0, -0x1000));
+    emit(img, mips_daddiu(R_T1, R_T1, 1));
+    emit_branch(img, OPC_BNE, R_T1, R_T2, loop);
+    emit_nop(img);
+    emit_asid_result(img, R_S0, slot);
+}
+
+static void emit_asid_call_code(GuestImage *img)
+{
+    emit_li64(img, R_T1, ASID_VA_CODE);
+    emit_jalr(img, R_RA, R_T1);
+    emit_nop(img);
+}
+
+static void asid_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(ASID_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = ASID_IMAGE_SIZE };
+    unsigned int loop;
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, ASID_MAIN);
+    emit_nop(&img);
+    img.pos = VEC_TLB_REFILL;
+    emit_asid_fault_handler(&img, 1);
+    img.pos = VEC_XTLB_REFILL;
+    emit_asid_fault_handler(&img, 2);
+    img.pos = VEC_CACHE_ERROR;
+    emit_asid_fault_handler(&img, 3);
+    img.pos = VEC_GENERAL;
+    emit_asid_fault_handler(&img, 4);
+    g_assert_cmpuint(img.pos, <=, ASID_MAIN);
+
+    img.pos = ASID_MAIN;
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_mtc0(&img, R_ZERO, CP0_WIRED);
+    emit_ehb(&img);
+
+    emit_asid_poke(&img, ASID_P1, ASID_TAG_P1);
+    emit_asid_poke(&img, ASID_P2, ASID_TAG_P2);
+    emit_asid_poke(&img, ASID_P3, ASID_TAG_P3);
+    emit_asid_poke(&img, ASID_P4, ASID_TAG_P4);
+    emit_asid_poke(&img, ASID_P5, ASID_TAG_P5);
+    /* At VA_CODE: addiu v0, zero, ASID; jr ra; nop. */
+    emit_asid_poke_word(&img, ASID_P6, mips_addiu(R_V0, R_ZERO, 1));
+    emit_asid_poke_word(&img, ASID_P6 + 4, OPC_JR | (R_RA << 21));
+    emit_asid_poke_word(&img, ASID_P6 + 8, 0);
+    emit_asid_poke_word(&img, ASID_P7, mips_addiu(R_V0, R_ZERO, 2));
+    emit_asid_poke_word(&img, ASID_P7 + 4, OPC_JR | (R_RA << 21));
+    emit_asid_poke_word(&img, ASID_P7 + 8, 0);
+    emit_asid_tag_pages(&img, ASID_BIG1, ASID_BIG_PAGES, ASID_TAG_BIG1);
+    emit_asid_tag_pages(&img, ASID_BIG2, ASID_BIG_PAGES, ASID_TAG_BIG2);
+
+    emit_asid_tlb_entry(&img, 0, ASID_VA_A | 1, ASID_LO(ASID_P1 >> 12), 0, 0);
+    emit_asid_tlb_entry(&img, 1, ASID_VA_A | 2, ASID_LO(ASID_P2 >> 12), 0, 0);
+    emit_asid_tlb_entry(&img, 2, ASID_VA_G | 1, ASID_LO_G(ASID_P3 >> 12),
+                        ASID_LO_G((ASID_P3 >> 12) + 1), 0);
+
+    /*
+     * One straight run, so one translation block: a write to EntryHi must
+     * take effect for the very next load, with no branch in between.
+     */
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_S1, ASID_VA_A);
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S2, ASID_VA_A);
+    emit_asid_load(&img, R_S3, ASID_VA_G);
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_S4, ASID_VA_G);
+    emit_asid_result(&img, R_S0, ASID_R_A1);
+    emit_asid_result(&img, R_S1, ASID_R_A2);
+    emit_asid_result(&img, R_S2, ASID_R_A1_AGAIN);
+    emit_asid_result(&img, R_S3, ASID_R_G_A1);
+    emit_asid_result(&img, R_S4, ASID_R_G_A2);
+
+    /* A store under ASID 2 reaches only ASID 2's page. */
+    emit_li32(&img, R_T2, ASID_TAG_STORE);
+    emit_li64(&img, R_T1, ASID_VA_A);
+    emit_sd(&img, R_T2, R_T1, 0);
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_result(&img, R_S0, ASID_R_A1_AFTER_STORE);
+    emit_asid_load(&img, R_S0, 0xffffffffa0000000ULL | ASID_P2);
+    emit_asid_result(&img, R_S0, ASID_R_P2_PHYS);
+
+    /* Alternate many times, so the loop's own translations are reused. */
+    emit_addiu(&img, R_S0, R_ZERO, 0);
+    emit_addiu(&img, R_S1, R_ZERO, 16);
+    loop = img.pos;
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_T2, ASID_VA_A);
+    emit(&img, mips_daddu(R_S0, R_S0, R_T2));
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_T2, ASID_VA_A);
+    emit(&img, mips_daddu(R_S0, R_S0, R_T2));
+    emit_addiu(&img, R_S1, R_S1, -1);
+    emit_branch(&img, OPC_BNE, R_S1, R_ZERO, loop);
+    emit_nop(&img);
+    emit_asid_result(&img, R_S0, ASID_R_LOOP_SUM);
+
+    /* Remap ASID 1's entry while ASID 2's translation is the cached one. */
+    emit_asid_tlb_entry(&img, 0, ASID_VA_A | 1, ASID_LO(ASID_P4 >> 12), 0, 0);
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_S1, ASID_VA_A);
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_result(&img, R_S0, ASID_R_REMAP_A1);
+    emit_asid_result(&img, R_S1, ASID_R_REMAP_A2);
+
+    /*
+     * A random write that replaces another ASID's entry leaves nothing
+     * behind: with Wired at the last index, Random names that index.
+     * Fault 1 is the refill when ASID 2 reaches for its page again.
+     */
+    emit_addiu(&img, R_T0, R_ZERO, 63);
+    emit_mtc0(&img, R_T0, CP0_WIRED);
+    emit_asid_tlb_entry(&img, 63, ASID_VA_B | 2, ASID_LO(ASID_P5 >> 12),
+                        0, 0);
+    emit_asid_load(&img, R_S0, ASID_VA_B);
+    emit_asid_set(&img, 1);
+    emit_li64(&img, R_T0, 0x00080000 | 1);
+    emit(&img, mips_dmtc0(R_T0, CP0_ENTRYHI));
+    emit_li32(&img, R_T0, ASID_LO(ASID_P3 >> 12));
+    emit_mtc0(&img, R_T0, CP0_ENTRYLO0);
+    emit_mtc0(&img, R_ZERO, CP0_ENTRYLO1);
+    emit_ehb(&img);
+    emit(&img, OPC_TLBWR);
+    emit_ehb(&img);
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_S0, ASID_VA_B);
+    emit_asid_result(&img, R_S0, ASID_R_REPLACED);
+
+    /* Random writes leave the wired entries alone. */
+    emit_addiu(&img, R_T0, R_ZERO, 10);
+    emit_mtc0(&img, R_T0, CP0_WIRED);
+    for (int i = 0; i < 4; i++) {
+        emit_li64(&img, R_T0, (0x00200000 + 0x2000 * i) | 1);
+        emit(&img, mips_dmtc0(R_T0, CP0_ENTRYHI));
+        emit_li32(&img, R_T0, ASID_LO(ASID_P3 >> 12));
+        emit_mtc0(&img, R_T0, CP0_ENTRYLO0);
+        emit_ehb(&img);
+        emit(&img, OPC_TLBWR);
+        emit_ehb(&img);
+    }
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_set(&img, 2);
+    emit_asid_load(&img, R_S1, ASID_VA_A);
+    emit_asid_result(&img, R_S0, ASID_R_WIRED_A1);
+    emit_asid_result(&img, R_S1, ASID_R_WIRED_A2);
+    emit_mtc0(&img, R_ZERO, CP0_WIRED);
+
+    /* TLBP matches by ASID. */
+    emit_li64(&img, R_T0, ASID_VA_A | 2);
+    emit(&img, mips_dmtc0(R_T0, CP0_ENTRYHI));
+    emit_ehb(&img);
+    emit(&img, OPC_TLBP);
+    emit_ehb(&img);
+    emit_mfc0(&img, R_S0, CP0_INDEX);
+    emit_asid_result(&img, R_S0, ASID_R_TLBP_HIT);
+    emit_li64(&img, R_T0, ASID_VA_A | 3);
+    emit(&img, mips_dmtc0(R_T0, CP0_ENTRYHI));
+    emit_ehb(&img);
+    emit(&img, OPC_TLBP);
+    emit_ehb(&img);
+    emit_mfc0(&img, R_S0, CP0_INDEX);
+    emit_asid_result(&img, R_S0, ASID_R_TLBP_MISS);
+
+    /* TLBR changes the ASID as an EntryHi write does. */
+    emit_asid_set(&img, 1);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_addiu(&img, R_T0, R_ZERO, 1);
+    emit_mtc0(&img, R_T0, CP0_INDEX);
+    emit_ehb(&img);
+    emit(&img, OPC_TLBR);
+    emit_ehb(&img);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_result(&img, R_S0, ASID_R_TLBR);
+
+    /* An ASID with no entry refills: fault 2. */
+    emit_asid_set(&img, 3);
+    emit_asid_load(&img, R_S0, ASID_VA_A);
+    emit_asid_result(&img, R_S0, ASID_R_NO_ENTRY);
+
+    /*
+     * 1 MiB pages, first over more pages than the model lists per ASID,
+     * then over fewer.
+     */
+    emit_asid_tlb_entry(&img, 4, ASID_VA_BIG | 1, ASID_LO(ASID_BIG1 >> 12),
+                        ASID_LO((ASID_BIG1 >> 12) + 0x100), ASID_PAGEMASK_1M);
+    emit_asid_tlb_entry(&img, 5, ASID_VA_BIG | 2, ASID_LO(ASID_BIG2 >> 12),
+                        ASID_LO((ASID_BIG2 >> 12) + 0x100), ASID_PAGEMASK_1M);
+    emit_mtc0(&img, R_ZERO, CP0_PAGEMASK);
+    emit_asid_set(&img, 1);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_BIG_PAGES, ASID_R_BIG_A1);
+    emit_asid_set(&img, 2);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_BIG_PAGES, ASID_R_BIG_A2);
+    emit_asid_set(&img, 1);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_BIG_PAGES,
+                        ASID_R_BIG_A1_AGAIN);
+    emit_asid_set(&img, 2);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_SMALL_PAGES,
+                        ASID_R_SMALL_A2);
+    emit_asid_set(&img, 1);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_SMALL_PAGES,
+                        ASID_R_SMALL_A1);
+    emit_asid_set(&img, 2);
+    emit_asid_sum_pages(&img, ASID_VA_BIG, ASID_SMALL_PAGES,
+                        ASID_R_SMALL_A2_AGAIN);
+
+    /*
+     * Status UX reaches xuseg above 2 Gbytes and KX reaches xkseg. Each
+     * load with its enable clear is an address error: faults 3 and 4.
+     */
+    emit_asid_tlb_entry(&img, 6, ASID_VA_X | 1, ASID_LO(ASID_P3 >> 12), 0, 0);
+    emit_asid_tlb_entry(&img, 7, ASID_VA_K | 1, ASID_LO_G(ASID_P1 >> 12),
+                        ASID_LO_G((ASID_P1 >> 12) + 1), 0);
+    emit_asid_set(&img, 1);
+    emit_asid_status(&img, true, STATUS_UX);
+    emit_asid_load(&img, R_S0, ASID_VA_X);
+    emit_asid_status(&img, false, STATUS_UX);
+    emit_asid_load(&img, R_S1, ASID_VA_X);
+    emit_asid_status(&img, true, STATUS_UX);
+    emit_asid_load(&img, R_S2, ASID_VA_X);
+    emit_asid_result(&img, R_S0, ASID_R_UX_SET);
+    emit_asid_result(&img, R_S1, ASID_R_UX_CLEAR);
+    emit_asid_result(&img, R_S2, ASID_R_UX_RESET);
+    emit_asid_status(&img, true, STATUS_KX);
+    emit_asid_load(&img, R_S0, ASID_VA_K);
+    emit_asid_status(&img, false, STATUS_KX);
+    emit_asid_load(&img, R_S1, ASID_VA_K);
+    emit_asid_status(&img, true, STATUS_KX);
+    emit_asid_load(&img, R_S2, ASID_VA_K);
+    emit_asid_result(&img, R_S0, ASID_R_KX_SET);
+    emit_asid_result(&img, R_S1, ASID_R_KX_CLEAR);
+    emit_asid_result(&img, R_S2, ASID_R_KX_RESET);
+
+    /* Code fetched through one virtual page under two ASIDs. */
+    emit_asid_tlb_entry(&img, 8, ASID_VA_CODE | 1, ASID_LO(ASID_P6 >> 12),
+                        0, 0);
+    emit_asid_tlb_entry(&img, 9, ASID_VA_CODE | 2, ASID_LO(ASID_P7 >> 12),
+                        0, 0);
+    emit_asid_set(&img, 1);
+    emit_addiu(&img, R_V0, R_ZERO, ASID_SENTINEL);
+    emit_asid_call_code(&img);
+    emit_asid_result(&img, R_V0, ASID_R_CODE_A1);
+    emit_asid_set(&img, 2);
+    emit_addiu(&img, R_V0, R_ZERO, ASID_SENTINEL);
+    emit_asid_call_code(&img);
+    emit_asid_result(&img, R_V0, ASID_R_CODE_A2);
+    emit_addiu(&img, R_S0, R_ZERO, 0);
+    emit_addiu(&img, R_S1, R_ZERO, ASID_CODE_ROUNDS);
+    loop = img.pos;
+    emit_asid_set(&img, 1);
+    emit_asid_call_code(&img);
+    emit(&img, mips_daddu(R_S0, R_S0, R_V0));
+    emit_asid_set(&img, 2);
+    emit_asid_call_code(&img);
+    emit(&img, mips_daddu(R_S0, R_S0, R_V0));
+    emit_addiu(&img, R_S1, R_S1, -1);
+    emit_branch(&img, OPC_BNE, R_S1, R_ZERO, loop);
+    emit_nop(&img);
+    emit_asid_result(&img, R_S0, ASID_R_CODE_LOOP);
+
+    /*
+     * The kernel and user mode cache the same page separately: an ASID
+     * change must discard both. User code at VA_USER loads the low word at
+     * a0 into v1 and returns through a system call.
+     */
+    emit_asid_poke_word(&img, ASID_P8, mips_lw(3, R_A0, 4));
+    emit_asid_poke_word(&img, ASID_P8 + 4, OPC_SYSCALL);
+    emit_asid_poke_word(&img, ASID_P8 + 8, 0);
+    emit_asid_tlb_entry(&img, 10, ASID_VA_USER | 1, ASID_LO(ASID_P8 >> 12),
+                        0, 0);
+    emit_asid_tlb_entry(&img, 11, ASID_VA_USER | 2, ASID_LO(ASID_P8 >> 12),
+                        0, 0);
+    for (int asid = 1; asid <= 2; asid++) {
+        unsigned int cont_li;
+
+        emit_asid_set(&img, asid);
+        emit_asid_load(&img, R_S0, ASID_VA_A);
+        emit_li64(&img, R_A0, ASID_VA_A);
+        emit_addiu(&img, 3, R_ZERO, ASID_SENTINEL);
+        cont_li = img.pos;
+        emit_nop(&img);
+        emit_nop(&img);
+        emit_li64(&img, R_T0, ASID_VA_USER);
+        emit(&img, mips_dmtc0(R_T0, CP0_EPC));
+        emit_mfc0(&img, R_T0, CP0_STATUS);
+        emit_ori(&img, R_T0, R_T0, 0x12); /* KSU user, EXL */
+        emit_mtc0(&img, R_T0, CP0_STATUS);
+        emit_ehb(&img);
+        emit(&img, OPC_ERET);
+        {
+            unsigned int cont = img.pos;
+
+            img.pos = cont_li;
+            emit_li32(&img, R_S7, 0xbfc00000u + cont);
+            img.pos = cont;
+        }
+        emit_asid_result(&img, 3, asid == 1 ? ASID_R_USER_A1 :
+                                              ASID_R_USER_A2);
+    }
+
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_li32(&img, R_T2, ASID_DONE_MAGIC);
+    emit_sd(&img, R_T2, R_T0, ASID_DONE_OFF);
+    emit(&img, OPC_SYNC);
+    loop = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, loop);
+    emit_nop(&img);
+
+    written = write(fd, image, ASID_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, ASID_IMAGE_SIZE);
+    g_free(image);
+}
+
+static uint64_t asid_result(QTestState *qts, int slot)
+{
+    return qtest_readq(qts, STATE_PHYS + ASID_RESULT_OFF + 8 * slot);
+}
+
+static void asid_check_fault(QTestState *qts, int n, uint64_t vec,
+                             uint64_t exccode, uint64_t badvaddr)
+{
+    uint64_t rec = STATE_PHYS + ASID_FAULT_OFF + ASID_FAULT_STRIDE * (n - 1);
+
+    g_assert_cmpuint(qtest_readq(qts, rec), ==, vec);
+    g_assert_cmpuint((qtest_readq(qts, rec + 8) >> 2) & 0x1f, ==, exccode);
+    g_assert_cmphex(qtest_readq(qts, rec + 16), ==, badvaddr);
+}
+
+static uint64_t asid_page_sum(int pages, int base)
+{
+    return (uint64_t)pages * (pages - 1) / 2 + (uint64_t)pages * base;
+}
+
+typedef struct AsidCase {
+    const char *path;
+    const char *machine;
+    const char *cpu;
+} AsidCase;
+
+/* Origin 200 carries only the R10000; Malta takes the R14000. */
+static const AsidCase asid_cases[] = {
+    { "/sn0/tcg/tlb-asid/r10000", "origin200", "R10000" },
+    { "/r10k/tlb-asid/r14000", "malta", "R14000" },
+};
+
+static void test_r10k_tlb_asid(gconstpointer opaque)
+{
+    const AsidCase *c = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+    SgiWait w;
+
+    fd = g_file_open_tmp("mips64-r10k-tlb-asid-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    asid_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M %s -m 64M -cpu %s -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", c->machine, c->cpu, image);
+    unlink(image);
+
+    sgi_wait_start(&w, "guest done");
+    while (qtest_readq(qts, STATE_PHYS + ASID_DONE_OFF) == 0) {
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + ASID_DONE_OFF), ==,
+                    ASID_DONE_MAGIC);
+
+    g_assert_cmphex(asid_result(qts, ASID_R_A1), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_A2), ==, ASID_TAG_P2);
+    g_assert_cmphex(asid_result(qts, ASID_R_A1_AGAIN), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_G_A1), ==, ASID_TAG_P3);
+    g_assert_cmphex(asid_result(qts, ASID_R_G_A2), ==, ASID_TAG_P3);
+    g_assert_cmphex(asid_result(qts, ASID_R_A1_AFTER_STORE), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_P2_PHYS), ==, ASID_TAG_STORE);
+    g_assert_cmphex(asid_result(qts, ASID_R_LOOP_SUM), ==,
+                    16 * (ASID_TAG_P1 + ASID_TAG_STORE));
+    g_assert_cmphex(asid_result(qts, ASID_R_REMAP_A1), ==, ASID_TAG_P4);
+    g_assert_cmphex(asid_result(qts, ASID_R_REMAP_A2), ==, ASID_TAG_STORE);
+    g_assert_cmphex(asid_result(qts, ASID_R_REPLACED), ==, ASID_SENTINEL);
+    g_assert_cmphex(asid_result(qts, ASID_R_WIRED_A1), ==, ASID_TAG_P4);
+    g_assert_cmphex(asid_result(qts, ASID_R_WIRED_A2), ==, ASID_TAG_STORE);
+    g_assert_cmphex(asid_result(qts, ASID_R_TLBP_HIT), ==, 1);
+    g_assert_cmphex(asid_result(qts, ASID_R_TLBP_MISS) & 0x80000000u, !=, 0);
+    g_assert_cmphex(asid_result(qts, ASID_R_TLBR), ==, ASID_TAG_STORE);
+    g_assert_cmphex(asid_result(qts, ASID_R_NO_ENTRY), ==, ASID_SENTINEL);
+    g_assert_cmpuint(asid_result(qts, ASID_R_BIG_A1), ==,
+                     asid_page_sum(ASID_BIG_PAGES, ASID_TAG_BIG1));
+    g_assert_cmpuint(asid_result(qts, ASID_R_BIG_A2), ==,
+                     asid_page_sum(ASID_BIG_PAGES, ASID_TAG_BIG2));
+    g_assert_cmpuint(asid_result(qts, ASID_R_BIG_A1_AGAIN), ==,
+                     asid_page_sum(ASID_BIG_PAGES, ASID_TAG_BIG1));
+    g_assert_cmpuint(asid_result(qts, ASID_R_SMALL_A2), ==,
+                     asid_page_sum(ASID_SMALL_PAGES, ASID_TAG_BIG2));
+    g_assert_cmpuint(asid_result(qts, ASID_R_SMALL_A1), ==,
+                     asid_page_sum(ASID_SMALL_PAGES, ASID_TAG_BIG1));
+    g_assert_cmpuint(asid_result(qts, ASID_R_SMALL_A2_AGAIN), ==,
+                     asid_page_sum(ASID_SMALL_PAGES, ASID_TAG_BIG2));
+    g_assert_cmphex(asid_result(qts, ASID_R_UX_SET), ==, ASID_TAG_P3);
+    g_assert_cmphex(asid_result(qts, ASID_R_UX_CLEAR), ==, ASID_SENTINEL);
+    g_assert_cmphex(asid_result(qts, ASID_R_UX_RESET), ==, ASID_TAG_P3);
+    g_assert_cmphex(asid_result(qts, ASID_R_KX_SET), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_KX_CLEAR), ==, ASID_SENTINEL);
+    g_assert_cmphex(asid_result(qts, ASID_R_KX_RESET), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_CODE_A1), ==, 1);
+    g_assert_cmphex(asid_result(qts, ASID_R_CODE_A2), ==, 2);
+    g_assert_cmphex(asid_result(qts, ASID_R_CODE_LOOP), ==,
+                    ASID_CODE_ROUNDS * (1 + 2));
+    g_assert_cmphex(asid_result(qts, ASID_R_USER_A1), ==, ASID_TAG_P4);
+    g_assert_cmphex(asid_result(qts, ASID_R_USER_A2), ==, ASID_TAG_STORE);
+
+    /* Refill vector, TLBL; general vector, AdEL. */
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + ASID_FCOUNT_OFF), ==, 4);
+    asid_check_fault(qts, 1, 1, 2, ASID_VA_B);
+    asid_check_fault(qts, 2, 1, 2, ASID_VA_A);
+    asid_check_fault(qts, 3, 4, 4, ASID_VA_X);
+    asid_check_fault(qts, 4, 4, 4, ASID_VA_K);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2757,6 +3436,10 @@ int main(int argc, char **argv)
                    test_r10k_tlb_interleaved);
     qtest_add_func("/sn0/tcg/tlb-replaced-half",
                    test_r10k_tlb_replaced_half);
+    for (unsigned int i = 0; i < ARRAY_SIZE(asid_cases); i++) {
+        qtest_add_data_func(asid_cases[i].path, &asid_cases[i],
+                            test_r10k_tlb_asid);
+    }
     qtest_add_func("/sn0/tcg/count-chaining",
                    test_r10k_count_chaining);
     qtest_add_func("/sn0/tcg/count-interrupt-delivery",
