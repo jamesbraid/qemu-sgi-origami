@@ -2086,9 +2086,15 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 
 #define ODSY_CONTROL_WIDGET_MASK 0xf
 
-/* Memory configuration: size code, bank count and column-address latency. */
+/*
+ * Memory configuration: size code, bank count and column-address latency.
+ * The IRIX 6.5.30 kernel reads bits 31:30 as 32, 64 or 128 MB, bit 29 set as
+ * four SDRAM banks and clear as two, and bit 28 set as latency 2 and clear as
+ * latency 3 (established from its board-information gather); gfxinfo prints
+ * them back. A V12's "Banks: 4" is bit 29 set.
+ */
 #define ODSY_CONFIG_SIZE_SHIFT 30
-#define ODSY_CONFIG_TWO_BANKS (1u << 29)
+#define ODSY_CONFIG_FOUR_BANKS (1u << 29)
 #define ODSY_CONFIG_LATENCY_2 (1u << 28)
 /*
  * Bits 27:24 the live V12 capture read back as 0x1
@@ -11291,7 +11297,7 @@ static bool odyssey_compose_memory_config(SGIOdysseyState *s, Error **errp)
      * driver waits to reach zero, stay zero: neither is modeled.
      */
     s->memory_config = code << ODSY_CONFIG_SIZE_SHIFT |
-                       (s->memory_banks == 2 ? ODSY_CONFIG_TWO_BANKS : 0) |
+                       (s->memory_banks == 4 ? ODSY_CONFIG_FOUR_BANKS : 0) |
                        (s->cas_latency == 2 ? ODSY_CONFIG_LATENCY_2 : 0) |
                        ODSY_CONFIG_COPY_FIELD;
     return true;
@@ -12168,7 +12174,7 @@ static void odyssey_instance_init(Object *obj)
 /*
  * Crosstalk part 0xc013 and manufacturer 0x023 are the board's, from the
  * part number the IP35 driver registers for. Revision nibble 0xa and the
- * 128 MB/two-bank/latency-3 memory profile are the values a live V12
+ * 128 MB/four-bank/latency-3 memory profile are the values a live V12
  * board (030-1611-001 rev C) answered, not a placeholder
  * (odyssey-octane2-v12-registers-20260926.md). The one-wire record
  * defaults to the public owner record of the 128 MB board; the serial is
@@ -12183,7 +12189,7 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_LINK("pi", SGIOdysseyState, pi, TYPE_SGI_PI_GFX, Object *),
     DEFINE_PROP_UINT32("revision", SGIOdysseyState, revision, 0xa),
     DEFINE_PROP_UINT32("memory-size", SGIOdysseyState, memory_size, 128),
-    DEFINE_PROP_UINT32("memory-banks", SGIOdysseyState, memory_banks, 2),
+    DEFINE_PROP_UINT32("memory-banks", SGIOdysseyState, memory_banks, 4),
     DEFINE_PROP_UINT32("cas-latency", SGIOdysseyState, cas_latency, 3),
     DEFINE_PROP_UINT32("backend-version", SGIOdysseyState, backend_version, 1),
     DEFINE_PROP_STRING("profile", SGIOdysseyState, profile),
