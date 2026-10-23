@@ -45,6 +45,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define REG_SXFRCTL0 0x01
 #define REG_SXFRCTL1 0x02
 #define REG_SCSISIGI 0x03
+#define REG_SCSIRATE 0x04
+#define REG_SCSIBUSL 0x12
 #define REG_SCSIID   0x05
 #define REG_SCSIDATL 0x06
 #define REG_STCNT    0x08
@@ -173,8 +175,16 @@ struct AIC7880State {
     bool selection_pending;
     bool initiator_atn;
     bool identify_seen;
+    uint8_t message_out[5];
+    uint8_t message_out_len;
+    bool message_resume_command;
     bool disconnect_allowed;
     bool peer_reselection;
+    bool peer_nexus_disconnected;
+    bool peer_nexus_saved;
+    uint8_t peer_nexus_message;
+    uint8_t peer_nexus_signal;
+    uint32_t peer_nexus_saved_pos;
     bool peer_scsi_irq_latched;
     bool peer_hold_data_in;
     bool peer_data_in_pending;
@@ -207,6 +217,43 @@ void aic7880_set_storage_diagnostic_reporter(PCIDevice *pci,
 static void aic7880_run(AIC7880State *s);
 static void aic7880_host_dma(AIC7880State *s);
 static void aic7880_process_scsi_data(AIC7880State *s);
+
+static bool aic7880_pio_pending(AIC7880State *s)
+{
+    return s->selected && (s->phase == AIC_PHASE_COMMAND ||
+                           s->phase == AIC_PHASE_STATUS ||
+                           s->phase == AIC_PHASE_MSG_IN ||
+                           s->phase == AIC_PHASE_MSG_OUT);
+}
+
+static void aic7880_pio_phase(AIC7880State *s)
+{
+    s->regs[REG_SSTAT1] &= ~0x10;
+    if ((s->regs[REG_SSTAT1] & 1) && s->expected_phase != 0xff &&
+        (s->regs[REG_SCSISIGI] & 0xe0) != s->expected_phase) {
+        s->regs[REG_SSTAT1] |= 0x10;
+    }
+}
+
+static void aic7880_pio_present(AIC7880State *s)
+{
+    s->regs[REG_SSTAT1] &= ~0x11;
+    s->regs[REG_SSTAT0] &= ~2;
+    if (aic7880_pio_pending(s)) {
+        s->regs[REG_SSTAT1] |= 1;
+        s->regs[REG_SCSISIGI] |= 2;
+        if (s->regs[REG_SXFRCTL0] & 8) {
+            s->regs[REG_SSTAT0] |= 2;
+        }
+        aic7880_pio_phase(s);
+    }
+}
+
+static bool aic7880_pio_enabled(AIC7880State *s)
+{
+    return (s->regs[REG_SXFRCTL0] & 8) &&
+           !(s->regs[REG_SSTAT1] & 0x10);
+}
 
 static void aic7880_update_irq(AIC7880State *s)
 {
@@ -397,7 +444,8 @@ static void aic7880_host_dma(AIC7880State *s)
     bool success;
 
     aic7880_fifo_status(s);
-    if (!s->host_request_pending ||
+    if ((s->req && s->phase != AIC_PHASE_DATA) ||
+        s->peer_nexus_disconnected || !s->host_request_pending ||
         (pci_get_word(pci->config + PCI_STATUS) &
          (PCI_STATUS_REC_MASTER_ABORT | PCI_STATUS_REC_TARGET_ABORT)) ||
         !(pci_get_word(pci->config + PCI_COMMAND) & PCI_COMMAND_MASTER) ||
@@ -490,6 +538,8 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
 
     s->regs[REG_SCSIDATL] = req->status;
     s->regs[REG_SCSISIGI] = SCSI_SIG_STATUS;
+    s->phase = AIC_PHASE_STATUS;
+    aic7880_pio_present(s);
     phase_mismatch = s->expected_phase != 0xff &&
                      (s->regs[REG_SCSISIGI] & 0x02) &&
                      (s->regs[REG_SCSISIGI] & 0xe0) != s->expected_phase;
@@ -529,6 +579,9 @@ static void aic7880_cancel(SCSIRequest *req)
     AIC7880State *s = req->hba_private;
 
     if (s->req == req) {
+        s->peer_nexus_disconnected = false;
+        s->peer_nexus_saved = false;
+        s->peer_nexus_message = 0;
         s->scsi_data_len = s->scsi_data_pos = 0;
         s->regs[REG_DFSTATUS] |= 1;
         s->regs[REG_DFCNTRL] &= ~DFC_FIFOFLUSH;
@@ -544,7 +597,8 @@ static void aic7880_process_scsi_data(AIC7880State *s)
     SCSIRequest *req = s->req;
     bool from_target;
 
-    if (!req || !s->scsi_data_len) {
+    if (!req || !s->scsi_data_len || s->phase != AIC_PHASE_DATA ||
+        s->peer_nexus_disconnected) {
         return;
     }
     from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
@@ -607,7 +661,13 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     AIC7880State *s = req->hba_private;
     bool from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
 
+    if (s->regs[REG_SCSIRATE] & 0x8f) {
+        aic7880_error(s, "synchronous or wide DATA is unsupported");
+        scsi_req_cancel(req);
+        return;
+    }
     s->phase = AIC_PHASE_DATA;
+    aic7880_pio_present(s);
     s->regs[REG_SCSISIGI] = from_target ? SCSI_SIG_DATA_IN :
                              SCSI_SIG_DATA_OUT;
     if (s->test_peer && s->peer_hold_data_in && from_target && len) {
@@ -652,7 +712,8 @@ static void aic7880_bus_free_timer_cb(void *opaque)
 {
     AIC7880State *s = opaque;
 
-    if (!s->selected && !s->selection_pending && !s->req) {
+    if (!s->selected && !s->selection_pending &&
+        (!s->req || s->peer_nexus_disconnected)) {
         s->regs[REG_SSTAT1] |= 0x08;
         aic7880_update_scsi_irq(s);
     }
@@ -721,11 +782,16 @@ static void aic7880_select(AIC7880State *s)
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
     s->target = target;
+    s->peer_nexus_disconnected = false;
+    s->peer_nexus_saved = false;
+    s->peer_nexus_message = 0;
     s->lun = 0;
     s->disconnect_allowed = false;
     s->cdb_len = s->cdb_need = 0;
     s->initiator_atn = false;
     s->identify_seen = false;
+    s->message_out_len = 0;
+    s->message_resume_command = false;
     s->selected = scsi_device_find(&s->bus, 0, s->target, 0) != NULL;
     if (s->selected) {
         s->initiator_atn = s->regs[REG_SCSISEQ] & 0x08;
@@ -734,6 +800,7 @@ static void aic7880_select(AIC7880State *s)
                                  SCSI_SIG_COMMAND;
         s->regs[REG_SSTAT0] = (s->regs[REG_SSTAT0] & ~0x10) | 0x42;
         s->regs[REG_SSTAT1] &= ~0x08;
+        aic7880_pio_present(s);
         aic7880_update_scsi_irq(s);
     } else {
         s->selection_pending = true;
@@ -744,16 +811,55 @@ static void aic7880_select(AIC7880State *s)
     }
 }
 
+static bool aic7880_message_complete(AIC7880State *s)
+{
+    return s->message_out_len >= 2 &&
+           s->message_out_len == s->message_out[1] + 2;
+}
+
 static void aic7880_finish_message_out(AIC7880State *s)
 {
-    if (s->phase == AIC_PHASE_MSG_OUT && s->identify_seen &&
-        !s->initiator_atn) {
-        s->phase = AIC_PHASE_COMMAND;
-        s->identify_seen = false;
-        s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
-        s->regs[REG_SSTAT0] |= 0x02;
-        aic7880_update_scsi_irq(s);
+    if (s->phase != AIC_PHASE_MSG_OUT || !s->identify_seen ||
+        s->initiator_atn ||
+        (s->message_out_len && !aic7880_message_complete(s))) {
+        return;
     }
+    if (aic7880_message_complete(s)) {
+        s->phase = AIC_PHASE_MSG_IN;
+        s->message_resume_command = true;
+        s->regs[REG_SCSIDATL] = 7; /* MESSAGE REJECT. */
+        s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
+    } else {
+        s->phase = AIC_PHASE_COMMAND;
+        s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
+    }
+    aic7880_pio_present(s);
+    aic7880_update_scsi_irq(s);
+}
+
+static void aic7880_message_out(AIC7880State *s, uint8_t val)
+{
+    unsigned n = s->message_out_len;
+
+    if (!s->identify_seen) {
+        if ((val & 0xb8) != 0x80) {
+            aic7880_error(s, "unsupported Message Out byte");
+            return;
+        }
+        s->lun = val & 7;
+        s->disconnect_allowed = val & 0x40;
+        s->identify_seen = true;
+    } else {
+        if (aic7880_message_complete(s) || n == sizeof(s->message_out) ||
+            (!n && val != 1) || (n == 1 && val != 2 && val != 3) ||
+            (n == 2 && val != (s->message_out[1] == 3 ? 1 : 3))) {
+            aic7880_error(s, "unsupported extended Message Out");
+            return;
+        }
+        s->message_out[s->message_out_len++] = val;
+    }
+    aic7880_pio_present(s);
+    aic7880_finish_message_out(s);
 }
 
 static void aic7880_scsi_reset(AIC7880State *s)
@@ -770,7 +876,12 @@ static void aic7880_scsi_reset(AIC7880State *s)
     s->disconnect_allowed = false;
     s->initiator_atn = false;
     s->identify_seen = false;
+    s->message_out_len = 0;
+    s->message_resume_command = false;
     s->peer_reselection = false;
+    s->peer_nexus_disconnected = false;
+    s->peer_nexus_saved = false;
+    s->peer_nexus_message = 0;
     s->peer_hold_data_in = false;
     s->peer_data_in_pending = false;
     s->peer_faulted_command = false;
@@ -815,7 +926,12 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->disconnect_allowed = false;
     s->initiator_atn = false;
     s->identify_seen = false;
+    s->message_out_len = 0;
+    s->message_resume_command = false;
     s->peer_reselection = false;
+    s->peer_nexus_disconnected = false;
+    s->peer_nexus_saved = false;
+    s->peer_nexus_message = 0;
     s->peer_scsi_irq_latched = false;
     s->peer_hold_data_in = false;
     s->peer_data_in_pending = false;
@@ -854,6 +970,49 @@ static uint8_t aic7880_error_status(AIC7880State *s)
     return s->error | (aic7880_pci_status(s) ? 0x40 : 0);
 }
 
+static void aic7880_nexus_message(AIC7880State *s, uint8_t message)
+{
+    s->peer_nexus_message = message;
+    s->phase = AIC_PHASE_MSG_IN;
+    s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
+    s->regs[REG_SCSIDATL] = message;
+    aic7880_pio_present(s);
+    aic7880_update_scsi_irq(s);
+}
+
+static void aic7880_nexus_message_done(AIC7880State *s)
+{
+    uint8_t message = s->peer_nexus_message;
+
+    s->peer_nexus_message = 0;
+    if (message == 4) { /* DISCONNECT. */
+        s->peer_nexus_disconnected = true;
+        s->selected = false;
+        s->initiator_atn = false;
+        s->phase = AIC_PHASE_BUS_FREE;
+        s->regs[REG_SCSISIGI] = 0;
+        s->regs[REG_SSTAT0] &= ~0x62;
+        timer_mod(s->bus_free_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+    } else {
+        if (message == 2) { /* SAVE DATA POINTER. */
+            s->peer_nexus_saved = true;
+            s->peer_nexus_saved_pos = s->scsi_data_pos;
+        } else if (message == 3) { /* RESTORE POINTERS. */
+            s->scsi_data_pos = s->peer_nexus_saved_pos;
+        } else {
+            s->peer_nexus_disconnected = false; /* IDENTIFY accepted. */
+        }
+        s->phase = AIC_PHASE_DATA;
+        s->regs[REG_SCSISIGI] = s->peer_nexus_signal;
+    }
+    aic7880_pio_present(s);
+    aic7880_update_scsi_irq(s);
+    if (message != 4) {
+        aic7880_process_scsi_data(s);
+    }
+}
+
 static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
 {
     AIC7880State *s = opaque;
@@ -874,38 +1033,51 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == REG_SCSIDATL) {
         uint8_t data = s->regs[REG_SCSIDATL];
 
+        if (s->phase != AIC_PHASE_STATUS && s->phase != AIC_PHASE_MSG_IN) {
+            aic7880_error(s, "SCSIDATL read outside incoming PIO phase");
+            return 0xff;
+        }
         if (s->peer_reselection || s->peer_data_in_pending ||
             s->peer_faulted_command) {
             aic7880_error(s, "SCSI transfer during synthetic peer event");
             return 0xff;
         }
 
-        if (s->phase == AIC_PHASE_STATUS ||
-            s->phase == AIC_PHASE_MSG_IN) {
-            if (!s->running) {
-                aic7880_error(s, "manual status PIO is unsupported");
-                return 0xff;
-            }
-            if (!(s->regs[REG_SXFRCTL0] & 0x08)) {
-                aic7880_error(s, "automatic SCSI PIO is disabled");
-                return 0xff;
-            }
+        if (!aic7880_pio_enabled(s)) {
+            return data;
         }
-        if (s->phase == AIC_PHASE_STATUS) {
+        if (!s->running && !s->message_resume_command) {
+            aic7880_error(s, "manual status PIO is unsupported");
+            return 0xff;
+        }
+        if (s->phase == AIC_PHASE_MSG_IN && s->peer_nexus_message) {
+            aic7880_nexus_message_done(s);
+        } else if (s->phase == AIC_PHASE_STATUS) {
             s->phase = AIC_PHASE_MSG_IN;
             s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
             s->regs[REG_SCSIDATL] = 0; /* Command Complete. */
+            aic7880_pio_present(s);
+            aic7880_update_scsi_irq(s);
+        } else if (s->phase == AIC_PHASE_MSG_IN && s->message_resume_command) {
+            s->message_resume_command = false;
+            s->message_out_len = 0;
+            s->phase = AIC_PHASE_COMMAND;
+            s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
+            aic7880_pio_present(s);
             aic7880_update_scsi_irq(s);
         } else if (s->phase == AIC_PHASE_MSG_IN) {
             s->phase = AIC_PHASE_BUS_FREE;
             s->initiator_atn = false;
             s->identify_seen = false;
+            s->message_out_len = 0;
+            s->message_resume_command = false;
             s->regs[REG_SCSISIGI] = 0;
-            s->regs[REG_SSTAT0] &= ~0x42;
+            s->regs[REG_SSTAT0] &= ~0x62;
             s->regs[REG_SSTAT1] |= 0x08;
             s->selected = false;
             s->lun = 0;
             s->disconnect_allowed = false;
+            aic7880_pio_present(s);
             aic7880_update_scsi_irq(s);
         }
         return data;
@@ -952,6 +1124,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_STCNT:
     case REG_STCNT + 1:
     case REG_STCNT + 2:
+    case REG_SCSIRATE:
     case REG_SSTAT0:
     case REG_SSTAT1:
     case REG_SIMODE0:
@@ -969,6 +1142,12 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_SCBCNT:
     case REG_INTSTAT:
         return s->regs[addr];
+    case REG_SCSIBUSL:
+        if (s->phase == AIC_PHASE_MSG_IN || s->phase == AIC_PHASE_STATUS) {
+            return s->regs[REG_SCSIDATL];
+        }
+        aic7880_error(s, "unqualified SCSIBUSL data");
+        return 0xff;
     case REG_DSPCISTATUS:
         return (s->regs[addr] & 0xc0) | aic7880_pci_status(s);
     case REG_SEQRAM:
@@ -1089,12 +1268,18 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     }
     switch (addr) {
+    case REG_SCSIRATE:
+        s->regs[addr] = val;
+        break;
     case REG_SSTAT0: /* CLRSINT0 on writes. */
         s->regs[REG_SSTAT0] &= ~(val & 0x7a);
         aic7880_update_scsi_irq(s);
         break;
     case REG_SSTAT1: /* CLRSINT1 on writes. */
         s->regs[REG_SSTAT1] &= ~(val & 0xef);
+        if (val & 1) {
+            s->regs[REG_SSTAT1] &= ~0x10;
+        }
         if ((val & 0x04) && s->peer_last_parity_bad) {
             s->regs[REG_SSTAT1] |= 0x04;
         }
@@ -1120,7 +1305,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[addr] = val;
         aic7880_update_scsi_irq(s);
         break;
-    case REG_SXFRCTL0:
+    case REG_SXFRCTL0: {
+        bool pio_was_enabled = s->regs[addr] & 8;
+
         if (val & ~0x9a) {
             aic7880_error(s, "unsupported SXFRCTL0 control");
             break;
@@ -1143,6 +1330,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->disconnect_allowed = false;
             s->initiator_atn = false;
             s->identify_seen = false;
+            s->message_out_len = 0;
+            s->message_resume_command = false;
             s->peer_hold_data_in = false;
             s->peer_faulted_command = false;
             s->phase = AIC_PHASE_BUS_FREE;
@@ -1154,13 +1343,15 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[addr] = val & 0x88;
         if (!(val & 0x08)) {
             s->regs[REG_SSTAT0] &= ~0x02;
-        } else if (s->phase == AIC_PHASE_COMMAND ||
-                   s->phase == AIC_PHASE_STATUS ||
-                   s->phase == AIC_PHASE_MSG_IN) {
-            s->regs[REG_SSTAT0] |= 0x02;
+        } else if (!pio_was_enabled) {
+            aic7880_pio_present(s);
+        }
+        if (!s->selected) {
+            aic7880_pio_present(s);
         }
         aic7880_update_scsi_irq(s);
         break;
+    }
     case REG_SXFRCTL1: {
         uint8_t old = s->regs[addr];
 
@@ -1177,11 +1368,28 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_SCSISIGI: /* SCSISIGO on writes. */
-        if (val & ~0xe0) {
+        if ((val & ~0xf0) ||
+            ((val & SCSI_SIG_ATN) &&
+             (!s->selected || s->req || s->cdb_len ||
+              (s->phase != AIC_PHASE_MSG_OUT &&
+               s->phase != AIC_PHASE_COMMAND)))) {
             aic7880_error(s, "unsupported SCSISIGO control");
             break;
         }
-        s->expected_phase = val;
+        if (val & SCSI_SIG_ATN) {
+            s->initiator_atn = true;
+            if (s->phase == AIC_PHASE_COMMAND) {
+                s->phase = AIC_PHASE_MSG_OUT;
+                s->identify_seen = true;
+                s->message_out_len = 0;
+                s->message_resume_command = false;
+                s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_OUT;
+                aic7880_pio_present(s);
+            }
+        }
+        s->expected_phase = val & 0xe0;
+        aic7880_pio_phase(s);
+        aic7880_update_scsi_irq(s);
         break;
     case REG_SBLKCTL:
         if (val & ~SBLK_AUTOFLUSHDIS) {
@@ -1329,20 +1537,15 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_SCSIDATL:
-        if (!s->running) {
+        if (aic7880_pio_pending(s) && !aic7880_pio_enabled(s)) {
+            break;
+        }
+        if (!s->running && s->phase != AIC_PHASE_MSG_OUT) {
             aic7880_error(s, "manual command PIO is unsupported");
             break;
         }
-        if (s->phase == AIC_PHASE_MSG_OUT) {
-            if (!s->selected || s->identify_seen || (val & 0xb8) != 0x80) {
-                aic7880_error(s, "unsupported Message Out byte");
-                break;
-            }
-            s->lun = val & 7;
-            s->disconnect_allowed = val & 0x40;
-            s->identify_seen = true;
-            s->regs[REG_SSTAT0] &= ~0x02;
-            aic7880_finish_message_out(s);
+        if (s->phase == AIC_PHASE_MSG_OUT && s->selected) {
+            aic7880_message_out(s, val);
             break;
         }
         if (s->phase != AIC_PHASE_COMMAND) {
@@ -1359,6 +1562,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         s->regs[REG_SSTAT0] &= ~0x02;
+        s->regs[REG_SSTAT1] &= ~0x11;
         s->regs[REG_SCSISIGI] &= ~0x02;
         s->cdb[s->cdb_len++] = val;
         if (s->cdb_len == 1) {
@@ -1371,8 +1575,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         if (s->cdb_len == s->cdb_need) {
             aic7880_start_request(s);
         } else {
-            s->regs[REG_SSTAT0] |= 0x02;
-            s->regs[REG_SCSISIGI] |= 0x02;
+            aic7880_pio_present(s);
         }
         aic7880_update_scsi_irq(s);
         break;
@@ -1630,6 +1833,7 @@ static bool aic7880_dindir_target_supported(AIC7880State *s, uint8_t reg)
     case REG_SXFRCTL1:
     case REG_SCSISIGI:
     case REG_SCSIID:
+    case REG_SCSIRATE:
     case REG_SCSIDATL:
     case REG_SSTAT0:
     case REG_SSTAT1:
@@ -1962,6 +2166,49 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
     g_auto(GStrv) parts = g_strsplit(value, ":", -1);
     unsigned long target_id, initiator_id, position, byte;
 
+    if (g_strv_length(parts) == 3 &&
+        (g_str_equal(parts[0], "save") ||
+         g_str_equal(parts[0], "restore") ||
+         g_str_equal(parts[0], "disconnect"))) {
+        uint8_t message = g_str_equal(parts[0], "save") ? 2 :
+                          g_str_equal(parts[0], "restore") ? 3 : 4;
+
+        if (qemu_strtoul(parts[1], NULL, 10, &target_id) ||
+            qemu_strtoul(parts[2], NULL, 10, &position) ||
+            target_id != s->target || position != s->lun || !s->req ||
+            !s->selected || s->phase != AIC_PHASE_DATA ||
+            !s->scsi_data_len || s->peer_nexus_disconnected ||
+            s->peer_nexus_message ||
+            (message == 4 && !s->disconnect_allowed) ||
+            (message == 3 && (!s->peer_nexus_saved ||
+                              s->peer_nexus_saved_pos > s->scsi_data_len))) {
+            error_setg(errp, "invalid synthetic nexus message");
+            return;
+        }
+        s->peer_nexus_signal = s->regs[REG_SCSISIGI];
+        aic7880_nexus_message(s, message);
+        return;
+    }
+    if (g_strv_length(parts) == 4 && g_str_equal(parts[0], "reselect")) {
+        if (qemu_strtoul(parts[1], NULL, 10, &target_id) ||
+            qemu_strtoul(parts[2], NULL, 10, &initiator_id) ||
+            qemu_strtoul(parts[3], NULL, 10, &position) ||
+            target_id != s->target || position != s->lun ||
+            initiator_id > 7 || initiator_id == target_id ||
+            initiator_id != (s->regs[REG_SCSIID] & 15) ||
+            !s->req || !s->peer_nexus_disconnected || s->selected ||
+            s->phase != AIC_PHASE_BUS_FREE || s->peer_nexus_message ||
+            !(s->regs[REG_SCSISEQ] & 0x10)) {
+            error_setg(errp, "invalid synthetic nexus reselection");
+            return;
+        }
+        timer_del(s->bus_free_timer);
+        s->selected = true;
+        s->regs[REG_SSTAT0] = (s->regs[REG_SSTAT0] & ~0xa0) | 0x20;
+        aic7880_nexus_message(s, 0x80 | s->lun);
+        return;
+    }
+
     if (g_strv_length(parts) == 3 && g_str_equal(parts[0], "reselect")) {
         if (qemu_strtoul(parts[1], NULL, 10, &target_id) ||
             qemu_strtoul(parts[2], NULL, 10, &initiator_id) ||
@@ -1989,6 +2236,9 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
     }
     if (g_str_equal(value, "release") && s->peer_reselection) {
         s->peer_reselection = false;
+        s->peer_nexus_disconnected = false;
+        s->peer_nexus_saved = false;
+        s->peer_nexus_message = 0;
         s->initiator_atn = false;
         s->regs[REG_SSTAT0] &= ~0x20;
         s->regs[REG_SSTAT1] |= 0x08;
@@ -2071,6 +2321,11 @@ static int aic7880_post_load(void *opaque, int version_id)
 {
     AIC7880State *s = opaque;
 
+    if (s->message_out_len > sizeof(s->message_out) ||
+        (s->message_resume_command &&
+         (s->phase != AIC_PHASE_MSG_IN || !aic7880_message_complete(s)))) {
+        return -EINVAL;
+    }
     if (s->seqaddr > AIC_SEQ_INSNS ||
         s->seqbyte >= 4 ||
         s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 7 ||
@@ -2114,9 +2369,6 @@ static int aic7880_post_load(void *opaque, int version_id)
     s->scsi_data_len = s->scsi_data_pos = 0;
     s->running = false;
     s->error_serial = 0;
-    if (version_id < 2) {
-        s->expected_phase = 0xff;
-    }
     aic7880_fifo_status(s);
     aic7880_update_scsi_irq(s);
     if ((s->regs[REG_HCNTRL] & HOST_PAUSE) ||
@@ -2129,7 +2381,7 @@ static int aic7880_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_aic7880 = {
     .name = "aic7880",
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .pre_save = aic7880_pre_save,
     .post_load = aic7880_post_load,
     .fields = (const VMStateField[]) {
@@ -2151,8 +2403,12 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(target, AIC7880State),
         VMSTATE_UINT8(lun, AIC7880State),
         VMSTATE_BOOL(disconnect_allowed, AIC7880State),
+        VMSTATE_BOOL(identify_seen, AIC7880State),
+        VMSTATE_UINT8_ARRAY(message_out, AIC7880State, 5),
+        VMSTATE_UINT8(message_out_len, AIC7880State),
+        VMSTATE_BOOL(message_resume_command, AIC7880State),
         VMSTATE_UINT8(phase, AIC7880State),
-        VMSTATE_UINT8_V(expected_phase, AIC7880State, 2),
+        VMSTATE_UINT8(expected_phase, AIC7880State),
         VMSTATE_UINT8_ARRAY(qout, AIC7880State, 16),
         VMSTATE_UINT8(qout_head, AIC7880State),
         VMSTATE_UINT8(qout_tail, AIC7880State),
