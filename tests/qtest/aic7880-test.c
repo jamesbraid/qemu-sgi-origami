@@ -1666,6 +1666,12 @@ static void test_internal_scb_pointer_migrates(void)
     size_t n = 0;
 
     mark_internal_scb_canaries(from);
+    qtest_writeb(from, REG_BASE + 0x90, 1);
+    qtest_writeb(from, REG_BASE + 0xbf, 0x88);
+    qtest_writeb(from, REG_BASE + 0x90, 16);
+    qtest_writeb(from, REG_BASE + 0xbf, 0x31);
+    qtest_writeb(from, REG_BASE + 0x90, 255);
+    qtest_writeb(from, REG_BASE + 0xbf, 0xf1);
     qtest_writeb(from, REG_BASE + 0x90, 0xff);
     g_assert_cmphex(qtest_readb(from, REG_BASE + 0x90), ==, 0xff);
     g_assert_cmphex(qtest_readb(from, REG_BASE + 0x92), ==, 0);
@@ -1679,6 +1685,7 @@ static void test_internal_scb_pointer_migrates(void)
     start_program(from, program, n);
     g_assert_cmphex(qtest_readb(from, REG_BASE + 0x20), ==, 0x5a);
     qtest_writeb(from, REG_BASE + 0x92, 1);
+    qtest_writeb(from, REG_BASE + 0x9a, 0x9f);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
@@ -1686,7 +1693,18 @@ static void test_internal_scb_pointer_migrates(void)
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x90), ==, 0xff);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x92), ==, 0);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x91), ==, 0);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x9a), ==, 0x9f);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0xa0), ==, 0xf1);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0xbf), ==, 0x22);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x9a), ==, 0x81);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x90), ==, 255);
+    qtest_writeb(to, REG_BASE + 0x9a, 0);
     check_internal_scb_canaries(to);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0xbf), ==, 0xf1);
+    qtest_writeb(to, REG_BASE + 0x90, 0);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0xbf), ==, 0x31);
+    qtest_writeb(to, REG_BASE + 0x90, 1);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0xbf), ==, 0x88);
     g_assert_cmphex(qtest_readb(to, REG_BASE + 0x9d), ==, 0x0d);
     n = 0;
     emit(program, &n, alu_word(1, 0xff, 0x9b, 0x21, false));
@@ -1719,42 +1737,299 @@ static void test_internal_scb_pointer_reset(void)
         g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
         mark_internal_scb_canaries(qts);
         check_internal_scb_canaries(qts);
+        qtest_writeb(qts, REG_BASE + 0x90, 16);
+        qtest_writeb(qts, REG_BASE + 0xbf, 0x73);
+        qtest_writeb(qts, REG_BASE + 0x90, 255);
+        qtest_writeb(qts, REG_BASE + 0xbf, 0x84);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 255);
+        qtest_writeb(qts, REG_BASE + 0x90, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x73);
+        qtest_writeb(qts, REG_BASE + 0x90, 15);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x84);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
         qtest_quit(qts);
     }
 }
 
-static void test_internal_scb_high_array_refusal(void)
+static void test_internal_scb_alias_host(void)
 {
-    for (unsigned write = 0; write < 2; write++) {
-        g_autofree char *dir = g_dir_make_tmp("aic7880-high-scb-XXXXXX", NULL);
+    g_autofree char *dir = g_dir_make_tmp("aic7880-scb-alias-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
+    QTestState *qts = start_aic_logged(path);
+    static const uint8_t pages[] = { 0, 15, 1, 14 };
+    static const uint8_t values[] = { 0x20, 0x80, 0xc0, 0xe0 };
+
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    mark_internal_scb_canaries(qts);
+    for (unsigned page = 0; page < ARRAY_SIZE(pages); page++) {
+        qtest_writeb(qts, REG_BASE + 0x90, pages[page]);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            qtest_writeb(qts, REG_BASE + 0xa0 + byte, values[page] + byte);
+        }
+    }
+    for (unsigned alias = 0; alias < 2; alias++) {
+        unsigned high = alias ? 255 : 16;
+        unsigned low = alias ? 15 : 0;
+        unsigned initial = alias ? 0x80 : 0x20;
+        unsigned changed = alias ? 0xa0 : 0x40;
+
+        qtest_writeb(qts, REG_BASE + 0x90, high);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0 + byte), ==,
+                            initial + byte);
+            qtest_writeb(qts, REG_BASE + 0xa0 + byte, changed + byte);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, high);
+        qtest_writeb(qts, REG_BASE + 0x90, low);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0 + byte), ==,
+                            changed + byte);
+        }
+    }
+    /* The I/O BAR selects the same byte array and full pointer latch. */
+    config_writel(qts, 0x10, 0x1001);
+    config_writew(qts, 4, 7);
+    qtest_outb(qts, 0x1090, 255);
+    qtest_outb(qts, 0x10bf, 0x7e);
+    g_assert_cmphex(qtest_inb(qts, 0x1090), ==, 255);
+    qtest_writeb(qts, REG_BASE + 0x90, 15);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x7e);
+    for (unsigned guard = 2; guard < ARRAY_SIZE(pages); guard++) {
+        qtest_writeb(qts, REG_BASE + 0x90, pages[guard]);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0 + byte), ==,
+                            values[guard] + byte);
+        }
+    }
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    g_assert_false(qtest_get_irq(qts, 11));
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 0x0d);
+    qtest_quit(qts);
+    assert_no_aic_log(path);
+    unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_internal_scb_alias_sequencer(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-scb-seq-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
+    QTestState *qts = start_aic_logged(path);
+    uint8_t program[64];
+    size_t n = 0;
+    static const uint8_t pages[] = { 0, 15, 1, 14 };
+
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    mark_internal_scb_canaries(qts);
+    for (unsigned page = 0; page < ARRAY_SIZE(pages); page++) {
+        qtest_writeb(qts, REG_BASE + 0x90, pages[page]);
+        qtest_writeb(qts, REG_BASE + 0xa0, 0x11 + page * 0x33);
+        qtest_writeb(qts, REG_BASE + 0xa5, 0x22 + page * 0x33);
+        qtest_writeb(qts, REG_BASE + 0xbf, 0x33 + page * 0x33);
+    }
+    emit_or(program, &n, 16, 0x90);
+    emit(program, &n, alu_word(1, 0xff, 0xa0, 0x20, false));
+    emit(program, &n, alu_word(1, 0xff, 0xbf, 0x21, false));
+    emit_or(program, &n, 0x9a, 0xa5);
+    emit_or(program, &n, 255, 0x90);
+    emit(program, &n, alu_word(1, 0xff, 0xa0, 0x22, false));
+    emit(program, &n, alu_word(1, 0xff, 0xbf, 0x23, false));
+    emit_or(program, &n, 0x6b, 0xbf);
+    emit_or(program, &n, 0xa0, 0x66);
+    emit_or(program, &n, 0x7c, 0x6d);
+    emit_or(program, &n, 0xbf, 0x65);
+    emit(program, &n, alu_word(1, 0xff, 0x6c, 0x24, false));
+    emit_or(program, &n, 1, 0x91);
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 255);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0x11);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x21), ==, 0x33);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x22), ==, 0x44);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0x66);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24), ==, 0x6b);
+    qtest_writeb(qts, REG_BASE + 0x92, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    g_assert_false(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 0x90, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa5), ==, 0x9a);
+    qtest_writeb(qts, REG_BASE + 0x90, 15);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x7c);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x6b);
+    for (unsigned page = 2; page < ARRAY_SIZE(pages); page++) {
+        qtest_writeb(qts, REG_BASE + 0x90, pages[page]);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==,
+                        0x11 + page * 0x33);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa5), ==,
+                        0x22 + page * 0x33);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==,
+                        0x33 + page * 0x33);
+    }
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 0x0d);
+    qtest_quit(qts);
+    assert_no_aic_log(path);
+    unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_internal_scb_alias_auto(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-scb-auto-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
+    QTestState *qts = start_aic_logged(path);
+    uint8_t program[16];
+    size_t n = 0;
+
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    mark_internal_scb_canaries(qts);
+    for (unsigned page = 0; page < 2; page++) {
+        qtest_writeb(qts, REG_BASE + 0x90, page);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            qtest_writeb(qts, REG_BASE + 0xa0 + byte,
+                         (page ? 0x80 : 0x20) + byte);
+        }
+    }
+    qtest_writeb(qts, REG_BASE + 0x90, 16);
+    qtest_writeb(qts, REG_BASE + 0x9a, 0x9f);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa4), ==, 0x3f);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xbf), ==, 0x20);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9a), ==, 0x81);
+    qtest_writeb(qts, REG_BASE + 0x9a, 0x9f);
+    qtest_writeb(qts, REG_BASE + 0xbf, 0x55);
+    qtest_writeb(qts, REG_BASE + 0xa0, 0x66);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9a), ==, 0x81);
+    qtest_writeb(qts, REG_BASE + 0x9a, 0x9f);
+    emit(program, &n, alu_word(1, 0xff, 0xa0, 0x20, false));
+    emit(program, &n, alu_word(1, 0xff, 0xbf, 0x21, false));
+    emit_or(program, &n, 0x77, 0xaf);
+    emit_or(program, &n, 1, 0x91);
+    start_program(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 16);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9a), ==, 0x82);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0x55);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x21), ==, 0x66);
+    qtest_writeb(qts, REG_BASE + 0x92, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    g_assert_false(qtest_get_irq(qts, 11));
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==, 1);
+    g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+    qtest_writeb(qts, REG_BASE + 0x9a, 0);
+    for (unsigned page = 0; page < 2; page++) {
+        qtest_writeb(qts, REG_BASE + 0x90, page);
+        for (unsigned byte = 0; byte < 32; byte++) {
+            unsigned expected = (page ? 0x80 : 0x20) + byte;
+
+            if (!page) {
+                expected = byte == 31 ? 0x55 : byte == 0 ? 0x66 :
+                           byte == 1 ? 0x77 : expected;
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0 + byte), ==,
+                            expected);
+        }
+    }
+    qtest_quit(qts);
+    assert_no_aic_log(path);
+    unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_internal_scb_alias_bounds(void)
+{
+    static const unsigned outside[] = { 0x9f, 0xc0 };
+
+    for (unsigned access = 0; access < 4; access++) {
+        g_autofree char *dir = g_dir_make_tmp(
+            "aic7880-scb-bounds-XXXXXX", NULL);
         g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
         g_autofree char *log = NULL;
         QTestState *qts = start_aic_logged(path);
-        uint8_t program[8];
-        size_t n = 0;
 
-        mark_internal_scb_canaries(qts);
-        qtest_writeb(qts, REG_BASE + 0x20, 0xa5);
-        qtest_writeb(qts, REG_BASE + 0x90, 0xff);
-        if (write) {
-            qtest_writeb(qts, REG_BASE + 0xa0, 0x99);
-        } else {
-            qtest_readb(qts, REG_BASE + 0xa0);
+        for (unsigned page = 0; page < 16; page++) {
+            qtest_writeb(qts, REG_BASE + 0x90, page);
+            for (unsigned byte = 0; byte < 32; byte++) {
+                qtest_writeb(qts, REG_BASE + 0xa0 + byte, page * 7 + byte);
+            }
         }
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 0xff);
+        qtest_writeb(qts, REG_BASE + 0x90, 255);
+        qtest_writeb(qts, REG_BASE + 0x9a, 0x9f);
+        if (access & 1) {
+            qtest_writeb(qts, REG_BASE + outside[access / 2], 0xee);
+        } else {
+            qtest_readb(qts, REG_BASE + outside[access / 2]);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9a), ==, 0x9f);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 255);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
-        check_internal_scb_canaries(qts);
-        emit_or(program, &n, 0x5a, 0x20);
-        emit_or(program, &n, 1, 0x91);
-        start_program(qts, program, n);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0xa5);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 0x0d);
+        qtest_writeb(qts, REG_BASE + 0x9a, 0);
+        for (unsigned page = 0; page < 16; page++) {
+            qtest_writeb(qts, REG_BASE + 0x90, page);
+            for (unsigned byte = 0; byte < 32; byte++) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0 + byte), ==,
+                                page * 7 + byte);
+            }
+        }
         qtest_quit(qts);
         g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
-        g_assert_nonnull(strstr(log, "external SCB RAM is absent"));
+        g_assert_nonnull(strstr(log, "unsupported register"));
         unlink(path);
         g_rmdir(dir);
+    }
+}
+
+static void test_internal_scb_alias_queue_limits(void)
+{
+    for (unsigned scenario = 0; scenario < 4; scenario++) {
+        QTestState *qts = start_aic();
+        uint8_t program[136];
+        size_t n = 0;
+
+        qtest_writeb(qts, REG_BASE + 0x90, 255);
+        if (scenario == 0) {
+            qtest_writeb(qts, REG_BASE + 0x9b, 16);
+        } else if (scenario == 1) {
+            for (unsigned id = 0; id < 16; id++) {
+                qtest_writeb(qts, REG_BASE + 0x9b, id);
+            }
+            qtest_writeb(qts, REG_BASE + 0x9b, 0);
+        } else {
+            if (scenario == 3) {
+                for (unsigned id = 0; id < 16; id++) {
+                    qtest_writeb(qts, REG_BASE + 0x9b, id);
+                    emit(program, &n, alu_word(1, 0xff, 0x9b, 0x20, false));
+                    emit(program, &n, alu_word(0, 0, 0x20, 0x9d, false));
+                }
+            }
+            emit_or(program, &n, scenario == 2 ? 16 : 0, 0x9d);
+            emit_or(program, &n, 1, 0x91);
+            start_program(qts, program, n);
+        }
+        g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9c), ==,
+                         scenario == 1 ? 16 : 0);
+        g_assert_cmpuint(qtest_readb(qts, REG_BASE + 0x9e), ==,
+                         scenario == 3 ? 16 : 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x90), ==, 255);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+        if (scenario == 3) {
+            for (unsigned id = 0; id < 16; id++) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, id);
+            }
+        }
+        qtest_quit(qts);
     }
 }
 
@@ -6601,7 +6876,9 @@ static void test_scb_pages_and_sequencer_access(void)
 
     qtest_writeb(qts, REG_BASE + 0x90, 16);
     qtest_writeb(qts, REG_BASE + 0xa0, 0xee);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0xff);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0xee);
+    qtest_writeb(qts, REG_BASE + 0x90, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0xee);
     qtest_writeb(qts, REG_BASE + 0x90, 2);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xa0), ==, 0x35);
     qtest_quit(qts);
@@ -10448,8 +10725,16 @@ int main(int argc, char **argv)
                    test_internal_scb_pointer_migrates);
     qtest_add_func("aic7880/internal-scb-pointer/reset",
                    test_internal_scb_pointer_reset);
-    qtest_add_func("aic7880/internal-scb-pointer/high-array-refusal",
-                   test_internal_scb_high_array_refusal);
+    qtest_add_func("aic7880/internal-scb-alias/host",
+                   test_internal_scb_alias_host);
+    qtest_add_func("aic7880/internal-scb-alias/sequencer",
+                   test_internal_scb_alias_sequencer);
+    qtest_add_func("aic7880/internal-scb-alias/auto",
+                   test_internal_scb_alias_auto);
+    qtest_add_func("aic7880/internal-scb-alias/bounds",
+                   test_internal_scb_alias_bounds);
+    qtest_add_func("aic7880/internal-scb-alias/queue-limits",
+                   test_internal_scb_alias_queue_limits);
     qtest_add_func("aic7880/external-scb-capacity", test_external_scb_capacity);
     qtest_add_func("aic7880/external-scb-queues", test_external_scb_queues);
     qtest_add_func("aic7880/external-scb-auto", test_external_scb_auto);
