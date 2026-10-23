@@ -1647,11 +1647,7 @@ static void aic7880_run(AIC7880State *s)
             aic7880_bad_opcode(s, op);
             goto done;
         }
-        if (op == 0 && (insn & (1u << 24))) {
-            aic7880_error(s, "unsupported OR return instruction");
-            goto done;
-        }
-        if (op && (insn & (1u << 24)) && !s->return_depth) {
+        if ((insn & (1u << 24)) && !s->return_depth) {
             aic7880_error(s, "sequencer return without call");
             goto done;
         }
@@ -1745,8 +1741,7 @@ static void aic7880_run(AIC7880State *s)
         if (op >= 2 && op <= 4 && s->error_serial == error_before) {
             s->regs[REG_FLAGS] = updated_flags;
         }
-        if (op && (insn & (1u << 24)) &&
-            s->error_serial == error_before &&
+        if ((insn & (1u << 24)) && s->error_serial == error_before &&
             return_depth_before &&
             s->return_depth == return_depth_before) {
             /* The destination write reported no controller error. */
