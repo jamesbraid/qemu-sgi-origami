@@ -6793,6 +6793,233 @@ static void test_line_smoothing_unstippled_is_one_rectangle(void)
     g_assert_cmphex(frag_pixel(&f, 10, 20), ==, 0x6060ff);
 }
 
+#define COVERAGE_EPSILON (1.0 / (1ull << 40))
+
+/*
+ * OpenGL 1.2.1's box filter (3.3.2, 3.4.2): a fragment's coverage is the
+ * area of its square inside the point's circle or the line's rectangle.
+ */
+static void test_smooth_area_coverage_exact(void)
+{
+    SGIRasterRules area = rules_stencil;
+    double half = sqrt(0.5);
+
+    area.smooth_primitives = true;
+    area.smooth_rule = SGI_SMOOTH_AREA;
+    /* A unit circle on a pixel corner: a quarter disc in each square. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&area, 10, 10, 1, 9, 9), M_PI / 16,
+        COVERAGE_EPSILON);
+    /* Diameter 2 on the corner: the quarter disc fills a quarter circle. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&area, 10, 10, 2, 10, 10), M_PI / 4,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat(sgi_raster_point_coverage(&area, 10, 10, 2, 12, 10),
+                      ==, 0);
+    /* Size counts: diameter 4 covers the centre's neighbours fully. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&area, 10.5, 10.5, 4, 11, 10), 1,
+        COVERAGE_EPSILON);
+
+    /* A width-1 line on a row's centre covers it; one on its edge, half. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 10, 20.5, 14, 20.5, 1, 11, 20), 1,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 10, 21, 14, 21, 1, 11, 20), 0.5,
+        COVERAGE_EPSILON);
+    /* The end through the endpoint is perpendicular: 3/4 of the square. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 10.25, 20.5, 14, 20.5, 1, 10, 20),
+        0.75, COVERAGE_EPSILON);
+    /* Width counts: 3 wide reaches the next row out in full. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 10, 20.5, 14, 20.5, 3, 11, 21), 1,
+        COVERAGE_EPSILON);
+    /*
+     * A diagonal sqrt(2) wide spans |x - y| <= 1: all of the square it
+     * crosses, half of the one beside it.
+     */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 0, 0, 4, 4, 2 * half, 1, 1), 1,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&area, 0, 0, 4, 4, 2 * half, 2, 1), 0.5,
+        COVERAGE_EPSILON);
+}
+
+/*
+ * The two-pixel filter: at size 1 a point weights its 2x2 neighbourhood
+ * bilinearly and a line its two minor-axis pixels by distance; larger, a
+ * box of the size filtered by a one-pixel tent.
+ */
+static void test_smooth_two_pixel_filter_exact(void)
+{
+    SGIRasterRules filter = rules_stencil;
+    double k = sqrt(1.25);
+
+    filter.smooth_primitives = true;
+    filter.smooth_rule = SGI_SMOOTH_TWO_PIXEL_FILTER;
+    /* On a pixel centre the point is that pixel alone. */
+    g_assert_cmpfloat(sgi_raster_point_coverage(&filter, 10.5, 10.5, 1,
+                                                10, 10), ==, 1);
+    g_assert_cmpfloat(sgi_raster_point_coverage(&filter, 10.5, 10.5, 1,
+                                                11, 10), ==, 0);
+    g_assert_cmpfloat(sgi_raster_point_coverage(&filter, 10.5, 10.5, 1,
+                                                9, 10), ==, 0);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&filter, 10.25, 10.75, 1, 9, 10),
+        0.25 * 0.75, COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&filter, 10.25, 10.75, 1, 10, 10),
+        0.75 * 0.75, COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&filter, 10.25, 10.75, 1, 9, 11),
+        0.25 * 0.25, COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&filter, 10.25, 10.75, 1, 10, 11),
+        0.75 * 0.25, COVERAGE_EPSILON);
+    /*
+     * Size 4 spans 2.5 pixels either side at full weight down to zero:
+     * the centre's pixel full, pixel 8, 1.75 away in x, at 3/4, and pixel
+     * 7, 2.75 away, not at all.
+     */
+    g_assert_cmpfloat(sgi_raster_point_coverage(&filter, 10.25, 10.75, 4,
+                                                10, 10), ==, 1);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_point_coverage(&filter, 10.25, 10.75, 4, 8, 10), 0.75,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat(sgi_raster_point_coverage(&filter, 10.25, 10.75, 4,
+                                                7, 10), ==, 0);
+
+    /* On a row's centre a horizontal line is that row alone. */
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 10, 20.5, 14, 20.5,
+                                               1, 11, 20), ==, 1);
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 10, 20.5, 14, 20.5,
+                                               1, 11, 21), ==, 0);
+    /* Between two rows it is half of each. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 10, 21, 14, 21, 1, 11, 20), 0.5,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 10, 21, 14, 21, 1,
+                                               11, 22), ==, 0);
+    /* Width 5 is full to 2 pixels out, 1/2 at 2.5 and nothing at 3.5. */
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 10, 21, 14, 21, 5,
+                                               11, 22), ==, 1);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 10, 21, 14, 21, 5, 11, 23), 0.5,
+        COVERAGE_EPSILON);
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 10, 21, 14, 21, 5,
+                                               11, 24), ==, 0);
+    /* An endpoint fades with the part of its column the segment spans. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 10.25, 20.5, 14, 20.5, 1, 10, 20),
+        0.75, COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 10, 20.5, 13.5, 20.5, 1, 13, 20),
+        0.5, COVERAGE_EPSILON);
+    /* A diagonal through centres: the slope correction clamps at one. */
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 0, 0, 4, 4, 1, 1, 1),
+                      ==, 1);
+    g_assert_cmpfloat(sgi_raster_line_coverage(&filter, 0, 0, 4, 4, 1, 1, 2),
+                      ==, 0);
+    /*
+     * Slope 1/2: in column 1 the line is at y 1.25, a quarter pixel from
+     * row 1's centre and three quarters from row 0's, each weight scaled
+     * by sqrt(1 + 1/4).
+     */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 0, 0.5, 4, 2.5, 1, 1, 1),
+        0.75 * k, COVERAGE_EPSILON);
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 0, 0.5, 4, 2.5, 1, 1, 0),
+        0.25 * k, COVERAGE_EPSILON);
+    /* A y-major line filters across x. */
+    g_assert_cmpfloat_with_epsilon(
+        sgi_raster_line_coverage(&filter, 21, 10, 21, 14, 1, 20, 11), 0.5,
+        COVERAGE_EPSILON);
+}
+
+/*
+ * The filter reaches the framebuffer through alpha: a white point a
+ * quarter pixel right of a centre, blended over blue, leaves 3/4 and 1/4
+ * of white in the two pixels, and nothing above or below.
+ */
+static void test_smooth_two_pixel_filter_draw(void)
+{
+    FragScene f;
+    SGIRasterRules filter = rules_stencil;
+    uint32_t white[4] = { bits(1), bits(1), bits(1), bits(1) };
+
+    filter.smooth_primitives = true;
+    filter.smooth_rule = SGI_SMOOTH_TWO_PIXEL_FILTER;
+    frag_init(&f);
+    f.rec.rules = &filter;
+    frag_quad(&f, 0, 0, 1, 1);
+    frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_command(&f, SGI_GL_OP_COLOR4F, white, ARRAY_SIZE(white));
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 10.75, 10.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 10, 10), ==, 0xbfbfff);
+    g_assert_cmphex(frag_pixel(&f, 11, 10), ==, 0x4040ff);
+    g_assert_cmphex(frag_pixel(&f, 9, 10), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 10, 11), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 10, 9), ==, 0x0000ff);
+
+    /* A line between rows 20 and 21 gives each half. */
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 10, 21);
+    wide_vertex(&f, 14, 21);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 12, 20), ==, 0x8080ff);
+    g_assert_cmphex(frag_pixel(&f, 12, 21), ==, 0x8080ff);
+    g_assert_cmphex(frag_pixel(&f, 12, 19), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 12, 22), ==, 0x0000ff);
+}
+
+/*
+ * In colour-index mode the filter's weight replaces the low four bits.
+ * The geometry is where the filter and OpenGL's area coverage differ. A
+ * slope-1/2 line in column 10 is 1/4 from row 21's centre: the filter
+ * gives 3/4 * sqrt(5/4), 13 sixteenths, where the area is 12; 3/4 from
+ * row 22's: 4 sixteenths. A point a quarter right of pixel (30, 10)'s
+ * centre gives it 3/4, 12, and (31, 10) 1/4, 4, where the area of a
+ * unit disc gives 10 and 2.
+ */
+static void test_smooth_two_pixel_filter_index(void)
+{
+    FragScene f;
+    SGIRasterRules filter = rules_stencil;
+
+    filter.smooth_primitives = true;
+    filter.smooth_rule = SGI_SMOOTH_TWO_PIXEL_FILTER;
+    frag_init(&f);
+    f.rec.rules = &filter;
+    sgi_gl_set_index_mode(&f.c, 8);
+    frag_command(&f, SGI_GL_OP_INDEXF, (uint32_t[]) { bits(0x40) }, 1);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 8, 20.5);
+    wide_vertex(&f, 16, 24.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 10, 21), ==, 0x4d);
+    g_assert_cmphex(frag_pixel(&f, 10, 22), ==, 0x44);
+    g_assert_cmphex(frag_pixel(&f, 10, 20), ==, 0);
+
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 30.75, 10.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 30, 10), ==, 0x4c);
+    g_assert_cmphex(frag_pixel(&f, 31, 10), ==, 0x44);
+    g_assert_cmphex(frag_pixel(&f, 30, 11), ==, 0);
+}
+
 static void smoothing_rules_disabled_scene(void)
 {
     FragScene aliased, requested;
@@ -13967,6 +14194,14 @@ int main(int argc, char **argv)
                     test_smoothing_rules_disabled);
     g_test_add_func("/sgi-gl/line-smoothing-unstippled-is-one-rectangle",
                     test_line_smoothing_unstippled_is_one_rectangle);
+    g_test_add_func("/sgi-gl/smooth-area-coverage-exact",
+                    test_smooth_area_coverage_exact);
+    g_test_add_func("/sgi-gl/smooth-two-pixel-filter-exact",
+                    test_smooth_two_pixel_filter_exact);
+    g_test_add_func("/sgi-gl/smooth-two-pixel-filter-draw",
+                    test_smooth_two_pixel_filter_draw);
+    g_test_add_func("/sgi-gl/smooth-two-pixel-filter-index",
+                    test_smooth_two_pixel_filter_index);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
