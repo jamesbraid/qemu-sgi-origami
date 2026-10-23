@@ -4,8 +4,9 @@
 # (docs/specs/sgi-onyx2.rst, One-wire records). A composition fits it beside
 # or under a layers/modules/kona-pipe.yaml instance and binds the
 # placeholder `pipe-one-wire` bus to that pipe's one-wire bus, before any
-# other record joins the chain. QEMU's sgi-kona presents its own geometry
-# record whatever this part says.
+# other record joins the chain. QEMU's sgi-kona stores this part in its
+# geometry record; a pipe configured with a product (sgi-kona "product")
+# names and revises that record as its configuration says.
 layer_version: 1
 layer:
   kind: module

@@ -339,6 +339,46 @@ static void test_deskside_places_kona_at_io4(void)
     qtest_quit(qts);
 }
 
+/*
+ * The rack's pipe presents true-wombat's InfiniteReality3: the class word
+ * kona_attach reads after selector 0x8800 is 1, and its 0x1e9 answer
+ * names board set 5 and one RM. The deskside keeps the unconfigured
+ * answer, board set 0 and no RM.
+ */
+static void assert_kona_configuration(const char *args, unsigned int widget,
+                                      uint32_t product, uint32_t board_set,
+                                      uint32_t rms)
+{
+    QTestState *qts = qtest_init(args);
+    uint64_t base = SPACE_IO + widget * WIDGET_SIZE;
+    uint64_t command = base + KONA_COMMAND_PORT;
+
+    qtest_writel(qts, base + 0x8003c0, 0x8800);
+    g_assert_cmphex(qtest_readl(qts, base + 0x8003d0), ==, product);
+    qtest_writel(qts, KONA_RETURN_PAGE, 0);
+    qtest_writel(qts, command, 0x1f2);
+    qtest_writel(qts, command,
+                 0x10000000u | (uint32_t)(KONA_RETURN_PAGE >> 12));
+    qtest_writel(qts, command, 0);
+    qtest_writel(qts, command, 0x1000);
+    qtest_writel(qts, command, 0x1e9);
+    qtest_writel(qts, command, 0);
+    g_assert_cmphex(qtest_readl(qts, KONA_RETURN_PAGE), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, KONA_RETURN_PAGE + 8), ==, board_set);
+    g_assert_cmphex(qtest_readl(qts, KONA_RETURN_PAGE + 8 + 0x58), ==, rms);
+    qtest_quit(qts);
+}
+
+static void test_rack_kona_presents_ir3(void)
+{
+    assert_kona_configuration(RACK_ARGS, 15, 1, 5, 1);
+}
+
+static void test_deskside_kona_unconfigured(void)
+{
+    assert_kona_configuration(DESKSIDE_ARGS, 8, 0, 0, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -354,5 +394,9 @@ int main(int argc, char **argv)
                    test_rack_kona_reset);
     qtest_add_func("sn0/onyx2/deskside-kona-reset-clears-state-keeps-identity",
                    test_deskside_kona_reset);
+    qtest_add_func("sn0/onyx2/rack-kona-presents-ir3",
+                   test_rack_kona_presents_ir3);
+    qtest_add_func("sn0/onyx2/deskside-kona-unconfigured",
+                   test_deskside_kona_unconfigured);
     return g_test_run();
 }
