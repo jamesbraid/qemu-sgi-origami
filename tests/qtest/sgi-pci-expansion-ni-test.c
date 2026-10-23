@@ -1162,6 +1162,129 @@ static void test_routed_direct32_word_write(void)
     }
 }
 
+static void test_routed_direct32_read_placement(void)
+{
+    static const unsigned lengths[] = { 4, 8, 16 };
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    static const uint8_t word[] = {
+        0x43, 0x32, 0x21, 0x10, 0x87, 0x76, 0x65, 0x54,
+        0xcb, 0xba, 0xa9, 0x98, 0x0f, 0xfe, 0xed, 0xdc,
+    };
+    static const uint8_t half[] = {
+        0x54, 0x65, 0x76, 0x87, 0x10, 0x21, 0x32, 0x43,
+        0xdc, 0xed, 0xfe, 0x0f, 0x98, 0xa9, 0xba, 0xcb,
+    };
+
+    for (unsigned slot = 1; slot <= 2; slot++) {
+        for (unsigned wide = 0; wide < 2; wide++) {
+            for (unsigned n = 0; n < G_N_ELEMENTS(lengths); n++) {
+                unsigned length = lengths[n];
+                g_autofree char *options = g_strdup_printf(
+                    "-global sgi-pci-expansion-ni-fixture.card-device=%u "
+                    "-global sgi-pci-expansion-ni-fixture.wide-card=%s "
+                    "-global sgi-pci-expansion-ni-card.transfer-length=%u "
+                    "-global sgi-pci-expansion-ni-card.distinct-second-word=on",
+                    slot, wide ? "on" : "off", length);
+                QTestState *qts;
+                uint64_t h, bar;
+                uint8_t actual[16], expected[16];
+
+                card_device = slot;
+                qts = routed_start(options);
+                h = head(0, 0);
+                bar = card_bar(0);
+                routed_program(qts);
+                configure_card(qts, 0);
+                qtest_writel(qts, h + 0x84,
+                             (0xa << 20) | (NODE(3) >> 31));
+                for (unsigned swap = 0; swap < 2; swap++) {
+                    uint64_t first, second;
+                    const uint8_t *read_expected = swap ?
+                        (length >= 8 ? half : source) : word;
+                    const uint8_t *write_expected = swap ?
+                        (length >= 8 ? half : source) : word;
+                    unsigned write_offset = wide && !swap && length == 4 ?
+                        4 : 0;
+
+                    qtest_writel(qts, h + 0x204 + slot * 8,
+                                 swap ? 0x81012 : 0x1012);
+                    qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+                    qtest_writeb(qts, RAM + 0x7fff, 0xa5);
+                    qtest_writeb(qts, RAM + 0x8010, 0x5a);
+                    qtest_writel(qts, bar + 8, 0x80008000);
+                    qtest_writel(qts, bar + 12, 0);
+                    qtest_writel(qts, bar + 16, 0);
+                    qtest_writel(qts, bar + 20, 0);
+                    qtest_writel(qts, bar + 24, 2);
+                    g_assert_cmphex(qtest_readl(qts, bar + 24), ==, MEMTX_OK);
+                    first = qtest_readl(qts, bar + 16) |
+                            (uint64_t)qtest_readl(qts, bar + 20) << 32;
+                    stq_be_p(actual, first);
+                    if (length == 16) {
+                        second = qtest_readl(qts, bar + 40) |
+                                 (uint64_t)qtest_readl(qts, bar + 44) << 32;
+                        stq_be_p(actual + 8, second);
+                    }
+                    g_assert_cmpmem(actual, length, read_expected, length);
+                    qtest_memread(qts, RAM + 0x8000, actual, sizeof(actual));
+                    g_assert_cmpmem(actual, sizeof(actual), source,
+                                    sizeof(source));
+                    g_assert_cmphex(qtest_readb(qts, RAM + 0x7fff), ==, 0xa5);
+                    g_assert_cmphex(qtest_readb(qts, RAM + 0x8010), ==, 0x5a);
+
+                    qtest_memset(qts, RAM + 0x8000, 0xee, sizeof(expected));
+                    memset(expected, 0xee, sizeof(expected));
+                    memcpy(expected + write_offset, write_expected, length);
+                    dma(qts, 0, 0x80008000,
+                        UINT64_C(0x1021324354657687), true, MEMTX_OK);
+                    qtest_memread(qts, RAM + 0x8000, actual, sizeof(actual));
+                    g_assert_cmpmem(actual, sizeof(actual), expected,
+                                    sizeof(expected));
+                    g_assert_cmphex(qtest_readb(qts, RAM + 0x7fff), ==, 0xa5);
+                    g_assert_cmphex(qtest_readb(qts, RAM + 0x8010), ==, 0x5a);
+                }
+                qtest_quit(qts);
+            }
+        }
+    }
+    card_device = 1;
+}
+
+static void test_routed_direct32_read_exclusions(void)
+{
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.wide-card=on "
+        "-global sgi-pci-expansion-ni-card.transfer-length=16");
+    uint64_t ram = NODE(3) + 0x8000;
+
+    routed_program(qts);
+    qtest_memwrite(qts, RAM + 0x8000, source, sizeof(source));
+    for (unsigned index = 0; index <= 1; index++) {
+        uint64_t h = head(0, index);
+
+        configure_card(qts, index);
+        qtest_writel(qts, h + 0x204 + card_device * 8, 0x1012);
+        qtest_writel(qts, h + 0x84, (0xa << 20) | (ram >> 31));
+        if (!index) {
+            qtest_writeq(qts, h + 0x10000, ram | (0xa << 8) | 1);
+        }
+        dma_read_expect(qts, index,
+                        index ? 0x80008000 : 0x40000000,
+                        UINT64_C(0x8776655443322110), MEMTX_OK);
+        g_assert_cmphex(qtest_readl(qts, card_bar(index) + 40) |
+                        (uint64_t)qtest_readl(qts, card_bar(index) + 44) << 32,
+                        ==, UINT64_C(0x0ffeeddccbbaa998));
+    }
+    qtest_quit(qts);
+}
+
 static void test_routed_wide_direct_dma_chunks(void)
 {
     const unsigned lengths[] = { 8, 16, 256 };
@@ -5376,6 +5499,10 @@ int main(int argc, char **argv)
                    test_routed_wide_direct_dma_chunks);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct32-word-write",
                    test_routed_direct32_word_write);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/direct32-read-placement",
+                   test_routed_direct32_read_placement);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/direct32-read-exclusions",
+                   test_routed_direct32_read_exclusions);
     qtest_add_func("/sgi/pci-expansion-ni/routed/wide-page-dma",
                    test_routed_wide_page_dma);
     qtest_add_func("/sgi/pci-expansion-ni/routed/direct-then-page-same-ram",

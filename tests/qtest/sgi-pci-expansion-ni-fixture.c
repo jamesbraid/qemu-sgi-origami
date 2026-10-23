@@ -42,6 +42,7 @@ struct NICardState {
     uint64_t payload;
     uint64_t second_payload;
     uint32_t transfer_length;
+    bool distinct_second_word;
     bool capture_failed_read;
     uint32_t result;
     uint32_t signature;
@@ -79,6 +80,9 @@ static uint64_t card_read(void *opaque, hwaddr offset, unsigned size)
 static void card_write(void *opaque, hwaddr offset, uint64_t value,
                        unsigned size)
 {
+    static const uint8_t second[] = {
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
     NICardState *s = opaque;
     uint8_t buffer[256];
 
@@ -100,7 +104,8 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
     case 24:
         stq_be_p(buffer, s->payload);
         for (unsigned i = 8; i < s->transfer_length; i++) {
-            buffer[i] = 0x10 + i;
+            buffer[i] = s->distinct_second_word && i < 16 ?
+                second[i - 8] : 0x10 + i;
         }
         if (value == 1) {
             s->result = pci_dma_write(PCI_DEVICE(s), s->address, buffer,
@@ -208,6 +213,8 @@ static const Property card_properties[] = {
     DEFINE_PROP_UINT64("dma-address", NICardState, address, 0),
     DEFINE_PROP_UINT64("dma-payload", NICardState, payload, 0),
     DEFINE_PROP_UINT32("transfer-length", NICardState, transfer_length, 8),
+    DEFINE_PROP_BOOL("distinct-second-word", NICardState,
+                     distinct_second_word, false),
     DEFINE_PROP_BOOL("capture-failed-read", NICardState,
                      capture_failed_read, false),
 };
