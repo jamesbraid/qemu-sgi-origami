@@ -820,8 +820,10 @@ static uint32_t odsy_test_object_texel(QTestState *qts, uint32_t base,
     return odsy_qom_get_uint(qts, "x-test-object-texel");
 }
 
-static uint32_t odsy_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
+static uint32_t odsy_screendump_pixel_sized(QTestState *qts, uint32_t x,
+                                           uint32_t y, uint32_t w, uint32_t h)
 {
+    g_autofree char *header = g_strdup_printf("P6\n%u %u\n255\n", w, h);
     g_autofree char *path = NULL;
     g_autofree char *contents = NULL;
     g_autoptr(GError) error = NULL;
@@ -844,18 +846,47 @@ static uint32_t odsy_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
     }
     g_assert_true(g_file_get_contents(path, &contents, &length, &error));
     g_assert_no_error(error);
-    g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
+    g_assert_true(g_str_has_prefix(contents, header));
     pixels = g_strstr_len(contents, length, "\n255\n");
     g_assert_nonnull(pixels);
     pixels += 5;
-    g_assert_cmpuint(x, <, 1280);
-    g_assert_cmpuint(y, <, 1024);
-    g_assert_cmpuint((gsize)(pixels - contents) + 1280 * 1024 * 3, <=,
-                     length);
-    pixels += (y * 1280 + x) * 3;
+    g_assert_cmpuint(x, <, w);
+    g_assert_cmpuint(y, <, h);
+    g_assert_cmpuint((gsize)(pixels - contents) + w * h * 3, <=, length);
+    pixels += (y * w + x) * 3;
     unlink(path);
     return ((uint8_t)pixels[0] << 16) | ((uint8_t)pixels[1] << 8) |
            (uint8_t)pixels[2];
+}
+
+static uint32_t odsy_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
+{
+    return odsy_screendump_pixel_sized(qts, x, y, 1280, 1024);
+}
+
+/* The "W H" of a screendump's PPM header. */
+static char *odsy_screendump_size(QTestState *qts)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    char **lines;
+    char *size;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-size-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    unlink(path);
+    lines = g_strsplit(contents, "\n", 3);
+    g_assert_cmpstr(lines[0], ==, "P6");
+    size = g_strdup(lines[1]);
+    g_strfreev(lines);
+    return size;
 }
 
 /*
@@ -1899,6 +1930,94 @@ static void test_framebuffer_pixel_reaches_display_and_screendump(void)
     g_assert_cmphex(odsy_screendump_pixel(qts, 6, 5), ==, 0);
 
     board_quit(qts);
+}
+
+/*
+ * The display channel's active size. The kernel and the X server write the
+ * selected video format's active pixels and lines to backend entries 0x2802
+ * and 0x2803, with the channel origin and a zero word after them: 1280 and
+ * 1024 at boot, 1280 and 720 once a V6's X server loads 1280x720_72, the
+ * format gfxinfo then reports. They write zeros there while a format
+ * changes. The scanout presents the latest nonzero size, kept within the
+ * modeled planes, and reset returns it to 1280x1024.
+ */
+static void test_display_channel_size_sets_scanout(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    char *size;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-channel-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+    display_identity(qts, 0);
+
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1280 1024");
+    g_free(size);
+
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 5));
+    backend_push32(qts, 1280);
+    backend_push32(qts, 720);
+    backend_push32(qts, 0);
+    backend_push32(qts, 0);
+    backend_push32(qts, 0);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1280 720");
+    g_free(size);
+    odsy_test_pixel_write(qts, 5, 5, 0x11223344);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 5, 5, 1280, 720), ==,
+                    0x00112233);
+
+    /* The zeros of a format change leave the picture as it was. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 2));
+    backend_push32(qts, 0);
+    backend_push32(qts, 0);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1280 720");
+    g_free(size);
+
+    /* A narrower channel presents the left of each line. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 2));
+    backend_push32(qts, 1024);
+    backend_push32(qts, 768);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1024 768");
+    g_free(size);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 5, 5, 1024, 768), ==,
+                    0x00112233);
+
+    /* Larger than the modeled planes: kept to them and reported. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 2));
+    backend_push32(qts, 1600);
+    backend_push32(qts, 1200);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1280 1024");
+    g_free(size);
+
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2803, 1));
+    backend_push32(qts, 720);
+    qtest_system_reset(qts);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1280 1024");
+    g_free(size);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "display channel 1600x768 is larger than "
+                                 "the modeled 1280x1024 planes"));
+    g_assert_nonnull(strstr(log, "display channel 1280x1200 is larger than "
+                                 "the modeled 1280x1024 planes"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*
@@ -20515,6 +20634,8 @@ int main(int argc, char **argv)
              test_i2c_reset_state_poll_terminates);
     add_case("sn1/odyssey/framebuffer-pixel-reaches-scanout",
              test_framebuffer_pixel_reaches_display_and_screendump);
+    add_fresh_case("sn1/odyssey/display-channel-size-sets-scanout",
+                   test_display_channel_size_sets_scanout);
     add_fresh_case("sn1/odyssey/reset-clears-the-framebuffer",
                    test_reset_clears_the_framebuffer);
     add_fresh_case("sn1/odyssey/reset-mid-primitive-does-not-hang",
