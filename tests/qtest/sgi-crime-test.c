@@ -733,6 +733,45 @@ static void test_ram_128m_aliases_and_holes(void)
     qtest_quit(s);
 }
 
+static void test_flat_fixture_ram_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-flat-ram-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    const char *registration = "-global memory-transaction-test.migrate-ram="
+                               "/objects/fit/fit[0]";
+    g_autofree char *incoming =
+        g_strdup_printf("%s -incoming defer", registration);
+    QTestState *from = crime_start_with_ram(registration);
+    QTestState *to = crime_start_with_ram(incoming);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_writeq(from, 0x1234, 0x126795e4bc304affULL);
+    qtest_writeb(from, CRIME_FITTED_RAM - 1, 0x8d);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readq(to, CRIME_FULL_RAM + 0x1234), ==,
+                    0x126795e4bc304affULL);
+    g_assert_cmphex(qtest_readb(to, CRIME_NO_ECC_RAM + CRIME_FITTED_RAM - 1),
+                    ==, 0x8d);
+    qtest_qmp_assert_success(to,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'realized','value':false}}", MEMTX_TEST_PATH);
+    qtest_qmp_assert_success(to,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'realized','value':true}}", MEMTX_TEST_PATH);
+    g_assert_cmphex(qtest_readq(to, 0x1234), ==, 0x126795e4bc304affULL);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_rmdir(directory);
+}
+
 static void test_ram_unsupported_fit(void)
 {
     QTestState *s;
@@ -1284,6 +1323,8 @@ int main(int argc, char **argv)
                    test_ram_128m_aliases_and_holes);
     qtest_add_func("/sgi/crime/ram-alias-migration",
                    test_ram_alias_mapping_migration);
+    qtest_add_func("/sgi/crime/flat-fixture-ram-migration",
+                   test_flat_fixture_ram_migration);
     qtest_add_func("/sgi/crime/ram-unsupported-fit",
                    test_ram_unsupported_fit);
     qtest_add_func("/sgi/crime/ram-readonly-fit",

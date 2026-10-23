@@ -13,6 +13,7 @@
 #include "qemu/cutils.h"
 #include "qemu/module.h"
 #include "system/qtest.h"
+#include "system/ramblock.h"
 
 #define TYPE_MEMORY_TRANSACTION_TEST "memory-transaction-test"
 OBJECT_DECLARE_SIMPLE_TYPE(MemoryTransactionTest, MEMORY_TRANSACTION_TEST)
@@ -20,6 +21,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(MemoryTransactionTest, MEMORY_TRANSACTION_TEST)
 struct MemoryTransactionTest {
     DeviceState parent_obj;
     char *result;
+    MemoryRegion *migrate_ram;
+    bool ram_registered;
     MemoryRegion test_memory;
     MemoryRegion fault_memory_io;
     uint8_t bytes[65536];
@@ -175,11 +178,25 @@ static void transaction_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "Memory transactions require a qtest server");
         return;
     }
-    if (s->fault_memory) {
-        if (s->fault_memory_base > UINT64_MAX - (UINT64_C(1) << 30)) {
-            error_setg(errp, "Fault memory address range overflows");
+    if (s->fault_memory &&
+        s->fault_memory_base > UINT64_MAX - (UINT64_C(1) << 30)) {
+        error_setg(errp, "Fault memory address range overflows");
+        return;
+    }
+    if (s->migrate_ram) {
+        if (!memory_region_is_ram(s->migrate_ram) ||
+            memory_region_is_rom(s->migrate_ram)) {
+            error_setg(errp, "migrate-ram requires writable test RAM");
             return;
         }
+        if (qemu_ram_get_idstr(s->migrate_ram->ram_block)[0]) {
+            error_setg(errp, "migrate-ram requires unregistered test RAM");
+            return;
+        }
+        vmstate_register_ram(s->migrate_ram, dev);
+        s->ram_registered = true;
+    }
+    if (s->fault_memory) {
         memory_region_init(&s->test_memory, OBJECT(s), "test-memory",
                            1ULL << 30);
         memory_region_init_io(&s->fault_memory_io, OBJECT(s), &fault_memory_ops,
@@ -194,6 +211,10 @@ static void transaction_unrealize(DeviceState *dev)
 {
     MemoryTransactionTest *s = MEMORY_TRANSACTION_TEST(dev);
 
+    if (s->ram_registered) {
+        vmstate_unregister_ram(s->migrate_ram, dev);
+        s->ram_registered = false;
+    }
     if (s->fault_memory) {
         memory_region_del_subregion(get_system_memory(), &s->test_memory);
     }
@@ -243,6 +264,8 @@ static const VMStateDescription transaction_vmstate = {
 };
 
 static const Property transaction_properties[] = {
+    DEFINE_PROP_LINK("migrate-ram", MemoryTransactionTest, migrate_ram,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("fault-memory", MemoryTransactionTest,
                      fault_memory, false),
     DEFINE_PROP_UINT64("fault-memory-base", MemoryTransactionTest,
