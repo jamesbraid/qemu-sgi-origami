@@ -148,6 +148,7 @@ struct AIC7880State {
     uint8_t cdb_len;
     uint8_t cdb_need;
     uint8_t target;
+    uint8_t lun;
     uint8_t phase;
     uint8_t expected_phase;
     uint8_t qout[16];
@@ -172,6 +173,7 @@ struct AIC7880State {
     bool selection_pending;
     bool initiator_atn;
     bool identify_seen;
+    bool disconnect_allowed;
     bool peer_reselection;
     bool peer_scsi_irq_latched;
     bool peer_hold_data_in;
@@ -631,7 +633,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
 
 static void aic7880_start_request(AIC7880State *s)
 {
-    SCSIDevice *target = scsi_device_find(&s->bus, 0, s->target, 0);
+    SCSIDevice *target = scsi_device_find(&s->bus, 0, s->target, s->lun);
     int32_t length;
 
     if (!target) {
@@ -639,7 +641,7 @@ static void aic7880_start_request(AIC7880State *s)
         aic7880_update_scsi_irq(s);
         return;
     }
-    s->req = scsi_req_new(target, 0, 0, s->cdb, s->cdb_need, s);
+    s->req = scsi_req_new(target, 0, s->lun, s->cdb, s->cdb_need, s);
     length = scsi_req_enqueue(s->req);
     if (length && s->req) {
         scsi_req_continue(s->req);
@@ -702,6 +704,12 @@ static void aic7880_cancel_selection(AIC7880State *s)
 
 static void aic7880_select(AIC7880State *s)
 {
+    uint8_t target = (s->regs[REG_SCSIID] >> 4) & 0x0f;
+
+    if (target > 7) {
+        aic7880_error(s, "unsupported narrow target ID");
+        return;
+    }
     if (s->host_fifo_len) {
         aic7880_error(s, "SCSI selection with host-only FIFO data");
         return;
@@ -712,7 +720,9 @@ static void aic7880_select(AIC7880State *s)
     }
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
-    s->target = (s->regs[REG_SCSIID] >> 4) & 0x0f;
+    s->target = target;
+    s->lun = 0;
+    s->disconnect_allowed = false;
     s->cdb_len = s->cdb_need = 0;
     s->initiator_atn = false;
     s->identify_seen = false;
@@ -756,6 +766,8 @@ static void aic7880_scsi_reset(AIC7880State *s)
     }
     bus_cold_reset(BUS(&s->bus));
     s->selected = false;
+    s->lun = 0;
+    s->disconnect_allowed = false;
     s->initiator_atn = false;
     s->identify_seen = false;
     s->peer_reselection = false;
@@ -799,6 +811,8 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->host_dma_active = false;
     s->host_request_pending = false;
     s->selected = false;
+    s->lun = 0;
+    s->disconnect_allowed = false;
     s->initiator_atn = false;
     s->identify_seen = false;
     s->peer_reselection = false;
@@ -890,6 +904,8 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
             s->regs[REG_SSTAT0] &= ~0x42;
             s->regs[REG_SSTAT1] |= 0x08;
             s->selected = false;
+            s->lun = 0;
+            s->disconnect_allowed = false;
             aic7880_update_scsi_irq(s);
         }
         return data;
@@ -1123,6 +1139,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->regs[REG_DFSTATUS] |= 1;
             s->regs[REG_DFCNTRL] &= ~DFC_FIFOFLUSH;
             s->selected = false;
+            s->lun = 0;
+            s->disconnect_allowed = false;
             s->initiator_atn = false;
             s->identify_seen = false;
             s->peer_hold_data_in = false;
@@ -1316,10 +1334,12 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         if (s->phase == AIC_PHASE_MSG_OUT) {
-            if (!s->selected || s->identify_seen || val != 0x80) {
+            if (!s->selected || s->identify_seen || (val & 0xb8) != 0x80) {
                 aic7880_error(s, "unsupported Message Out byte");
                 break;
             }
+            s->lun = val & 7;
+            s->disconnect_allowed = val & 0x40;
             s->identify_seen = true;
             s->regs[REG_SSTAT0] &= ~0x02;
             aic7880_finish_message_out(s);
@@ -2034,6 +2054,8 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
         s->peer_data_len = s->peer_data_pos = 0;
         s->peer_faulted_command = false;
         s->selected = false;
+        s->lun = 0;
+        s->disconnect_allowed = false;
         s->initiator_atn = false;
         s->phase = AIC_PHASE_BUS_FREE;
         s->regs[REG_SCSISIGI] = 0;
@@ -2051,7 +2073,7 @@ static int aic7880_post_load(void *opaque, int version_id)
 
     if (s->seqaddr > AIC_SEQ_INSNS ||
         s->seqbyte >= 4 ||
-        s->phase >= AIC_PHASE_MSG_OUT ||
+        s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 7 ||
         s->cdb_len > sizeof(s->cdb) ||
         s->cdb_need > sizeof(s->cdb) ||
         s->qout_count > ARRAY_SIZE(s->qout) ||
@@ -2127,6 +2149,8 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(cdb_len, AIC7880State),
         VMSTATE_UINT8(cdb_need, AIC7880State),
         VMSTATE_UINT8(target, AIC7880State),
+        VMSTATE_UINT8(lun, AIC7880State),
+        VMSTATE_BOOL(disconnect_allowed, AIC7880State),
         VMSTATE_UINT8(phase, AIC7880State),
         VMSTATE_UINT8_V(expected_phase, AIC7880State, 2),
         VMSTATE_UINT8_ARRAY(qout, AIC7880State, 16),
@@ -2153,7 +2177,7 @@ static const VMStateDescription vmstate_aic7880 = {
 
 static const SCSIBusInfo aic7880_scsi_info = {
     .tcq = false,
-    .max_target = 16,
+    .max_target = 8,
     .max_lun = 7,
     .transfer_data = aic7880_transfer_data,
     .complete = aic7880_complete,
