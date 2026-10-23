@@ -11225,13 +11225,15 @@ static const MemoryRegionOps odyssey_ops = {
  *
  * One field by default, because the stock IP35 PROM was observed reading
  * exactly one 32-byte page and stopping; a longer record is truncated
- * where the master stops clocking. The default value is the public owner
+ * where the master stops clocking. Without a nic-record, a selected profile
+ * supplies its board's name, and otherwise the default is the public owner
  * record of the board the Odyssey contract describes.
  */
 static void odyssey_build_nic_rom(SGIOdysseyState *s,
                                   uint8_t rom[ODSY_NIC_ROM_SIZE])
 {
-    const char *fields = s->nic_record ?: ODSY_NIC_RECORD_DEFAULT;
+    const char *fields = s->nic_record ?: s->profile_record ?:
+                         ODSY_NIC_RECORD_DEFAULT;
     g_autofree char *record = g_strdup_printf("%c    ;%s;", 0x01, fields);
     size_t length = MIN(strlen(record), ODSY_NIC_ROM_SIZE);
 
@@ -11624,6 +11626,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
  * V12. The V8's A.1, four banks and PB&J 1 are inferred from its generation
  * and size; the 32 MB boards' two banks are inferred, since gfxinfo prints a
  * fixed "Banks: 2" line for any 32 MB board. Every profile is CAS latency 3.
+ * The identity record is the Octane board's name as hinv -mv prints it.
  */
 static const struct {
     const char *name;
@@ -11631,11 +11634,12 @@ static const struct {
     uint32_t memory_size;
     uint32_t memory_banks;
     uint32_t backend_version;
+    const char *record;
 } odyssey_profiles[] = {
-    { "v12", 0xa, 128, 4, 1 },
-    { "v10", 0xa, 32, 2, 1 },
-    { "v8",  0x2, 128, 4, 1 },
-    { "v6",  0x2, 32, 2, 1 },
+    { "v12", 0xa, 128, 4, 1, "Name:ODY128VERSIONB" },  /* 030-1611 */
+    { "v10", 0xa, 32, 2, 1, "Name:ODY32VERSIONB" },    /* 030-1655 */
+    { "v8",  0x2, 128, 4, 1, "Name:ODY128" },          /* 030-1404 */
+    { "v6",  0x2, 32, 2, 1, "Name:ODY32" },            /* 030-1403 */
 };
 
 static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
@@ -11651,6 +11655,7 @@ static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
             s->memory_size = odyssey_profiles[i].memory_size;
             s->memory_banks = odyssey_profiles[i].memory_banks;
             s->backend_version = odyssey_profiles[i].backend_version;
+            s->profile_record = odyssey_profiles[i].record;
             return true;
         }
     }
