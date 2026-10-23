@@ -8,6 +8,8 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
+#include "qemu/units.h"
 #include "system/qtest.h"
 
 #define TYPE_SGI_SERIAL_PEER "sgi-serial-peer"
@@ -50,6 +52,15 @@ static void peer_set(Object *obj, Visitor *v, const char *name,
     serial_io_ops.write(s->uart, 1, ier ^ 4, 1);
     serial_io_ops.write(s->uart, 1, ier, 1);
     s->uart->lcr = lcr;
+    if (!strcmp(name, "modem-status-and-advance") ||
+        !strcmp(name, "modem-transient-pause")) {
+        /* Keep the service BH deferred while a UART event advances time. */
+        qemu_clock_advance_virtual_time(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                        (value >> 8) * SCALE_MS);
+        if (!strcmp(name, "modem-transient-pause")) {
+            serial_io_ops.read(s->uart, 6, 1);
+        }
+    }
 }
 
 static bool peer_tx_blocked(Object *obj, Error **errp)
@@ -67,6 +78,10 @@ static void peer_init(Object *obj)
                         NULL, NULL);
     object_property_add(obj, "modem-status", "uint64", NULL, peer_set,
                         NULL, NULL);
+    object_property_add(obj, "modem-status-and-advance", "uint64", NULL,
+                        peer_set, NULL, NULL);
+    object_property_add(obj, "modem-transient-pause", "uint64", NULL,
+                        peer_set, NULL, NULL);
 }
 
 static void peer_realize(DeviceState *dev, Error **errp)

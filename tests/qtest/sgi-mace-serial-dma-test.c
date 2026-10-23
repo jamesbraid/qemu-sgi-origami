@@ -984,6 +984,38 @@ static void test_delay_zero_cancel(void)
     fixture_stop(&t);
 }
 
+static void test_modem_event_time(void)
+{
+    for (unsigned transient = 0; transient < 2; transient++) {
+        SerialFixture t = fixture_start();
+        uint8_t block[32] = { 0 };
+
+        packet_pair(block, 0, 0xe0, 10);
+        packet_pair(block, 1, 0x40, 'T');
+        ring_write(&t, 0, 0, block, 32);
+        qtest_writeb(t.qts, uart_address(0) + 0x100, 8);
+        qtest_writeq(t.qts, BASE, 0);
+        qtest_writeq(t.qts, BASE + 0x10, 32);
+        qtest_writeq(t.qts, BASE, 0x200);
+        qtest_clock_step(t.qts, 4000000);
+        peer_set(&t, 0, transient ? "modem-transient-pause" :
+                 "modem-status-and-advance", (20 << 8) | 0xb1);
+        if (!transient) {
+            g_assert_cmphex(qtest_readb(t.qts, uart_address(0) + 0x600),
+                            ==, 0xb1);
+        }
+        qtest_clock_step(t.qts, 5000000);
+        g_assert_cmphex(qtest_readq(t.qts, BASE + 8), ==, 0);
+        g_assert_false(qtest_readq(t.qts, RING + 0x10) & (1U << 22));
+        uart_empty(&t, 0);
+        qtest_clock_step(t.qts, 1000000);
+        pointer_wait(&t, BASE + 8, 32);
+        uart_expect(&t, 0, (const uint8_t *)"T", 1);
+        g_assert_true(qtest_readq(t.qts, RING + 0x10) & (1U << 22));
+        fixture_stop(&t);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1019,5 +1051,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace-serial-dma/rx-long-input", test_rx_long_input);
     qtest_add_func("/sgi/mace-serial-dma/delay-zero-cancel",
                    test_delay_zero_cancel);
+    qtest_add_func("/sgi/mace-serial-dma/modem-event-time",
+                   test_modem_event_time);
     return g_test_run();
 }

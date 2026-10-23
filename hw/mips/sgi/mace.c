@@ -80,7 +80,6 @@ struct SGIMACEState {
     MemoryRegion cpu_pci_pio_low;
     MemoryRegion cpu_pci_pio_high;
     MACESerialDMA serial_dma;
-    bool migration_loading;
     AddressSpace serial_dma_as;
     MemoryRegion peripheral_dma;
     MemoryRegion peripheral_native_ram;
@@ -188,7 +187,7 @@ static void mace_uart_irq(void *opaque, int n, int level)
     SGIMACEState *s = opaque;
     uint32_t bit = 1U << (20 + 6 * n);
 
-    if (s->migration_loading) {
+    if (s->serial_dma.loading) {
         return;
     }
     if (s->serial_dma.bh) {
@@ -884,7 +883,7 @@ static int mace_pre_load(void *opaque)
 {
     SGIMACEState *s = opaque;
 
-    s->migration_loading = true;
+    s->serial_dma.loading = true;
     return 0;
 }
 
@@ -895,7 +894,6 @@ static int mace_post_load(void *opaque, int version_id)
     if (s->ring_base & ~MACE_RING_WRITABLE) {
         return -EINVAL;
     }
-    s->migration_loading = false;
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                   s->saved_elapsed_ns;
     mace_update_irqs(s);
