@@ -61,6 +61,7 @@
 #define MACE_ETH_MDIO_BUSY (1U << 16)
 /* The specification leaves MDIO duration open; keep busy visible to polls. */
 #define MACE_ETH_MDIO_NS 1000
+#define MACE_ETH_RX_TICK_NS 30690
 #define MACE_ETH_REVISION (1U << 29)
 #define MACE_ETH_MAC_RESET 1U
 #define MACE_ETH_MAC_LOOPBACK (1U << 2)
@@ -134,7 +135,8 @@ static void sgi_mace_eth_update_irq(SGIMACEEthState *s)
         s->tx_read == s->tx_write && sgi_mace_eth_link_ready(s)) {
         s->int_status |= MACE_ETH_TX_EMPTY_INT;
     }
-    if (rx_active && s->rx_count != threshold) {
+    if (rx_active && !s->rx_delay && !s->rx_pending &&
+        s->rx_count != threshold) {
         s->int_status |= MACE_ETH_RX_THRESHOLD_INT;
     }
     events = s->int_status;
@@ -145,6 +147,41 @@ static void sgi_mace_eth_update_irq(SGIMACEEthState *s)
                  (events & (MACE_ETH_MEMORY_ERROR_INT |
                             MACE_ETH_RX_UNDERFLOW_INT | (1U << 2) |
                             (1U << 4) | (1U << 7))));
+}
+
+static uint32_t sgi_mace_eth_fifo_pop(SGIMACEEthState *s);
+
+static void sgi_mace_eth_rx_close(SGIMACEEthState *s)
+{
+    if (s->rx_gather_open) {
+        s->rx_gather_open = false;
+        sgi_mace_eth_fifo_pop(s);
+    }
+    s->rx_gather_address = 0;
+    s->rx_gather_cursor = 0;
+}
+
+static void sgi_mace_eth_rx_expire(void *opaque)
+{
+    SGIMACEEthState *s = opaque;
+
+    sgi_mace_eth_rx_close(s);
+    timer_del(s->rx_timer);
+    s->rx_pending = false;
+    if ((s->dma_control & MACE_ETH_RX_ENABLE) &&
+        s->rx_count != ((s->dma_control >> 4) & 31)) {
+        s->int_status |= MACE_ETH_RX_THRESHOLD_INT;
+    }
+    sgi_mace_eth_update_irq(s);
+}
+
+static void sgi_mace_eth_rx_cancel(SGIMACEEthState *s)
+{
+    timer_del(s->rx_timer);
+    s->rx_pending = false;
+    s->rx_gather_open = false;
+    s->rx_gather_address = 0;
+    s->rx_gather_cursor = 0;
 }
 
 static uint32_t sgi_mace_eth_fifo_info(SGIMACEEthState *s)
@@ -162,15 +199,13 @@ static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
         (MACE_ETH_RX_REINIT_DMA_OFF | MACE_ETH_RX_REINIT_MAC_PULSED)) {
         return;
     }
-    if (!s->rx_active_ring_size && !(s->dma_control & 0x0c)) {
-        /* The combined 8 KiB setup retires old FIFO cursors in this model. */
-        s->rx_count = 0;
-        s->rx_read = 0;
-        s->rx_write = 0;
-        s->rx_read_generation = false;
-        s->rx_write_generation = false;
-        sgi_mace_eth_update_irq(s);
-    }
+    sgi_mace_eth_rx_cancel(s);
+    s->rx_count = 0;
+    s->rx_read = 0;
+    s->rx_write = 0;
+    s->rx_read_generation = false;
+    s->rx_write_generation = false;
+    sgi_mace_eth_update_irq(s);
     s->rx_reinit_seen = 0;
 }
 
@@ -256,8 +291,10 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
     SGIMACEEthState *s = qemu_get_nic_opaque(nc);
     uint8_t fcs[4], status[8], padding[2] = { 0, 0 };
     uint64_t match, vector;
-    uint32_t crc, address;
+    uint32_t crc, address, sum = 0;
     unsigned offset = ((s->dma_control >> 12) & 7) * 8 + 2;
+    unsigned bucket = s->rx_gather_open ? s->rx_gather_cursor : 0;
+    unsigned end = bucket + offset + size + sizeof(fcs);
     MemTxResult result;
 
     if (!sgi_mace_eth_can_receive(nc) ||
@@ -277,10 +314,20 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
                       "sgi-mace-eth: oversized RX frame is unsupported\n");
         return size;
     }
-    address = s->rx_fifo[s->rx_read];
+    address = s->rx_gather_open ? s->rx_gather_address :
+              s->rx_fifo[s->rx_read];
+    address += bucket;
     crc = ~net_crc32_le(frame, size);
     stl_le_p(fcs, crc);
-    vector = MACE_ETH_RX_STATUS_VALID | match |
+    for (unsigned i = 0; i < size + sizeof(fcs); i++) {
+        uint8_t byte = i < size ? frame[i] : fcs[i - size];
+
+        sum += byte << ((i & 1) ? 0 : 8);
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    vector = MACE_ETH_RX_STATUS_VALID | match | ((uint64_t)sum << 32) |
              ((uint64_t)s->rx_sequence << 27) | (size + sizeof(fcs));
     stq_be_p(status, vector);
     result = dma_memory_write(&s->dma_as, address + offset, frame, size,
@@ -297,19 +344,35 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
     if (result != MEMTX_OK) {
         goto memory_error;
     }
-    if (!s->checksum_unimp_reported) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-mace-eth: RX partial checksum is unsupported\n");
-        s->checksum_unimp_reported = true;
-    }
     s->rx_sequence = (s->rx_sequence + 1) & 31;
-    sgi_mace_eth_fifo_pop(s);
+    if (s->rx_delay && (s->dma_control & MACE_ETH_RX_GATHER) &&
+        offset + size + sizeof(fcs) <= 256 &&
+        ROUND_UP(end, 256) + offset + 1514 + sizeof(fcs) <= 4096 &&
+        s->rx_count >= 4) {
+        s->rx_gather_open = true;
+        s->rx_gather_address = address - bucket;
+        s->rx_gather_cursor = ROUND_UP(end, 256);
+    } else if (s->rx_gather_open) {
+        sgi_mace_eth_rx_close(s);
+    } else {
+        sgi_mace_eth_fifo_pop(s);
+    }
+    if (s->rx_delay || s->rx_pending) {
+        if (s->rx_count < 4) {
+            sgi_mace_eth_rx_expire(s);
+        } else if (!s->rx_pending) {
+            s->rx_pending = true;
+            timer_mod(s->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      s->rx_delay * MACE_ETH_RX_TICK_NS);
+        }
+    }
     return size;
 
 memory_error:
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-mace-eth: RX DMA failed at 0x%" PRIx32 "\n",
                   address);
+    sgi_mace_eth_rx_cancel(s);
     s->dma_control &= ~MACE_ETH_RX_ENABLE;
     sgi_mace_eth_update_irq(s);
     return size;
@@ -362,17 +425,31 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
     total = (command & 0xffff) + 1;
     start = (command >> 16) & 0x7f;
     pointer_flags = (command >> 25) & 7;
-    if (total > sizeof(frame) ||
+    if ((command & ~UINT64_C(0x0fffffff)) || total > sizeof(frame) ||
         (start && start < 8 + 8 * (32 - clz32(pointer_flags))) ||
         (start == 0 && !pointer_flags)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-mace-eth: invalid TX descriptor at 0x%" PRIx64
-                      "\n", address);
-        s->int_status |= 1U << 4;
-        s->dma_control &= ~MACE_ETH_TX_ENABLE;
-        return false;
+        goto invalid_descriptor;
     }
     inline_length = start ? MIN(total, sizeof(descriptor) - start) : 0;
+    copied = inline_length;
+    for (unsigned i = 0; i < 3; i++) {
+        uint64_t pointer;
+        unsigned length;
+
+        if (!(pointer_flags & (1U << i))) {
+            continue;
+        }
+        pointer = ldq_be_p(descriptor + 8 + 8 * i);
+        length = ((pointer >> 32) & 0xffff) + 1;
+        if ((pointer & ~UINT64_C(0x0000fffffffffff8)) ||
+            length > total - copied) {
+            goto invalid_descriptor;
+        }
+        copied += length;
+    }
+    if (copied != total) {
+        goto invalid_descriptor;
+    }
     memcpy(frame, descriptor + start, inline_length);
     copied = inline_length;
     for (unsigned i = 0; i < 3; i++) {
@@ -384,13 +461,6 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
         }
         pointer = ldq_be_p(descriptor + 8 + 8 * i);
         length = ((pointer >> 32) & 0xffff) + 1;
-        if (length > total - copied) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-mace-eth: TX pointer exceeds packet length\n");
-            s->int_status |= 1U << 4;
-            s->dma_control &= ~MACE_ETH_TX_ENABLE;
-            return false;
-        }
         fault_address = pointer & UINT32_C(0xfffffff8);
         result = dma_memory_read(&s->dma_as, fault_address,
                                  frame + copied, length,
@@ -399,13 +469,6 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
             goto memory_error;
         }
         copied += length;
-    }
-    if (copied != total) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-mace-eth: incomplete TX descriptor\n");
-        s->int_status |= 1U << 4;
-        s->dma_control &= ~MACE_ETH_TX_ENABLE;
-        return false;
     }
     qemu_send_packet(qemu_get_queue(s->nic), frame, total);
     vector = MACE_ETH_TX_STATUS_DONE | MACE_ETH_TX_STATUS_SUCCESS | total;
@@ -423,18 +486,28 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
     s->tx_reinit_seen = 0;
     return true;
 
+invalid_descriptor:
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-mace-eth: invalid TX descriptor at 0x%" PRIx64 "\n",
+                  address);
+    s->int_status |= 1U << 4;
+    s->tx_stopped = true;
+    s->dma_control &= ~MACE_ETH_TX_ENABLE;
+    return false;
+
 memory_error:
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-mace-eth: TX DMA failed at 0x%" PRIx64 "\n",
                   fault_address);
     s->int_status |= MACE_ETH_MEMORY_ERROR_INT;
+    s->tx_stopped = true;
     s->dma_control &= ~MACE_ETH_TX_ENABLE;
     return false;
 }
 
 static void sgi_mace_eth_tx_run(SGIMACEEthState *s)
 {
-    if ((s->mac_control & MACE_ETH_MAC_RESET) ||
+    if (s->tx_stopped || (s->mac_control & MACE_ETH_MAC_RESET) ||
         !(s->dma_control & MACE_ETH_TX_ENABLE) ||
         !sgi_mace_eth_link_ready(s)) {
         return;
@@ -588,35 +661,33 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             sgi_mace_eth_schedule_flush(s);
             return;
         case MACE_ETH_DMA_CONTROL:
-            if ((s->dma_control & MACE_ETH_TX_ENABLE) &&
-                !(value & MACE_ETH_TX_ENABLE)) {
+            if ((s->dma_control & (MACE_ETH_TX_ENABLE | MACE_ETH_RX_ENABLE)) &&
+                ((value ^ s->dma_control) & 0x0c)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-mace-eth: live TX ring size change\n");
+                value = (value & ~UINT64_C(0x0c)) | (s->dma_control & 0x0c);
+            }
+            if (!(value & MACE_ETH_TX_ENABLE)) {
                 s->tx_reinit_seen |= MACE_ETH_TX_REINIT_STOP;
             }
             if (!(s->dma_control & MACE_ETH_TX_ENABLE) &&
                 (value & MACE_ETH_TX_ENABLE)) {
                 if (s->tx_reinit_seen == MACE_ETH_TX_REINIT_READY &&
                     !(s->mac_control & MACE_ETH_MAC_RESET)) {
-                    /* Full 8 KiB reinit starts a new queue in this model. */
-                    if (!(value & 0x0c)) {
-                        s->tx_read = 0;
-                        s->tx_write = 0;
-                    } else {
-                        s->tx_read = s->tx_write;
-                    }
+                    s->tx_stopped = false;
+                    s->tx_read = 0;
+                    s->tx_write = 0;
                 }
                 s->tx_reinit_seen = 0;
             }
             s->dma_control = value & 0xffff;
             if (!(s->dma_control & MACE_ETH_RX_ENABLE)) {
+                sgi_mace_eth_rx_close(s);
+                sgi_mace_eth_rx_cancel(s);
                 s->rx_reinit_seen |= MACE_ETH_RX_REINIT_DMA_OFF;
                 sgi_mace_eth_rx_reinit_finish(s);
             } else {
-                s->rx_active_ring_size = s->dma_control & 0x0c;
                 s->rx_reinit_seen = 0;
-            }
-            if (value & MACE_ETH_RX_GATHER) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-mace-eth: RX gathering is unsupported\n");
             }
             sgi_mace_eth_tx_run(s);
             sgi_mace_eth_update_irq(s);
@@ -668,11 +739,6 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             return;
         case MACE_ETH_RX_DELAY:
             s->rx_delay = value & 0x3f;
-            if (s->rx_delay) {
-                qemu_log_mask(LOG_UNIMP,
-                              "sgi-mace-eth: RX interrupt delay "
-                              "is unsupported\n");
-            }
             return;
         case MACE_ETH_TX_INT_ALIAS:
             s->dma_control = (s->dma_control & ~MACE_ETH_TX_INT_ENABLE) |
@@ -724,12 +790,13 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->mac_control = MACE_ETH_REVISION | MACE_ETH_MAC_RESET;
     s->dma_control = 0;
     s->rx_delay = 0;
+    sgi_mace_eth_rx_cancel(s);
     s->tx_base = 0;
     s->tx_read = 0;
     s->tx_write = 0;
     s->tx_reinit_seen = 0;
+    s->tx_stopped = false;
     s->rx_reinit_seen = 0;
-    s->rx_active_ring_size = 0;
     s->int_status = 0;
     s->rx_read = 0;
     s->rx_write = 0;
@@ -737,7 +804,6 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->rx_sequence = 0;
     s->rx_read_generation = false;
     s->rx_write_generation = false;
-    s->checksum_unimp_reported = false;
     qemu_set_irq(s->irq, 0);
     if (s->flush_bh) {
         qemu_bh_cancel(s->flush_bh);
@@ -771,13 +837,18 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_UINT64(secondary_station, SGIMACEEthState),
         VMSTATE_UINT64(multicast_mask, SGIMACEEthState),
         VMSTATE_UINT8(rx_delay, SGIMACEEthState),
+        VMSTATE_BOOL(rx_pending, SGIMACEEthState),
+        VMSTATE_BOOL(rx_gather_open, SGIMACEEthState),
+        VMSTATE_UINT32(rx_gather_address, SGIMACEEthState),
+        VMSTATE_UINT16(rx_gather_cursor, SGIMACEEthState),
+        VMSTATE_TIMER_PTR(rx_timer, SGIMACEEthState),
         VMSTATE_UINT64(tx_base, SGIMACEEthState),
         VMSTATE_UINT32(int_status, SGIMACEEthState),
         VMSTATE_UINT16(tx_read, SGIMACEEthState),
         VMSTATE_UINT16(tx_write, SGIMACEEthState),
         VMSTATE_UINT8(tx_reinit_seen, SGIMACEEthState),
+        VMSTATE_BOOL(tx_stopped, SGIMACEEthState),
         VMSTATE_UINT8(rx_reinit_seen, SGIMACEEthState),
-        VMSTATE_UINT8(rx_active_ring_size, SGIMACEEthState),
         VMSTATE_UINT32_ARRAY(rx_fifo, SGIMACEEthState, 16),
         VMSTATE_UINT8(rx_read, SGIMACEEthState),
         VMSTATE_UINT8(rx_write, SGIMACEEthState),
@@ -785,7 +856,6 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_UINT8(rx_sequence, SGIMACEEthState),
         VMSTATE_BOOL(rx_read_generation, SGIMACEEthState),
         VMSTATE_BOOL(rx_write_generation, SGIMACEEthState),
-        VMSTATE_BOOL(checksum_unimp_reported, SGIMACEEthState),
         VMSTATE_UINT16(mdio_data, SGIMACEEthState),
         VMSTATE_UINT16(mdio_address, SGIMACEEthState),
         VMSTATE_UINT16(mdio_pending_value, SGIMACEEthState),
@@ -804,6 +874,8 @@ static void sgi_mace_eth_init(Object *obj)
                           "sgi-mace.eth", MACE_ETH_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->irq);
+    s->rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                               sgi_mace_eth_rx_expire, s);
     s->mdio_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                  sgi_mace_eth_mdio_complete, s);
 }
@@ -813,6 +885,7 @@ static void sgi_mace_eth_finalize(Object *obj)
     SGIMACEEthState *s = SGI_MACE_ETH(obj);
 
     timer_free(s->mdio_timer);
+    timer_free(s->rx_timer);
 }
 
 static void sgi_mace_eth_realize(DeviceState *dev, Error **errp)

@@ -7,6 +7,7 @@
 #include "system/memory.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
@@ -19,6 +20,51 @@ OBJECT_DECLARE_SIMPLE_TYPE(MemoryTransactionTest, MEMORY_TRANSACTION_TEST)
 struct MemoryTransactionTest {
     DeviceState parent_obj;
     char *result;
+    MemoryRegion test_memory;
+    MemoryRegion fault_memory_io;
+    uint8_t bytes[65536];
+    bool fault_memory;
+    uint64_t fault_memory_base;
+    uint64_t fault_start;
+    uint64_t fault_end;
+    uint32_t fault_mode;
+};
+
+static MemTxResult fault_memory_read(void *opaque, hwaddr address,
+                                      uint64_t *value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    MemoryTransactionTest *s = opaque;
+
+    if ((s->fault_mode & 1) && address <= s->fault_end &&
+        address + size - 1 >= s->fault_start) {
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = ldn_le_p(s->bytes + address, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult fault_memory_write(void *opaque, hwaddr address,
+                                       uint64_t value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    MemoryTransactionTest *s = opaque;
+
+    if ((s->fault_mode & 2) && address <= s->fault_end &&
+        address + size - 1 >= s->fault_start) {
+        return MEMTX_ERROR;
+    }
+    stn_le_p(s->bytes + address, size, value);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps fault_memory_ops = {
+    .read_with_attrs = fault_memory_read,
+    .write_with_attrs = fault_memory_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
 /*
@@ -123,14 +169,35 @@ static char *transaction_result(Object *obj, Error **errp)
 
 static void transaction_realize(DeviceState *dev, Error **errp)
 {
+    MemoryTransactionTest *s = MEMORY_TRANSACTION_TEST(dev);
+
     if (!qtest_driver()) {
         error_setg(errp, "Memory transactions require a qtest server");
+        return;
+    }
+    if (s->fault_memory) {
+        if (s->fault_memory_base > UINT64_MAX - (UINT64_C(1) << 30)) {
+            error_setg(errp, "Fault memory address range overflows");
+            return;
+        }
+        memory_region_init(&s->test_memory, OBJECT(s), "test-memory",
+                           1ULL << 30);
+        memory_region_init_io(&s->fault_memory_io, OBJECT(s), &fault_memory_ops,
+                              s, "fault-memory-io", sizeof(s->bytes));
+        memory_region_add_subregion(&s->test_memory, 0, &s->fault_memory_io);
+        memory_region_add_subregion(get_system_memory(), s->fault_memory_base,
+                                    &s->test_memory);
     }
 }
 
 static void transaction_unrealize(DeviceState *dev)
 {
-    g_clear_pointer(&MEMORY_TRANSACTION_TEST(dev)->result, g_free);
+    MemoryTransactionTest *s = MEMORY_TRANSACTION_TEST(dev);
+
+    if (s->fault_memory) {
+        memory_region_del_subregion(get_system_memory(), &s->test_memory);
+    }
+    g_clear_pointer(&s->result, g_free);
 }
 
 static void transaction_finalize(Object *obj)
@@ -143,6 +210,25 @@ static void transaction_finalize(Object *obj)
  * Unrealize clears it. Migration transfers an empty test-device section;
  * each process keeps its own response, independent of guest VMState.
  */
+static bool fault_memory_needed(void *opaque)
+{
+    return MEMORY_TRANSACTION_TEST(opaque)->fault_memory;
+}
+
+static const VMStateDescription fault_memory_vmstate = {
+    .name = TYPE_MEMORY_TRANSACTION_TEST "/fault-memory",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = fault_memory_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(bytes, MemoryTransactionTest, 65536),
+        VMSTATE_UINT64(fault_start, MemoryTransactionTest),
+        VMSTATE_UINT64(fault_end, MemoryTransactionTest),
+        VMSTATE_UINT32(fault_mode, MemoryTransactionTest),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription transaction_vmstate = {
     .name = TYPE_MEMORY_TRANSACTION_TEST,
     .version_id = 1,
@@ -150,7 +236,30 @@ static const VMStateDescription transaction_vmstate = {
     .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const[]) {
+        &fault_memory_vmstate,
+        NULL
+    },
 };
+
+static const Property transaction_properties[] = {
+    DEFINE_PROP_BOOL("fault-memory", MemoryTransactionTest,
+                     fault_memory, false),
+    DEFINE_PROP_UINT64("fault-memory-base", MemoryTransactionTest,
+                       fault_memory_base, UINT64_C(0x100000000)),
+};
+
+static void transaction_init(Object *obj)
+{
+    MemoryTransactionTest *s = MEMORY_TRANSACTION_TEST(obj);
+
+    object_property_add_uint64_ptr(obj, "fault-start", &s->fault_start,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint64_ptr(obj, "fault-end", &s->fault_end,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "fault-mode", &s->fault_mode,
+                                   OBJ_PROP_FLAG_READWRITE);
+}
 
 static void transaction_class_init(ObjectClass *oc, const void *data)
 {
@@ -159,6 +268,7 @@ static void transaction_class_init(ObjectClass *oc, const void *data)
     dc->realize = transaction_realize;
     dc->unrealize = transaction_unrealize;
     dc->vmsd = &transaction_vmstate;
+    device_class_set_props(dc, transaction_properties);
     object_class_property_add_str(oc, "request", NULL, transaction_request);
     object_class_property_add_str(oc, "result", transaction_result, NULL);
 }
@@ -167,6 +277,7 @@ static const TypeInfo transaction_type = {
     .name = TYPE_MEMORY_TRANSACTION_TEST,
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(MemoryTransactionTest),
+    .instance_init = transaction_init,
     .instance_finalize = transaction_finalize,
     .class_init = transaction_class_init,
 };

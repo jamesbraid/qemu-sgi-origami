@@ -27,8 +27,8 @@ struct SGIMACEEthState {
     uint16_t tx_read;
     uint16_t tx_write;
     uint8_t tx_reinit_seen;
+    bool tx_stopped;
     uint8_t rx_reinit_seen;
-    uint8_t rx_active_ring_size;
     uint32_t rx_fifo[16];
     uint8_t rx_read;
     uint8_t rx_write;
@@ -36,13 +36,17 @@ struct SGIMACEEthState {
     uint8_t rx_sequence;
     bool rx_read_generation;
     bool rx_write_generation;
-    bool checksum_unimp_reported;
     MemoryRegion *dma_mr;
     AddressSpace dma_as;
     NICConf conf;
     NICState *nic;
     ICS1890State *phy;
     QEMUTimer *mdio_timer;
+    QEMUTimer *rx_timer;
+    bool rx_pending;
+    bool rx_gather_open;
+    uint32_t rx_gather_address;
+    uint16_t rx_gather_cursor;
     QEMUBH *flush_bh;
     uint16_t mdio_data;
     uint16_t mdio_address;
