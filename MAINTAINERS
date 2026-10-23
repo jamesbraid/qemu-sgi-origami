@@ -1560,6 +1560,7 @@ F: tests/qtest/sgi-o2-rom-test.c
 F: tests/qtest/sgi-o2-test.c
 F: tests/qtest/octane-test.c
 F: tests/qtest/octane-mgras-test.c
+F: tests/qtest/octane-timer-test.c
 F: tests/qtest/r10000-identity-test.c
 F: tests/qtest/o2-r10k-cache-test.c
 F: tests/qtest/sgi-pci-expansion-ni-fixture.c

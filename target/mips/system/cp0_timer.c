@@ -36,11 +36,6 @@ static uint32_t cpu_mips_count_at(CPUMIPSState *env, int64_t now_ns)
             (uint32_t)clock_ns_to_ticks(cpu->count_clock, now_ns);
 }
 
-static uint32_t cpu_mips_get_count_val(CPUMIPSState *env)
-{
-    return cpu_mips_count_at(env, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-}
-
 /*
  * Drive the line behind Cause.IP7 with the OR of its two sources, so
  * that neither the timer nor a counter can clear what the other
@@ -121,7 +116,11 @@ static void cpu_mips_timer_expire(CPUMIPSState *env, int64_t now_ns)
 
 uint32_t cpu_mips_get_count(CPUMIPSState *env)
 {
+    MIPSCPU *cpu = env_archcpu(env);
     uint64_t now_ns;
+    uint32_t count;
+
+    env->timer_window_pending = false;
 
     /*
      * Reading needs no lock. CP0_Count and CP0_Compare are written only
@@ -151,7 +150,15 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
         }
     }
 
-    return cpu_mips_get_count_val(env);
+    now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    count = cpu_mips_count_at(env, now_ns);
+    if (cpu->count_sample_window) {
+        env->timer_window_count = count;
+        env->timer_window_start_ticks = clock_ns_to_ticks(cpu->count_clock,
+                                                          now_ns);
+        env->timer_window_pending = true;
+    }
+    return count;
 }
 
 /*
@@ -185,6 +192,7 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
     BQL_LOCK_GUARD();
 
     env->timer_adjacent_pending = false;
+    env->timer_window_pending = false;
     if (env->CP0_Cause & (1 << CP0Ca_DC) || !env->timer) {
         env->CP0_Count = count;
     } else {
@@ -201,6 +209,12 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
                 clock_ns_to_ticks(cpu->count_clock, now_ns);
             env->timer_adjacent_pc = env->active_tc.PC;
             env->timer_adjacent_pending = true;
+        }
+        if (guest_write && cpu->count_sample_window) {
+            env->timer_window_count = count;
+            env->timer_window_start_ticks =
+                clock_ns_to_ticks(cpu->count_clock, now_ns);
+            env->timer_window_pending = true;
         }
         /* Update timer timer */
         cpu_mips_timer_update(env, now_ns);
@@ -231,11 +245,40 @@ void cpu_mips_store_count_guest(CPUMIPSState *env, uint32_t count)
     cpu_mips_store_count_internal(env, count, true);
 }
 
+/*
+ * The Count-sample window. A guest that reads or writes Count and then, a
+ * few register instructions later, writes Compare a short way ahead of
+ * that value has armed a future match; on the processor those
+ * instructions take a few cycles. Without instruction counting the
+ * virtual clock follows the host, and the vCPU can be held between the
+ * two for longer than the guest's margin. The target is then behind
+ * Count and a strict comparator would wait a full wrap.
+ *
+ * With count_sample_window selected, every guest Count read or write
+ * records the value and the clock. The next Compare write raises the
+ * timer interrupt when its target lies less than half the counter range
+ * ahead of the latest such value and the counter has already reached it.
+ * A target behind that value is a disarm or a long wait and keeps the
+ * ordinary rule: the read-Count-minus-one disarm, and Count=1 followed by
+ * Compare=0. Exception or interrupt entry and reset close the window.
+ */
+static bool cpu_mips_window_crossed(CPUMIPSState *env, uint32_t value,
+                                    uint64_t now_ticks)
+{
+    uint32_t forward = value - env->timer_window_count;
+    uint64_t elapsed = now_ticks - env->timer_window_start_ticks;
+
+    return forward > 0 && forward < 0x80000000u &&
+           elapsed < 0x80000000ULL && elapsed >= forward;
+}
+
 void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 {
     bool matched = false;
     bool adjacent = env->timer_adjacent_pending &&
                     (env->active_tc.PC == env->timer_adjacent_pc);
+    bool window = env->timer_window_pending;
+    bool window_crossed = false;
     uint32_t count = env->CP0_Count;
     uint32_t forward = 0;
     uint64_t elapsed = 0;
@@ -244,6 +287,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
     BQL_LOCK_GUARD();
 
     env->timer_adjacent_pending = false;
+    env->timer_window_pending = false;
     env->CP0_Compare = value;
     if (!(env->CP0_Cause & (1 << CP0Ca_DC))) {
         MIPSCPU *cpu = env_archcpu(env);
@@ -265,6 +309,12 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
             env->cp0_timer_ip7 = 1;
             matched = true;
         }
+        if (!matched && window &&
+            cpu_mips_window_crossed(env, value, now_ticks)) {
+            env->cp0_timer_ip7 = 1;
+            matched = true;
+            window_crossed = true;
+        }
         cpu_mips_timer_update(env, now_ns);
     }
     if (trace_event_get_state(TRACE_MIPS_CP0_COMPARE_WRITE)) {
@@ -276,6 +326,14 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
             qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             env_cpu(env)->cpu_index, env->active_tc.PC, count, value,
             adjacent, elapsed, forward, matched);
+    }
+    if (window && trace_event_get_state(TRACE_MIPS_CP0_COUNT_SAMPLE_WINDOW)) {
+        if (write_ns < 0) {
+            write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        }
+        trace_mips_cp0_count_sample_window(
+            write_ns, env_cpu(env)->cpu_index, env->active_tc.PC,
+            env->timer_window_count, value, count, window_crossed);
     }
     if (matched) {
         /* The write's own reset of IP[7] loses to the standing match. */

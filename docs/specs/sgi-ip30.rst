@@ -467,6 +467,50 @@ revision 2.7. No raw PRId read was published.
 ``octane2`` fits an R12000 at 360 MHz with 2 MiB secondary cache
 (established, :ref:`sgi-ip30-octane2-hinv`).
 
+.. _sgi-ip30-scheduler-clock:
+
+Scheduler clock
+---------------
+
+CP0 Count advances every other processor clock (R10000 manual, version
+2.0, section 14.8): 97.5 MHz on ``octane`` and 180 MHz on ``octane2``.
+A 32-bit wrap therefore takes 44.05 s and 23.86 s.
+
+The IRIX 6.5.30 IP30 kernel drives its scheduler tick from CP0 Count and
+Compare and arms it in two places, both with interrupts masked. The
+rearm routine writes Count zero and, eight register instructions later,
+Compare with a target of at least 1000 ticks (5.6 us at 180 MHz). A
+second routine that pulls the deadline in reads Count and, at most
+seventeen instructions later (a Compare read and register arithmetic),
+writes Compare at least 1000 ticks ahead of the value read. These are from our disassembly of the shipped
+``kernel.o``, whose only Compare writes are these two and two adjacent
+Count/Compare pairs; they are not hardware measurements. On the
+processor those instructions take a few cycles. Without instruction
+counting, QEMU's virtual clock follows the host, and a vCPU held between
+the sample and the write leaves the target behind Count. A strict
+equality comparator then defers the tick a full wrap, and IRIX reports
+that CPU 0 "hasn't seen a scheduler clock interrupt". A traced
+wall-clock Octane2 boot rearmed 16,114 times in 549 virtual seconds;
+twelve rearms crossed their target, each costing 23.9 s, and the desktop
+never appeared. Recovering only the Count-write form reached the greeter
+but still lost six ticks in three minutes to the Count-read form.
+
+Both machines therefore set the CPU's ``count-sample-window`` property.
+Every guest Count read or write records the value and the virtual
+clock. The next Compare write raises the timer interrupt when its target
+lies less than half the counter range ahead of the latest recorded
+value and Count has already reached it. A target behind that value is a
+disarm or a deliberate long wait and keeps the ordinary rule: the
+read-Count-minus-one disarm public drivers use, and the kernel's
+Count=1/Compare=0 pair. Exception or interrupt entry and reset close the
+window. This is an approximation of a host artefact, not processor
+behaviour: after a delayed arm the model raises IP7 at the Compare
+write, where silicon would not have been late. A window open when the
+machine is migrated is dropped, and the destination applies the
+ordinary rule to that one write. The SN machines do not set the
+property and keep the adjacent-write rule alone.
+``tests/qtest/octane-timer-test.c`` pins the recovery and its controls.
+
 .. _sgi-ip30-r12000-defaults:
 
 R12000 catalogue defaults

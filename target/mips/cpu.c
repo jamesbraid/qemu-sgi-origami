@@ -798,6 +798,8 @@ static const Property mips_cpu_properties[] = {
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_BOOL("cache-data-visibility", MIPSCPU,
                      cache_data_visibility, false),
+    DEFINE_PROP_BOOL("count-sample-window", MIPSCPU,
+                     count_sample_window, false),
 #endif
 };
 
