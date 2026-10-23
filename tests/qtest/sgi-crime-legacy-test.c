@@ -461,6 +461,7 @@ static void wait_failed(QTestState *s)
             g_assert_true(qdict_haskey(info, "error-desc"));
             return;
         }
+        g_assert_cmpstr(qdict_get_str(info, "status"), !=, "completed");
         g_assert_cmpint(g_get_monotonic_time(), <, deadline);
         g_usleep(1000);
     }
@@ -531,7 +532,7 @@ static void test_invalid_profile_state(gconstpointer data)
         switch (fault) {
         case 0: {
             char *first = state - 4 - (sizeof(name) - 1) - 2;
-            size_t length = 2 + sizeof(name) - 1 + 4 + 30;
+            size_t length = 2 + sizeof(name) - 1 + 4 + 31;
 
             memmove(first, first + length, size - (first - stream) - length);
             size -= length;
@@ -544,13 +545,13 @@ static void test_invalid_profile_state(gconstpointer data)
             state[1] = 1;
             break;
         case 3:
-            stl_be_p(state + 6, 1U << 4);
+            stl_be_p(state + 7, 1U << 4);
             break;
         case 4:
-            stl_be_p(state + 18, 8);
+            stl_be_p(state + 19, 8);
             break;
         case 5:
-            stl_be_p(state + 26, 0x40000000);
+            stl_be_p(state + 27, 0x40000000);
             break;
         case 6:
         case 7:
@@ -711,6 +712,38 @@ static void test_immutable(void)
     qtest_quit(s);
 }
 
+static void test_feature_mismatch(gconstpointer data)
+{
+    const char *property = data;
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        GError *error = NULL;
+        g_autofree char *directory =
+            g_dir_make_tmp("crime-feature-id-XXXXXX", &error);
+        g_autofree char *socket = NULL;
+        g_autofree char *uri = NULL;
+        g_autofree char *option =
+            g_strdup_printf("-global sgi-crime.%s=on", property);
+        QTestState *from = start_profile(legacy, option);
+        QTestState *to = start_profile(legacy, "-incoming defer");
+
+        g_assert_no_error(error);
+        socket = g_build_filename(directory, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        qtest_writeq(to, BASE + 0x18, 1U << 4);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming',"
+            "'arguments':{'uri':%s,'exit-on-error':false}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        wait_failed(to);
+        g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, 1U << 4);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_rmdir(directory);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *faults[] = {
@@ -746,5 +779,9 @@ int main(int argc, char **argv)
         qtest_add_data_func(name, GUINT_TO_POINTER(i),
                             test_invalid_profile_state);
     }
+    qtest_add_data_func("/sgi/crime/legacy/feature-id-word", "prom-id-word",
+                        test_feature_mismatch);
+    qtest_add_data_func("/sgi/crime/legacy/feature-inert-renderer",
+                        "empty-renderer-status", test_feature_mismatch);
     return g_test_run();
 }
