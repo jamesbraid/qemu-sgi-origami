@@ -128,8 +128,9 @@ static void test_invalid_translation(void)
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     qtest_memset(s, 0, 0x9b, 64);
     qtest_memset(s, 0x3000, 0x6a, 64);
-    qtest_writel(s, MTE, CLEAR_A);
+    qtest_writel(s, MTE, COPY_AB);
     qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x28, 63);
     qtest_writel(s, MTE + 0x38, 42);
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 63), !=, MEMTX_OK);
     status = qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
@@ -137,7 +138,7 @@ static void test_invalid_translation(void)
     qobject_unref(status);
     assert_bytes(s, 0, 64, 0x9b);
     assert_bytes(s, 0x3000, 64, 0x6a);
-    g_assert_cmphex(qtest_readl(s, MTE), ==, CLEAR_A);
+    g_assert_cmphex(qtest_readl(s, MTE), ==, COPY_AB);
     page_pair(s, 0, 0, 3, 9);
     qtest_writel(s, MTE + 0x800, CLEAR_A);
     assert_bytes(s, 0x3000, 43, 0);
@@ -357,14 +358,15 @@ static void test_rejected_commands(void)
     qtest_writel(s, MTE + 0x30, 1);
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 0x20000), !=, MEMTX_OK);
     qtest_writel(s, MTE + 0x30, 0);
-    qtest_writeq(s, TLB, 0x8000000300000000ULL);
+    qtest_writeq(s, TLB, 0x8000000380004000ULL);
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 4096), !=, MEMTX_OK);
     assert_bytes(s, 0x3000, 4096, 0x6c);
     page_pair(s, 0, 0, 3, 9);
     for (unsigned i = 0; i < 2; i++) {
-        g_assert_cmpint(memtx_writeq(s, TLB,
-            0x8000000380000009ULL | (1ULL << (i * 32 + 20))), !=, MEMTX_OK);
-        g_assert_cmphex(qtest_readq(s, TLB), ==, 0x8000000380000009ULL);
+        uint64_t raw = 0x8000000380000009ULL | (1ULL << (i * 32 + 20));
+
+        g_assert_cmpint(memtx_writeq(s, TLB, raw), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, TLB), ==, raw);
     }
     qtest_writeq(s, BASE + 0x18, 1U << 4);
     qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
@@ -640,7 +642,7 @@ static void test_migration_invalid_state(gconstpointer data)
             state[0] = 2;
             break;
         case 2:
-            state[2 + 5] |= 0x10;
+            stl_be_p(state + 2 + 256 + 8, 1);
             break;
         case 3:
             stq_be_p(state + 2 + 256 + 40, 2);
@@ -691,7 +693,8 @@ static void test_diagnostics(void)
     qtest_writeq(s, BASE + 0x200, 1);
     qtest_writeq(s, BASE + 0x200, 0);
     qtest_writeq(s, BASE + 0x200, 1);
-    qtest_writel(s, MTE, CLEAR_A | 1);
+    qtest_writel(s, MTE, COPY_AB | 1);
+    qtest_writel(s, MTE + 0x28, 31);
     qtest_writel(s, MTE + 8, UINT32_MAX);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
     g_assert_cmpint(memtx_writel(s, MTE + 0x838, 31), !=, MEMTX_OK);
@@ -797,7 +800,7 @@ int main(int argc, char **argv)
           test_migration_invalid_state, GUINT_TO_POINTER(0), NULL },
         { "migration-policy", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(1), NULL },
-        { "migration-translation", NULL,
+        { "migration-unadmitted-parameter", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(2), NULL },
         { "migration-ecc-enable", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(3), NULL },

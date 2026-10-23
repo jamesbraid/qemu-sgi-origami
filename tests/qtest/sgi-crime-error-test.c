@@ -123,7 +123,8 @@ static void test_transfer_failure_retention(void)
     qtest_writeq(s, BASE + 0x200, 1);
     qtest_writeq(s, BASE + 0x18, 1U << 4);
     qtest_set_irq_in(s, CRIME_PATH, "mace", 4, 1);
-    qtest_writel(s, MTE, 4U << 2);
+    qtest_writel(s, MTE, (1U << 11) | (4U << 5) | (5U << 2));
+    qtest_writel(s, MTE + 0x28, 63);
     qtest_writel(s, MTE + 8, UINT32_MAX);
     qtest_writel(s, MTE + 0x18, 0xa5);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
