@@ -139,6 +139,8 @@ struct AIC7880State {
     MemoryRegion dspc_mem[16];
     SCSIBus bus;
     QEMUTimer *seq_timer;
+    QEMUTimer *selection_timer;
+    QEMUTimer *bus_free_timer;
     uint8_t regs[AIC_REG_SPACE];
     uint8_t seqram[AIC_SEQ_BYTES];
     uint8_t scb_ram[AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES];
@@ -170,6 +172,7 @@ struct AIC7880State {
     uint8_t qout_tail;
     uint8_t qout_count;
     bool selected;
+    bool selection_pending;
     bool initiator_atn;
     bool identify_seen;
     bool peer_reselection;
@@ -628,16 +631,72 @@ static void aic7880_start_request(AIC7880State *s)
     }
 }
 
+static void aic7880_bus_free_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+
+    if (!s->selected && !s->selection_pending && !s->req) {
+        s->regs[REG_SSTAT1] |= 0x08;
+        aic7880_update_scsi_irq(s);
+    }
+}
+
+static void aic7880_selection_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+
+    if (!s->selection_pending) {
+        return;
+    }
+    s->selection_pending = false;
+    s->regs[REG_SCSISIGI] &= ~0x08;
+    s->regs[REG_SSTAT1] |= 0x80;
+    timer_mod(s->bus_free_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+    aic7880_update_scsi_irq(s);
+}
+
+static void aic7880_selection_timer_update(AIC7880State *s, uint8_t old)
+{
+    uint8_t control = s->regs[REG_SXFRCTL1];
+    int64_t interval;
+
+    if (!s->selection_pending || !(control & 0x04)) {
+        timer_del(s->selection_timer);
+        return;
+    }
+    if (timer_pending(s->selection_timer) && !((old ^ control) & 0x1c)) {
+        return;
+    }
+    /* Selected timing policy; the sibling's first table entry conflicts. */
+    interval = 256000000LL >> ((control >> 3) & 3);
+    timer_mod(s->selection_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + interval);
+}
+
+static void aic7880_cancel_selection(AIC7880State *s)
+{
+    timer_del(s->selection_timer);
+    if (s->selection_pending) {
+        s->selection_pending = false;
+        s->regs[REG_SCSISIGI] &= ~0x08;
+        timer_mod(s->bus_free_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+    }
+}
+
 static void aic7880_select(AIC7880State *s)
 {
     if (s->host_fifo_len) {
         aic7880_error(s, "SCSI selection with host-only FIFO data");
         return;
     }
-    if (s->selected || s->req || s->peer_reselection) {
+    if (s->selected || s->selection_pending || s->req || s->peer_reselection) {
         aic7880_error(s, "selection while SCSI bus is occupied");
         return;
     }
+    timer_del(s->selection_timer);
+    timer_del(s->bus_free_timer);
     s->target = (s->regs[REG_SCSIID] >> 4) & 0x0f;
     s->cdb_len = s->cdb_need = 0;
     s->initiator_atn = false;
@@ -648,14 +707,14 @@ static void aic7880_select(AIC7880State *s)
         s->phase = s->initiator_atn ? AIC_PHASE_MSG_OUT : AIC_PHASE_COMMAND;
         s->regs[REG_SCSISIGI] = s->initiator_atn ? SCSI_SIG_MSG_OUT :
                                  SCSI_SIG_COMMAND;
-        s->regs[REG_SSTAT0] |= 0x42; /* Selection done, PIO ready. */
+        s->regs[REG_SSTAT0] = (s->regs[REG_SSTAT0] & ~0x10) | 0x42;
         s->regs[REG_SSTAT1] &= ~0x08;
         aic7880_update_scsi_irq(s);
-    } else if (s->regs[REG_SXFRCTL1] & 0x04) {
-        s->regs[REG_SSTAT1] |= 0x80;
-        aic7880_update_scsi_irq(s);
     } else {
-        s->regs[REG_SSTAT0] |= 0x10;
+        s->selection_pending = true;
+        s->regs[REG_SCSISIGI] = 0x08;
+        s->regs[REG_SSTAT0] = (s->regs[REG_SSTAT0] & ~0x42) | 0x10;
+        aic7880_selection_timer_update(s, 0);
         aic7880_update_scsi_irq(s);
     }
 }
@@ -674,6 +733,9 @@ static void aic7880_finish_message_out(AIC7880State *s)
 
 static void aic7880_scsi_reset(AIC7880State *s)
 {
+    timer_del(s->selection_timer);
+    timer_del(s->bus_free_timer);
+    s->selection_pending = false;
     if (s->req) {
         scsi_req_cancel(s->req);
     }
@@ -699,6 +761,9 @@ static void aic7880_scsi_reset(AIC7880State *s)
 static void aic7880_chip_reset(AIC7880State *s)
 {
     timer_del(s->seq_timer);
+    timer_del(s->selection_timer);
+    timer_del(s->bus_free_timer);
+    s->selection_pending = false;
     if (s->req) {
         scsi_req_cancel(s->req);
     }
@@ -1046,8 +1111,10 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         aic7880_update_scsi_irq(s);
         break;
-    case REG_SXFRCTL1:
-        if (val & ~0x27) {
+    case REG_SXFRCTL1: {
+        uint8_t old = s->regs[addr];
+
+        if (val & ~0x3f) {
             aic7880_error(s, "unsupported SXFRCTL1 control");
             break;
         }
@@ -1056,7 +1123,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
          * electrical latches.
          */
         s->regs[addr] = val;
+        aic7880_selection_timer_update(s, old);
         break;
+    }
     case REG_SCSISIGI: /* SCSISIGO on writes. */
         if (val & ~0xe0) {
             aic7880_error(s, "unsupported SCSISIGO control");
@@ -1200,6 +1269,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[addr] = val;
         if (select) {
             aic7880_select(s);
+        } else if (!(val & 0x40)) {
+            aic7880_cancel_selection(s);
         }
         break;
     }
@@ -1947,6 +2018,10 @@ static int aic7880_post_load(void *opaque, int version_id)
         s->qout_tail >= ARRAY_SIZE(s->qout)) {
         return -EINVAL;
     }
+    if (s->selection_pending &&
+        (s->selected || s->req || !(s->regs[REG_SCSISEQ] & 0x40))) {
+        return -EINVAL;
+    }
     if (s->qin_count > ARRAY_SIZE(s->qin) ||
         s->qin_head >= ARRAY_SIZE(s->qin) ||
         s->qin_tail >= ARRAY_SIZE(s->qin)) {
@@ -1994,6 +2069,9 @@ static const VMStateDescription vmstate_aic7880 = {
                             AIC_SCB_PAGES * AIC_SCB_PAGE_BYTES),
         VMSTATE_UINT16(seqaddr, AIC7880State),
         VMSTATE_TIMER_PTR(seq_timer, AIC7880State),
+        VMSTATE_TIMER_PTR(selection_timer, AIC7880State),
+        VMSTATE_TIMER_PTR(bus_free_timer, AIC7880State),
+        VMSTATE_BOOL(selection_pending, AIC7880State),
         VMSTATE_UINT8(seqbyte, AIC7880State),
         VMSTATE_UINT8(error, AIC7880State),
         VMSTATE_UINT8_ARRAY(cdb, AIC7880State, 16),
@@ -2085,6 +2163,10 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
     }
     s->seq_timer = timer_new_us(QEMU_CLOCK_VIRTUAL,
                                 aic7880_seq_timer_cb, s);
+    s->selection_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                     aic7880_selection_timer_cb, s);
+    s->bus_free_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    aic7880_bus_free_timer_cb, s);
     pci->config[PCI_INTERRUPT_PIN] = 1;
     /* The selected AIC-7870 sibling policy covers readback only. */
     pci_word_test_and_set_mask(pci->wmask + PCI_COMMAND,
@@ -2117,6 +2199,8 @@ static void aic7880_exit(PCIDevice *pci)
     AIC7880State *s = AIC7880(pci);
 
     timer_free(s->seq_timer);
+    timer_free(s->selection_timer);
+    timer_free(s->bus_free_timer);
 }
 
 static const Property aic7880_properties[] = {
