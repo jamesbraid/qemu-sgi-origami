@@ -14,6 +14,9 @@ const char rom_name[] = "cp0misc";
 #define CAUSE_RESERVED_27_16 (0x0fffu << 16)
 #define CAUSE_IP1_0          (3u << 8)
 
+#define R16000_STATUS_RW_MASK 0xf67dffffu
+#define STATUS_EXL_ERL         (ROM_ST_EXL | ROM_ST_ERL)
+
 /* Load-linked operand and non-aliasing physical-address sentinel. */
 #define LLADDR_SENTINEL 0x5aa55aa5u
 
@@ -120,4 +123,22 @@ void rom_main(void)
      * Nothing ran off the expected path.
      */
     rom_assert_eq(23, 0, rom_exc.count - 1);
+
+    if (rom_get_prid() == 0x00000f50u) {
+        uint32_t original = rom_get_status();
+        uint32_t read_only = original & ~R16000_STATUS_RW_MASK;
+
+        /* EXL and ERL keep these all-ones writes in privileged context. */
+        rom_set_status(0xffffffffu);
+        rom_assert_eq(24, read_only | R16000_STATUS_RW_MASK,
+                      rom_get_status());
+        rom_assert_eq(25, STATUS_EXL_ERL,
+                      rom_get_status() & STATUS_EXL_ERL);
+
+        /* KSU=kernel keeps CP0 accessible after the zero write. */
+        rom_set_status(0);
+        rom_assert_eq(26, read_only, rom_get_status());
+        rom_set_status(original);
+        rom_assert_eq(27, original, rom_get_status());
+    }
 }
