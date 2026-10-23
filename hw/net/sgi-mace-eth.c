@@ -200,6 +200,7 @@ static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
         return;
     }
     sgi_mace_eth_rx_cancel(s);
+    s->rx_stopped = false;
     s->rx_count = 0;
     s->rx_read = 0;
     s->rx_write = 0;
@@ -280,7 +281,7 @@ static bool sgi_mace_eth_can_receive(NetClientState *nc)
 {
     SGIMACEEthState *s = qemu_get_nic_opaque(nc);
 
-    return !(s->mac_control & MACE_ETH_MAC_RESET) &&
+    return !s->rx_stopped && !(s->mac_control & MACE_ETH_MAC_RESET) &&
            (s->dma_control & MACE_ETH_RX_ENABLE) &&
            sgi_mace_eth_link_ready(s);
 }
@@ -378,6 +379,7 @@ memory_error:
                   "sgi-mace-eth: RX DMA failed at 0x%" PRIx32 "\n",
                   address);
     sgi_mace_eth_rx_cancel(s);
+    s->rx_stopped = true;
     s->dma_control &= ~MACE_ETH_RX_ENABLE;
     sgi_mace_eth_update_irq(s);
     return size;
@@ -665,7 +667,15 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             sgi_mace_eth_update_irq(s);
             sgi_mace_eth_schedule_flush(s);
             return;
-        case MACE_ETH_DMA_CONTROL:
+        case MACE_ETH_DMA_CONTROL: {
+            bool rx_enable_requested = value & MACE_ETH_RX_ENABLE;
+
+            if (s->rx_stopped && rx_enable_requested) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-mace-eth: RX restart requires full "
+                              "reinitialization\n");
+                value &= ~MACE_ETH_RX_ENABLE;
+            }
             if ((s->dma_control & (MACE_ETH_TX_ENABLE | MACE_ETH_RX_ENABLE)) &&
                 ((value ^ s->dma_control) & 0x0c)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
@@ -686,7 +696,7 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                 s->tx_reinit_seen = 0;
             }
             s->dma_control = value & 0xffff;
-            if (!(s->dma_control & MACE_ETH_RX_ENABLE)) {
+            if (!rx_enable_requested) {
                 sgi_mace_eth_rx_close(s);
                 sgi_mace_eth_rx_cancel(s);
                 s->rx_reinit_seen |= MACE_ETH_RX_REINIT_DMA_OFF;
@@ -698,6 +708,7 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             sgi_mace_eth_update_irq(s);
             sgi_mace_eth_schedule_flush(s);
             return;
+        }
         case MACE_ETH_INT_STATUS:
             s->int_status &= ~(value & 0xff);
             sgi_mace_eth_update_irq(s);
@@ -801,6 +812,7 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->tx_write = 0;
     s->tx_reinit_seen = 0;
     s->tx_stopped = false;
+    s->rx_stopped = false;
     s->rx_reinit_seen = 0;
     s->int_status = 0;
     s->rx_read = 0;
@@ -853,6 +865,7 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_UINT16(tx_write, SGIMACEEthState),
         VMSTATE_UINT8(tx_reinit_seen, SGIMACEEthState),
         VMSTATE_BOOL(tx_stopped, SGIMACEEthState),
+        VMSTATE_BOOL(rx_stopped, SGIMACEEthState),
         VMSTATE_UINT8(rx_reinit_seen, SGIMACEEthState),
         VMSTATE_UINT32_ARRAY(rx_fifo, SGIMACEEthState, 16),
         VMSTATE_UINT8(rx_read, SGIMACEEthState),
