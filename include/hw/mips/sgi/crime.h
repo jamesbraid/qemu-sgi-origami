@@ -18,6 +18,15 @@ typedef struct CrimeMigrationState {
     uint32_t timer_fraction;
 } CrimeMigrationState;
 
+typedef struct CrimeProfileState {
+    uint32_t inputs;
+    uint32_t latched;
+    uint64_t cpu_error_address;
+    uint32_t cpu_error_status;
+    uint32_t memory_error_status;
+    uint32_t memory_error_address;
+} CrimeProfileState;
+
 typedef struct CrimeTransferState {
     uint64_t tlb[32];
     uint32_t parameter[10];
@@ -45,6 +54,10 @@ struct SGICrimeState {
     MemoryRegion bank_ram[SGI_CRIME_BANK_COUNT];
     MemoryRegion wrong_geometry[SGI_CRIME_BANK_COUNT];
     qemu_irq cpu_ip[5];
+    uint32_t inputs;
+    uint32_t latched;
+    uint32_t cpu_error_status;
+    uint64_t cpu_error_address;
     uint32_t hardware;
     uint32_t enable;
     uint32_t software;
@@ -59,6 +72,10 @@ struct SGICrimeState {
     Error *migration_blocker;
     uint8_t interface_revision;
     uint8_t transfer_policy;
+    uint8_t profile_id;
+    bool legacy_software;
+    bool profile_state_received;
+    CrimeProfileState incoming_profile;
     bool eight_128m_banks;
     bool reset_low_ram_approx;
     bool reset_low_ram_active;

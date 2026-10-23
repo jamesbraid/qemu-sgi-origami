@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
 /*
- * SGI CRIME 1.5 revision-1 processor interface and MACE interrupts.
+ * SGI CRIME processor interfaces and MACE interrupts.
+ * The default 1.5 interface has an explicit legacy software alternative.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
  * An opt-in synchronous linear transfer approximation uses healthy RAM.
  * Physical ECC, watchdog, rasterization, GBE and VICE are not modeled.
@@ -37,17 +38,21 @@
 #define CRIME_BANK_64_MBIT 0x100U
 #define CRIME_ERROR_READ (1U << 25)
 #define CRIME_ERROR_WRITE (1U << 26)
+#define CRIME_ERROR_RMW (1U << 27)
 #define CRIME_FULL_RAM 0x40000000ULL
 #define CRIME_NO_ECC_RAM 0x80000000ULL
 #define CRIME_CARRIER_SPAN (CRIME_NO_ECC_RAM + CRIME_BANKED_RAM)
 #define CRIME_MACE_MASK 0xffffU
 #define CRIME_SOFTWARE_MASK 0x30000000U
-#define CRIME_ENABLE_MASK (CRIME_MACE_MASK | CRIME_SOFTWARE_MASK)
-#define CRIME_IP2_MASK 0x0038U
-#define CRIME_IP3_MASK 0xff07U
+#define CRIME_LEGACY_SOFTWARE_MASK 0x70000000U
+#define CRIME_RENDER_IRQ_MASK 0x0fc00000U
+#define CRIME_LATCH_MASK 0x41cf0000U
+#define CRIME_LEGACY_LATCH_MASK 0x81cf0000U
+#define CRIME_IP2_MASK 0x8fc00038U
+#define CRIME_IP3_MASK 0x000fff07U
 #define CRIME_IP4_MASK (1U << 28)
 #define CRIME_IP5_MASK ((1U << 6) | (1U << 29))
-#define CRIME_IP6_MASK (1U << 7)
+#define CRIME_IP6_MASK 0x40300080U
 #define CRIME_ID_REVISION 0xb1U
 #define CRIME_TIMER_HZ 66666666U
 
@@ -216,6 +221,7 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     if ((mode & 1) || (copy && (mode & 2))) {
         crime_healthy_memory_notice(s);
     }
+    /* MMIO holds the BQL, so the validated RAM mappings remain stable. */
     buffer = g_malloc(destination_length);
     if (copy) {
         position = 0;
@@ -298,10 +304,33 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
     return crime_transfer_fail(offset, "unsupported transfer register write");
 }
 
+static uint32_t crime_software_mask(const SGICrimeState *s)
+{
+    return s->legacy_software ? CRIME_LEGACY_SOFTWARE_MASK :
+                                CRIME_SOFTWARE_MASK;
+}
+
+static uint32_t crime_latch_mask(const SGICrimeState *s)
+{
+    return s->legacy_software ? CRIME_LEGACY_LATCH_MASK : CRIME_LATCH_MASK;
+}
+
+static bool crime_enable_valid(const SGICrimeState *s, uint64_t value)
+{
+    return !(value >> 32) &&
+           (!s->functional_memory_transfer || !(value & CRIME_RENDER_IRQ_MASK));
+}
+
 static void crime_update_irq(SGICrimeState *s)
 {
     uint32_t pending = (s->hardware | s->software) & s->enable;
 
+    if (s->legacy_software) {
+        for (unsigned i = 0; i < ARRAY_SIZE(s->cpu_ip); i++) {
+            qemu_set_irq(s->cpu_ip[i], i == 0 && pending);
+        }
+        return;
+    }
     qemu_set_irq(s->cpu_ip[0], !!(pending & CRIME_IP2_MASK));
     qemu_set_irq(s->cpu_ip[1], !!(pending & CRIME_IP3_MASK));
     qemu_set_irq(s->cpu_ip[2], !!(pending & CRIME_IP4_MASK));
@@ -309,16 +338,31 @@ static void crime_update_irq(SGICrimeState *s)
     qemu_set_irq(s->cpu_ip[4], !!(pending & CRIME_IP6_MASK));
 }
 
+static void crime_update_hardware(SGICrimeState *s)
+{
+    uint32_t latch_mask = crime_latch_mask(s);
+
+    s->latched |= s->inputs & latch_mask;
+    s->hardware = (s->inputs & ~crime_software_mask(s) & ~latch_mask) |
+                  s->latched;
+    crime_update_irq(s);
+}
+
 static void crime_mace_input(void *opaque, int n, int level)
 {
     SGICrimeState *s = opaque;
 
     if (level) {
-        s->hardware |= 1U << n;
+        s->inputs |= 1U << n;
     } else {
-        s->hardware &= ~(1U << n);
+        s->inputs &= ~(1U << n);
     }
-    crime_update_irq(s);
+    crime_update_hardware(s);
+}
+
+static void crime_external_input(void *opaque, int n, int level)
+{
+    crime_mace_input(opaque, n + 16, level);
 }
 
 static void crime_timer_snapshot(SGICrimeState *s, int64_t now,
@@ -469,14 +513,14 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         return MEMTX_OK;
     }
     if (s->prom_id_word && offset == 0x0004 && size == 4) {
-        *value = CRIME_ID_REVISION;
+        *value = s->legacy_software ? 0xa1 : CRIME_ID_REVISION;
         return MEMTX_OK;
     }
     if (size != 8 || offset & 7) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte read at 0x%" HWADDR_PRIx
                       "\n", size, offset);
-        return s->functional_memory_transfer ?
+        return (s->functional_memory_transfer || s->legacy_software) ?
             crime_transfer_fail(offset, "invalid register width or alignment") :
             MEMTX_ERROR;
     }
@@ -488,10 +532,10 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
     }
     switch (offset) {
     case 0x0000:
-        *value = CRIME_ID_REVISION;
+        *value = s->legacy_software ? 0xa1 : CRIME_ID_REVISION;
         break;
     case 0x0008:
-        *value = 0x120;
+        *value = s->legacy_software ? 0x100 : 0x120;
         break;
     case 0x0010:
         *value = s->hardware | s->software;
@@ -506,8 +550,21 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         *value = s->hardware;
         break;
     case 0x0030: /* Watchdog remains disabled. */
-    case 0x0040: /* No CPU error producer is modeled. */
-    case 0x4048: /* No CPU error producer is modeled. */
+        *value = 0;
+        break;
+    case 0x0040:
+        *value = s->legacy_software ? s->cpu_error_address : 0;
+        break;
+    case 0x0048:
+        if (!s->legacy_software) {
+            goto unsupported;
+        }
+        *value = s->cpu_error_status;
+        break;
+    case 0x4048:
+        if (s->legacy_software) {
+            goto unsupported;
+        }
         *value = 0;
         break;
     case 0x0038:
@@ -516,21 +573,28 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
     case 0x0200:
         *value = s->functional_memory_transfer ? s->transfer.ecc_enable : 0;
         break;
-    case 0x0260:
     case 0x0270:
+        if (s->legacy_software) {
+            *value = 0;
+            break;
+        }
+        /* fall through */
+    case 0x0260:
         if (s->functional_memory_transfer) {
             *value = 0;
             break;
         }
         goto unsupported;
     case 0x0250:
-        if (s->eight_128m_banks || s->functional_memory_transfer) {
+        if (s->eight_128m_banks || s->functional_memory_transfer ||
+            s->legacy_software) {
             *value = s->memory_error_status;
             break;
         }
         goto unsupported;
     case 0x0258:
-        if (s->eight_128m_banks || s->functional_memory_transfer) {
+        if (s->eight_128m_banks || s->functional_memory_transfer ||
+            s->legacy_software) {
             *value = s->memory_error_address;
             break;
         }
@@ -540,7 +604,7 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         qemu_log_mask(LOG_UNIMP,
                       "sgi-crime: unsupported read at 0x%" HWADDR_PRIx
                       "\n", offset);
-        return s->functional_memory_transfer ?
+        return (s->functional_memory_transfer || s->legacy_software) ?
             crime_transfer_fail(offset, "unsupported register read") :
             MEMTX_ERROR;
     }
@@ -559,7 +623,7 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte write at 0x%" HWADDR_PRIx
                       "\n", size, offset);
-        return s->functional_memory_transfer ?
+        return (s->functional_memory_transfer || s->legacy_software) ?
             crime_transfer_fail(offset, "invalid register width or alignment") :
             MEMTX_ERROR;
     }
@@ -579,6 +643,36 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
             }
             crime_update_bank_mapping(s);
             return MEMTX_OK;
+        }
+    }
+    if (s->legacy_software) {
+        switch (offset) {
+        case 0x0008:
+            if (!value || value == 0x100) {
+                return MEMTX_OK;
+            }
+            break;
+        case 0x0010:
+        case 0x0030:
+        case 0x0250:
+        case 0x0270:
+            if (!value) {
+                return MEMTX_OK;
+            }
+            break;
+        case 0x0200:
+            if (!s->functional_memory_transfer && !value) {
+                return MEMTX_OK;
+            }
+            break;
+        case 0x0048:
+            if (!value) {
+                s->cpu_error_status = 0;
+                return MEMTX_OK;
+            }
+            break;
+        default:
+            break;
         }
     }
     if (s->functional_memory_transfer) {
@@ -604,21 +698,28 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
     }
     switch (offset) {
     case 0x0018:
-        if (!(value & ~CRIME_ENABLE_MASK)) {
+        if (crime_enable_valid(s, value)) {
             s->enable = value;
             crime_update_irq(s);
             return MEMTX_OK;
         }
         break;
     case 0x0020:
-        if (!(value & ~CRIME_SOFTWARE_MASK)) {
+        if (!(value & ~(uint64_t)crime_software_mask(s))) {
             s->software = value;
             crime_update_irq(s);
             return MEMTX_OK;
         }
         break;
-    case 0x0038:
+    case 0x0028:
         if (!(value >> 32)) {
+            s->latched &= value;
+            crime_update_hardware(s);
+            return MEMTX_OK;
+        }
+        break;
+    case 0x0038:
+        if (s->legacy_software || !(value >> 32)) {
             s->timer_base = value;
             s->timer_fraction = 0;
             s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -631,7 +732,7 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
     qemu_log_mask(LOG_UNIMP,
                   "sgi-crime: unsupported write at 0x%" HWADDR_PRIx
                   " value 0x%" PRIx64 "\n", offset, value);
-    return s->functional_memory_transfer ?
+    return (s->functional_memory_transfer || s->legacy_software) ?
         crime_transfer_fail(offset, "unsupported register write") : MEMTX_ERROR;
 }
 
@@ -651,6 +752,9 @@ static void crime_reset_enter(Object *obj, ResetType type)
 
     memset(&s->transfer, 0, sizeof(s->transfer));
     s->healthy_memory_reported = false;
+    s->latched = 0;
+    s->cpu_error_status = 0;
+    s->cpu_error_address = 0;
     s->enable = 0;
     s->software = 0;
     s->timer_base = 0;
@@ -675,7 +779,7 @@ static void crime_reset_hold(Object *obj, ResetType type)
     SGICrimeState *s = SGI_CRIME(obj);
 
     crime_update_bank_mapping(s);
-    crime_update_irq(s);
+    crime_update_hardware(s);
 }
 
 static bool crime_pre_save(void *opaque, Error **errp)
@@ -700,30 +804,45 @@ static int crime_post_load(void *opaque, int version_id)
 {
     SGICrimeState *s = opaque;
     CrimeMigrationState *incoming = &s->incoming;
+    CrimeProfileState *profile = &s->incoming_profile;
+    uint32_t latch_mask = crime_latch_mask(s);
+    uint32_t software_mask = crime_software_mask(s);
+    uint32_t hardware;
 
-    if (s->functional_memory_transfer && !s->transfer_state_received) {
+    if ((s->functional_memory_transfer && !s->transfer_state_received) ||
+        !s->profile_state_received) {
         return -EINVAL;
     }
-    if ((incoming->hardware & ~CRIME_MACE_MASK) ||
-        (incoming->enable & ~CRIME_ENABLE_MASK) ||
-        (incoming->software & ~CRIME_SOFTWARE_MASK)) {
+    if ((incoming->hardware & software_mask) ||
+        !crime_enable_valid(s, incoming->enable) ||
+        (incoming->software & ~software_mask)) {
         return -EINVAL;
     }
-    if (version_id == 1) {
-        incoming->timer_base = 0;
-        incoming->timer_fraction = 0;
-    } else if (incoming->timer_fraction >= NANOSECONDS_PER_SECOND) {
+    if (incoming->timer_fraction >= NANOSECONDS_PER_SECOND) {
         return -EINVAL;
     }
-    s->hardware = incoming->hardware;
+    profile->latched |= profile->inputs & latch_mask;
+    hardware = (profile->inputs & ~software_mask & ~latch_mask) |
+               profile->latched;
+    if (hardware != incoming->hardware ||
+        (s->functional_memory_transfer &&
+         (profile->memory_error_status != s->incoming_memory_error_status ||
+          profile->memory_error_address != s->incoming_memory_error_address))) {
+        return -EINVAL;
+    }
+    s->inputs = profile->inputs;
+    s->latched = profile->latched;
+    s->cpu_error_address = profile->cpu_error_address;
+    s->cpu_error_status = profile->cpu_error_status;
+    s->memory_error_status = profile->memory_error_status;
+    s->memory_error_address = profile->memory_error_address;
+    s->hardware = hardware;
     s->enable = incoming->enable;
     s->software = incoming->software;
     s->timer_base = incoming->timer_base;
     s->timer_fraction = incoming->timer_fraction;
     if (s->functional_memory_transfer) {
         s->transfer = s->incoming_transfer;
-        s->memory_error_status = s->incoming_memory_error_status;
-        s->memory_error_address = s->incoming_memory_error_address;
         s->healthy_memory_reported = false;
     }
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -758,11 +877,8 @@ static int crime_transfer_post_load(void *opaque, int version_id)
 
     if (incoming->ecc_enable > 1 || incoming->parameter[2] ||
         (s->incoming_memory_error_status &
-         ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE)) ||
-        s->incoming_memory_error_address > 0x3fffffff ||
-        (s->incoming.hardware & ~CRIME_MACE_MASK) ||
-        (s->incoming.enable & ~CRIME_ENABLE_MASK) ||
-        (s->incoming.software & ~CRIME_SOFTWARE_MASK)) {
+         ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE | CRIME_ERROR_RMW)) ||
+        s->incoming_memory_error_address > 0x3fffffff) {
         return -EINVAL;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(incoming->tlb); i++) {
@@ -794,18 +910,76 @@ static const VMStateDescription vmstate_crime_transfer = {
     },
 };
 
+static bool crime_profile_needed(void *opaque)
+{
+    return true;
+}
+
+static bool crime_profile_pre_save(void *opaque, Error **errp)
+{
+    SGICrimeState *s = opaque;
+    CrimeProfileState *profile = &s->incoming_profile;
+
+    profile->inputs = s->inputs;
+    profile->latched = s->latched;
+    profile->cpu_error_address = s->cpu_error_address;
+    profile->cpu_error_status = s->cpu_error_status;
+    profile->memory_error_status = s->memory_error_status;
+    profile->memory_error_address = s->memory_error_address;
+    return true;
+}
+
+static int crime_profile_post_load(void *opaque, int version_id)
+{
+    SGICrimeState *s = opaque;
+    CrimeProfileState *profile = &s->incoming_profile;
+
+    if ((profile->latched & ~crime_latch_mask(s)) ||
+        (profile->cpu_error_status & ~7U) ||
+        (profile->memory_error_status &
+         ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE | CRIME_ERROR_RMW)) ||
+        profile->memory_error_address > 0x3fffffff ||
+        (!s->legacy_software &&
+         (profile->cpu_error_status || profile->cpu_error_address))) {
+        return -EINVAL;
+    }
+    s->profile_state_received = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_crime_profile = {
+    .name = TYPE_SGI_CRIME "/profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = crime_profile_needed,
+    .pre_save_errp = crime_profile_pre_save,
+    .post_load = crime_profile_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(profile_id, SGICrimeState),
+        VMSTATE_UINT8_EQUAL(transfer_policy, SGICrimeState),
+        VMSTATE_UINT32(incoming_profile.inputs, SGICrimeState),
+        VMSTATE_UINT32(incoming_profile.latched, SGICrimeState),
+        VMSTATE_UINT64(incoming_profile.cpu_error_address, SGICrimeState),
+        VMSTATE_UINT32(incoming_profile.cpu_error_status, SGICrimeState),
+        VMSTATE_UINT32(incoming_profile.memory_error_status, SGICrimeState),
+        VMSTATE_UINT32(incoming_profile.memory_error_address, SGICrimeState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int crime_pre_load(void *opaque)
 {
     SGICrimeState *s = opaque;
 
     s->transfer_state_received = false;
+    s->profile_state_received = false;
     return 0;
 }
 
 static const VMStateDescription vmstate_crime = {
     .name = TYPE_SGI_CRIME,
     .version_id = 2,
-    .minimum_version_id = 1,
+    .minimum_version_id = 2,
     .pre_save_errp = crime_pre_save,
     .pre_load = crime_pre_load,
     .post_load = crime_post_load,
@@ -813,12 +987,13 @@ static const VMStateDescription vmstate_crime = {
         VMSTATE_UINT32(incoming.hardware, SGICrimeState),
         VMSTATE_UINT32(incoming.enable, SGICrimeState),
         VMSTATE_UINT32(incoming.software, SGICrimeState),
-        VMSTATE_UINT32_V(incoming.timer_base, SGICrimeState, 2),
-        VMSTATE_UINT32_V(incoming.timer_fraction, SGICrimeState, 2),
+        VMSTATE_UINT32(incoming.timer_base, SGICrimeState),
+        VMSTATE_UINT32(incoming.timer_fraction, SGICrimeState),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_crime_transfer,
+        &vmstate_crime_profile,
         NULL
     },
 };
@@ -833,6 +1008,7 @@ static void crime_realize(DeviceState *dev, Error **errp)
     SGICrimeState *s = SGI_CRIME(dev);
     uint64_t ram_size;
 
+    s->profile_id = s->legacy_software ? 1 : 0;
     s->transfer_policy = s->functional_memory_transfer ? 1 : 0;
     if (s->functional_memory_transfer && s->empty_renderer_status) {
         error_setg(errp, "sgi-crime functional-memory-transfer conflicts with "
@@ -1158,6 +1334,28 @@ static void crime_set_functional_memory_transfer(Object *obj, bool value,
     s->functional_memory_transfer = value;
 }
 
+static char *crime_get_profile(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_CRIME(obj)->legacy_software ?
+                    "legacy-software" : "1.5");
+}
+
+static void crime_set_profile(Object *obj, const char *value, Error **errp)
+{
+    SGICrimeState *s = SGI_CRIME(obj);
+
+    if (qdev_is_realized(DEVICE(obj)) || s->ram_aliases_initialized) {
+        error_setg(errp, "sgi-crime crime-profile cannot change after initial "
+                   "realization");
+        return;
+    }
+    if (strcmp(value, "1.5") && strcmp(value, "legacy-software")) {
+        error_setg(errp, "crime-profile must be 1.5 or legacy-software");
+        return;
+    }
+    s->legacy_software = !strcmp(value, "legacy-software");
+}
+
 static void crime_init(Object *obj)
 {
     SGICrimeState *s = SGI_CRIME(obj);
@@ -1166,6 +1364,7 @@ static void crime_init(Object *obj)
                           "sgi-crime.registers", CRIME_REGISTER_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->registers);
     qdev_init_gpio_in_named(DEVICE(obj), crime_mace_input, "mace", 16);
+    qdev_init_gpio_in_named(DEVICE(obj), crime_external_input, "external", 16);
     qdev_init_gpio_out_named(DEVICE(obj), s->cpu_ip, "cpu-ip", 5);
     object_property_add_link(obj, "decoded-carrier", TYPE_MEMORY_REGION,
                              (Object **)&s->decoded_carrier,
@@ -1177,6 +1376,8 @@ static void crime_init(Object *obj)
     object_property_add_bool(obj, "reset-low-ram-approx",
                              crime_get_reset_low_ram_approx,
                              crime_set_reset_low_ram_approx);
+    object_property_add_str(obj, "crime-profile", crime_get_profile,
+                            crime_set_profile);
     object_property_add_bool(obj, "functional-memory-transfer",
                              crime_get_functional_memory_transfer,
                              crime_set_functional_memory_transfer);
@@ -1200,7 +1401,7 @@ static void crime_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI CRIME 1.5 revision-1 processor interface";
+    dc->desc = "SGI CRIME processor interface";
     dc->realize = crime_realize;
     dc->unrealize = crime_unrealize;
     dc->vmsd = &vmstate_crime;

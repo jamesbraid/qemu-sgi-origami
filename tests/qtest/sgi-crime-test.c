@@ -304,7 +304,7 @@ static void test_reset_and_access(void)
     g_assert_cmphex(qtest_readq(s, CRIME_CONTROL), ==, 0x120);
     g_assert_cmpuint(memtx_writeq(s, CRIME_MEMORY_CONTROL, 1), !=, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_CONTROL), ==, 0);
-    g_assert_cmpuint(memtx_writeq(s, CRIME_HARDWARE, 1), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeq(s, CRIME_HARDWARE, BIT64(32)), !=, MEMTX_OK);
     g_assert_cmpuint(memtx_readq(s, CRIME_BASE + 0x48, &value), !=, MEMTX_OK);
     g_assert_cmpuint(memtx_readq(s, CRIME_BASE + 0x100, &value), !=, MEMTX_OK);
     g_assert_cmpuint(memtx_writeq(s, CRIME_BASE + 0x100, 0), !=, MEMTX_OK);
@@ -510,7 +510,7 @@ static void test_software_interrupts(void)
     assert_cpu_ip(s, 0);
     qtest_writeq(s, CRIME_ENABLE, BIT64(28) | BIT64(29));
     assert_cpu_ip(s, (1U << 2) | (1U << 3));
-    g_assert_cmpuint(memtx_writeq(s, CRIME_ENABLE, BIT64(27)),
+    g_assert_cmpuint(memtx_writeq(s, CRIME_ENABLE, BIT64(32)),
                      !=, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, CRIME_ENABLE), ==,
                     BIT64(28) | BIT64(29));
