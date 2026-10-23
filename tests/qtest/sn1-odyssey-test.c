@@ -967,14 +967,16 @@ static void test_widget_control_reads_back(void)
 
 /*
  * Memory size, bank count and column-address latency reach the driver
- * through one register, and IRIX publishes the marketed board name from
- * the size field alone. The zero low bits are the outstanding-operation
- * count and the data-FIFO level the driver waits on at nearly every step.
- * Bit 24 is the unexplained "don't-care copy field" a live V12 board
- * reads as 0x1 (odyssey-octane2-v12-registers-20260926.md); the model
- * carries it as an unconditional constant, so it appears in every profile
- * below. The default profile (128 MB, two banks, latency 3) is that same
- * board's measured 0xa1000000.
+ * through one register. The IRIX 6.5.30 kernel decodes it as bits 31:30 the
+ * size code (32, 64 or 128 MB), bit 29 set for four banks and clear for two,
+ * and bit 28 set for latency 2 and clear for latency 3; gfxinfo prints those
+ * values back. The zero low bits are the outstanding-operation count and the
+ * data-FIFO level the driver waits on at nearly every step. Bit 24 is the
+ * unexplained "don't-care copy field" a live V12 board reads as 0x1; the
+ * model carries it as an unconditional constant, so it appears in every
+ * value below. The default (128 MB, four banks, latency 3) is that board's
+ * measured 0xa1000000, which gfxinfo on a real V12 prints as "Banks: 4,
+ * CAS latency: 3".
  */
 static void test_memory_configuration_follows_properties(void)
 {
@@ -983,14 +985,21 @@ static void test_memory_configuration_follows_properties(void)
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0xa1000000);
     board_quit(qts);
 
-    qts = board_start(" -global sgi-odyssey.memory-size=32");
-    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x21000000);
+    qts = board_start(" -global sgi-odyssey.memory-size=32"
+                      " -global sgi-odyssey.memory-banks=2");
+    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x01000000);
+    board_quit(qts);
+
+    qts = board_start(" -global sgi-odyssey.memory-size=64"
+                      " -global sgi-odyssey.memory-banks=4"
+                      " -global sgi-odyssey.cas-latency=2");
+    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x71000000);
     board_quit(qts);
 
     qts = board_start(" -global sgi-odyssey.memory-size=64"
                       " -global sgi-odyssey.memory-banks=2"
                       " -global sgi-odyssey.cas-latency=2");
-    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x71000000);
+    g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x51000000);
     board_quit(qts);
 }
 
@@ -1032,12 +1041,12 @@ static void test_profile_selects_identity_and_memory(void)
 }
 
 /*
- * Bits 29 (two memory banks) and 28 (cas latency 2) of the memory
+ * Bits 29 (four memory banks) and 28 (cas latency 2) of the memory
  * configuration word, decomposed from the V12 profile's measured
- * 0xa1000000 (odyssey-octane2-v12-registers-20260926.md): two banks (bit
- * 29 set), latency 3 rather than 2 (bit 28 clear). Bits 27:24 carry the
- * constant "copy field" (ODSY_CONFIG_COPY_FIELD), that same board's only
- * established value for it.
+ * 0xa1000000: four banks (bit 29 set), latency 3 rather than 2 (bit 28
+ * clear), the "Banks: 4, CAS latency: 3" a real V12's gfxinfo prints. Bits
+ * 27:24 carry the constant "copy field" (ODSY_CONFIG_COPY_FIELD), that same
+ * board's only established value for it.
  */
 static void test_v12_profile_memory_word_bits(void)
 {
