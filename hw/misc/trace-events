@@ -130,6 +130,7 @@ sgi_kona_gl_tex_table(uint32_t slot) "slot 0x%x"
 sgi_kona_gl_packed(uint32_t selector, uint32_t high) "selector 0x%x data 0x%x"
 sgi_kona_gl_data(uint32_t token, uint32_t words) "token 0x%x data words %u"
 sgi_kona_gl_reply(uint32_t token, uint32_t what, uint64_t bytes) "token 0x%x 0x%x reply bytes 0x%" PRIx64
+sgi_kona_gl_read_texels(uint32_t target, uint32_t width, uint32_t height, uint32_t select, uint32_t bank_a, uint32_t bank_b, uint32_t handle) "target 0x%x %ux%u select 0x%x banks 0x%x 0x%x handle 0x%x"
 # The GL client's buffer or read-buffer configuration: its level, RGB
 # component size, index size and double-buffer words.
 sgi_kona_gl_buffer_config(uint32_t token, uint32_t level, uint32_t rgb, uint32_t index, uint32_t dbl) "token 0x%x level %u rgb %u index %u double %u"

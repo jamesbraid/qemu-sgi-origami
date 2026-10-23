@@ -4767,6 +4767,91 @@ static void test_texture_native_publication(void)
     qtest_quit(s);
 }
 
+/*
+ * A texel readback, the copy the library takes of a resident texture
+ * before it gives the texture's memory to another (__glkonReadTexels3D):
+ * its mode command 0x111 and two words, then 0x52 and 18 words inside a
+ * select-feed bracket, naming the texture by the destination a texel load
+ * gave it (geometry word 0x23, banks 0 and 0). The finish writes the
+ * texels to the mapped page and posts completion reason 0x100 with the
+ * finish's tag; without the readback the pipe never completed the
+ * bracket and IRIX declared it dead ("selectfeed operation timed out").
+ * A readback that names no texture still closes nothing: the bracket is
+ * refused and no completion posts.
+ */
+static void test_texture_readback(gconstpointer opaque)
+{
+    bool unknown = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    uint32_t readback[18] = {
+        0xde1, 2, 2, 7, 3, 0x28, 0, 0, 0, 0, 1, 1, 0, 0x38c0000, 0x23,
+        0x43, 0, 0,
+    };
+    uint8_t expected[16], actual[16];
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = 0x21;
+    gl_make_current(s);
+    texture_native_bind(s, h[10]);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+        stl_be_p(expected + 4 * k, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    kona_command_kicked(s, 0x1f1,
+                        (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3);
+    qtest_writel(s, KONA_REG(0x000034), 0x98000);
+    qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+    qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    qtest_memset(s, destination, 0xa5, sizeof(actual));
+    qtest_memset(s, reason_page, 0, 16);
+    if (unknown) {
+        readback[16] = 0x20000;
+    }
+    kona_command_kicked(s, 0x1f5,
+                        (uint32_t[]){ 0, 0x9000, 16, 16, 0, 0 }, 6);
+    kona_command(s, 0x111, (uint32_t[]){ 2, 0x60000000 }, 2);
+    kona_command(s, 0x52, readback, 18);
+    kona_command_kicked(s, 0x1f6, (uint32_t[]){ 0x100, 7 }, 2);
+    qtest_memread(s, destination, actual, sizeof(actual));
+    if (unknown) {
+        memset(expected, 0xa5, sizeof(expected));
+        g_assert_cmphex(qtest_readl(s, reason_page), ==, 0);
+    } else {
+        g_assert_cmphex(qtest_readl(s, reason_page), ==, 0x100);
+        g_assert_cmphex(qtest_readl(s, reason_page + 4), ==, 7);
+    }
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    /* The stream frames on: the texture still samples its texels. */
+    assert_texture_pixel(s, 1, 1, texture_source[3]);
+    if (!unknown) {
+        /*
+         * The library loads the copy back in the readback's own codes,
+         * format 7, type 3, storage 0x28, into whichever cache entry the
+         * texture now has; it samples as the original did.
+         */
+        h[3] = 7;
+        h[4] = 3;
+        h[9] = 0x28;
+        h[10] = 0x22;
+        texture_native_bind(s, h[10]);
+        kona_command(s, 0x174, h, 20);
+        for (unsigned k = 0; k < 4; k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(actual + 4 * k));
+        }
+        kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+        texture_native_bind(s, h[10]);
+        for (unsigned k = 0; k < 4; k++) {
+            assert_texture_pixel(s, k % 2, k / 2, texture_source[k]);
+        }
+    }
+    qtest_quit(s);
+}
+
 static const uint32_t texture_8x8_headers[2][20];
 static const uint32_t texture_8x8_sources[2][64];
 static void texture_words(QTestState *s, const uint32_t *v, unsigned n,
@@ -17561,6 +17646,10 @@ int main(int argc, char **argv)
                   test_texture_native_migrates);
     add_case("sn0/origin2000/kona-3d/texture/publication",
              test_texture_native_publication);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback",
+                  GUINT_TO_POINTER(0), test_texture_readback);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-unknown",
+                  GUINT_TO_POINTER(1), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
                   GUINT_TO_POINTER(0), test_texture_rebind_control);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",

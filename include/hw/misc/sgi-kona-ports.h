@@ -382,6 +382,16 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_POP_ATTRIB  0xc8
 #define SGI_KONA_CMD_GL_POP_LIGHTS  0x119
 /*
+ * A texel readback, 0x52 and 18 words, which the library sends inside a
+ * select-feed bracket to copy a resident texture to host memory before it
+ * gives the texture's pipe memory to another (__glkonReadTexels3D), or
+ * answered on the return page when small. The library's mode command
+ * 0x111 and two words (__glKonSetNoModeState) comes before it.
+ */
+#define SGI_KONA_CMD_GL_READ_TEXELS 0x52
+#define SGI_KONA_GL_READ_TEXELS_WORDS 18
+#define SGI_KONA_CMD_GL_MODE_STATE  0x111
+/*
  * Textures: a texel load, 0x174 and 20 header words with the image rows
  * after them, closed by 0x176 and the texture's memory handle; the binds
  * 0x1d5 or 0x106 with five words, 0x179 with 22, and 0x178 with the
