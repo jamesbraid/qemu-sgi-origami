@@ -554,6 +554,10 @@ sgi_qtests = \
     ['octane-test', 'octane-mgras-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['octane-vpro-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
+   config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sgi-heads-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

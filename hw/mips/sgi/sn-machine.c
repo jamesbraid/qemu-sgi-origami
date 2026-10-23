@@ -35,6 +35,7 @@
 #include "qapi/qapi-builtin-types.h"
 #include "qapi/qapi-visit-common.h"
 #include "qapi/visitor.h"
+#include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
@@ -68,6 +69,7 @@
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci/pci.h"
+#include "hw/pci/pci_host.h"
 #include "block/block.h"
 #include "block/graph-lock.h"
 #include "net/util.h"
@@ -266,6 +268,17 @@ struct SGIMachineState {
     /* The topology this machine builds: one row of its chassis. */
     const SGIModelTopology *view;
     char *baseio_preset;
+    /*
+     * heads.<position>=<id>: the selections as given, checked against the
+     * topology at realize, since machine properties are applied in hash
+     * order and topology= may come later. NULL when none were given.
+     */
+    QDict *heads;
+    /* Every modelled graphics position and what it holds, from realize. */
+    SGIHeadChoice *head_choices;
+    size_t head_count;
+    /* The first module's onboard PCI bus, for an Origin 200's PCI head. */
+    PCIBus *head_pci_bus;
     /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
     char *io_prom;
     bool io_prom_used;
@@ -2317,6 +2330,9 @@ static bool sgi_machine_instantiate_ip29_io(
             record_b ? record_b->label : NULL, parallel_id, mac, &bridge,
             errp)) {
         return false;
+    }
+    if (record->module_index == 0 && !s->head_pci_bus) {
+        s->head_pci_bus = PCI_HOST_BRIDGE(bridge)->bus;
     }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN &&
         !sgi_machine_add_crosstown_record(bridge, record->serial, errp)) {
@@ -6483,6 +6499,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
     }
+    g_free(s->head_choices);
+    s->head_choices = sgi_model_resolve_heads(mc->name, t, s->heads,
+                                              &s->head_count, errp);
+    if (!s->head_choices) {
+        return false;
+    }
     if (s->processor) {
         node_memory = sn0_model_board_memory(node_memory,
                                              s->processor->clock_hz);
@@ -7550,6 +7572,82 @@ bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
     return SGI_MACHINE(machine)->ip53_experiment_authorized;
 }
 
+/*
+ * The PCI device a pci-N position names, on the first module's onboard
+ * Bridge: m0-pci-N on a topology whose modules share the label.
+ */
+static bool sgi_machine_head_pci_slot(const char *name, unsigned int *device)
+{
+    const char *rest = name;
+
+    if (g_str_has_prefix(rest, "m0-")) {
+        rest += strlen("m0-");
+    }
+    return g_str_has_prefix(rest, "pci-") &&
+           !qemu_strtoui(rest + strlen("pci-"), NULL, 10, device) &&
+           *device < PCI_SLOT_MAX;
+}
+
+/*
+ * Fit each head heads.<position>= or a position's default selects, the way
+ * a -device naming the same slot would: an MGRAS board by XIO slot name,
+ * a PsiTech board at its PCI device. A built-in position's head is the
+ * topology's own I/O board record, which the builder already fitted.
+ * Runs once machine init has realized every Crossbow, as a slot claim
+ * needs.
+ */
+static bool sgi_machine_build_heads(SGIMachineState *s, Error **errp)
+{
+    const char *machine = MACHINE_GET_CLASS(s)->name;
+
+    for (size_t i = 0; i < s->head_count; i++) {
+        const SGIHeadChoice *choice = &s->head_choices[i];
+        const SGIModelGraphicsConfiguration *c = choice->option->configuration;
+        const char *name = choice->position->name;
+        unsigned int device;
+        DeviceState *dev;
+
+        if (!sgi_model_head_fitted(choice) || choice->position->built_in) {
+            continue;
+        }
+        switch (c->family) {
+        case SGI_MODEL_GRAPHICS_FAMILY_MGRAS:
+            dev = qdev_new(TYPE_SGI_MGRAS);
+            qdev_prop_set_string(dev, "slot", name);
+            qdev_prop_set_string(dev, "board", c->id);
+            if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), errp)) {
+                return false;
+            }
+            break;
+        case SGI_MODEL_GRAPHICS_FAMILY_PSITECH: {
+            g_autofree char *child = g_strdup_printf("head-%s", name);
+            PCIDevice *pci;
+
+            if (!s->head_pci_bus || !sgi_machine_head_pci_slot(name, &device)) {
+                error_setg(errp, "%s: topology '%s' has no PCI bus for "
+                           "graphics at %s", machine,
+                           sgi_machine_topology(MACHINE(s))->name, name);
+                return false;
+            }
+            pci = pci_new(PCI_DEVFN(device, 0), "psitech-rad4");
+            qdev_prop_set_uint16(DEVICE(pci), "device-id",
+                                 g_str_equal(c->id, "rad4-km") ? 0x0105 :
+                                 0x0104);
+            object_property_add_child(OBJECT(s), child, OBJECT(pci));
+            if (!pci_realize_and_unref(pci, s->head_pci_bus, errp)) {
+                return false;
+            }
+            break;
+        }
+        default:
+            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
+                       "machine", machine, c->id, name);
+            return false;
+        }
+    }
+    return true;
+}
+
 void sgi_machine_init(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -7567,6 +7665,7 @@ void sgi_machine_init(MachineState *machine)
     memory_region_transaction_begin();
     sgi_machine_realize(machine, &error_fatal);
     memory_region_transaction_commit();
+    sgi_machine_build_heads(s, &error_fatal);
     s->machine_done.notify = sgi_machine_done;
     qemu_add_machine_init_done_notifier(&s->machine_done);
 }
@@ -7691,6 +7790,43 @@ static void sgi_machine_set_processor(Object *obj, const char *value,
     }
     g_free(s->processor_name);
     s->processor_name = *value ? g_strdup(value) : NULL;
+}
+
+static void sgi_machine_get_heads(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    QObject *value = s->heads ? QOBJECT(qobject_ref(s->heads)) :
+                     QOBJECT(qdict_new());
+
+    visit_type_any(v, name, &value, errp);
+    qobject_unref(value);
+}
+
+/*
+ * heads.<position>=<id> arrives as one dictionary. Positions vary per
+ * topology, so no fixed structure fits, and topology= may not be set yet:
+ * keep the dictionary and check it at realize.
+ */
+static void sgi_machine_set_heads(Object *obj, Visitor *v, const char *name,
+                                  void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    QObject *value = NULL;
+    QDict *heads;
+
+    if (sgi_machine_built("heads", errp) ||
+        !visit_type_any(v, name, &value, errp)) {
+        return;
+    }
+    heads = qobject_to(QDict, value);
+    if (!heads) {
+        error_setg(errp, "heads takes heads.<position>=<id>");
+        qobject_unref(value);
+        return;
+    }
+    qobject_unref(s->heads);
+    s->heads = heads;
 }
 
 static char *sgi_machine_get_topology(Object *obj, Error **errp)
@@ -8197,6 +8333,8 @@ static void sgi_machine_instance_finalize(Object *obj)
     }
     g_free(s->node_module);
     g_free(s->controller_module);
+    qobject_unref(s->heads);
+    g_free(s->head_choices);
     g_free(s->module_start);
     sgi_l1_query_router_destroy(&s->query_router);
     for (i = 0; i < s->controller_count; i++) {
@@ -8339,6 +8477,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "(r12000-270mhz-4mb), one of the topology's processor options; "
         "-cpu must name its part. Defaults to the product's shipped "
         "module.");
+
+    object_class_property_add(oc, "heads", "SGIHeads", sgi_machine_get_heads,
+                              sgi_machine_set_heads, NULL, NULL);
+    object_class_property_set_description(oc, "heads",
+        "Graphics heads by position, heads.<position>=<id> (heads.io3=si-t); "
+        "query-sgi-machines lists each topology's positions and ids. A "
+        "position not named holds its default.");
 
     object_class_property_add_str(oc, "io-prom", sgi_machine_get_io_prom,
                                   sgi_machine_set_io_prom);
