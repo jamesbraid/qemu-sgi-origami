@@ -72,6 +72,39 @@ layer:
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
       node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
   memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - name: io3
+        description: "Xtown in XIO slot 3, cabled to the graphics module's Ktown"
+        built_in: true
+        options:
+          - id: ir3-ge16-4-rm1
+            default: true
+            fidelity: approximated
+            pairing: established
+            assembly: "030-1398-001"
+            limitations:
+              - "presents the IRIX name InfiniteReality2 and a 64 MiB texture pool"
+              - "presents no RM, TM or DG board record"
+              - "configuration reply carries 0 RM records"
+              - "one display channel at 1280x1024"
+          - {id: ir3-ge16-4-rm1-gvo, refused: "the model presents one configuration"}
+          - {id: ir3-ge16-4-rm2, refused: "the model presents one configuration"}
+          - {id: ir3-ge16-4-rm4, refused: "the model presents one configuration"}
+          - {id: ir2-ge16-rm1, refused: "the model presents one configuration"}
+          - {id: ir2-ge16-rm2, refused: "the model presents one configuration"}
+          - {id: ir2-ge16-rm4, refused: "the model presents one configuration"}
+          - {id: ir4-ge16-4-rm1, refused: "the model presents one configuration"}
+          - {id: ir4-ge16-4-rm2, refused: "the model presents one configuration"}
+          - {id: ir4-ge16-4-rm4, refused: "the model presents one configuration"}
+      - names: [io2, io4, io5, io6, io7, io8]
+        description: "an Xtown slot for a further pipe"
+        modelled: false
+        reason: "the model builds one pipe"
   data:
     machine:
       name: Onyx2 rack with one InfiniteReality pipe

@@ -579,6 +579,7 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->ip35_firmware = t->ip35_firmware;
     view->has_processor_options = t->has_processor_options;
     view->processor_options = t->processor_options;
+    view->graphics = t->graphics;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;

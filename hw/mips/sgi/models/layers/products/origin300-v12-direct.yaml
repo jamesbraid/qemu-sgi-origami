@@ -20,6 +20,21 @@ layer:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
   memory_kits_per_node: [kit-512-at-banks-2-3]
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - name: widget-11
+        description: "the XIO cable port, widget 11"
+        built_in: true
+        options:
+          - id: v12
+            default: true
+            fidelity: approximated
+            limitations:
+              - "not an SGI configuration: SGI documented no V12 wired directly to an Origin 300"
   data:
     machine:
       name: Origin 300 with a direct V12 widget

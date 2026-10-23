@@ -29,6 +29,78 @@ layer:
     - cpu0
   memory_kits_per_node:
   - kit-128
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - names: [widget-9, widget-10]
+        description: "Crossbow port of an XIO graphics slot"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: established}
+          - {id: si-t, fidelity: implemented, pairing: established}
+          - {id: esi, fidelity: implemented, pairing: established}
+          - {id: ssi, fidelity: implemented, pairing: established}
+          - {id: essi, fidelity: implemented, pairing: established}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+      - name: widget-11
+        description: "Crossbow port 11, the default graphics port"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: established}
+          - {id: si-t, fidelity: implemented, pairing: established}
+          - {id: esi, fidelity: implemented, pairing: established}
+          - {id: ssi, fidelity: implemented, pairing: established}
+          - {id: essi, fidelity: implemented, pairing: established}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+          - id: v10
+            refused: "VPro V10 and V12 need Crossbow 1.4, the ER power supply 060-0035-00x and PROM 4.5 (007-4210-003); this Octane presents Crossbow revision code 4, below the 1.4 required, and the SR supply."
+            requires:
+              - {kind: crossbow-revision, value: "1.4", evidence: "007-4210-003 preface", met: false}
+              - {kind: power-supply, value: "060-0035-00x, x >= 1", evidence: "007-4210-003 preface", met: false}
+              - {kind: prom-revision, value: "4.5", evidence: "007-4210-003 preface"}
+              - {kind: guest-release, value: "IRIX 6.5.10", evidence: "007-4210-003 preface"}
+          - id: v12
+            refused: "VPro V10 and V12 need Crossbow 1.4, the ER power supply 060-0035-00x and PROM 4.5 (007-4210-003); this Octane presents Crossbow revision code 4, below the 1.4 required, and the SR supply."
+            requires:
+              - {kind: crossbow-revision, value: "1.4", evidence: "007-4210-003 preface", met: false}
+              - {kind: power-supply, value: "060-0035-00x, x >= 1", evidence: "007-4210-003 preface", met: false}
+              - {kind: prom-revision, value: "4.5", evidence: "007-4210-003 preface"}
+              - {kind: guest-release, value: "IRIX 6.5.10", evidence: "007-4210-003 preface"}
+          - id: v6
+            refused: "the v6 and v8 profiles present identity only; VPro also needs the ER supply (007-4210-003)."
+            requires:
+              - {kind: power-supply, value: "060-0035-00x, x >= 1", evidence: "007-4210-003 preface", met: false}
+              - {kind: prom-revision, value: "4.0", evidence: "007-4210-003 preface"}
+              - {kind: guest-release, value: "IRIX 6.5.10", evidence: "007-4210-003 preface"}
+          - id: v8
+            refused: "the v6 and v8 profiles present identity only; VPro also needs the ER supply (007-4210-003)."
+            requires:
+              - {kind: power-supply, value: "060-0035-00x, x >= 1", evidence: "007-4210-003 preface", met: false}
+              - {kind: prom-revision, value: "4.0", evidence: "007-4210-003 preface"}
+              - {kind: guest-release, value: "IRIX 6.5.10", evidence: "007-4210-003 preface"}
+      - name: widget-12
+        description: "Crossbow port of an XIO graphics slot"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - {id: si, fidelity: implemented, pairing: established}
+          - {id: si-t, fidelity: implemented, pairing: established}
+          - {id: esi, fidelity: implemented, pairing: established}
+          - {id: ssi, fidelity: implemented, pairing: established}
+          - {id: essi, fidelity: implemented, pairing: established}
+          - {id: esi-t, refused: "the model lacks the texture paths this board needs"}
+          - {id: mxi, refused: "the model lacks the texture paths this board needs"}
+          - {id: emxi, refused: "the model lacks the texture paths this board needs"}
+      - name: pci-cage
+        description: "the PCI cage at Crossbow port 13"
+        modelled: false
+        reason: "the model has no Octane PCI cage"
   data:
     machine:
       name: Octane serial profile

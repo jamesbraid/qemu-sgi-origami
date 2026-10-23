@@ -27,6 +27,9 @@ slow_qtests = {
   # psitech-rad4-test's 92 cases, with the RAD4 DMA engine's, took 94.5s
   # under debug_tcg at load 145 on 32 threads, 2026-10-05; three times that.
   'psitech-rad4-test': 300,
+  # sgi-heads-test starts a fresh QEMU for nearly every case; 20 subtests took
+  # 65-70s at load 100-150 on 32 threads, 2026-10-23, and overran the default.
+  'sgi-heads-test': 180,
   'sgi-ioc3-eth-test': 500,
   'sgi-kona-read-defense-test': 80,
   'sgi-mgras-board-test': 670,

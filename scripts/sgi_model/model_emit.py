@@ -394,6 +394,8 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
         result["ip35-firmware"] = _kebab_keys(topology["ip35_firmware"])
     if "processor_options" in topology:
         result["processor-options"] = _kebab_keys(topology["processor_options"])
+    if "graphics" in topology:
+        result["graphics"] = _kebab_keys(topology["graphics"])
     return result
 
 def _node_population(raw: dict) -> dict:

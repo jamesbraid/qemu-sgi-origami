@@ -2660,6 +2660,459 @@
       ]
     },
     "generation": "SN0",
+    "graphics": {
+      "headless": true,
+      "max_heads": 1,
+      "positions": [
+        {
+          "built_in": false,
+          "description": "GIGAchannel XIO position io6, Crossbow widget 15",
+          "modelled": true,
+          "name": "io6",
+          "options": [
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "",
+                "family": "none",
+                "family_name": "",
+                "id": "none",
+                "parameters": {},
+                "product": "No graphics"
+              },
+              "default": true,
+              "fidelity": "validated",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "1 GE11, 1 RE4, no texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "si",
+                "parameters": {
+                  "geometry_engines": 1,
+                  "raster_engines": 1
+                },
+                "product": "Solid IMPACT (SI)"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "si-t",
+                "parameters": {
+                  "geometry_engines": 1,
+                  "raster_engines": 1,
+                  "texture_mib": 4
+                },
+                "product": "SI with texture"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "1 GE12, 1 RE4, no texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "esi",
+                "parameters": {
+                  "geometry_engines": 1,
+                  "raster_engines": 1
+                },
+                "product": "ESI"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "2 GE11, 2 RE4, no texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "ssi",
+                "parameters": {
+                  "geometry_engines": 2,
+                  "raster_engines": 2
+                },
+                "product": "SSI"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "2 GE12, 2 RE4, no texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "essi",
+                "parameters": {
+                  "geometry_engines": 2,
+                  "raster_engines": 2
+                },
+                "product": "ESSI"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "esi-t",
+                "parameters": {
+                  "geometry_engines": 1,
+                  "raster_engines": 1,
+                  "texture_mib": 4
+                },
+                "product": "ESI with texture"
+              },
+              "default": false,
+              "refused": "the model lacks the texture paths this board needs",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "mxi",
+                "parameters": {
+                  "geometry_engines": 2,
+                  "raster_engines": 2,
+                  "texture_mib": 8
+                },
+                "product": "MXI"
+              },
+              "default": false,
+              "refused": "the model lacks the texture paths this board needs",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+                "family": "mgras",
+                "family_name": "IMPACT",
+                "id": "emxi",
+                "parameters": {
+                  "geometry_engines": 2,
+                  "raster_engines": 2,
+                  "texture_mib": 8
+                },
+                "product": "EMXI"
+              },
+              "default": false,
+              "refused": "the model lacks the texture paths this board needs",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "GE14-4, 1 RM7, 64 MB texture per RM",
+                "family": "kona",
+                "family_name": "InfiniteReality",
+                "id": "ir2-ge14-4-rm1",
+                "parameters": {
+                  "geometry_board": "GE14-4",
+                  "raster_manager": "RM7",
+                  "raster_manager_count": 1,
+                  "texture_mib": 64
+                },
+                "product": "InfiniteReality2 (technical report: InfiniteReality)"
+              },
+              "default": false,
+              "refused": "SGI did not offer InfiniteReality on the Origin 200; the known GIGAchannel pipe is an owner conversion the model does not build.",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+                "family": "kona",
+                "family_name": "InfiniteReality",
+                "id": "ir3-ge16-4-rm1",
+                "parameters": {
+                  "display_channels": 2,
+                  "display_generator": "DG5-2",
+                  "geometry_board": "GE16-4",
+                  "raster_manager": "RM10",
+                  "raster_manager_count": 1,
+                  "texture_mib": 256
+                },
+                "product": "InfiniteReality3"
+              },
+              "default": false,
+              "refused": "SGI did not offer InfiniteReality on the Origin 200; the known GIGAchannel pipe is an owner conversion the model does not build.",
+              "selectable": false
+            }
+          ]
+        },
+        {
+          "built_in": false,
+          "description": "PCI option slot, device 5",
+          "modelled": true,
+          "name": "pci-5",
+          "options": [
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "",
+                "family": "none",
+                "family_name": "",
+                "id": "none",
+                "parameters": {},
+                "product": "No graphics"
+              },
+              "default": true,
+              "fidelity": "validated",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0104",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4",
+                "parameters": {},
+                "product": "RAD4"
+              },
+              "default": false,
+              "fidelity": "validated",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0105, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4-km",
+                "parameters": {},
+                "product": "RAD4-KM"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "8 MB VRAM, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4c-km",
+                "parameters": {},
+                "product": "RAD4C-KM"
+              },
+              "default": false,
+              "refused": "no published PCI identity",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "Permedia 2 class, 8 MB",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad1",
+                "parameters": {},
+                "product": "RAD1"
+              },
+              "default": false,
+              "refused": "the model sits at device 4, which is not an option slot",
+              "selectable": false
+            }
+          ]
+        },
+        {
+          "built_in": false,
+          "description": "PCI option slot, devices 6 and 7",
+          "modelled": true,
+          "name": "pci-6",
+          "options": [
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "",
+                "family": "none",
+                "family_name": "",
+                "id": "none",
+                "parameters": {},
+                "product": "No graphics"
+              },
+              "default": true,
+              "fidelity": "validated",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0104",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4",
+                "parameters": {},
+                "product": "RAD4"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0105, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4-km",
+                "parameters": {},
+                "product": "RAD4-KM"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "8 MB VRAM, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4c-km",
+                "parameters": {},
+                "product": "RAD4C-KM"
+              },
+              "default": false,
+              "refused": "no published PCI identity",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "Permedia 2 class, 8 MB",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad1",
+                "parameters": {},
+                "product": "RAD1"
+              },
+              "default": false,
+              "refused": "the model sits at device 4, which is not an option slot",
+              "selectable": false
+            }
+          ]
+        },
+        {
+          "built_in": false,
+          "description": "PCI option slot, devices 6 and 7",
+          "modelled": true,
+          "name": "pci-7",
+          "options": [
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "",
+                "family": "none",
+                "family_name": "",
+                "id": "none",
+                "parameters": {},
+                "product": "No graphics"
+              },
+              "default": true,
+              "fidelity": "validated",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0104",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4",
+                "parameters": {},
+                "product": "RAD4"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "PCI 12d1:0105, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4-km",
+                "parameters": {},
+                "product": "RAD4-KM"
+              },
+              "default": false,
+              "fidelity": "implemented",
+              "pairing": "established",
+              "selectable": true
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "8 MB VRAM, keyboard and mouse",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad4c-km",
+                "parameters": {},
+                "product": "RAD4C-KM"
+              },
+              "default": false,
+              "refused": "no published PCI identity",
+              "selectable": false
+            },
+            {
+              "change": "between-boots",
+              "configuration": {
+                "configuration": "Permedia 2 class, 8 MB",
+                "family": "psitech",
+                "family_name": "PsiTech",
+                "id": "rad1",
+                "parameters": {},
+                "product": "RAD1"
+              },
+              "default": false,
+              "refused": "the model sits at device 4, which is not an option slot",
+              "selectable": false
+            }
+          ]
+        }
+      ]
+    },
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 200 GIGAchannel",

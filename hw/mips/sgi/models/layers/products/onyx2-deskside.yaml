@@ -48,6 +48,34 @@ layer:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu-a, cpu-b]
   memory_kits_per_node: [kit-64, kit-64]
+  # Graphics heads heads.<position>=<id> selects; the ids are
+  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics heads).
+  graphics:
+    max_heads: 1
+    positions:
+      - name: io4
+        description: "XIO slot 4, Crossbow widget 8"
+        built_in: true
+        options:
+          - id: ir2-ge14-4-rm2
+            default: true
+            fidelity: approximated
+            pairing: established
+            assembly: "030-1129-002"
+            limitations:
+              - "presents no RM, TM or DG board record"
+              - "configuration reply carries 0 RM records"
+              - "one display channel at 1280x1024"
+          - {id: ir2-ge14-4-rm1, refused: "the model presents one configuration"}
+          - {id: ir2-ge14-2-rm1, refused: "the model presents one configuration"}
+          - {id: ir2-ge14-2-rm2, refused: "the model presents one configuration"}
+          - {id: ir2-ge16-rm1, refused: "the model presents one configuration"}
+          - {id: ir2-ge16-rm2, refused: "the model presents one configuration"}
+          - {id: reality-ge14-rm1, refused: "the model presents one configuration"}
+          - {id: reality-ge14-rm2, refused: "the model presents one configuration"}
+          - {id: ir4-ge16-4-rm1, refused: "the model presents one configuration"}
+          - {id: ir4-ge16-4-rm2, refused: "the model presents one configuration"}
   data:
     machine:
       name: Onyx2 deskside with one InfiniteReality pipe

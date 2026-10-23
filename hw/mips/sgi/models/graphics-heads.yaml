@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Every graphics product configuration a topology's graphics positions may
+# list, by the id heads.<position>=<id> selects (docs/specs/sgi-sn.rst,
+# Graphics heads). One id names one product, parameter set and option set
+# in every topology; product layers list ids, never their own copies.
+#
+# Ids are frozen once listed. MGRAS, VPro and PsiTech ids are the product's
+# own short name, with + spelled -, and equal the device's own product
+# property. InfiniteReality ids are <product>-<geometry board>-rm<count>,
+# with option suffixes in a fixed order (-dg5-8, -gvo, -hdgvo, -dplex,
+# -ddo2, -tvo); where only the geometry class is known, the id uses the
+# class (ge14, ge16).
+graphics_heads_version: 1
+configurations:
+  - id: none
+    family: none
+    family_name: ""
+    product: No graphics
+    configuration: ""
+    parameters: {}
+
+  # IMPACT (MGRAS): OCTANE Technical Report Table 4.1; E-series counts
+  # inferred from the first-generation pattern.
+  - {id: si, family: mgras, family_name: IMPACT, product: Solid IMPACT (SI),
+     configuration: "1 GE11, 1 RE4, no texture",
+     parameters: {geometry_engines: 1, raster_engines: 1}}
+  - {id: si-t, family: mgras, family_name: IMPACT, product: SI with texture,
+     configuration: "1 GE11, 1 RE4, 1 TE1, 4 MB texture",
+     parameters: {geometry_engines: 1, raster_engines: 1, texture_mib: 4}}
+  - {id: ssi, family: mgras, family_name: IMPACT, product: SSI,
+     configuration: "2 GE11, 2 RE4, no texture",
+     parameters: {geometry_engines: 2, raster_engines: 2}}
+  - {id: mxi, family: mgras, family_name: IMPACT, product: MXI,
+     configuration: "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
+     parameters: {geometry_engines: 2, raster_engines: 2, texture_mib: 8}}
+  - {id: esi, family: mgras, family_name: IMPACT, product: ESI,
+     configuration: "1 GE12, 1 RE4, no texture",
+     parameters: {geometry_engines: 1, raster_engines: 1}}
+  - {id: esi-t, family: mgras, family_name: IMPACT, product: ESI with texture,
+     configuration: "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
+     parameters: {geometry_engines: 1, raster_engines: 1, texture_mib: 4}}
+  - {id: essi, family: mgras, family_name: IMPACT, product: ESSI,
+     configuration: "2 GE12, 2 RE4, no texture",
+     parameters: {geometry_engines: 2, raster_engines: 2}}
+  - {id: emxi, family: mgras, family_name: IMPACT, product: EMXI,
+     configuration: "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
+     parameters: {geometry_engines: 2, raster_engines: 2, texture_mib: 8}}
+
+  # VPro (Odyssey).
+  - {id: v6, family: odyssey, family_name: VPro, product: VPro V6,
+     configuration: "first generation, 32 MB",
+     parameters: {board_memory_mib: 32}}
+  - {id: v8, family: odyssey, family_name: VPro, product: VPro V8,
+     configuration: "first generation, 128 MB",
+     parameters: {board_memory_mib: 128}}
+  - {id: v10, family: odyssey, family_name: VPro, product: VPro V10,
+     configuration: "second generation, 32 MB",
+     parameters: {board_memory_mib: 32}}
+  - {id: v12, family: odyssey, family_name: VPro, product: VPro V12,
+     configuration: "second generation, 128 MB",
+     parameters: {board_memory_mib: 128}}
+
+  # PsiTech.
+  - {id: rad4, family: psitech, family_name: PsiTech, product: RAD4,
+     configuration: "PCI 12d1:0104", parameters: {}}
+  - {id: rad4-km, family: psitech, family_name: PsiTech, product: RAD4-KM,
+     configuration: "PCI 12d1:0105, keyboard and mouse", parameters: {}}
+  - {id: rad4c-km, family: psitech, family_name: PsiTech, product: RAD4C-KM,
+     configuration: "8 MB VRAM, keyboard and mouse", parameters: {}}
+  - {id: rad1, family: psitech, family_name: PsiTech, product: RAD1,
+     configuration: "Permedia 2 class, 8 MB", parameters: {}}
+
+  # InfiniteReality (KONA).
+  - {id: reality-ge14-rm1, family: kona, family_name: InfiniteReality,
+     product: Onyx2 Reality, configuration: "GE14, 1 RM8",
+     parameters: {geometry_board: GE14, raster_manager: RM8,
+                  raster_manager_count: 1}}
+  - {id: reality-ge14-rm2, family: kona, family_name: InfiniteReality,
+     product: Onyx2 Reality, configuration: "GE14, 2 RM8",
+     parameters: {geometry_board: GE14, raster_manager: RM8,
+                  raster_manager_count: 2}}
+  - {id: ir2-ge14-4-rm1, family: kona, family_name: InfiniteReality,
+     product: "InfiniteReality2 (technical report: InfiniteReality)",
+     configuration: "GE14-4, 1 RM7, 64 MB texture per RM",
+     parameters: {geometry_board: GE14-4, raster_manager: RM7,
+                  raster_manager_count: 1, texture_mib: 64}}
+  - {id: ir2-ge14-4-rm2, family: kona, family_name: InfiniteReality,
+     product: "InfiniteReality2 (technical report: InfiniteReality)",
+     configuration: "GE14-4, 2 RM7, 64 MB texture per RM",
+     parameters: {geometry_board: GE14-4, raster_manager: RM7,
+                  raster_manager_count: 2, texture_mib: 64}}
+  - {id: ir2-ge14-2-rm1, family: kona, family_name: InfiniteReality,
+     product: "InfiniteReality2 (technical report: InfiniteReality)",
+     configuration: "GE14-2, 1 RM7, 64 MB texture per RM",
+     parameters: {geometry_board: GE14-2, raster_manager: RM7,
+                  raster_manager_count: 1, texture_mib: 64}}
+  - {id: ir2-ge14-2-rm2, family: kona, family_name: InfiniteReality,
+     product: "InfiniteReality2 (technical report: InfiniteReality)",
+     configuration: "GE14-2, 2 RM7, 64 MB texture per RM",
+     parameters: {geometry_board: GE14-2, raster_manager: RM7,
+                  raster_manager_count: 2, texture_mib: 64}}
+  - {id: ir2-ge16-rm1, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality2, configuration: "GE16, 1 RM9, 64 MB texture",
+     parameters: {geometry_board: GE16, raster_manager: RM9,
+                  raster_manager_count: 1, texture_mib: 64}}
+  - {id: ir2-ge16-rm2, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality2, configuration: "GE16, 2 RM9, 64 MB texture",
+     parameters: {geometry_board: GE16, raster_manager: RM9,
+                  raster_manager_count: 2, texture_mib: 64}}
+  - {id: ir2-ge16-rm4, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality2, configuration: "GE16, 4 RM9, 64 MB texture",
+     parameters: {geometry_board: GE16, raster_manager: RM9,
+                  raster_manager_count: 4, texture_mib: 64}}
+  - {id: ir3-ge16-4-rm1, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality3,
+     configuration: "GE16-4, 1 RM10, 256 MB texture, DG5-2",
+     parameters: {geometry_board: GE16-4, raster_manager: RM10,
+                  raster_manager_count: 1, texture_mib: 256,
+                  display_generator: DG5-2, display_channels: 2}}
+  - {id: ir3-ge16-4-rm1-gvo, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality3,
+     configuration: "GE16-4, 1 RM10, 256 MB texture, DG5-2 with GVO",
+     parameters: {geometry_board: GE16-4, raster_manager: RM10,
+                  raster_manager_count: 1, texture_mib: 256,
+                  display_generator: DG5-2, display_channels: 2},
+     options: [gvo]}
+  - {id: ir3-ge16-4-rm2, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality3,
+     configuration: "GE16-4, 2 RM10, 256 MB texture, DG5-2",
+     parameters: {geometry_board: GE16-4, raster_manager: RM10,
+                  raster_manager_count: 2, texture_mib: 256,
+                  display_generator: DG5-2, display_channels: 2}}
+  - {id: ir3-ge16-4-rm4, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality3,
+     configuration: "GE16-4, 4 RM10, 256 MB texture, DG5-2",
+     parameters: {geometry_board: GE16-4, raster_manager: RM10,
+                  raster_manager_count: 4, texture_mib: 256,
+                  display_generator: DG5-2, display_channels: 2}}
+  - {id: ir4-ge16-4-rm1, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality4,
+     configuration: "GE16-4, 1 RM11, 1024 MB texture per RM",
+     parameters: {geometry_board: GE16-4, raster_manager: RM11,
+                  raster_manager_count: 1, texture_mib: 1024}}
+  - {id: ir4-ge16-4-rm2, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality4,
+     configuration: "GE16-4, 2 RM11, 1024 MB texture per RM",
+     parameters: {geometry_board: GE16-4, raster_manager: RM11,
+                  raster_manager_count: 2, texture_mib: 1024}}
+  - {id: ir4-ge16-4-rm4, family: kona, family_name: InfiniteReality,
+     product: InfiniteReality4,
+     configuration: "GE16-4, 4 RM11, 1024 MB texture per RM",
+     parameters: {geometry_board: GE16-4, raster_manager: RM11,
+                  raster_manager_count: 4, texture_mib: 1024}}

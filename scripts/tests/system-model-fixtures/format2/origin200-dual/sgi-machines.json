@@ -940,6 +940,276 @@
       "crossbars": [],
       "description": "SGI Origin 200 (IP29)",
       "generation": "sn0",
+      "graphics": {
+        "headless": true,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": false,
+            "description": "PCI option slot, device 5",
+            "modelled": true,
+            "name": "m0-pci-5",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0104",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4",
+                  "parameters": {},
+                  "product": "RAD4"
+                },
+                "default": false,
+                "fidelity": "validated",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0105, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4-km",
+                  "parameters": {},
+                  "product": "RAD4-KM"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "8 MB VRAM, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4c-km",
+                  "parameters": {},
+                  "product": "RAD4C-KM"
+                },
+                "default": false,
+                "refused": "no published PCI identity",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "Permedia 2 class, 8 MB",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad1",
+                  "parameters": {},
+                  "product": "RAD1"
+                },
+                "default": false,
+                "refused": "the model sits at device 4, which is not an option slot",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "PCI option slot, devices 6 and 7",
+            "modelled": true,
+            "name": "m0-pci-6",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0104",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4",
+                  "parameters": {},
+                  "product": "RAD4"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0105, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4-km",
+                  "parameters": {},
+                  "product": "RAD4-KM"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "8 MB VRAM, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4c-km",
+                  "parameters": {},
+                  "product": "RAD4C-KM"
+                },
+                "default": false,
+                "refused": "no published PCI identity",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "Permedia 2 class, 8 MB",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad1",
+                  "parameters": {},
+                  "product": "RAD1"
+                },
+                "default": false,
+                "refused": "the model sits at device 4, which is not an option slot",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "PCI option slot, devices 6 and 7",
+            "modelled": true,
+            "name": "m0-pci-7",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0104",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4",
+                  "parameters": {},
+                  "product": "RAD4"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "PCI 12d1:0105, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4-km",
+                  "parameters": {},
+                  "product": "RAD4-KM"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "8 MB VRAM, keyboard and mouse",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad4c-km",
+                  "parameters": {},
+                  "product": "RAD4C-KM"
+                },
+                "default": false,
+                "refused": "no published PCI identity",
+                "selectable": false
+              },
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "Permedia 2 class, 8 MB",
+                  "family": "psitech",
+                  "family-name": "PsiTech",
+                  "id": "rad1",
+                  "parameters": {},
+                  "product": "RAD1"
+                },
+                "default": false,
+                "refused": "the model sits at device 4, which is not an option slot",
+                "selectable": false
+              }
+            ]
+          },
+          {
+            "built-in": false,
+            "description": "the second module's PCI option slots",
+            "modelled": false,
+            "name": "m1-pci-5",
+            "options": [],
+            "reason": "the model fits PCI heads on the first module only"
+          },
+          {
+            "built-in": false,
+            "description": "the second module's PCI option slots",
+            "modelled": false,
+            "name": "m1-pci-6",
+            "options": [],
+            "reason": "the model fits PCI heads on the first module only"
+          },
+          {
+            "built-in": false,
+            "description": "the second module's PCI option slots",
+            "modelled": false,
+            "name": "m1-pci-7",
+            "options": [],
+            "reason": "the model fits PCI heads on the first module only"
+          }
+        ]
+      },
       "io-boards": [
         {
           "attachment": 0,
