@@ -91,7 +91,8 @@
 #define BCM_BUFMGR_STATUS       0x4404u
 #define BCM_BUFMGR_ENABLE       0x00000002u
 #define BCM_BUFMGR_ATTN         0x00000004u
-#define BCM_BUFMGR_START_NS     1000000
+#define BCM_BUFMGR_START_NS     8000000
+#define BCM_BUFMGR_EARLY_READ_NS 7000000
 
 /* The firmware-ready handshake in on-chip SRAM. */
 #define BCM_SRAM_FW_MBOX        0x0b50u
@@ -1016,10 +1017,12 @@ static void test_bufmgr_registers(const void *data)
         write_reg(&b, BCM_BUFMGR_MODE,
                   BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
-        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2);
+        qtest_clock_step(b.qts, BCM_BUFMGR_EARLY_READ_NS);
+        g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
         write_reg(&b, BCM_BUFMGR_MODE,
                   BCM_BUFMGR_ENABLE | BCM_BUFMGR_ATTN);
-        qtest_clock_step(b.qts, BCM_BUFMGR_START_NS / 2 - 1);
+        qtest_clock_step(b.qts,
+                         BCM_BUFMGR_START_NS - BCM_BUFMGR_EARLY_READ_NS - 1);
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==, BCM_BUFMGR_ATTN);
         qtest_clock_step(b.qts, 1);
         g_assert_cmphex(read_reg(&b, BCM_BUFMGR_MODE), ==,
