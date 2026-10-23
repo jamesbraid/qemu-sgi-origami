@@ -75,6 +75,8 @@ typedef struct OctaneMachineState {
     MemoryRegion low_ram;
     MemoryRegion high_guard;
     uint64_t bank_size[HEART_BANKS];
+    /* Which bank<N>-size properties the launch set, one bit per bank. */
+    uint8_t banks_set;
     const SGIModelTopology *model;
     const SGIModelNode *node;
     char *topology_name;
@@ -359,25 +361,119 @@ static bool octane_attach_record(OctaneMachineState *s, Object *owner,
                                    role, errp);
 }
 
-static bool octane_valid_banks(OctaneMachineState *s)
+/* Whether the catalogue lets one populated bank have @size bytes. */
+static bool octane_bank_size_accepted(const SGIModelNode *node, uint64_t size)
 {
-    for (SGIModelBankLayoutList *item = s->node->accepted_bank_layouts;
-         item; item = item->next) {
-        uint64List *bank = item->value->bank_mib;
-        bool match = true;
+    const uint64List *item;
 
-        for (unsigned i = 0; i < HEART_BANKS; i++) {
-            if (!bank || s->bank_size[i] != bank->value * MiB) {
-                match = false;
-                break;
-            }
-            bank = bank->next;
-        }
-        if (match && !bank) {
+    for (item = node->accepted_bank_mib; item; item = item->next) {
+        if (size == item->value * MiB) {
             return true;
         }
     }
     return false;
+}
+
+/*
+ * The catalogue's bank rule (docs/specs/sgi-ip30.rst, Memory kits and
+ * capacity): banks fill from bank 0 without a gap, each populated bank
+ * takes an accepted capacity, and on a product that requires it no bank
+ * is larger than the one before.
+ */
+static bool octane_valid_banks(OctaneMachineState *s)
+{
+    bool empty = false;
+
+    for (unsigned i = 0; i < HEART_BANKS; i++) {
+        uint64_t size = s->bank_size[i];
+
+        if (!size) {
+            empty = true;
+            continue;
+        }
+        if (empty || !octane_bank_size_accepted(s->node, size) ||
+            (i && s->node->banks_descending && size > s->bank_size[i - 1])) {
+            return false;
+        }
+    }
+    return s->bank_size[0] != 0;
+}
+
+/*
+ * Fill the banks for @total bytes the way a buyer would, largest DIMM
+ * pairs first in the fewest banks. The accepted capacities are powers of
+ * two, so this finds a layout whenever any layout makes @total.
+ */
+static bool octane_layout_banks(OctaneMachineState *s, uint64_t total)
+{
+    const uint64List *item;
+
+    for (unsigned i = 0; i < HEART_BANKS; i++) {
+        uint64_t best = 0;
+
+        for (item = s->node->accepted_bank_mib; item; item = item->next) {
+            uint64_t size = item->value * MiB;
+
+            if (size <= total && size > best) {
+                best = size;
+            }
+        }
+        s->bank_size[i] = best;
+        total -= best;
+    }
+    return !total && octane_valid_banks(s);
+}
+
+/* "64, 128, 256 or 512": the accepted bank capacities, for a refusal. */
+static char *octane_bank_sizes(const SGIModelNode *node)
+{
+    GString *out = g_string_new(NULL);
+    const uint64List *item;
+
+    for (item = node->accepted_bank_mib; item; item = item->next) {
+        g_string_append_printf(out, "%s%" PRIu64,
+                               item == node->accepted_bank_mib ? "" :
+                               item->next ? ", " : " or ", item->value);
+    }
+    return g_string_free(out, false);
+}
+
+/* Settle bank_size[] from bank<N>-size or -m; refusals go to @errp. */
+static bool octane_fit_memory(OctaneMachineState *s, const char *product,
+                              uint64_t ram_size, Error **errp)
+{
+    g_autofree char *sizes = octane_bank_sizes(s->node);
+    const char *order = s->node->banks_descending ? ", largest first" : "";
+
+    if (!s->banks_set) {
+        if (!octane_layout_banks(s, ram_size)) {
+            error_setg(errp, "%s cannot make %" PRIu64 " MiB of RAM from "
+                       "one to four banks of %s MiB filled from bank 0%s",
+                       product, ram_size / MiB, sizes, order);
+            return false;
+        }
+        return true;
+    }
+    for (unsigned i = 0; i < HEART_BANKS; i++) {
+        if (!(s->banks_set & (1 << i))) {
+            s->bank_size[i] = 0;
+        }
+    }
+    if (!octane_valid_banks(s)) {
+        error_setg(errp, "%s unsupported HEART bank population: banks take "
+                   "%s MiB and fill from bank 0 without a gap%s", product,
+                   sizes, order);
+        return false;
+    }
+    if (s->bank_size[0] + s->bank_size[1] + s->bank_size[2] +
+        s->bank_size[3] != ram_size) {
+        error_setg(errp, "%s HEART banks hold %" PRIu64 " MiB, but the "
+                   "machine's memory (-m) is %" PRIu64 " MiB", product,
+                   (s->bank_size[0] + s->bank_size[1] + s->bank_size[2] +
+                    s->bank_size[3]) / MiB, ram_size / MiB);
+        return false;
+    }
+    return true;
 }
 
 static MemTxResult octane_high_guard_read(void *opaque, hwaddr addr,
@@ -658,16 +754,11 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         return false;
     }
 
-    if (machine->ram_size != octane_model_ram(s->node) ||
-        machine->smp.cpus != 1) {
-        error_setg(errp, "%s supports one CPU and %u MiB of RAM", product,
-                   (unsigned)(octane_model_ram(s->node) / MiB));
+    if (machine->smp.cpus != 1) {
+        error_setg(errp, "%s supports one CPU", product);
         return false;
     }
-    if (!octane_valid_banks(s) ||
-        s->bank_size[0] + s->bank_size[1] + s->bank_size[2] +
-        s->bank_size[3] != machine->ram_size) {
-        error_setg(errp, "%s unsupported HEART bank population", product);
+    if (!octane_fit_memory(s, product, machine->ram_size, errp)) {
         return false;
     }
     if (!octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock,
@@ -1065,6 +1156,7 @@ static void octane_set_bank_size(Object *obj, Visitor *v, const char *name,
 
     if (visit_type_uint64(v, name, &value, errp)) {
         s->bank_size[(uintptr_t)opaque] = value;
+        s->banks_set |= 1 << (uintptr_t)opaque;
     }
 }
 
@@ -1100,7 +1192,8 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
         object_class_property_add(oc, name, "uint64", octane_get_bank_size,
                                   octane_set_bank_size, NULL, (void *)bank);
         object_class_property_set_description(oc, name,
-            "Capacity of the selected HEART bank in bytes");
+            "Capacity of this HEART bank in bytes; setting any bank "
+            "leaves the unset ones empty (default: -m's fewest banks)");
     }
     for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
          entry; entry = entry->next) {

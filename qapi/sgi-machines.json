@@ -247,18 +247,6 @@
             'board-records': ['SGIModelBoardRecord'] } }
 
 ##
-# @SGIModelBankLayout:
-#
-# One accepted memory fitting, in the controller's bank order.
-#
-# @bank-mib: per-bank capacity, with zero for an unpopulated bank
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelBankLayout',
-  'data': { 'bank-mib': ['uint64'] } }
-
-##
 # @SGIModelInputBinding:
 #
 # An existing public machine option permitted to supply one
@@ -433,8 +421,12 @@
 #
 # @heart: IP30 fitted controller/board identity, absent for SN0/SN1
 #
-# @accepted-bank-layouts: selected valid bank populations where
-#     specified
+# @accepted-bank-mib: the capacities one populated bank may have, for
+#     a node whose banks fill in order from bank 0 (HEART); absent
+#     where the node's builder has its own fitting rule
+#
+# @banks-descending: whether each populated bank must be at least as
+#     large as the next, as the Octane2 guide requires
 #
 # @bedrock: explicit initialization for a Bedrock node
 #
@@ -445,9 +437,11 @@
 #     an unpopulated bank.  Always exactly as many entries as the node
 #     ASIC's architectural bank count.
 #
-# @accepted-memory-mib: other total per-node memory sizes the
-#     builder's fitting rule accepts for this node besides @bank-mib's
-#     own shipped population; empty means the shipped population only
+# @accepted-memory-mib: the total per-node memory sizes the builder's
+#     fitting rule accepts for this node.  A HEART node lists every
+#     accepted total, the default included; for other nodes the list
+#     holds the totals besides @bank-mib's own shipped population, and
+#     empty means the shipped population only
 #
 # @flash: this node's boot flash
 #
@@ -473,7 +467,8 @@
             'cpu-slots': ['SGIModelCpuSlot'],
             'bank-mib': ['uint64'],
             'accepted-memory-mib': ['uint64'],
-            '*accepted-bank-layouts': ['SGIModelBankLayout'],
+            '*accepted-bank-mib': ['uint64'],
+            '*banks-descending': 'bool',
             'flash': 'SGIModelFlash',
             'slave-role': 'bool',
             '*option-intx-map': ['uint8'] } }

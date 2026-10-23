@@ -17,10 +17,16 @@ layer:
     - 64
     - 128
     - 256
+    - 512
+    - 1024
+    - 2048
     provenance: derived
     sources:
     - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
-    notes: Processor capacity is restricted to the existing single-processor emulator profiles.
+    notes: >-
+      Processor capacity is restricted to the existing single-processor
+      emulator profiles. Bank sizes are the owner's guides' pairs of 32 MB
+      to 1 GB DIMMs; each product accepts its own subset.
   memory_kits:
   - id: kit-128
     dimms: 2
