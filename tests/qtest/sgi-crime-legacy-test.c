@@ -75,6 +75,139 @@ static void test_identity(void)
     }
 }
 
+/* Include nonzero latches so a mistaken error clear is observable. */
+static void check_error_enable_zero(QTestState *s)
+{
+    const unsigned offsets[] = {
+        0, 8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38,
+        0x40, 0x48, 0x200, 0x250, 0x258, 0x270,
+    };
+    uint64_t before[ARRAY_SIZE(offsets)];
+    unsigned outputs = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+        before[i] = qtest_readq(s, BASE + offsets[i]);
+    }
+    for (unsigned i = 0; i < 5; i++) {
+        outputs |= qtest_get_irq(s, i) << i;
+    }
+    for (unsigned write = 0; write < 2; write++) {
+        g_assert_cmpint(memtx_writeq(s, BASE + 0x50, 0), ==, MEMTX_OK);
+        for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+            g_assert_cmphex(qtest_readq(s, BASE + offsets[i]), ==, before[i]);
+        }
+        assert_outputs(s, outputs);
+    }
+}
+
+static void check_error_enable_log(const char *path, unsigned expected)
+{
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned count = 0;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        if (strstr(lines[i], "legacy CPU error enable")) {
+            g_assert_nonnull(strstr(lines[i], "0x14000050"));
+            g_assert_nonnull(strstr(lines[i], "8-byte"));
+            count++;
+        }
+    }
+    g_assert_cmpuint(count, ==, expected);
+}
+
+static void test_error_enable_zero(void)
+{
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-error-enable-XXXXXX", NULL);
+    g_autofree char *from_log = g_build_filename(directory, "from.txt", NULL);
+    g_autofree char *to_log = g_build_filename(directory, "to.txt", NULL);
+    g_autofree char *socket =
+        g_build_filename(directory, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *extra = g_strdup_printf(
+        "-D %s -device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH,
+        from_log);
+    g_autofree char *incoming = g_strdup_printf(
+        "-D %s -incoming defer "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH, to_log);
+    QTestState *from = start_profile(true, extra);
+    QTestState *to = start_profile(true, incoming);
+
+    qtest_irq_intercept_out_named(from, CRIME_PATH, "cpu-ip");
+    qtest_irq_intercept_out_named(to, CRIME_PATH, "cpu-ip");
+    qtest_writeq(from, BASE + 0x18, 1U << 4);
+    cause(from, 4, 1);
+    qtest_writeq(from, BASE + 0x20, 1U << 30);
+    qtest_writeq(from, BASE + 0x38, 0x12345678);
+    qtest_qmp_assert_success(from,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-address','value':305419896}}");
+    qtest_qmp_assert_success(from,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-status','value':5}}");
+    check_error_enable_zero(from);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readq(to, BASE + 0x40), ==, 0x12345678);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x48), ==, 5);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, (1U << 4) | (1U << 30));
+    assert_outputs(to, 1);
+    check_error_enable_zero(to);
+    qtest_system_reset(to);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x40), ==, 0);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x48), ==, 0);
+    assert_outputs(to, 0);
+    check_error_enable_zero(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    check_error_enable_log(from_log, 2);
+    check_error_enable_log(to_log, 4);
+    g_unlink(from_log);
+    g_unlink(to_log);
+    g_rmdir(directory);
+}
+
+static void test_error_enable_refusal(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy, "");
+        uint64_t value;
+
+        qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+        qtest_writeq(s, BASE + 0x18, 1U << 4);
+        cause(s, 4, 1);
+        for (unsigned size = 1; size <= 8; size *= 2) {
+            g_assert_cmpint(memtx_read(s, BASE + 0x50, &value, size),
+                            !=, MEMTX_OK);
+            if (size < 8 || !legacy) {
+                g_assert_cmpint(memtx_write(s, BASE + 0x50, 0, size),
+                                !=, MEMTX_OK);
+            }
+        }
+        for (unsigned bit = 0; bit < 64; bit++) {
+            g_assert_cmpint(memtx_writeq(s, BASE + 0x50, 1ULL << bit),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned offset = 1; offset < 8; offset++) {
+            g_assert_cmpint(memtx_writeq(s, BASE + 0x50 + offset, 0),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_readq(s, BASE + 0x50 + offset, &value),
+                            !=, MEMTX_OK);
+        }
+        g_assert_cmphex(qtest_readq(s, BASE + 0x40), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + (legacy ? 0x48 : 0x4048)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+        assert_outputs(s, 1);
+        qtest_quit(s);
+    }
+}
+
 static void test_controls(void)
 {
     QTestState *s = start_profile(true, "");
@@ -594,7 +727,7 @@ static void test_register_access(void)
         0, 8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48,
         0x200, 0x250, 0x258, 0x270,
     };
-    const unsigned unsupported[] = { 0x248, 0x260, 0x268, 0x4048, 0x50 };
+    const unsigned unsupported[] = { 0x248, 0x260, 0x268, 0x4048 };
     QTestState *s = start_profile(true, "");
     uint8_t byte;
     uint16_t half;
@@ -753,6 +886,10 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/crime/legacy/identity", test_identity);
     qtest_add_func("/sgi/crime/legacy/controls", test_controls);
+    qtest_add_func("/sgi/crime/legacy/error-enable-zero",
+                   test_error_enable_zero);
+    qtest_add_func("/sgi/crime/legacy/error-enable-refusal",
+                   test_error_enable_refusal);
     qtest_add_func("/sgi/crime/legacy/register-access", test_register_access);
     qtest_add_func("/sgi/crime/legacy/banks", test_banks);
     qtest_add_func("/sgi/crime/legacy/immutable", test_immutable);
