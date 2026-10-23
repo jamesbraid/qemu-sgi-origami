@@ -4511,10 +4511,12 @@ static void o2_storage_append_queued_command(uint8_t *program, size_t *n,
     o2_storage_emit_value(program, n, write ? 0x3c : 0x38, 0x93);
     o2_storage_emit_value(program, n, 0x08, 0x01);
     o2_storage_emit_value(program, n, 0, 0x00);
+    o2_storage_emit_value(program, n, 0xa0, 0x03);
     o2_storage_emit_value(program, n, 0x5a, 0x00);
     o2_storage_emit(program, n,
                     o2_storage_alu_word(0, 0x80, 0x26, 0x06));
     o2_storage_emit_value(program, n, 0x40, 0x0c);
+    o2_storage_emit_value(program, n, 0x80, 0x03);
     o2_storage_emit_value(program, n, 5, 0x90);
     o2_storage_emit_value(program, n, 0x80, 0x9a);
     wait_at = *n / 4;
@@ -4578,10 +4580,12 @@ static void o2_storage_append_queued_command(uint8_t *program, size_t *n,
                     o2_storage_branch_word(0xf, 8, 0x94, wait_at + 3));
     o2_storage_emit(program, n,
                     o2_storage_branch_word(0xf, 2, 0x0b, wait_at + 4));
+    o2_storage_emit_value(program, n, 0xc0, 0x03);
     o2_storage_emit(program, n, o2_storage_alu_word(1, 0xff, 0x06, 0x22));
+    o2_storage_emit_value(program, n, 0xe0, 0x03);
     o2_storage_emit(program, n, o2_storage_alu_word(1, 0xff, 0x06, 0x23));
     o2_storage_emit(program, n,
-                    o2_storage_branch_word(0xf, 8, 0x0c, wait_at + 7));
+                    o2_storage_branch_word(0xf, 8, 0x0c, wait_at + 9));
 
     o2_storage_emit_value(program, n, 4, 0x90);
     terminal_branch = *n;
@@ -4783,6 +4787,17 @@ static void o2_storage_step_to(QTestState *qts, unsigned slot,
     g_assert_cmphex(o2_storage_seq_pc(qts, slot), ==, target);
 }
 
+static void o2_storage_assert_diagnostic_stop(QTestState *qts, unsigned slot)
+{
+    unsigned failed_pc = o2_storage_seq_pc(qts, slot);
+
+    qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+    g_assert_cmphex(o2_storage_seq_pc(qts, slot), ==, failed_pc);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4,
+                    ==, 4);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x92)), ==, 0);
+}
+
 static void o2_storage_assert_dma_event(const char *path, unsigned count,
                                         unsigned slot, uint32_t address,
                                         unsigned length, bool to_memory)
@@ -4959,6 +4974,7 @@ static void test_storage_host_offset_four_write(void)
         pattern[i] = i * 23 + 7;
     }
     qtest_memwrite(t.qts, RAM_FULL + 0x10028000, guarded, sizeof(guarded));
+    qtest_writeb(t.qts, o2_storage_aic(0x86), 0xc0);
     o2_storage_host_setup(t.qts, 0x10028004, sizeof(pattern), false);
     for (unsigned i = 0; i < sizeof(pattern); i++) {
         qtest_writeb(t.qts, o2_storage_aic(0x99), pattern[i]);
@@ -5016,7 +5032,7 @@ static void test_storage_host_offset_four_refusals(void)
         } else {
             qtest_writeb(t.qts, o2_storage_aic(0x93), 0x0c);
         }
-        g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x92)), !=, 0);
+        g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x92)), ==, 0);
         g_assert_cmphex(o2_storage_host_value(t.qts, 0x88, 4), ==,
                         cases[c].address);
         g_assert_cmphex(o2_storage_host_value(t.qts, 0x8c, 3), ==,
@@ -5080,9 +5096,9 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
                                     uint32_t count, bool write,
                                     bool pause_before_completion)
 {
-    uint8_t program[136] = { 0 };
+    uint8_t program[160] = { 0 };
     size_t n = 0;
-    unsigned wait_at = 6 + cdb_len;
+    unsigned wait_at;
     uint64_t aic_base = AIC_PCI_VIEW + (slot - 1) * 0x1000;
 
     g_assert_cmpuint(cdb_len, <=, 16);
@@ -5102,10 +5118,12 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
     o2_storage_emit_value(program, &n, 0, 0x93);
     o2_storage_emit_value(program, &n, write ? 0x3c : 0x38, 0x93);
     o2_storage_emit_value(program, &n, 0, 0x00);
+    o2_storage_emit_value(program, &n, 0x80, 0x03);
     o2_storage_emit_value(program, &n, 0x40, 0x00);
     for (unsigned i = 0; i < cdb_len; i++) {
         o2_storage_emit_value(program, &n, cdb[i], 0x06);
     }
+    wait_at = n / 4;
     /* STATUS may precede data or arrive after host DMA completes. */
     o2_storage_emit(program, &n,
                     o2_storage_branch_word(0xd, 2, 0x0b, wait_at + 5));
@@ -5116,10 +5134,12 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
                     o2_storage_branch_word(0xf, 8, 0x94, wait_at + 3));
     o2_storage_emit(program, &n,
                     o2_storage_branch_word(0xf, 2, 0x0b, wait_at + 4));
+    o2_storage_emit_value(program, &n, 0xc0, 0x03);
     o2_storage_emit(program, &n, o2_storage_alu_word(1, 0xff, 0x06, 0x22));
+    o2_storage_emit_value(program, &n, 0xe0, 0x03);
     o2_storage_emit(program, &n, o2_storage_alu_word(1, 0xff, 0x06, 0x23));
     o2_storage_emit(program, &n,
-                    o2_storage_branch_word(0xf, 8, 0x0c, wait_at + 7));
+                    o2_storage_branch_word(0xf, 8, 0x0c, wait_at + 9));
     if (pause_before_completion) {
         o2_storage_emit_value(program, &n, 1, 0x91);
     }
@@ -5153,7 +5173,8 @@ static void o2_storage_wait_completion(QTestState *qts, unsigned slot)
     int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
 
     while (!(qtest_readb(qts, o2_storage_aic_slot(slot, 0x91)) & 2) &&
-           !qtest_readb(qts, o2_storage_aic_slot(slot, 0x92))) {
+           !qtest_readb(qts, o2_storage_aic_slot(slot, 0x92)) &&
+           !(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4)) {
         g_assert_cmpint(g_get_monotonic_time(), <, deadline);
         qtest_clock_step(qts, 1000);
         g_usleep(1000);
@@ -5843,7 +5864,9 @@ static void test_storage_diagnostic_dma_events(void)
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x91)) & 2, ==, 0);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x9e)), ==, 0);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x92)) & 0x40,
-                    ==, 0x40);
+                    ==, 0);
+    g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x87)) & 4, ==, 4);
+    o2_storage_assert_diagnostic_stop(t.qts, 1);
     events = o2_storage_stop(&t);
     g_assert_nonnull(strstr(events, "\"sequence\":2"));
     g_assert_nonnull(strstr(events, "\"sequence\":3"));
@@ -6215,14 +6238,10 @@ static void test_storage_completion_window_failure(void)
         }
         program_len = o2_storage_build_completion_program(program, &pc);
         o2_storage_load_stepped_program(t.qts, 1, program, program_len);
-        for (unsigned step = 0; step < pc.write[0]; step++) {
-            qtest_writeb(t.qts, o2_storage_aic(0x87), 2);
-            if (qtest_readb(t.qts, o2_storage_aic(0x92)) & 0x40) {
-                break;
-            }
-        }
+        o2_storage_step_to(t.qts, 1, pc.write[0]);
+        o2_storage_assert_diagnostic_stop(t.qts, 1);
         g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x92)) & 0x40,
-                        ==, 0x40);
+                        ==, 0);
         g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x8c)), ==, 8);
         g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x94)) & 8, ==, 0);
         g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x9e)), ==, 0);
@@ -6585,16 +6604,11 @@ static void check_storage_queued_rw_to_completion(bool write,
         return;
     }
     if (outcome == O2_QUEUED_DMA_FAILURE) {
-        for (unsigned step = 0; step < 512; step++) {
-            if (qtest_readb(t.qts,
-                            o2_storage_aic_slot(slot, 0x92)) & 0x40) {
-                break;
-            }
-            qtest_writeb(t.qts, o2_storage_aic_slot(slot, 0x87), 2);
-        }
+        o2_storage_step_to(t.qts, slot, pc.second_segment);
+        o2_storage_assert_diagnostic_stop(t.qts, slot);
         g_assert_cmphex(qtest_readb(t.qts,
                                     o2_storage_aic_slot(slot, 0x92)) & 0x40,
-                        ==, 0x40);
+                        ==, 0);
         g_assert_cmphex(qtest_readb(t.qts,
                                     o2_storage_aic_slot(slot, 0x91)) & 2,
                         ==, 0);
@@ -7230,7 +7244,9 @@ static void test_storage_second_segment_dma_failure(void)
     qtest_writeb(t.qts, o2_storage_aic(0x0a), 0);
     qtest_writeb(t.qts, o2_storage_aic(0x93), 0x38);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x92)) & 0x40,
-                    ==, 0x40);
+                    ==, 0);
+    g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x87)) & 4, ==, 4);
+    o2_storage_assert_diagnostic_stop(t.qts, 1);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x91)) & 2, ==, 0);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x9e)), ==, 0);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x94)) & 8, ==, 0);
