@@ -68,12 +68,22 @@
 #define CAPACITY_DATA_STRIDE 0x30
 #define CAPACITY_INVALID_TAG_OFF 0x500
 #define CAPACITY_PRIMARY_RESULTS_OFF 0x600
-#define CAPACITY_RESET_RESULTS_OFF 0x800
+#define CAPACITY_RESET_TAG_OFF 0x800
+#define CAPACITY_RESET_SECONDARY_BASE_OFF \
+    (CAPACITY_RESET_TAG_OFF - CAPACITY_TAG_OFF)
+#define CAPACITY_RESET_DATA_OFF \
+    (CAPACITY_RESET_SECONDARY_BASE_OFF + CAPACITY_DATA_OFF)
+#define CAPACITY_RESET_INVALID_TAG_OFF \
+    (CAPACITY_RESET_SECONDARY_BASE_OFF + CAPACITY_INVALID_TAG_OFF)
+#define CAPACITY_RESET_RESULTS_OFF 0xa40
 #define CAPACITY_PRIMARY_TAG_RESULT_OFF 0x00
 #define CAPACITY_PRIMARY_DATA_RESULT_OFF 0x40
 #define CAPACITY_DIAGNOSTIC_RESULT_OFF 0xa0
 #define CAPACITY_BPT_RESULT_OFF 0xa8
-#define CAPACITY_RESULTS_SIZE 0xc0
+#define CAPACITY_FRAMEMASK_RESULT_OFF 0xc0
+#define CAPACITY_RESULTS_SIZE 0xc8
+#define CAPACITY_FRAMEMASK_MASK 0xffffu
+#define CAPACITY_FRAMEMASK_VALUE 0xa53c
 #define PRIMARY_TAG_STRIDE  0x10
 #define PRIMARY_DATA_STRIDE 0x18
 #define BPT_RESULT_STRIDE   0x08
@@ -113,9 +123,11 @@
 #define R_T3                11
 #define R_T4                12
 #define R_T5                13
+#define R_T6                14
 
 #define CP0_STATUS          12
 #define CP0_CONFIG0         16
+#define CP0_FRAMEMASK       21
 #define CP0_PERFORMANCE     25
 #define CP0_ERRCTL          26
 #define CP0_TAGLO           28
@@ -402,6 +414,8 @@ static void emit_primary_cache_read(GuestImage *img,
         emit_dmfc0(img, R_T0, CP0_DIAGNOSTIC);
         emit(img, mips_sd(R_T0, R_T3, result));
     }
+    emit_mfc0(img, R_T0, CP0_FRAMEMASK, 0);
+    emit(img, mips_sd(R_T0, R_T3, CAPACITY_FRAMEMASK_RESULT_OFF));
     emit(img, mips_daddu(R_T1, R_T2, R_T5));
     emit(img, mips_sd(R_T4, R_T1, 0));
     emit(img, mips_sync());
@@ -461,18 +475,18 @@ static void emit_cache_value(GuestImage *img, int reg, int16_t off,
                              uint64_t result_off)
 {
     emit_mfc0(img, R_T0, CP0_TAGLO, 0);
-    emit(img, mips_sd(R_T0, R_T2, result_off));
+    emit(img, mips_sd(R_T0, R_T3, result_off));
     emit_mfc0(img, R_T0, CP0_TAGHI, 0);
-    emit(img, mips_sd(R_T0, R_T2, (result_off + 8)));
+    emit(img, mips_sd(R_T0, R_T3, (result_off + 8)));
     emit_mfc0(img, R_T0, CP0_ERRCTL, 0);
-    emit(img, mips_sd(R_T0, R_T2, (result_off + 16)));
+    emit(img, mips_sd(R_T0, R_T3, (result_off + 16)));
     emit_cache(img, 0x1b, reg, off ^ 8);
     emit_mfc0(img, R_T0, CP0_TAGLO, 0);
-    emit(img, mips_sd(R_T0, R_T2, (result_off + 24)));
+    emit(img, mips_sd(R_T0, R_T3, (result_off + 24)));
     emit_mfc0(img, R_T0, CP0_TAGHI, 0);
-    emit(img, mips_sd(R_T0, R_T2, (result_off + 32)));
+    emit(img, mips_sd(R_T0, R_T3, (result_off + 32)));
     emit_mfc0(img, R_T0, CP0_ERRCTL, 0);
-    emit(img, mips_sd(R_T0, R_T2, (result_off + 40)));
+    emit(img, mips_sd(R_T0, R_T3, (result_off + 40)));
 }
 
 static void write_capacity_guest_image(int fd, uint32_t capacity)
@@ -486,6 +500,14 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
 
     cache_capacity_probes(capacity, tags, data);
     primary_cache_probes(primary);
+    g_assert_cmphex(CAPACITY_FRAMEMASK_VALUE & ~CAPACITY_FRAMEMASK_MASK,
+                    ==, 0);
+    g_assert_cmpuint(CAPACITY_PRIMARY_READ, <, CAPACITY_SEED);
+    g_assert_cmpuint(CAPACITY_SEED, <, CAPACITY_START);
+    g_assert_cmpuint(CAPACITY_START, <, CAPACITY_LOOP);
+    g_assert_cmpuint(CAPACITY_LOOP, <, CAPACITY_READ);
+    g_assert_cmpuint(CAPACITY_READ, <, CAPACITY_HALT);
+    g_assert_cmpuint(CAPACITY_HALT, <, IMAGE_SIZE);
     emit_branch(&img, CACHE_START);
     emit(&img, 0);
     img.pos = CAPACITY_START;
@@ -495,16 +517,20 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
     emit_bne(&img, R_T0, R_T1, CAPACITY_SEED);
     emit(&img, 0);
     emit(&img, mips_sd(R_ZERO, R_T2, CAPACITY_RESET_REQUEST_OFF));
-    emit(&img, mips_daddiu(R_T3, R_T2, CAPACITY_RESET_RESULTS_OFF));
+    emit(&img, mips_daddiu(R_T3, R_T2,
+                           CAPACITY_RESET_SECONDARY_BASE_OFF));
     emit(&img, mips_addiu(R_T4, R_ZERO, CACHE_RESET_DONE_MAGIC));
     emit(&img, mips_addiu(R_T5, R_ZERO, CAPACITY_RESET_DONE_OFF));
-    emit_branch(&img, CAPACITY_PRIMARY_READ);
+    emit(&img, mips_addiu(R_T6, R_ZERO, CAPACITY_RESET_RESULTS_OFF));
+    emit_branch(&img, CAPACITY_READ);
     emit(&img, 0);
 
     g_assert_cmpuint(img.pos, <=, CAPACITY_LOOP);
     img.pos = CAPACITY_SEED;
     emit_mfc0(&img, R_T0, CP0_CONFIG0, 0);
     emit(&img, mips_sd(R_T0, R_T2, CAPACITY_CONFIG_OFF));
+    emit_load_u32(&img, R_T0, CAPACITY_FRAMEMASK_VALUE);
+    emit_mtc0(&img, R_T0, CP0_FRAMEMASK, 0);
 
     for (unsigned int i = 0; i < ARRAY_SIZE(tags); i++) {
         emit(&img, mips_lui(R_T1, tags[i].address_hi));
@@ -534,6 +560,10 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
     emit(&img, 0);
     img.pos = CAPACITY_LOOP;
     emit(&img, mips_ld(R_T0, R_T2, CAPACITY_COMMAND_OFF));
+    emit(&img, mips_daddiu(R_T3, R_T2, 0));
+    emit(&img, mips_addiu(R_T4, R_ZERO, CACHE_DONE_MAGIC));
+    emit(&img, mips_addiu(R_T5, R_ZERO, CAPACITY_DONE_OFF));
+    emit(&img, mips_addiu(R_T6, R_ZERO, CAPACITY_PRIMARY_RESULTS_OFF));
     emit_bne(&img, R_T0, R_ZERO, CAPACITY_READ);
     emit(&img, 0);
     emit_branch(&img, CAPACITY_LOOP);
@@ -547,10 +577,10 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_cache(&img, 0x07, R_T1, tags[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-        emit(&img, mips_sd(R_T0, R_T2,
+        emit(&img, mips_sd(R_T0, R_T3,
                            CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE));
         emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-        emit(&img, mips_sd(R_T0, R_T2,
+        emit(&img, mips_sd(R_T0, R_T3,
                            CAPACITY_TAG_OFF + i * CAPACITY_TAG_STRIDE + 8));
     }
     for (unsigned int i = 0; i < ARRAY_SIZE(data); i++) {
@@ -571,13 +601,11 @@ static void write_capacity_guest_image(int fd, uint32_t capacity)
         emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
         emit_cache(&img, 0x07, R_T1, tags[i].address_off);
         emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-        emit(&img, mips_sd(R_T0, R_T2,
+        emit(&img, mips_sd(R_T0, R_T3,
                            CAPACITY_INVALID_TAG_OFF +
                            i * CACHE_TAG_STRIDE));
     }
-    emit(&img, mips_daddiu(R_T3, R_T2, CAPACITY_PRIMARY_RESULTS_OFF));
-    emit(&img, mips_addiu(R_T4, R_ZERO, CACHE_DONE_MAGIC));
-    emit(&img, mips_addiu(R_T5, R_ZERO, CAPACITY_DONE_OFF));
+    emit(&img, mips_daddu(R_T3, R_T2, R_T6));
     emit_branch(&img, CAPACITY_PRIMARY_READ);
     emit(&img, 0);
 
@@ -940,6 +968,32 @@ static void assert_primary_cache_state(QTestState *qts,
             reset ? 0 : r16000_bpt_probes[i].state, 0);
 
         g_assert_cmphex(state_word(qts, result), ==, expected);
+    }
+    g_assert_cmphex(state_word(qts, results + CAPACITY_FRAMEMASK_RESULT_OFF),
+                    ==, reset ? 0 : CAPACITY_FRAMEMASK_VALUE);
+}
+
+static void assert_r16000_secondary_cache_reset(QTestState *qts)
+{
+    for (unsigned int i = 0; i < 4; i++) {
+        uint64_t result = CAPACITY_RESET_TAG_OFF + i * CAPACITY_TAG_STRIDE;
+
+        g_assert_cmphex(state_word(qts, result), ==, 0);
+        g_assert_cmphex(state_word(qts, result + 8), ==, 0);
+    }
+    for (unsigned int i = 0; i < 6; i++) {
+        uint64_t result = CAPACITY_RESET_DATA_OFF + i * CAPACITY_DATA_STRIDE;
+
+        for (unsigned int field = 0; field < 6; field++) {
+            g_assert_cmphex(state_word(qts, result + field * 8), ==, 0);
+        }
+    }
+    for (unsigned int i = 0; i < 4; i++) {
+        uint64_t result = CAPACITY_RESET_INVALID_TAG_OFF +
+                          i * CACHE_TAG_STRIDE;
+
+        /* Index writeback-invalidate leaves an already-invalid tag alone. */
+        g_assert_cmphex(state_word(qts, result), ==, 0);
     }
 }
 
@@ -1419,7 +1473,9 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
                                false);
 
     qtest_qmp_assert_success(to, "{'execute':'stop'}");
-    poison_results(to, CAPACITY_RESET_RESULTS_OFF, CAPACITY_RESULTS_SIZE);
+    poison_results(to, CAPACITY_RESET_TAG_OFF,
+                   CAPACITY_RESET_RESULTS_OFF + CAPACITY_RESULTS_SIZE -
+                   CAPACITY_RESET_TAG_OFF);
     qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_DONE_OFF, UINT64_MAX);
     qtest_writeq(to, STATE_PHYS + CAPACITY_RESET_REQUEST_OFF,
                  CACHE_RESET_REQUEST_MAGIC);
@@ -1428,6 +1484,7 @@ static void test_r16000_scache_capacity_migration(gconstpointer opaque)
     wait_for_state(to, CAPACITY_RESET_DONE_OFF, CACHE_RESET_DONE_MAGIC);
     g_assert_cmphex(state_word(to, CAPACITY_RESET_REQUEST_OFF), ==, 0);
     assert_primary_cache_state(to, primary, CAPACITY_RESET_RESULTS_OFF, true);
+    assert_r16000_secondary_cache_reset(to);
 
     qtest_quit(from);
     qtest_quit(to);
