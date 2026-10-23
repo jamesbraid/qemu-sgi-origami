@@ -92,6 +92,34 @@ typedef enum SGIDitherAnchor {
     SGI_DITHER_WINDOW,
 } SGIDitherAnchor;
 
+/*
+ * The coverage a smoothed point or line gives each fragment, under rules
+ * with smooth_primitives (OpenGL 1.2.1, 3.2, which leaves the method to
+ * the implementation within its stated conditions).
+ */
+typedef enum SGISmoothRule {
+    /*
+     * OpenGL's exact box filter: the area of the fragment square inside a
+     * circle of the point's size centred on it (3.3.2), or inside the
+     * rectangle the line's width spans about the segment, its ends
+     * perpendicular through the endpoints (3.4.2).
+     */
+    SGI_SMOOTH_AREA,
+    /*
+     * A separable filter: in each axis a box of the point's size or the
+     * line's width filtered by a one-pixel tent, a fragment whose centre
+     * is d from the middle weighted min(1, max(0, (size + 1) / 2 - |d|)).
+     * At size 1 that is 1 - |d|: a point weights the 2x2 pixels whose
+     * centres surround it bilinearly, and a line the two minor-axis pixels
+     * whose centres straddle it in each major-axis column. A point's weight
+     * is the product of its x and y weights. A line's is its minor-axis
+     * weight scaled by sqrt(1 + slope^2), so a diagonal is as bright as an
+     * axis line, clamped to 1, and times the part of the major-axis column
+     * the segment spans, which fades an endpoint across its pixel.
+     */
+    SGI_SMOOTH_TWO_PIXEL_FILTER,
+} SGISmoothRule;
+
 typedef struct SGIRasterRules {
     uint8_t subpixel_bits;      /* window coordinates snap to 2^-n pixel */
     uint8_t color_bits;         /* per channel of a stored colour */
@@ -111,7 +139,13 @@ typedef struct SGIRasterRules {
     const char *evidence;
     uint8_t alpha_bits;         /* stored A width, zero means no alpha */
     uint8_t alpha_test_bits; /* Zero derives precision from color/alpha bits. */
-    bool smooth_primitives; /* Enable area coverage for smooth primitives. */
+    /*
+     * Smooth points, lines and polygons as their enables ask; without it a
+     * smoothed primitive is drawn aliased and reported. Points and lines
+     * follow smooth_rule; polygons always take area coverage.
+     */
+    bool smooth_primitives;
+    uint8_t smooth_rule;        /* SGISmoothRule */
     /*
      * A head whose depth is linear in eye distance, as a w-buffer keeps
      * it, in place of OpenGL's, which is linear in window coordinates: a
@@ -156,12 +190,23 @@ typedef struct SGIRasterRules {
  * 1 to 12, color_bits 1 to 10, alpha_bits 0 to 10, depth_bits 1 to 32
  * (10 to 30 for a floating-point depth code), a finite depth row,
  * stencil_bits 0 to 16,
- * every rounding and dither, and otherwise only
+ * every rounding, dither and smooth rule, and otherwise only
  * SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN, SGI_ARITH_DOUBLE,
  * SGI_LINE_COVERAGE_DOUBLE and SGI_DITHER_SCREEN; the anchor is not
  * checked without a dither.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
+/*
+ * The coverage in [0, 1] the rules' smooth_rule gives the fragment square
+ * with lower left corner (x, y) of a smoothed point of the given size
+ * centred at (cx, cy) in window coordinates, or of a smoothed line of the
+ * given width from (ax, ay) to (bx, by).
+ */
+double sgi_raster_point_coverage(const SGIRasterRules *r, double cx,
+                                 double cy, double size, int x, int y);
+double sgi_raster_line_coverage(const SGIRasterRules *r, double ax,
+                                double ay, double bx, double by,
+                                double width, int x, int y);
 /* Packed RGB bits selected by channel masks under supported rules. */
 uint32_t sgi_raster_colour_mask(const SGIRasterRules *r, uint32_t mask);
 /* Compare incoming alpha and reference at the rules' alpha-test precision. */

@@ -149,6 +149,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->arith == SGI_ARITH_DOUBLE &&
            r->line_rule == SGI_LINE_COVERAGE_DOUBLE &&
            r->dither <= SGI_DITHER_BAYER4_TOP_ROWS &&
+           r->smooth_rule <= SGI_SMOOTH_TWO_PIXEL_FILTER &&
            (r->dither == SGI_DITHER_NONE ||
             r->dither_anchor == SGI_DITHER_SCREEN);
 }
@@ -3168,7 +3169,8 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
  * the viewport, when there is one. Width follows the minor-axis shift and
  * replication of 3.4.3. Polygon boundaries count stipple in submitted
  * direction; activated standalone lines count across streamed segments.
- * Antialiasing is not modelled.
+ * A smoothed segment takes the coverage of the rules' smooth_rule
+ * (3.4.2), stippled as one-pixel pieces along its length.
  */
 typedef struct SGISoftPoint2 {
     double x, y;
@@ -3303,6 +3305,96 @@ static double sgi_soft_circle_coverage(double cx, double cy, double radius,
     return MIN(1.0, MAX(0.0, area));
 }
 
+/*
+ * SGI_SMOOTH_TWO_PIXEL_FILTER's weight in one axis for a fragment whose
+ * centre is d from a footprint of the given size: a box of that size
+ * filtered by a one-pixel tent, 1 - |d| at size 1.
+ */
+static double sgi_soft_filter_weight(double size, double d)
+{
+    return MIN(1.0, MAX(0.0, (size + 1) * 0.5 - fabs(d)));
+}
+
+/*
+ * SGI_SMOOTH_TWO_PIXEL_FILTER's point weight: the product of the weights
+ * in x and y, at size 1 bilinear over the 2x2 pixels whose centres
+ * surround the point.
+ */
+static double sgi_soft_point_filter(double cx, double cy, double size,
+                                    int x, int y)
+{
+    return sgi_soft_filter_weight(size, cx - (x + 0.5)) *
+           sgi_soft_filter_weight(size, cy - (y + 0.5));
+}
+
+/*
+ * SGI_SMOOTH_TWO_PIXEL_FILTER's line weight: the segment's part of the
+ * fragment's major-axis column, times the weight in the minor axis of the
+ * fragment's centre at d from the line at the middle of that part, scaled
+ * for slope and clamped.
+ */
+static double sgi_soft_line_filter(double ax, double ay, double bx,
+                                   double by, double width, int x, int y)
+{
+    bool x_major = fabs(bx - ax) >= fabs(by - ay);
+    double l0 = x_major ? ax : ay, l1 = x_major ? bx : by;
+    double n0 = x_major ? ay : ax, n1 = x_major ? by : bx;
+    int m = x_major ? x : y, n = x_major ? y : x;
+    double lo, hi, slope, minor, d;
+
+    if (!(l1 != l0)) {
+        return 0;
+    }
+    if (l1 < l0) {
+        double t = l0;
+
+        l0 = l1;
+        l1 = t;
+        t = n0;
+        n0 = n1;
+        n1 = t;
+    }
+    lo = MAX(l0, m);
+    hi = MIN(l1, m + 1.0);
+    if (!(hi > lo)) {
+        return 0;
+    }
+    slope = (n1 - n0) / (l1 - l0);
+    minor = n0 + slope * ((lo + hi) * 0.5 - l0);
+    d = minor - (n + 0.5);
+    return MIN(1.0, sgi_soft_filter_weight(width, d) *
+                    sqrt(1 + slope * slope)) * (hi - lo);
+}
+
+double sgi_raster_point_coverage(const SGIRasterRules *r, double cx,
+                                 double cy, double size, int x, int y)
+{
+    if (r->smooth_rule == SGI_SMOOTH_TWO_PIXEL_FILTER) {
+        return sgi_soft_point_filter(cx, cy, size, x, y);
+    }
+    return sgi_soft_circle_coverage(cx, cy, size * 0.5, x, y);
+}
+
+double sgi_raster_line_coverage(const SGIRasterRules *r, double ax,
+                                double ay, double bx, double by,
+                                double width, int x, int y)
+{
+    if (r->smooth_rule == SGI_SMOOTH_TWO_PIXEL_FILTER) {
+        return sgi_soft_line_filter(ax, ay, bx, by, width, x, y);
+    }
+    return sgi_soft_line_coverage(ax, ay, bx, by, width, x, y);
+}
+
+/*
+ * How far from a smoothed point's centre, or a smoothed line, in pixels,
+ * a fragment can have coverage.
+ */
+static double sgi_soft_smooth_reach(const SGIRasterRules *r, double size)
+{
+    return r->smooth_rule == SGI_SMOOTH_TWO_PIXEL_FILTER ? (size + 1) * 0.5 :
+                                                           size * 0.5;
+}
+
 typedef struct SGISoftLineStipple {
     uint32_t counter;
     uint32_t repeat, pattern;
@@ -3431,7 +3523,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
     major0--;
     major1++;
     if (r->line_smooth) {
-        double pad = r->smooth_line_width * 0.5;
+        double pad = sgi_soft_smooth_reach(r->rules, r->smooth_line_width);
         double l0 = x_major ? a.x : a.y;
         double l1 = x_major ? b.x : b.y;
 
@@ -3476,7 +3568,8 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
         minor0 = (int64_t)floor(MIN(f0, f1) / (1 << sub)) - 1;
         minor1 = (int64_t)floor(MAX(f0, f1) / (1 << sub)) + 1;
         if (r->line_smooth) {
-            double pad = r->smooth_line_width * 0.5;
+            double pad = sgi_soft_smooth_reach(r->rules,
+                                               r->smooth_line_width);
             double q0 = x_major ? a.y : a.x;
             double q1 = x_major ? b.y : b.x;
 
@@ -3492,7 +3585,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
             bool keep = true;
 
             double coverage = r->line_smooth ?
-                sgi_soft_line_coverage((double)a.x / (1 << sub),
+                sgi_raster_line_coverage(r->rules, (double)a.x / (1 << sub),
                     (double)a.y / (1 << sub), (double)b.x / (1 << sub),
                     (double)b.y / (1 << sub), r->smooth_line_width,
                     base_x, base_y) :
@@ -3690,7 +3783,8 @@ bool sgi_raster_line_span(const SGIRasterRules *rules,
  * snapped subpixel grid rather than ideal unsnapped coordinates. A point
  * outside the view volume is dropped (2.11), and so is one outside the
  * viewport, when there is one, which only a point on the volume's edge
- * can be. Point antialiasing is not modelled.
+ * can be. A smoothed point takes the coverage of the rules' smooth_rule
+ * about its snapped centre (3.3.2).
  */
 static void sgi_soft_point_projected(const SGISoftDraw *r,
                                      const SGISoftVertex *pv,
@@ -3726,7 +3820,8 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
     if (r->point_smooth) {
         double scale = 1 << sub;
         double cx = v.x / scale, cy = v.y / scale;
-        double radius = r->smooth_point_size * 0.5;
+        double radius = sgi_soft_smooth_reach(r->rules,
+                                              r->smooth_point_size);
 
         x0 = MAX((int64_t)floor(cx - radius), bx0);
         y0 = MAX((int64_t)floor(cy - radius), by0);
@@ -3734,8 +3829,9 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
         y1 = MIN((int64_t)ceil(cy + radius) - 1, by1);
         for (int64_t y = y0; y <= y1; y++) {
             for (int64_t x = x0; x <= x1; x++) {
-                double coverage = sgi_soft_circle_coverage(cx, cy, radius,
-                                                           x, y);
+                double coverage = sgi_raster_point_coverage(r->rules, cx, cy,
+                                                    r->smooth_point_size,
+                                                    x, y);
 
                 sgi_soft_fragment_coverage(r, x, y, v.z, offset, v.depth_w,
                                            &frag, coverage, true);
