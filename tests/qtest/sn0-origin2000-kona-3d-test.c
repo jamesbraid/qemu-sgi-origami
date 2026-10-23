@@ -10123,6 +10123,53 @@ static uint32_t window_colour(QTestState *s, unsigned x, unsigned y)
     return (image[at] << 16) | (image[at + 1] << 8) | image[at + 2];
 }
 
+/*
+ * Smoothed points and lines take OpenGL 1.2.1's area coverage as alpha
+ * (3.3.2, 3.4.2), blended white over a blue window under
+ * glOrtho(0, 128, 0, 128, -1, 1). A point of size 2 on the corner of
+ * pixel (20, 20) leaves a quarter disc, pi/4, in each of the four squares
+ * about it: alpha 200 of 255. A width-1 line along y = 61 covers half of
+ * rows 60 and 61, and its left end at x = 40.25 three quarters of that.
+ * Drawn aliased, the point is a white 2x2 square and the line one white
+ * row.
+ */
+static void test_smooth_point_and_line_coverage(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0xd0, (uint32_t[]){ 0x1701 }, 1);
+    kona_command_d(qts, 0xd7, (double[]){ 0, 128, 0, 128, -1, 1 }, 6);
+    kona_command(qts, 0xd0, (uint32_t[]){ 0x1700 }, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xbe2 }, 1);
+    kona_command(qts, 0xcb, (uint32_t[]){ 0x302, 0x303 }, 2);
+    kona_command_f(qts, 0x6b, (float[]){ 1, 1, 1, 1 }, 4);
+
+    kona_command_f(qts, 0xbe, (float[]){ 2, 2 }, 2);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb10 }, 1);
+    gl_begin(qts, 0);
+    gl_vertex2f(qts, 20, 20);
+    gl_end(qts);
+    for (unsigned y = 19; y <= 20; y++) {
+        for (unsigned x = 19; x <= 20; x++) {
+            g_assert_cmphex(window_colour(qts, x, y), ==, 0xc8c8ff);
+        }
+    }
+    g_assert_cmphex(window_colour(qts, 21, 20), ==, 0x0000ff);
+    g_assert_cmphex(window_colour(qts, 20, 18), ==, 0x0000ff);
+
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb20 }, 1);
+    gl_begin(qts, 1);
+    gl_vertex2f(qts, 40.25, 61);
+    gl_vertex2f(qts, 60, 61);
+    gl_end(qts);
+    g_assert_cmphex(window_colour(qts, 50, 60), ==, 0x8080ff);
+    g_assert_cmphex(window_colour(qts, 50, 61), ==, 0x8080ff);
+    g_assert_cmphex(window_colour(qts, 50, 62), ==, 0x0000ff);
+    g_assert_cmphex(window_colour(qts, 50, 59), ==, 0x0000ff);
+    g_assert_cmphex(window_colour(qts, 40, 61), ==, 0x6060ff);
+}
+
 /* One sprite parameter as 0x1a5 sends it: the pname and three floats. */
 static void sprite_vector(QTestState *s, uint32_t pname, float x, float y,
                           float z)
@@ -17365,6 +17412,8 @@ int main(int argc, char **argv)
              test_depth_without_buffer);
     add_case("sn0/origin2000/kona-3d/blended-triangle",
              test_blended_triangle);
+    add_case("sn0/origin2000/kona-3d/smooth-point-and-line-coverage",
+             test_smooth_point_and_line_coverage);
     add_case("sn0/origin2000/kona-3d/culled-triangle",
              test_culled_triangle);
     add_case("sn0/origin2000/kona-3d/draw-pixels-begin-with-skips",

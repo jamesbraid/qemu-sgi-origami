@@ -3574,6 +3574,12 @@ static void sgi_kona_gl_get_block(SGIKonaState *s, uint32_t token)
  * planes' depth, not the pipe's: the client's visual carries twelve. No
  * dither is applied whatever GL_DITHER's enable; the probe disables it,
  * and this pipe's dither pattern is unknown.
+ *
+ * Smoothed points, lines and polygons take OpenGL's area coverage. The
+ * Raster Manager's pixel generator calculates coverage alpha for
+ * antialiasing (Kilgard, "Realizing OpenGL", SIGGRAPH 97, 3.4), but how
+ * is not published; the area rule is inferred, and a capture of a
+ * smoothed point and a smoothed diagonal line would settle it.
  */
 static const SGIRasterRules sgi_kona_gl_rules = {
     .subpixel_bits = 8,
@@ -3585,9 +3591,11 @@ static const SGIRasterRules sgi_kona_gl_rules = {
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .dither = SGI_DITHER_NONE,
     .dither_anchor = SGI_DITHER_SCREEN,
+    .smooth_primitives = true,
+    .smooth_rule = SGI_SMOOTH_AREA,
     .evidence = "chosen, pending capture: the shared rasterizer's first "
                 "implemented set, eight bits a channel for the model's "
-                "planes, no dither",
+                "planes, no dither, area coverage for smoothing",
 };
 
 /*
