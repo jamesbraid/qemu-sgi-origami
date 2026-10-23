@@ -1577,7 +1577,7 @@ static void aic7880_run(AIC7880State *s)
         imm = insn;
         src = (insn >> 8) & 0xff;
         dst = (insn >> 16) & 0xff;
-        if (op == 0x09 || op == 0x0a) {
+        if (op == 0x09) {
             aic7880_bad_opcode(s, op);
             goto done;
         }
@@ -1593,13 +1593,14 @@ static void aic7880_run(AIC7880State *s)
             }
             switch (op) {
             case 0x08: /* JMP */
+            case 0x0a: /* JNC */
             case 0x0b: /* CALL */
                 value |= imm;
                 aic7880_write(s, REG_SINDEX, value, 1);
                 /* Selected transfer flag policy; fitted effects are unknown. */
                 s->regs[REG_FLAGS] = (updated_flags & FLAGS_CARRY) |
                                      (value == 0 ? FLAGS_ZERO : 0);
-                taken = true;
+                taken = op != 0x0a || !(updated_flags & FLAGS_CARRY);
                 break;
             case 0x0c: /* JNE */
                 taken = value != mask;
