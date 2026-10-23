@@ -22,7 +22,7 @@ static const unsigned sgi_dma_placement_unit[SGI_DMA_PLACEMENTS] = {
     [SGI_DMA_PLACEMENT_WORD] = 4,
     [SGI_DMA_PLACEMENT_DOUBLEWORD] = 8,
     [SGI_DMA_PLACEMENT_HALF_WRITE] = 8,
-    [SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE] = 8,
+    [SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM] = 8,
 };
 
 /*
@@ -228,7 +228,7 @@ static void sgi_dma_placement_init_target(SGIDMAPlacementSet *set,
         [SGI_DMA_PLACEMENT_WORD] = "word",
         [SGI_DMA_PLACEMENT_DOUBLEWORD] = "doubleword",
         [SGI_DMA_PLACEMENT_HALF_WRITE] = "half-write",
-        [SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE] = "doubleword-word-write",
+        [SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM] = "doubleword-word-ram",
     };
     SGIDMAPlacementTarget *t = &set->target[placement];
     g_autofree char *target_name = g_strdup_printf("%s.%s", name,

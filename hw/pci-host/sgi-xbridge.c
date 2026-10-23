@@ -186,10 +186,12 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
     SGIXioPacketAttrs packet_attrs = {
         .half_write_requested = placement == SGI_DMA_PLACEMENT_HALF_WRITE &&
                                 write && size == 8 && !(address & 7),
-        .half_read_requested = placement == SGI_DMA_PLACEMENT_HALF_WRITE &&
+        .half_read_requested =
+            (placement == SGI_DMA_PLACEMENT_HALF_WRITE ||
+             placement == SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM) &&
                                !write && size == 8 && !(address & 7),
         .word_write_requested =
-            placement == SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE &&
+            placement == SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM &&
             write && size == 8 && !(address & 7),
     };
     MemTxResult result;
@@ -297,15 +299,23 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
           (direct_window || wide64_read || page_alias_read)))) {
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;
     }
-    if (s->origin300_direct32_dma_placement_experiment && s->packet_sender &&
+    if (s->origin300_dma_placement_experiment && s->packet_sender &&
         rev2 && direct_window && !device_swap &&
         (s->wide_slot_mask & BIT(dma->slot)) &&
         (s->dma_64bit & BIT(dma->slot))) {
         if (flag == IOMMU_RO) {
             placement = SGI_DMA_PLACEMENT_WORD;
         } else if (flag & IOMMU_WO) {
-            placement = SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE;
+            placement = SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM;
         }
+    }
+    if (s->origin300_dma_placement_experiment && s->packet_sender && rev2 &&
+        (s->wide_slot_mask & BIT(dma->slot)) &&
+        (s->dma_64bit & BIT(dma->slot)) && !swap &&
+        (flag == IOMMU_RO || flag == IOMMU_WO) &&
+        ((wide_64bit && !device_swap) ||
+         (page_window && !(addr & (1U << 29))))) {
+        placement = SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM;
     }
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
@@ -1114,8 +1124,8 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
 
             if (s->wide_slot_mask & BIT(i)) {
                 needed |= BIT(SGI_DMA_PLACEMENT_HALF_WRITE);
-                if (s->origin300_direct32_dma_placement_experiment) {
-                    needed |= BIT(SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_WRITE);
+                if (s->origin300_dma_placement_experiment) {
+                    needed |= BIT(SGI_DMA_PLACEMENT_DOUBLEWORD_WORD_RAM);
                 }
             }
             sgi_dma_placement_init_send(&s->dma[i].source, OBJECT(s),
@@ -1323,7 +1333,7 @@ struct SGIXBridgeState {
     bool superbridge;
     uint8_t packet_context;
     bool origin300_mem64_pio_width;
-    bool origin300_direct32_dma_placement_experiment;
+    bool origin300_dma_placement_experiment;
     SGIXBridgePacketFrame *active_packet;
     SGIXioPeer host_peer;
     SGIXioPeer head_peer[2];
@@ -1571,15 +1581,15 @@ bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp)
     return true;
 }
 
-bool sgi_xbridge_enable_origin300_direct32_dma_placement_experiment(
+bool sgi_xbridge_enable_origin300_dma_placement_experiment(
     SGIXBridgeState *s, Error **errp)
 {
     if (DEVICE(s)->realized || !s->packet_context) {
-        error_setg(errp, "Origin 300 direct32 DMA placement needs packet "
+        error_setg(errp, "Origin 300 DMA placement needs packet "
                    "transport before XBridge realization");
         return false;
     }
-    s->origin300_direct32_dma_placement_experiment = true;
+    s->origin300_dma_placement_experiment = true;
     return true;
 }
 
@@ -1757,8 +1767,8 @@ static void chip_build(DeviceState *dev, Error **errp)
                                 s->wide_slot_mask_e);
             s->head[i].origin300_mem64_pio_width =
                 s->origin300_mem64_pio_width;
-            s->head[i].origin300_direct32_dma_placement_experiment =
-                s->origin300_direct32_dma_placement_experiment;
+            s->head[i].origin300_dma_placement_experiment =
+                s->origin300_dma_placement_experiment;
         }
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
