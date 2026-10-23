@@ -2147,7 +2147,7 @@ static void test_deferred_dma_preserves_registers(void)
 static void test_sequencer_host_completion_memory(void)
 {
     QTestState *qts = start_aic();
-    uint8_t program[128], expected[12], got[12];
+    uint8_t program[128], expected[272], got[272];
     size_t n = 0;
     unsigned dma_pc, qout_pc, interrupt_pc;
 
@@ -2156,17 +2156,16 @@ static void test_sequencer_host_completion_memory(void)
     qtest_writeb(qts, REG_BASE + 0x21, 0x20);
     qtest_writeb(qts, REG_BASE + 0x22, 1);
     qtest_writeb(qts, REG_BASE + 0x23, 0);
-    qtest_writeb(qts, REG_BASE + 0x24, 3);
+    qtest_writeb(qts, REG_BASE + 0x24, 0xff);
     memset(expected, 0xa5, sizeof(expected));
     qtest_memwrite(qts, 0x12000, expected, sizeof(expected));
     emit_or(program, &n, 1, 0x93); /* Empty the host FIFO. */
     emit(program, &n, alu_word(1, 0xff, 0x24, 0x64, false));
     emit(program, &n, alu_word(3, 0, 0x20, 0x88, false));
-    for (unsigned i = 1; i < 4; i++) {
-        emit(program, &n, alu_word(1, 0xff, 0x20 + i, 0x88 + i,
-                                 false));
-    }
     emit(program, &n, alu_word(2, 0, 0x64, 0x64, false));
+    for (unsigned i = 1; i < 4; i++) {
+        emit(program, &n, alu_word(4, 0, 0x20 + i, 0x88 + i, false));
+    }
     emit_or(program, &n, 1, 0x8c);
     emit_or(program, &n, 0, 0x8d);
     emit_or(program, &n, 0, 0x8e);
@@ -2179,7 +2178,6 @@ static void test_sequencer_host_completion_memory(void)
     interrupt_pc = n / 4;
     emit_or(program, &n, 2, 0x91);
     emit(program, &n, alu_word(3, 1, 0x24, 0x24, false));
-    emit(program, &n, alu_word(1, 3, 0x24, 0x24, false));
 
     qtest_writeb(qts, REG_BASE + 0x60, 0x91);
     for (size_t i = 0; i < n; i++) {
@@ -2187,7 +2185,7 @@ static void test_sequencer_host_completion_memory(void)
     }
     qtest_writeb(qts, REG_BASE + 0x60, 0x94);
     for (unsigned completion = 0; completion < 3; completion++) {
-        unsigned index = (completion + 3) & 3;
+        unsigned index = (completion + 255) & 0xff;
         uint8_t id = 5 + completion;
 
         qtest_writeb(qts, REG_BASE + 0x25, id);
@@ -2219,7 +2217,7 @@ static void test_sequencer_host_completion_memory(void)
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, id);
             }
         }
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24), ==, (index + 1) & 3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24), ==, (index + 1) & 0xff);
     }
     /* With PCI admission inhibited, the firmware waits before publishing. */
     config_writew(qts, 0x04, 2);
