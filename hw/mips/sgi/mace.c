@@ -99,6 +99,7 @@ struct SGIMACEState {
     uint32_t ring_base;
     uint32_t istat;
     uint32_t imask;
+    uint8_t uart_irq_level;
     uint32_t compare[3];
     uint64_t compare_due[3];
     bool compare_programmed[3];
@@ -175,9 +176,12 @@ static void mace_serial_update_irq(void *opaque, uint32_t status)
         uint32_t bit = 1U << (20 + 6 * p);
         bool rx = (s->serial_dma.channel[2 * p + 1].control & 0x600) == 0x200;
         bool tx = (s->serial_dma.channel[2 * p].control & 0x600) == 0x200;
+        bool level = s->uart_irq_level & (1U << p);
 
-        s->istat = (s->istat & ~bit) |
-                   (serial_pio_irq_pending(&s->uart[p], rx, tx) ? bit : 0);
+        if (rx || tx) {
+            level = serial_pio_irq_pending(&s->uart[p], rx, tx);
+        }
+        s->istat = (s->istat & ~bit) | (level ? bit : 0);
     }
     mace_update_irqs(s);
 }
@@ -190,6 +194,8 @@ static void mace_uart_irq(void *opaque, int n, int level)
     if (s->serial_dma.loading) {
         return;
     }
+    s->uart_irq_level = (s->uart_irq_level & ~(1U << n)) |
+                        (level ? (1U << n) : 0);
     if (s->serial_dma.bh) {
         mace_serial_update_irq(s, s->istat & 0xfbe00000U);
     } else {
@@ -846,6 +852,7 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->saved_elapsed_ns = 0;
     s->ring_base = 1;
+    s->uart_irq_level = 0;
     mace_serial_dma_reset(&s->serial_dma);
     s->istat = 0;
     s->imask = 0;
@@ -891,7 +898,7 @@ static int mace_post_load(void *opaque, int version_id)
 {
     SGIMACEState *s = opaque;
 
-    if (s->ring_base & ~MACE_RING_WRITABLE) {
+    if ((s->ring_base & ~MACE_RING_WRITABLE) || (s->uart_irq_level & ~3U)) {
         return -EINVAL;
     }
     s->epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
@@ -917,6 +924,7 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT32(ring_base, SGIMACEState),
         VMSTATE_UINT32(istat, SGIMACEState),
         VMSTATE_UINT32(imask, SGIMACEState),
+        VMSTATE_UINT8(uart_irq_level, SGIMACEState),
         VMSTATE_UINT32_ARRAY(compare, SGIMACEState, 3),
         VMSTATE_UINT64_ARRAY(compare_due, SGIMACEState, 3),
         VMSTATE_BOOL_ARRAY(compare_programmed, SGIMACEState, 3),
