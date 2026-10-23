@@ -87,6 +87,7 @@ slow_qtests = {
   'sn0-origin2000-kona-3d-test-state': 180,
   'sn0-origin2000-kona-3d-test-texture': 840,
   'sn0-origin2000-kona-bringup-test': 230,
+  'sn0-origin2000-kona-config-test': 120,
   # With the suspended-command checks it took 43-64 s alone, and 99 s in a
   # full parallel run with the saved-input and kernel-framer tests; 300
   # keeps three times that.
@@ -525,6 +526,7 @@ sn0_machine_qtests = \
                                                    'sn0-origin2000-kona-textport-test',
                                                    'sn0-origin2000-kona-dma-test',
                                                    'sn0-origin2000-kona-bringup-test',
+                                                   'sn0-origin2000-kona-config-test',
                                                    'sn0-origin2000-kona-video-test',
                                                    'sn0-origin2000-kona-scanout-test',
                                                    'sn0-origin2000-kona-fill-test',
