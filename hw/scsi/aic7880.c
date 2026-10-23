@@ -73,6 +73,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define REG_ALLONES  0x69
 #define REG_ALLZEROS 0x6a
 #define REG_FLAGS    0x6b
+#define REG_FUNCTION1 0x6e
 #define REG_DSCOMMAND 0x84
 #define REG_DSPCISTATUS 0x86
 #define REG_HCNTRL   0x87
@@ -1202,6 +1203,12 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
         return s->regs[addr];
     }
     switch (addr) {
+    case REG_ALLONES:
+        return 0xff;
+    case REG_ALLZEROS:
+        return 0;
+    case REG_FUNCTION1:
+        return 1u << ((s->regs[addr] >> 4) & 7);
     case REG_SCSISIGI:
         return s->regs[addr] | (s->initiator_atn ? SCSI_SIG_ATN : 0);
     case REG_SCSISEQ:
@@ -1550,6 +1557,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
     case REG_DINDEX:
     case REG_BRKADDR0:
     case REG_ACCUM:
+    case REG_FUNCTION1:
         s->regs[addr] = val;
         break;
     case REG_ALLZEROS: /* NONE on writes. */
@@ -1960,6 +1968,7 @@ static bool aic7880_dindir_target_supported(uint8_t reg)
     case REG_BRKADDR0:
     case REG_BRKADDR1:
     case REG_ALLZEROS:
+    case REG_FUNCTION1:
     case REG_SCBPTR:
     case REG_SCBCNT:
     case REG_DFCNTRL:
