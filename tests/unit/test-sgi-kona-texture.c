@@ -9,6 +9,9 @@
 #include "hw/misc/sgi-kona-texture.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
 
+/* The host budget of a pipe with no configured product. */
+#define DEFAULT_BUDGET SGI_KONA_TEXTURE_BUDGET(SGI_KONA_TEXTURE_MEMORY)
+
 static const uint32_t red[] = { 0xff0000ff };
 static const uint32_t green[] = { 0x00ff00ff };
 
@@ -23,6 +26,30 @@ static uint32_t texel(SGIKonaTextureState *s, unsigned i, unsigned x)
     l = &im->pyramid->levels[i];
     g_assert_true(l->read_texel(l->opaque, l->level, x, 0, &rgba));
     return rgba;
+}
+
+/*
+ * A pipe configured with more texture memory gets a larger host budget:
+ * an image that a 64 MB pipe's budget no longer has room for still fits
+ * once the pipe reports 256 MB, nine times either size.
+ */
+static void test_budget_follows_memory(void)
+{
+    static const uint32_t two[] = { 0xff0000ff, 0x00ff00ff };
+    SGIKonaTextureState s;
+    uint64_t spent = DEFAULT_BUDGET - 4;
+
+    sgi_kona_texture_init(&s);
+    g_assert_cmpuint(s.budget, ==, 9 * UINT64_C(64) * 1024 * 1024);
+    s.bytes = spent;
+    g_assert_false(sgi_kona_texture_upload(&s, 0, 0, 2, 1,
+                                          SGI_GL_RGBA, SGI_GL_RGBA, two));
+    sgi_kona_texture_set_memory(&s, 256 * 1024 * 1024);
+    g_assert_cmpuint(s.budget, ==, 9 * UINT64_C(256) * 1024 * 1024);
+    g_assert_true(sgi_kona_texture_upload(&s, 0, 0, 2, 1,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, two));
+    s.bytes -= spent;
+    sgi_kona_texture_cleanup(&s);
 }
 
 static void test_objects(void)
@@ -53,11 +80,11 @@ static void test_objects(void)
      * With all but 64 MiB of the budget spent elsewhere, the image alone
      * fits, but its object metadata must fit too.
      */
-    s.bytes = bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES;
+    s.bytes = bytes + DEFAULT_BUDGET - SGI_KONA_TEXTURE_BYTES;
     g_assert_false(sgi_kona_texture_upload(&s, 0, 0, 4096, 4096,
                                           SGI_GL_RGBA, SGI_GL_RGBA, green));
     g_assert_cmpuint(s.bytes, ==,
-                     bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES);
+                     bytes + DEFAULT_BUDGET - SGI_KONA_TEXTURE_BYTES);
     s.bytes = bytes;
     g_assert_cmphex(texel(&s, 0, 0), ==, red[0]);
     g_assert_true(sgi_kona_texture_upload(&s, 0, 0, 1, 1,
@@ -700,11 +727,11 @@ static void test_native_growth(void)
     h[2] = 4096;
     h[14] = 4095;
     /* A 64 MiB image and its coverage cannot fit the last 64 MiB. */
-    s.bytes = bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES;
+    s.bytes = bytes + DEFAULT_BUDGET - SGI_KONA_TEXTURE_BYTES;
     g_assert_false(sgi_kona_texture_native_upload(&s, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     g_assert_cmpuint(s.bytes, ==,
-                     bytes + SGI_KONA_TEXTURE_BUDGET - SGI_KONA_TEXTURE_BYTES);
+                     bytes + DEFAULT_BUDGET - SGI_KONA_TEXTURE_BYTES);
     s.bytes = bytes;
     sgi_kona_texture_cleanup(&s);
 }
@@ -1375,7 +1402,7 @@ static void test_native_volume_slices(void)
     h[17] = 0x40;
     bytes = src.bytes;
     h[16]++;
-    src.bytes = SGI_KONA_TEXTURE_BUDGET;
+    src.bytes = DEFAULT_BUDGET;
     g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
                                                  SGI_GL_RGBA, SGI_GL_RGBA));
     src.bytes = bytes;
@@ -2633,7 +2660,7 @@ static void test_filter_curve_budget(void)
     sgi_kona_texture_init(&s);
     g_assert_true(sgi_kona_texture_curve_upload(&s, 1, words));
     first = s.bytes;
-    s.bytes = SGI_KONA_TEXTURE_BUDGET;
+    s.bytes = DEFAULT_BUDGET;
     g_assert_false(sgi_kona_texture_curve_upload(&s, 2, words));
     /* Replacing an existing slot requires no additional budget. */
     words[0] = 0x200;
@@ -2700,6 +2727,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     module_call_init(MODULE_INIT_QOM);
     g_test_add_func("/sgi/kona/texture/objects", test_objects);
+    g_test_add_func("/sgi/kona/texture/budget-follows-memory",
+                    test_budget_follows_memory);
     g_test_add_func("/sgi/kona/texture/sampling", test_sampling);
     g_test_add_func("/sgi/kona/texture/depth/native-storage",
                     test_native_depth_storage);
