@@ -63,6 +63,52 @@ static void check_rounding_pair(uint32_t mode, uint32_t positive,
     rom_assert_eq(id + 2, mode, cfc1_fsr() & 3);
 }
 
+static void check_cvt_l(uint32_t single, uint64_t source, uint64_t expected,
+                        uint32_t rejected, int id)
+{
+    const uint64_t sentinel = 0x123456789abcdef0ull;
+    uint64_t actual, fault_pc = 0;
+
+    ctc1_fsr(0);
+    rom_exc_reset();
+    if (single) {
+        ROM_TRY(".set mips4\n\t.set hardfloat\n\t"
+                "dmtc1 %[sentinel], $f2\n\t"
+                "mtc1 %[source], $f0\n\t"
+                "ld $26, 0(%[resume])\n\t"
+                "daddiu $26, $26, -4\n\t"
+                "sd $26, 0(%[fault_pc])\n\t"
+                "cvt.l.s $f2, $f0",
+                [sentinel] "r"(sentinel), [source] "r"((uint32_t)source),
+                [fault_pc] "r"(&fault_pc), [resume] "r"(&rom_exc.resume));
+    } else {
+        ROM_TRY(".set mips4\n\t.set hardfloat\n\t"
+                "dmtc1 %[sentinel], $f2\n\t"
+                "dmtc1 %[source], $f0\n\t"
+                "ld $26, 0(%[resume])\n\t"
+                "daddiu $26, $26, -4\n\t"
+                "sd $26, 0(%[fault_pc])\n\t"
+                "cvt.l.d $f2, $f0",
+                [sentinel] "r"(sentinel), [source] "r"(source),
+                [fault_pc] "r"(&fault_pc), [resume] "r"(&rom_exc.resume));
+    }
+    __asm__ __volatile__(".set push\n\t.set mips4\n\t.set hardfloat\n\t"
+                         "dmfc1 %0, $f2\n\t.set pop"
+                         : "=r"(actual));
+
+    if (rejected) {
+        rom_assert_eq(id, 1, rom_exc.count);
+        rom_assert_eq(id + 1, ROM_EXC_FPE,
+                      ROM_CAUSE_EXC(rom_exc.cause));
+        rom_assert_eq(id + 2, fault_pc, rom_exc.epc);
+        rom_assert_eq(id + 3, 0x20, (cfc1_fsr() >> 12) & 0x3f);
+        rom_assert_eq(id + 4, sentinel, actual);
+    } else {
+        rom_assert_eq(id, 0, rom_exc.count);
+        rom_assert_eq(id + 1, expected, actual);
+    }
+}
+
 void rom_main(void)
 {
     uint32_t taken;
@@ -515,6 +561,20 @@ void rom_main(void)
     check_rounding_pair(2, 0x3f800001u, 0xbf800000u, 74);
     check_rounding_pair(3, 0x3f800000u, 0xbf800001u, 77);
     rom_assert_eq(80, 0, rom_exc.count);
+
+    /* The signed 52-bit CVT.L choice applies to the R16000 model only. */
+    if (rom_get_prid() == 0x00000f50u) {
+        check_cvt_l(0, 0xc320000000000000ull, 0xfff8000000000000ull,
+                    0, 81);
+        check_cvt_l(0, 0x431ffffffffffffcull, 0x0007ffffffffffffull,
+                    0, 86);
+        check_cvt_l(0, 0xc320000000000002ull, 0, 1, 91);
+        check_cvt_l(0, 0x4320000000000000ull, 0, 1, 96);
+        check_cvt_l(1, 0xd9000000u, 0xfff8000000000000ull, 0, 101);
+        check_cvt_l(1, 0x58ffffffu, 0x0007fffff8000000ull, 0, 106);
+        check_cvt_l(1, 0xd9000001u, 0, 1, 111);
+        check_cvt_l(1, 0x59000000u, 0, 1, 116);
+    }
 
     ctc1_fsr(0);
     rom_set_status((rom_get_status() & ~ROM_ST_FR) & ~ROM_ST_CU1);
