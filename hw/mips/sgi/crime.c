@@ -67,6 +67,11 @@ typedef struct CrimeTransferSpan {
     unsigned length;
 } CrimeTransferSpan;
 
+typedef struct CrimeTransferSuppression {
+    unsigned validity_clear;
+    unsigned outside_mask;
+} CrimeTransferSuppression;
+
 static MemTxResult crime_transfer_fail(hwaddr offset, const char *reason)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
@@ -84,11 +89,6 @@ static void crime_healthy_memory_notice(SGICrimeState *s)
                       "RAM without ECC check bits or correction\n");
         s->healthy_memory_reported = true;
     }
-}
-
-static bool crime_tlb_word_valid(uint64_t word)
-{
-    return !(((uint32_t)word | (uint32_t)(word >> 32)) & ~CRIME_TLB_ENTRY_MASK);
 }
 
 static bool crime_transfer_parameter(unsigned offset, unsigned *index)
@@ -131,7 +131,8 @@ static bool crime_transfer_resolve(SGICrimeState *s, uint64_t physical,
 static bool crime_transfer_spans(SGICrimeState *s, unsigned bank,
                                   uint32_t first, uint32_t last,
                                   CrimeTransferSpan *spans, unsigned *count,
-                                  uint64_t *length)
+                                  uint64_t *length,
+                                  CrimeTransferSuppression *suppressed)
 {
     uint64_t position = first;
 
@@ -152,11 +153,22 @@ static bool crime_transfer_spans(SGICrimeState *s, unsigned bank,
         uint64_t physical = ((uint64_t)(entry & 0xfffff) << 12) |
                             (position & 0xfff);
 
-        if (!(entry & 0x80000000U) ||
-            !crime_transfer_resolve(s, physical, bytes, &spans[*count])) {
-            return false;
+        /* Raw storage is retained; classification is a command policy. */
+        if (!(entry & 0x80000000U) || (entry & ~CRIME_TLB_ENTRY_MASK)) {
+            if (!suppressed) {
+                return false;
+            }
+            if (!(entry & 0x80000000U)) {
+                suppressed->validity_clear++;
+            } else {
+                suppressed->outside_mask++;
+            }
+        } else {
+            if (!crime_transfer_resolve(s, physical, bytes, &spans[*count])) {
+                return false;
+            }
+            (*count)++;
         }
-        (*count)++;
         position += bytes;
     }
     return true;
@@ -174,6 +186,7 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
 {
     uint32_t parameter[CRIME_TRANSFER_PARAMETERS];
     CrimeTransferSpan source[32], destination[32];
+    CrimeTransferSuppression suppressed = { 0 };
     unsigned source_count = 0, destination_count;
     uint64_t source_length, destination_length;
     uint32_t mode, src, dst;
@@ -193,16 +206,16 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     }
     if (!crime_transfer_spans(s, dst - 4, parameter[6], parameter[7],
                               destination, &destination_count,
-                              &destination_length)) {
+                              &destination_length, copy ? NULL : &suppressed)) {
         return crime_transfer_fail(offset,
-                                           "invalid destination translation or bounds");
+                                   "invalid destination translation or bounds");
     }
     if (copy &&
         (!crime_transfer_spans(s, src - 4, parameter[4], parameter[5],
-                               source, &source_count, &source_length) ||
+                               source, &source_count, &source_length, NULL) ||
          source_length != destination_length)) {
         return crime_transfer_fail(offset,
-                                           "invalid source translation or bounds");
+                                   "invalid source translation or bounds");
     }
     for (unsigned i = 0; i < destination_count; i++) {
         for (unsigned j = 0; j < i; j++) {
@@ -237,6 +250,7 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         }
     } else {
         memset(buffer, parameter[3] & 0xff, destination_length);
+        s->transfer.parameter[index] = value;
     }
     position = 0;
     for (unsigned i = 0; i < destination_count; i++) {
@@ -249,7 +263,15 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         }
         position += span->length;
     }
-    s->transfer.parameter[index] = value;
+    if (copy) {
+        s->transfer.parameter[index] = value;
+    } else if (suppressed.validity_clear || suppressed.outside_mask) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: LINEAR CLEAR suppressed %u destination pages "
+                      "(validity-bit-clear=%u, outside-mask=%u)\n",
+                      suppressed.validity_clear + suppressed.outside_mask,
+                      suppressed.validity_clear, suppressed.outside_mask);
+    }
     return MEMTX_OK;
 }
 
@@ -284,9 +306,6 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
 
     if (offset >= CRIME_LINEAR_TLB && offset < CRIME_LINEAR_TLB + 256 &&
         size == 8 && !(offset & 7)) {
-        if (!crime_tlb_word_valid(value)) {
-            return crime_transfer_fail(offset, "reserved translation bits");
-        }
         s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8] = value;
         return MEMTX_OK;
     }
@@ -869,8 +888,7 @@ static int crime_transfer_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(incoming->tlb); i++) {
-        if (!crime_tlb_word_valid(incoming->tlb[i]) ||
-            (!s->functional_memory_transfer && incoming->tlb[i])) {
+        if (!s->functional_memory_transfer && incoming->tlb[i]) {
             return -EINVAL;
         }
     }
