@@ -1396,7 +1396,8 @@ static void o2_init(MachineState *machine)
          !renderer_status)) {
         error_report("o2-test prom-private-window requires the 1 GiB "
                      "eight-bank profile, reset-low-ram-approx=on and "
-                     "empty-renderer-status=on");
+                     "either empty-renderer-status=on or "
+                     "functional-memory-transfer=on");
         exit(1);
     }
     if (s->prom_id_word &&
@@ -1408,7 +1409,8 @@ static void o2_init(MachineState *machine)
          s->rom_pad_byte == UINT16_MAX)) {
         error_report("o2-test prom-id-word requires the 1 GiB "
                      "eight-bank PROM diagnostic with reset-low-ram-approx=on, "
-                     "empty-renderer-status=on, prom-private-window=on, "
+                     "either empty-renderer-status=on or "
+                     "functional-memory-transfer=on, prom-private-window=on, "
                      "prom-sb64-reset=on, gbe11-registers=on and complete "
                      "ROM settings");
         exit(1);
@@ -1421,7 +1423,8 @@ static void o2_init(MachineState *machine)
          s->rom_pad_byte == UINT16_MAX)) {
         error_report("o2-test gbe11-registers requires the 1 GiB "
                      "eight-bank PROM diagnostic with reset-low-ram-approx=on, "
-                     "empty-renderer-status=on, prom-private-window=on, "
+                     "either empty-renderer-status=on or "
+                     "functional-memory-transfer=on, prom-private-window=on, "
                      "prom-sb64-reset=on and complete ROM settings");
         exit(1);
     }
@@ -1439,7 +1442,8 @@ static void o2_init(MachineState *machine)
          s->rom_pad_byte == UINT16_MAX)) {
         error_report("o2-test prom-sb64-reset requires the 1 GiB "
                      "eight-bank profile, reset-low-ram-approx=on, "
-                     "empty-renderer-status=on, prom-private-window=on "
+                     "either empty-renderer-status=on or "
+                     "functional-memory-transfer=on, prom-private-window=on "
                      "and the ROM image/size/offset/pad settings");
         exit(1);
     }
