@@ -3353,6 +3353,24 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
     if ((!visible && !stipple) || (a.x == b.x && a.y == b.y)) {
         return;
     }
+    if (r->line_smooth && stipple && !stipple->enabled) {
+        double scale = 1 << sub;
+        double length = hypot((b.x - a.x) / scale, (b.y - a.y) / scale);
+        uint32_t period = 16 * stipple->repeat;
+
+        /*
+         * Unstippled, the segment is one rectangle (3.4.2): its fragments
+         * are not split between one-pixel pieces, each blended on its own.
+         * The count still moves on by the pieces a stipple would take.
+         */
+        stipple->counter = (stipple->counter +
+                            (uint32_t)fmod(ceil(length), period)) % period;
+        stipple->consumed = true;
+        if (!visible) {
+            return;
+        }
+        stipple = NULL;
+    }
     if (r->line_smooth && stipple) {
         double scale = 1 << sub;
         double length = hypot((b.x - a.x) / scale, (b.y - a.y) / scale);

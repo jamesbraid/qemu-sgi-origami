@@ -6761,6 +6761,38 @@ static void test_line_smoothing_stipple(void)
     g_assert_cmpuint((p >> 8) & 0xff, ==, 0);
 }
 
+/*
+ * With line stipple available but disabled, a smoothed segment is one
+ * rectangle (3.4.2), not one-pixel pieces each blended on its own: a line
+ * on the boundary of rows 20 and 21 blends half of white into each, where
+ * pieces meeting at x = 12.25 would blend 1/8 and then 3/8 into pixel 12.
+ */
+static void test_line_smoothing_unstippled_is_one_rectangle(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t white[4] = { bits(1), bits(1), bits(1), bits(1) };
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    frag_quad(&f, 0, 0, 1, 1);
+    frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f.c, SGI_GL_BLEND, true);
+    line_stipple_activate(&f);
+    enable(&f.c, SGI_GL_LINE_STIPPLE, false);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_COLOR4F, white, ARRAY_SIZE(white));
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 10.25, 21);
+    wide_vertex(&f, 14, 21);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 12, 20), ==, 0x8080ff);
+    g_assert_cmphex(frag_pixel(&f, 12, 21), ==, 0x8080ff);
+    g_assert_cmphex(frag_pixel(&f, 10, 20), ==, 0x6060ff);
+}
+
 static void smoothing_rules_disabled_scene(void)
 {
     FragScene aliased, requested;
@@ -13933,6 +13965,8 @@ int main(int argc, char **argv)
                     test_line_smoothing_stipple);
     g_test_add_func("/sgi-gl/smoothing-rules-disabled",
                     test_smoothing_rules_disabled);
+    g_test_add_func("/sgi-gl/line-smoothing-unstippled-is-one-rectangle",
+                    test_line_smoothing_unstippled_is_one_rectangle);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
