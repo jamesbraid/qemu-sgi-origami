@@ -601,8 +601,9 @@ static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, uint32_t rgb)
  * Display line y for the shared scanout: each pixel resolved by its tag
  * from the bank shown there (see sgi_kona_displayed_bank()), with the
  * unused top byte of an x8r8g8b8 word cleared, then through the gamma
- * table. The shared scanout composes the loaded cursor after resolving
- * the row.
+ * table; every pixel black while the display is blanked (see
+ * sgi_kona_video_temp_blank()). The shared scanout composes the loaded
+ * cursor after resolving the row.
  */
 static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
@@ -610,6 +611,10 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
     int row = SGI_KONA_FB_HEIGHT - 1 - y;
     SGIClipRect r;
 
+    if (s->video_blanked) {
+        memset(dst, 0, SGI_KONA_FB_WIDTH * sizeof(*dst));
+        return;
+    }
     for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
         dst[x] = sgi_kona_bank_read(s, 0, x, row) & 0x00ffffff;
     }
@@ -2166,6 +2171,28 @@ static void sgi_kona_video_reply(SGIKonaState *s,
                          v->reply_bytes + 8);
 }
 
+/*
+ * TempBlankAllChannels, video command 0x3c: one data word, nonzero to
+ * blank the display and 0 to show it again. The IRIX 6.5.30 X server's
+ * screen saver is the sender (konBlankScreen in konal.so passes its blank
+ * flag, 1 or 0, as the word); a traced desktop session sends 1 when the
+ * saver fires and 0 at the next pointer motion or key press.
+ *
+ * Inferred from the command's name in the server's video command table:
+ * a blanked display shows every pixel black, and the framebuffer, colour
+ * maps and gamma table are left as they were, so the unblank shows the
+ * same frame. Whether a blank also hides the cursor, which the shared
+ * scanout presents without asking the pipe, and what "temporary" means
+ * on a pipe beyond the next unblank or reset, are unknown.
+ */
+static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
+{
+    if (s->video_blanked != (blank != 0)) {
+        s->video_blanked = blank != 0;
+        sgi_scanout_invalidate_all(&s->scanout);
+    }
+}
+
 static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
 {
     const SGIKonaVideoCommand *v = sgi_kona_video_lookup(s->video_command);
@@ -2188,6 +2215,9 @@ static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
                       " (data 0x%" PRIx32 "); consumed, nothing posted\n",
                       s->video_command, s->video_first);
         return;
+    }
+    if (v->command == SGI_KONA_VIDEO_TEMP_BLANK) {
+        sgi_kona_video_temp_blank(s, s->video_first);
     }
     if (v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
         if ((v->command == SGI_KONA_VIDEO_GET_CHANNEL_CONFIG ||
@@ -14652,6 +14682,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->video_have = 0;
     s->video_first = 0;
     s->video_tail_sum = 0;
+    s->video_blanked = false;
     s->color_map_start = 0;
     s->color_map_count = 0;
     s->color_map_remaining = 0;
@@ -17522,6 +17553,23 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
     },
 };
 
+/* A display blanked by TempBlankAllChannels, only while it is blanked. */
+static bool sgi_kona_video_blank_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->video_blanked;
+}
+
+static const VMStateDescription vmstate_sgi_kona_video_blank = {
+    .name = TYPE_SGI_KONA "/video-blank",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_video_blank_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(video_blanked, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 6,
@@ -17704,6 +17752,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_gl_raw_pixels,
         &vmstate_sgi_kona_x_read,
         &vmstate_sgi_kona_gl_read_dma,
+        &vmstate_sgi_kona_video_blank,
         NULL
     },
 };

@@ -33,6 +33,9 @@
 
 #define REG_DMA_FIFO_PUSH KONA_REG(0x80007c)
 #define REG_TEXTPORT      KONA_REG(0xc10000)
+#define REG_COMMAND_DATA  KONA_REG(0xc1000c)
+/* The video token 0x1a6's slot store: offset 0xc + 0x20 * 0x1a6. */
+#define REG_VIDEO_SLOT    KONA_REG(0xc1000c + 0x20 * 0x1a6)
 
 #define KONA_QOM_PATH "/machine/module0/kona0"
 
@@ -706,6 +709,91 @@ static void test_colour_map_low_bits_dropped(void)
     g_rmdir(dir);
 }
 
+/*
+ * Video command 0x3c, TempBlankAllChannels, as the IRIX 6.5.30 X server's
+ * screen saver sends it (konBlankScreen in konal.so): the command number
+ * at the video token's slot, one data word, 1 to blank and 0 to unblank,
+ * then the checksum, the number plus the data word.
+ */
+static void kona_temp_blank(QTestState *s, uint32_t blank)
+{
+    qtest_writel(s, REG_VIDEO_SLOT, 0x3c);
+    qtest_writel(s, REG_COMMAND_DATA, blank);
+    qtest_writel(s, REG_COMMAND_DATA, 0x3c + blank);
+}
+
+/*
+ * A blank shows every pixel black while the planes keep what was drawn,
+ * and an unblank shows them again; the stock X server sends the pair when
+ * its saver fires and at the next pointer or key event. Reset unblanks: a
+ * pixel drawn after it shows.
+ */
+static void test_temp_blank_hides_and_restores(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree uint8_t *blanked = NULL;
+    g_autofree uint8_t *shown = NULL;
+    g_autofree uint8_t *after_reset = NULL;
+
+    qtest_system_reset(qts);
+    kona_load_colour(qts, 6, 0x10, 0x20, 0x30);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 6 }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 200, 300 }, 2);
+
+    kona_temp_blank(qts, 1);
+    blanked = kona_screendump(qts, dir, "blanked.ppm");
+    g_assert_cmphex(ppm_pixel(blanked, 200, wire_line(300)), ==, 0);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_FRONT, 200, 300), ==, 6);
+
+    kona_temp_blank(qts, 0);
+    shown = kona_screendump(qts, dir, "shown.ppm");
+    g_assert_cmphex(ppm_pixel(shown, 200, wire_line(300)), ==, 0x102030);
+
+    kona_temp_blank(qts, 1);
+    qtest_system_reset(qts);
+    kona_load_colour(qts, 6, 0x10, 0x20, 0x30);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 6 }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 200, 300 }, 2);
+    after_reset = kona_screendump(qts, dir, "after-reset.ppm");
+    g_assert_cmphex(ppm_pixel(after_reset, 200, wire_line(300)), ==,
+                    0x102030);
+    g_rmdir(dir);
+}
+
+/*
+ * A display blanked at the migration point stays blank on the destination
+ * and unblanks there: the blank is device state, not the console's.
+ */
+static void test_migration_carries_temp_blank(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    g_autofree uint8_t *blanked = NULL;
+    g_autofree uint8_t *shown = NULL;
+    QTestState *from, *to;
+
+    from = qtest_init(MIGRATION_ARGS);
+    kona_load_colour(from, 6, 0x10, 0x20, 0x30);
+    kona_textport_push(from, 0x2, (uint32_t[]){ 6 }, 1);
+    kona_textport_push(from, 0x6, (uint32_t[]){ 200, 300 }, 2);
+    kona_temp_blank(from, 1);
+
+    dest_args = g_strdup_printf("%s -incoming %s", MIGRATION_ARGS, uri);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+
+    blanked = kona_screendump(to, dir, "blanked.ppm");
+    g_assert_cmphex(ppm_pixel(blanked, 200, wire_line(300)), ==, 0);
+    kona_temp_blank(to, 0);
+    shown = kona_screendump(to, dir, "shown.ppm");
+    g_assert_cmphex(ppm_pixel(shown, 200, wire_line(300)), ==, 0x102030);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -746,6 +834,10 @@ int main(int argc, char **argv)
                    test_dma_readback_follows_colour_map);
     qtest_add_func("sn0/origin2000/kona-scanout/colour-map-low-bits-dropped",
                    test_colour_map_low_bits_dropped);
+    qtest_add_func("sn0/origin2000/kona-scanout/temp-blank-hides-and-restores",
+                   test_temp_blank_hides_and_restores);
+    qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-temp-blank",
+                   test_migration_carries_temp_blank);
 
     ret = g_test_run();
     qtest_quit(qts);

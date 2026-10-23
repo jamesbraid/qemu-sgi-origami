@@ -552,7 +552,8 @@ const SGIKonaVideoCommand sgi_kona_video_commands[] = {
     { 0x39, "VampireAndFieldDominance", U, NR, 0 }, /* tables only */
     { 0x3a, "GetVampire", 1, 16, 24 }, /* sender and wait, 1 site */
     { 0x3b, "FastlistChunksize", 1, NR, 0 }, /* sender, 1 site */
-    { 0x3c, "TempBlankAllChannels", 1, NR, 0 }, /* sender, 1 site */
+    /* sender, 1 site */
+    { SGI_KONA_VIDEO_TEMP_BLANK, "TempBlankAllChannels", 1, NR, 0 },
     { 0x3d, "GetDGInterruptState", 1, 17, 12 }, /* sender and wait, 1 site */
     { 0x3e, "XMapClockSelect", 1, NR, 0 }, /* sender, 1 site */
     { 0x3f, "GetXMapClockSelect", U, 18, 4 }, /* tables only */

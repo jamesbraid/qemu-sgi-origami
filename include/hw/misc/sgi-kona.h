@@ -1221,6 +1221,11 @@ struct SGIKonaState {
     uint32_t video_have;
     uint32_t video_first;
     uint32_t video_tail_sum;
+    /*
+     * Whether the last TempBlankAllChannels video command blanked the
+     * display; see sgi_kona_video_temp_blank().
+     */
+    bool video_blanked;
 
     /*
      * The X colour map, and a load (SGI_KONA_CMD_X_COLOR_MAP) still taking

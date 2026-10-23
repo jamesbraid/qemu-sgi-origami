@@ -616,6 +616,7 @@ extern const unsigned sgi_kona_gl_num_tokens;
 /* The command numbers the model gives a reply or other behaviour. */
 #define SGI_KONA_VIDEO_GET_BOARD_CONFIG   0x12
 #define SGI_KONA_VIDEO_GET_CHANNEL_CONFIG 0x13
+#define SGI_KONA_VIDEO_TEMP_BLANK         0x3c
 #define SGI_KONA_VIDEO_X_SERVER_INIT      0x53
 
 typedef struct SGIKonaVideoCommand {
