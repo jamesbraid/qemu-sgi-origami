@@ -41,6 +41,7 @@ struct NICardState {
     uint64_t address;
     uint64_t payload;
     uint64_t second_payload;
+    uint8_t read_data[256];
     uint32_t transfer_length;
     bool distinct_second_word;
     bool capture_failed_read;
@@ -53,6 +54,10 @@ struct NICardState {
 static uint64_t card_read(void *opaque, hwaddr offset, unsigned size)
 {
     NICardState *s = opaque;
+
+    if (offset >= 0x100 && offset + size <= 0x200) {
+        return ldn_be_p(s->read_data + offset - 0x100, size);
+    }
 
     switch (offset) {
     case 0:
@@ -115,6 +120,7 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
                                      s->transfer_length);
             if (s->result == MEMTX_OK || s->capture_failed_read) {
                 s->payload = ldq_be_p(buffer);
+                memcpy(s->read_data, buffer, s->transfer_length);
             }
             if (s->result == MEMTX_OK && s->transfer_length >= 16) {
                 s->second_payload = ldq_be_p(buffer + 8);
@@ -156,6 +162,7 @@ static void card_reset_hold(Object *obj, ResetType type)
     s->address = 0;
     s->payload = 0;
     s->second_payload = 0;
+    memset(s->read_data, 0, sizeof(s->read_data));
     s->result = MEMTX_DECODE_ERROR;
     s->pin = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
@@ -179,6 +186,7 @@ static const VMStateDescription card_vmstate = {
         VMSTATE_UINT64(address, NICardState),
         VMSTATE_UINT64(payload, NICardState),
         VMSTATE_UINT64(second_payload, NICardState),
+        VMSTATE_UINT8_ARRAY(read_data, NICardState, 256),
         VMSTATE_UINT32(result, NICardState),
         VMSTATE_UINT32_EQUAL(signature, NICardState),
         VMSTATE_UINT8_EQUAL(interrupt_pin, NICardState),
@@ -566,8 +574,8 @@ static void ram_overlay_write(void *opaque, hwaddr offset, uint64_t value,
 }
 
 static MemTxResult ram_error_read(void *opaque, hwaddr offset,
-                                   uint64_t *value, unsigned size,
-                                   MemTxAttrs attrs)
+                                 uint64_t *value, unsigned size,
+                                 MemTxAttrs attrs)
 {
     NIFixtureState *s = opaque;
 
@@ -576,16 +584,9 @@ static MemTxResult ram_error_read(void *opaque, hwaddr offset,
     return MEMTX_ACCESS_ERROR;
 }
 
-static const MemoryRegionOps ram_error_ops = {
-    .read_with_attrs = ram_error_read,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 4 },
-    .impl = { .min_access_size = 4, .max_access_size = 4 },
-};
-
 static MemTxResult ram_write_error(void *opaque, hwaddr offset,
-                                   uint64_t value, unsigned size,
-                                   MemTxAttrs attrs)
+                                  uint64_t value, unsigned size,
+                                  MemTxAttrs attrs)
 {
     NIFixtureState *s = opaque;
 
@@ -593,6 +594,14 @@ static MemTxResult ram_write_error(void *opaque, hwaddr offset,
     s->ram_write_error_value = value;
     return MEMTX_ACCESS_ERROR;
 }
+
+static const MemoryRegionOps ram_error_ops = {
+    .read_with_attrs = ram_error_read,
+    .write_with_attrs = ram_write_error,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
 
 static const MemoryRegionOps ram_write_error_ops = {
     .write_with_attrs = ram_write_error,

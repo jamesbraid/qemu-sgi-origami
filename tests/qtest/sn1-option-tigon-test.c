@@ -409,13 +409,9 @@ static void test_pio_sram_direct_dma_bytes_one(unsigned device)
         { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
         { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
     };
-    static const uint8_t narrow_host_bytes[2][8] = {
+    static const uint8_t ordinary_host_bytes[2][8] = {
         { 0x17, 0x39, 0x5b, 0xc1, 0x2e, 0x40, 0x68, 0xaf },
         { 0xc1, 0x5b, 0x39, 0x17, 0xaf, 0x68, 0x40, 0x2e },
-    };
-    static const uint8_t wide_host_bytes[2][8] = {
-        { 0x2e, 0x40, 0x68, 0xaf, 0x17, 0x39, 0x5b, 0xc1 },
-        { 0xaf, 0x68, 0x40, 0x2e, 0xc1, 0x5b, 0x39, 0x17 },
     };
     const uint8_t sentinel[8] = {
         0xd3, 0x08, 0x95, 0x4a, 0xe1, 0x76, 0x2b, 0xbc,
@@ -499,13 +495,8 @@ static void test_pio_sram_direct_dma_bytes_one(unsigned device)
                        "%02x %02x %02x %02x %02x %02x %02x %02x",
                        swap, seen[0], seen[1], seen[2], seen[3],
                        seen[4], seen[5], seen[6], seen[7]);
-        if (device == 1) {
-            g_assert_cmpmem(seen, sizeof(seen), wide_host_bytes[swap],
-                            sizeof(wide_host_bytes[swap]));
-        } else {
-            g_assert_cmpmem(seen, sizeof(seen), narrow_host_bytes[swap],
-                            sizeof(narrow_host_bytes[swap]));
-        }
+        g_assert_cmpmem(seen, sizeof(seen), ordinary_host_bytes[swap],
+                        sizeof(ordinary_host_bytes[swap]));
         memory_read(&t, p.destination, destination - sizeof(sentinel),
                     seen, sizeof(seen));
         g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
@@ -1300,14 +1291,13 @@ static void test_direct_dma_write(void)
     uint8_t source[16], guard[24], seen[24], migrated[24];
     uint8_t chunk_source[272], chunk_raw[272], chunk_expected[272];
     uint8_t chunk_guard[288], chunk_seen[288];
-    /* This expansion slot selects the model's eight-byte DMA placement. */
-    static const uint8_t wide_no_swap[16] = {
+    static const uint8_t page_alias_raw[16] = {
         0x4d, 0x54, 0x5b, 0x62, 0x31, 0x38, 0x3f, 0x46,
         0x85, 0x8c, 0x93, 0x9a, 0x69, 0x70, 0x77, 0x7e,
     };
-    static const uint8_t swapped[16] = {
-        0x62, 0x5b, 0x54, 0x4d, 0x46, 0x3f, 0x38, 0x31,
-        0x9a, 0x93, 0x8c, 0x85, 0x7e, 0x77, 0x70, 0x69,
+    static const uint8_t word_swapped[16] = {
+        0x46, 0x3f, 0x38, 0x31, 0x62, 0x5b, 0x54, 0x4d,
+        0x7e, 0x77, 0x70, 0x69, 0x9a, 0x93, 0x8c, 0x85,
     };
     uint64_t address;
     uint32_t device_control;
@@ -1387,8 +1377,7 @@ static void test_direct_dma_write(void)
                     0x2000 + sizeof(source));
     memory_read(&t, p.destination, 0x2a0000 - 4, seen, sizeof(seen));
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
-                    sizeof(wide_no_swap));
+    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     /* The second DMA chunk must preserve the same eight-byte placement. */
@@ -1470,7 +1459,8 @@ static void test_direct_dma_write(void)
     reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_ACTIVE);
     memory_read(&t, p.destination, 0x2a0080 - 4, seen, sizeof(seen));
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(swapped), swapped, sizeof(swapped));
+    g_assert_cmpmem(seen + 4, sizeof(word_swapped), word_swapped,
+                    sizeof(word_swapped));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0100, source, sizeof(source));
@@ -1495,8 +1485,7 @@ static void test_direct_dma_write(void)
                                     t.window + 0x800, seen,
                                     sizeof(seen)));
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
-                    sizeof(wide_no_swap));
+    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0180, source, sizeof(source));
@@ -1524,8 +1513,8 @@ static void test_direct_dma_write(void)
                                         &seen[i], 1));
     }
     g_assert_cmpmem(seen, 4, guard, 4);
-    g_assert_cmpmem(seen + 4, sizeof(wide_no_swap), wide_no_swap,
-                    sizeof(wide_no_swap));
+    g_assert_cmpmem(seen + 4, sizeof(page_alias_raw), page_alias_raw,
+                    sizeof(page_alias_raw));
     g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
 
     memory_write(&t, p.destination, 0x2a0200 - 4,
@@ -1706,6 +1695,154 @@ static void test_wide_64bit_dma_write(void)
         g_assert_cmpmem(seen, sizeof(seen), expected[bit19],
                         sizeof(expected[bit19]));
     }
+    qtest_quit(t.qts);
+    g_assert_cmpint(unlink(storage), ==, 0);
+}
+
+static void test_expansion_direct_channel_bytes(void)
+{
+    const Placement p = { .head = 2, .device = 1, .destination = 0 };
+    static const uint8_t source[] = {
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87,
+        0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
+    };
+    static const uint8_t raw_word[] = {
+        0x43, 0x32, 0x21, 0x10, 0x87, 0x76, 0x65, 0x54,
+        0xcb, 0xba, 0xa9, 0x98, 0x0f, 0xfe, 0xed, 0xdc,
+    };
+    static const uint8_t raw_half[] = {
+        0x54, 0x65, 0x76, 0x87, 0x10, 0x21, 0x32, 0x43,
+        0xdc, 0xed, 0xfe, 0x0f, 0x98, 0xa9, 0xba, 0xcb,
+    };
+    static const uint8_t reverse[] = {
+        0x87, 0x76, 0x65, 0x54, 0x43, 0x32, 0x21, 0x10,
+        0x0f, 0xfe, 0xed, 0xdc, 0xcb, 0xba, 0xa9, 0x98,
+    };
+    uint8_t guard[24], seen[24];
+    g_autofree char *storage = NULL;
+    g_autoptr(GError) error = NULL;
+    Tigon t = { .placement = &p };
+    uint32_t device;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-option-tigon-direct-placement-XXXXXX",
+                         &storage, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    t.qts = qtest_initf(
+        "-M origin300,topology=" TOPOLOGY
+        ",expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device tigon,bus=%s,addr=%u,mac=" MAC,
+        prom_path, storage, bus_names[p.head], p.device);
+    setup_routes(&t);
+    setup_card(&t);
+    g_assert_cmphex(reg_read(&t, TI_PCI_STATE) & TI_PCI_32BIT_BUS, ==, 0);
+    reg_write(&t, TI_PCI_STATE, TI_PCI_NO_WORD_SWAP);
+    reg_write(&t, TI_WINBASE, 0x2000);
+    device = cpu_readl(t.qts, t.pio_cpu, t.head + 0x20c);
+    memset(guard, 0x96, sizeof(guard));
+    g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                                     t.window + 0x800, source,
+                                     sizeof(source)));
+    for (unsigned i = 0; i < sizeof(source); i++) {
+        uint8_t raw;
+
+        g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+            t.window + 0x800 + (i ^ 3), &raw, 1));
+        g_assert_cmphex(raw, ==, raw_word[i]);
+    }
+
+    for (unsigned window = 0; window < 3; window++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            uint64_t iova = window == 1 ?
+                (swap ? 0x60000000 : 0x40000000) :
+                window == 2 ? 0x804d4000 :
+                UINT64_C(0xa000000000000000) + 0x4d4000 +
+                (swap ? (UINT64_C(1) << 55) : 0);
+            const uint8_t *host_expected = swap ? reverse : source;
+            const uint8_t *raw_expected = swap ? raw_half : raw_word;
+
+            cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c,
+                       (device & ~XBRIDGE_DIRECT_SWAP) |
+                       (window != 1 && swap ? XBRIDGE_DIRECT_SWAP : 0));
+            cpu_writel(t.qts, t.pio_cpu, t.head + 0x84, 0xa << 20);
+            cpu_writeq(t.qts, t.pio_cpu, t.head + 0x10000,
+                       0x4d4000 | (0xa << 8) | 1);
+            memory_write(&t, 0, 0x4d4000 - 4, guard, sizeof(guard));
+            reg_write(&t, TI_DMA_WRITE_HOST_HI, iova >> 32);
+            reg_write(&t, TI_DMA_WRITE_HOST_LO, iova);
+            reg_write(&t, TI_DMA_WRITE_LOCAL, 0x2000);
+            reg_write(&t, TI_DMA_WRITE_STATE, TI_DMA_NO_SWAP);
+            reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(source));
+            reg_write(&t, TI_DMA_WRITE_STATE,
+                      TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+            g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_STATE) & TI_DMA_ACTIVE,
+                            ==, 0);
+            g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, 0);
+            g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_HOST_LO), ==,
+                            (uint32_t)iova + sizeof(source));
+            memory_read(&t, 0, 0x4d4000 - 4, seen, sizeof(seen));
+            g_assert_cmpmem(seen, 4, guard, 4);
+            g_assert_cmpmem(seen + 4, sizeof(source), host_expected,
+                            sizeof(source));
+            g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
+
+            memory_write(&t, 0, 0x4d4400, source, sizeof(source));
+            reg_write(&t, TI_WINBASE, 0x2200);
+            g_assert_true(qtest_memwrite_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800, guard, sizeof(guard)));
+            reg_write(&t, TI_DMA_READ_HOST_HI, iova >> 32);
+            reg_write(&t, TI_DMA_READ_HOST_LO, (uint32_t)iova + 0x400);
+            reg_write(&t, TI_DMA_READ_LOCAL, 0x2204);
+            reg_write(&t, TI_DMA_READ_STATE, TI_DMA_NO_SWAP);
+            reg_write(&t, TI_DMA_READ_LENGTH, sizeof(source));
+            reg_write(&t, TI_DMA_READ_STATE,
+                      TI_DMA_ACTIVE | TI_DMA_NO_SWAP);
+            g_assert_cmphex(reg_read(&t, TI_DMA_READ_STATE) & TI_DMA_ACTIVE,
+                            ==, 0);
+            g_assert_cmphex(reg_read(&t, TI_DMA_READ_LENGTH), ==, 0);
+            g_assert_cmphex(reg_read(&t, TI_DMA_READ_HOST_LO), ==,
+                            (uint32_t)iova + 0x400 + sizeof(source));
+            for (unsigned i = 0; i < sizeof(source); i++) {
+                uint8_t raw;
+
+                g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                    t.window + 0x804 + (i ^ 3), &raw, 1));
+                g_assert_cmphex(raw, ==, raw_expected[i]);
+            }
+            g_assert_true(qtest_memread_cpu(t.qts, t.pio_cpu,
+                t.window + 0x800, seen, sizeof(seen)));
+            g_assert_cmpmem(seen, 4, guard, 4);
+            g_assert_cmpmem(seen + 4, sizeof(source), host_expected,
+                            sizeof(source));
+            g_assert_cmpmem(seen + 20, 4, guard + 20, 4);
+            memory_read(&t, 0, 0x4d4400, seen, sizeof(source));
+            g_assert_cmpmem(seen, sizeof(source), source, sizeof(source));
+            reg_write(&t, TI_WINBASE, 0x2000);
+        }
+    }
+    cpu_writel(t.qts, t.pio_cpu, t.head + 0x20c,
+               device & ~XBRIDGE_DIRECT_SWAP);
+    memory_write(&t, 0, 0x4d4800 - 4, guard, sizeof(guard));
+    expect_interrupt(&t, false);
+    reg_write(&t, TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
+    reg_write(&t, TI_DMA_WRITE_HOST_HI, 0);
+    reg_write(&t, TI_DMA_WRITE_HOST_LO, 0x804d4800);
+    reg_write(&t, TI_DMA_WRITE_LOCAL, 0x2000);
+    reg_write(&t, TI_DMA_WRITE_LENGTH, sizeof(source));
+    reg_write(&t, TI_DMA_WRITE_STATE,
+              TI_DMA_ACTIVE | TI_DMA_NO_SWAP | TI_DMA_INT_ENABLE);
+    g_assert_cmphex(reg_read(&t, TI_DMA_WRITE_LENGTH), ==, 0);
+    expect_interrupt(&t, false);
+    reg_write(&t, TI_MISC_HOST_CTL, 0);
+    expect_interrupt(&t, true);
+    memory_read(&t, 0, 0x4d4800 - 4, seen, sizeof(seen));
+    g_assert_cmpmem(seen + 4, sizeof(source), source, sizeof(source));
+    acknowledge(&t);
     qtest_quit(t.qts);
     g_assert_cmpint(unlink(storage), ==, 0);
 }
@@ -2709,6 +2846,8 @@ int main(int argc, char **argv)
                    test_direct_dma_write);
     qtest_add_func("/sn1/option-tigon/wide-64bit-dma-write",
                    test_wide_64bit_dma_write);
+    qtest_add_func("/sn1/option-tigon/expansion-direct-channel-bytes",
+                   test_expansion_direct_channel_bytes);
     qtest_add_func("/sn1/option-tigon/generic-wide-64bit-dma-write",
                    test_generic_wide_64bit_dma_write);
     qtest_add_func("/sn1/option-tigon/pio-sram-direct-dma-bytes",

@@ -850,7 +850,7 @@ static void expansion_realize(DeviceState *dev, Error **errp)
             return;
         }
         if (s->ni_route && i == 0 &&
-            !sgi_xbridge_enable_origin300_direct32_dma_placement_experiment(
+            !sgi_xbridge_enable_origin300_dma_placement_experiment(
                 SGI_XBRIDGE(s->chip[i]), errp)) {
             return;
         }
