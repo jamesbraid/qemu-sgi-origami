@@ -412,12 +412,16 @@ static bool aic7880_dma_attempt(AIC7880State *s, PCIDevice *pci,
                                 uint8_t *buf, uint32_t len)
 {
     MemTxResult result;
+    MemReentrancyGuard *guard = &DEVICE(s)->mem_reentrancy_guard;
+    bool was_engaged = guard->engaged_in_io;
 
+    guard->engaged_in_io = true;
     if (to_memory) {
         result = pci_dma_write(pci, addr, buf, len);
     } else {
         result = pci_dma_read(pci, addr, buf, len);
     }
+    guard->engaged_in_io = was_engaged;
     trace_aic7880_dma(pci->devfn, addr, len, to_memory, result);
 
     if (s->o2_storage_diagnostic &&

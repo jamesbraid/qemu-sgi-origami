@@ -2115,6 +2115,35 @@ static void test_diagnostic_unpause_cannot_complete(void)
     }
 }
 
+static void test_deferred_dma_preserves_registers(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t program[16];
+    size_t n = 0;
+
+    qtest_writeb(qts, REG_BASE + 0x20, 0xa5);
+    qtest_writeb(qts, REG_BASE + 0x21, 0);
+    host_dma_program(qts, REG_BASE + 0x20, 1);
+    qtest_writeb(qts, REG_BASE + 0x93, 1);
+    qtest_writeb(qts, REG_BASE + 0x99, 0x5a);
+    emit(program, &n, branch_word(0x0f, 1, 0x21, 0));
+    emit_or(program, &n, 0x0a, 0x93);
+    emit_or(program, &n, 3, 0x9d);
+    emit_or(program, &n, 2, 0x91);
+    start_program(qts, program, n);
+    qtest_writeb(qts, REG_BASE + 0x21, 1);
+    qtest_clock_step(qts, 500000);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x20), ==, 0xa5);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, REG_BASE + 0x20);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x99), ==, 0x5a);
+    qtest_quit(qts);
+}
+
 static void test_sequencer_host_completion_memory(void)
 {
     QTestState *qts = start_aic();
@@ -9600,6 +9629,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/host-pausedis-refusal", test_host_pausedis_refusal);
     qtest_add_func("aic7880/internal-completion-ids",
                    test_internal_completion_ids);
+    qtest_add_func("aic7880/deferred-dma-preserves-registers",
+                   test_deferred_dma_preserves_registers);
     qtest_add_func("aic7880/diagnostic-unpause-cannot-complete",
                    test_diagnostic_unpause_cannot_complete);
     qtest_add_func("aic7880/sequencer-host-completion-memory",
