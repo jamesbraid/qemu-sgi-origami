@@ -20,6 +20,7 @@
 #include "trace.h"
 
 #define MACE_ID_FLASH_ENABLE 1U
+#define MACE_ID_PASSWORD_CLEAR (1U << 1)
 #define MACE_ID_RELEASE (1U << 2)
 #define MACE_ID_SAMPLE (1U << 3)
 #define MACE_ID_RED_LED (1U << 4)
@@ -57,6 +58,7 @@ struct SGIMACEIDState {
     bool flash_write_enabled;
     bool no_responder;
     bool misc_word_pio;
+    bool password_clear_input;
     uint32_t led_control;
     bool high_seen;
     bool reset_ready;
@@ -108,6 +110,7 @@ static uint64_t mace_id_value(SGIMACEIDState *s, int64_t now)
                  !mace_id_sample_pull(s, now);
 
     return s->led_control |
+           (s->password_clear_input ? MACE_ID_PASSWORD_CLEAR : 0) |
            (s->flash_write_enabled ? MACE_ID_FLASH_ENABLE : 0) |
            (s->released ? MACE_ID_RELEASE : 0) |
            (level ? MACE_ID_SAMPLE : 0);
@@ -259,6 +262,7 @@ static void mace_id_reset_hold(Object *obj, ResetType type)
 {
     SGIMACEIDState *s = SGI_MACE_ID(obj);
 
+    /* Reset changes the drive outputs, not the connected board input. */
     mace_id_clear_windows(s);
     s->released = false;
     s->flash_write_enabled = false;
@@ -364,6 +368,13 @@ static void mace_id_unrealize(DeviceState *dev)
     mace_id_clear_windows(s);
 }
 
+static void mace_id_password_clear_input(void *opaque, int n, int level)
+{
+    SGIMACEIDState *s = opaque;
+
+    s->password_clear_input = !!level;
+}
+
 static void mace_id_init(Object *obj)
 {
     SGIMACEIDState *s = SGI_MACE_ID(obj);
@@ -373,6 +384,8 @@ static void mace_id_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), &s->flash_write_enable_irq,
                              "flash-write-enable", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_id_password_clear_input,
+                             "password-clear-input", 1);
     s->bus = onewire_create_bus(DEVICE(obj), "onewire");
 }
 
@@ -390,6 +403,7 @@ static const VMStateDescription vmstate_mace_id = {
     .minimum_version_id = 1,
     .post_load = mace_id_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(password_clear_input, SGIMACEIDState),
         VMSTATE_BOOL(flash_write_enabled, SGIMACEIDState),
         VMSTATE_BOOL(released, SGIMACEIDState),
         VMSTATE_UINT32(led_control, SGIMACEIDState),
@@ -398,6 +412,8 @@ static const VMStateDescription vmstate_mace_id = {
 };
 
 static const Property mace_id_properties[] = {
+    DEFINE_PROP_BOOL("password-clear-input", SGIMACEIDState,
+                     password_clear_input, false),
     DEFINE_PROP_BOOL("misc-word-pio", SGIMACEIDState, misc_word_pio, false),
     DEFINE_PROP_BOOL("no-responder", SGIMACEIDState, no_responder, false),
     DEFINE_PROP_STRING("test-serial", SGIMACEIDState, test_serial),

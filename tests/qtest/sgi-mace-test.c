@@ -12,6 +12,7 @@
 
 #define MACE_BASE       0x1f000000ULL
 #define MACE_RING_BASE  (MACE_BASE + 0x310000)
+#define MACE_MISC       (MACE_BASE + 0x310008)
 #define MACE_PCI_ERROR_ADDR (MACE_BASE + 0x080000)
 #define MACE_PCI_ERROR_FLAGS (MACE_BASE + 0x080004)
 #define MACE_PCI_CONTROL (MACE_BASE + 0x080008)
@@ -211,6 +212,8 @@ static void test_migrate_pending_compare(void)
     from = mace_start();
     to = mace_start_extra("-incoming defer");
 
+    qtest_set_irq_in(from, "/machine/peripheral/mace",
+                      "password-clear-input", 0, 1);
     qtest_writeq(from, MACE_RING_BASE, 0);
     qtest_writeb(from, MACE_RTC + 0x2000, 0x5a);
     qtest_writeb(from, MACE_UART_A + 0x700, 0x6b);
@@ -225,6 +228,7 @@ static void test_migrate_pending_compare(void)
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
 
+    g_assert_cmphex(qtest_readq(to, MACE_MISC), ==, 0x22);
     g_assert_cmphex(qtest_readq(to, MACE_RING_BASE) & 1, ==, 0);
     g_assert_cmphex(qtest_readb(to, MACE_RTC + 0x2007), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, MACE_UART_A + 0x707), ==, 0x6b);
@@ -240,6 +244,45 @@ static void test_migrate_pending_compare(void)
     qtest_quit(from);
     g_unlink(socket);
     g_rmdir(directory);
+}
+
+static void test_migrate_password_clear_input(void)
+{
+    for (unsigned initial = 0; initial < 2; initial++) {
+        g_autofree char *directory = g_dir_make_tmp("mace-input-XXXXXX", NULL);
+        g_autofree char *socket = g_build_filename(directory, "state.sock",
+                                                   NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        g_autofree char *source_options = g_strdup_printf(
+            "-global sgi-mace.password-clear-input=%s", initial ? "on" : "off");
+        g_autofree char *dest_options = g_strdup_printf(
+            "%s -incoming defer", source_options);
+        QTestState *from = mace_start_extra(source_options);
+        QTestState *to = mace_start_extra(dest_options);
+        unsigned level = !initial;
+
+        qtest_set_irq_in(from, "/machine/peripheral/mace",
+                          "password-clear-input", 0, level);
+        /* Change flash, line drive and both LEDs from their reset values. */
+        qtest_writeq(from, MACE_MISC, 0x15);
+        g_assert_cmphex(qtest_readq(from, MACE_MISC), ==,
+                         0x15 | (level << 1));
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        g_assert_cmphex(qtest_readq(to, MACE_MISC), ==,
+                         0x15 | (level << 1));
+        qtest_system_reset(to);
+        g_assert_cmphex(qtest_readq(to, MACE_MISC), ==,
+                         0x20 | (level << 1));
+        qtest_quit(to);
+        qtest_quit(from);
+        if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+            g_assert_cmpint(g_unlink(socket), ==, 0);
+        }
+        g_assert_cmpint(g_rmdir(directory), ==, 0);
+    }
 }
 
 static void test_reset_after_pending_sources(void)
@@ -673,6 +716,8 @@ int main(int argc, char **argv)
                    test_rtc_periodic_interrupt);
     qtest_add_func("/sgi/mace/migrate-pending-compare",
                    test_migrate_pending_compare);
+    qtest_add_func("/sgi/mace/migrate-password-clear-input",
+                   test_migrate_password_clear_input);
     qtest_add_func("/sgi/mace/reset-after-pending-sources",
                    test_reset_after_pending_sources);
     qtest_add_func("/sgi/mace/uart-receive-backends",

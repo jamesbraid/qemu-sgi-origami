@@ -650,6 +650,8 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_ONEWIRE') ?
     ['sgi-mace-id-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_O2_TEST') ?
+    ['sgi-o2-platform-inputs-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_O2_TEST') and
    config_all_devices.has_key('CONFIG_ONEWIRE') ?
     ['sgi-o2-id-test'] : []) + \

@@ -786,7 +786,7 @@ static void test_rom_aliases(void)
     g_autofree char *dir = g_dir_make_tmp("o2-rom-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
     g_autofree char *machine = g_strdup_printf(
-        "o2-test,rom-image=%s,rom-size=%u,rom-offset=256,rom-pad-byte=238",
+        "o2-test,password-clear-input=0,rom-image=%s,rom-size=%u,rom-offset=256,rom-pad-byte=238",
         path, capacity);
     QTestState *qts;
 
@@ -835,7 +835,7 @@ static void test_banked_approx_rom_aliases(void)
         const uint32_t offset = cases[c].offset;
         g_autofree char *machine = g_strdup_printf(
             "o2-test,bank-profile=8x128m-synthetic,"
-            "reset-low-ram-approx=on,rom-image=%s,rom-size=%u,"
+            "reset-low-ram-approx=on,password-clear-input=0,rom-image=%s,rom-size=%u,"
             "rom-offset=%u,rom-pad-byte=238", path, capacity, offset);
         QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
                                       "-M %s -cpu R10000 -m 1G -nodefaults "
@@ -891,7 +891,7 @@ static void test_banked_approx_rom_first_fetch(void)
                                       sizeof(image), NULL));
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
-        "reset-low-ram-approx=on,rom-image=%s,rom-size=524288,"
+        "reset-low-ram-approx=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S", machine);
@@ -932,7 +932,7 @@ static void test_cpu_reset_restarts_rom(void)
     g_assert_true(g_file_set_contents(path, (const char *)image,
                                       sizeof(image), NULL));
     machine = g_strdup_printf(
-        "o2-test,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 64M "
                       "-nodefaults -accel tcg,thread=single -S", machine);
@@ -1012,7 +1012,7 @@ static void run_private_window_backing_isolation(uint16_t offset)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -1197,7 +1197,7 @@ static void test_private_window_other_cache_algorithms(void)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -1297,7 +1297,7 @@ static void run_private_window_missed_rom_trigger(bool wait_for_poll)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -1409,7 +1409,7 @@ static void test_private_window_low_fetch_report(void)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -1539,7 +1539,7 @@ static void test_private_window_uncached_low_fetch_release(void)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -1699,7 +1699,7 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
     machine = g_strdup_printf(
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
-        "prom-private-window=on,rom-image=%s,rom-size=524288,"
+        "prom-private-window=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
@@ -2209,7 +2209,7 @@ static void test_prom_sb64_reset(void)
         g_autofree char *machine = g_strdup_printf(
             "o2-test,bank-profile=8x128m-synthetic,"
             "reset-low-ram-approx=on,empty-renderer-status=on,"
-            "prom-private-window=on,%srom-image=%s,rom-size=524288,"
+            "prom-private-window=on,%spassword-clear-input=0,rom-image=%s,rom-size=524288,"
             "rom-offset=0,rom-pad-byte=238",
             selected ? "prom-sb64-reset=on," : "", path);
         QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s "
@@ -2371,7 +2371,7 @@ static void test_banked_configuration(void)
                               NULL, NULL,
                               "supports only bank-profile=8x128m-synthetic");
     assert_o2_banked_rejected(
-        "o2-test,bank-profile=8x128m-synthetic,rom-image=unused",
+        "o2-test,bank-profile=8x128m-synthetic,password-clear-input=0,rom-image=unused",
         "1G", NULL, NULL, "does not support ROM images");
     assert_o2_banked_rejected(banked, "1G", "-bios", "unused",
                               "does not support -bios");
@@ -2445,7 +2445,7 @@ static void test_functional_transfer_configuration(void)
         g_autofree char *selected = g_strdup_printf(
             "o2-test,bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
             "%s=on,prom-private-window=on,prom-sb64-reset=on,"
-            "gbe11-registers=on,prom-id-word=on,rom-image=%s,"
+            "gbe11-registers=on,prom-id-word=on,password-clear-input=0,rom-image=%s,"
             "rom-size=524288,rom-offset=0,rom-pad-byte=238", choices[i], path);
         QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
             "-M %s -cpu R10000 -m 1G -nodefaults -accel tcg,thread=single -S",
@@ -2550,7 +2550,7 @@ static void test_gbe11_registers(void)
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
         path);
     selected = g_strdup_printf("%s,gbe11-registers=on", base);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
@@ -2658,7 +2658,7 @@ static void test_prom_id_word(void)
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
         path);
     selected = g_strdup_printf("%s,prom-id-word=on", base);
 
@@ -2746,7 +2746,7 @@ static void test_prom_id_word_configuration(void)
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
-        "prom-id-word=on,rom-image=%s,rom-size=524288,rom-offset=0",
+        "prom-id-word=on,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0",
         path);
     assert_o2_banked_rejected(partial_rom, "1G", NULL, NULL,
                               "prom-id-word requires");
@@ -2798,7 +2798,8 @@ static void test_gbe11_registers_configuration(void)
         "o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0", path);
+        "password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "rom-offset=0", path);
     assert_o2_banked_rejected(partial_rom, "1G", NULL, NULL,
                               "gbe11-registers requires");
     selected = g_strdup_printf(
@@ -2830,13 +2831,13 @@ static void test_prom_sb64_reset_configuration(void)
 
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
     without_private = g_strdup_printf(
-        "%s,prom-sb64-reset=on,rom-image=%s,rom-size=524288,"
+        "%s,prom-sb64-reset=on,password-clear-input=0,rom-image=%s,rom-size=524288,"
         "rom-offset=0,rom-pad-byte=238", base, path);
     without_rom = g_strdup_printf(
         "%s,prom-private-window=on,prom-sb64-reset=on", base);
     selected = g_strdup_printf(
         "%s,prom-private-window=on,prom-sb64-reset=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
         base, path);
     assert_o2_banked_rejected("o2-test,prom-sb64-reset=on", "64M",
                               NULL, NULL,
@@ -2870,16 +2871,16 @@ static void test_banked_approx_rom_rejected(void)
                                           NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
     g_autofree char *nonregular = g_strdup_printf(
-        "%s,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=255",
+        "%s,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=255",
         approx, dir);
     g_autofree char *too_large = g_strdup_printf(
-        "%s,rom-image=%s,rom-size=524288,rom-offset=524285,"
+        "%s,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=524285,"
         "rom-pad-byte=255", approx, path);
     g_autofree char *bad_capacity = g_strdup_printf(
-        "%s,rom-image=%s,rom-size=65536,rom-offset=0,"
+        "%s,password-clear-input=0,rom-image=%s,rom-size=65536,rom-offset=0,"
         "rom-pad-byte=255", approx, path);
     g_autofree char *bad_padding = g_strdup_printf(
-        "%s,rom-image=%s,rom-size=524288,rom-offset=0,"
+        "%s,password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,"
         "rom-pad-byte=256", approx, path);
 
     g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
@@ -2888,7 +2889,7 @@ static void test_banked_approx_rom_rejected(void)
                               "1G", NULL, NULL,
                               "o2-test ROM settings require rom-image");
     assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
-                              "reset-low-ram-approx=on,rom-image=unused",
+                              "reset-low-ram-approx=on,password-clear-input=0,rom-image=unused",
                               "1G", NULL, NULL,
                               "o2-test ROM requires rom-size, rom-offset "
                               "and rom-pad-byte");
@@ -3099,7 +3100,8 @@ static void test_configuration(void)
         NULL,
     };
     const char *rom_without_layout[] = {
-        qtest_qemu_binary(NULL), "-M", "o2-test,rom-image=unused", "-m",
+        qtest_qemu_binary(NULL), "-M",
+        "o2-test,password-clear-input=0,rom-image=unused", "-m",
         "64M", "-nodefaults", "-display", "none", "-S", "-qmp", "stdio",
         NULL,
     };
@@ -3130,7 +3132,7 @@ static QTestState *o2_gbe_one_tile_start(const char *image, bool selected,
         MEMTX_TEST_DEVICE "-M o2-test,bank-profile=8x128m-synthetic,"
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238%s "
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238%s "
         "-cpu R10000 -m 1G -nodefaults %s",
         image, selected ? ",gbe-one-tile-diagnostic=on" : "", extra);
 }
@@ -3642,7 +3644,8 @@ static void test_aic_pci_diagnostic_rejections(void)
     assert_o2_banked_rejected("o2-test,aic-pci-diagnostic=on", "64M",
                               "-accel", "tcg", "requires QTest, 64 MiB");
     assert_o2_banked_rejected(
-        "o2-test,aic-pci-diagnostic=on,rom-image=unused", "64M",
+        "o2-test,aic-pci-diagnostic=on,password-clear-input=0,"
+        "rom-image=unused", "64M",
         "-accel", "qtest", "requires QTest, 64 MiB RAM and no ROM");
     assert_o2_banked_rejected("origin200,aic-pci-diagnostic=on", "64M",
                               "-accel", "qtest", "aic-pci-diagnostic");
@@ -4101,7 +4104,8 @@ static void test_mace_banked_dma_fixture_rejections(void)
         "1G", "-accel", "tcg", "requires QTest");
     assert_o2_banked_rejected(
         "o2-test,bank-profile=8x128m-synthetic,mace-bank-dma-fixture=on,"
-        "rom-image=unused", "1G", "-accel", "qtest", "no ROM");
+        "password-clear-input=0,rom-image=unused", "1G", "-accel", "qtest",
+        "no ROM");
     assert_launch_rejected(default_card, "does not support attached PCI");
     assert_launch_rejected(extra_card, "slot 2 function 0 not available");
     assert_launch_rejected(scsi_target,
@@ -4155,7 +4159,7 @@ static O2StorageTest o2_storage_start_accel_full(bool disk,
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
         "diagnostic-lower-pci-byte-identity=on%s,"
         "storage-diagnostic-event-file=%s "
         "-cpu R10000 -m 1G -nodefaults -accel %s -S %s %s",
@@ -5508,7 +5512,7 @@ static void check_default_o2_aic(const char *memory, bool full_profile)
             "reset-low-ram-approx=on,empty-renderer-status=on,"
             "prom-private-window=on,prom-sb64-reset=on,"
             "gbe11-registers=on,prom-id-word=on,"
-            "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
+            "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238",
             rom_path);
     } else {
         machine = g_strdup("o2-test");
@@ -5680,7 +5684,7 @@ static void test_full_identity_ethernet_aic(void)
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
         "identity-diagnostic=on,identity-test-serial=1032547698ba,"
         "identity-eprom-file=%s,identity-status=0123456789abcd,"
         "mace-misc-word-pio=on,mace-eth-low-dma-compat=on,"
@@ -7303,7 +7307,7 @@ static void test_storage_diagnostic_rejections(void)
         "reset-low-ram-approx=on,empty-renderer-status=on,"
         "prom-private-window=on,prom-sb64-reset=on,"
         "gbe11-registers=on,prom-id-word=on,"
-        "rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,rom-offset=0,rom-pad-byte=238,"
         "diagnostic-lower-pci-byte-identity=on", rom);
     full_mode = g_strdup_printf("%s,storage-diagnostic-event-file=%s",
                                 no_sink_mode, events);

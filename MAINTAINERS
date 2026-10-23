@@ -1567,6 +1567,7 @@ F: tests/qtest/sgi-mace-dma-test.c
 F: tests/qtest/sgi-mace-eth-test.c
 F: tests/qtest/sgi-o2-id-test.c
 F: tests/qtest/sgi-mace-test.c
+F: tests/qtest/sgi-o2-platform-inputs-test.c
 F: tests/qtest/sgi-o2-rom-test.c
 F: tests/qtest/sgi-o2-test.c
 F: tests/qtest/octane-test.c

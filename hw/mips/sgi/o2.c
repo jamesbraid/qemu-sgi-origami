@@ -39,6 +39,7 @@
 #include "qemu/module.h"
 #include "qemu/notify.h"
 #include "system/address-spaces.h"
+#include "system/block-backend.h"
 #include "system/cpus.h"
 #include "system/reset.h"
 #include "system/system.h"
@@ -72,6 +73,7 @@ typedef struct O2MachineState {
     char *identity_test_serial;
     char *identity_eprom_file;
     char *identity_status;
+    char *password_clear_input;
     uint32_t rom_size;
     uint32_t rom_offset;
     uint16_t rom_pad_byte;
@@ -644,6 +646,29 @@ static void o2_set_identity_status(Object *obj, const char *value,
     }
     g_free(s->identity_status);
     s->identity_status = g_strdup(value);
+}
+
+static char *o2_get_password_clear_input(Object *obj, Error **errp)
+{
+    return g_strdup(((O2MachineState *)obj)->password_clear_input);
+}
+
+static void o2_set_password_clear_input(Object *obj, const char *value,
+                                        Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "password-clear-input cannot change once the "
+                         "machine is built");
+        return;
+    }
+    if (strcmp(value, "0") && strcmp(value, "1")) {
+        error_setg(errp, "password-clear-input must be 0 or 1");
+        return;
+    }
+    g_free(s->password_clear_input);
+    s->password_clear_input = g_strdup(value);
 }
 
 static bool o2_get_prom_id_word(Object *obj, Error **errp)
@@ -1251,6 +1276,7 @@ static void o2_instance_finalize(Object *obj)
     g_free(s->identity_test_serial);
     g_free(s->identity_eprom_file);
     g_free(s->identity_status);
+    g_free(s->password_clear_input);
 }
 
 static void o2_init(MachineState *machine)
@@ -1662,7 +1688,21 @@ static void o2_init(MachineState *machine)
         sysbus_mmio_map(SYS_BUS_DEVICE(gbe), 0, O2_GBE_BASE);
     }
 
+    if (s->rom_image && !s->password_clear_input) {
+        error_report("o2-test rom-image requires password-clear-input=0|1; "
+                     "the fitted board input is unknown");
+        exit(1);
+    }
     mace = qdev_new("sgi-mace");
+    if (blk_by_name("nvram0")) {
+        qdev_prop_set_drive(mace, "drive", blk_by_name("nvram0"));
+    }
+    if (blk_by_name("nvram0-clock")) {
+        qdev_prop_set_drive(mace, "clock-drive", blk_by_name("nvram0-clock"));
+    }
+    qdev_prop_set_bit(mace, "password-clear-input",
+                      s->password_clear_input &&
+                      !strcmp(s->password_clear_input, "1"));
     qdev_prop_set_bit(mace, "phy-ics1890", s->phy_ics1890);
     qdev_prop_set_uint8(mace, "phy-address", s->phy_address);
     qdev_prop_set_bit(mace, "identity-diagnostic", s->identity_diagnostic);
@@ -1894,6 +1934,12 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "identity-eprom-file",
                                   o2_get_identity_eprom_file,
                                   o2_set_identity_eprom_file);
+    object_class_property_add_str(oc, "password-clear-input",
+                                  o2_get_password_clear_input,
+                                  o2_set_password_clear_input);
+    object_class_property_set_description(oc, "password-clear-input",
+        "Raw external password-clear input (0 or 1); required with rom-image; "
+        "omission without ROM selects synthetic zero");
     object_class_property_add_str(oc, "identity-status",
                                   o2_get_identity_status,
                                   o2_set_identity_status);
