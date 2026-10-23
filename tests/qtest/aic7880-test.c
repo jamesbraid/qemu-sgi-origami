@@ -6683,6 +6683,7 @@ static void test_missing_target(void)
     qtest_writeb(qts, REG_BASE + 0x60, 0x90);
     qtest_writeb(qts, REG_BASE + 0x62, 0);
     qtest_writeb(qts, REG_BASE + 0x87, 0x02);
+    qtest_clock_step(qts, 256000000);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0x04);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x02, ==, 0);
