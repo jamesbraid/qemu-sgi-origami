@@ -1348,7 +1348,9 @@ static void test_board_inventory_registers(void)
 
 /*
  * Expected identity values for each model variant: version bytes,
- * revisions, counts, and the name returned by hinv.
+ * revisions, counts, and the name returned by hinv. MXI and EMXI are
+ * the gfxinfo output owners published
+ * (docs/datasheets/mgras-board-identity.md).
  */
 typedef struct MgrasBoardExpect {
     const char *board;
@@ -1364,12 +1366,12 @@ static const MgrasBoardExpect mgras_board_expect[] = {
     { "si-t",  true,  1, 1, 4, "SI with texture option",
       0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
     { "ssi",   true,  2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
-    { "mxi",   false, 2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
+    { "mxi",   false, 2, 2, 4, "MXI", 0x66, 0x00, 2, 2, 2, 0, 0, 3, 0 },
     { "esi",   true,  1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
     { "esi-t", false, 1, 1, 4, "ESI with texture option",
       0x51, 0x0c, 2, 3, 2, 4, 0, 3, 0 },
     { "essi",  true,  2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
-    { "emxi",  false, 2, 2, 4, "EMXI", 0x52, 0x00, 2, 3, 2, 4, 0, 3, 0 },
+    { "emxi",  false, 2, 2, 4, "EMXI", 0x72, 0x00, 2, 3, 2, 7, 0, 4, 0 },
 };
 
 #define REG_GE_STATUS          MGRAS_REG(0x028000)

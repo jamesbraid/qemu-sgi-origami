@@ -87,10 +87,15 @@
  * - SI and ESI are inferred from those two boards with the TRAM taken
  *   away: nobody has captured gfxinfo from a textureless board. 0x072408
  *   is approximated as 0x0f, both TRAM paths absent.
- * - SSI, MXI, ESSI and EMXI have no capture at all. Their counts and
- *   names are established by the OCTANE Technical Report and IRIX's own
- *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
- *   revision are approximated with the matching one-GE board's values.
+ * - MXI and EMXI come from gfxinfo output owners posted to Usenet. Four
+ *   MXI posts from 1997 to 1999, one with hinv's "Graphics board: MXI",
+ *   print product ID 3, MGRAS revision 1 and the SI+T's ASIC revisions;
+ *   a two-GE GE12 board with 4 TRAMs, which IRIX names EMXI, prints
+ *   product ID 3, MGRAS revision 4, PP1 rev H and CMAP rev F.
+ * - SSI and ESSI have no capture used here. Their counts and names are
+ *   established by the OCTANE Technical Report and IRIX's own decode;
+ *   product ID 2 (over 3), the MGRAS revision and every ASIC revision are
+ *   approximated with the matching one-GE board's values.
  *
  * MXI and EMXI add one TE1 and its TRAM to each of SSI's two REs. The model
  * keeps one texture store, drawn by the shared rasterizer for every row, so
@@ -158,7 +163,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .name = "mxi", .hinv_name = "MXI",
         .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
-        .version1 = 0x46, .version0 = 0x00,
+        .version1 = 0x66, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
@@ -208,9 +213,9 @@ static const SGIMgrasBoard mgras_boards[] = {
         .name = "emxi", .hinv_name = "EMXI",
         .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
-        .version1 = 0x52, .version0 = 0x00,
+        .version1 = 0x72, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
-        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .pp1_revision = 7, .vc3_revision = 0, .cmap_revision = 4,
         .ra_revision = 0, .video_option = false,
         .record_name = "MOT20", .record_part = "030-1240-003",
         .record_revision = "G",
