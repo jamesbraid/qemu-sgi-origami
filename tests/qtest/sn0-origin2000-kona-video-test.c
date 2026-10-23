@@ -523,6 +523,49 @@ static void test_channel_config_reply(void)
 }
 
 /*
+ * The channel count a configured pipe reports is presentation only:
+ * whole-tetra's configuration reports eight channels in its 0x1e9 answer,
+ * but the video commands still describe the one channel the model scans
+ * out. GetBoardConfig answers the same single-channel reply as an
+ * unconfigured pipe, and GetChannelConfig for channel 1 is logged as
+ * unsupported and answers nothing.
+ */
+static void test_configured_channels_presentation_only(void)
+{
+    static const uint32_t expected[] = { 6, 1, 1, 0, 0, 0, 8 };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(
+        "-M origin2000,nodes=1 -smp 1 -m 64M "
+        "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
+        "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
+        "\"other-identity-parts\":[],\"product\":\"ir2\"}'",
+        "guest_errors,unimp", &log);
+
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    kona_register_return_page(s, RETURN_PAGE);
+    video_command(s, GET_BOARD_CONFIG, (uint32_t[]){ 0 }, 1,
+                  GET_BOARD_CONFIG);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+    for (size_t i = 0; i < ARRAY_SIZE(expected); i++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * i), ==,
+                        expected[i]);
+    }
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    video_command(s, GET_CHANNEL_CONFIG, (uint32_t[]){ 1 }, 1,
+                  GET_CHANNEL_CONFIG + 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x5a5a5a5a);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unsupported video channel 1 for 0x13"));
+}
+
+/*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
  * smallest (one word); the rest follow the model's video command table.
@@ -1205,6 +1248,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/resize-reply", test_resize_reply);
     qtest_add_func("sn0/origin2000/kona-video/channel-config-reply",
                    test_channel_config_reply);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "configured-channels-presentation-only",
+                   test_configured_channels_presentation_only);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
