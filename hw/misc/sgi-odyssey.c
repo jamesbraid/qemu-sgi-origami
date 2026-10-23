@@ -178,6 +178,20 @@
 #define ODSY_PIXEL_CLOCK_HZ 107964476u
 
 /*
+ * The display channel's active size, backend entries 0x2802 (pixels) and
+ * 0x2803 (lines). The PROM and kernel write 1280 and 1024 there at boot,
+ * and a V6's X server writes 1280 and 720 once it loads 1280x720_72, the
+ * format gfxinfo then reports; the entries after them, written as zero,
+ * line up with gfxinfo's "Channel 0: Origin = (0,0)". That these two
+ * entries set the displayed size is INFERRED from those writes matched
+ * against the reported formats; the timing table the guest also loads
+ * (entries 0x2000-0x247f) is not decoded, so the retrace period stays the
+ * 1280x1024 60 Hz one whatever the size.
+ */
+#define ODSY_CHANNEL_WIDTH 0x2802
+#define ODSY_CHANNEL_HEIGHT 0x2803
+
+/*
  * The crosstalk configuration block: eight 64-bit registers on an 8-byte
  * stride, whose low halves are the 0x04, 0x0c, ... spellings every SGI
  * driver and this tree's other widgets use.
@@ -2478,6 +2492,49 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     return value;
 }
 
+/* Present the plane's top-left width x height at the 1280x1024 rate. */
+static void odyssey_set_scanout_size(SGIOdysseyState *s, uint32_t width,
+                                     uint32_t height)
+{
+    sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode) {
+        .width = width,
+        .height = height,
+        .frame_clocks = ODSY_FRAME_CLOCKS,
+        .clock_hz = ODSY_PIXEL_CLOCK_HZ,
+    });
+}
+
+/*
+ * One of the display channel's two size entries. A zero is the guest
+ * blanking the channel while it changes format and leaves the picture as
+ * it was. A size past the modeled planes is reported and kept to them.
+ */
+static void odyssey_channel_size(SGIOdysseyState *s, uint32_t index,
+                                 uint32_t data)
+{
+    uint32_t width = s->scanout.mode.width;
+    uint32_t height = s->scanout.mode.height;
+
+    if (data == 0) {
+        return;
+    }
+    if (index == ODSY_CHANNEL_WIDTH) {
+        width = data;
+    } else {
+        height = data;
+    }
+    if (width > SGI_ODYSSEY_WIDTH || height > SGI_ODYSSEY_HEIGHT) {
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: display channel %ux%u is "
+                      "larger than the modeled %ux%u planes\n", width, height,
+                      SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+        width = MIN(width, SGI_ODYSSEY_WIDTH);
+        height = MIN(height, SGI_ODYSSEY_HEIGHT);
+    }
+    if (width != s->scanout.mode.width || height != s->scanout.mode.height) {
+        odyssey_set_scanout_size(s, width, height);
+    }
+}
+
 /*
  * One data word of a backend record, delivered to the entry the record's
  * header selected. The colour lookup RAM and the per-drawable display-mode
@@ -2514,6 +2571,10 @@ static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
         return;
     }
     switch (index) {
+    case ODSY_CHANNEL_WIDTH:
+    case ODSY_CHANNEL_HEIGHT:
+        odyssey_channel_size(s, index, data);
+        break;
     case ODSY_I2C_MAIN_CMD_INDEX:
         s->i2c_main_cmd = data;
         break;
@@ -3255,9 +3316,10 @@ static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
     SGIOdysseyState *s = opaque;
     const uint8_t *did = &s->did[y * SGI_ODYSSEY_WIDTH];
+    uint32_t width = MIN(s->scanout.mode.width, SGI_ODYSSEY_WIDTH);
     uint32_t x;
 
-    for (x = 0; x < SGI_ODYSSEY_WIDTH; x++) {
+    for (x = 0; x < width; x++) {
         uint32_t main_id = odyssey_main_id(s, x, y);
         uint32_t word = odyssey_buffer_load(s, (s->displayed_buffer >>
                                                 main_id) & 1, x, y);
@@ -11841,12 +11903,7 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
      * timer at the mode's rate.
      */
     sgi_scanout_init(&s->scanout, dev, &odyssey_head_ops, s);
-    sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode) {
-        .width = SGI_ODYSSEY_WIDTH,
-        .height = SGI_ODYSSEY_HEIGHT,
-        .frame_clocks = ODSY_FRAME_CLOCKS,
-        .clock_hz = ODSY_PIXEL_CLOCK_HZ,
-    });
+    odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
 }
 
 static void odyssey_unrealize(DeviceState *dev)
@@ -11911,7 +11968,14 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
                             x, y, ODSY_DEPTH24_MAX);
         }
     }
-    /* Forget swaps and the cursor, repaint the cleared plane, restart phase. */
+    /*
+     * Back to the boot size, then forget swaps and the cursor, repaint the
+     * cleared plane and restart the phase.
+     */
+    if (s->scanout.mode.width != SGI_ODYSSEY_WIDTH ||
+        s->scanout.mode.height != SGI_ODYSSEY_HEIGHT) {
+        odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+    }
     sgi_scanout_reset(&s->scanout);
 }
 
@@ -12056,9 +12120,9 @@ static void odyssey_test_get_display_pixel(Object *obj, Visitor *v,
         qemu_console_hw_update(s->scanout.con);
     }
     if (DEVICE(obj)->realized && s->scanout.frame &&
-        s->test_pixel_x < SGI_ODYSSEY_WIDTH &&
-        s->test_pixel_y < SGI_ODYSSEY_HEIGHT) {
-        value = s->scanout.frame[s->test_pixel_y * SGI_ODYSSEY_WIDTH +
+        s->test_pixel_x < s->scanout.mode.width &&
+        s->test_pixel_y < s->scanout.mode.height) {
+        value = s->scanout.frame[s->test_pixel_y * s->scanout.mode.width +
                                  s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);

@@ -31,6 +31,7 @@ board /mips64/sn1/odyssey/i2c-opt-port-pll-register-write
 board /mips64/sn1/odyssey/i2c-opt-port-ddc-register-read
 board /mips64/sn1/odyssey/i2c-reset-state-poll-terminates
 board /mips64/sn1/odyssey/framebuffer-pixel-reaches-scanout
+board /mips64/sn1/odyssey/display-channel-size-sets-scanout
 board /mips64/sn1/odyssey/reset-clears-the-framebuffer
 board /mips64/sn1/odyssey/reset-mid-primitive-does-not-hang
 board /mips64/sn1/odyssey/framebuffer-pixel-accessor-bounds
