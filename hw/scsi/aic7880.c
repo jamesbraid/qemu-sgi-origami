@@ -696,6 +696,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
         scsi_req_continue(req);
         return;
     }
+    s->peer_nexus_saved = false;
     s->scsi_data_len = len;
     s->scsi_data_pos = 0;
     aic7880_process_scsi_data(s);

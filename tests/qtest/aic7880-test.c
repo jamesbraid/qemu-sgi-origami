@@ -8634,6 +8634,68 @@ static void test_scsi_reset_out(void)
     qtest_quit(qts);
 }
 
+static void test_checkpoint_expires_at_backend_buffer(void)
+{
+    static const uint8_t ready[6] = { 0 };
+    static const uint8_t sense[6] = { 3, 0, 0, 0, 18, 0 };
+    static const uint8_t read[10] = { 0x28, 0, 0, 0, 0, 0, 0, 2, 0, 0 };
+    QTestState *qts = start_peer_disk();
+    uint8_t program[128];
+    size_t n = 0;
+    unsigned remaining = 128 * 1024 - 17 + 23;
+
+    g_assert_cmphex(run_disk_cdb(qts, ready, sizeof(ready), 0, 0, false),
+                    ==, 2);
+    g_assert_cmphex(run_disk_cdb(qts, sense, sizeof(sense), 0x11000, 18, false),
+                    ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x87, 4);
+    host_dma_program(qts, 0x10000, 17);
+    qtest_writeb(qts, REG_BASE + 0x08, 17);
+    emit_or(program, &n, 0, 0x00);
+    emit_or(program, &n, 7, 0x05);
+    emit_or(program, &n, 0x30, 0x93);
+    emit_or(program, &n, 0xa0, 0x03);
+    emit_or(program, &n, 0x58, 0x00);
+    emit_or(program, &n, 0xc0, 0x06);
+    emit_or(program, &n, 0x40, 0x0c);
+    emit_or(program, &n, 0x80, 0x03);
+    for (unsigned i = 0; i < sizeof(read); i++) {
+        emit_or(program, &n, read[i], 0x06);
+    }
+    emit_or(program, &n, 1, 0x91);
+    start_program(qts, program, n);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x38);
+    for (unsigned i = 0; i < 1000 &&
+         host_dma_read_bytes(qts, 0x08, 3); i++) {
+        qtest_clock_step(qts, 1000);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x10011);
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
+    peer_event(qts, "save:0:0");
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
+    pio_read_to_scratch(qts);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x30), ==, 2);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe0, ==, 0x40);
+    host_dma_program(qts, 0x10011, remaining);
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_writeb(qts, REG_BASE + 0x08 + i, remaining >> (8 * i));
+    }
+    qtest_writeb(qts, REG_BASE + 0x93, 0x38);
+    for (unsigned i = 0; i < 1000 &&
+         host_dma_read_bytes(qts, 0x08, 3); i++) {
+        qtest_clock_step(qts, 1000);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x30017);
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
+    peer_event_rejected(qts, "restore:0:0");
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x30017);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_read_write_via_sequencer(void)
 {
     static const uint8_t read_cdb[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0 };
@@ -9770,6 +9832,8 @@ int main(int argc, char **argv)
                    test_pci_error_mask_migrates);
     qtest_add_func("aic7880/status-message-phases",
                    test_status_message_phases);
+    qtest_add_func("aic7880/checkpoint-expires-at-backend-buffer",
+                   test_checkpoint_expires_at_backend_buffer);
     qtest_add_func("aic7880/rate-change-refuses-pending-data",
                    test_rate_change_refuses_pending_data);
     qtest_add_func("aic7880/pio-wrong-direction", test_pio_wrong_direction);
