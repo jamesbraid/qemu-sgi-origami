@@ -1486,20 +1486,25 @@ static void emit_cdb_completion(uint8_t *program, size_t *n,
                                  const uint8_t *cdb, size_t cdb_len,
                                  bool write, bool host_dma)
 {
-    unsigned wait_at = *n / 4 + cdb_len + 1;
-    unsigned idle_at = wait_at + 6;
+    unsigned wait_at, free_at, idle_at;
 
     g_assert_cmpuint(cdb_len, <=, 16);
+    emit_or(program, n, 0x80, 0x03);
     for (size_t i = 0; i < cdb_len; i++) {
         emit_or(program, n, cdb[i], 0x06);
     }
     emit_or(program, n, (write ? 0x34 : 0x30) | (host_dma ? 10 : 0), 0x93);
+    wait_at = *n / 4;
     emit(program, n, branch_word(0xf, 2, 0x0b, wait_at));
+    emit_or(program, n, 0xc0, 0x03);
     emit(program, n, alu_word(0, 0, 0x06, 0x22, false)); /* status */
+    emit_or(program, n, 0xe0, 0x03);
     emit(program, n, alu_word(0, 0, 0x06, 0x23, false)); /* message */
-    emit(program, n, branch_word(0xf, 8, 0x0c, wait_at + 3));
-    emit_or(program, n, 1, 0x9d); /* completion identifier */
-    emit_or(program, n, 2, 0x91); /* completion interrupt */
+    free_at = *n / 4;
+    emit(program, n, branch_word(0xf, 8, 0x0c, free_at));
+    emit_or(program, n, 1, 0x9d);
+    emit_or(program, n, 2, 0x91);
+    idle_at = *n / 4;
     emit(program, n, branch_word(8, 0, 0x65, idle_at));
 }
 
@@ -1514,6 +1519,7 @@ static size_t build_command_program_mode(uint8_t *program, const uint8_t *cdb,
     emit_or(program, &n, 0, 0x93); /* disable the old data path */
     emit_or(program, &n, (write ? 0x34 : 0x30) | (host_dma ? 8 : 0), 0x93);
     emit(program, &n, alu_word(1, 0xff, 0x6a, 0x00, false));
+    emit_or(program, &n, identify >= 0 ? 0xa0 : 0x80, 0x03);
     emit_or(program, &n, identify >= 0 ? 0x48 : 0x40, 0x00);
     if (identify >= 0) {
         emit_or(program, &n, identify, 0x06);
@@ -1552,9 +1558,11 @@ static size_t build_selected_inquiry_identify(uint8_t *program,
     emit_or(program, &n, 0x08, 0x01);
     emit_or(program, &n, 0x07, 0x05);
     emit_or(program, &n, 0x30, 0x93);
+    emit_or(program, &n, 0xa0, 0x03);
     emit_or(program, &n, 0x5a, 0x00);
     emit_or(program, &n, identify, 0x06);
     emit_or(program, &n, 0x40, 0x0c);
+    emit_or(program, &n, 0x80, 0x03);
     for (size_t i = 0; i < sizeof(cdb); i++) {
         if (cdb[i]) {
             emit_or(program, &n, cdb[i], 0x06);
@@ -2292,16 +2300,17 @@ static void test_workload_host_only_negative(void)
 
 static void attention_select(QTestState *qts, uint8_t control)
 {
-    uint8_t program[12] = { 0 };
+    uint8_t program[16] = { 0 };
     size_t n = 0;
 
     emit_or(program, &n, 0x07, 0x05);
+    emit_or(program, &n, control & 8 ? 0xa0 : 0x80, 0x03);
     emit_or(program, &n, control, 0x00);
     emit_or(program, &n, 1, 0x91);
     start_program(qts, program, n);
 }
 
-static void attention_write(QTestState *qts, uint8_t reg, uint8_t value)
+static void attention_write_raw(QTestState *qts, uint8_t reg, uint8_t value)
 {
     uint8_t program[8] = { 0 };
     size_t n = 0;
@@ -2315,12 +2324,25 @@ static void attention_write(QTestState *qts, uint8_t reg, uint8_t value)
     start_program(qts, program, n);
 }
 
+static void attention_write(QTestState *qts, uint8_t reg, uint8_t value)
+{
+    if (reg == 0x06) {
+        uint8_t phase = qtest_readb(qts, REG_BASE + 0x03) & 0xe0;
+
+        if (phase == 0x80 || phase == 0xa0) {
+            qtest_writeb(qts, REG_BASE + 0x03, phase);
+        }
+    }
+    attention_write_raw(qts, reg, value);
+}
+
 static void attention_complete_test_unit_ready(QTestState *qts)
 {
-    uint8_t command[7 * 4] = { 0 };
+    uint8_t command[8 * 4] = { 0 };
     uint8_t finish[7 * 4] = { 0 };
     size_t n = 0;
 
+    emit_or(command, &n, 0x80, 0x03);
     for (unsigned i = 0; i < 6; i++) {
         emit(command, &n, alu_word(1, 0xff, 0x6a, 0x06, false));
     }
@@ -3275,7 +3297,7 @@ static QTestState *start_pending_status(void)
 {
     static const uint8_t cdb[6] = { 0x12, 0, 0, 0, 36, 0 };
     uint8_t program[128] = { 0 };
-    size_t wait_at = 7 + sizeof(cdb);
+    size_t wait_at = 9 + sizeof(cdb);
     uint32_t jump = branch_word(8, 0, 0x65, wait_at);
     QTestState *qts = start_disk();
 
@@ -3337,6 +3359,7 @@ static void test_status_message_phases(void)
     n = 0;
     emit(status_read, &n, alu_word(0, 0, 0x06, 0x22, false));
     emit(status_read, &n, branch_word(8, 0, 0x65, 1));
+    qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
     start_program(qts, status_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x22), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xe6);
@@ -3350,6 +3373,7 @@ static void test_status_message_phases(void)
     emit_or(finish, &n, 1, 0x9d);
     emit_or(finish, &n, 2, 0x91);
     emit(finish, &n, branch_word(8, 0, 0x65, 3));
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, finish, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
@@ -3392,11 +3416,11 @@ static void test_pio_request_phase_qualification(void)
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 2);
         qtest_writeb(qts, REG_BASE + 0x03, phase ^ 0x20);
         qtest_writeb(qts, REG_BASE + 0x92, 1);
-        attention_write(qts, 0x06, message ? 0x80 : 0);
+        attention_write_raw(qts, 0x06, message ? 0x80 : 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0x11);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
         qtest_writeb(qts, REG_BASE + 0x0c, 1);
-        attention_write(qts, 0x06, message ? 0x80 : 0);
+        attention_write_raw(qts, 0x06, message ? 0x80 : 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 1, ==, 1);
         qtest_writeb(qts, REG_BASE + 0x87, 1);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
@@ -3618,6 +3642,7 @@ static void test_peer_disconnected_nexus(void)
         if (save) {
             peer_event(qts, "save:0:0");
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 2);
+            qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
             pio_read_to_scratch(qts);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x30), ==, 2);
         }
@@ -3632,6 +3657,7 @@ static void test_peer_disconnected_nexus(void)
             start_program(qts, program, n);
         }
         peer_event(qts, "disconnect:0:0");
+        qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
         pio_read_to_scratch(qts);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x30), ==, 4);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03), ==, 0);
@@ -3667,10 +3693,12 @@ static void test_peer_disconnected_nexus(void)
         peer_event(qts, "reselect:0:7:0");
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0xa0, ==, 0x20);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 0x80);
+        qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
         pio_read_to_scratch(qts);
         peer_event_rejected(qts, "reselect:0:7:0");
         if (save) {
             peer_event(qts, "restore:0:0");
+            qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
             pio_read_to_scratch(qts);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x30), ==, 3);
             qtest_writeb(qts, REG_BASE + 0x93, 0x38);
@@ -3691,7 +3719,9 @@ static void test_peer_disconnected_nexus(void)
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 2);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+        qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
         pio_read_to_scratch(qts);
+        qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
         pio_read_to_scratch(qts);
         qtest_quit(qts);
     }
@@ -3720,6 +3750,7 @@ static void test_peer_disconnect_boundaries(void)
             peer_event_rejected(qts, "save:0:3");
             peer_event_rejected(qts, "restore:0:0");
             peer_event(qts, "disconnect:0:0");
+            qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
             pio_read_to_scratch(qts);
             peer_event_rejected(qts, "disconnect:0:0");
             if (reset == 1) {
@@ -3852,6 +3883,54 @@ static void test_rate_change_refuses_pending_data(void)
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
+static void test_expected_phase_clears_on_reset_and_bus_free(void)
+{
+    for (unsigned reset = 0; reset < 5; reset++) {
+        QTestState *qts = reset == 4 ? start_peer_disk() : start_disk();
+        uint8_t program[20];
+        size_t n = 0;
+
+        emit_or(program, &n, 8, 0x01);
+        emit_or(program, &n, 7, 0x05);
+        emit_or(program, &n, 0, 0x00);
+        emit_or(program, &n, 0x40, 0x00);
+        emit_or(program, &n, 1, 0x91);
+        if (reset) {
+            qtest_writeb(qts, REG_BASE + 0x03, 0x80);
+        }
+        if (reset == 1) {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        } else if (reset == 2) {
+            qtest_writeb(qts, REG_BASE + 0x00, 1);
+        } else if (reset == 4) {
+            qtest_writeb(qts, REG_BASE + 0x05, 7);
+            qtest_writeb(qts, REG_BASE + 0x00, 0x10);
+            peer_event(qts, "reselect:0:7");
+            peer_event(qts, "release");
+        } else if (reset == 3) {
+            start_program(qts, program, n);
+            for (unsigned i = 0; i < 6; i++) {
+                attention_write(qts, 0x06, 0);
+            }
+            for (unsigned i = 0; i < 1000 &&
+                 (qtest_readb(qts, REG_BASE + 0x03) & 0xe0) != 0xc0; i++) {
+                qtest_clock_step(qts, 1000);
+            }
+            qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
+            pio_read_to_scratch(qts);
+            qtest_writeb(qts, REG_BASE + 0x03, 0x80);
+            qtest_writeb(qts, REG_BASE + 0x0c, 1);
+            pio_read_to_scratch(qts);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03), ==, 0);
+        }
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0x11);
+        qtest_writeb(qts, REG_BASE + 0x03, 0x80);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 1);
         qtest_quit(qts);
     }
 }
@@ -4055,6 +4134,7 @@ static QTestState *start_peer_data_in(bool check_parity, bool auto_atn,
         emit_or(command, &n, inquiry[i], 0x06);
     }
     emit(command, &n, branch_word(8, 0, 0x65, 6));
+    qtest_writeb(qts, REG_BASE + 0x03, 0x80);
     start_program(qts, command, n);
     for (unsigned i = 0; i < 1000; i++) {
         if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe0) == 0x40) {
@@ -4291,6 +4371,7 @@ static void test_peer_status_fault_stops_completion(void)
         emit_or(command, &n, 0, 0x06);
     }
     emit(command, &n, branch_word(8, 0, 0x65, 6));
+    qtest_writeb(qts, REG_BASE + 0x03, 0x80);
     start_program(qts, command, n);
     for (unsigned i = 0; i < 1000; i++) {
         if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe0) == 0xc0) {
@@ -4311,6 +4392,7 @@ static void test_peer_status_fault_stops_completion(void)
     emit_or(finish, &n, 1, 0x9d);
     emit_or(finish, &n, 2, 0x91);
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
     start_program(qts, finish, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
@@ -4335,6 +4417,7 @@ static void test_peer_message_in_parity(void)
         emit_or(command, &n, 0, 0x06);
     }
     emit(command, &n, branch_word(8, 0, 0x65, 6));
+    qtest_writeb(qts, REG_BASE + 0x03, 0x80);
     start_program(qts, command, n);
     for (unsigned i = 0; i < 1000; i++) {
         if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe0) == 0xc0) {
@@ -4347,8 +4430,12 @@ static void test_peer_message_in_parity(void)
     emit(read_status, &n, alu_word(0, 0, 0x06, 0x22, false));
     emit(read_status, &n, branch_word(8, 0, 0x65, 1));
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
     start_program(qts, read_status, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe0, ==, 0xe0);
+    qtest_writeb(qts, REG_BASE + 0x87, 4);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x10, ==, 0);
     peer_event(qts, "bad:msg-in:0:00");
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x14, ==, 0x04);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xf0, ==, 0xf0);
@@ -4358,6 +4445,7 @@ static void test_peer_message_in_parity(void)
     emit(read_message, &n, alu_word(0, 0, 0x06, 0x23, false));
     emit_or(read_message, &n, 1, 0x9d);
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, read_message, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
@@ -4602,6 +4690,7 @@ static void test_spioen_gates_input_phases(void)
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
     qtest_writeb(qts, REG_BASE + 0x01, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x01), ==, 0x80);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
     start_program(qts, status_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xc6);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x02, ==, 0);
@@ -4613,6 +4702,7 @@ static void test_spioen_gates_input_phases(void)
     qtest_writeb(qts, REG_BASE + 0x01, 0x88);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x01), ==, 0x88);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x02, ==, 0x02);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xc0);
     start_program(qts, status_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xe6);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
@@ -4624,6 +4714,7 @@ static void test_spioen_gates_input_phases(void)
     qtest_writeb(qts, REG_BASE + 0x92, 0x08);
     qtest_writeb(qts, REG_BASE + 0x01, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x01), ==, 0x80);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, message_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0xe6);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x02, ==, 0);
@@ -4633,6 +4724,7 @@ static void test_spioen_gates_input_phases(void)
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
     qtest_writeb(qts, REG_BASE + 0x92, 0x08);
     qtest_writeb(qts, REG_BASE + 0x01, 0x88);
+    qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, message_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
@@ -5122,7 +5214,7 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
     static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
     uint8_t command[128] = { 0 };
     uint8_t bytes[42];
-    size_t wait_at = 6 + sizeof(cdb);
+    size_t wait_at = 8 + sizeof(cdb);
     QTestState *qts = start_disk();
     uint32_t pause = alu_word(0, 1, 0x6a, 0x91, false);
 
@@ -5172,7 +5264,7 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
 
 static void test_partial_fifo_flush(void)
 {
-    uint8_t finish[8 * 4];
+    uint8_t finish[10 * 4];
     uint8_t bytes[36];
     QTestState *qts = start_pending_fifo(0x10000);
     size_t n = 0;
@@ -5181,12 +5273,14 @@ static void test_partial_fifo_flush(void)
 
     emit_or(finish, &n, 0x3a, 0x93);
     emit(finish, &n, branch_word(0xf, 2, 0x0b, 1));
+    emit_or(finish, &n, 0xc0, 0x03);
     emit(finish, &n, alu_word(0, 0, 0x06, 0x22, false));
+    emit_or(finish, &n, 0xe0, 0x03);
     emit(finish, &n, alu_word(0, 0, 0x06, 0x23, false));
-    emit(finish, &n, branch_word(0xf, 8, 0x0c, 4));
+    emit(finish, &n, branch_word(0xf, 8, 0x0c, 6));
     emit_or(finish, &n, 1, 0x9d);
     emit_or(finish, &n, 2, 0x91);
-    emit(finish, &n, branch_word(8, 0, 0x65, 7));
+    emit(finish, &n, branch_word(8, 0, 0x65, 9));
     qtest_writeb(qts, REG_BASE + 0x92, 1);
     start_program(qts, finish, n);
     for (unsigned i = 0; i < 1000; i++) {
@@ -9846,6 +9940,8 @@ int main(int argc, char **argv)
                    test_checkpoint_expires_at_backend_buffer);
     qtest_add_func("aic7880/rate-change-refuses-pending-data",
                    test_rate_change_refuses_pending_data);
+    qtest_add_func("aic7880/expected-phase-reset-and-bus-free",
+                   test_expected_phase_clears_on_reset_and_bus_free);
     qtest_add_func("aic7880/pio-wrong-direction", test_pio_wrong_direction);
     qtest_add_func("aic7880/nonzero-rate-refuses-data",
                    test_nonzero_rate_refuses_data);
