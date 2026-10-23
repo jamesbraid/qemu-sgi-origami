@@ -15,16 +15,18 @@ layer:
         identity:
           widget_revision: 10
           notes: >-
-            Revision 0xa is the QEMU Odyssey device's selected default. An
-            OpenBSD Fuel capture reports Odyssey revision 11 on a board
-            whose model is not stated; the device keeps its tested default.
+            Revision 0xa is the measured V12's, which IRIX prints as BUZZ
+            B.1. An OpenBSD Fuel capture reports Odyssey revision 11 (B.2)
+            on a board whose model is not stated. Two Fuel V10 boards have
+            reported B.1 (030-1725-001) and B.2 (030-1826-002).
         datasheet_contracts: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey]
-        sources: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey-identity, "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
+        sources: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-odyssey-identity, "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541", "web:usenet-slrndi91sn ASTODY 030-1726-003 rev E at /hw/module/001c01/Ibrick/xtalk/13, Graphics board: V12"]
         notes: >-
-          The observed Fuel carries a V10 (ASTODYB 030-1725-001, 32 MiB).
-          The model fits the Odyssey device's default V12 memory
-          configuration; the V12 in a Fuel is inferred to use the same slot.
-          Board one-wire records and display output remain unverified.
+          Fuels are captured with a V10 (ASTODYB 030-1725-001, 32 MiB) and
+          with a V12 (ASTODY 030-1726-003) at this widget. The model fits
+          the Odyssey device's default V12 configuration. Its one-wire
+          record names the Octane V12 board, not ASTODY, and display output
+          remains unverified.
     connections:
       - component: v12
         bus: graphics-xio
