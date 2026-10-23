@@ -99,6 +99,7 @@ typedef struct O2MachineState {
     bool banked_ram;
     bool reset_low_ram_approx;
     bool empty_renderer_status;
+    bool functional_memory_transfer;
     bool prom_private_window;
     bool prom_sb64_reset;
     bool gbe11_registers;
@@ -295,6 +296,24 @@ static void o2_set_reset_low_ram_approx(Object *obj, bool value,
         return;
     }
     s->reset_low_ram_approx = value;
+}
+
+static bool o2_get_functional_memory_transfer(Object *obj, Error **errp)
+{
+    return ((O2MachineState *)obj)->functional_memory_transfer;
+}
+
+static void o2_set_functional_memory_transfer(Object *obj, bool value,
+                                             Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "functional-memory-transfer cannot change once the "
+                   "machine is initialized");
+        return;
+    }
+    s->functional_memory_transfer = value;
 }
 
 static bool o2_get_empty_renderer_status(Object *obj, Error **errp)
@@ -1222,6 +1241,8 @@ static void o2_init(MachineState *machine)
     DeviceState *rom;
     Error *err = NULL;
     GStatBuf image_stat;
+    bool renderer_status = s->empty_renderer_status ||
+                           s->functional_memory_transfer;
 
     if (!s->identity_diagnostic &&
         (s->identity_test_serial || s->identity_eprom_file ||
@@ -1245,7 +1266,7 @@ static void o2_init(MachineState *machine)
     }
     if (s->diagnostic_lower_pci_byte_identity &&
         (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE ||
-         !s->reset_low_ram_approx || !s->empty_renderer_status ||
+         !s->reset_low_ram_approx || !renderer_status ||
          !s->prom_private_window || !s->prom_sb64_reset ||
          !s->gbe11_registers || !s->prom_id_word ||
          !s->rom_image || !s->rom_size ||
@@ -1311,6 +1332,11 @@ static void o2_init(MachineState *machine)
                      "bank-profile=8x128m-synthetic");
         exit(1);
     }
+    if (s->empty_renderer_status && s->functional_memory_transfer) {
+        error_report("o2-test functional-memory-transfer conflicts with "
+                     "empty-renderer-status");
+        exit(1);
+    }
     if (s->empty_renderer_status && !s->banked_ram) {
         error_report("o2-test empty-renderer-status requires "
                      "bank-profile=8x128m-synthetic");
@@ -1323,7 +1349,7 @@ static void o2_init(MachineState *machine)
     }
     if (s->prom_private_window &&
         (!s->banked_ram || !s->reset_low_ram_approx ||
-         !s->empty_renderer_status)) {
+         !renderer_status)) {
         error_report("o2-test prom-private-window requires the 1 GiB "
                      "eight-bank profile, reset-low-ram-approx=on and "
                      "empty-renderer-status=on");
@@ -1331,7 +1357,7 @@ static void o2_init(MachineState *machine)
     }
     if (s->prom_id_word &&
         (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE ||
-         !s->reset_low_ram_approx || !s->empty_renderer_status ||
+         !s->reset_low_ram_approx || !renderer_status ||
          !s->prom_private_window || !s->prom_sb64_reset ||
          !s->gbe11_registers || !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
@@ -1345,7 +1371,7 @@ static void o2_init(MachineState *machine)
     }
     if (s->gbe11_registers &&
         (!s->banked_ram || !s->reset_low_ram_approx ||
-         !s->empty_renderer_status || !s->prom_private_window ||
+         !renderer_status || !s->prom_private_window ||
          !s->prom_sb64_reset || !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
@@ -1363,7 +1389,7 @@ static void o2_init(MachineState *machine)
     }
     if (s->prom_sb64_reset &&
         (!s->banked_ram || !s->reset_low_ram_approx ||
-         !s->empty_renderer_status || !s->prom_private_window ||
+         !renderer_status || !s->prom_private_window ||
          !s->rom_image || !s->rom_size ||
          s->rom_offset == UINT32_MAX ||
          s->rom_pad_byte == UINT16_MAX)) {
@@ -1544,6 +1570,8 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_bit(crime, "eight-128m-banks", s->banked_ram);
     qdev_prop_set_bit(crime, "reset-low-ram-approx",
                       s->reset_low_ram_approx);
+    qdev_prop_set_bit(crime, "functional-memory-transfer",
+                      s->functional_memory_transfer);
     qdev_prop_set_bit(crime, "empty-renderer-status",
                       s->empty_renderer_status);
     qdev_prop_set_bit(crime, "prom-id-word", s->prom_id_word);
@@ -1752,6 +1780,9 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "reset-low-ram-approx",
                                    o2_get_reset_low_ram_approx,
                                    o2_set_reset_low_ram_approx);
+    object_class_property_add_bool(oc, "functional-memory-transfer",
+                                   o2_get_functional_memory_transfer,
+                                   o2_set_functional_memory_transfer);
     object_class_property_add_bool(oc, "empty-renderer-status",
                                    o2_get_empty_renderer_status,
                                    o2_set_empty_renderer_status);

@@ -2425,6 +2425,61 @@ static void test_empty_renderer_configuration(void)
                               "eight-bank profile requires 1 GiB");
 }
 
+static void test_functional_transfer_configuration(void)
+{
+    static const char image[] = { 0, 0, 0, 0 };
+    g_autofree char *dir = g_dir_make_tmp("o2-transfer-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
+    const char *choices[] = {
+        "empty-renderer-status", "functional-memory-transfer"
+    };
+
+    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+        "reset-low-ram-approx=on,empty-renderer-status=on,"
+        "functional-memory-transfer=on", "1G", NULL, NULL, "conflicts with");
+    assert_o2_banked_rejected("o2-test,bank-profile=8x128m-synthetic,"
+        "reset-low-ram-approx=on,prom-private-window=on", "1G", NULL, NULL,
+        "prom-private-window requires");
+    g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
+    for (unsigned i = 0; i < ARRAY_SIZE(choices); i++) {
+        g_autofree char *selected = g_strdup_printf(
+            "o2-test,bank-profile=8x128m-synthetic,reset-low-ram-approx=on,"
+            "%s=on,prom-private-window=on,prom-sb64-reset=on,"
+            "gbe11-registers=on,prom-id-word=on,rom-image=%s,"
+            "rom-size=524288,rom-offset=0,rom-pad-byte=238", choices[i], path);
+        QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
+            "-M %s -cpu R10000 -m 1G -nodefaults -accel tcg,thread=single -S",
+            selected);
+        g_autoptr(QDict) property = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine/crime',"
+            "'property':%s}}", choices[i]);
+        g_autoptr(QDict) change = qtest_qmp(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine',"
+            "'property':%s,'value':false}}", choices[i]);
+
+        g_assert_true(qdict_get_bool(property, "return"));
+        g_assert_nonnull(qdict_get_qdict(change, "error"));
+        g_assert_cmphex(qtest_readq(qts, CRIME), ==, 0xb1);
+        g_assert_cmphex(qtest_readl(qts, CRIME + 4), ==, 0xb1);
+        g_assert_cmphex(qtest_readl(qts, CRIME_RENDER_STATUS), ==, 0x1e000000);
+        if (i == 1) {
+            qtest_writeq(qts, 0x15001700, 0x8000000380000009ULL);
+            qtest_writel(qts, 0x15003008, UINT32_MAX);
+            qtest_writel(qts, 0x15003018, 0x58);
+            qtest_writel(qts, 0x15003030, 7);
+            qtest_writel(qts, 0x15003038, 39);
+            qtest_writel(qts, 0x15003800, 4U << 2);
+            for (unsigned j = 7; j <= 39; j++) {
+                g_assert_cmphex(qtest_readb(qts, RAM_FULL + 0x3000 + j),
+                                ==, 0x58);
+            }
+        }
+        qtest_quit(qts);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_private_window_configuration(void)
 {
     const char *selected =
@@ -7499,6 +7554,8 @@ int main(int argc, char **argv)
                    test_banked_approx_configuration);
     qtest_add_func("/o2/empty-renderer-configuration",
                    test_empty_renderer_configuration);
+    qtest_add_func("/o2/functional-transfer-configuration",
+                   test_functional_transfer_configuration);
     qtest_add_func("/o2/private-window-configuration",
                    test_private_window_configuration);
     qtest_add_func("/o2/prom-sb64-reset-configuration",

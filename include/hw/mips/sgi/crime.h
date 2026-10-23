@@ -10,6 +10,20 @@
 #define SGI_CRIME_BANK_COUNT 8
 OBJECT_DECLARE_SIMPLE_TYPE(SGICrimeState, SGI_CRIME)
 
+typedef struct CrimeMigrationState {
+    uint32_t hardware;
+    uint32_t enable;
+    uint32_t software;
+    uint32_t timer_base;
+    uint32_t timer_fraction;
+} CrimeMigrationState;
+
+typedef struct CrimeTransferState {
+    uint64_t tlb[32];
+    uint32_t parameter[10];
+    uint64_t ecc_enable;
+} CrimeTransferState;
+
 struct SGICrimeState {
     SysBusDevice parent_obj;
     MemoryRegion registers;
@@ -44,10 +58,19 @@ struct SGICrimeState {
     uint16_t bank_control[SGI_CRIME_BANK_COUNT];
     Error *migration_blocker;
     uint8_t interface_revision;
+    uint8_t transfer_policy;
     bool eight_128m_banks;
     bool reset_low_ram_approx;
     bool reset_low_ram_active;
     bool empty_renderer_status;
+    bool functional_memory_transfer;
+    bool transfer_state_received;
+    bool healthy_memory_reported;
+    CrimeMigrationState incoming;
+    CrimeTransferState transfer;
+    CrimeTransferState incoming_transfer;
+    uint32_t incoming_memory_error_status;
+    uint32_t incoming_memory_error_address;
     bool prom_id_word;
     bool alias_profile;
     bool carrier_aliases_initialized;
