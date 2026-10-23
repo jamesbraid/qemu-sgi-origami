@@ -9,10 +9,6 @@ Boots IRIX 6.5.30 to the 4Dwm desktop on the Origin 2000 with four nodes,
 the BaseIO-G and a sgi-mgras board=esi-t in IO3, checks hinv's graphics
 line, and runs the desktop, lit 3D, texture and pixel transfer against
 colour-statistics references. lib_mgras_boot.run_board owns the sequence.
-
-The model does not list esi-t as implemented, so the board is presented
-with x-unimplemented-board=on. Remove that from lib_mgras_matrix.BOARDS
-once the model accepts the board by default.
 """
 
 import os

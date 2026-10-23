@@ -1354,7 +1354,6 @@ static void test_board_inventory_registers(void)
  */
 typedef struct MgrasBoardExpect {
     const char *board;
-    bool implemented;
     unsigned int ge, re, tram;
     const char *hinv;
     uint8_t version1, version0;
@@ -1362,16 +1361,16 @@ typedef struct MgrasBoardExpect {
 } MgrasBoardExpect;
 
 static const MgrasBoardExpect mgras_board_expect[] = {
-    { "si",    true,  1, 1, 0, "SI", 0x45, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
-    { "si-t",  true,  1, 1, 4, "SI with texture option",
+    { "si",    1, 1, 0, "SI", 0x45, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
+    { "si-t",  1, 1, 4, "SI with texture option",
       0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
-    { "ssi",   true,  2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
-    { "mxi",   false, 2, 2, 4, "MXI", 0x66, 0x00, 2, 2, 2, 0, 0, 3, 0 },
-    { "esi",   true,  1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
-    { "esi-t", false, 1, 1, 4, "ESI with texture option",
+    { "ssi",   2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
+    { "mxi",   2, 2, 4, "MXI", 0x66, 0x00, 2, 2, 2, 0, 0, 3, 0 },
+    { "esi",   1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
+    { "esi-t", 1, 1, 4, "ESI with texture option",
       0x51, 0x0c, 2, 3, 2, 4, 0, 3, 0 },
-    { "essi",  true,  2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
-    { "emxi",  false, 2, 2, 4, "EMXI", 0x72, 0x00, 2, 3, 2, 7, 0, 4, 0 },
+    { "essi",  2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
+    { "emxi",  2, 2, 4, "EMXI", 0x72, 0x00, 2, 3, 2, 7, 0, 4, 0 },
 };
 
 #define REG_GE_STATUS          MGRAS_REG(0x028000)
@@ -1425,8 +1424,7 @@ static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
 static QTestState *mgras_board_init(const MgrasBoardExpect *e)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s%s", e->board,
-        e->implemented ? "" : " -global sgi-mgras.x-unimplemented-board=on");
+        MACHINE_ARGS " -global sgi-mgras.board=%s", e->board);
 
     return qtest_init(args);
 }
@@ -1561,7 +1559,6 @@ static void test_board_record(gconstpointer data)
     const MgrasBoardRecordExpect *e = data;
     g_autofree char *args = g_strdup_printf(
         MACHINE_ARGS " -global sgi-mgras.board=%s"
-        " -global sgi-mgras.x-unimplemented-board=on"
         " -global sgi-mgras.board-record=on"
         " -global sgi-mgras.board-record-barcode=SIMTEST001"
         " -global sgi-mgras.board-record-serial=0x123456789abc", e->board);
@@ -1678,9 +1675,6 @@ static void test_board_re4_status_keeps_revision_bits(void)
         const MgrasBoardExpect *e = &mgras_board_expect[i];
         QTestState *s;
 
-        if (!e->implemented) {
-            continue;
-        }
         s = mgras_board_init(e);
         mgras_enter_context(s);
         for (uint32_t re = 0; re < e->re; re++) {
@@ -1805,28 +1799,35 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
 }
 
 /*
- * A board with TRAM is refused at realize, naming texture as what the model
- * lacks, unless x-unimplemented-board asks for it. "-qtest
- * stdio -accel qtest" gets past the machine's stock-PROM-only check the
- * same way sn0-origin2000-kona-test.c's rejection cases do.
+ * Every board realizes with no opt-in: ESI+T, MXI and EMXI were refused
+ * until the model drew their textured programs, naming texture as what it
+ * lacked. Each now starts with no note about presenting an unimplemented
+ * board and answers its own identity.
  */
-static void test_board_refused(gconstpointer data)
+static void test_board_accepted(gconstpointer data)
 {
     const MgrasBoardExpect *e = data;
-    g_autofree char *global = g_strdup_printf("sgi-mgras.board=%s", e->board);
-    g_autofree char *message = g_strdup_printf("board '%s' (%s) needs",
-                                               e->board, e->hinv);
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000", "-global", global,
-        "-device", "sgi-mgras,slot=io3",
-        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
-    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    QTestState *s;
 
-    /* Texture is the only thing any board still lacks, in part. */
-    g_assert_cmpuint(e->tram, >, 0);
-    assert_qemu_rejects(args, message);
-    assert_qemu_rejects(args, "needs texture beyond the subset its datasheet "
-                        "lists (TE1 and TRAM), which");
+    tmpfs = g_dir_make_tmp("sn0-mgras-accepted-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    s = qtest_initf(MACHINE_ARGS " -global sgi-mgras.board=%s -d unimp -D %s",
+                    e->board, log);
+    g_assert_cmphex(qtest_readl(s, REG_BOARD_INVENTORY) >> 24, ==,
+                    e->version1);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_null(strstr(contents, "presenting board"));
+    unlink(log);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -2148,9 +2149,9 @@ int main(int argc, char **argv)
             mgras_qtest_add_data_func(
                 pp1s, e, test_board_pp1s_follow_re_count, false);
         }
-        if (every && e->implemented && (!strcmp(e->board, "si") ||
-                                        !strcmp(e->board, "ssi") ||
-                                        !strcmp(e->board, "esi"))) {
+        if (every && (!strcmp(e->board, "si") ||
+                      !strcmp(e->board, "ssi") ||
+                      !strcmp(e->board, "esi"))) {
             g_autofree char *rdram = g_strdup_printf(
                 "sn0/origin2000/mgras/rdram-data-same-for-each-re/%s",
                 e->board);
@@ -2160,10 +2161,10 @@ int main(int argc, char **argv)
                 e,
                 test_board_rdram_data_same_for_each_re, false);
         }
-        if (every && e->implemented && (!strcmp(e->board, "si") ||
-                                        !strcmp(e->board, "ssi") ||
-                                        !strcmp(e->board, "esi") ||
-                                        !strcmp(e->board, "essi"))) {
+        if (every && (!strcmp(e->board, "si") ||
+                      !strcmp(e->board, "ssi") ||
+                      !strcmp(e->board, "esi") ||
+                      !strcmp(e->board, "essi"))) {
             g_autofree char *re4 = g_strdup_printf(
                 "sn0/origin2000/mgras/re4-status-reports-selected-re/%s",
                 e->board);
@@ -2180,15 +2181,15 @@ int main(int argc, char **argv)
                 e,
                 test_board_mapping_port_raster_write, false);
         }
-        if (!e->implemented &&
-            (g_test_slow() || !strcmp(e->board, "esi-t"))) {
-            g_autofree char *refused = g_strdup_printf(
-                "sn0/origin2000/mgras/board-refused/%s", e->board);
+        if (e->tram && (g_test_slow() || !strcmp(e->board, "esi-t") ||
+                        !strcmp(e->board, "mxi"))) {
+            g_autofree char *accepted = g_strdup_printf(
+                "sn0/origin2000/mgras/board-accepted/%s", e->board);
 
             mgras_qtest_add_data_func(
-                refused,
+                accepted,
                 e,
-                test_board_refused, false);
+                test_board_accepted, false);
         }
     }
     mgras_qtest_add_func(

@@ -10,10 +10,6 @@ the BaseIO-G and a sgi-mgras board=emxi in IO3, checks hinv's graphics
 line, and runs the desktop, lit 3D, texture, pixel transfer and double
 buffering against colour-statistics references. lib_mgras_boot.run_board
 owns the sequence.
-
-The model does not list emxi as implemented, so the board is presented
-with x-unimplemented-board=on. Remove that from lib_mgras_matrix.BOARDS
-once the model accepts the board by default.
 """
 
 import os

@@ -136,7 +136,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "GM10", .record_part = "030-0938-003",
         .record_revision = "U",
-        .implemented = true,
     }, {
         .name = "si-t", .hinv_name = "SI with texture option",
         .width = 1280, .height = 1024,
@@ -147,7 +146,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "GM10", .record_part = "030-0938-003",
         .record_revision = "U",
-        .implemented = true,
     }, {
         .name = "ssi", .hinv_name = "SSI",
         .width = 1280, .height = 1024,
@@ -158,7 +156,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "GM20", .record_part = "030-0957-003",
         .record_revision = "N",
-        .implemented = true,
     }, {
         .name = "mxi", .hinv_name = "MXI",
         .width = 1280, .height = 1024,
@@ -187,7 +184,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "MOT10", .record_part = "030-1241-002",
         .record_revision = "J",
-        .implemented = true,
     }, {
         .name = "esi-t", .hinv_name = "ESI with texture option",
         .width = 1280, .height = 1024,
@@ -208,7 +204,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .ra_revision = 0, .video_option = false,
         .record_name = "MOT20", .record_part = "030-1240-003",
         .record_revision = "G",
-        .implemented = true,
     }, {
         .name = "emxi", .hinv_name = "EMXI",
         .width = 1280, .height = 1024,
@@ -1591,21 +1586,16 @@ static void mgras_reset_exit(Object *obj, ResetType type)
 }
 
 /*
- * Select the descriptor. A board not marked implemented is refused unless
- * x-unimplemented-board asks for it anyway; then it is presented with a
- * LOG_UNIMP note naming what is missing. SI+T is implemented: the texture
- * subset in hw/misc/sgi-mgras-texture.c draws the stock IRIX 6.5.30
- * programs it was compared on at least as the textureless SI draws them,
- * and what it does not model is logged. ESI+T, MXI and EMXI stay refused:
- * ESI+T has not been compared program by program, and MXI and EMXI need
- * the client's pixel-texture passes, one per RE, which are not modelled
- * (sgi-mgras-texture.c has no pixel texture on any board).
+ * Select the descriptor. Every board is implemented: the texture subset in
+ * hw/misc/sgi-mgras-texture.c draws the stock IRIX 6.5.30 programs SI+T,
+ * ESI+T, MXI and EMXI were compared on as SI+T draws them, a two-RE board's
+ * pixel-texture passes each land on their own rows, and what the model
+ * does not draw is logged.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
     const char *name = s->board_name ? s->board_name : "si";
     const SGIMgrasBoard *b = mgras_find_board(name);
-    g_autoptr(GString) missing = NULL;
 
     if (!b) {
         g_autoptr(GString) names = g_string_new(NULL);
@@ -1617,24 +1607,6 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
         error_setg(errp, "sgi-mgras: unknown board '%s'", name);
         error_append_hint(errp, "Valid boards: %s\n", names->str);
         return false;
-    }
-    if (!b->implemented) {
-        missing = g_string_new(NULL);
-        if (b->tram_count) {
-            g_string_append(missing, "texture beyond the subset its "
-                            "datasheet lists (TE1 and TRAM)");
-        }
-        if (!s->unimplemented_board) {
-            error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
-                       "the model does not implement", b->name, b->hinv_name,
-                       missing->str);
-            error_append_hint(errp, "Implemented boards: si, si-t, esi, ssi, "
-                              "essi\n");
-            return false;
-        }
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: presenting board '%s' (%s) "
-                      "without %s; IRIX will drive paths the model ignores\n",
-                      b->name, b->hinv_name, missing->str);
     }
     if (b->width > SGI_MGRAS_MAX_WIDTH) {
         error_setg(errp, "sgi-mgras: board '%s' names a %u-pixel-wide "
@@ -2381,7 +2353,10 @@ static const Property mgras_properties[] = {
     DEFINE_PROP_UINT32("part", SGIMgrasState, part, 0xc003),
     DEFINE_PROP_UINT32("manufacturer", SGIMgrasState, manufacturer, 0x02aa),
     DEFINE_PROP_STRING("board", SGIMgrasState, board_name),
-    /* Present a board the model cannot render; for identity experiments. */
+    /*
+     * Accepted and ignored: it presented ESI+T, MXI and EMXI before the
+     * model implemented them, and command lines from then still set it.
+     */
     DEFINE_PROP_BOOL("x-unimplemented-board", SGIMgrasState,
                      unimplemented_board, false),
     /* Experimental host renderer; ordinary board rendering stays native. */
