@@ -2070,6 +2070,106 @@ static void test_internal_completion_ids(void)
     }
 }
 
+static void test_sequencer_host_completion_memory(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t program[128], expected[12], got[12];
+    size_t n = 0;
+    unsigned dma_pc, qout_pc, interrupt_pc;
+
+    /* Scratch holds an arbitrary byte-array base, index and identifier. */
+    qtest_writeb(qts, REG_BASE + 0x20, 4);
+    qtest_writeb(qts, REG_BASE + 0x21, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x22, 1);
+    qtest_writeb(qts, REG_BASE + 0x23, 0);
+    qtest_writeb(qts, REG_BASE + 0x24, 3);
+    memset(expected, 0xa5, sizeof(expected));
+    qtest_memwrite(qts, 0x12000, expected, sizeof(expected));
+    emit_or(program, &n, 1, 0x93); /* Empty the host FIFO. */
+    emit(program, &n, alu_word(1, 0xff, 0x24, 0x64, false));
+    emit(program, &n, alu_word(3, 0, 0x20, 0x88, false));
+    for (unsigned i = 1; i < 4; i++) {
+        emit(program, &n, alu_word(1, 0xff, 0x20 + i, 0x88 + i,
+                                 false));
+    }
+    emit(program, &n, alu_word(2, 0, 0x64, 0x64, false));
+    emit_or(program, &n, 1, 0x8c);
+    emit_or(program, &n, 0, 0x8d);
+    emit_or(program, &n, 0, 0x8e);
+    emit(program, &n, alu_word(1, 0xff, 0x25, 0x99, false));
+    dma_pc = n / 4;
+    emit_or(program, &n, 0x0a, 0x93); /* Flush the one-byte tail to RAM. */
+    emit(program, &n, branch_word(0x0f, 8, 0x94, n / 4));
+    qout_pc = n / 4;
+    emit(program, &n, alu_word(1, 0xff, 0x25, 0x9d, false));
+    interrupt_pc = n / 4;
+    emit_or(program, &n, 2, 0x91);
+    emit(program, &n, alu_word(3, 1, 0x24, 0x24, false));
+    emit(program, &n, alu_word(1, 3, 0x24, 0x24, false));
+
+    qtest_writeb(qts, REG_BASE + 0x60, 0x91);
+    for (size_t i = 0; i < n; i++) {
+        qtest_writeb(qts, REG_BASE + 0x61, program[i]);
+    }
+    qtest_writeb(qts, REG_BASE + 0x60, 0x94);
+    for (unsigned completion = 0; completion < 3; completion++) {
+        unsigned index = (completion + 3) & 3;
+        uint8_t id = 5 + completion;
+
+        qtest_writeb(qts, REG_BASE + 0x25, id);
+        qtest_writeb(qts, REG_BASE + 0x62, 0);
+        qtest_writeb(qts, REG_BASE + 0x63, 0);
+        for (unsigned pc = 0; pc < n / 4; pc++) {
+            if (pc == dma_pc) {
+                qtest_memread(qts, 0x12000, got, sizeof(got));
+                g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+            }
+            qtest_writeb(qts, REG_BASE + 0x87, 2);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, pc + 1);
+            if (pc == dma_pc) {
+                expected[4 + index] = id;
+                qtest_memread(qts, 0x12000, got, sizeof(got));
+                g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8,
+                                ==, 8);
+            }
+            if (pc == qout_pc) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+            }
+            if (pc == interrupt_pc) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
+                qtest_writeb(qts, REG_BASE + 0x92, 2);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, id);
+            }
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x24), ==, (index + 1) & 3);
+    }
+    /* With PCI admission inhibited, the firmware waits before publishing. */
+    config_writew(qts, 0x04, 2);
+    qtest_writeb(qts, REG_BASE + 0x25, 8);
+    qtest_writeb(qts, REG_BASE + 0x62, 0);
+    qtest_writeb(qts, REG_BASE + 0x63, 0);
+    for (unsigned pc = 0; pc <= dma_pc + 1; pc++) {
+        qtest_writeb(qts, REG_BASE + 0x87, 2);
+    }
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, dma_pc + 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+    qtest_memread(qts, 0x12000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    config_writew(qts, 0x04, 6);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+    qtest_memread(qts, 0x12000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_quit(qts);
+}
+
 static void test_workload_host_only_negative(void)
 {
     uint8_t program[8];
@@ -8948,6 +9048,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/host-pausedis-refusal", test_host_pausedis_refusal);
     qtest_add_func("aic7880/internal-completion-ids",
                    test_internal_completion_ids);
+    qtest_add_func("aic7880/sequencer-host-completion-memory",
+                   test_sequencer_host_completion_memory);
     qtest_add_func("aic7880/workload-host-only-negative",
                    test_workload_host_only_negative);
     qtest_add_func("aic7880/sequencer-exec", test_sequencer_exec);
