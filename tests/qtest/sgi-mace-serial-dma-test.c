@@ -496,6 +496,7 @@ static void test_rx_full_wrap(void)
         uint64_t base = BASE + p * 0x4000;
         uint8_t block[32];
 
+        qtest_writeb(t.qts, uart_address(p) + 0x100, 1);
         qtest_writeq(t.qts, base + 0x20, 0x200);
         for (unsigned i = 0; i < 127; i++) {
             peer_set(&t, p, "receive", i);
@@ -503,6 +504,11 @@ static void test_rx_full_wrap(void)
         }
         g_assert_cmphex(qtest_readq(t.qts, base + 0x38), ==, 0xfe0);
         peer_set(&t, p, "receive", 0xe3);
+        g_assert_false(qtest_readq(t.qts, RING + 0x10) & (1U << (20 + 6 * p)));
+        qtest_writeq(t.qts, base + 0x20, 0);
+        g_assert_true(qtest_readq(t.qts, RING + 0x10) & (1U << (20 + 6 * p)));
+        qtest_writeq(t.qts, base + 0x20, 0x200);
+        g_assert_false(qtest_readq(t.qts, RING + 0x10) & (1U << (20 + 6 * p)));
         g_assert_cmphex(qtest_readq(t.qts, base + 0x30), ==, 0xfe0);
         /* Free exactly one block; the pending byte publishes through wrap. */
         qtest_writeq(t.qts, base + 0x28, 32);
@@ -1016,6 +1022,48 @@ static void test_modem_event_time(void)
     }
 }
 
+static void test_uart_gpio_levels(void)
+{
+    SerialFixture from = fixture_start();
+    SerialFixture to = fixture_start_extra("-incoming defer");
+    g_autofree char *path = g_build_filename(from.dir, "migration", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", path);
+    const uint32_t both = (1U << 20) | (1U << 26);
+
+    qtest_writeq(from.qts, RING + 0x18, both);
+    for (unsigned p = 0; p < 2; p++) {
+        uint32_t bit = 1U << (20 + p * 6);
+
+        qtest_set_irq_in(from.qts, "/machine/peripheral/mace", "uart", p, 1);
+        g_assert_true(qtest_readq(from.qts, RING + 0x10) & bit);
+        g_assert_true(qtest_get_irq(from.qts, 4));
+        /* Idle DMA service must preserve the asserted UART input wire. */
+        qtest_writeq(from.qts, BASE + p * 0x4000, 0);
+        qtest_writeq(from.qts, BASE + p * 0x4000, 0x400);
+        qtest_writeq(from.qts, RING + 0x10, 0);
+        g_assert_true(qtest_readq(from.qts, RING + 0x10) & bit);
+    }
+    qtest_writeq(from.qts, RING + 0x18, 0);
+    g_assert_false(qtest_get_irq(from.qts, 4));
+    g_assert_cmphex(qtest_readq(from.qts, RING + 0x10) & both, ==, both);
+    qtest_writeq(from.qts, RING + 0x18, both);
+    qtest_qmp_assert_success(to.qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from.qts, uri);
+    sgi_wait_migration(to.qts, "completed");
+    g_assert_cmphex(qtest_readq(to.qts, RING + 0x10) & both, ==, both);
+    g_assert_true(qtest_get_irq(to.qts, 4));
+    qtest_set_irq_in(to.qts, "/machine/peripheral/mace", "uart", 0, 0);
+    g_assert_cmphex(qtest_readq(to.qts, RING + 0x10) & both, ==, 1U << 26);
+    g_assert_true(qtest_get_irq(to.qts, 4));
+    qtest_qmp_assert_success(to.qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(to.qts, RING + 0x10) & both, ==, 0);
+    g_assert_false(qtest_get_irq(to.qts, 4));
+    fixture_stop(&to);
+    g_unlink(path);
+    fixture_stop(&from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1053,5 +1101,7 @@ int main(int argc, char **argv)
                    test_delay_zero_cancel);
     qtest_add_func("/sgi/mace-serial-dma/modem-event-time",
                    test_modem_event_time);
+    qtest_add_func("/sgi/mace-serial-dma/uart-gpio-levels",
+                   test_uart_gpio_levels);
     return g_test_run();
 }
