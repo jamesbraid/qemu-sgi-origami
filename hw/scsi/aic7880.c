@@ -1063,6 +1063,7 @@ static unsigned aic7880_queue_limit(AIC7880State *s)
 
 static unsigned aic7880_scb_index(AIC7880State *s, unsigned offset)
 {
+    /* High internal page bits alias under the selected model approximation. */
     unsigned pages = s->external_scb_ram ?
                      s->external_scb_size / AIC_SCB_PAGE_BYTES : AIC_SCB_PAGES;
 
@@ -1169,12 +1170,6 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (addr >= REG_SCB_BASE &&
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        if (!s->external_scb_ram &&
-            s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
-            qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
-            aic7880_stop_diagnostic(s);
-            return 0xff;
-        }
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
                           s->regs[REG_SCBCNT] & 0x1f : addr - REG_SCB_BASE;
         unsigned index = aic7880_scb_index(s, offset);
@@ -1328,12 +1323,6 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
 
     if (addr >= REG_SCB_BASE &&
         addr < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        if (!s->external_scb_ram &&
-            s->regs[REG_SCBPTR] >= AIC_SCB_PAGES) {
-            qemu_log_mask(LOG_UNIMP, "aic7880: external SCB RAM is absent\n");
-            aic7880_stop_diagnostic(s);
-            return;
-        }
         unsigned offset = (s->regs[REG_SCBCNT] & 0x80) ?
                           s->regs[REG_SCBCNT] & 0x1f : addr - REG_SCB_BASE;
 
@@ -1939,7 +1928,7 @@ static uint8_t aic7880_shift_byte(AICShiftKind kind, unsigned count,
     }
 }
 
-static bool aic7880_dindir_target_supported(AIC7880State *s, uint8_t reg)
+static bool aic7880_dindir_target_supported(uint8_t reg)
 {
     if ((reg >= REG_STCNT && reg < REG_STCNT + 3) ||
         (reg >= REG_SHADDR && reg < REG_SHADDR + 4) ||
@@ -1948,7 +1937,7 @@ static bool aic7880_dindir_target_supported(AIC7880State *s, uint8_t reg)
         return true;
     }
     if (reg >= REG_SCB_BASE && reg < REG_SCB_BASE + AIC_SCB_PAGE_BYTES) {
-        return s->external_scb_ram || s->regs[REG_SCBPTR] < AIC_SCB_PAGES;
+        return true;
     }
     /* Pointer aliases and unselected write paths remain unsupported. */
     switch (reg) {
@@ -2140,7 +2129,7 @@ static void aic7880_run(AIC7880State *s)
             uint8_t target = s->regs[REG_DINDEX];
 
             /* Other source and destination aliases have no reviewed order. */
-            if (!aic7880_dindir_target_supported(s, target) ||
+            if (!aic7880_dindir_target_supported(target) ||
                 target == src ||
                 (src == REG_SINDIR &&
                  target == s->regs[REG_SINDEX] &&
