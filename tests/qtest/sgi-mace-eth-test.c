@@ -805,6 +805,39 @@ static void test_rx_gather_capacity(void)
     close(sv[1]);
 }
 
+static void test_rx_gather_offset_change(void)
+{
+    uint8_t frame[1514] = { 0 }, sentinel[8192], guard[32];
+    int sv[2];
+    QTestState *qts = rx_interval_start(sv, 8, true);
+    SgiWait wait;
+
+    memset(sentinel, 0x55, sizeof(sentinel));
+    qtest_memwrite(qts, RAM_FULL + 0x8000, sentinel, sizeof(sentinel));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 (1U << 15) | (1U << 11) | (1U << 12) | (8U << 4));
+    for (unsigned packet = 0; packet < 10; packet++) {
+        socket_send_frame(sv[0], frame, 60);
+        wait_rx_status(qts, RAM_FULL + 0x8000 + packet * 256);
+    }
+    g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31, ==, 8);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 (1U << 15) | (1U << 11) | (7U << 12) | (8U << 4));
+    socket_send_frame(sv[0], frame, sizeof(frame));
+    sgi_wait_start(&wait, "MACE receive after live offset change");
+    while (((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31) != 11) {
+        sgi_wait_pause(&wait, 1000);
+        qtest_clock_step(qts, 0);
+    }
+    g_assert_true(eth_status(qts, RAM_FULL + 0x9000) & (UINT64_C(1) << 63));
+    g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31, ==, 6);
+    qtest_memread(qts, RAM_FULL + 0x8fe0, guard, sizeof(guard));
+    g_assert_cmpmem(guard, sizeof(guard), sentinel, sizeof(guard));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_rx_gather_limits(void)
 {
     for (unsigned mode = 0; mode < 4; mode++) {
@@ -3281,6 +3314,8 @@ static void test_tx_empty_reassert(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/mace/ethernet/rx-gather-offset-change",
+                   test_rx_gather_offset_change);
     qtest_add_func("/sgi/mace/ethernet/rx-gather-limits",
                    test_rx_gather_limits);
     qtest_add_func("/sgi/mace/ethernet/rx-gather-capacity",

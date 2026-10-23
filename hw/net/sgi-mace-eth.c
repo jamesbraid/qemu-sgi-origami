@@ -294,7 +294,7 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
     uint32_t crc, address, sum = 0;
     unsigned offset = ((s->dma_control >> 12) & 7) * 8 + 2;
     unsigned bucket = s->rx_gather_open ? s->rx_gather_cursor : 0;
-    unsigned end = bucket + offset + size + sizeof(fcs);
+    unsigned end;
     MemTxResult result;
 
     if (!sgi_mace_eth_can_receive(nc) ||
@@ -314,6 +314,11 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
                       "sgi-mace-eth: oversized RX frame is unsupported\n");
         return size;
     }
+    if (s->rx_gather_open && bucket + offset + 1514 + sizeof(fcs) > 4096) {
+        sgi_mace_eth_rx_close(s);
+        bucket = 0;
+    }
+    end = bucket + offset + size + sizeof(fcs);
     address = s->rx_gather_open ? s->rx_gather_address :
               s->rx_fifo[s->rx_read];
     address += bucket;
