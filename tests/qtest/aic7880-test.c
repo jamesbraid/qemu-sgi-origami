@@ -3735,6 +3735,7 @@ static void test_setup_selection_timeout_mask(void)
         qtest_writeb(qts, REG_BASE + 0x02, 0x27);
         qtest_writeb(qts, REG_BASE + 0x11, enabled ? 0xa4 : 0x24);
         start_program(qts, program, n);
+        qtest_clock_step(qts, 256000000);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==,
                         enabled ? 0x04 : 0);
@@ -3761,6 +3762,7 @@ static void test_selection_timeout_scsiint_latch(void)
     qtest_writeb(qts, REG_BASE + 0x02, 0x04);
     qtest_writeb(qts, REG_BASE + 0x11, 0x80);
     start_program(qts, program, n);
+    qtest_clock_step(qts, 256000000);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0x04);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 0x04, ==, 0x04);
@@ -3831,6 +3833,7 @@ static void test_selection_timeout_scsiint_latch_migrates(void)
     qtest_writeb(from, REG_BASE + 0x02, 0x04);
     qtest_writeb(from, REG_BASE + 0x11, 0x80);
     start_program(from, program, n);
+    qtest_clock_step(from, 256000000);
     g_assert_cmphex(qtest_readb(from, REG_BASE + 0x0c) & 0x80, ==, 0x80);
     qtest_writeb(from, REG_BASE + 0x11, 0);
     qtest_writeb(from, REG_BASE + 0x0c, 0x80);
@@ -3875,6 +3878,7 @@ static void test_unmasked_selection_timeout(void)
     emit(program, &n, branch_word(8, 0, 0x65, 2));
     qtest_writeb(qts, REG_BASE + 0x02, 0x04);
     start_program(qts, program, n);
+    qtest_clock_step(qts, 256000000);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 0x04, ==, 0);
@@ -3886,6 +3890,186 @@ static void test_unmasked_selection_timeout(void)
     qtest_writeb(qts, REG_BASE + 0x92, 0x04);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 0x04, ==, 0);
     qtest_quit(qts);
+}
+
+static void start_missing_selection(QTestState *qts)
+{
+    uint8_t program[4 * 4];
+    size_t n = 0;
+
+    emit_or(program, &n, 0x27, 0x05);
+    emit_or(program, &n, 0x40, 0x00);
+    emit_or(program, &n, 1, 0x91);
+    emit(program, &n, branch_word(8, 0, 0x65, 3));
+    start_program(qts, program, n);
+    qtest_writeb(qts, REG_BASE + 0x92, 1);
+}
+
+static void test_selection_timer_intervals(void)
+{
+    for (unsigned period = 0; period < 4; period++) {
+        for (unsigned masked = 0; masked < 2; masked++) {
+            QTestState *qts = start_aic();
+            int64_t interval = 256000000LL >> period;
+
+            qtest_irq_intercept_in(qts, "ioapic");
+            qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+            qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+            qtest_writeb(qts, REG_BASE + 0x02, 4 | (period << 3));
+            qtest_writeb(qts, REG_BASE + 0x11, masked ? 0x80 : 0);
+            start_missing_selection(qts);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50,
+                            ==, 0x10);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 8, ==, 8);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x88, ==, 0);
+            g_assert_false(qtest_get_irq(qts, 11));
+            qtest_clock_step(qts, interval - 1);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+            qtest_writeb(qts, REG_BASE + 0x87, 2);
+            qtest_clock_step(qts, 1);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x88,
+                            ==, 0x80);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 8, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4,
+                            ==, masked ? 4 : 0);
+            g_assert_cmpint(qtest_get_irq(qts, 11), ==, masked);
+            qtest_writeb(qts, REG_BASE + 0x87, 6);
+            qtest_clock_step(qts, 399);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 8, ==, 0);
+            qtest_clock_step(qts, 1);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x88,
+                            ==, 0x88);
+            qtest_writeb(qts, REG_BASE + 0x92, 4);
+            g_assert_cmpint(qtest_get_irq(qts, 11), ==, masked);
+            qtest_writeb(qts, REG_BASE + 0x0c, 0x80);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x88, ==, 8);
+            qtest_writeb(qts, REG_BASE + 0x92, 4);
+            g_assert_false(qtest_get_irq(qts, 11));
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50,
+                            ==, 0x10);
+            qtest_writeb(qts, REG_BASE + 0x0b, 0x10);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_selection_timer_late_enable(void)
+{
+    QTestState *qts = start_aic();
+
+    start_missing_selection(qts);
+    qtest_clock_step(qts, 1000000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 8, ==, 8);
+    qtest_writeb(qts, REG_BASE + 0x02, 4);
+    qtest_clock_step(qts, 64000000);
+    qtest_writeb(qts, REG_BASE + 0x02, 4);
+    qtest_clock_step(qts, 191999999);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    qtest_quit(qts);
+}
+
+static void test_selection_timer_reconfigure(void)
+{
+    QTestState *qts = start_aic();
+
+    qtest_writeb(qts, REG_BASE + 0x02, 4);
+    start_missing_selection(qts);
+    qtest_clock_step(qts, 200000000);
+    qtest_writeb(qts, REG_BASE + 0x02, 0x0c);
+    qtest_clock_step(qts, 127999999);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x02, 8);
+    qtest_clock_step(qts, 1000000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x02, 0x0c);
+    qtest_clock_step(qts, 127999999);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    qtest_quit(qts);
+}
+
+static void test_selection_timer_cancel(void)
+{
+    for (unsigned reset = 0; reset < 4; reset++) {
+        QTestState *qts = start_aic();
+
+        qtest_writeb(qts, REG_BASE + 0x02, 4);
+        start_missing_selection(qts);
+        qtest_clock_step(qts, 64000000);
+        if (reset == 0) {
+            attention_write(qts, 0, 0);
+        } else if (reset == 1) {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        } else if (reset == 2) {
+            qobject_unref(qtest_qmp(qts, "{'execute': 'system_reset'}"));
+            qtest_qmp_eventwait(qts, "RESET");
+            config_writel(qts, 0x14, REG_BASE);
+            config_writew(qts, 0x04, 0x0006);
+        } else {
+            attention_write(qts, 0, 1);
+        }
+        qtest_clock_step(qts, 1000000000);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 8, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+        qtest_quit(qts);
+    }
+    QTestState *qts = start_disk();
+
+    qtest_writeb(qts, REG_BASE + 0x02, 4);
+    attention_select(qts, 0x40);
+    qtest_clock_step(qts, 1000000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50, ==, 0x40);
+    qtest_quit(qts);
+}
+
+static void test_selection_timer_migrates(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("aic7880-select-XXXXXX", &error);
+    g_autofree char *socket_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    int64_t source_time;
+
+    g_assert_no_error(error);
+    socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    from = start_aic();
+    to = qtest_init("-M pc -m 128M -nodefaults -S -incoming defer "
+                    "-device aic7880,id=hba,bus=pci.0,addr=04.0");
+    qtest_writeb(from, REG_BASE + 0x02, 4);
+    start_missing_selection(from);
+    source_time = qtest_clock_step(from, 64000000);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_migrate_resume(to);
+    /* QTest's destination clock starts at zero, independently of migration. */
+    qtest_clock_set(to, source_time);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x03) & 8, ==, 8);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0b) & 0x10, ==, 0x10);
+    qtest_clock_step(to, 191999999);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    qtest_writeb(to, REG_BASE + 0x0c, 0x80);
+    qtest_clock_step(to, 1000000000);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 0x80, ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket_path);
+    g_rmdir(dir);
 }
 
 static void test_direction_latches_while_dma_enabled(void)
@@ -4512,7 +4696,7 @@ static void test_unsupported_scsi_controls(void)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x11), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
     qtest_writeb(qts, REG_BASE + 0x87, 1);
-    qtest_writeb(qts, REG_BASE + 0x02, 0x08);
+    qtest_writeb(qts, REG_BASE + 0x02, 0x40);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x02), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x04), ==, 0xff);
@@ -6488,7 +6672,7 @@ static void test_missing_target(void)
 
     emit_or(program, &n, 0x07, 0x05);
     emit_or(program, &n, 0x40, 0x00);
-    emit_or(program, &n, 0x02, 0x91);
+    emit(program, &n, branch_word(8, 0, 0x65, 2));
     qtest_writeb(qts, REG_BASE + 0x02, 0x04);
     qtest_writeb(qts, REG_BASE + 0x11, 0x80);
     qtest_writeb(qts, REG_BASE + 0x60, 0x91);
@@ -8512,6 +8696,16 @@ int main(int argc, char **argv)
                    test_bus_free_scsiint_latch);
     qtest_add_func("aic7880/selection-timeout-scsiint-latch-migrates",
                    test_selection_timeout_scsiint_latch_migrates);
+    qtest_add_func("aic7880/selection-timer-intervals",
+                   test_selection_timer_intervals);
+    qtest_add_func("aic7880/selection-timer-late-enable",
+                   test_selection_timer_late_enable);
+    qtest_add_func("aic7880/selection-timer-reconfigure",
+                   test_selection_timer_reconfigure);
+    qtest_add_func("aic7880/selection-timer-migrates",
+                   test_selection_timer_migrates);
+    qtest_add_func("aic7880/selection-timer-cancel",
+                   test_selection_timer_cancel);
     qtest_add_func("aic7880/unmasked-selection-timeout",
                    test_unmasked_selection_timeout);
     qtest_add_func("aic7880/unsupported-scsi-controls",
