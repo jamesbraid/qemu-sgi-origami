@@ -6338,6 +6338,39 @@ static void test_reset_and_interrupt_level(void)
     qtest_quit(qts);
 }
 
+static void test_reset_discards_posted_completion(void)
+{
+    for (unsigned pci_reset = 0; pci_reset < 2; pci_reset++) {
+        uint8_t program[8];
+        QTestState *qts = start_aic();
+        size_t n = 0;
+
+        qtest_irq_intercept_in(qts, "ioapic");
+        qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+        qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+        emit_or(program, &n, 5, 0x9d);
+        emit_or(program, &n, 3, 0x91);
+        start_program(qts, program, n);
+        qtest_writeb(qts, REG_BASE + 0x87, 6);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
+        g_assert_true(qtest_get_irq(qts, 11));
+
+        if (pci_reset) {
+            qobject_unref(qtest_qmp(qts, "{'execute': 'system_reset'}"));
+            qtest_qmp_eventwait(qts, "RESET");
+            config_writel(qts, 0x14, REG_BASE);
+            config_writew(qts, 0x04, 0x0006);
+        } else {
+            qtest_writeb(qts, REG_BASE + 0x87, 1);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+        g_assert_false(qtest_get_irq(qts, 11));
+        qtest_quit(qts);
+    }
+}
+
 static void test_missing_target(void)
 {
     uint8_t program[12] = { 0 };
@@ -7485,7 +7518,7 @@ static void test_empty_fifo_flush_during_request(void)
     unlink(path);
 }
 
-static void test_reset_cancels_busy_request(void)
+static void check_reset_cancels_busy_request(bool pci_reset)
 {
     static const uint8_t read_cdb[10] = {
         0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0
@@ -7526,14 +7559,32 @@ static void test_reset_cancels_busy_request(void)
     qtest_writeb(qts, REG_BASE + 0x87, 0x04);
     qtest_writeb(qts, REG_BASE + 0x00, 0x40);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0x40);
-    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    if (pci_reset) {
+        qobject_unref(qtest_qmp(qts, "{'execute': 'system_reset'}"));
+        qtest_qmp_eventwait(qts, "RESET");
+        config_writel(qts, 0x14, REG_BASE);
+        config_writew(qts, 0x04, 0x0006);
+    } else {
+        qtest_writeb(qts, REG_BASE + 0x87, 1);
+    }
     g_usleep(1500000);
     qtest_clock_step(qts, 1000000000);
     qtest_memread(qts, 0x12000, after, sizeof(after));
     g_assert_cmpint(memcmp(guard, after, sizeof(guard)), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
     qtest_quit(qts);
     unlink(path);
+}
+
+static void test_reset_cancels_busy_request(void)
+{
+    check_reset_cancels_busy_request(false);
+}
+
+static void test_pci_reset_cancels_busy_request(void)
+{
+    check_reset_cancels_busy_request(true);
 }
 
 static void test_independent_functions(void)
@@ -8356,6 +8407,8 @@ int main(int argc, char **argv)
                    test_manual_command_path_is_unsupported);
     qtest_add_func("aic7880/reset-and-interrupt",
                    test_reset_and_interrupt_level);
+    qtest_add_func("aic7880/reset-posted-completion",
+                   test_reset_discards_posted_completion);
     qtest_add_func("aic7880/missing-target", test_missing_target);
     qtest_add_func("aic7880/bad-opcode", test_bad_sequencer_opcode);
     qtest_add_func("aic7880/pci-admission-keeps-abort-pending",
@@ -8405,6 +8458,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/independent-functions", test_independent_functions);
     qtest_add_func("aic7880/reset-cancels-busy",
                    test_reset_cancels_busy_request);
+    qtest_add_func("aic7880/pci-reset-cancels-busy",
+                   test_pci_reset_cancels_busy_request);
     qtest_add_func("aic7880/paused-state-migrates", test_paused_state_migrates);
     return g_test_run();
 }
