@@ -100,6 +100,7 @@ typedef struct O2MachineState {
     bool reset_low_ram_approx;
     bool empty_renderer_status;
     bool functional_memory_transfer;
+    bool legacy_crime_software;
     bool prom_private_window;
     bool prom_sb64_reset;
     bool gbe11_registers;
@@ -296,6 +297,29 @@ static void o2_set_reset_low_ram_approx(Object *obj, bool value,
         return;
     }
     s->reset_low_ram_approx = value;
+}
+
+static char *o2_get_crime_profile(Object *obj, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    return g_strdup(s->legacy_crime_software ? "legacy-software" : "1.5");
+}
+
+static void o2_set_crime_profile(Object *obj, const char *value, Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "crime-profile cannot change once the machine "
+                   "is built");
+        return;
+    }
+    if (strcmp(value, "1.5") && strcmp(value, "legacy-software")) {
+        error_setg(errp, "crime-profile must be 1.5 or legacy-software");
+        return;
+    }
+    s->legacy_crime_software = !strcmp(value, "legacy-software");
 }
 
 static bool o2_get_functional_memory_transfer(Object *obj, Error **errp)
@@ -1244,6 +1268,26 @@ static void o2_init(MachineState *machine)
     bool renderer_status = s->empty_renderer_status ||
                            s->functional_memory_transfer;
 
+    if (s->legacy_crime_software &&
+        (!s->banked_ram || machine->ram_size != O2_RAM_BANKED_SIZE)) {
+        error_report("o2-test legacy-software requires the 1 GiB "
+                     "eight-bank synthetic population");
+        exit(1);
+    }
+    if (s->legacy_crime_software && s->mace_bank_dma_fixture) {
+        error_report("o2-test legacy-software does not admit an extra PCI "
+                     "DMA fixture");
+        exit(1);
+    }
+    if (s->legacy_crime_software && s->rom_image &&
+        (!s->reset_low_ram_approx || !s->prom_private_window ||
+         !s->prom_sb64_reset || !s->prom_id_word || !s->gbe11_registers ||
+         !renderer_status || !s->rom_size || s->rom_offset == UINT32_MAX ||
+         s->rom_pad_byte == UINT16_MAX)) {
+        error_report("o2-test legacy-software ROM requires the complete "
+                     "explicit processor, renderer, display and ROM settings");
+        exit(1);
+    }
     if (!s->identity_diagnostic &&
         (s->identity_test_serial || s->identity_eprom_file ||
          s->identity_status)) {
@@ -1567,6 +1611,9 @@ static void o2_init(MachineState *machine)
     crime = qdev_new(TYPE_SGI_CRIME);
     object_property_add_child(OBJECT(machine), "crime", OBJECT(crime));
     qdev_prop_set_uint8(crime, "interface-revision", 1);
+    object_property_set_str(OBJECT(crime), "crime-profile",
+                            s->legacy_crime_software ?
+                            "legacy-software" : "1.5", &error_fatal);
     qdev_prop_set_bit(crime, "eight-128m-banks", s->banked_ram);
     qdev_prop_set_bit(crime, "reset-low-ram-approx",
                       s->reset_low_ram_approx);
@@ -1739,6 +1786,11 @@ static bool o2_hotplug_allowed(MachineState *machine, DeviceState *dev,
 {
     O2MachineState *s = (O2MachineState *)machine;
 
+    if (s->legacy_crime_software &&
+        object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) {
+        error_setg(errp, "o2-test legacy-software rejects PCI hotplug");
+        return false;
+    }
     if (((s->aic_pci_diagnostic || s->mace_bank_dma_fixture ||
           s->diagnostic_lower_pci_byte_identity) &&
          object_dynamic_cast(OBJECT(dev), TYPE_PCI_DEVICE)) ||
@@ -1780,6 +1832,8 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "reset-low-ram-approx",
                                    o2_get_reset_low_ram_approx,
                                    o2_set_reset_low_ram_approx);
+    object_class_property_add_str(oc, "crime-profile", o2_get_crime_profile,
+                                  o2_set_crime_profile);
     object_class_property_add_bool(oc, "functional-memory-transfer",
                                    o2_get_functional_memory_transfer,
                                    o2_set_functional_memory_transfer);

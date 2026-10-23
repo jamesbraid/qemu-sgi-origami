@@ -15,13 +15,16 @@
 #define CLEAR_A (4U << 2)
 #define COPY_AB ((1U << 11) | (4U << 5) | (5U << 2))
 
+static const char *selected_profile = "1.5";
+
 static QTestState *start_profile(bool functional, const char *extra)
 {
     QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx,"
         "migrate-ram=/objects/fit/fit[0] -M none -cpu R10000 -S -d guest_errors,unimp "
         "-object memory-backend-ram,id=fit,size=64M "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
-        "functional-memory-transfer=%s %s", functional ? "on" : "off", extra);
+        "crime-profile=%s,functional-memory-transfer=%s %s",
+        selected_profile, functional ? "on" : "off", extra);
 
     qtest_sysbus_mmio_map(s, "/machine/peripheral/crime", 0, BASE);
     return s;
@@ -411,8 +414,8 @@ static QTestState *start_banked(bool approximation)
         "-M none -cpu R10000 -S -d guest_errors,unimp "
         "-object memory-backend-ram,id=fit,size=1G "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
-        "eight-128m-banks=on,functional-memory-transfer=on%s",
-        approximation ? ",reset-low-ram-approx=on" : "");
+        "eight-128m-banks=on,crime-profile=%s,functional-memory-transfer=on%s",
+        selected_profile, approximation ? ",reset-low-ram-approx=on" : "");
 
     qtest_sysbus_mmio_map(s, "/machine/peripheral/crime", 0, BASE);
     return s;
@@ -636,6 +639,14 @@ static void test_migration_invalid_state(gconstpointer data)
         case 3:
             stq_be_p(state + 2 + 256 + 40, 2);
             break;
+        case 4: {
+            char *first = state - 4 - (sizeof(subsection) - 1) - 2;
+            size_t length = 2 + sizeof(subsection) - 1 + 4 + 314;
+
+            memmove(first, first + length, size - (first - stream) - length);
+            size -= length;
+            break;
+        }
         default:
             g_assert_not_reached();
         }
@@ -690,10 +701,13 @@ static void test_diagnostics(void)
 
 static void test_translated_code(void)
 {
-    QTestState *s = qtest_init(MEMTX_TEST_DEVICE
-        "-M o2-test,functional-memory-transfer=on -cpu R10000 -m 64M "
-        "-nodefaults -accel tcg,thread=single -S "
-        "-device loader,addr=0xffffffffa0001000,cpu-num=0");
+    bool legacy = !strcmp(selected_profile, "legacy-software");
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE
+        "-M o2-test,crime-profile=%s,functional-memory-transfer=on%s "
+        "-cpu R10000 -m %s -nodefaults -accel tcg,thread=single -S "
+        "-device loader,addr=0xffffffffa0001000,cpu-num=0", selected_profile,
+        legacy ? ",bank-profile=8x128m-synthetic,reset-low-ram-approx=on" : "",
+        legacy ? "1G" : "64M");
     int64_t deadline;
 
     qtest_writel(s, 0x1000, mips_lui(8, 0xa000));
@@ -727,37 +741,73 @@ static void test_translated_code(void)
     qtest_quit(s);
 }
 
+typedef struct TransferCase {
+    const char *name;
+    GTestFunc function;
+    GTestDataFunc data_function;
+    gconstpointer data;
+    const char *profile;
+} TransferCase;
+
+static void run_transfer_case(gconstpointer data)
+{
+    const TransferCase *test = data;
+
+    selected_profile = test->profile;
+    if (test->function) {
+        test->function();
+    } else {
+        test->data_function(test->data);
+    }
+    selected_profile = "1.5";
+}
+
 int main(int argc, char **argv)
 {
+    static const TransferCase tests[] = {
+        { "clear", test_clear, NULL, NULL, NULL },
+        { "copy", test_copy, NULL, NULL, NULL },
+        { "invalid-translation", test_invalid_translation, NULL, NULL, NULL },
+        { "registers", test_registers, NULL, NULL, NULL },
+        { "translation-commit", test_translation_and_commit, NULL, NULL, NULL },
+        { "rejected-commands", test_rejected_commands, NULL, NULL, NULL },
+        { "overlap", test_overlap, NULL, NULL, NULL },
+        { "healthy-memory", test_healthy_memory, NULL, NULL, NULL },
+        { "banked-views", test_banked_views, NULL, NULL, NULL },
+        { "bounds-holes", test_bounds_and_holes, NULL, NULL, NULL },
+        { "source-alias", test_source_alias, NULL, NULL, NULL },
+        { "maximum-interval", test_maximum_interval, NULL, NULL, NULL },
+        { "migration", test_migration, NULL, NULL, NULL },
+        { "diagnostics", test_diagnostics, NULL, NULL, NULL },
+        { "translated-code", test_translated_code, NULL, NULL, NULL },
+        { "migration-missing-state", NULL,
+          test_migration_policy, GINT_TO_POINTER(0), NULL },
+        { "migration-unselected-state", NULL,
+          test_migration_policy, GINT_TO_POINTER(1), NULL },
+        { "migration-rendering-enable", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(0), NULL },
+        { "migration-policy", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(1), NULL },
+        { "migration-translation", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(2), NULL },
+        { "migration-ecc-enable", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(3), NULL },
+        { "migration-absent-section", NULL,
+          test_migration_invalid_state, GUINT_TO_POINTER(4), NULL },
+    };
+    const char *profiles[] = { "1.5", "legacy-software" };
+
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/sgi/crime/mte/clear", test_clear);
-    qtest_add_func("/sgi/crime/mte/copy", test_copy);
-    qtest_add_func("/sgi/crime/mte/invalid-translation",
-                   test_invalid_translation);
-    qtest_add_func("/sgi/crime/mte/registers", test_registers);
-    qtest_add_func("/sgi/crime/mte/translation-commit",
-                   test_translation_and_commit);
-    qtest_add_func("/sgi/crime/mte/rejected-commands", test_rejected_commands);
-    qtest_add_func("/sgi/crime/mte/overlap", test_overlap);
-    qtest_add_func("/sgi/crime/mte/healthy-memory", test_healthy_memory);
-    qtest_add_func("/sgi/crime/mte/banked-views", test_banked_views);
-    qtest_add_func("/sgi/crime/mte/bounds-holes", test_bounds_and_holes);
-    qtest_add_func("/sgi/crime/mte/source-alias", test_source_alias);
-    qtest_add_func("/sgi/crime/mte/maximum-interval", test_maximum_interval);
-    qtest_add_func("/sgi/crime/mte/migration", test_migration);
-    qtest_add_data_func("/sgi/crime/mte/migration-missing-state",
-                        GINT_TO_POINTER(0), test_migration_policy);
-    qtest_add_data_func("/sgi/crime/mte/migration-unselected-state",
-                        GINT_TO_POINTER(1), test_migration_policy);
-    qtest_add_data_func("/sgi/crime/mte/migration-rendering-enable",
-                        GUINT_TO_POINTER(0), test_migration_invalid_state);
-    qtest_add_data_func("/sgi/crime/mte/migration-policy",
-                        GUINT_TO_POINTER(1), test_migration_invalid_state);
-    qtest_add_data_func("/sgi/crime/mte/migration-translation",
-                        GUINT_TO_POINTER(2), test_migration_invalid_state);
-    qtest_add_data_func("/sgi/crime/mte/migration-ecc-enable",
-                        GUINT_TO_POINTER(3), test_migration_invalid_state);
-    qtest_add_func("/sgi/crime/mte/diagnostics", test_diagnostics);
-    qtest_add_func("/sgi/crime/mte/translated-code", test_translated_code);
+    for (unsigned profile = 0; profile < ARRAY_SIZE(profiles); profile++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(tests); i++) {
+            TransferCase *test = g_new(TransferCase, 1);
+            g_autofree char *name = g_strdup_printf("/sgi/crime/mte/%s%s",
+                profile ? "legacy/" : "", tests[i].name);
+
+            *test = tests[i];
+            test->profile = profiles[profile];
+            qtest_add_data_func_full(name, test, run_transfer_case, g_free);
+        }
+    }
     return g_test_run();
 }
