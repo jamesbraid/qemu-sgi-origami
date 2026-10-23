@@ -9,6 +9,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "qapi/clone-visitor.h"
 #include "qapi/error.h"
 #include "hw/mips/sgi/sgi-machines.h"
@@ -131,9 +132,9 @@ static void check_modules_partition_nodes(const SGIModelTopology *t)
 /* The selected IP30 profiles have one CPU; this is not a HEART CPU limit. */
 static void check_heart_node_shape(const SGIModelNode *node)
 {
-    const SGIModelBankLayoutList *layout;
-    const uint64List *bank, *default_bank;
-    uint64_t total = 0;
+    const uint64List *bank, *size;
+    uint64_t total = 0, previous = 0;
+    bool empty = false, found = false;
 
     g_assert_nonnull(node->heart);
     g_assert_null(node->identity);
@@ -145,36 +146,37 @@ static void check_heart_node_shape(const SGIModelNode *node)
     g_assert_cmpuint(node->cpu_slots->value->slot, ==, 0);
     g_assert_nonnull(node->cpu_slots->value->assembly);
     g_assert_cmpuint(QAPI_LIST_LENGTH(node->bank_mib), ==, 4);
+    g_assert_nonnull(node->accepted_bank_mib);
+    g_assert_true(node->has_banks_descending);
+    for (size = node->accepted_bank_mib; size; size = size->next) {
+        /* A HEART size field names 32 MiB to 2 GiB; a pair is 64 MiB up. */
+        g_assert_true(size->value >= 64 && size->value <= 2048 &&
+                      is_power_of_2(size->value));
+        g_assert_cmpuint(size->value, >, previous);
+        previous = size->value;
+    }
+    previous = UINT64_MAX;
     for (bank = node->bank_mib; bank; bank = bank->next) {
+        if (!bank->value) {
+            empty = true;
+            continue;
+        }
+        g_assert_false(empty);
+        found = false;
+        for (size = node->accepted_bank_mib; size; size = size->next) {
+            found |= size->value == bank->value;
+        }
+        g_assert_true(found);
+        g_assert_true(!node->banks_descending || bank->value <= previous);
+        previous = bank->value;
         total += bank->value;
     }
     g_assert_cmpuint(total, >, 0);
-    g_assert_cmpuint(QAPI_LIST_LENGTH(node->accepted_memory_mib), ==, 1);
-    g_assert_cmpuint(node->accepted_memory_mib->value, ==, total);
-    g_assert_true(node->has_accepted_bank_layouts);
-    g_assert_nonnull(node->accepted_bank_layouts);
-    for (layout = node->accepted_bank_layouts; layout; layout = layout->next) {
-        uint64_t fitted = 0;
-        bool empty = false;
-
-        g_assert_cmpuint(QAPI_LIST_LENGTH(layout->value->bank_mib), ==, 4);
-        for (bank = layout->value->bank_mib; bank; bank = bank->next) {
-            g_assert_true(bank->value == 0 || bank->value == 64 ||
-                          bank->value == 128 || bank->value == 256);
-            if (bank->value) {
-                g_assert_false(empty);
-            } else {
-                empty = true;
-            }
-            fitted += bank->value;
-        }
-        g_assert_cmpuint(fitted, ==, total);
+    found = false;
+    for (size = node->accepted_memory_mib; size; size = size->next) {
+        found |= size->value == total;
     }
-    default_bank = node->accepted_bank_layouts->value->bank_mib;
-    for (bank = node->bank_mib; bank; bank = bank->next) {
-        g_assert_cmpuint(bank->value, ==, default_bank->value);
-        default_bank = default_bank->next;
-    }
+    g_assert_true(found);
 }
 
 /* Every node names a known ASIC kind; its CPU slots and banks fit it. */

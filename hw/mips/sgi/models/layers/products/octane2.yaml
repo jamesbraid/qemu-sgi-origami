@@ -115,23 +115,17 @@ layer:
             - hw/mips/sgi/octane.c
             notes: The board's IOC3 drives a DS1685-family clock, whose 512-byte NVRAM and the model's 24-byte clock record a new machine starts zeroed; the part treats an all-zero image as fresh.
         emulator_constraints:
+          # The Octane2 guide (007-4207-002, printed page 47): 64 MiB to 2 GiB a
+          # bank, banks filled from bank 1 without a gap, highest density first
+          # (docs/specs/sgi-ip30.rst, Memory kits and capacity).
           accepted_bank_sizes_mib:
           - 64
           - 128
           - 256
-          accepted_bank_layouts_mib:
-          - - 256
-            - 0
-            - 0
-            - 0
-          - - 128
-            - 128
-            - 0
-            - 0
-          - - 64
-            - 64
-            - 64
-            - 64
+          - 512
+          - 1024
+          - 2048
+          bank_order: descending
         synthetic_identities:
         - component: bridge
           serial: '0x51454d554e00'

@@ -281,16 +281,30 @@ static void test_memory_populations(void)
         const char *options;
         unsigned size[4];
     };
+    /*
+     * The owner's guides' populations: Octane banks of 64 to 512 MiB in
+     * any order, Octane2 banks of 64 MiB to 2 GiB largest first. -m alone
+     * fills the fewest banks, largest first.
+     */
     static const struct OctaneMemoryCase cases[] = {
         { "octane", "", { 128, 0, 0, 0 } },
         { "octane", ",bank0-size=67108864,bank1-size=67108864",
           { 64, 64, 0, 0 } },
+        { "octane", "", { 512, 256, 0, 0 } },
+        { "octane", "", { 512, 512, 512, 512 } },
+        { "octane", ",bank0-size=67108864,bank1-size=536870912",
+          { 64, 512, 0, 0 } },
         { "octane2", "", { 256, 0, 0, 0 } },
         { "octane2", ",bank0-size=134217728,bank1-size=134217728",
           { 128, 128, 0, 0 } },
         { "octane2", ",bank0-size=67108864,bank1-size=67108864,"
           "bank2-size=67108864,bank3-size=67108864",
           { 64, 64, 64, 64 } },
+        { "octane2", "", { 1024, 512, 0, 0 } },
+        { "octane2", "", { 2048, 1024, 0, 0 } },
+        { "octane2", "", { 2048, 2048, 2048, 2048 } },
+        { "octane2", ",bank0-size=1073741824,bank1-size=1073741824,"
+          "bank2-size=268435456", { 1024, 1024, 256, 0 } },
     };
     g_autofree char *quoted = g_shell_quote(flash_path);
 
@@ -299,11 +313,12 @@ static void test_memory_populations(void)
         const char *cpu = !strcmp(test->machine, "octane2") ?
             OCTANE2_CPU : "R10000";
         unsigned base = 0;
+        unsigned total = test->size[0] + test->size[1] + test->size[2] +
+                         test->size[3];
         QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE
                            "-M %s%s -m %uM -cpu %s -bios %s -S",
-                                     test->machine, test->options,
-                                     !strcmp(test->machine, "octane2") ?
-                                     256 : 128, cpu, quoted);
+                                     test->machine, test->options, total,
+                                     cpu, quoted);
 
         for (unsigned bank = 0; bank < 4; bank++) {
             unsigned size = test->size[bank];
@@ -337,8 +352,7 @@ static void test_memory_populations(void)
                 base += test->size[bank];
             }
         }
-        g_assert_cmpuint(base, ==, !strcmp(test->machine, "octane2") ?
-                         256 : 128);
+        g_assert_cmpuint(base, ==, total);
         {
             uint64_t missing;
 
@@ -390,15 +404,36 @@ static void test_memory_population_rejections(void)
         const char *error;
     } cases[] = {
         { "octane,bank0-size=67108864,bank2-size=67108864", "128M",
-          "unsupported HEART bank population" },
+          "octane unsupported HEART bank population: banks take 64, 128, "
+          "256 or 512 MiB and fill from bank 0 without a gap" },
         { "octane,bank0-size=134217728,bank1-size=67108864", "128M",
-          "unsupported HEART bank population" },
+          "octane HEART banks hold 192 MiB, but the machine's memory "
+          "(-m) is 128 MiB" },
+        { "octane,bank0-size=1073741824", "1G",
+          "octane unsupported HEART bank population" },
+        { "octane", "4G",
+          "octane cannot make 4096 MiB of RAM from one to four banks of 64, "
+          "128, 256 or 512 MiB filled from bank 0" },
         { "octane2,bank0-size=134217728,bank1-size=67108864,"
-          "bank2-size=67108864", "256M",
-          "unsupported HEART bank population" },
+          "bank2-size=67108864", "512M",
+          "octane2 HEART banks hold 256 MiB, but the machine's memory "
+          "(-m) is 512 MiB" },
         { "octane2,bank0-size=67108864,bank1-size=67108864,"
           "bank2-size=67108864,bank3-size=67108864", "128M",
-          "supports one CPU and 256 MiB of RAM" },
+          "octane2 HEART banks hold 256 MiB, but the machine's memory "
+          "(-m) is 128 MiB" },
+        { "octane2,bank0-size=536870912,bank1-size=1073741824", "1536M",
+          "octane2 unsupported HEART bank population: banks take 64, 128, "
+          "256, 512, 1024 or 2048 MiB and fill from bank 0 without a gap, "
+          "largest first" },
+        { "octane2", "100M",
+          "octane2 cannot make 100 MiB of RAM" },
+        { "octane2", "8256M",
+          "octane2 cannot make 8256 MiB of RAM from one to four banks of 64, "
+          "128, 256, 512, 1024 or 2048 MiB filled from bank 0, largest "
+          "first" },
+        { "octane2", "4800M",
+          "octane2 cannot make 4800 MiB of RAM" },
     };
 
     for (unsigned n = 0; n < G_N_ELEMENTS(cases); n++) {

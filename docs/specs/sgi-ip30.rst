@@ -299,13 +299,13 @@ Products
      - Basis
    * - ``octane``
      - one R10000, 195 MHz, 1 MiB secondary cache
-     - 128 MiB
+     - 128 MiB by default; 64 MiB to 2 GiB (:ref:`sgi-ip30-memory`)
      - ``030-0887-003`` revision F
      - published 195 MHz inventory, the Technical Report's standard
        configurations, and the SGIStuff page for the 1 MiB cache
    * - ``octane2``
      - one R12000, 360 MHz, 2 MiB secondary cache
-     - 256 MiB
+     - 256 MiB by default; 64 MiB to 8 GiB (:ref:`sgi-ip30-memory`)
      - ``030-1467-001`` revision B
      - the owner's ``hinv -mvv`` (:ref:`sgi-ip30-octane2-hinv`)
 
@@ -516,15 +516,34 @@ Memory kits and capacity
 
 Both owner's guides describe four DIMM banks of two sockets each. Bank 1
 must be filled, banks fill in order without gaps, and each populated
-bank holds two DIMMs (established: 007-3435-004 page 54, 007-4207-002
-page 47). The Octane guide requires the two DIMMs of a bank to match in
-capacity and type and allows 64 to 512 MiB per bank; the Octane2 guide
-puts the highest-density DIMMs in bank 1 and allows up to 2 GiB per
-bank.
+bank holds two DIMMs of the same capacity and type (established:
+007-3435-004 page 54, 007-4207-002 page 47).
 
-The assembly layer records eight DIMM slots as four banks of two DIMMs,
-one processor slot, and accepted bank sizes of 64, 128 and 256 MiB.
-The bank-size list is a model limit, narrower than either guide.
+- Octane (007-3435-004 pages 54-55): 32, 64, 128 and 256 MB DIMMs, so
+  64 to 512 MiB a bank and at most 2 GiB. The guide sets no order of
+  bank sizes.
+- Octane2 (007-4207-002 page 47): DIMMs from 32 MB to 1 GB, so 64 MiB
+  to 2 GiB a bank and at most 8 GiB, highest-density DIMMs in bank 1
+  and the rest in descending order.
+
+Public posts agree with the split by board: an SGI engineer wrote in
+2000 that the older IP30 board stops at 2 GB and that board
+``030-1467-001``, which the ``octane2`` profile carries, takes 2 GB
+memory kits (Library mail ``39B750E0.CA1E23C4@brussels.sgi.com``).
+Published ``hinv`` captures report totals, among them 320 and 640 MiB
+on R10000 Octanes, which need more than one bank size, and 2048 MiB on
+a dual 250 MHz R10000 Octane. They report totals, never the fitted
+sockets.
+
+The catalogue carries each product's rule as ``accepted_bank_sizes_mib``
+(64 to 512 on ``octane``, 64 to 2048 on ``octane2``) and, for
+``octane2``, ``bank_order: descending``. The generator emits the bank
+sizes, the order rule and every total one to four banks make (27 totals
+on ``octane``, 79 on ``octane2``). ``-m`` alone fills the fewest banks,
+largest first: ``-m 3072`` on ``octane2`` is 2048+1024. ``bank<N>-size``
+selects a layout explicitly; setting any bank leaves the unset ones
+empty, and the banks must hold exactly ``-m``. Anything else is
+refused with the rule it breaks.
 
 .. list-table::
    :header-rows: 1
@@ -532,7 +551,7 @@ The bank-size list is a model limit, narrower than either guide.
    * - Kit
      - DIMMs
      - Bank
-     - Used by
+     - Default of
    * - ``kit-128``
      - two 64 MiB
      - one 128 MiB bank
@@ -542,14 +561,22 @@ The bank-size list is a model limit, narrower than either guide.
      - one 256 MiB bank
      - ``octane2``
 
-The kits are model choices (approximation). Neither inventory reports
-which sockets are filled or the DIMM sizes, only the total. The machines
-also accept other layouts that sum to the same total, through
-``bank<N>-size``: 128+128 or 64+64+64+64 MiB on ``octane2``, and 64+64
-on ``octane``. The guides number physical banks 1 to 4; public software
-indexes HEART bank descriptors 0 to 3. Treating them as the same
-positions is inferred, not a measured board wiring fact. HEART revision
-F's descriptor reset values and density encoding are unknown.
+The default kits are model choices (approximation): the profiles'
+inventories report only their totals. The guides number physical banks
+1 to 4; public software indexes HEART bank descriptors 0 to 3. Treating
+them as the same positions is inferred, not a measured board wiring fact.
+
+The stock 6.5.30 PROM sizes each bank itself under a temporary 2 GiB
+descriptor and writes the final descriptors; the IRIX 6.5.30 kernel
+only reads them (the HEART memory configuration in the Origami HEART
+datasheet). The model's response to that probe is a functional
+projection chosen so the PROM's own table names the fitted capacity on
+both of its HEART revision paths; it is not a measured HEART address
+decoder. With it, the PROM writes density code 4 for 64 and 128 MiB
+banks, 5 for 256 and 512 MiB and 6 for 1 and 2 GiB, the code an
+Octane2 PROM was seen writing for a 256 MiB bank
+(:ref:`sgi-ip30-octane2-heart-bank`). What the density code does to
+HEART's address decoding is unknown.
 
 .. _sgi-ip30-topology:
 
@@ -748,7 +775,8 @@ Open questions
   (:ref:`sgi-ip30-flash-wiring`).
 - R12000 reset mode word and cache block size
   (:ref:`sgi-ip30-r12000-defaults`).
-- HEART revision F bank descriptors and density encoding, and the
+- HEART's density decoding and its response to the PROM's probe of a
+  smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`).
 - The Octane2 Bridge silicon revision and RAD PCI revision byte.
 - The expansion Bridge's widget number.

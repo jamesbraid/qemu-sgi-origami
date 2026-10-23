@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Compile the selected IP30 populations without borrowing SN node facts."""
 
+import itertools
+
 from . import synthetic_serial
 from .model_shared import _integer, _required, _validate_integer, num
 
@@ -10,6 +12,33 @@ R12000_CONFIG_BE = 1 << 15
 R12000_CONFIG_SS_SHIFT = 16
 R12000_CONFIG_SB = 1 << 13
 BOARD_ROLES = ("processor", "system-board", "frontplane", "power-supply")
+# Bank capacities a HEART descriptor's size field can name, 32 MiB units
+# up to 2 GiB, that a matched DIMM pair makes: two 32 MB DIMMs at least.
+HEART_BANK_MIB = (64, 128, 256, 512, 1024, 2048)
+HEART_BANKS = 4
+
+
+def _bank_layout_accepted(banks, sizes, descending):
+    """Whether @banks fills from bank 0 without a gap, every populated
+    bank is one of @sizes, and, if @descending, no bank is larger than
+    the one before it.
+    """
+    populated = [size for size in banks if size]
+    return (len(banks) == HEART_BANKS and populated and
+            banks[:len(populated)] == populated and
+            all(size in sizes for size in populated) and
+            (not descending or populated == sorted(populated, reverse=True)))
+
+
+def _accepted_totals(sizes, descending):
+    """Every total some accepted layout of one to four banks makes."""
+    totals = set()
+    for count in range(1, HEART_BANKS + 1):
+        for row in itertools.product(sorted(sizes), repeat=count):
+            row = list(row) + [0] * (HEART_BANKS - count)
+            if _bank_layout_accepted(row, sizes, descending):
+                totals.add(sum(row))
+    return sorted(totals)
 
 
 def _r12000_profile(model, cpu, processor):
@@ -83,22 +112,17 @@ def compile_heart_node(model, components, entry):
     if len(banks) > 4:
         raise CompileError("HEART supports four selected memory banks")
     banks += [0] * (4 - len(banks))
-    layouts = _required(model["machine"]["emulation"]["emulator_constraints"],
-                        "accepted_bank_layouts_mib", "IP30 memory population")
-    memory = population["memory_mib_per_node"][0]
-    if banks not in layouts or any(len(row) != 4 or sum(row) != memory
-                                  for row in layouts):
-        raise CompileError("IP30 bank layouts must match the selected total and default")
-    for row in layouts:
-        empty = False
-        for capacity in row:
-            if type(capacity) is not int or capacity not in (0, 64, 128, 256):
-                raise CompileError("IP30 banks require a selected 64, 128 or 256 MiB pair")
-            if capacity and empty:
-                raise CompileError("IP30 memory banks must be populated sequentially")
-            empty |= capacity == 0
-
-    layouts = [banks] + [row for row in layouts if row != banks]
+    constraints = model["machine"]["emulation"]["emulator_constraints"]
+    sizes = _required(constraints, "accepted_bank_sizes_mib",
+                      "IP30 memory population")
+    descending = constraints.get("bank_order", "any") == "descending"
+    for size in sizes:
+        if type(size) is not int or size not in HEART_BANK_MIB:
+            raise CompileError("IP30 banks require a pair making 64, 128, "
+                               "256, 512, 1024 or 2048 MiB")
+    if not _bank_layout_accepted(banks, sizes, descending):
+        raise CompileError("IP30 default bank population breaks the "
+                           "selected bank rules")
 
     records = {}
     for component in components.values():
@@ -143,8 +167,10 @@ def compile_heart_node(model, components, entry):
         "slot": entry["slot"], "hub_slot_bits": None, "asic_kind": "HEART",
         "heart": heart_identity,
         "cpu_slots": [{"interface": 0, "slot": 0, "assembly": processor}],
-        "bank_mib": banks, "accepted_memory_mib": [memory],
-        "accepted_bank_layouts": [{"bank_mib": row} for row in layouts],
+        "bank_mib": banks,
+        "accepted_memory_mib": _accepted_totals(sizes, descending),
+        "accepted_bank_mib": sorted(sizes),
+        "banks_descending": descending,
         "flash": {
             "kind": "OPERATOR_PROM",
             "size": model["machine"]["harness"]["firmware_bytes"],

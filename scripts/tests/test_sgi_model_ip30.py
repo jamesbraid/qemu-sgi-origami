@@ -199,24 +199,55 @@ class IP30CatalogueTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "single-processor population"):
             compile_model(model)
 
-    def test_memory_layouts_match_total_capacity_and_sequential_banks(self):
-        source = resolved("octane")
-        for row, message in (([64, 0, 64, 0], "sequentially"),
-                             ([32, 32, 32, 32], "64, 128 or 256"),
-                             ([64, 64, 64, 0], "selected total")):
-            with self.subTest(row=row):
-                model = copy.deepcopy(source)
-                model["machine"]["emulation"]["emulator_constraints"]                    ["accepted_bank_layouts_mib"].append(row)
-                with self.assertRaisesRegex(CompileError, message):
+    def test_bank_rules_follow_the_owners_guides(self):
+        # Octane: 64 to 512 MiB a bank in any order, up to 2 GiB. Octane2:
+        # 64 MiB to 2 GiB a bank, largest first, up to 8 GiB.
+        for name, sizes, descending, top in (
+                ("octane", [64, 128, 256, 512], False, 2048),
+                ("octane2", [64, 128, 256, 512, 1024, 2048], True, 8192)):
+            with self.subTest(product=name):
+                node = compile_model(resolved(name))["nodes"][0]
+                self.assertEqual(node["accepted_bank_mib"], sizes)
+                self.assertEqual(node["banks_descending"], descending)
+                totals = node["accepted_memory_mib"]
+                self.assertEqual((totals[0], totals[-1]), (64, top))
+                self.assertIn(sum(node["bank_mib"]), totals)
+
+    def test_accepted_totals_are_what_four_banks_make(self):
+        node = compile_model(resolved("octane2"))["nodes"][0]
+        totals = node["accepted_memory_mib"]
+        # 3072 is 2048 + 1024; 4800 needs five banks; 8256 is past 8 GiB.
+        self.assertIn(3072, totals)
+        self.assertNotIn(4800, totals)
+        self.assertNotIn(8256, totals)
+        self.assertNotIn(96, totals)
+        self.assertEqual(len(totals), 79)
+        self.assertEqual(len(compile_model(resolved("octane"))["nodes"][0]
+                             ["accepted_memory_mib"]), 27)
+
+    def test_bank_sizes_must_be_heart_pairs(self):
+        for size in (32, 96, 4096):
+            with self.subTest(size=size):
+                model = resolved("octane")
+                model["machine"]["emulation"]["emulator_constraints"][
+                    "accepted_bank_sizes_mib"].append(size)
+                with self.assertRaisesRegex(CompileError, "pair making 64"):
                     compile_model(model)
 
+    def test_default_population_must_follow_the_bank_rules(self):
+        model = resolved("octane2")
+        model["machine"]["emulation"]["emulator_constraints"][
+            "accepted_bank_sizes_mib"] = [64, 128]
+        with self.assertRaisesRegex(CompileError, "default bank population"):
+            compile_model(model)
 
-    def test_emitted_layouts_always_put_the_default_first(self):
-        model = resolved("octane")
-        model["machine"]["emulation"]["emulator_constraints"]            ["accepted_bank_layouts_mib"].reverse()
-        node = compile_model(model)["nodes"][0]
-        self.assertEqual(node["accepted_bank_layouts"][0]["bank_mib"],
-                         node["bank_mib"])
+    def test_descending_order_refuses_a_smaller_first_bank(self):
+        model = resolved("octane2")
+        model["composition"]["population"]["memory_bank_mib_per_node"] = [
+            [128, 256, 0, 0]]
+        model["composition"]["population"]["memory_mib_per_node"] = [384]
+        with self.assertRaisesRegex(CompileError, "default bank population"):
+            compile_model(model)
 
 
 if __name__ == "__main__":

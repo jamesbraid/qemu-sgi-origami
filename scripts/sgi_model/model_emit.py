@@ -118,7 +118,8 @@ def _node(raw: dict) -> dict:
             "cpu-slots": _kebab_keys(raw["cpu_slots"]),
             "bank-mib": raw["bank_mib"],
             "accepted-memory-mib": raw["accepted_memory_mib"],
-            "accepted-bank-layouts": _kebab_keys(raw["accepted_bank_layouts"]),
+            "accepted-bank-mib": raw["accepted_bank_mib"],
+            "banks-descending": raw["banks_descending"],
             "flash": _flash(raw["flash"]), "slave-role": False,
         }
     node = {
