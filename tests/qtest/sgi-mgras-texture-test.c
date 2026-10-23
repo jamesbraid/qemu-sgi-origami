@@ -543,12 +543,103 @@ static void test_gl_texture_color_table_reset_partial(gconstpointer data)
 #define TEX_MDDMA_PIXEL_ON       0x3c040045
 #define TEX_MDDMA_PIXEL_OFF      0x3c040044
 
+/*
+ * The board's RE count, as the kernel reads it: the GE count in bits 25:24
+ * of 0x072488, which products 2 and 3 give the RE count too.
+ */
+static uint32_t tex_re_count(QTestState *t)
+{
+    return (qtest_readl(t, MGRAS_REG(0x072488)) >> 24) & 3;
+}
+
+/*
+ * One pass of the client's pixel-texture draw of a 2-pixel-wide image,
+ * rows image rows, on a board with res REs: the GE box the client loads
+ * (corners 0,0 to 1, the pass's rows times res; its rows and width; 1;
+ * +1, +1; the pass), the draw, and a DMA of the source rows the pass
+ * carries, pass, pass + res, ... (docs/datasheets/mgras-mxi.md).
+ */
+static uint32_t tex_pixel_texture_pass_rows(uint32_t res, uint32_t pass,
+                                            uint32_t rows)
+{
+    return (rows + res - pass - 1) / res;
+}
+
+/* The pass's GE box and its 0x8d20: the draw then waits for its image. */
+static void tex_pixel_texture_pass_start(QTestState *t, uint32_t res,
+                                         uint32_t pass, uint32_t rows,
+                                         uint32_t enabled_control)
+{
+    uint32_t pass_rows = tex_pixel_texture_pass_rows(res, pass, rows);
+    uint32_t box[9] = {
+        0, 0, 1, pass_rows * res, pass_rows << 16 | 2, 1, 1, 1, pass,
+    };
+
+    tex_record(t, 0x18a, enabled_control);
+    gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+    gl_raster_pos2f(t, 0, 0);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0x4fc5);
+    gl_word(t, 0x98);
+}
+
+/* The DMA of the source rows the pass carries, and the closing record. */
+static void tex_pixel_texture_pass_finish(QTestState *t, uint32_t res,
+                                          uint32_t pass, const uint8_t *pixels,
+                                          uint32_t rows,
+                                          uint32_t disabled_control)
+{
+    uint32_t pass_rows = tex_pixel_texture_pass_rows(res, pass, rows);
+    uint8_t sent[8 * 4];
+
+    g_assert_cmpuint(pass_rows, <=, 4);
+    for (uint32_t i = 0; i < pass_rows; i++) {
+        memcpy(&sent[8 * i], &pixels[8 * (pass + res * i)], 8);
+    }
+    gl_pixels_dma_on(t, 0, sent, 8 * pass_rows, 8, pass_rows, 8, 0xa7);
+    tex_record(t, 0x18a, disabled_control);
+    gl_pixels_fence(t);
+}
+
+static void tex_pixel_texture_pass(QTestState *t, uint32_t res, uint32_t pass,
+                                   const uint8_t *pixels, uint32_t rows,
+                                   uint32_t enabled_control,
+                                   uint32_t disabled_control)
+{
+    tex_pixel_texture_pass_start(t, res, pass, rows, enabled_control);
+    tex_pixel_texture_pass_finish(t, res, pass, pixels, rows,
+                                  disabled_control);
+}
+
+/*
+ * A 2x2 draw with pixel texgen on or off. captured_size 0x00020002 sends
+ * it as the client's pixel-texture draw, one pass per RE; any other
+ * nonzero size is one draw with that size word in the captured one-RE box;
+ * 0 leaves the ordinary rectangle gl_pixels_program() loads.
+ */
 static void tex_volume_pixels_data(QTestState *t, bool enabled,
                                    uint32_t captured_size,
                                    const uint8_t pixels[16],
                                    uint32_t enabled_control,
                                    uint32_t disabled_control)
 {
+    if (captured_size == 0x00020002) {
+        uint32_t res = tex_re_count(t);
+
+        for (uint32_t pass = 0; pass < res; pass++) {
+            tex_pixel_texture_pass(t, res, pass, pixels, 2,
+                                   enabled ? enabled_control :
+                                   disabled_control, disabled_control);
+        }
+        return;
+    }
     tex_record(t, 0x18a, enabled ? enabled_control : disabled_control);
     gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
     if (captured_size) {
@@ -1920,6 +2011,121 @@ static void test_gl_texture_captured_volume_rejects_unknown_selector(void)
     g_assert_cmphex(gl_window_pixel(t, 32, 24), ==, TEX_WHITE);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
+}
+
+/*
+ * A pixel-texture DrawPixels arrives as one pass per RE: on a two-RE board
+ * pass 0 carries image rows 0 and 2 and pass 1 rows 1 and 3, each in a GE
+ * box covering the whole image, and the passes together draw every row
+ * once, as a one-RE board's single pass does. After pass 0 alone the odd
+ * rows are still the clear colour; a model that drew each pass's rows one
+ * after another, or refused the passes, fails here.
+ */
+static void test_gl_texture_pixel_texture_passes(gconstpointer data)
+{
+    static const uint8_t image[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint32_t texels[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    /* Rows 0 to 3: each row's two pixels pick texels by red and green. */
+    static const uint8_t pixels[32] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
+        0x40, 0xbf, 0xbf, 0xff, 0xbf, 0xbf, 0xff, 0xff,
+        0xbf, 0xbf, 0x00, 0xff, 0x40, 0xbf, 0x00, 0xff,
+        0xbf, 0x40, 0x00, 0xff, 0x40, 0x40, 0x00, 0xff,
+    };
+    static const uint32_t expected[4][2] = {
+        { 0xff0000, 0x00ff00 }, { 0x0000ff, 0xffff00 },
+        { 0xffff00, 0x0000ff }, { 0x00ff00, 0xff0000 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint32_t res = tex_re_count(t);
+
+    g_assert_true(res == 1 || res == 2);
+    tex_load_captured_volume(t, image, 1);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x, 20 + 8 * y), ==,
+                            texels[y * 2 + x]);
+        }
+    }
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    for (uint32_t pass = 0; pass < res; pass++) {
+        tex_pixel_texture_pass(t, res, pass, pixels, 4, TEX_MDDMA_PIXEL_ON,
+                               TEX_MDDMA_PIXEL_OFF);
+        for (uint32_t y = 0; y < 4; y++) {
+            bool drawn = res == 1 || y % res <= pass;
+
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, x, y), ==,
+                                drawn ? expected[y][x] : 0);
+            }
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A two-RE board's second pass waiting for its image crosses a migration
+ * and lands on the odd rows on the destination.
+ */
+static void test_gl_texture_pixel_texture_pass_migration(gconstpointer data)
+{
+    static const uint8_t image[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
+        0x40, 0xbf, 0xbf, 0xff, 0xbf, 0xbf, 0xff, 0xff,
+    };
+    static const uint32_t texels[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-pixel-pass-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS, (char *)data);
+    from = tex_start(args);
+    g_assert_cmpuint(tex_re_count(from), ==, 2);
+    tex_load_captured_volume(from, image, 1);
+    tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+    tex_record(from, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    gl_clear_color(from, 0, 0, 0, 1);
+    gl_word(from, GL_CLEAR_COLOR_BUFFER);
+    tex_pixel_texture_pass(from, 2, 0, pixels, 2, TEX_MDDMA_PIXEL_ON,
+                           TEX_MDDMA_PIXEL_OFF);
+    tex_pixel_texture_pass_start(from, 2, 1, 2, TEX_MDDMA_PIXEL_ON);
+    to = tex_sb_file_migrate_and_restart(from, args, uri);
+
+    tex_pixel_texture_pass_finish(to, 2, 1, pixels, 2, TEX_MDDMA_PIXEL_OFF);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(to, x, y), ==, texels[y * 2 + x]);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
 }
 
 static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
@@ -5694,6 +5900,12 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-pixel-rgba-nearest/si-t",
         "si-t", test_gl_texture_pixel_rgba_nearest);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-pixel-texture-passes",
+        test_gl_texture_pixel_texture_passes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-pixel-texture-pass-migration/mxi",
+        "mxi", test_gl_texture_pixel_texture_pass_migration);
     add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
                             test_gl_texture_volume_pixel_rgba);
     add_texture_board_cases(
