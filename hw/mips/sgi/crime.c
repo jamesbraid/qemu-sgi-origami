@@ -275,6 +275,52 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     return MEMTX_OK;
 }
 
+static bool crime_renderer_touches(hwaddr offset, unsigned size,
+                                    hwaddr start, unsigned length)
+{
+    return offset < start + length && start < offset + size;
+}
+
+static bool crime_renderer_must_stop(hwaddr offset, unsigned size, bool write)
+{
+    offset -= 0x1000000;
+    /* Bad setup must stop before a later command can use stale state. */
+    return crime_renderer_touches(offset, size, 0x1700, 0x100) ||
+           crime_renderer_touches(offset, size, 0x2800, 0x800) ||
+           crime_renderer_touches(offset, size, 0x3000, 0x80) ||
+           crime_renderer_touches(offset, size, 0x3800, 0x800) ||
+           crime_renderer_touches(offset, size, 0x4000, 0x1000) ||
+           (write &&
+            (crime_renderer_touches(offset, size, 0x400, 4) ||
+             crime_renderer_touches(offset, size, 0x21f0, 4) ||
+             crime_renderer_touches(offset, size, 0x21f8, 4)));
+}
+
+static MemTxResult crime_renderer_unsupported(SGICrimeState *s, hwaddr offset,
+                                              unsigned size, bool write,
+                                              uint64_t value)
+{
+    if (s->legacy_software && s->functional_memory_transfer &&
+        offset >= 0x1000000 && offset + size <= 0x1005000 &&
+        !crime_renderer_must_stop(offset, size, write)) {
+        if (write) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: unsupported renderer %u-byte write "
+                          "at 0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
+                          size, (hwaddr)(0x14000000ULL + offset), value);
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: unsupported renderer %u-byte read "
+                          "at 0x%" HWADDR_PRIx "\n", size,
+                          (hwaddr)(0x14000000ULL + offset));
+        }
+        return MEMTX_ERROR;
+    }
+    return crime_transfer_fail(offset, write ?
+                               "unsupported transfer register write" :
+                               "unsupported transfer register read");
+}
+
 static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
                                        uint64_t *value, unsigned size)
 {
@@ -296,7 +342,7 @@ static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
         *value = s->transfer.parameter[index];
         return MEMTX_OK;
     }
-    return crime_transfer_fail(offset, "unsupported transfer register read");
+    return crime_renderer_unsupported(s, offset, size, false, 0);
 }
 
 static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
@@ -320,7 +366,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         s->transfer.parameter[index] = value;
         return MEMTX_OK;
     }
-    return crime_transfer_fail(offset, "unsupported transfer register write");
+    return crime_renderer_unsupported(s, offset, size, true, value);
 }
 
 static uint32_t crime_software_mask(const SGICrimeState *s)
