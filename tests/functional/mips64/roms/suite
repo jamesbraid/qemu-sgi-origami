@@ -67,7 +67,7 @@ diagregs         R10000 R16000-4m R16000-8m R16000-16m
 fpucond          R10000 R14000 R16000-4m R16000-8m R16000-16m
 isadecode        R10000 R14000 R16000-4m R16000-8m R16000-16m
 buserror         R10000 R14000 R16000-4m R16000-8m R16000-16m
-icountslot       R4000 R10000 R14000 config:icount
+icountslot       R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m config:icount
 r14000_identity  R14000
 r14000_perf      R14000 R16000-4m R16000-8m R16000-16m
 r14000_cache     R14000
