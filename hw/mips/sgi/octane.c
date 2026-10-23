@@ -7,6 +7,7 @@
  * not establish additional physical behavior.
  */
 #include "qemu/osdep.h"
+#include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
 #include "qemu/log.h"
@@ -44,6 +45,7 @@
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "qobject/qdict.h"
 #include "hw/mips/sgi/sgi-storage.h"
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
@@ -79,8 +81,11 @@ typedef struct OctaneMachineState {
     /* nodes=, or zero for the topology's largest row. */
     uint32_t nodes_requested;
     char *graphics_board;
+    bool graphics_board_set;
     uint8_t graphics_widget;
     bool graphics_widget_set;
+    /* heads.<position>=<id>, checked at realize; NULL when none given. */
+    QDict *heads;
     MemoryRegion graphics_fabric;
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
@@ -110,6 +115,7 @@ static void octane_set_graphics_board(Object *obj, const char *value,
     }
     g_free(s->graphics_board);
     s->graphics_board = g_strdup(value);
+    s->graphics_board_set = true;
 }
 
 static void octane_get_graphics_widget(Object *obj, Visitor *v,
@@ -139,6 +145,124 @@ static void octane_set_graphics_widget(Object *obj, Visitor *v,
     }
     s->graphics_widget = value;
     s->graphics_widget_set = true;
+}
+
+static void octane_get_heads(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    QObject *value = s->heads ? QOBJECT(qobject_ref(s->heads)) :
+                     QOBJECT(qdict_new());
+
+    visit_type_any(v, name, &value, errp);
+    qobject_unref(value);
+}
+
+/*
+ * heads.<position>=<id> arrives as one dictionary; keep it for realize,
+ * which checks it against the topology topology= selects.
+ */
+static void octane_set_heads(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    QObject *value = NULL;
+    QDict *heads;
+
+    if (!visit_type_any(v, name, &value, errp)) {
+        return;
+    }
+    heads = qobject_to(QDict, value);
+    if (!heads) {
+        error_setg(errp, "heads takes heads.<position>=<id>");
+        qobject_unref(value);
+        return;
+    }
+    qobject_unref(s->heads);
+    s->heads = heads;
+}
+
+static int octane_compare_keys(gconstpointer a, gconstpointer b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * Turn heads.widget-N=<id> into the graphics board and widget the builder
+ * fits: an MGRAS board by its own board name, or the V12 the vpro board
+ * presents. Without heads, graphics-board= and graphics-widget= keep
+ * deciding, as they always have. @profile is set when the selection names
+ * a VPro profile the board must take.
+ */
+static bool octane_apply_heads(OctaneMachineState *s, const char *machine,
+                               const char **profile, Error **errp)
+{
+    g_autofree SGIHeadChoice *choices = NULL;
+    size_t count;
+
+    *profile = NULL;
+    if (s->heads && qdict_size(s->heads) &&
+        (s->graphics_board_set || s->graphics_widget_set)) {
+        g_autoptr(GPtrArray) keys = g_ptr_array_new();
+        const char *key;
+
+        for (const QDictEntry *e = qdict_first(s->heads); e;
+             e = qdict_next(s->heads, e)) {
+            g_ptr_array_add(keys, (gpointer)qdict_entry_key(e));
+        }
+        g_ptr_array_sort(keys, octane_compare_keys);
+        key = g_ptr_array_index(keys, 0);
+        if (s->graphics_board_set) {
+            error_setg(errp, "%s: heads.%s and graphics-board both select a "
+                       "graphics board; use heads.%s", machine, key, key);
+        } else {
+            error_setg(errp, "%s: heads.%s and graphics-widget both place a "
+                       "graphics board; use heads.%s", machine, key, key);
+        }
+        return false;
+    }
+    choices = sgi_model_resolve_heads(machine, s->model, s->heads, &count,
+                                      errp);
+    if (!choices) {
+        return false;
+    }
+    if (!s->heads) {
+        return true;
+    }
+    for (size_t i = 0; i < count; i++) {
+        const SGIModelGraphicsConfiguration *c =
+            choices[i].option->configuration;
+        const char *name = choices[i].position->name;
+        unsigned int widget;
+
+        if (!sgi_model_head_fitted(&choices[i])) {
+            continue;
+        }
+        if (!g_str_has_prefix(name, "widget-")) {
+            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
+                       "machine", machine, c->id, name);
+            return false;
+        }
+        if (qemu_strtoui(name + strlen("widget-"), NULL, 10, &widget) ||
+            widget < OCTANE_GRAPHICS_WIDGET_FIRST ||
+            widget > OCTANE_GRAPHICS_WIDGET_LAST) {
+            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
+                       "machine", machine, c->id, name);
+            return false;
+        }
+        g_free(s->graphics_board);
+        if (c->family == SGI_MODEL_GRAPHICS_FAMILY_MGRAS) {
+            s->graphics_board = g_strdup(c->id);
+            s->graphics_widget = widget;
+        } else {
+            /* The catalogue lists VPro only at the board's fixed port. */
+            g_assert(c->family == SGI_MODEL_GRAPHICS_FAMILY_ODYSSEY &&
+                     widget == OCTANE_GRAPHICS_WIDGET);
+            s->graphics_board = g_strdup("vpro");
+            *profile = c->id;
+        }
+    }
+    return true;
 }
 
 /* Whether @t is a topology this machine can build: one HEART node. */
@@ -502,10 +626,9 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     const char *product = octane2 ? "octane2" : "octane";
     const char *flash_node, *nvram, *nvram_clock;
     uint64_t flash_size;
-    bool mgras = sgi_mgras_board_known(s->graphics_board);
-    bool vpro = !strcmp(s->graphics_board, "vpro");
-    bool graphics = mgras || vpro;
-    unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
+    bool mgras, vpro, graphics;
+    unsigned int widget;
+    const char *vpro_profile;
     uint16_t links = (1 << 8) | (1 << 15);
 
     if (machine->kernel_filename) {
@@ -521,6 +644,14 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     }
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
+    if (!octane_apply_heads(s, MACHINE_GET_CLASS(machine)->name,
+                            &vpro_profile, errp)) {
+        return false;
+    }
+    mgras = sgi_mgras_board_known(s->graphics_board);
+    vpro = !strcmp(s->graphics_board, "vpro");
+    graphics = mgras || vpro;
+    widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
 
     if (s->graphics_widget_set && !mgras) {
         error_setg(errp, "graphics-widget requires an MGRAS graphics-board");
@@ -725,6 +856,8 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
              * driver's table of 32-bit words.
              */
             qdev_prop_set_uint8(board, "page-list-entry-bytes", 4);
+        } else if (vpro_profile) {
+            qdev_prop_set_string(board, "profile", vpro_profile);
         }
         if (!object_property_set_link(OBJECT(board), "fabric",
                                       OBJECT(&s->graphics_fabric), errp) ||
@@ -888,6 +1021,7 @@ static void octane_instance_finalize(Object *obj)
 
     g_free(s->topology_name);
     g_free(s->graphics_board);
+    qobject_unref(s->heads);
     g_free(s->mac);
     if (s->storage) {
         g_hash_table_destroy(s->storage);
@@ -948,6 +1082,12 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
     object_class_property_set_description(oc, "graphics-board",
         "Optional graphics board: none, vpro, si, si-t, ssi, mxi, esi, "
         "esi-t, essi or emxi");
+    object_class_property_add(oc, "heads", "SGIHeads", octane_get_heads,
+                              octane_set_heads, NULL, NULL);
+    object_class_property_set_description(oc, "heads",
+        "Graphics heads by position, heads.<position>=<id> "
+        "(heads.widget-11=si-t); query-sgi-machines lists the positions and "
+        "ids. Use it or graphics-board, not both.");
     object_class_property_add(oc, "graphics-widget", "uint8",
                               octane_get_graphics_widget,
                               octane_set_graphics_widget, NULL, NULL);

@@ -567,6 +567,131 @@ path on any Scalable Node machine in this tree. A guest reaches its
 kernel or standalone program through the PROM's own TFTP netboot or a
 disk image, the same as real hardware.
 
+.. _sgi-sn-graphics-heads:
+
+Graphics heads
+==============
+
+``heads.<position>=<id>`` selects the graphics head a position holds, on
+the Scalable Node products and on ``octane`` and ``octane2``. A position
+is a place a head can go: an XIO slot by its label (``io6``), a Crossbow
+port on IP30 and IP34 (``widget-11``) or an Origin 200 PCI option slot
+(``pci-5``), prefixed ``m<module>-`` where two modules share the label.
+An id names one product configuration (``si-t``, ``v12``,
+``ir3-ge16-4-rm1``); the same id means the same product, parameters and
+options in every topology that lists it, and an id never changes once
+listed. ``query-sgi-machines`` lists each topology's positions under
+``graphics``, with every id a position offers or refuses, the default,
+whether the machine may run headless, and the most heads it builds at
+once. The ids and their configurations live in
+``hw/mips/sgi/models/graphics-heads.yaml``; each product layer lists the
+ids its positions take.
+
+A position not named holds its default, which is what the machine built
+before the option existed, so a command line without ``heads`` is
+unchanged. The Octane's ``graphics-board=`` and ``graphics-widget=``
+still work without it; naming both is refused. For example::
+
+    -M origin200,topology=origin200-gigachannel,heads.io6=si-t
+    -M octane2,heads.widget-11=v12
+
+The machine fits each head as the matching ``-device`` would: an MGRAS
+board by XIO slot name with ``board=`` set to the id, a VPro board with
+``profile=`` set to the id, and a PsiTech board on the first module's
+onboard PCI bus with ``device-id`` 0x104 (``rad4``) or 0x105
+(``rad4-km``). A built-in position's head is the topology's own I/O
+board record; naming its default changes nothing.
+
+``heads`` is one property holding a dictionary, because positions vary
+per topology and no fixed structure fits them. Machine properties apply
+in no fixed order, so the dictionary is checked against the topology at
+realize. A position name is never purely numeric, since a numeric key
+fragment would be read as a list index. The name is ``heads`` because
+every machine already has the boolean ``graphics`` property that
+``-nographic`` sets.
+
+QEMU refuses a selection with one of these messages, where ``<machine>``
+is the ``-M`` name and ``<reason>`` is the catalogue's own text:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Case
+     - Message
+   * - Unknown position
+     - ``<machine>: topology '<t>' has no graphics position '<p>'; its
+       positions are <p1>, <p2>, ...``
+   * - Id not listed at the position
+     - ``<machine>: topology '<t>' offers no graphics '<id>' at <p>; it
+       offers <id1>, <id2>, ...``
+   * - Refused id
+     - ``<machine>: topology '<t>' does not build <product> (<id>) at
+       <p>: <reason>``
+   * - Position not modelled
+     - ``<machine>: topology '<t>' cannot fit graphics at <p>: <reason>``
+   * - Too many heads
+     - ``<machine>: topology '<t>' builds at most <n> graphics head(s);
+       <p1> and <p2> both select one``
+   * - Octane ``graphics-board=`` beside ``heads``
+     - ``<machine>: heads.<p> and graphics-board both select a graphics
+       board; use heads.<p>``
+
+A topology with no graphics position says ``it has no graphics
+positions`` in place of the list.
+
+What each topology offers today:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topologies
+     - Positions
+     - Default
+     - Selectable
+   * - ``origin200``, ``origin200-gigachannel-loopback``
+     - ``pci-5`` to ``pci-7``
+     - ``none``
+     - ``rad4``, ``rad4-km``
+   * - ``origin200-dual``
+     - ``m0-pci-5`` to ``m0-pci-7``; the second module's are listed, not
+       modelled
+     - ``none``
+     - ``rad4``, ``rad4-km``
+   * - ``origin200-gigachannel``
+     - ``io6`` (established by owner inventories), ``pci-5`` to ``pci-7``
+     - ``none``
+     - ``si``, ``si-t``, ``esi``, ``ssi``, ``essi`` at ``io6``; RAD4 as
+       above
+   * - ``origin2000-deskside``, ``origin2000-rack``
+     - every XIO slot, ``io2`` to ``io12``
+     - ``none``
+     - ``si``, ``si-t``, ``esi``, ``ssi``, ``essi``
+   * - ``onyx2-deskside``
+     - ``io4``, built in
+     - ``ir2-ge14-4-rm2``, approximated
+     - its default
+   * - ``onyx2-rack``
+     - ``io3``, built in; further Xtown slots listed, not modelled
+     - ``ir3-ge16-4-rm1``, approximated
+     - its default
+   * - ``octane``, ``octane2``
+     - ``widget-9`` to ``widget-12``; the PCI cage, not modelled
+     - ``none``
+     - the five MGRAS ids; ``v12`` at ``widget-11`` on ``octane2``
+   * - ``fuel``
+     - ``widget-13``
+     - ``none``
+     - none (``fuel-vpro`` fits the V12)
+   * - ``fuel-vpro``, ``origin300-v12-direct``, ``origin300-vbrick``
+     - ``widget-13`` or ``widget-11``, built in
+     - ``v12``
+     - its default
+
+``esi-t``, ``mxi`` and ``emxi``, the VPro profiles other than V12, and
+InfiniteReality configurations other than each Onyx2 pipe's own are
+listed as refused, each with its reason, until the models present them.
+At most one head is built at once on every topology today.
+
 .. _sgi-sn-firmware-supply:
 
 Firmware supply
