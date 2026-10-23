@@ -463,6 +463,207 @@ static void test_host_dma_read_capacity(void)
     qtest_quit(qts);
 }
 
+static void test_fifo_start_thresholds(void)
+{
+    static const struct {
+        unsigned receive_min[2];
+        unsigned transmit_max[2];
+    } levels[] = {
+        { { 24, 28 }, { 232, 228 } },
+        { { 128, 132 }, { 128, 124 } },
+        { { 192, 196 }, { 64, 60 } },
+        { { 256, 256 }, { 0, 0 } },
+    };
+
+    for (unsigned selector = 0; selector < ARRAY_SIZE(levels); selector++) {
+        for (unsigned from_memory = 0; from_memory < 2; from_memory++) {
+            for (unsigned offset = 0; offset <= 4; offset += 4) {
+                QTestState *qts = start_aic();
+                unsigned boundary = from_memory ?
+                    levels[selector].transmit_max[offset / 4] :
+                    levels[selector].receive_min[offset / 4];
+                unsigned end = MIN(boundary + 1, 256);
+
+                host_dma_program(qts, 0x10000 + offset, 0);
+                qtest_writeb(qts, REG_BASE + 0x93,
+                             (from_memory ? 4 : 0) | 1);
+                qtest_writeb(qts, REG_BASE + 0x86, selector << 6);
+                for (unsigned stored = 0; stored <= end; stored++) {
+                    bool ready = from_memory ? stored <= boundary :
+                                               stored >= boundary;
+
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x14,
+                                    ==, ready ? 4 : 0);
+                    if (stored < end) {
+                        qtest_writeb(qts, REG_BASE + 0x99, stored);
+                    }
+                }
+                g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==,
+                                0x10000 + offset);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_fifo_threshold_pending_admission(void)
+{
+    static const unsigned words[] = { 3, 16, 24, 32 };
+
+    for (unsigned selector = 0; selector < ARRAY_SIZE(words); selector++) {
+        for (unsigned from_memory = 0; from_memory < 2; from_memory++) {
+            QTestState *qts = start_aic();
+            uint8_t pattern[256], seed[256], guarded[272], got[272];
+            unsigned initial = from_memory ? (32 - words[selector]) * 8 :
+                                             words[selector] * 8;
+            unsigned count = from_memory ? 255 - initial : initial;
+
+            for (unsigned i = 0; i < sizeof(pattern); i++) {
+                pattern[i] = i * 53 + 9;
+                seed[i] = i * 17 + 3;
+            }
+            memset(guarded, 0xa5, sizeof(guarded));
+            if (from_memory) {
+                memcpy(guarded + 8, pattern, count);
+            }
+            qtest_memwrite(qts, 0x10000, guarded, sizeof(guarded));
+            host_dma_program(qts, 0x10008, count);
+            qtest_writeb(qts, REG_BASE + 0x93,
+                         (from_memory ? 4 : 0) | 1);
+            qtest_writeb(qts, REG_BASE + 0x86, selector << 6);
+            for (unsigned i = 0; i < initial; i++) {
+                qtest_writeb(qts, REG_BASE + 0x99, seed[i]);
+            }
+            config_writew(qts, 4, 2);
+            qtest_writeb(qts, REG_BASE + 0x93, from_memory ? 0x0c : 8);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x14,
+                            ==, 0x14);
+            /* PCI admission is off, leaving one active FIFO port. */
+            if (from_memory) {
+                qtest_writeb(qts, REG_BASE + 0x99, 0x7d);
+            } else {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x99), ==, seed[0]);
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x14,
+                            ==, 0x10);
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x10008);
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, count);
+            qtest_memread(qts, 0x10000, got, sizeof(got));
+            g_assert_cmpmem(got, sizeof(got), guarded, sizeof(guarded));
+            config_writew(qts, 4, 6);
+            if (from_memory) {
+                g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x1a,
+                                ==, 0x0a);
+                qtest_writeb(qts, REG_BASE + 0x93, 4);
+                for (unsigned i = 0; i < initial; i++) {
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x99), ==,
+                                    seed[i]);
+                }
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x99), ==, 0x7d);
+                for (unsigned i = 0; i < count; i++) {
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x99), ==,
+                                    pattern[i]);
+                }
+            } else {
+                g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 1);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x19,
+                                ==, 1);
+                qtest_memread(qts, 0x10000, got, sizeof(got));
+                g_assert_cmpmem(got + 8, count - 1, seed + 1, count - 1);
+                qtest_writeb(qts, REG_BASE + 0x99, 0x7d);
+                g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 1);
+                qtest_writeb(qts, REG_BASE + 0x93, 0x0a);
+                g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+                qtest_memread(qts, 0x10000, got, sizeof(got));
+                g_assert_cmpmem(got + 8, count - 1, seed + 1, count - 1);
+                g_assert_cmphex(got[8 + count - 1], ==, 0x7d);
+                g_assert_cmpmem(got, 8, guarded, 8);
+                g_assert_cmpmem(got + 8 + count, sizeof(got) - 8 - count,
+                                guarded + 8 + count,
+                                sizeof(guarded) - 8 - count);
+            }
+            if (from_memory) {
+                qtest_memread(qts, 0x10000, got, sizeof(got));
+                g_assert_cmpmem(got, sizeof(got), guarded, sizeof(guarded));
+            }
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x10008);
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_fifo_threshold_migrates(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("aic7880-threshold-XXXXXX", &error);
+    g_autofree char *socket_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    from = start_aic();
+    to = qtest_init("-M pc -m 128M -nodefaults -S -incoming defer "
+                    "-device aic7880,id=hba,bus=pci.0,addr=04.0");
+    host_dma_program(from, 0x10000, 0);
+    qtest_writeb(from, REG_BASE + 0x93, 1);
+    qtest_writeb(from, REG_BASE + 0x86, 0x80);
+    for (unsigned i = 0; i < 200; i++) {
+        qtest_writeb(from, REG_BASE + 0x99, i * 37 + 11);
+    }
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x94) & 0x14, ==, 4);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x86), ==, 0x80);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x94) & 0x14, ==, 4);
+    for (unsigned i = 0; i < 200; i++) {
+        g_assert_cmphex(qtest_readb(to, REG_BASE + 0x99), ==,
+                        (uint8_t)(i * 37 + 11));
+        g_assert_cmphex(qtest_readb(to, REG_BASE + 0x94) & 0x14, ==,
+                        i < 8 ? 4 : 0);
+    }
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x94) & 1, ==, 1);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x92), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket_path);
+    g_rmdir(dir);
+}
+
+static void test_fifo_threshold_selector_change(void)
+{
+    QTestState *qts = start_aic();
+    uint8_t expected[144], got[144];
+
+    memset(expected, 0xa5, sizeof(expected));
+    qtest_memwrite(qts, 0x10000, expected, sizeof(expected));
+    host_dma_program(qts, 0x10008, 128);
+    qtest_writeb(qts, REG_BASE + 0x93, 1);
+    qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
+    for (unsigned i = 0; i < 128; i++) {
+        expected[8 + i] = i * 7 + 1;
+        qtest_writeb(qts, REG_BASE + 0x99, expected[8 + i]);
+    }
+    qtest_writeb(qts, REG_BASE + 0x93, 8);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 128);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x14, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x86, 0x40);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 0x19, ==, 9);
+    qtest_memread(qts, 0x10000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_quit(qts);
+}
+
 static void test_host_dma_fifo_to_memory(void)
 {
     uint8_t pattern[256], guarded[272], got[272];
@@ -591,6 +792,8 @@ static void check_host_dma_write_stream(unsigned offset, unsigned count)
     qtest_memwrite(qts, address - 8, guarded, count + 16);
     host_dma_program(qts, address, count);
     qtest_writeb(qts, REG_BASE + 0x93, 1);
+    /* Keep this stream test on full-FIFO start and explicit tail flush. */
+    qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
     qtest_writeb(qts, REG_BASE + 0x93, 8);
     while (sent < count) {
         unsigned block = MIN(count - sent, 256);
@@ -4240,6 +4443,8 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
     memset(bytes, 0xa5, sizeof(bytes));
     qtest_memwrite(qts, 0x10000, bytes, sizeof(bytes));
     qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    /* Hold this short response below the ordinary DMA start level. */
+    qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
     for (unsigned byte = 0; byte < 4; byte++) {
         qtest_writeb(qts, REG_BASE + 0x88 + byte,
                      guest_addr >> (byte * 8));
@@ -4369,6 +4574,8 @@ static void prepare_short_inquiry(QTestState *qts, uint32_t addr,
     qtest_writeb(qts, REG_BASE + 0x8c, 36);
     qtest_writeb(qts, REG_BASE + 0x08, stcnt);
     qtest_writeb(qts, REG_BASE + 0x1f, disabled ? 0x20 : 0);
+    /* Distinguish automatic/manual flush from a threshold-started burst. */
+    qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
 }
 
 static QTestState *start_auto_flush_request(bool disabled, uint32_t addr)
@@ -8505,6 +8712,13 @@ int main(int argc, char **argv)
                    test_host_dma_offset_four_28);
     qtest_add_func("aic7880/host-fifo-partial-words",
                    test_host_fifo_partial_words);
+    qtest_add_func("aic7880/fifo-start-thresholds", test_fifo_start_thresholds);
+    qtest_add_func("aic7880/fifo-threshold-pending-admission",
+                   test_fifo_threshold_pending_admission);
+    qtest_add_func("aic7880/fifo-threshold-migrates",
+                   test_fifo_threshold_migrates);
+    qtest_add_func("aic7880/fifo-threshold-selector-change",
+                   test_fifo_threshold_selector_change);
     qtest_add_func("aic7880/host-dma-fifo-to-memory",
                    test_host_dma_fifo_to_memory);
     qtest_add_func("aic7880/host-dma-short-word-flush",
