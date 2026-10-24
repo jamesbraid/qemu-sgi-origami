@@ -35,10 +35,6 @@
 #include "desc.h"
 #include "qom/object.h"
 
-/* Interface requests */
-#define WACOM_GET_REPORT    0x2101
-#define WACOM_SET_REPORT    0x2109
-
 struct USBWacomState {
     USBDevice dev;
     USBEndpoint *intr;
@@ -50,7 +46,7 @@ struct USBWacomState {
         WACOM_MODE_HID = 1,
         WACOM_MODE_WACOM = 2,
     } mode;
-    uint8_t idle;
+    uint8_t protocol;
     int changed;
 };
 
@@ -110,7 +106,7 @@ static const uint8_t qemu_wacom_hid_report_descriptor[] = {
     0x15, 0x00,      /*       Logical Minimum (0) */
     0x26, 0xff, 0x00,/*       Logical Maximum (255) */
     0x75, 0x08,      /*       Report Size (8) */
-    0x95, 0x07,      /*       Report Count (7) */
+    0x95, 0x06,      /*       Report Count (6) */
     0x81, 0x02,      /*       Input (Data, Variable, Absolute) */
     0xc0,            /*    End Collection */
     0x09, 0x01,      /*    Usage (01h) */
@@ -141,7 +137,7 @@ static const USBDescIface desc_iface_wacom = {
             .data = (uint8_t[]) {
                 0x09,          /*  u8  bLength */
                 USB_DT_HID,    /*  u8  bDescriptorType */
-                0x01, 0x10,    /*  u16 HID_class */
+                0x11, 0x01,    /*  u16 bcdHID */
                 0x00,          /*  u8  country_code */
                 0x01,          /*  u8  num_descriptors */
                 USB_DT_REPORT, /*  u8  type: Report */
@@ -188,6 +184,11 @@ static const USBDesc desc_wacom = {
     .str  = desc_strings,
 };
 
+static bool usb_wacom_absolute(USBWacomState *s)
+{
+    return s->protocol && s->mode == WACOM_MODE_WACOM;
+}
+
 static void usb_wacom_input_event(DeviceState *dev, QemuConsole *src,
                                   QemuInputEvent *evt)
 {
@@ -195,20 +196,37 @@ static void usb_wacom_input_event(DeviceState *dev, QemuConsole *src,
 
     switch (evt->type) {
     case INPUT_EVENT_KIND_BTN:
-        if (evt->btn.down) {
-            if (evt->btn.button == INPUT_BUTTON_WHEEL_UP) {
-                s->dz--;
-            } else if (evt->btn.button == INPUT_BUTTON_WHEEL_DOWN) {
-                s->dz++;
+        switch (evt->btn.button) {
+        case INPUT_BUTTON_WHEEL_UP:
+        case INPUT_BUTTON_WHEEL_DOWN:
+            if (evt->btn.down && s->protocol && !usb_wacom_absolute(s)) {
+                s->dz += evt->btn.button == INPUT_BUTTON_WHEEL_UP ? -1 : 1;
+                s->changed = 1;
             }
+            break;
+        case INPUT_BUTTON_LEFT:
+        case INPUT_BUTTON_RIGHT:
+        case INPUT_BUTTON_MIDDLE:
+            if (s->btns[evt->btn.button] != evt->btn.down) {
+                s->btns[evt->btn.button] = evt->btn.down;
+                s->changed = 1;
+            }
+            break;
+        default:
+            break;
         }
-        s->btns[evt->btn.button] = evt->btn.down;
         break;
     case INPUT_EVENT_KIND_ABS:
-        s->axis[evt->abs.axis] = evt->abs.value;
+        if (s->axis[evt->abs.axis] != evt->abs.value) {
+            s->axis[evt->abs.axis] = evt->abs.value;
+            s->changed = 1;
+        }
         break;
     case INPUT_EVENT_KIND_REL:
-        s->axis[evt->rel.axis] += evt->rel.value;
+        if (evt->rel.value) {
+            s->axis[evt->rel.axis] += evt->rel.value;
+            s->changed = 1;
+        }
         break;
     default:
         break;
@@ -219,18 +237,9 @@ static void usb_wacom_input_sync(DeviceState *dev)
 {
     USBWacomState *s = USB_WACOM(dev);
 
-    s->changed = 1;
-    usb_wakeup(s->intr, 0);
-}
-
-static inline int int_clamp(int val, int vmin, int vmax)
-{
-    if (val < vmin)
-        return vmin;
-    else if (val > vmax)
-        return vmax;
-    else
-        return val;
+    if (s->changed) {
+        usb_wakeup(s->intr, 0);
+    }
 }
 
 static void usb_wacom_register_input_handler(USBWacomState *s, bool absolute)
@@ -258,91 +267,74 @@ static void usb_wacom_register_input_handler(USBWacomState *s, bool absolute)
     qemu_input_handler_activate(s->hs);
 }
 
-static int usb_mouse_poll(USBWacomState *s, uint8_t *buf, int len)
+static void usb_wacom_update_handler(USBWacomState *s, bool was_absolute)
 {
-    int dx, dy, dz, b, l;
-
-    if (!s->hs) {
-        usb_wacom_register_input_handler(s, false);
+    if (was_absolute != usb_wacom_absolute(s)) {
+        memset(s->axis, 0, sizeof(s->axis));
+        s->dz = 0;
+        usb_wacom_register_input_handler(s, usb_wacom_absolute(s));
+        s->changed = 1;
     }
+}
 
-    dx = int_clamp(s->axis[INPUT_AXIS_X], -128, 127);
-    dy = int_clamp(s->axis[INPUT_AXIS_Y], -128, 127);
-    dz = int_clamp(s->dz, -128, 127);
+static int usb_wacom_report(USBWacomState *s, uint8_t *buf)
+{
+    int b = 0, x, y;
 
-    s->axis[INPUT_AXIS_X] -= dx;
-    s->axis[INPUT_AXIS_Y] -= dy;
-    s->dz -= dz;
-
-    b = 0;
+    memset(buf, 0, 8);
     if (s->btns[INPUT_BUTTON_LEFT]) {
-        b |= 0x01;
+        b |= 1;
     }
     if (s->btns[INPUT_BUTTON_RIGHT]) {
-        b |= 0x02;
+        b |= 2;
     }
     if (s->btns[INPUT_BUTTON_MIDDLE]) {
-        b |= 0x04;
+        b |= 4;
     }
 
-    if (len < 3) {
-        return 0;
+    if (usb_wacom_absolute(s)) {
+        x = qemu_input_scale_axis(s->axis[INPUT_AXIS_X],
+                                 INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
+                                 0, 5040);
+        y = qemu_input_scale_axis(s->axis[INPUT_AXIS_Y],
+                                 INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
+                                 0, 3780);
+        buf[0] = 2;
+        buf[1] = x;
+        buf[2] = x >> 8;
+        buf[3] = y;
+        buf[4] = y >> 8;
+        buf[5] = (b & 2 ? 0x40 : 0) | (b & 4 ? 0x20 : 0);
+        buf[6] = b & 5 ? 0 : -127;
+        return 7;
+    }
+
+    if (s->protocol) {
+        buf[0] = 1;
+        buf[1] = b;
+        buf[2] = MIN(MAX(s->axis[INPUT_AXIS_X], -127), 127);
+        buf[3] = MIN(MAX(s->axis[INPUT_AXIS_Y], -127), 127);
+        buf[4] = MIN(MAX(s->dz, -127), 127);
+        return 8;
     }
 
     buf[0] = b;
-    buf[1] = dx;
-    buf[2] = dy;
-    l = 3;
-    if (len >= 4) {
-        buf[3] = dz;
-        l = 4;
-    }
-    return l;
+    buf[1] = MIN(MAX(s->axis[INPUT_AXIS_X], -127), 127);
+    buf[2] = MIN(MAX(s->axis[INPUT_AXIS_Y], -127), 127);
+    return 3;
 }
 
-static int usb_wacom_poll(USBWacomState *s, uint8_t *buf, int len)
+static void usb_wacom_consume(USBWacomState *s, const uint8_t *buf)
 {
-    int b, x, y;
-
-    if (!s->hs) {
-        usb_wacom_register_input_handler(s, true);
+    s->changed = 0;
+    if (!usb_wacom_absolute(s)) {
+        s->axis[INPUT_AXIS_X] -= (int8_t)buf[s->protocol ? 2 : 1];
+        s->axis[INPUT_AXIS_Y] -= (int8_t)buf[s->protocol ? 3 : 2];
+        if (s->protocol) {
+            s->dz -= (int8_t)buf[4];
+        }
+        s->changed = s->axis[INPUT_AXIS_X] || s->axis[INPUT_AXIS_Y] || s->dz;
     }
-
-    b = 0;
-    if (s->btns[INPUT_BUTTON_LEFT]) {
-        b |= 0x01;
-    }
-    if (s->btns[INPUT_BUTTON_RIGHT]) {
-        b |= 0x40;
-    }
-    if (s->btns[INPUT_BUTTON_MIDDLE]) {
-        b |= 0x20; /* eraser */
-    }
-
-    if (len < 7) {
-        return 0;
-    }
-
-    x = qemu_input_scale_axis(s->axis[INPUT_AXIS_X],
-                              INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
-                              0, 5040);
-    y = qemu_input_scale_axis(s->axis[INPUT_AXIS_Y],
-                              INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
-                              0, 3780);
-
-    buf[0] = s->mode;
-    buf[5] = 0x00 | (b & 0xf0);
-    buf[1] = x & 0xff;
-    buf[2] = x >> 8;
-    buf[3] = y & 0xff;
-    buf[4] = y >> 8;
-    if (b & 0x3f) {
-        buf[6] = 0;
-    } else {
-        buf[6] = (unsigned char) -127;
-    }
-
-    return 7;
 }
 
 static void usb_wacom_handle_reset(USBDevice *dev)
@@ -353,92 +345,126 @@ static void usb_wacom_handle_reset(USBDevice *dev)
     memset(s->btns, 0, sizeof(s->btns));
     s->dz = 0;
     s->mode = WACOM_MODE_HID;
+    s->protocol = 1;
     s->changed = 1;
     usb_wacom_register_input_handler(s, false);
+}
+
+static bool usb_wacom_idle_id(USBWacomState *s, int id)
+{
+    return id == 0 || (s->protocol && (id == 1 || id == 2));
 }
 
 static void usb_wacom_handle_control(USBDevice *dev, USBPacket *p,
                int request, int value, int index, int length, uint8_t *data)
 {
-    USBWacomState *s = (USBWacomState *) dev;
-    int ret;
+    USBWacomState *s = USB_WACOM(dev);
+    uint8_t report[8];
+    bool was_absolute = usb_wacom_absolute(s);
+    int ret, report_length;
 
     ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
     if (ret >= 0) {
         return;
     }
+    if (index != 0) {
+        goto fail;
+    }
 
     switch (request) {
     case InterfaceRequest | USB_REQ_GET_DESCRIPTOR:
-        switch (value >> 8) {
-        case 0x22:
-                memcpy(data, qemu_wacom_hid_report_descriptor,
-                       sizeof(qemu_wacom_hid_report_descriptor));
-                p->actual_length = sizeof(qemu_wacom_hid_report_descriptor);
-            break;
-        default:
-            return;
+        if (value != USB_DT_REPORT << 8) {
+            goto fail;
         }
+        p->actual_length = MIN(length,
+                              sizeof(qemu_wacom_hid_report_descriptor));
+        memcpy(data, qemu_wacom_hid_report_descriptor, p->actual_length);
         break;
-    case WACOM_SET_REPORT:
-        s->mode = data[0];
-        if (s->mode == WACOM_MODE_HID || s->mode == WACOM_MODE_WACOM) {
-            usb_wacom_register_input_handler(s, s->mode == WACOM_MODE_WACOM);
-        } else {
-            g_clear_pointer(&s->hs, qemu_input_handler_unregister);
+    case HID_SET_REPORT:
+        if (value != 0x302 || length != 2 || data[0] != 2 ||
+            (data[1] != WACOM_MODE_HID && data[1] != WACOM_MODE_WACOM)) {
+            goto fail;
         }
-        s->changed = 1;
+        s->mode = data[1];
+        usb_wacom_update_handler(s, was_absolute);
         break;
-    case WACOM_GET_REPORT:
-        data[0] = 0;
-        data[1] = s->mode;
-        p->actual_length = 2;
-        break;
-    /* USB HID requests */
     case HID_GET_REPORT:
-        if (s->mode == WACOM_MODE_HID)
-            p->actual_length = usb_mouse_poll(s, data, length);
-        else if (s->mode == WACOM_MODE_WACOM)
-            p->actual_length = usb_wacom_poll(s, data, length);
+        if (value == 0x302) {
+            report[0] = 2;
+            report[1] = s->mode;
+            report_length = 2;
+        } else {
+            int id = s->protocol ? usb_wacom_absolute(s) ? 2 : 1 : 0;
+
+            if (value != (0x100 | id)) {
+                goto fail;
+            }
+            report_length = usb_wacom_report(s, report);
+        }
+        p->actual_length = MIN(length, report_length);
+        memcpy(data, report, p->actual_length);
+        break;
+    case HID_GET_PROTOCOL:
+        if (value != 0 || length != 1) {
+            goto fail;
+        }
+        data[0] = s->protocol;
+        p->actual_length = 1;
+        break;
+    case HID_SET_PROTOCOL:
+        if (value > 1 || length != 0) {
+            goto fail;
+        }
+        if (s->protocol != value) {
+            s->protocol = value;
+            if (!s->protocol) {
+                s->dz = 0;
+            }
+            usb_wacom_update_handler(s, was_absolute);
+            s->changed = 1;
+        }
         break;
     case HID_GET_IDLE:
-        data[0] = s->idle;
+        if (value >> 8 || !usb_wacom_idle_id(s, value) || length != 1) {
+            goto fail;
+        }
+        data[0] = 0;
         p->actual_length = 1;
         break;
     case HID_SET_IDLE:
-        s->idle = (uint8_t) (value >> 8);
+        if (value >> 8 || !usb_wacom_idle_id(s, value) || length != 0) {
+            goto fail;
+        }
         break;
     default:
-        p->status = USB_RET_STALL;
-        break;
+        goto fail;
     }
+    return;
+
+fail:
+    p->status = USB_RET_STALL;
 }
 
 static void usb_wacom_handle_data(USBDevice *dev, USBPacket *p)
 {
-    USBWacomState *s = (USBWacomState *) dev;
-    g_autofree uint8_t *buf = g_malloc(p->iov.size);
-    int len = 0;
+    USBWacomState *s = USB_WACOM(dev);
+    uint8_t report[8];
+    int length;
 
-    switch (p->pid) {
-    case USB_TOKEN_IN:
-        if (p->ep->nr == 1) {
-            if (!(s->changed || s->idle)) {
-                p->status = USB_RET_NAK;
-                return;
-            }
-            s->changed = 0;
-            if (s->mode == WACOM_MODE_HID)
-                len = usb_mouse_poll(s, buf, p->iov.size);
-            else if (s->mode == WACOM_MODE_WACOM)
-                len = usb_wacom_poll(s, buf, p->iov.size);
-            usb_packet_copy(p, buf, len);
-            break;
-        }
-        /* Fall through.  */
-    case USB_TOKEN_OUT:
-    default:
+    if (p->pid != USB_TOKEN_IN || p->ep->nr != 1) {
         p->status = USB_RET_STALL;
+        return;
+    }
+    if (!s->changed) {
+        p->status = USB_RET_NAK;
+        return;
+    }
+
+    length = usb_wacom_report(s, report);
+    usb_packet_copy(p, report, MIN(length, p->iov.size));
+    /* Short reads repeat the report until the host can take it whole. */
+    if (p->iov.size >= length) {
+        usb_wacom_consume(s, report);
     }
 }
 
@@ -455,9 +481,7 @@ static void usb_wacom_realize(USBDevice *dev, Error **errp)
     usb_desc_create_serial(dev);
     usb_desc_init(dev);
     s->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
-    s->changed = 1;
-    s->mode = WACOM_MODE_HID;
-    usb_wacom_register_input_handler(s, false);
+    usb_wacom_handle_reset(dev);
 }
 
 static const VMStateDescription vmstate_usb_wacom = {

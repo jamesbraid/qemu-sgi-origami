@@ -16,8 +16,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
 #include "sgi-migrate.h"
@@ -348,6 +350,520 @@ static void test_wacom_input_handler_ready(void)
     g_assert_true(found);
     qobject_unref(response);
 
+    lucent_ohci_close(&ohci);
+}
+
+#define WACOM_ED       0x100
+#define WACOM_SETUP_TD 0x110
+#define WACOM_DATA_TD  0x120
+#define WACOM_STATUS_TD 0x130
+#define WACOM_TAIL     0x140
+#define WACOM_SETUP    0x200
+#define WACOM_DATA     0x300
+
+static void wacom_wr(LucentOHCI *ohci, unsigned off, uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_le_p(bytes, value);
+    qtest_memwrite(ohci->qts, OHCI_DMA_PHYS + off, bytes, sizeof(bytes));
+}
+
+static uint32_t wacom_rd(LucentOHCI *ohci, unsigned off)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(ohci->qts, OHCI_DMA_PHYS + off, bytes, sizeof(bytes));
+    return ldl_le_p(bytes);
+}
+
+static void wacom_td(LucentOHCI *ohci, unsigned off, unsigned direction,
+                     unsigned toggle, unsigned next, unsigned buffer,
+                     unsigned length)
+{
+    wacom_wr(ohci, off, (15U << 28) | (toggle << 24) |
+                        (direction << 19) | (1U << 18));
+    wacom_wr(ohci, off + 4, length ? SGI_DMA_IOVA + buffer : 0);
+    wacom_wr(ohci, off + 8, SGI_DMA_IOVA + next);
+    wacom_wr(ohci, off + 12,
+             length ? SGI_DMA_IOVA + buffer + length - 1 : 0);
+}
+
+/* Return -1 for STALL, -2 for NAK, or the payload length. */
+static int wacom_transfer(LucentOHCI *ohci, bool control, uint8_t *data,
+                          unsigned length, const uint8_t *setup)
+{
+    uint8_t buffer[256];
+    unsigned first = control ? WACOM_SETUP_TD : WACOM_DATA_TD;
+    unsigned direction = control && !(setup[0] & 0x80) ? 1 : 2;
+    uint32_t head, cbp;
+    unsigned i;
+    int result;
+
+    g_assert_cmpuint(length, <=, sizeof(buffer));
+    memset(buffer, 0xa5, sizeof(buffer));
+    if (control && direction == 1 && length) {
+        memcpy(buffer, data, length);
+    }
+    qtest_memwrite(ohci->qts, OHCI_DMA_PHYS + WACOM_DATA,
+                   buffer, sizeof(buffer));
+    /* A large ED MPS exposes host capacity without splitting the input read. */
+    wacom_wr(ohci, WACOM_ED, (control ? 8U : 64U) << 16 |
+                            (control ? 0 : 1U << 7));
+    wacom_wr(ohci, WACOM_ED + 4, SGI_DMA_IOVA + WACOM_TAIL);
+    wacom_wr(ohci, WACOM_ED + 8, SGI_DMA_IOVA + first);
+    wacom_wr(ohci, WACOM_ED + 12, 0);
+    wacom_td(ohci, WACOM_DATA_TD, direction, 3,
+             control ? WACOM_STATUS_TD : WACOM_TAIL, WACOM_DATA, length);
+    if (control) {
+        qtest_memwrite(ohci->qts, OHCI_DMA_PHYS + WACOM_SETUP, setup, 8);
+        wacom_td(ohci, WACOM_SETUP_TD, 0, 2,
+                 length || direction == 2 ? WACOM_DATA_TD : WACOM_STATUS_TD,
+                 WACOM_SETUP, 8);
+        wacom_td(ohci, WACOM_STATUS_TD, direction == 1 ? 2 : 1,
+                 3, WACOM_TAIL, 0, 0);
+        lucent_ohci_writel(ohci, OHCI_HC_CONTROL_HEAD_ED,
+                           SGI_DMA_IOVA + WACOM_ED);
+        lucent_ohci_writel(ohci, OHCI_HC_COMMAND_STATUS,
+                           OHCI_COMMAND_STATUS_CLF);
+    } else {
+        for (i = 0; i < 32; i++) {
+            wacom_wr(ohci, i * 4, SGI_DMA_IOVA + WACOM_ED);
+        }
+    }
+    lucent_ohci_writel(ohci, OHCI_HC_CONTROL,
+                       OHCI_CONTROL_OPERATIONAL | (control ? 0x10 : 4));
+    for (i = 0; i < 64; i++) {
+        qtest_clock_step(ohci->qts, OHCI_FRAME_TIME_NS);
+        head = wacom_rd(ohci, WACOM_ED + 8);
+        if ((head & 1) || (head & ~15U) == SGI_DMA_IOVA + WACOM_TAIL) {
+            break;
+        }
+    }
+    lucent_ohci_writel(ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+    if (head & 1) {
+        bool stalled = false;
+
+        for (unsigned off = first; off <= WACOM_STATUS_TD; off += 0x10) {
+            stalled |= wacom_rd(ohci, off) >> 28 == 4;
+        }
+        g_assert_true(stalled);
+        return -1;
+    }
+    if (i == 64) {
+        g_assert_false(control);
+        g_assert_cmphex(wacom_rd(ohci, WACOM_DATA_TD) >> 28, ==, 15);
+        return -2;
+    }
+    cbp = wacom_rd(ohci, WACOM_DATA_TD + 4);
+    result = !length ? 0 : cbp ? cbp - (SGI_DMA_IOVA + WACOM_DATA) : length;
+    qtest_memread(ohci->qts, OHCI_DMA_PHYS + WACOM_DATA,
+                  buffer, sizeof(buffer));
+    if (direction == 2) {
+        memcpy(data, buffer, result);
+        for (i = result; i < sizeof(buffer); i++) {
+            g_assert_cmphex(buffer[i], ==, 0xa5);
+        }
+    }
+    return result;
+}
+
+static int wacom_control(LucentOHCI *ohci, unsigned request, unsigned value,
+                         unsigned index, unsigned length, uint8_t *data)
+{
+    uint8_t setup[8] = { request >> 8, request, value, value >> 8,
+                         index, index >> 8, length, length >> 8 };
+
+    return wacom_transfer(ohci, true, data, length, setup);
+}
+
+static void wacom_open(LucentOHCI *ohci)
+{
+    lucent_ohci_open(ohci, lucent_ohci_start("lucent-ohci",
+        " -device usb-wacom-tablet,bus=ohci.0,port=1"));
+    lucent_ohci_map_bar(ohci);
+    lucent_ohci_configure_dma(ohci);
+    lucent_ohci_writel(ohci, OHCI_HC_HCCA, SGI_DMA_IOVA);
+    lucent_ohci_writel(ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PPS);
+    lucent_ohci_writel(ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PRS);
+    g_assert_cmphex(lucent_ohci_readl(ohci, OHCI_HC_RH_PORT_STATUS(0)) &
+                    (OHCI_PORT_CCS | OHCI_PORT_PES), ==,
+                    OHCI_PORT_CCS | OHCI_PORT_PES);
+    g_assert_cmpint(wacom_control(ohci, 0x0009, 1, 0, 0, NULL), ==, 0);
+    qtest_qmp_assert_success(ohci->qts, "{'execute':'cont'}");
+}
+
+static void wacom_mode(LucentOHCI *ohci, unsigned mode)
+{
+    uint8_t data[] = { 2, mode };
+
+    g_assert_cmpint(wacom_control(ohci, 0x2109, 0x302, 0, 2, data), ==, 2);
+    memset(data, 0, sizeof(data));
+    g_assert_cmpint(wacom_control(ohci, 0xa101, 0x302, 0, 2, data), ==, 2);
+    g_assert_cmphex(data[0], ==, 2);
+    g_assert_cmphex(data[1], ==, mode);
+}
+
+static void wacom_protocol(LucentOHCI *ohci, unsigned protocol)
+{
+    uint8_t data[1];
+
+    g_assert_cmpint(wacom_control(ohci, 0x210b, protocol, 0, 0, data), ==, 0);
+    g_assert_cmpint(wacom_control(ohci, 0xa103, 0, 0, 1, data), ==, 1);
+    g_assert_cmphex(data[0], ==, protocol);
+}
+
+static void wacom_event(LucentOHCI *ohci, const char *kind, const char *payload)
+{
+    g_autofree char *command = g_strdup_printf(
+        "{'execute':'input-send-event','arguments':{'events':"
+        "[{'type':'%s','data':%s}]}}", kind, payload);
+
+    qtest_qmp_assert_success(ohci->qts, "%p",
+                             qobject_from_json(command, NULL));
+}
+
+static void wacom_button(LucentOHCI *ohci, const char *button, bool down)
+{
+    g_autofree char *payload = g_strdup_printf(
+        "{'button':'%s','down':%s}", button, down ? "true" : "false");
+
+    wacom_event(ohci, "btn", payload);
+}
+
+static void wacom_axis(LucentOHCI *ohci, const char *kind,
+                       const char *axis, int value)
+{
+    g_autofree char *payload = g_strdup_printf(
+        "{'axis':'%s','value':%d}", axis, value);
+
+    wacom_event(ohci, kind, payload);
+}
+
+static void wacom_input(LucentOHCI *ohci, const uint8_t *expected,
+                        unsigned length)
+{
+    uint8_t data[16];
+
+    g_assert_cmpint(wacom_transfer(ohci, false, data, sizeof(data), NULL), ==,
+                    length);
+    g_assert_cmpmem(data, length, expected, length);
+}
+
+static void test_wacom_descriptors(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint8_t data[256];
+    unsigned count = 0, size = 0, id = 0, bits[3][256] = { { 0 } };
+    int length;
+
+    wacom_open(&ohci);
+    length = wacom_control(&ohci, 0x8006, 0x200, 0, sizeof(data), data);
+    g_assert_cmpint(length, >, 9);
+    for (unsigned i = 0; i < length; i += data[i]) {
+        g_assert_cmpuint(data[i], >=, 2);
+        if (data[i + 1] == 0x21) {
+            g_assert_cmphex(lduw_le_p(data + i + 2), ==, 0x0111);
+        }
+    }
+    length = wacom_control(&ohci, 0x8106, 0x2200, 0, sizeof(data), data);
+    g_assert_cmpint(length, >, 0);
+    for (unsigned i = 0; i < length; ) {
+        uint8_t item = data[i++];
+        unsigned n = item & 3, value = 0;
+
+        n = n == 3 ? 4 : n;
+        g_assert_cmpuint(i + n, <=, length);
+        for (unsigned j = 0; j < n; j++) {
+            value |= data[i++] << (8 * j);
+        }
+        switch (item & 0xfc) {
+        case 0x74:
+            size = value;
+            break;
+        case 0x94:
+            count = value;
+            break;
+        case 0x84:
+            id = value;
+            break;
+        case 0x80:
+            bits[0][id] += size * count;
+            break;
+        case 0x90:
+            bits[1][id] += size * count;
+            break;
+        case 0xb0:
+            bits[2][id] += size * count;
+            break;
+        }
+    }
+    g_assert_cmpuint(bits[0][0], ==, 0);
+    g_assert_cmpuint(bits[0][1], ==, 56);
+    g_assert_cmpuint(bits[0][2], ==, 48);
+    g_assert_cmpuint(bits[0][99], ==, 56);
+    g_assert_cmpuint(bits[2][2], ==, 8);
+    g_assert_cmpuint(bits[2][3], ==, 8);
+    lucent_ohci_close(&ohci);
+}
+
+static void test_wacom_reports(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint8_t relative[] = { 1, 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t native[] = { 2, 0, 0, 0, 0, 0, 0x81 };
+    uint8_t boot[] = { 0, 0, 0 };
+    uint8_t data[16];
+    const char *ignored[] = { "wheel-up", "wheel-down", "side", "extra" };
+    const char *buttons[] = { "left", "right", "middle" };
+
+    wacom_open(&ohci);
+    wacom_input(&ohci, relative, sizeof(relative));
+    for (unsigned i = 0; i < G_N_ELEMENTS(buttons); i++) {
+        wacom_button(&ohci, buttons[i], true);
+        relative[1] = 1U << i;
+        wacom_input(&ohci, relative, sizeof(relative));
+        wacom_button(&ohci, buttons[i], false);
+        relative[1] = 0;
+        wacom_input(&ohci, relative, sizeof(relative));
+    }
+    wacom_axis(&ohci, "rel", "x", 19);
+    relative[2] = 19;
+    wacom_input(&ohci, relative, sizeof(relative));
+    relative[2] = 0;
+    wacom_axis(&ohci, "rel", "y", -23);
+    relative[3] = -23;
+    wacom_input(&ohci, relative, sizeof(relative));
+    relative[3] = 0;
+    for (unsigned i = 0; i < 2; i++) {
+        const char *wheel = i ? "wheel-down" : "wheel-up";
+
+        wacom_button(&ohci, wheel, true);
+        relative[4] = i ? 1 : -1;
+        wacom_input(&ohci, relative, sizeof(relative));
+        wacom_button(&ohci, wheel, false);
+        relative[4] = 0;
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    }
+    for (unsigned i = 2; i < G_N_ELEMENTS(ignored); i++) {
+        wacom_button(&ohci, ignored[i], true);
+        wacom_button(&ohci, ignored[i], false);
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    }
+    wacom_axis(&ohci, "rel", "x", 0);
+    wacom_button(&ohci, "left", false);
+    g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    wacom_mode(&ohci, 2);
+    wacom_input(&ohci, native, sizeof(native));
+    for (unsigned i = 0; i < G_N_ELEMENTS(ignored); i++) {
+        wacom_button(&ohci, ignored[i], true);
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+        wacom_button(&ohci, ignored[i], false);
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(buttons); i++) {
+        wacom_button(&ohci, buttons[i], true);
+        native[5] = i == 1 ? 0x40 : i == 2 ? 0x20 : 0;
+        native[6] = i == 1 ? 0x81 : 0;
+        wacom_input(&ohci, native, sizeof(native));
+        wacom_button(&ohci, buttons[i], false);
+        native[5] = 0;
+        native[6] = 0x81;
+        wacom_input(&ohci, native, sizeof(native));
+    }
+    wacom_axis(&ohci, "abs", "x", 32767);
+    native[1] = 0xb0;
+    native[2] = 0x13;
+    wacom_input(&ohci, native, sizeof(native));
+    wacom_axis(&ohci, "abs", "y", 32767);
+    native[3] = 0xc4;
+    native[4] = 0x0e;
+    wacom_input(&ohci, native, sizeof(native));
+    wacom_axis(&ohci, "abs", "x", 16384);
+    native[1] = 0xd8;
+    native[2] = 0x09;
+    wacom_input(&ohci, native, sizeof(native));
+    wacom_axis(&ohci, "abs", "y", 16384);
+    native[3] = 0x62;
+    native[4] = 0x07;
+    wacom_input(&ohci, native, sizeof(native));
+    wacom_axis(&ohci, "abs", "y", 16384);
+    g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    wacom_protocol(&ohci, 0);
+    wacom_input(&ohci, boot, sizeof(boot));
+    wacom_axis(&ohci, "rel", "x", 31);
+    wacom_mode(&ohci, 1);
+    boot[1] = 31;
+    wacom_input(&ohci, boot, sizeof(boot));
+    boot[1] = 0;
+    wacom_mode(&ohci, 2);
+    for (unsigned i = 0; i < G_N_ELEMENTS(ignored); i++) {
+        wacom_button(&ohci, ignored[i], true);
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+        wacom_button(&ohci, ignored[i], false);
+        g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    }
+    wacom_button(&ohci, "left", true);
+    boot[0] = 1;
+    wacom_input(&ohci, boot, sizeof(boot));
+    wacom_button(&ohci, "left", false);
+    boot[0] = 0;
+    g_assert_cmpint(wacom_transfer(&ohci, false, data, 1, NULL), ==, 1);
+    g_assert_cmphex(data[0], ==, 0);
+    wacom_button(&ohci, "wheel-up", true);
+    wacom_input(&ohci, boot, sizeof(boot));
+    g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
+    wacom_protocol(&ohci, 1);
+    memset(native + 1, 0, 5);
+    wacom_input(&ohci, native, sizeof(native));
+    wacom_mode(&ohci, 1);
+    wacom_input(&ohci, relative, sizeof(relative));
+    wacom_protocol(&ohci, 0);
+    wacom_axis(&ohci, "rel", "x", 29);
+    wacom_protocol(&ohci, 1);
+    relative[2] = 29;
+    wacom_input(&ohci, relative, sizeof(relative));
+    lucent_ohci_close(&ohci);
+}
+
+static void test_wacom_lengths(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint8_t data[16], expected[8];
+
+    wacom_open(&ohci);
+    for (unsigned mode = 0; mode < 3; mode++) {
+        unsigned length = mode == 0 ? 8 : mode == 1 ? 7 : 3;
+        unsigned id = mode == 0 ? 1 : mode == 1 ? 2 : 0;
+
+        if (mode == 1) {
+            wacom_mode(&ohci, 2);
+        } else if (mode == 2) {
+            wacom_protocol(&ohci, 0);
+        }
+        for (unsigned capacity = 0; capacity <= 12; capacity++) {
+            memset(expected, 0, sizeof(expected));
+            if (mode != 2) {
+                expected[0] = id;
+            }
+            if (mode == 1) {
+                expected[6] = 0x81;
+            } else {
+                wacom_axis(&ohci, "rel", "x", 17);
+                expected[mode == 2 ? 1 : 2] = 17;
+            }
+            wacom_button(&ohci, "left", true);
+            expected[mode == 2 ? 0 : mode == 1 ? 6 : 1] = mode == 1 ? 0 : 1;
+            for (unsigned repeat = 0; repeat < 2; repeat++) {
+                g_assert_cmpint(wacom_control(&ohci, 0xa101, 0x100 | id,
+                                              0, capacity, data), ==,
+                                MIN(capacity, length));
+                g_assert_cmpmem(data, MIN(capacity, length),
+                                expected, MIN(capacity, length));
+            }
+            g_assert_cmpint(wacom_transfer(&ohci, false, data, capacity, NULL),
+                            ==, MIN(capacity, length));
+            g_assert_cmpmem(data, MIN(capacity, length),
+                            expected, MIN(capacity, length));
+            if (capacity < length) {
+                wacom_input(&ohci, expected, length);
+            }
+            g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL),
+                            ==, -2);
+            wacom_button(&ohci, "left", false);
+            expected[mode == 2 ? 0 : mode == 1 ? 6 : 1] = mode == 1 ? 0x81 : 0;
+            if (mode != 1) {
+                expected[mode == 2 ? 1 : 2] = 0;
+            }
+            g_assert_cmpint(wacom_transfer(&ohci, false, data, 1, NULL), ==, 1);
+            wacom_input(&ohci, expected, length);
+        }
+    }
+    lucent_ohci_close(&ohci);
+}
+
+static void test_wacom_controls(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint8_t data[16] = { 2, 1 };
+    const struct {
+        unsigned request, value, index, length;
+    } invalid[] = {
+        { 0x2109, 0x102, 0, 2 }, { 0x2109, 0x301, 0, 2 },
+        { 0x2109, 0x302, 1, 2 }, { 0x2109, 0x302, 0, 0 },
+        { 0x2109, 0x302, 0, 1 }, { 0x2109, 0x302, 0, 3 },
+        { 0xa101, 0x100, 0, 8 }, { 0xa101, 0x101, 0, 8 },
+        { 0xa101, 0x103, 0, 8 }, { 0xa101, 0x163, 0, 8 },
+        { 0xa101, 0x303, 0, 2 }, { 0xa101, 0x202, 0, 8 },
+        { 0xa101, 0x102, 1, 8 }, { 0x2101, 0x302, 0, 0 },
+        { 0xa103, 1, 0, 1 }, { 0xa103, 0, 1, 1 },
+        { 0xa103, 0, 0, 0 }, { 0xa103, 0, 0, 2 },
+        { 0x210b, 2, 0, 0 }, { 0x210b, 0, 1, 0 },
+        { 0x210b, 0, 0, 1 }, { 0xa102, 0x100, 0, 1 },
+        { 0xa102, 3, 0, 1 }, { 0xa102, 99, 0, 1 },
+        { 0xa102, 0, 1, 1 }, { 0xa102, 0, 0, 0 },
+        { 0xa102, 0, 0, 2 }, { 0x210a, 0x100, 0, 0 },
+        { 0x210a, 3, 0, 0 }, { 0x210a, 99, 0, 0 },
+        { 0x210a, 0, 1, 0 }, { 0x210a, 0, 0, 1 },
+        { 0x8106, 0x2300, 0, 8 }, { 0x8106, 0x2200, 1, 8 },
+    };
+    const uint8_t pending[] = { 2, 0, 0, 0, 0, 0, 0 };
+
+    wacom_open(&ohci);
+    wacom_mode(&ohci, 2);
+    wacom_button(&ohci, "left", true);
+    for (unsigned i = 0; i < G_N_ELEMENTS(invalid); i++) {
+        memset(data, 0, sizeof(data));
+        data[0] = 2;
+        data[1] = 1;
+        g_test_message("invalid control %u", i);
+        g_assert_cmpint(wacom_control(&ohci, invalid[i].request,
+                       invalid[i].value, invalid[i].index,
+                       invalid[i].length, data), ==, -1);
+    }
+    for (unsigned mode = 0; mode <= 3; mode++) {
+        data[0] = mode == 1 ? 1 : 2;
+        data[1] = mode;
+        if (mode != 2) {
+            g_assert_cmpint(wacom_control(&ohci, 0x2109, 0x302, 0, 2, data),
+                            ==, -1);
+        }
+    }
+    g_assert_cmpint(wacom_control(&ohci, 0xa101, 0x302, 0, 2, data), ==, 2);
+    g_assert_cmphex(data[1], ==, 2);
+    g_assert_cmpint(wacom_control(&ohci, 0xa103, 0, 0, 1, data), ==, 1);
+    g_assert_cmphex(data[0], ==, 1);
+    for (unsigned id = 0; id <= 2; id++) {
+        g_assert_cmpint(wacom_control(&ohci, 0x210a, id, 0, 0, data), ==, 0);
+        g_assert_cmpint(wacom_control(&ohci, 0xa102, id, 0, 1, data), ==, 1);
+        g_assert_cmphex(data[0], ==, 0);
+    }
+    wacom_input(&ohci, pending, sizeof(pending));
+    wacom_protocol(&ohci, 0);
+    for (unsigned id = 1; id <= 2; id++) {
+        g_assert_cmpint(wacom_control(&ohci, 0xa102, id, 0, 1, data), ==, -1);
+        g_assert_cmpint(wacom_control(&ohci, 0x210a, id, 0, 0, data), ==, -1);
+        g_assert_cmpint(wacom_control(&ohci, 0xa101, 0x100 | id,
+                                      0, 8, data), ==, -1);
+    }
+    g_assert_cmpint(wacom_control(&ohci, 0xa102, 0, 0, 1, data), ==, 1);
+    g_assert_cmpint(wacom_control(&ohci, 0x210a, 0, 0, 0, data), ==, 0);
+    wacom_axis(&ohci, "rel", "x", 42);
+    wacom_axis(&ohci, "rel", "y", -21);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_PORT_STATUS(0), OHCI_PORT_PRS);
+    g_assert_cmpint(wacom_control(&ohci, 0xa103, 0, 0, 1, data), ==, 1);
+    g_assert_cmphex(data[0], ==, 1);
+    g_assert_cmpint(wacom_control(&ohci, 0xa101, 0x302, 0, 2, data), ==, 2);
+    g_assert_cmphex(data[1], ==, 1);
+    g_assert_cmpint(wacom_control(&ohci, 0xa102, 0, 0, 1, data), ==, 1);
+    g_assert_cmphex(data[0], ==, 0);
+    wacom_input(&ohci, (uint8_t[8]) { 1 }, 8);
+    wacom_axis(&ohci, "rel", "x", -300);
+    wacom_axis(&ohci, "rel", "y", 255);
+    wacom_input(&ohci, (uint8_t[8]) { 1, 0, 0x81, 127 }, 8);
+    wacom_input(&ohci, (uint8_t[8]) { 1, 0, 0x81, 127 }, 8);
+    wacom_input(&ohci, (uint8_t[8]) { 1, 0, -46, 1 }, 8);
+    g_assert_cmpint(wacom_transfer(&ohci, false, data, 8, NULL), ==, -2);
     lucent_ohci_close(&ohci);
 }
 
@@ -1191,6 +1707,10 @@ int main(int argc, char **argv)
                    test_parent_identity_unchanged);
     qtest_add_func("/lucent-ohci/wacom-input-handler-ready",
                    test_wacom_input_handler_ready);
+    qtest_add_func("/lucent-ohci/wacom/descriptors", test_wacom_descriptors);
+    qtest_add_func("/lucent-ohci/wacom/reports", test_wacom_reports);
+    qtest_add_func("/lucent-ohci/wacom/lengths", test_wacom_lengths);
+    qtest_add_func("/lucent-ohci/wacom/controls", test_wacom_controls);
     qtest_add_func("/lucent-ohci/pci-command-status",
                    test_pci_command_status);
     qtest_add_func("/lucent-ohci/dma-error-preserves-pci-status",
