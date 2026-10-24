@@ -6256,6 +6256,35 @@ static uint32_t odyssey_front_face(uint32_t pattern_mode)
 }
 
 /*
+ * Feed one raster-state register (polygon mode, line width and point size,
+ * line stipple and its enable). The IRIX 6.5.30 kernel's context swap drops
+ * the outgoing primitive (0x0444 with operand 0, then 0x0850 type 0xf) and
+ * only then runs its raster restore, which re-pushes the owner's polygon
+ * mode, sizes and stipple (ESTABLISHED from disassembly of the kernel's
+ * swap). On the board no primitive is open by then. The model is
+ * different: it keeps a GL_POLYGON open across the switch, because it
+ * assembles a polygon whole and the board's way of continuing one after a
+ * switch is unknown (odyssey_cmd_dispatch()'s 0x0444 and 0x0850 cases). The
+ * shared layer would refuse the restored values as GL calls inside glBegin
+ * and keep what the other context left, so while a GL_POLYGON is held open
+ * its begin flag is set aside for the one call. APPROXIMATION: this follows
+ * the model's hold, not any board behaviour; for every other primitive the
+ * shared layer's rule stands.
+ */
+static void odyssey_gl_feed_raster_state(SGIOdysseyState *s, uint16_t op,
+                                         const uint32_t *args, unsigned n)
+{
+    uint32_t in_begin = s->gl_ctx.in_begin;
+    bool held_polygon = s->gl_begin_open && s->gl_primitive == 9;
+
+    if (held_polygon) {
+        s->gl_ctx.in_begin = 0;
+    }
+    odyssey_gl_feed(s, op, args, n);
+    s->gl_ctx.in_begin = in_begin;
+}
+
+/*
  * Hand the GL state register 0x0404 carries to the shared context: bit 12,
  * the shade model, bit 16, the depth test, bit 14, the alpha test, bit 15,
  * the stencil test, bit 17, blending, bit 19, index logic op, bit 20,
@@ -6370,8 +6399,10 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &offset_fill, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_CULL_FACE ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cull_face, 1);
-    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_GL_LINE_STIPPLE ?
-                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &line_stipple, 1);
+    odyssey_gl_feed_raster_state(s, s->pattern_mode &
+                                 ODSY_MODE_GL_LINE_STIPPLE ?
+                                 SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE,
+                                 &line_stipple, 1);
     odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
     odyssey_gl_feed(s, SGI_GL_OP_FRONT_FACE, &front_face, 1);
     odyssey_gl_apply_polygon_stipple(s);
@@ -6385,7 +6416,8 @@ static void odyssey_gl_apply_line_stipple(SGIOdysseyState *s)
         s->line_stipple[0] & 0xffff,
     };
 
-    odyssey_gl_feed(s, SGI_GL_OP_LINE_STIPPLE, args, ARRAY_SIZE(args));
+    odyssey_gl_feed_raster_state(s, SGI_GL_OP_LINE_STIPPLE, args,
+                                 ARRAY_SIZE(args));
 }
 
 /*
@@ -10220,11 +10252,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         args[0] = odyssey_f32_bits((s->cmd_operand[0] &
                                     ODSY_LINE_POINT_SIZE_MASK) /
                                    ODSY_LINE_POINT_SIZE_SCALE);
-        odyssey_gl_feed(s, SGI_GL_OP_LINE_WIDTH, &args[0], 1);
+        odyssey_gl_feed_raster_state(s, SGI_GL_OP_LINE_WIDTH, &args[0], 1);
         args[1] = odyssey_f32_bits((s->cmd_operand[1] &
                                     ODSY_LINE_POINT_SIZE_MASK) /
                                    ODSY_LINE_POINT_SIZE_SCALE);
-        odyssey_gl_feed(s, SGI_GL_OP_POINT_SIZE, &args[1], 1);
+        odyssey_gl_feed_raster_state(s, SGI_GL_OP_POINT_SIZE, &args[1], 1);
         break;
     }
     case ODSY_REG_POLYGON_MODE: {
@@ -10234,12 +10266,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         front[1] = odyssey_polygon_mode((s->cmd_operand[0] >>
                                          ODSY_POLYGON_MODE_FRONT_SHIFT) &
                                         ODSY_POLYGON_MODE_MASK);
-        odyssey_gl_feed(s, SGI_GL_OP_POLYGON_MODE, front, 2);
+        odyssey_gl_feed_raster_state(s, SGI_GL_OP_POLYGON_MODE, front, 2);
         back[0] = SGI_GL_BACK;
         back[1] = odyssey_polygon_mode((s->cmd_operand[0] >>
                                         ODSY_POLYGON_MODE_BACK_SHIFT) &
                                        ODSY_POLYGON_MODE_MASK);
-        odyssey_gl_feed(s, SGI_GL_OP_POLYGON_MODE, back, 2);
+        odyssey_gl_feed_raster_state(s, SGI_GL_OP_POLYGON_MODE, back, 2);
         break;
     }
     case ODSY_REG_POLYGON_OFFSET: {

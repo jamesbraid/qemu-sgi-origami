@@ -9850,6 +9850,69 @@ static void test_context_switch_polygon_assembly(void)
                      ==, 1);
 }
 
+/*
+ * The kernel's context swap in the order the IRIX 6.5.30 kernel sends it
+ * (disassembly of its swap): the switch store, the drop of the outgoing
+ * primitive (0x10444 with operand 0, 0x10850 with 0x7f00f), then the raster
+ * restore, here the owner's polygon mode FILL and line and point size 1. The
+ * model holds an open GL_POLYGON across the drop
+ * (context-switch-polygon-assembly), so the restored registers arrive while
+ * it is still open. They are taken as the board's registers, not reported
+ * as GL calls inside glBegin, and the polygon still fills when it ends.
+ */
+static void test_context_switch_polygon_raster_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("odyssey-polygon-restore-XXXXXX", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d guest_errors -D %s", quoted);
+    qts = shadow_start(extra);
+    user_cmd_push(qts, ODSY_REG_POLYGON_MODE);
+    user_cmd_push(qts, 0xa);
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, 0x3f800000);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 9);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0x3f400000);
+    user_cmd_push(qts, 0xbf200000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbe000000);
+    user_cmd_push(qts, 0x3f3c0000);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x7f00f);
+    cmd_push(qts, ODSY_REG_POLYGON_MODE);
+    cmd_push(qts, 0xa);
+    cmd_push(qts, 0x0001084a);
+    cmd_push(qts, 128);
+    cmd_push(qts, 128);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
+    board_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    g_assert_null(strstr(log, "inside glBegin"));
+}
+
 static void test_context_restart_unsupported_words(void)
 {
     g_autoptr(GError) error = NULL;
@@ -21394,6 +21457,8 @@ int main(int argc, char **argv)
                    test_context_restart_quad_strip_after_wrap);
     add_fresh_case("sn1/odyssey/context-switch-integer-quad",
                    test_context_switch_integer_quad);
+    add_fresh_case("sn1/odyssey/context-switch-polygon-raster-restore",
+                   test_context_switch_polygon_raster_restore);
     add_fresh_case("sn1/odyssey/context-switch-polygon-assembly",
                    test_context_switch_polygon_assembly);
     add_fresh_case("sn1/odyssey/context-restart-unsupported-words",
