@@ -5,9 +5,9 @@
  *
  * The downloaded sequencer controls selection, command delivery, status,
  * and Command Complete. This subset accepts one asynchronous narrow command
- * at a time. Paused host PIO supports bounded message exchanges. Isolated
- * qtest peer events exercise disconnect/reselection; ordinary targets stay
- * connected. Host command/data PIO and target mode are unsupported.
+ * at a time. Paused host PIO supports manual DATA and status exchanges.
+ * Isolated qtest peer events exercise disconnect/reselection; targets stay
+ * connected. Host command PIO and target mode are unsupported.
  * Reset values transferred from the AIC-7870 manual are provisional.
  * The O2 qtest policy selects its sibling's BAR1 size and SWINT gating.
  */
@@ -164,6 +164,9 @@ struct AIC7880State {
     uint8_t lun;
     uint8_t phase;
     uint8_t expected_phase;
+    uint8_t signal_outputs;
+    uint8_t manual_data;
+    bool manual_valid;
     uint8_t qout[256];
     uint8_t qin[256];
     uint8_t qin_head;
@@ -231,10 +234,30 @@ static void aic7880_process_scsi_data(AIC7880State *s);
 
 static bool aic7880_pio_pending(AIC7880State *s)
 {
-    return s->selected && (s->phase == AIC_PHASE_COMMAND ||
-                           s->phase == AIC_PHASE_STATUS ||
-                           s->phase == AIC_PHASE_MSG_IN ||
-                           s->phase == AIC_PHASE_MSG_OUT);
+    if (!s->selected || (s->signal_outputs & 1)) {
+        return false;
+    }
+    if (s->phase == AIC_PHASE_DATA) {
+        return !(s->regs[REG_SXFRCTL0] & 8) &&
+               !(s->regs[REG_DFCNTRL] & 0x38) &&
+               !s->peer_nexus_disconnected && s->req &&
+               s->scsi_data_pos < s->scsi_data_len;
+    }
+    return s->phase == AIC_PHASE_COMMAND ||
+           s->phase == AIC_PHASE_STATUS ||
+           s->phase == AIC_PHASE_MSG_IN ||
+           s->phase == AIC_PHASE_MSG_OUT;
+}
+
+static bool aic7880_manual_busy(AIC7880State *s)
+{
+    return s->manual_valid || (s->signal_outputs & 1);
+}
+
+static void aic7880_manual_clear(AIC7880State *s)
+{
+    s->manual_valid = false;
+    s->manual_data = 0;
 }
 
 static void aic7880_pio_phase(AIC7880State *s)
@@ -250,6 +273,7 @@ static void aic7880_pio_present(AIC7880State *s)
 {
     s->regs[REG_SSTAT1] &= ~0x11;
     s->regs[REG_SSTAT0] &= ~2;
+    s->regs[REG_SCSISIGI] &= ~2;
     if (aic7880_pio_pending(s)) {
         s->regs[REG_SSTAT1] |= 1;
         s->regs[REG_SCSISIGI] |= 2;
@@ -257,6 +281,11 @@ static void aic7880_pio_present(AIC7880State *s)
             s->regs[REG_SSTAT0] |= 2;
         }
         aic7880_pio_phase(s);
+    } else if (s->selected && s->phase == AIC_PHASE_DATA &&
+               !(s->signal_outputs & 1) && !s->peer_nexus_disconnected &&
+               s->req && s->scsi_data_pos < s->scsi_data_len) {
+        /* DATA requests are observable even when DMA owns their handshake. */
+        s->regs[REG_SCSISIGI] |= 2;
     }
 }
 
@@ -628,6 +657,9 @@ static void aic7880_process_scsi_data(AIC7880State *s)
         s->peer_nexus_disconnected) {
         return;
     }
+    if ((s->regs[REG_DFCNTRL] & 0x30) != 0x30) {
+        return;
+    }
     if (s->regs[REG_SCSIRATE] & 0x8f) {
         aic7880_error(s, "synchronous or wide DATA is unsupported");
         scsi_req_cancel(req);
@@ -693,13 +725,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     AIC7880State *s = req->hba_private;
     bool from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
 
-    if (s->regs[REG_SCSIRATE] & 0x8f) {
-        aic7880_error(s, "synchronous or wide DATA is unsupported");
-        scsi_req_cancel(req);
-        return;
-    }
     s->phase = AIC_PHASE_DATA;
-    aic7880_pio_present(s);
     s->regs[REG_SCSISIGI] = from_target ? SCSI_SIG_DATA_IN :
                              SCSI_SIG_DATA_OUT;
     if (s->test_peer && s->peer_hold_data_in && from_target && len) {
@@ -707,6 +733,7 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
         s->peer_data_in_pending = true;
         s->peer_data_len = len;
         s->peer_data_pos = 0;
+        aic7880_pio_present(s);
         return;
     }
     if (s->scsi_data_len) {
@@ -721,6 +748,8 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     s->peer_nexus_saved = false;
     s->scsi_data_len = len;
     s->scsi_data_pos = 0;
+    aic7880_pio_present(s);
+    aic7880_update_scsi_irq(s);
     aic7880_process_scsi_data(s);
 }
 
@@ -748,6 +777,9 @@ static void aic7880_bus_free_timer_cb(void *opaque)
     if (!s->selected && !s->selection_pending &&
         (!s->req || s->peer_nexus_disconnected)) {
         s->expected_phase = 0;
+        s->signal_outputs = 0;
+        s->initiator_atn = false;
+        aic7880_manual_clear(s);
         s->regs[REG_SSTAT1] |= 0x08;
         aic7880_update_scsi_irq(s);
     }
@@ -921,6 +953,8 @@ static void aic7880_scsi_reset(AIC7880State *s)
     s->peer_faulted_command = false;
     s->peer_data_len = s->peer_data_pos = 0;
     s->phase = AIC_PHASE_BUS_FREE;
+    s->signal_outputs = 0;
+    aic7880_manual_clear(s);
     s->expected_phase = 0;
     s->cdb_len = s->cdb_need = 0;
     s->regs[REG_SCSISEQ] = 1;
@@ -946,6 +980,8 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->error_serial = 0;
     s->cdb_len = s->cdb_need = s->target = 0;
     s->phase = AIC_PHASE_BUS_FREE;
+    s->signal_outputs = 0;
+    aic7880_manual_clear(s);
     s->expected_phase = 0;
     s->qout_head = s->qout_tail = s->qout_count = 0;
     s->qin_head = s->qin_tail = s->qin_count = 0;
@@ -1028,6 +1064,8 @@ static void aic7880_nexus_message_done(AIC7880State *s)
         s->selected = false;
         s->initiator_atn = false;
         s->phase = AIC_PHASE_BUS_FREE;
+        s->signal_outputs = 0;
+        aic7880_manual_clear(s);
         s->expected_phase = 0;
         s->regs[REG_SCSISIGI] = 0;
         s->regs[REG_SSTAT0] &= ~0x62;
@@ -1099,6 +1137,140 @@ static void aic7880_check_scb_parity(AIC7880State *s, unsigned index)
     aic7880_update_irq(s);
 }
 
+static void aic7880_pio_advance(AIC7880State *s)
+{
+    if (s->phase == AIC_PHASE_DATA) {
+        if (s->req && s->scsi_data_pos == s->scsi_data_len) {
+            SCSIRequest *req = s->req;
+
+            s->scsi_data_len = s->scsi_data_pos = 0;
+            scsi_req_continue(req);
+        } else {
+            aic7880_pio_present(s);
+            aic7880_update_scsi_irq(s);
+        }
+        return;
+    }
+    if (s->phase == AIC_PHASE_MSG_IN && s->peer_nexus_message) {
+        aic7880_nexus_message_done(s);
+    } else if (s->phase == AIC_PHASE_STATUS) {
+        s->phase = AIC_PHASE_MSG_IN;
+        s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
+        s->regs[REG_SCSIDATL] = 0; /* Command Complete. */
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
+    } else if (s->phase == AIC_PHASE_MSG_IN && s->message_resume_command) {
+        s->message_resume_command = false;
+        s->message_out_len = 0;
+        s->phase = AIC_PHASE_COMMAND;
+        s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
+    } else if (s->phase == AIC_PHASE_MSG_IN) {
+        s->phase = AIC_PHASE_BUS_FREE;
+        s->signal_outputs = 0;
+        aic7880_manual_clear(s);
+        s->expected_phase = 0;
+        s->initiator_atn = false;
+        s->identify_seen = false;
+        s->message_out_len = 0;
+        s->message_resume_command = false;
+        s->regs[REG_SCSISIGI] = 0;
+        s->regs[REG_SSTAT0] &= ~0x62;
+        s->regs[REG_SSTAT1] |= 0x08;
+        s->selected = false;
+        s->lun = 0;
+        s->disconnect_allowed = false;
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
+    }
+}
+
+static bool aic7880_manual_admitted(AIC7880State *s)
+{
+    if (!s->selected || (s->regs[REG_SXFRCTL0] & 8) ||
+        (s->regs[REG_DFCNTRL] & 0x38) || s->peer_reselection ||
+        s->peer_nexus_disconnected || s->peer_data_in_pending ||
+        s->peer_faulted_command ||
+        (s->phase != AIC_PHASE_DATA && s->phase != AIC_PHASE_STATUS &&
+         s->phase != AIC_PHASE_MSG_IN)) {
+        aic7880_error(s, "manual PIO without an admitted selected phase");
+        return false;
+    }
+    if (s->phase == AIC_PHASE_DATA &&
+        (s->host_fifo_len || s->host_dma_active || s->host_request_pending ||
+         (s->regs[REG_SCSIRATE] & 0x8f))) {
+        aic7880_error(s, "manual DATA conflicts with FIFO, DMA or mode");
+        return false;
+    }
+    return true;
+}
+
+static bool aic7880_incoming(AIC7880State *s)
+{
+    return s->phase == AIC_PHASE_STATUS || s->phase == AIC_PHASE_MSG_IN ||
+           (s->phase == AIC_PHASE_DATA && s->req &&
+            s->req->cmd.mode == SCSI_XFER_FROM_DEV);
+}
+
+static uint8_t aic7880_bus_data(AIC7880State *s)
+{
+    if (s->signal_outputs & 1) {
+        return s->manual_data;
+    }
+    if (s->phase == AIC_PHASE_DATA) {
+        return scsi_req_get_buf(s->req)[s->scsi_data_pos];
+    }
+    return s->regs[REG_SCSIDATL];
+}
+
+static void aic7880_signal_write(AIC7880State *s, uint8_t val)
+{
+    bool rising = (val & 1) && !(s->signal_outputs & 1);
+    bool falling = !(val & 1) && (s->signal_outputs & 1);
+
+    if (rising && (!aic7880_manual_admitted(s) ||
+                   !(s->regs[REG_SCSISIGI] & 2) || !s->manual_valid)) {
+        aic7880_error(s, "manual ACK without a sampled or staged request");
+        return;
+    }
+    s->expected_phase = val & 0xe0;
+    aic7880_pio_phase(s);
+    if (val & SCSI_SIG_ATN) {
+        s->initiator_atn = true;
+        if (s->phase == AIC_PHASE_COMMAND && !s->req && !s->cdb_len) {
+            s->phase = AIC_PHASE_MSG_OUT;
+            s->identify_seen = true;
+            s->message_out_len = 0;
+            s->message_resume_command = false;
+            s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_OUT;
+            aic7880_pio_present(s);
+        }
+    }
+    /* A new expected phase qualifies this ACK before it can consume data. */
+    if (rising && (s->regs[REG_SSTAT1] & 0x10)) {
+        s->signal_outputs = val & 0x0c;
+        aic7880_update_scsi_irq(s);
+        return;
+    }
+    s->signal_outputs = val & 0x0d; /* Initiator REQO has no effect. */
+    if (rising) {
+        if (s->phase == AIC_PHASE_DATA) {
+            if (!aic7880_incoming(s)) {
+                scsi_req_get_buf(s->req)[s->scsi_data_pos] = s->manual_data;
+            }
+            s->scsi_data_pos++;
+        }
+        s->regs[REG_SCSISIGI] &= ~2;
+        s->regs[REG_SSTAT1] &= ~0x11;
+        s->regs[REG_SSTAT0] &= ~2;
+    } else if (falling) {
+        aic7880_manual_clear(s);
+        aic7880_pio_advance(s);
+    }
+    aic7880_update_scsi_irq(s);
+}
+
 static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
 {
     AIC7880State *s = opaque;
@@ -1117,55 +1289,38 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     }
 
     if (addr == REG_SCSIDATL) {
-        uint8_t data = s->regs[REG_SCSIDATL];
+        uint8_t data;
 
-        if (s->phase != AIC_PHASE_STATUS && s->phase != AIC_PHASE_MSG_IN) {
+        if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
+            aic7880_error(s, "unpaused host SCSIDATL read");
+            return 0xff;
+        }
+        if (!aic7880_incoming(s) || s->peer_reselection ||
+            s->peer_data_in_pending || s->peer_faulted_command) {
             aic7880_error(s, "SCSIDATL read outside incoming PIO phase");
             return 0xff;
         }
-        if (s->peer_reselection || s->peer_data_in_pending ||
-            s->peer_faulted_command) {
-            aic7880_error(s, "SCSI transfer during synthetic peer event");
-            return 0xff;
-        }
-
-        if (!aic7880_pio_enabled(s)) {
+        if (!(s->regs[REG_SXFRCTL0] & 8)) {
+            if (!aic7880_manual_admitted(s) ||
+                (!(s->signal_outputs & 1) &&
+                 !(s->regs[REG_SCSISIGI] & 2))) {
+                aic7880_error(s, "manual input without target REQ");
+                return 0xff;
+            }
+            data = aic7880_bus_data(s);
+            if (!(s->signal_outputs & 1)) {
+                s->manual_data = data;
+                s->manual_valid = true;
+            }
             return data;
         }
-        if (!s->running && !s->message_resume_command) {
-            aic7880_error(s, "manual status PIO is unsupported");
+        data = s->regs[REG_SCSIDATL];
+        if (s->phase == AIC_PHASE_DATA) {
+            aic7880_error(s, "automatic DATA PIO is unsupported");
             return 0xff;
         }
-        if (s->phase == AIC_PHASE_MSG_IN && s->peer_nexus_message) {
-            aic7880_nexus_message_done(s);
-        } else if (s->phase == AIC_PHASE_STATUS) {
-            s->phase = AIC_PHASE_MSG_IN;
-            s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
-            s->regs[REG_SCSIDATL] = 0; /* Command Complete. */
-            aic7880_pio_present(s);
-            aic7880_update_scsi_irq(s);
-        } else if (s->phase == AIC_PHASE_MSG_IN && s->message_resume_command) {
-            s->message_resume_command = false;
-            s->message_out_len = 0;
-            s->phase = AIC_PHASE_COMMAND;
-            s->regs[REG_SCSISIGI] = SCSI_SIG_COMMAND;
-            aic7880_pio_present(s);
-            aic7880_update_scsi_irq(s);
-        } else if (s->phase == AIC_PHASE_MSG_IN) {
-            s->phase = AIC_PHASE_BUS_FREE;
-            s->expected_phase = 0;
-            s->initiator_atn = false;
-            s->identify_seen = false;
-            s->message_out_len = 0;
-            s->message_resume_command = false;
-            s->regs[REG_SCSISIGI] = 0;
-            s->regs[REG_SSTAT0] &= ~0x62;
-            s->regs[REG_SSTAT1] |= 0x08;
-            s->selected = false;
-            s->lun = 0;
-            s->disconnect_allowed = false;
-            aic7880_pio_present(s);
-            aic7880_update_scsi_irq(s);
+        if (aic7880_pio_enabled(s)) {
+            aic7880_pio_advance(s);
         }
         return data;
     }
@@ -1210,7 +1365,8 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_FUNCTION1:
         return 1u << ((s->regs[addr] >> 4) & 7);
     case REG_SCSISIGI:
-        return s->regs[addr] | (s->initiator_atn ? SCSI_SIG_ATN : 0);
+        return s->regs[addr] | s->signal_outputs |
+               (s->initiator_atn ? SCSI_SIG_ATN : 0);
     case REG_SCSISEQ:
     case REG_SXFRCTL0:
     case REG_SXFRCTL1:
@@ -1237,6 +1393,15 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_INTSTAT:
         return s->regs[addr];
     case REG_SCSIBUSL:
+        if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
+            aic7880_error(s, "unpaused host SCSIBUSL read");
+            return 0xff;
+        }
+        if (s->phase == AIC_PHASE_DATA && aic7880_incoming(s) &&
+            aic7880_manual_admitted(s) &&
+            ((s->signal_outputs & 1) || (s->regs[REG_SCSISIGI] & 2))) {
+            return aic7880_bus_data(s);
+        }
         if (s->phase == AIC_PHASE_MSG_IN || s->phase == AIC_PHASE_STATUS) {
             return s->regs[REG_SCSIDATL];
         }
@@ -1400,7 +1565,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         aic7880_update_scsi_irq(s);
         break;
     case REG_SIMODE1:
-        if (val & ~0xac) {
+        if (val & ~0xbd) {
             aic7880_error(s, "unsupported SIMODE1 event mask");
             break;
         }
@@ -1414,38 +1579,31 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_error(s, "unsupported SXFRCTL0 control");
             break;
         }
+        if (((val ^ s->regs[addr]) & 8) && aic7880_manual_busy(s)) {
+            aic7880_error(s, "PIO mode change during a manual byte");
+            break;
+        }
+        if ((val & SXFR_CLRCHN) &&
+            ((s->signal_outputs & 1) || (s->regs[REG_DFCNTRL] & 0x30))) {
+            aic7880_error(s, "channel clear during ACK or SCSI DMA");
+            break;
+        }
         if (val & SXFR_CLRSTCNT) {
             memset(&s->regs[REG_STCNT], 0, 3);
             memset(&s->regs[REG_SHADDR], 0, 4);
             s->regs[REG_SSTAT0] &= ~0x04;
         }
         if (val & SXFR_CLRCHN) {
-            if (s->req) {
-                scsi_req_cancel(s->req);
-            }
-            s->host_fifo_len = 0;
-            s->host_fifo_write = s->host_fifo_read;
-            s->regs[REG_DFSTATUS] |= 1;
-            s->regs[REG_DFCNTRL] &= ~DFC_FIFOFLUSH;
-            s->selected = false;
-            s->lun = 0;
-            s->disconnect_allowed = false;
-            s->initiator_atn = false;
-            s->identify_seen = false;
-            s->message_out_len = 0;
-            s->message_resume_command = false;
-            s->peer_hold_data_in = false;
-            s->peer_faulted_command = false;
-            s->phase = AIC_PHASE_BUS_FREE;
-            s->expected_phase = 0;
-            s->cdb_len = s->cdb_need = 0;
-            s->regs[REG_SCSISIGI] = 0;
-            s->regs[REG_SSTAT0] &= ~0x42;
+            /* The target request and PCI FIFO have separate ownership. */
+            aic7880_manual_clear(s);
         }
         /* DFON is a latch; REQ#/ACK# filter timing is not modeled. */
         s->regs[addr] = val & 0x88;
         if (!(val & 0x08)) {
             s->regs[REG_SSTAT0] &= ~0x02;
+            if (pio_was_enabled && s->phase == AIC_PHASE_DATA) {
+                aic7880_pio_present(s);
+            }
         } else if (!pio_was_enabled) {
             aic7880_pio_present(s);
         }
@@ -1471,28 +1629,11 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_SCSISIGI: /* SCSISIGO on writes. */
-        if ((val & ~0xf0) ||
-            ((val & SCSI_SIG_ATN) &&
-             (!s->selected || s->req || s->cdb_len ||
-              (s->phase != AIC_PHASE_MSG_OUT &&
-               s->phase != AIC_PHASE_COMMAND)))) {
-            aic7880_error(s, "unsupported SCSISIGO control");
+        if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
+            aic7880_error(s, "unpaused host SCSISIGO write");
             break;
         }
-        if (val & SCSI_SIG_ATN) {
-            s->initiator_atn = true;
-            if (s->phase == AIC_PHASE_COMMAND) {
-                s->phase = AIC_PHASE_MSG_OUT;
-                s->identify_seen = true;
-                s->message_out_len = 0;
-                s->message_resume_command = false;
-                s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_OUT;
-                aic7880_pio_present(s);
-            }
-        }
-        s->expected_phase = val & 0xe0;
-        aic7880_pio_phase(s);
-        aic7880_update_scsi_irq(s);
+        aic7880_signal_write(s, val);
         break;
     case REG_SBLKCTL:
         if (val & ~SBLK_AUTOFLUSHDIS) {
@@ -1502,6 +1643,10 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         s->regs[addr] = val;
         break;
     case REG_DFCNTRL:
+        if ((val & 0x38) && aic7880_manual_busy(s)) {
+            aic7880_error(s, "DMA enable during a manual byte");
+            break;
+        }
         if ((val & ~0x3f) || (val & 3) == 3) {
             aic7880_error(s, "unsupported DFCNTRL control");
             break;
@@ -1532,6 +1677,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         if ((val & DFC_FIFOFLUSH) &&
             (!s->host_fifo_len || (s->regs[addr] & 0x04))) {
             s->regs[addr] &= ~DFC_FIFOFLUSH;
+        }
+        if (s->phase == AIC_PHASE_DATA && (val & 0x38)) {
+            aic7880_pio_present(s);
         }
         aic7880_host_dma(s);
         aic7880_process_scsi_data(s);
@@ -1645,6 +1793,29 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_SCSIDATL:
+        if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
+            aic7880_error(s, "unpaused host SCSIDATL write");
+            break;
+        }
+        if (s->signal_outputs & 1) {
+            aic7880_error(s, "SCSIDATL write while ACK is asserted");
+            break;
+        }
+        if (s->phase == AIC_PHASE_DATA &&
+            !(s->regs[REG_SXFRCTL0] & 8)) {
+            if (!aic7880_manual_admitted(s) || aic7880_incoming(s) ||
+                !(s->regs[REG_SCSISIGI] & 2)) {
+                aic7880_error(s, "manual output without target DATA OUT REQ");
+                break;
+            }
+            s->manual_data = val;
+            s->manual_valid = true;
+            break;
+        }
+        if (s->phase == AIC_PHASE_STATUS || s->phase == AIC_PHASE_MSG_IN) {
+            aic7880_error(s, "SCSIDATL write in incoming PIO phase");
+            break;
+        }
         if (aic7880_pio_pending(s) && !aic7880_pio_enabled(s)) {
             break;
         }
@@ -2351,7 +2522,8 @@ static int aic7880_pre_save(void *opaque)
 {
     AIC7880State *s = opaque;
 
-    return (s->req || s->running || s->scsi_data_len ||
+    return ((s->signal_outputs & 1) || s->req || s->running ||
+            s->scsi_data_len ||
             s->phase == AIC_PHASE_DATA ||
             (s->selected && s->host_fifo_len) || s->host_dma_active ||
             ((s->regs[REG_DFCNTRL] & 8) && aic7880_count(s, 0x8c)) ||
@@ -2512,6 +2684,8 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
         s->disconnect_allowed = false;
         s->initiator_atn = false;
         s->phase = AIC_PHASE_BUS_FREE;
+        s->signal_outputs = 0;
+        aic7880_manual_clear(s);
         s->expected_phase = 0;
         s->regs[REG_SCSISIGI] = 0;
         s->regs[REG_SSTAT0] &= ~0x62;
@@ -2619,6 +2793,9 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_BOOL(message_resume_command, AIC7880State),
         VMSTATE_UINT8(phase, AIC7880State),
         VMSTATE_UINT8(expected_phase, AIC7880State),
+        VMSTATE_UINT8(signal_outputs, AIC7880State),
+        VMSTATE_UINT8(manual_data, AIC7880State),
+        VMSTATE_BOOL(manual_valid, AIC7880State),
         VMSTATE_UINT8_ARRAY(qout, AIC7880State, 256),
         VMSTATE_UINT8(qout_head, AIC7880State),
         VMSTATE_UINT8(qout_tail, AIC7880State),
