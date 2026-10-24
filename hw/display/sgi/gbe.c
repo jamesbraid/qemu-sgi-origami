@@ -2,7 +2,8 @@
 /*
  * SGI GBE 1.1 architectural display model. The functional-display option
  * selects the reviewed functional policy in Origami's o2-gbe-platform.md.
- * Pipeline phase, byte placement and PLL validity are model approximations.
+ * Pipeline phase, byte placement, FIFO reset and PLL validity are model
+ * approximations. FIFO reset policy is in o2-gbe-dma-reset.md.
  */
 #include "qemu/osdep.h"
 #include "hw/core/resettable.h"
@@ -130,6 +131,11 @@ static bool dma_read(SGIO2GBEState *s, uint64_t addr, void *buf, size_t len)
     return true;
 }
 
+static bool plane_held(SGIO2GBEState *s, unsigned plane)
+{
+    return plane ? s->ovr[0] & BIT(13) : s->frm[0] & BIT(15);
+}
+
 static void fetch_list(SGIO2GBEState *s, unsigned plane)
 {
     uint32_t shape = plane ? s->ovr[0] : s->frm[0];
@@ -142,7 +148,7 @@ static void fetch_list(SGIO2GBEState *s, unsigned plane)
 
     s->list_count[plane] = 0;
     s->plane_fault[plane] = false;
-    if (!(control & 1)) {
+    if (plane_held(s, plane) || !(control & 1)) {
         return;
     }
     if (rhs > 15 || !(whole || rhs) || !height ||
@@ -373,7 +379,8 @@ static uint32_t plane_pixel(SGIO2GBEState *s, unsigned plane,
     uint64_t x, y, index, addr;
     uint16_t entry;
 
-    if (!(ctl & 1) || s->plane_fault[plane] || !s->list_count[plane]) {
+    if (plane_held(s, plane) || !(ctl & 1) || s->plane_fault[plane] ||
+        !s->list_count[plane]) {
         return 0;
     }
     if (!width || depth == 3) {
@@ -788,6 +795,24 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+static void write_shape(SGIO2GBEState *s, unsigned plane, uint32_t value)
+{
+    uint32_t *shape = plane ? &s->ovr[0] : &s->frm[0];
+    uint32_t bit = plane ? BIT(13) : BIT(15);
+
+    if ((value & bit) && !s->functional) {
+        unsupported(plane ? "overlay diagnostic reset" :
+                            "frame diagnostic reset");
+        return;
+    }
+    if ((value & bit) && !(*shape & bit)) {
+        s->list_count[plane] = 0;
+        s->plane_fault[plane] = false;
+        memset(s->lists[plane], 0, sizeof(s->lists[plane]));
+    }
+    *shape = value & ((bit - 1) | (s->functional ? bit : 0));
+}
+
 static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     SGIO2GBEState *s = opaque;
@@ -826,20 +851,19 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     }
     if (addr >= 0x20000 && addr < 0x2000c) {
         index = (addr - 0x20000) / 4;
-        if (!index && (v & BIT(13))) {
-            unsupported("overlay diagnostic reset");
+        if (!index) {
+            write_shape(s, 1, v);
         } else {
-            s->ovr[index] = v & (index ? POINTER : 8191);
+            s->ovr[index] = v & POINTER;
         }
         goto done;
     }
     if (addr >= 0x30000 && addr < 0x30010) {
         index = (addr - 0x30000) / 4;
-        if (!index && (v & BIT(15))) {
-            unsupported("frame diagnostic reset");
+        if (!index) {
+            write_shape(s, 0, v);
         } else {
-            s->frm[index] = v & (index >= 2 ? POINTER :
-                                 index ? 0xffff0000u : 0x7fff);
+            s->frm[index] = v & (index >= 2 ? POINTER : 0xffff0000u);
         }
         goto done;
     }
@@ -1024,7 +1048,9 @@ static int post_load(void *opaque, int version)
 {
     SGIO2GBEState *s = opaque;
     if (s->list_count[0] > LIST_ENTRIES ||
-        s->list_count[1] > LIST_ENTRIES) {
+        s->list_count[1] > LIST_ENTRIES ||
+        (plane_held(s, 0) && s->list_count[0]) ||
+        (plane_held(s, 1) && s->list_count[1])) {
         return -EINVAL;
     }
     for (unsigned i = 0; i < 2; i++) {
