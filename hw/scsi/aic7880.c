@@ -2453,13 +2453,7 @@ static void aic7880_run(AIC7880State *s)
                 s->regs[REG_HCNTRL] |= HOST_PAUSE;
                 goto done;
             }
-            if (taken && target == at && !s->req) {
-                timer_mod(s->seq_timer,
-                          qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) +
-                          AIC_SEQ_QUANTUM_US);
-                goto done;
-            }
-            if (taken && s->req) {
+            if (taken && (target == at || s->req)) {
                 goto done;
             }
             continue;
@@ -2591,12 +2585,12 @@ static void aic7880_run(AIC7880State *s)
             goto done;
         }
     }
+done:
     if (!(s->regs[REG_HCNTRL] & HOST_PAUSE) &&
         !(s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
         timer_mod(s->seq_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) +
                                AIC_SEQ_QUANTUM_US);
     }
-done:
     s->running = false;
 }
 
