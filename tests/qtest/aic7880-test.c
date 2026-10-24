@@ -11735,6 +11735,103 @@ static void test_explicit_ack_after_automatic_read(void)
     }
 }
 
+static QTestState *explicit_message_pair(bool delayed)
+{
+    static const uint8_t inquiry[] = { 0x12, 0, 0, 0, 36, 0 };
+    QTestState *qts = start_peer_disk();
+
+    manual_command(qts, inquiry, sizeof(inquiry));
+    manual_wait_phase(qts, 0x40);
+    manual_counters(qts);
+    peer_event(qts, delayed ? "messages:0:0:02:03:1" :
+                             "messages:0:0:02:03:0");
+    manual_wait_phase(qts, 0xe0);
+    qtest_writeb(qts, REG_BASE + 1, 8);
+    return qts;
+}
+
+static void explicit_messages_return_to_data(QTestState *qts)
+{
+    static const uint8_t prefix[] = { 0, 0, 5 };
+
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 1, 0);
+    manual_wait_phase(qts, 0x40);
+    for (unsigned i = 0; i < ARRAY_SIZE(prefix); i++) {
+        g_assert_cmphex(manual_incoming(qts, 0x40, false), ==, prefix[i]);
+    }
+    manual_check_counters(qts);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+}
+
+static void test_explicit_ack_consecutive_messages(void)
+{
+    for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+        QTestState *qts = explicit_message_pair(false);
+
+        /* The automatic read retires 2 and presents 3 in the same phase. */
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xe2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 1, ==, 1);
+        manual_signal_write(qts, 0xe7, sequencer);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xe1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 0);
+        manual_signal_write(qts, 0xe7, sequencer);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 3);
+        manual_signal_write(qts, 0xe6, sequencer);
+        explicit_messages_return_to_data(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_explicit_ack_delayed_message(void)
+{
+    for (unsigned automatic = 0; automatic < 2; automatic++) {
+        for (unsigned rejected = 0; rejected < 3; rejected++) {
+            QTestState *qts = explicit_message_pair(true);
+            ManualGuard before;
+
+            if (automatic) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+            } else {
+                qtest_writeb(qts, REG_BASE + 3, 0xe7);
+                qtest_writeb(qts, REG_BASE + 3, 0xe6);
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xe0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                            ==, automatic ? 0 : 2);
+            manual_capture(qts, &before);
+            qtest_clock_step(qts, 1000000);
+            manual_unchanged(qts, &before);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 8, ==, 0);
+            if (rejected) {
+                if (rejected == 1) {
+                    qtest_readb(qts, REG_BASE + 6);
+                } else {
+                    qtest_writeb(qts, REG_BASE + 3, 0xe7);
+                }
+                manual_unchanged(qts, &before);
+                qtest_quit(qts);
+                continue;
+            }
+            peer_event(qts, "release-messages");
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xe2);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 1, ==, 1);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 2);
+            qtest_writeb(qts, REG_BASE + 3, 0xe7);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 3);
+            qtest_writeb(qts, REG_BASE + 3, 0xe6);
+            explicit_messages_return_to_data(qts);
+            qtest_quit(qts);
+        }
+    }
+}
+
 static void test_explicit_ack_readiness_clears(void)
 {
     for (unsigned clear = 0; clear < 4; clear++) {
@@ -15258,6 +15355,10 @@ int main(int argc, char **argv)
                    test_explicit_incoming_ack);
     qtest_add_func("aic7880/manual/explicit-after-automatic-read",
                    test_explicit_ack_after_automatic_read);
+    qtest_add_func("aic7880/manual/explicit-consecutive-messages",
+                   test_explicit_ack_consecutive_messages);
+    qtest_add_func("aic7880/manual/explicit-delayed-message",
+                   test_explicit_ack_delayed_message);
     qtest_add_func("aic7880/manual/explicit-readiness-clears",
                    test_explicit_ack_readiness_clears);
     qtest_add_func("aic7880/manual/explicit-ownership",

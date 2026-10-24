@@ -224,6 +224,10 @@ struct AIC7880State {
     uint32_t peer_nexus_saved_pos;
     bool peer_scsi_irq_latched;
     bool peer_hold_data_in;
+    bool peer_messages_active;
+    bool peer_message_hold;
+    uint8_t peer_message_pos;
+    uint8_t peer_messages[2];
     bool peer_data_in_pending;
     bool peer_last_parity_bad;
     bool peer_faulted_command;
@@ -403,6 +407,10 @@ static void aic7880_dma_done(AIC7880State *s)
 static bool aic7880_pio_pending(AIC7880State *s)
 {
     if (!s->selected || (s->signal_outputs & 1)) {
+        return false;
+    }
+    if (s->test_peer && s->peer_messages_active &&
+        s->peer_message_pos == 1 && s->peer_message_hold) {
         return false;
     }
     if (s->phase == AIC_PHASE_DATA) {
@@ -877,6 +885,8 @@ static void aic7880_cancel_impl(SCSIRequest *req)
         s->regs[REG_DFCNTRL] &= ~DFC_FIFOFLUSH;
         s->peer_data_in_pending = false;
         s->peer_data_len = s->peer_data_pos = 0;
+        s->peer_messages_active = s->peer_message_hold = false;
+        s->peer_message_pos = 0;
         s->req = NULL;
         scsi_req_unref(req);
         aic7880_pio_retire(s);
@@ -1338,6 +1348,8 @@ static void aic7880_scsi_reset(AIC7880State *s)
     s->peer_nexus_disconnected = false;
     s->peer_nexus_saved = false;
     s->peer_nexus_message = 0;
+    s->peer_messages_active = s->peer_message_hold = false;
+    s->peer_message_pos = 0;
     s->peer_hold_data_in = false;
     s->peer_data_in_pending = false;
     s->peer_faulted_command = false;
@@ -1402,6 +1414,8 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->peer_nexus_saved = false;
     s->peer_nexus_message = 0;
     s->peer_scsi_irq_latched = false;
+    s->peer_messages_active = s->peer_message_hold = false;
+    s->peer_message_pos = 0;
     s->peer_hold_data_in = false;
     s->peer_data_in_pending = false;
     s->peer_last_parity_bad = false;
@@ -1558,6 +1572,25 @@ static void aic7880_pio_advance(AIC7880State *s)
             aic7880_pio_present(s);
             aic7880_update_scsi_irq(s);
         }
+        return;
+    }
+    if (s->test_peer && s->peer_messages_active &&
+        s->phase == AIC_PHASE_MSG_IN) {
+        s->peer_message_pos++;
+        if (s->peer_message_pos == ARRAY_SIZE(s->peer_messages)) {
+            s->peer_messages_active = false;
+            s->phase = AIC_PHASE_DATA;
+            s->regs[REG_SCSISIGI] = s->peer_nexus_signal;
+            aic7880_pio_present(s);
+        } else if (s->peer_message_hold) {
+            /* Withhold REQ while retaining the previous latch/readiness. */
+            s->regs[REG_SCSISIGI] &= ~2;
+            s->regs[REG_SSTAT1] &= ~0x11;
+        } else {
+            s->regs[REG_SCSIDATL] = s->peer_messages[s->peer_message_pos];
+            aic7880_pio_present(s);
+        }
+        aic7880_update_scsi_irq(s);
         return;
     }
     if (s->phase == AIC_PHASE_MSG_IN && s->peer_nexus_message) {
@@ -1758,6 +1791,10 @@ static uint64_t aic7880_read_impl(void *opaque, hwaddr addr, unsigned size)
             return 0xff;
         }
         if (aic7880_pio_enabled(s)) {
+            if (s->test_peer && s->peer_messages_active) {
+                /* A held peer need not publish a replacement request. */
+                s->regs[REG_SSTAT0] &= ~2;
+            }
             aic7880_pio_advance(s);
         }
         return data;
@@ -3121,6 +3158,44 @@ static void aic7880_peer_event_set_impl(Object *obj, const char *value,
     g_auto(GStrv) parts = g_strsplit(value, ":", -1);
     unsigned long target_id, initiator_id, position, byte;
 
+    if (g_strv_length(parts) == 6 && g_str_equal(parts[0], "messages")) {
+        unsigned long second, hold;
+
+        if (qemu_strtoul(parts[1], NULL, 10, &target_id) ||
+            qemu_strtoul(parts[2], NULL, 10, &position) ||
+            qemu_strtoul(parts[3], NULL, 16, &byte) || byte > UINT8_MAX ||
+            qemu_strtoul(parts[4], NULL, 16, &second) || second > UINT8_MAX ||
+            qemu_strtoul(parts[5], NULL, 10, &hold) || hold > 1 ||
+            target_id != s->target || position != s->lun || !s->req ||
+            !s->selected || s->phase != AIC_PHASE_DATA ||
+            !s->scsi_data_len || s->peer_nexus_disconnected ||
+            s->peer_nexus_message || s->peer_messages_active ||
+            s->peer_data_in_pending || s->peer_faulted_command ||
+            aic7880_manual_busy(s) || (s->regs[REG_DFCNTRL] & 0x38)) {
+            error_setg(errp, "invalid synthetic incoming message stream");
+            return;
+        }
+        s->peer_nexus_signal = s->regs[REG_SCSISIGI];
+        s->peer_messages[0] = byte;
+        s->peer_messages[1] = second;
+        s->peer_message_pos = 0;
+        s->peer_message_hold = hold;
+        s->peer_messages_active = true;
+        s->phase = AIC_PHASE_MSG_IN;
+        s->regs[REG_SCSISIGI] = SCSI_SIG_MSG_IN;
+        s->regs[REG_SCSIDATL] = byte;
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
+        return;
+    }
+    if (g_str_equal(value, "release-messages") && s->peer_messages_active &&
+        s->peer_message_pos == 1 && s->peer_message_hold) {
+        s->peer_message_hold = false;
+        s->regs[REG_SCSIDATL] = s->peer_messages[1];
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
+        return;
+    }
     if (g_strv_length(parts) == 3 &&
         (g_str_equal(parts[0], "save") ||
          g_str_equal(parts[0], "restore") ||
