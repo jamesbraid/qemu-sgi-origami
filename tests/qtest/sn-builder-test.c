@@ -1213,37 +1213,6 @@ static void count_cpus_per_node(QTestState *qts, unsigned int *counts,
     }
 }
 
-static void test_origin300_direct_v12_builds_device(const void *data)
-{
-    g_autoptr(GError) error = NULL;
-    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
-    g_autofree char *path = NULL;
-    g_autofree char *node = NULL;
-    QTestState *qts;
-    int fd;
-
-    fd = g_file_open_tmp("sn-builder-o300-v12-prom-XXXXXX.bin", &path,
-                         &error);
-    g_assert_no_error(error);
-    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
-    g_assert_cmpint(close(fd), ==, 0);
-
-    qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
-                      "-bios %s -S", path);
-    node = qom_child_type(qts, "/machine", "node0");
-    g_assert_cmpstr(node, ==, "sgi-sn1-node");
-    qtest_quit(qts);
-    g_clear_pointer(&node, g_free);
-
-    qts = qtest_initf("-M origin300,topology=origin300-v12-direct "
-                      "-cpu R14000 -smp 2 -m 512M -bios %s -S", path);
-    node = qom_child_type(qts, "/machine/module0", "rear-panel");
-    g_assert_cmpstr(node, ==, "sgi-odyssey");
-    g_assert_null(qom_child_type(qts, "/machine", "module1"));
-    qtest_quit(qts);
-    g_unlink(path);
-}
-
 /* The two-chip experiment gives the remote XBridge and V12 distinct PIO. */
 static void test_origin300_vbrick_projects_v12(const void *data)
 {
@@ -9728,8 +9697,6 @@ int main(int argc, char **argv)
                         NULL, test_origin200_accepts_its_memory_populations);
     qtest_add_data_func("sn/builder/origin200-dual-accepts-its-populations",
                         NULL, test_origin200_dual_accepts_its_populations);
-    qtest_add_data_func("sn/builder/origin300-direct-v12-builds-device",
-                        NULL, test_origin300_direct_v12_builds_device);
     qtest_add_data_func("sn/builder/origin300-vbrick-projects-v12",
                         NULL, test_origin300_vbrick_projects_v12);
     qtest_add_data_func("sn/builder/origin300-two-chassis-population",

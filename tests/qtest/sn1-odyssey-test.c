@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The Odyssey (VPro) graphics board plugged into the Origin 300's XIO
- * connector. No SGI product shipped that composition; it is the host the
- * emulator can build today, and the register contract under test is the
+ * The Odyssey (VPro) graphics board in the Fuel's graphics slot, the VPro
+ * target the SN1 tests share. The register contract under test is the
  * board's, not the machine's.
  *
  * Each test pins one step of the ladder the stock IP35 firmware and the
@@ -23,18 +22,18 @@
  * The board's register contract: its own property defaults, which -global
  * changes here, rather than the catalogue's V12, which a launch takes.
  */
-#define MACHINE "-M origin300,topology=origin300-v12-direct," \
-                "x-uncatalogued-graphics=on -cpu R14000 -smp 2 -S " \
-                "-device sgi-odyssey,slot=widget-11"
+#define MACHINE "-M fuel,x-uncatalogued-graphics=on " \
+                "-cpu R14000 -smp 1 -m 512M -S " \
+                "-device sgi-odyssey,slot=widget-13"
 
 /*
- * The connector's crosstalk position, repeated from the machine's own
- * selection rather than borrowed from it. No source binds the connector
- * to a crossbar port; see the chip's SGI_XBRIDGE_XIO_PORT_DEFAULT.
+ * The graphics slot's crosstalk position, repeated from the machine's own
+ * selection rather than borrowed from it: XBridge widget 13, where a Fuel
+ * IRIX inventory and an OpenBSD capture both report the board.
  */
-#define SLOT 11
+#define SLOT 13
 #define WIDGET (SPACE_IO + (uint64_t)SLOT * UINT64_C(0x1000000))
-#define BOARD "/machine/module0/rear-panel"
+#define BOARD "/machine/module0/graphics-slot"
 
 #define ODSY_IDENTITY 0x0004
 #define ODSY_STATUS 0x000c
@@ -140,17 +139,17 @@
 
 /*
  * The same node's memory-controller "installed banks" register, at the
- * CPU-relative offsets tests/qtest/sn1-address-map-test.c's own
- * BEDROCK_MD_MEMORY_CONFIG/BEDROCK_MD_INSTALLED_SELECT2 constants reach.
- * Real firmware programs this before touching RAM; a halted board_start()
- * board never runs that firmware, so a test that DMAs into guest RAM has
- * to install a bank itself first, or every address in it resolves as an
- * unassigned hole rather than memory.
+ * CPU-relative offset tests/qtest/sn1-address-map-test.c's own
+ * BEDROCK_MD_MEMORY_CONFIG constant reaches. Real firmware programs this
+ * before touching RAM; a halted board_start() board never runs that
+ * firmware, so a test that DMAs into guest RAM has to install a bank
+ * itself first, or every address in it resolves as an unassigned hole
+ * rather than memory. The Fuel fits 256 MB in each of locational banks 0
+ * and 1 (size code 3, both enabled), which need no software-bank selection
+ * to put RAM at physical 0.
  */
 #define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x780008)
-#define BEDROCK_MD_INSTALLED UINT64_C(0x3300)
-#define BEDROCK_MD_INSTALLED_SELECT2 \
-    ((UINT64_C(2) << 32) | BEDROCK_MD_INSTALLED)
+#define BEDROCK_MD_INSTALLED_BANKS UINT64_C(0x33)
 
 /*
  * The crosstalk register-packet address for that same PENDING_MODIFY
@@ -2532,7 +2531,7 @@ static void test_command_fifo_host_write_sync(void)
     const uint64_t base = 0xb70000;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
 
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
@@ -2647,7 +2646,7 @@ static void test_command_fifo_dma_trace(void)
                             " -trace enable=sgi_odyssey_dma_chunk -D %s", path);
     qts = board_start(args);
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     for (unsigned i = 0; i < sizeof(pixels); i++) {
         pixels[i] = i;
     }
@@ -2771,7 +2770,7 @@ static void test_command_fifo_dma_page_table(void)
     g_assert_cmphex(dma_pack_half(table & 0xffffff), ==, 0x2e000000);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
 
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)fence_base);
@@ -2854,7 +2853,7 @@ static void test_command_fifo_dma_page_table(void)
      */
     qts = board_start("");
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
     reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
     reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
@@ -2881,7 +2880,7 @@ static void test_command_fifo_dma_page_table(void)
      */
     qts = board_start("");
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     qtest_memwrite(qts, table, tbl, sizeof(tbl));
     dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==, 0);
@@ -2944,7 +2943,7 @@ static void test_command_fifo_dma_image(void)
     const uint64_t pte_obj[] = { ODSY_DMA_PTE(page_b, 12) };
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
     reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
     reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
@@ -3319,7 +3318,7 @@ static void test_context_switch_completion(void)
     const uint64_t base = 0xb70000;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
 
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, (uint32_t)base);
@@ -5992,7 +5991,7 @@ static void test_command_fifo_compare_incomplete(void)
     const uint64_t base = 0xb70000;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
     reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
@@ -6036,7 +6035,7 @@ static void test_command_fifo_compare_neutral(bool user)
     uint64_t last_interrupt_addr;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
     reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
@@ -6105,7 +6104,7 @@ static void test_command_fifo_compare_nonzero(bool user, bool second)
     qts = board_start(extra);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, (uint32_t)base);
     reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
@@ -6168,7 +6167,7 @@ static void test_command_fifo_compare_cancels_query_user(void)
     uint8_t counter[4];
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
@@ -8650,7 +8649,7 @@ static QTestState *shadow_start(const char *extra)
     const uint64_t p = ODSY_SHADOW_PAGE;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, (uint32_t)p);
     /*
@@ -8721,7 +8720,7 @@ static void push_material(QTestState *qts, const uint32_t commands[5],
 static void material_snapshot(QTestState *qts, unsigned context)
 {
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, ODSY_SHADOW_PAGE);
     qtest_memset(qts, ODSY_SHADOW_PAGE, 0xa5, 4096);
@@ -9008,7 +9007,7 @@ static void texture_current_query(QTestState *qts, const uint32_t *record,
     uint8_t bytes[28], counter[4], sync[2];
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
@@ -10349,7 +10348,7 @@ static void test_dma_texture_object(void)
     uint32_t x, y;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     /*
      * An earlier, smaller texture at the same base -- another client's 64x64
      * level, four width units: the DMA header's own row length replaces it.
@@ -10404,7 +10403,7 @@ static void test_dma_texture_luminance_alpha(void)
     uint32_t x, y;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     for (y = 0; y < 2; y++) {
         for (x = 0; x < 256; x++) {
             rows[2 * (256 * y + x)] = x;
@@ -10489,7 +10488,7 @@ static void test_dma_texture_12bit_sources(void)
     QTestState *qts = board_start("");
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         dma_texel12_row(qts, cases[i].base, cases[i].code,
                         cases[i].size_index, cases[i].bpp, cases[i].bytes);
@@ -10633,7 +10632,7 @@ static void test_object_store_reclaims(void)
     qts = board_start(extra);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     dma_object_texel(qts, 0x200000, 256, 5, 2999, 0x11111111);
     dma_object_texel(qts, 0x300000, 256, 6, 2999, 0x22222222);
     g_assert_cmphex(odsy_test_object_texel(qts, 0x200000, 5, 2999), ==,
@@ -10695,7 +10694,7 @@ static void test_object_store_grows_without_forgetting(void)
     QTestState *qts = board_start("");
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     dma_object_texel(qts, 0x200000, 256, 5, 2999, 0x11111111);
     dma_object_texel(qts, 0x300000, 256, 6, 2999, 0x22222222);
     dma_object_texel(qts, 0x200000, 256, 7, 3999, 0x33333333);
@@ -10747,7 +10746,7 @@ static void test_object_store_migrates_used_part(void)
         QTestState *qts = b ? large : small;
 
         qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                     BEDROCK_MD_INSTALLED_SELECT2);
+                     BEDROCK_MD_INSTALLED_BANKS);
         dma_object_texel(qts, 0x200000, 2, 3, 40, 0x11223344);
     }
     dma_object_texel(large, 0x300000, 256, 5, 2999, 0x55667788);
@@ -12266,7 +12265,7 @@ static void test_command_fifo_gl_program_window_unknown(void)
     QTestState *qts = lit_start(&log_path);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, ODSY_SHADOW_PAGE);
     context_switch_to(qts, 1);
@@ -15041,7 +15040,7 @@ static void context_save_texture_coordinate_inactive(bool nonunit,
         memcpy(&records[owner][1], coords[owner], 4 * sizeof(uint32_t));
     }
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     for (unsigned slot = 0; slot < 4; slot++) {
         for (unsigned owner = 0; owner < 2; owner++) {
@@ -15128,7 +15127,7 @@ static void test_context_save_texture_coordinate(void)
     const uint32_t word = 0x140, ops = 0x400;
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     texture_adapter_upload(qts, 0x180000, pixels);
     texture_adapter_window(qts);
@@ -15211,7 +15210,7 @@ static void test_context_save_texture_coordinate(void)
     }
     qtest_system_reset(qts);
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, pages[0]);
     qtest_writel(qts, pages[0] + ODSY_CTX_SWITCH_DONE_OFFSET, 0);
@@ -15302,7 +15301,7 @@ static void test_context_save_idle_descriptors(void)
     qts = board_start(extra);
     /* Bank 0 is absent; bank 1 holds completion and saved attributes. */
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 (UINT64_C(2) << 32) | UINT64_C(0x3200));
+                 UINT64_C(0x32));
     qtest_writel(qts, page + ODSY_HW_COLOUR_WORD, 0xa5a5a5a5);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
@@ -15345,7 +15344,7 @@ static void test_context_save_texture_coordinate_active_primitive(void)
      * entries stay writable.
      */
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 (UINT64_C(2) << 32) | UINT64_C(0x3200));
+                 UINT64_C(0x32));
     for (unsigned slot = 0; slot < 4; slot++) {
         qtest_writel(qts, page + 0x140 + 4 * slot, 0xa5a5a5a5);
         for (unsigned i = 0; i < 4; i++) {
@@ -16135,7 +16134,7 @@ static void test_texture_adapter_nearest_clamp_border(void)
     QTestState *qts = board_start("");
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
     qtest_writel(qts, page + ODSY_HW_PIPE_STATE, 0x4);
@@ -17279,7 +17278,7 @@ static void test_texture_adapter_linear_r(void)
     }
     /* Generated R must not overwrite the explicit current coordinate. */
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     qtest_memset(qts, page, 0xa5, 4096);
     qtest_writel(qts, page + 0x84, 0);
@@ -17589,7 +17588,7 @@ static void test_texture_adapter_linear_q(void)
     texture_adapter_current_point(qts, 36, 63);
     g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==, colours[0]);
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     qtest_memset(qts, page, 0xa5, 4096);
     qtest_writel(qts, page + 0x84, 0);
@@ -17744,7 +17743,7 @@ static void test_context_save_texture_coordinate_3d(void)
     QTestState *qts = board_start("");
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
     qtest_memset(qts, page, 0xa5, 4096);
     qtest_writel(qts, page + 0x84, 0);
@@ -18929,7 +18928,7 @@ static void test_buffers_transfers_follow_mask(void)
     uint8_t px[8];
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
     user_cmd_push(qts, 0x2000);
     user_cmd_push(qts, 0x50);
@@ -19097,7 +19096,7 @@ static QTestState *readback_start(const char *extra)
     QTestState *qts = board_start(extra);
 
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_BANKS);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
     reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, RB_FENCE);
     route_to_pending(qts);

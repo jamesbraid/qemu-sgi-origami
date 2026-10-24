@@ -738,15 +738,34 @@ static const RtRam octane_banks_ram[] = {
                                  IO8_IOC3_SLOT * 0x1000 + (o))
 #define IO8_IOC3_WINDOW         (IO8_WIDGET + 0x800000)
 
-/*
- * Banks 2 and 3 populated, which puts RAM at physical 0 and at the second
- * 1 GB bank through aliases the destination rebuilds after loading.
- */
 #define BEDROCK_MD(o)           (SPACE_IO + 0x01000000 + 0x780000 + (o))
 #define BEDROCK_BANK_SIZE       UINT64_C(0x40000000)
 
-static const RtStep bedrock[] = {
+/*
+ * The Origin 300's banks 2 and 3, selected as software banks 0 and 1,
+ * which puts RAM at physical 0 and at the second 1 GB bank through
+ * aliases the destination rebuilds after loading.
+ */
+static const RtStep bedrock_banks_23[] = {
     W64(BEDROCK_MD(0x8), (UINT64_C(2) << 32) | 0x3300),
+    M64(BEDROCK_MD(0x8)),
+    RT_DONE
+};
+
+static const RtDevice dev_bedrock_banks_23 = { "sgi-bedrock",
+                                               bedrock_banks_23 };
+
+/* The Fuel's banks 0 and 1, the same physical layout with no selection. */
+static const RtStep bedrock_banks_01[] = {
+    W64(BEDROCK_MD(0x8), 0x33),
+    M64(BEDROCK_MD(0x8)),
+    RT_DONE
+};
+
+static const RtDevice dev_bedrock_banks_01 = { "sgi-bedrock",
+                                               bedrock_banks_01 };
+
+static const RtStep bedrock[] = {
     W64(BEDROCK_REGS(0xd0), 0x5d),              /* LED, slice 2 */
     W64(BEDROCK_PI1(0x328), 0x10001400000ULL),  /* PI graphics page 1 */
     W64(BEDROCK_PI1(0x330), 0x64),              /* credit */
@@ -754,7 +773,6 @@ static const RtStep bedrock[] = {
     W64(BEDROCK_PI1(0x20068), 1),               /* credit mode */
     W64(BEDROCK_II(0x400148), 0x1001b),         /* II graphics map 1 */
     P64(BEDROCK_REGS(0x4000000)),               /* board identity */
-    M64(BEDROCK_MD(0x8)),
     M64(BEDROCK_REGS(0xd0)),
     M64(BEDROCK_PI1(0x328)),
     M64(BEDROCK_PI1(0x330)),
@@ -901,14 +919,15 @@ static const RtRam bedrock_ram[] = {
 };
 
 static const RtDevice *const origin300_devices[] = {
-    &dev_bedrock, &dev_bedrock_blocks, &dev_l1_uart, &dev_xbridge_head,
-    &dev_io8_xbridge, &dev_io8_ioc3, &dev_io8_timekeeper, NULL
+    &dev_bedrock_banks_23, &dev_bedrock, &dev_bedrock_blocks, &dev_l1_uart,
+    &dev_xbridge_head, &dev_io8_xbridge, &dev_io8_ioc3, &dev_io8_timekeeper,
+    NULL
 };
 
-/* ---- VPro (Odyssey) on the Origin 300's XIO connector, widget 0xb ---- */
+/* ---- VPro (Odyssey) in the Fuel's graphics slot, widget 0xd ---- */
 
 static const RtStep odyssey[] = {
-    W32(0x24, 0x0f00320b),                      /* widget control */
+    W32(0x24, 0x0f00320d),                      /* widget control */
     W32(0x2c, 0xaaaaaaaa),                      /* request timeout */
     W32(0x34, 0x00000001),                      /* interrupt dest upper */
     W32(0x3c, 0x23450000),                      /* interrupt dest lower */
@@ -936,10 +955,10 @@ static const RtStep odyssey[] = {
 };
 
 static const RtDevice dev_odyssey = { "sgi-odyssey", odyssey,
-                                      XIO_WIDGET(0xb) };
+                                      XIO_WIDGET(0xd) };
 
-static const RtDevice *const origin300_vpro_devices[] = {
-    &dev_bedrock, &dev_odyssey, NULL
+static const RtDevice *const fuel_vpro_devices[] = {
+    &dev_bedrock_banks_01, &dev_bedrock, &dev_odyssey, NULL
 };
 
 
@@ -984,9 +1003,9 @@ static const RtMachine machines[] = {
       "-cpu R10000 -vga none", 4, octane_banks_devices, octane_banks_ram },
     { "origin300", "origin300", NULL, "-M origin300 -cpu R14000 -smp 2 -m 512M",
       PROM_SIZE, origin300_devices, bedrock_ram },
-    { "origin300-vpro", "origin300", "sgi-odyssey",
-      "-M origin300,topology=origin300-v12-direct -cpu R14000 -smp 2 -m 512M",
-      PROM_SIZE, origin300_vpro_devices, bedrock_ram },
+    { "fuel-vpro", "fuel", "sgi-odyssey",
+      "-M fuel -cpu R14000 -smp 1 -m 512M",
+      PROM_SIZE, fuel_vpro_devices, bedrock_ram },
     { NULL }
 };
 

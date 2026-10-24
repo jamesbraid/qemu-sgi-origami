@@ -2813,10 +2813,10 @@ static unsigned int sgi_machine_kona_hub_widget(
  * The topology's own graphics pipe records: the Onyx2 InfiniteReality
  * pipe's KONA widget, Crossbow-attached at IO3 on the rack and IO4 on the
  * deskside, and a VPro wired straight to a node's XBridge, the Fuel's
- * graphics board at widget 13 or the Origin 300's direct V12 on its cable
- * port, whose node already selected that widget as the chip's external
- * port. None is built with the machine. Each is a slot the catalogue
- * names (io3, io4, widget-13, widget-11): a pipe -device, or the default
+ * graphics board at widget 13, whose node already selected that widget as
+ * the chip's external port, and the V-brick's V12. None is built with the
+ * machine. Each is a slot the catalogue names (io3, io4, widget-13,
+ * widget-11): a pipe -device, or the default
  * pipe the machine fits when there is none, claims it, and takes the
  * record's port and identity (sgi_machine_claim_pipe_record()).
  */

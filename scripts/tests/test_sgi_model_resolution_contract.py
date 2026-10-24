@@ -56,7 +56,6 @@ class SystemModelResolutionTests(unittest.TestCase):
     REAL_COMPOSITIONS = (
         "origin200", "origin200-dual", "origin200-gigachannel",
         "origin2000", "origin2000-rack", "origin300", "origin300-vbrick",
-        "origin300-v12-direct",
     )
 
     @classmethod
@@ -81,27 +80,6 @@ class SystemModelResolutionTests(unittest.TestCase):
     def real_model(self, name):
         """A fresh deep copy of `name`'s once-per-class-resolved composition."""
         return copy.deepcopy(self._real_models[name])
-
-    def test_origin300_direct_v12_uses_existing_node_module(self):
-        from sgi_model.model_compile import compile_model, index_graph
-
-        model = self.real_model("origin300-v12-direct")
-        graph = index_graph(model)
-        self.assertEqual(graph["modules"], [
-            {"id": "implicit-module", "index": 0},
-        ])
-        self.assertEqual(len(graph["nodes"]), 1)
-        self.assertEqual(
-            [(board["id"], board["module_index"], board["widget"])
-             for board in graph["io_boards"]],
-            [("graphics-v12", 0, 11)],
-        )
-        self.assertEqual(graph["xio_attachments"], [{
-            "crossbar_index": -1, "widget": 11, "node_index": 0,
-        }])
-        entry = compile_model(model)
-        self.assertEqual(entry["modules"][0]["nodes"], [0])
-        self.assertEqual(entry["io_boards"][2]["board_kind"], "ODYSSEY")
 
     def test_origin300_vbrick_keeps_own_xbridge_and_l1_position(self):
         model = self.real_model("origin300-vbrick")

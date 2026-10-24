@@ -2380,29 +2380,6 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(entry["modules"][1]["nodes"], [])
         self.assertEqual(entry["nodes"][0]["module_index"], 0)
 
-    def test_origin300_direct_v12_exports_one_odyssey_board(self):
-        entry = compile_model(_resolved("origin300-v12-direct"))
-
-        self.assertEqual(entry["name"], "origin300-v12-direct")
-        self.assertEqual([(module["id"], module["nodes"])
-                          for module in entry["modules"]],
-                         [("implicit-module", [0])])
-        self.assertEqual([node["module_index"] for node in entry["nodes"]], [0])
-        self.assertEqual([(board["id"], board["module_index"],
-                           board["board_kind"], board["slot_index"])
-                          for board in entry["io_boards"]],
-                         [("xbridge-bridge-e", 0, "IO8", 0),
-                          ("xbridge-bridge-f", 0, "IO8", 1),
-                          ("graphics-v12", 0, "ODYSSEY", 2)])
-        self.assertEqual(entry["xio_attachments"][2], {
-            "crossbar_index": -1, "widget": 11, "node_index": 0,
-        })
-        catalogue = json.loads(render_catalogue_json([_resolved("origin300-v12-direct")]))
-        board = catalogue["topologies"][0]["io-boards"][2]
-        self.assertEqual((board["preset"], board["carrier"], board["module-index"]),
-                         ("odyssey", "machine-placed", 0))
-        self.assertEqual(board["revision"], 10)
-
     def test_origin300_vbrick_exports_one_enclosure_preset(self):
         entry = compile_model(_resolved("origin300-vbrick"))
 
@@ -4044,7 +4021,7 @@ CONFIGURATIONS = (
     "origin200-gigachannel-loopback",
     "origin2000", "origin2000-rack", "origin2000-deskside",
     "onyx2-rack", "onyx2-deskside",
-    "origin300", "origin300-two-chassis", "origin300-v12-direct",
+    "origin300", "origin300-two-chassis",
 )
 
 

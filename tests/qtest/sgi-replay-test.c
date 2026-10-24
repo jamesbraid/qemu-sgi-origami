@@ -97,17 +97,16 @@ static const ReplayHead replay_heads[] = {
         .display_pixel_property = "x-test-pixel",
     },
     {
-        /* This direct attachment is an experimental machine composition. */
+        /* The Fuel's VPro in its graphics slot, its default pipe. */
         .codename = "sgi-odyssey",
-        .machine = "-M origin300,topology=origin300-v12-direct "
-                   "-cpu R14000 -smp 2 -S",
-        .mmio_base = SPACE_IO + (11ULL << 24),
+        .machine = "-M fuel -cpu R14000 -smp 1 -m 512M -S",
+        .mmio_base = SPACE_IO + (13ULL << 24),
         .mmio_size = 0x410000,
-        .qom_path = "/machine/module0/rear-panel",
+        .qom_path = "/machine/module0/graphics-slot",
         .width = 1280,
         .height = 1024,
         .trace = "-trace enable=sgi_odyssey_mmio",
-        .console = "rear-panel",
+        .console = "graphics-slot",
         .display_pixel_property = "x-test-display-pixel",
         .needs_prom = true,
     },
@@ -1139,7 +1138,7 @@ static void test_kona_checkpoint(void)
 static void test_odyssey_checkpoint(void)
 {
     run_family_checkpoint("odyssey-checkpoint.replay", "sgi_odyssey_mmio ",
-                          "offset 0x24 size 4 value 0xf00320b write=1",
+                          "offset 0x24 size 4 value 0xf00320d write=1",
                           "offset 0x20 size 8 value 0x55667788 write=1");
 }
 

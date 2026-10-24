@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "122d0b3b1f2f1d5d08ae4ee4656ad2b7d0c3068bdb31ffc5d774680e0ff98e44"
+    "9df9c101203fbaf339212b230e03817cae3e750a488a587af11591fe7d5c6d69"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -225,9 +225,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 125)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 40)
-        self.assertEqual(len(layers), 83)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 122)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 39)
+        self.assertEqual(len(layers), 81)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):

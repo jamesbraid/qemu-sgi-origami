@@ -109,7 +109,6 @@ hw/mips/sgi/models/layers/modules/origin2000-module.yaml
 hw/mips/sgi/models/layers/modules/origin300-base.yaml
 hw/mips/sgi/models/layers/modules/origin300-pci-expansion-experiment.yaml
 hw/mips/sgi/models/layers/modules/origin300-pci-expansion-module.yaml
-hw/mips/sgi/models/layers/modules/origin300-v12-direct.yaml
 hw/mips/sgi/models/layers/modules/origin300-vbrick.yaml
 hw/mips/sgi/models/layers/modules/origin350-module.yaml
 hw/mips/sgi/models/layers/modules/pci-carrier.yaml
@@ -142,7 +141,6 @@ hw/mips/sgi/models/layers/products/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-pending-register-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-unconnected-uart-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-two-chassis.yaml
-hw/mips/sgi/models/layers/products/origin300-v12-direct.yaml
 hw/mips/sgi/models/layers/products/origin300-vbrick.yaml
 hw/mips/sgi/models/layers/products/origin300.yaml
 hw/mips/sgi/models/layers/products/origin3000-reference-bricks.yaml
@@ -180,7 +178,6 @@ hw/mips/sgi/models/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/origin300-pci-expansion-pending-register-experiment.yaml
 hw/mips/sgi/models/origin300-pci-expansion-unconnected-uart-experiment.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
-hw/mips/sgi/models/origin300-v12-direct.yaml
 hw/mips/sgi/models/origin300-vbrick.yaml
 hw/mips/sgi/models/origin300.yaml
 hw/mips/sgi/models/origin3000-reference-bricks.yaml
@@ -417,8 +414,6 @@ scripts/tests/system-model-fixtures/format2/origin2000-rack/sn-model.json
 scripts/tests/system-model-fixtures/format2/origin2000/refused.txt
 scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sgi-machines.json
 scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sn-model.json
-scripts/tests/system-model-fixtures/format2/origin300-v12-direct/sgi-machines.json
-scripts/tests/system-model-fixtures/format2/origin300-v12-direct/sn-model.json
 scripts/tests/system-model-fixtures/format2/origin300/sgi-machines.json
 scripts/tests/system-model-fixtures/format2/origin300/sn-model.json
 scripts/tests/system-model-fixtures/incompatible.yaml
