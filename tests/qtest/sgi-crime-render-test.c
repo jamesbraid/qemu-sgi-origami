@@ -1131,7 +1131,16 @@ static void test_unsupported(void)
     setup(s, 0, false);
     qtest_writel(s, DE + 0x70, 0);
     qtest_writel(s, DE + 0x74, 0);
-    assert_failure(s, RE + 0x400, 0, 4);
+    qtest_memset(s, 0x30000, 0x5a, 16);
+    g_assert_cmpint(memtx_writel(s, RE + 0x400, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(s, RE + 0x1000), ==, 0x8003000000000000ULL);
+    g_assert_cmphex(qtest_readl(s, DE + 0x70), ==, 0);
+    g_assert_cmphex(qtest_readl(s, DE + 0x74), ==, 0);
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    for (unsigned i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(s, 0x30000 + i), ==, 0x5a);
+    }
+    assert_failure(s, RE + 0x400, 0, 8);
     for (unsigned i = 0; i < ARRAY_SIZE(hard_offsets); i++) {
         assert_failure(s, RE + hard_offsets[i], 0, 4);
         start_before_failure(s);
