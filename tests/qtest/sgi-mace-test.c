@@ -301,7 +301,8 @@ static void test_reset_after_pending_sources(void)
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(s, MACE_RING_BASE) & 1, ==, 1);
     g_assert_cmphex(qtest_readq(s, MACE_IMASK), ==, 0);
-    g_assert_cmphex(qtest_readq(s, MACE_ISTAT), ==, 0);
+    /* The idle PS/2 transmitters keep their unmasked poll flags high. */
+    g_assert_cmphex(qtest_readq(s, MACE_ISTAT), ==, 0x1400);
     g_assert_false(qtest_get_irq(s, 4));
     g_assert_false(qtest_get_irq(s, 5));
     qtest_quit(s);

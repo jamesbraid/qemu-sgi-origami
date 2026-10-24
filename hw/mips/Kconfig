@@ -164,6 +164,7 @@ config SGI_MACE
     select ONEWIRE
     select PCI
     select SERIAL_MM
+    select PS2
 
 config SGI_NET_CABLE
     bool

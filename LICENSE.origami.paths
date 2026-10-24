@@ -938,3 +938,6 @@ hw/mips/sgi/mace-serial-dma.h
 tests/qtest/fixtures/sgi-serial-peer.c
 tests/qtest/sgi-mace-serial-dma-test.c
 tests/qtest/sgi-o2-platform-inputs-test.c
+hw/mips/sgi/mace-ps2.c
+include/hw/mips/sgi/mace-ps2.h
+tests/qtest/sgi-mace-ps2-test.c

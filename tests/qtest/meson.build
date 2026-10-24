@@ -642,7 +642,7 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test'] + \
     ['sgi-crime-error-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
-    ['sgi-mace-test'] : []) + \
+    ['sgi-mace-test', 'sgi-mace-ps2-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
