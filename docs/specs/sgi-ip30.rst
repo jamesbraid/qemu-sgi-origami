@@ -478,12 +478,17 @@ A 32-bit wrap therefore takes 44.05 s and 23.86 s.
 
 The IRIX 6.5.30 IP30 kernel drives its scheduler tick from CP0 Count and
 Compare and arms it in two places, both with interrupts masked. The
-rearm routine writes Count zero and, eight register instructions later,
-Compare with a target of at least 1000 ticks (5.6 us at 180 MHz). A
-second routine that pulls the deadline in reads Count and, at most
-seventeen instructions later (a Compare read and register arithmetic),
-writes Compare at least 1000 ticks ahead of the value read. These are from our disassembly of the shipped
-``kernel.o``, whose only Compare writes are these two and two adjacent
+rearm routine reads Compare and Count and then takes one of two
+branches. When the deadline has passed, it writes Count zero and, up to
+eight register instructions later, Compare with a target of at least
+1000 ticks (5.6 us at 180 MHz). When it has not, it writes the Count it
+read back and either leaves Compare alone or writes Compare to the
+larger of the interval and 1000 as an absolute value, which need not be
+1000 ticks past that Count. A second routine that pulls the deadline in
+reads Count and, at most seventeen instructions later (a Compare read
+and register arithmetic), writes Compare at least 1000 ticks ahead of
+the value read. These are from our disassembly of the shipped
+``kernel.o``, whose only Compare writes are these and two adjacent
 Count/Compare pairs; they are not hardware measurements. On the
 processor those instructions take a few cycles. Without instruction
 counting, QEMU's virtual clock follows the host, and a vCPU held between
@@ -502,12 +507,23 @@ lies less than half the counter range ahead of the latest recorded
 value and Count has already reached it. A target behind that value is a
 disarm or a deliberate long wait and keeps the ordinary rule: the
 read-Count-minus-one disarm public drivers use, and the kernel's
-Count=1/Compare=0 pair. Exception or interrupt entry and reset close the
-window. This is an approximation of a host artefact, not processor
+Count=1/Compare=0 pair, and a target equal to it. In the rearm
+routine's not-expired branch the sample is the Count written back, so an
+absolute target behind it keeps the ordinary rule and one ahead of it is
+recovered only once Count has really passed it. Exception or interrupt
+entry and reset close the window, and a later Count read or write starts
+a new one. Nothing else ends it: the window has no limit on how many
+instructions separate the sample from the Compare write, only the limit of half the counter range on elapsed ticks. (The
+condition that the target lies less than half the range ahead follows
+from that limit and is not a separate bound.) This is an approximation of a host artefact, not processor
 behaviour: after a delayed arm the model raises IP7 at the Compare
 write, where silicon would not have been late. A window open when the
 machine is migrated is dropped, and the destination applies the
-ordinary rule to that one write. The SN machines do not set the
+ordinary rule to that one write. This is deliberate, unlike the adjacent
+rule, which migrates its pending state: the virtual clock is frozen
+while the machine is stopped, so a window open across a migration or
+snapshot loses nothing unless a host stall after the resume crosses the
+target, at a cost of one tick. The SN machines do not set the
 property and keep the adjacent-write rule alone.
 ``tests/qtest/octane-timer-test.c`` pins the recovery and its controls.
 
