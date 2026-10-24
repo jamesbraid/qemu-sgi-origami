@@ -1453,6 +1453,15 @@ static void test_dma_address_boundaries(void)
         wr(q, VT(14), 128);
         qtest_writew(q, 0x10020, (end - 65536) >> 16);
         qtest_writeb(q, end - base - 1, 0xa7);
+        /* Invalid domains must differ from widened or wrapped RAM reads. */
+        qtest_writeb(q, 0xffff, 0xa7);
+        qtest_writeb(q, 0xd6ffff, 0xa7);
+        qtest_writew(q, 0x20, (base + 0xd60000) >> 16);
+        qtest_writew(q, end - base - 32, (base + 0xd60000) >> 16);
+        if (legacy) {
+            qtest_writeb(q, 0x1000ffff, 0xa7);
+            qtest_writew(q, 0x10000020, 0xd6);
+        }
         wr(q, 0x30000, 1 << 5);
         wr(q, 0x30004, 128 << 16);
         wr(q, 0x3000c, (base + 0x10020) | 1);
@@ -1463,6 +1472,12 @@ static void test_dma_address_boundaries(void)
         qtest_clock_step(q, 20500000);
         g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
         wr(q, 0x3000c, (end + 32) | 1);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        wr(q, 0x3000c, 0x80000021);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        wr(q, 0x3000c, 0xffffffe1);
         qtest_clock_step(q, 20500000);
         g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
         /* Crossing spans also fail the independent 8 KiB list-page bound. */
