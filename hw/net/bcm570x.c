@@ -38,7 +38,11 @@
  * multifunction PCI device whose
  * function 0 spawns an identical MAC at function 1 of the same slot, each
  * function an independent instance of this
- * same code. A write to a register with no modelled behaviour logs LOG_UNIMP
+ * same code; and the BCM5701 serial EEPROM controller, with optional raw
+ * BlockBackend storage and no synthesized image. EEPROM transfers complete
+ * synchronously; the delay register only reads back, and direct serial pins
+ * are unsupported. A write to a register with no modelled behaviour logs
+ * LOG_UNIMP
  * and is stored so a read-back still
  * round-trips.
  *
@@ -75,6 +79,7 @@
 #include "standard-headers/linux/virtio_net.h"
 #include "hw/net/net_tx_pkt.h"
 #include "hw/core/qdev-properties.h"
+#include "system/block-backend.h"
 #include "hw/net/bcm570x_phy.h"
 #include "hw/net/net-rx-latency.h"
 #include "migration/vmstate.h"
@@ -213,6 +218,19 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MODE_BYTESWAP_DATA  0x00000010u
 #define BCM570X_MODE_WORDSWAP_DATA  0x00000020u
 #define BCM570X_MISC_CFG            0x6804
+#define BCM570X_EEPROM_ADDR         0x6838
+#define BCM570X_EEPROM_DATA         0x683c
+#define BCM570X_EEPROM_PIN          0x6840
+#define BCM570X_EEPROM_DELAY        0x6848
+#define BCM570X_EEPROM_READ         (1u << 31)
+#define BCM570X_EEPROM_COMPLETE     (1u << 30)
+#define BCM570X_EEPROM_RESET        (1u << 29)
+#define BCM570X_EEPROM_DEVICE_ID    (7u << 26)
+#define BCM570X_EEPROM_START        (1u << 25)
+#define BCM570X_EEPROM_WORD_ADDR    (0x3fffu << 2)
+#define BCM570X_EEPROM_MIN_SIZE     4
+#define BCM570X_EEPROM_MAX_SIZE     65536
+#define BCM570X_EEPROM_NO_DEVICE_ID UINT8_MAX
 
 /*
  * Bit 0 of a *_MODE register is a self-clearing reset the driver sets and
@@ -484,6 +502,16 @@ struct Bcm570xState {
     uint16_t subsystem_vendor_id;
     uint16_t subsystem_id;
 
+    BlockBackend *eeprom_blk;
+    uint8_t eeprom_device_id;
+    uint64_t eeprom_length;
+    bool eeprom_configured;
+    bool eeprom_read_only;
+    uint8_t mig_eeprom_device_id;
+    uint64_t mig_eeprom_length;
+    bool mig_eeprom_configured;
+    bool mig_eeprom_read_only;
+
     /* The two indirect-window base registers (config 0x78 / 0x7C). */
     uint32_t reg_win_base;
     uint32_t mem_win_base;
@@ -559,6 +587,165 @@ static uint32_t bcm570x_regfile_read(Bcm570xState *s, uint32_t off)
 static void bcm570x_regfile_write(Bcm570xState *s, uint32_t off, uint32_t val)
 {
     s->regfile[(off & (BCM570X_REG_FILE_SIZE - 1)) >> 2] = val;
+}
+
+static bool bcm570x_eeprom_access(Bcm570xState *s, uint32_t command)
+{
+    uint8_t bytes[4];
+    uint32_t word = (command & BCM570X_EEPROM_WORD_ADDR) >> 2;
+    uint32_t offset = word * sizeof(bytes);
+    uint32_t value;
+    int ret;
+
+    if (!s->eeprom_blk) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: EEPROM access to device %u word 0x%x "
+                      "has no configured backing\n",
+                      (command & BCM570X_EEPROM_DEVICE_ID) >> 26, word);
+        return false;
+    }
+    if (((command & BCM570X_EEPROM_DEVICE_ID) >> 26) !=
+        s->eeprom_device_id) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: EEPROM device ID %u is not configured\n",
+                      (command & BCM570X_EEPROM_DEVICE_ID) >> 26);
+        return false;
+    }
+    if (offset > s->eeprom_length - sizeof(bytes)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: EEPROM word 0x%x is outside the %" PRId64
+                      "-byte backing\n", word, (int64_t)s->eeprom_length);
+        return false;
+    }
+
+    if (command & BCM570X_EEPROM_READ) {
+        ret = blk_pread(s->eeprom_blk, offset, sizeof(bytes), bytes, 0);
+        if (ret < 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: EEPROM read at byte offset 0x%x failed: "
+                          "%s\n", offset, strerror(-ret));
+            return false;
+        }
+        value = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+                ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
+        bcm570x_regfile_write(s, BCM570X_EEPROM_DATA, value);
+        return true;
+    }
+
+    if (s->eeprom_read_only) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: EEPROM write at byte offset 0x%x "
+                      "to read-only backing\n", offset);
+        return false;
+    }
+
+    value = bcm570x_regfile_read(s, BCM570X_EEPROM_DATA);
+    bytes[0] = value;
+    bytes[1] = value >> 8;
+    bytes[2] = value >> 16;
+    bytes[3] = value >> 24;
+    ret = blk_pwrite(s->eeprom_blk, offset, sizeof(bytes), bytes, 0);
+    if (ret < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: EEPROM write at byte offset 0x%x failed: "
+                      "%s\n", offset, strerror(-ret));
+        return false;
+    }
+    return true;
+}
+
+static void bcm570x_eeprom_command_write(Bcm570xState *s, uint32_t val)
+{
+    uint32_t off = BCM570X_EEPROM_ADDR;
+    uint32_t old = bcm570x_regfile_read(s, off);
+    uint32_t command = val & ~(BCM570X_EEPROM_START |
+                               BCM570X_EEPROM_COMPLETE |
+                               BCM570X_EEPROM_RESET | 3u);
+    bool acknowledge = val & BCM570X_EEPROM_COMPLETE;
+
+    if (val & BCM570X_EEPROM_RESET) {
+        bcm570x_regfile_write(s, off, BCM570X_EEPROM_RESET);
+        bcm570x_regfile_write(s, BCM570X_EEPROM_DATA, 0);
+        return;
+    }
+
+    if (!acknowledge) {
+        command |= old & BCM570X_EEPROM_COMPLETE;
+    }
+    bcm570x_regfile_write(s, off, command);
+
+    if (!(val & BCM570X_EEPROM_START) ||
+        ((old & BCM570X_EEPROM_COMPLETE) && !acknowledge)) {
+        return;
+    }
+
+    if (bcm570x_eeprom_access(s, command)) {
+        command |= BCM570X_EEPROM_COMPLETE;
+        bcm570x_regfile_write(s, off, command);
+    }
+}
+
+static bool bcm570x_eeprom_realize(Bcm570xState *s, Error **errp)
+{
+    int64_t block_length;
+    int64_t length;
+    uint64_t permissions;
+
+    s->mig_eeprom_device_id = s->eeprom_device_id;
+    if (!s->eeprom_blk) {
+        if (s->eeprom_device_id != BCM570X_EEPROM_NO_DEVICE_ID) {
+            error_setg(errp, "bcm570x: eeprom-device-id requires eeprom");
+            return false;
+        }
+        return true;
+    }
+
+    if (s->eeprom_device_id > 7) {
+        error_setg(errp,
+                   "bcm570x: eeprom requires eeprom-device-id in 0..7");
+        return false;
+    }
+    if ((s->model && strcmp(s->model, "bcm5704") == 0) ||
+        s->device_id != BCM570X_DEVICE_ID) {
+        error_setg(errp,
+                   "bcm570x: eeprom backing is supported only for BCM5701 "
+                   "device ID 0x%04x", BCM570X_DEVICE_ID);
+        return false;
+    }
+
+    block_length = blk_getlength(s->eeprom_blk);
+    if (block_length < 0) {
+        error_setg(errp, "bcm570x: cannot determine EEPROM backend length");
+        return false;
+    }
+    length = blk_get_full_raw_file_length(s->eeprom_blk);
+    if (length < 0) {
+        error_setg(errp,
+                   "bcm570x: EEPROM backing must expose an exact raw-file "
+                   "length");
+        return false;
+    }
+    if (length < BCM570X_EEPROM_MIN_SIZE ||
+        length > BCM570X_EEPROM_MAX_SIZE || (length & 3)) {
+        error_setg(errp,
+                   "bcm570x: EEPROM backing must be 4 to 65536 bytes "
+                   "and a multiple of four");
+        return false;
+    }
+
+    s->eeprom_read_only = !blk_supports_write_perm(s->eeprom_blk);
+    permissions = BLK_PERM_CONSISTENT_READ |
+                  (s->eeprom_read_only ? 0 : BLK_PERM_WRITE);
+    if (blk_set_perm(s->eeprom_blk, permissions, BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+    s->eeprom_length = length;
+    s->eeprom_configured = true;
+    s->mig_eeprom_device_id = s->eeprom_device_id;
+    s->mig_eeprom_length = length;
+    s->mig_eeprom_configured = true;
+    s->mig_eeprom_read_only = s->eeprom_read_only;
+    return true;
 }
 
 static void bcm570x_bufmgr_start(void *opaque)
@@ -1628,6 +1815,17 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         break;
+    case BCM570X_EEPROM_ADDR:
+        bcm570x_eeprom_command_write(s, val);
+        return;
+    case BCM570X_EEPROM_DATA:
+    case BCM570X_EEPROM_DELAY:
+        break;
+    case BCM570X_EEPROM_PIN:
+        qemu_log_mask(LOG_UNIMP,
+                      "bcm570x: direct EEPROM pin access is unsupported\n");
+        bcm570x_regfile_write(s, off, val);
+        return;
     case BCM570X_MAC_MODE:
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
@@ -2651,6 +2849,10 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
         }
     }
 
+    if (!bcm570x_eeprom_realize(s, errp)) {
+        return;
+    }
+
     /*
      * The PCI four-tuple IRIX tg requires. The Broadcom primary vendor/device
      * sit at 0x00/0x02 and the SGI subsystem identity in the standard PCI
@@ -2811,19 +3013,29 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
  * PCISTATE.INTR_NOT_ACTIVE and the wire agree. The PHY state is nested in
  * this device's migration section.
  */
-static int bcm570x_post_load(void *opaque, int version_id)
+static bool bcm570x_post_load(void *opaque, int version_id, Error **errp)
 {
     Bcm570xState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (s->mig_eeprom_configured != s->eeprom_configured ||
+        s->mig_eeprom_device_id != s->eeprom_device_id ||
+        s->mig_eeprom_length != s->eeprom_length ||
+        s->mig_eeprom_read_only != s->eeprom_read_only) {
+        error_setg(errp, "bcm570x: EEPROM migration configuration mismatch");
+        return false;
+    }
 
     if (s->bufmgr_start_pending) {
         if ((bcm570x_regfile_read(s, BCM570X_BUFMGR_MODE) &
              BCM570X_BUFMGR_MODE_ENABLE) ||
             !timer_pending(&s->bufmgr_start_timer)) {
-            return -EINVAL;
+            error_setg(errp, "bcm570x: invalid buffer-manager timer state");
+            return false;
         }
     } else if (timer_pending(&s->bufmgr_start_timer)) {
-        return -EINVAL;
+        error_setg(errp, "bcm570x: unexpected buffer-manager timer");
+        return false;
     }
 
     /* The PHY migrates its cable state; NetClientState does not. */
@@ -2846,18 +3058,22 @@ static int bcm570x_post_load(void *opaque, int version_id)
         timer_mod(&s->tx_coal_timer,
                   now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
     }
-    return 0;
+    return true;
 }
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
     .version_id = 10,
     .minimum_version_id = 10,
-    .post_load = bcm570x_post_load,
+    .post_load_errp = bcm570x_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, Bcm570xState),
         VMSTATE_UINT32_ARRAY(regfile, Bcm570xState, BCM570X_REG_FILE_WORDS),
         VMSTATE_UINT32_ARRAY(sram, Bcm570xState, BCM570X_SRAM_WORDS),
+        VMSTATE_UINT8(mig_eeprom_device_id, Bcm570xState),
+        VMSTATE_UINT64(mig_eeprom_length, Bcm570xState),
+        VMSTATE_BOOL(mig_eeprom_configured, Bcm570xState),
+        VMSTATE_BOOL(mig_eeprom_read_only, Bcm570xState),
         VMSTATE_UINT32(reg_win_base, Bcm570xState),
         VMSTATE_UINT32(mem_win_base, Bcm570xState),
         VMSTATE_UINT16(tx_cons, Bcm570xState),
@@ -2896,6 +3112,9 @@ static const Property bcm570x_properties[] = {
     DEFINE_PROP_UINT16("subsystem-id", Bcm570xState, subsystem_id,
                        BCM570X_SUBSYS_ID),
     DEFINE_PROP_STRING("model", Bcm570xState, model),
+    DEFINE_PROP_DRIVE("eeprom", Bcm570xState, eeprom_blk),
+    DEFINE_PROP_UINT8("eeprom-device-id", Bcm570xState, eeprom_device_id,
+                      BCM570X_EEPROM_NO_DEVICE_ID),
     DEFINE_PROP_UINT32("rx-arrival-latency-us", Bcm570xState,
                        rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
     DEFINE_NIC_PROPERTIES(Bcm570xState, conf),

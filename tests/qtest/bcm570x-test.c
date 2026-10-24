@@ -86,6 +86,13 @@
 #define BCM_MODE_RESET          0x00000001u
 #define BCM_HCC_ENABLE          0x00000002u
 #define BCM_MISCCFG_RESET       0x00000001u
+#define BCM_EEPROM_ADDR         0x6838u
+#define BCM_EEPROM_DATA         0x683cu
+#define BCM_EEPROM_DELAY        0x6848u
+#define BCM_EEPROM_READ         (1u << 31)
+#define BCM_EEPROM_COMPLETE     (1u << 30)
+#define BCM_EEPROM_RESET        (1u << 29)
+#define BCM_EEPROM_START        (1u << 25)
 
 #define BCM_BUFMGR_MODE         0x4400u
 #define BCM_BUFMGR_STATUS       0x4404u
@@ -286,6 +293,9 @@ typedef struct {
     QPCIDevice *dev;
     QPCIBar bar;
 } Bcm;
+
+static void bcm570x_migrate(QTestState *from, QTestState *to,
+                            const char *uri);
 
 /*
  * All four of the card's DMA swaps set: the card's big-endian image then
@@ -799,6 +809,541 @@ static void test_indirect_register_window(const void *data)
     g_assert_cmphex(ind_reg_readl(&b, reg_off), ==, value);
 
     bcm_close(&b);
+}
+
+static void test_eeprom_bar_read_write(void)
+{
+    static const uint8_t initial[] = {
+        0x66, 0x99, 0x55, 0xaa, 0x12, 0x34, 0x56, 0x78,
+    };
+    static const uint8_t updated[] = { 0xef, 0xcd, 0xab, 0x89 };
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *command = NULL;
+    g_autofree gchar *contents = NULL;
+    gsize contents_len;
+    GError *err = NULL;
+    int fd;
+    Bcm b;
+
+    fd = g_file_open_tmp("bcm570x-eeprom-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+
+    command = g_strdup_printf(BCM_MACHINE
+                              " -drive if=none,id=eeprom0,file=%s,format=raw"
+                              " -netdev user,id=n0"
+                              " -device bcm570x,addr=%02x.0,netdev=n0,"
+                              "eeprom=eeprom0,eeprom-device-id=3",
+                              path, BCM_SLOT);
+    bcm_open(&b, qtest_init(command));
+
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | (0u << 2));
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0xaa559966);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==,
+                    BCM_EEPROM_COMPLETE);
+
+    /* Start cannot replace an unacknowledged completion. */
+    ind_reg_writel(&b, BCM_EEPROM_ADDR,
+                   BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0xaa559966);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) & BCM_EEPROM_COMPLETE,
+                    ==, BCM_EEPROM_COMPLETE);
+
+    /* OpenBSD acknowledges the old completion with the next Start. */
+    ind_reg_writel(&b, BCM_EEPROM_ADDR,
+                   BCM_EEPROM_READ | BCM_EEPROM_COMPLETE |
+                   BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(ind_reg_readl(&b, BCM_EEPROM_DATA), ==, 0x78563412);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==,
+                    BCM_EEPROM_COMPLETE);
+
+    /* Address bits 1:0 are ignored; transfers stay word aligned. */
+    bar_writel(&b, BCM_EEPROM_DATA, 0x13579bdf);
+    bar_writel(&b, BCM_EEPROM_ADDR, BCM_EEPROM_COMPLETE);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x13579bdf);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==, 0);
+    g_assert_true(g_file_get_contents(path, &contents, &contents_len, &err));
+    g_assert_no_error(err);
+    g_assert_cmpmem(contents + 4, 4, initial + 4, 4);
+    g_clear_pointer(&contents, g_free);
+
+    bar_writel(&b, BCM_EEPROM_DATA, 0x89abcdef);
+    ind_reg_writel(&b, BCM_EEPROM_ADDR,
+                   BCM_EEPROM_START | (3u << 26) | 7);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) & BCM_EEPROM_COMPLETE,
+                    ==, BCM_EEPROM_COMPLETE);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) & 3, ==, 0);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DELAY), ==, 0);
+    g_assert_true(g_file_get_contents(path, &contents, &contents_len, &err));
+    g_assert_no_error(err);
+    g_assert_cmpuint(contents_len, ==, sizeof(initial));
+    g_assert_cmpmem(contents, 4, initial, 4);
+    g_assert_cmpmem(contents + 4, 4, updated, sizeof(updated));
+
+    /* Controller, chip and system resets do not replace the external bytes. */
+    bar_writel(&b, BCM_EEPROM_DELAY, 0x000a2c2a);
+    bar_writel(&b, BCM_EEPROM_ADDR, BCM_EEPROM_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR), ==, BCM_EEPROM_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DELAY), ==, 0x000a2c2a);
+
+    /* Reset wins over Start, including while the reset level remains set. */
+    bar_writel(&b, BCM_EEPROM_DATA, 0x11223344);
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_RESET | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR), ==, BCM_EEPROM_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0);
+    bar_writel(&b, BCM_EEPROM_DATA, 0x55667788);
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_RESET | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR), ==, BCM_EEPROM_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0);
+
+    bar_writel(&b, BCM_EEPROM_ADDR, 0);
+    bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DELAY), ==, 0);
+
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x89abcdef);
+
+    {
+        QTestState *qts = b.qts;
+
+        qpci_iounmap(b.dev, b.bar);
+        g_free(b.dev);
+        qpci_free_sgi_bridge(b.bus);
+        qtest_system_reset(qts);
+        bcm_open(&b, qts);
+    }
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x89abcdef);
+
+    bcm_close(&b);
+
+    /* A fresh QEMU process sees the guest write in the same raw backend. */
+    bcm_open(&b, qtest_init(command));
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x89abcdef);
+    bcm_close(&b);
+}
+
+static QTestState *bcm_init_eeprom(const char *path, bool read_only,
+                                  uint8_t device_id)
+{
+    return qtest_initf(BCM_MACHINE
+                       " -drive if=none,id=eeprom0,file=%s,format=raw%s"
+                       " -netdev user,id=n0"
+                       " -device bcm570x,addr=%02x.0,netdev=n0,"
+                       "eeprom=eeprom0,eeprom-device-id=%u",
+                       path, read_only ? ",readonly=on" : "", BCM_SLOT,
+                       device_id);
+}
+
+static void test_eeprom_missing_backing(void)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+    bar_writel(&b, BCM_EEPROM_DATA, 0x76543210);
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x76543210);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==, 0);
+    bcm_close(&b);
+}
+
+static void test_eeprom_read_only_backing(void)
+{
+    static const uint8_t initial[] = { 0x66, 0x99, 0x55, 0xaa };
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    gsize contents_len;
+    GError *err = NULL;
+    int fd;
+    Bcm b;
+
+    fd = g_file_open_tmp("bcm570x-eeprom-ro-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+    bcm_open(&b, bcm_init_eeprom(path, true, 3));
+    bar_writel(&b, BCM_EEPROM_DATA, 0x12345678);
+    bar_writel(&b, BCM_EEPROM_ADDR, BCM_EEPROM_START | (3u << 26));
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x12345678);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==, 0);
+    bcm_close(&b);
+
+    g_assert_true(g_file_get_contents(path, &contents, &contents_len, &err));
+    g_assert_no_error(err);
+    g_assert_cmpuint(contents_len, ==, sizeof(initial));
+    g_assert_cmpmem(contents, sizeof(initial), initial, sizeof(initial));
+}
+
+static void test_eeprom_bounds_and_device_id(void)
+{
+    uint8_t initial[4] = { 0x66, 0x99, 0x55, 0xaa };
+    g_autofree gchar *path = NULL;
+    GError *err = NULL;
+    int fd;
+    Bcm b;
+
+    fd = g_file_open_tmp("bcm570x-eeprom-bounds-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+    bcm_open(&b, bcm_init_eeprom(path, false, 3));
+    bar_writel(&b, BCM_EEPROM_DATA, 0x12345678);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x12345678);
+
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x12345678);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==, 0);
+
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (4u << 26));
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0x12345678);
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==, 0);
+    bcm_close(&b);
+}
+
+static void test_eeprom_last_interface_word(void)
+{
+    static const uint8_t final_word[] = { 0x66, 0x99, 0x55, 0xaa };
+    static const uint8_t updated_word[] = { 0xef, 0xcd, 0xab, 0x89 };
+    uint8_t image[65536] = { 0 };
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *contents = NULL;
+    gsize contents_len;
+    GError *err = NULL;
+    int fd;
+    Bcm b;
+
+    memcpy(image + sizeof(image) - sizeof(final_word), final_word,
+           sizeof(final_word));
+    fd = g_file_open_tmp("bcm570x-eeprom-last-word-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)image,
+                                      sizeof(image), &err));
+    g_assert_no_error(err);
+    bcm_open(&b, bcm_init_eeprom(path, false, 3));
+
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26) |
+               (0x3fffu << 2));
+    g_assert_cmphex(bar_readl(&b, BCM_EEPROM_DATA), ==, 0xaa559966);
+    bar_writel(&b, BCM_EEPROM_DATA, 0x89abcdef);
+    bar_writel(&b, BCM_EEPROM_ADDR,
+               BCM_EEPROM_COMPLETE | BCM_EEPROM_START | (3u << 26) |
+               (0x3fffu << 2));
+    bcm_close(&b);
+
+    g_assert_true(g_file_get_contents(path, &contents, &contents_len, &err));
+    g_assert_no_error(err);
+    g_assert_cmpuint(contents_len, ==, sizeof(image));
+    g_assert_cmpmem(contents + sizeof(image) - sizeof(final_word),
+                    sizeof(final_word), updated_word, sizeof(updated_word));
+}
+
+static void test_eeprom_rejects_non_word_backing(void)
+{
+    static const uint8_t initial[] = { 1, 2, 3, 4, 5 };
+    g_autofree gchar *path = NULL;
+    GError *err = NULL;
+    int fd;
+
+    if (g_test_subprocess()) {
+        path = g_strdup(g_getenv("BCM570X_INVALID_EEPROM_PATH"));
+        g_assert_nonnull(path);
+        qtest_initf(BCM_MACHINE
+                    " -drive if=none,id=eeprom0,file=%s,format=raw"
+                    " -netdev user,id=n0"
+                    " -device bcm570x,addr=%02x.0,netdev=n0,"
+                    "eeprom=eeprom0,eeprom-device-id=3", path, BCM_SLOT);
+        g_assert_not_reached();
+    }
+
+    fd = g_file_open_tmp("bcm570x-eeprom-invalid-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+    g_setenv("BCM570X_INVALID_EEPROM_PATH", path, TRUE);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*multiple of four*");
+    g_unsetenv("BCM570X_INVALID_EEPROM_PATH");
+    unlink(path);
+}
+
+static void test_eeprom_id_requires_backing(void)
+{
+    if (g_test_subprocess()) {
+        qtest_initf(BCM_MACHINE
+                    " -netdev user,id=n0"
+                    " -device bcm570x,addr=%02x.0,netdev=n0,"
+                    "eeprom-device-id=3", BCM_SLOT);
+        g_assert_not_reached();
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*eeprom-device-id requires eeprom*");
+}
+
+static void test_eeprom_rejects_bcm5704(void)
+{
+    static const uint8_t initial[] = { 1, 2, 3, 4 };
+    g_autofree gchar *path = NULL;
+    GError *err = NULL;
+    int fd;
+
+    if (g_test_subprocess()) {
+        path = g_strdup(g_getenv("BCM570X_INVALID_EEPROM_PATH"));
+        g_assert_nonnull(path);
+        qtest_initf(BCM_MACHINE
+                    " -drive if=none,id=eeprom0,file=%s,format=raw"
+                    " -netdev user,id=n0"
+                    " -device bcm570x,addr=%02x.0,netdev=n0,model=bcm5704,"
+                    "eeprom=eeprom0,eeprom-device-id=3", path, BCM_SLOT);
+        g_assert_not_reached();
+    }
+
+    fd = g_file_open_tmp("bcm570x-eeprom-bcm5704-XXXXXX", &path, &err);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+    g_setenv("BCM570X_INVALID_EEPROM_PATH", path, TRUE);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*only for BCM5701*");
+    g_unsetenv("BCM570X_INVALID_EEPROM_PATH");
+    unlink(path);
+}
+
+static void test_eeprom_migration_shared_backing(void)
+{
+    static const uint8_t initial[] = {
+        0x66, 0x99, 0x55, 0xaa, 0x12, 0x34, 0x56, 0x78,
+    };
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *path = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    g_autofree gchar *contents = NULL;
+    gsize contents_len;
+    GError *err = NULL;
+    Bcm from, to;
+    QTestState *from_qts, *to_qts;
+
+    dir = g_dir_make_tmp("bcm570x-eeprom-mig-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(dir, "eeprom.raw", NULL);
+    socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    g_assert_true(g_file_set_contents(path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -drive if=none,id=eeprom0,file=%s,format=raw,"
+                           "file.locking=off"
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "eeprom=eeprom0,eeprom-device-id=3", path,
+                           BCM_SLOT);
+    bcm_open(&from, from_qts);
+    bar_writel(&from, BCM_EEPROM_DELAY, 0x12345678);
+    bar_writel(&from, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26));
+    g_assert_cmphex(bar_readl(&from, BCM_EEPROM_DATA), ==, 0xaa559966);
+    bar_writel(&from, BCM_EEPROM_DATA, 0x89abcdef);
+    bar_writel(&from, BCM_EEPROM_ADDR,
+               BCM_EEPROM_COMPLETE | BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&from, BCM_EEPROM_ADDR) & BCM_EEPROM_COMPLETE,
+                    ==, BCM_EEPROM_COMPLETE);
+    g_assert_true(g_file_get_contents(path, &contents, &contents_len, &err));
+    g_assert_no_error(err);
+    g_assert_cmpuint(contents_len, ==, sizeof(initial));
+    g_assert_cmpmem(contents + 4, 4, "\xef\xcd\xab\x89", 4);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -drive if=none,id=eeprom0,file=%s,format=raw,"
+                           "file.locking=off"
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "eeprom=eeprom0,eeprom-device-id=3"
+                           " -incoming %s", path, BCM_SLOT, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from_qts, to_qts, uri);
+
+    g_assert_cmphex(bar_readl(&to, BCM_EEPROM_DATA), ==, 0x89abcdef);
+    g_assert_cmphex(bar_readl(&to, BCM_EEPROM_DELAY), ==, 0x12345678);
+    g_assert_cmphex(bar_readl(&to, BCM_EEPROM_ADDR) &
+                    (BCM_EEPROM_COMPLETE | BCM_EEPROM_START), ==,
+                    BCM_EEPROM_COMPLETE);
+    bar_writel(&to, BCM_EEPROM_DATA, 0x01234567);
+    bar_writel(&to, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_COMPLETE |
+               BCM_EEPROM_START | (3u << 26) | 4);
+    g_assert_cmphex(bar_readl(&to, BCM_EEPROM_DATA), ==, 0x89abcdef);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    unlink(socket_path);
+    unlink(path);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void wait_eeprom_migration_failed(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        QDict *reply = qtest_qmp_assert_success_ref(qts,
+            "{'execute':'query-migrate'}");
+        const char *status = qdict_get_str(reply, "status");
+        bool failed = g_str_equal(status, "failed");
+        bool completed = g_str_equal(status, "completed");
+        bool expired = g_get_monotonic_time() >= deadline;
+
+        qobject_unref(reply);
+        if (failed) {
+            return;
+        }
+        g_assert_false(completed);
+        g_assert_false(expired);
+        g_usleep(1000);
+    }
+}
+
+static void wait_eeprom_migration_finished(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        QDict *reply = qtest_qmp_assert_success_ref(qts,
+            "{'execute':'query-migrate'}");
+        const char *status = qdict_get_str(reply, "status");
+        bool finished = g_str_equal(status, "completed") ||
+                        g_str_equal(status, "failed");
+        bool expired = g_get_monotonic_time() >= deadline;
+
+        qobject_unref(reply);
+        if (finished) {
+            return;
+        }
+        g_assert_false(expired);
+        g_usleep(1000);
+    }
+}
+
+static void test_eeprom_migration_rejects_mismatch(const void *data)
+{
+    int mismatch = GPOINTER_TO_INT(data);
+    static const uint8_t initial[] = {
+        0x66, 0x99, 0x55, 0xaa, 0x12, 0x34, 0x56, 0x78,
+    };
+    uint8_t larger[12] = { 0x66, 0x99, 0x55, 0xaa };
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *source_path = NULL;
+    g_autofree gchar *dest_path = NULL;
+    g_autofree gchar *socket_path = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_args = NULL;
+    GError *err = NULL;
+    Bcm from, to;
+    QTestState *from_qts, *to_qts;
+    QDict *status;
+    uint8_t dest_id = mismatch == 1 ? 4 : 3;
+    bool dest_read_only = mismatch == 3;
+    const char *readonly = dest_read_only ? ",readonly=on" : "";
+    const char *error_desc;
+
+    dir = g_dir_make_tmp("bcm570x-eeprom-mig-mismatch-XXXXXX", &err);
+    g_assert_no_error(err);
+    source_path = g_build_filename(dir, "source.raw", NULL);
+    dest_path = g_build_filename(dir, "destination.raw", NULL);
+    socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    g_assert_true(g_file_set_contents(source_path, (const gchar *)initial,
+                                      sizeof(initial), &err));
+    g_assert_no_error(err);
+    g_assert_true(g_file_set_contents(
+        dest_path, (const gchar *)(mismatch == 2 ? larger : initial),
+        mismatch == 2 ? sizeof(larger) : sizeof(initial), &err));
+    g_assert_no_error(err);
+
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -drive if=none,id=eeprom0,file=%s,format=raw"
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "eeprom=eeprom0,eeprom-device-id=3", source_path,
+                           BCM_SLOT);
+    bcm_open(&from, from_qts);
+    bar_writel(&from, BCM_EEPROM_ADDR,
+               BCM_EEPROM_READ | BCM_EEPROM_START | (3u << 26));
+
+    if (mismatch == 4) {
+        dest_args = g_strdup_printf(BCM_MACHINE
+                                    " -netdev user,id=n0"
+                                    " -device bcm570x,addr=%02x.0,netdev=n0"
+                                    " -incoming defer", BCM_SLOT);
+    } else {
+        dest_args = g_strdup_printf(BCM_MACHINE
+                                    " -drive if=none,id=eeprom0,file=%s,"
+                                    "format=raw%s"
+                                    " -netdev user,id=n0"
+                                    " -device bcm570x,addr=%02x.0,netdev=n0,"
+                                    "eeprom=eeprom0,eeprom-device-id=%u"
+                                    " -incoming defer",
+                                    dest_path, readonly, BCM_SLOT, dest_id);
+    }
+    to_qts = qtest_init(dest_args);
+    bcm_open(&to, to_qts);
+    qtest_qmp_assert_success(to_qts,
+        "{'execute':'migrate-incoming','arguments':{"
+        "'uri':%s,'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from_qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_eeprom_migration_finished(from_qts);
+    wait_eeprom_migration_failed(to_qts);
+    status = qtest_qmp_assert_success_ref(to_qts,
+        "{'execute':'query-migrate'}");
+    error_desc = qdict_get_str(status, "error-desc");
+    g_assert_nonnull(strstr(error_desc,
+                            "EEPROM migration configuration mismatch"));
+    qobject_unref(status);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    unlink(socket_path);
+    unlink(dest_path);
+    unlink(source_path);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 /*
@@ -6599,6 +7144,36 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/pci-four-tuple", NULL, test_pci_four_tuple);
     qtest_add_data_func("/bcm570x/indirect-register-window", NULL,
                         test_indirect_register_window);
+    qtest_add_func("/bcm570x/eeprom-bar-read-write",
+                   test_eeprom_bar_read_write);
+    qtest_add_func("/bcm570x/eeprom-missing-backing",
+                   test_eeprom_missing_backing);
+    qtest_add_func("/bcm570x/eeprom-read-only-backing",
+                   test_eeprom_read_only_backing);
+    qtest_add_func("/bcm570x/eeprom-bounds-and-device-id",
+                   test_eeprom_bounds_and_device_id);
+    qtest_add_func("/bcm570x/eeprom-last-interface-word",
+                   test_eeprom_last_interface_word);
+    qtest_add_func("/bcm570x/eeprom-rejects-non-word-backing",
+                   test_eeprom_rejects_non_word_backing);
+    qtest_add_func("/bcm570x/eeprom-id-requires-backing",
+                   test_eeprom_id_requires_backing);
+    qtest_add_func("/bcm570x/eeprom-rejects-bcm5704",
+                   test_eeprom_rejects_bcm5704);
+    qtest_add_func("/bcm570x/eeprom-migration-shared-backing",
+                   test_eeprom_migration_shared_backing);
+    qtest_add_data_func("/bcm570x/eeprom-migration/mismatch-device-id",
+                        GINT_TO_POINTER(1),
+                        test_eeprom_migration_rejects_mismatch);
+    qtest_add_data_func("/bcm570x/eeprom-migration/mismatch-length",
+                        GINT_TO_POINTER(2),
+                        test_eeprom_migration_rejects_mismatch);
+    qtest_add_data_func("/bcm570x/eeprom-migration/mismatch-read-only",
+                        GINT_TO_POINTER(3),
+                        test_eeprom_migration_rejects_mismatch);
+    qtest_add_data_func("/bcm570x/eeprom-migration/mismatch-backend-presence",
+                        GINT_TO_POINTER(4),
+                        test_eeprom_migration_rejects_mismatch);
     qtest_add_data_func("/bcm570x/indirect-memory-window", NULL,
                         test_indirect_memory_window);
     qtest_add_data_func("/bcm570x/reset-handshake-via-bar", NULL,
