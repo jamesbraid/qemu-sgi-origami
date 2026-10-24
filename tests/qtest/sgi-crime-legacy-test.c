@@ -965,13 +965,174 @@ static void assert_renderer_bounds(QTestState *s)
     g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
 }
 
+static const unsigned ifb_parameters[] = {
+    0, 8, 0x10, 0x18, 0x50, 0x58, 0xd8, 0x1b0, 0x1b8,
+};
+static const uint32_t ifb_values[] = {
+    0x124, 0, 0x210, 0x1002f8, 0, 0, 0x89abcdef, 6, 0x0f0f0f0f,
+};
+
+static void seed_ifb_state(QTestState *s)
+{
+    seed_renderer_state(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(ifb_parameters); i++) {
+        qtest_writel(s, RENDERER + 0x2000 + ifb_parameters[i], ifb_values[i]);
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        qtest_writeq(s, RENDERER + 0x2020 + i * 8,
+                     0x0001000200090007ULL + ((uint64_t)i << 16));
+    }
+    qtest_writeq(s, RENDERER + 0x1000, 0x8003000000000000ULL);
+    qtest_writeq(s, RENDERER + 0x1200, 0x8123456789abcdefULL);
+    qtest_writel(s, RENDERER + 0x2060, 0x00031234);
+    qtest_writel(s, RENDERER + 0x2070, 0x00030002);
+    qtest_writel(s, RENDERER + 0x2074, UINT32_MAX);
+    qtest_writel(s, RENDERER + 0x20d0, 0x123456cc);
+    qtest_writeq(s, 0x30400, 0x1122335a55667788ULL);
+}
+
+static void assert_ifb_state(QTestState *s, bool executed)
+{
+    assert_renderer_state(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(ifb_parameters); i++) {
+        g_assert_cmphex(qtest_readl(s, RENDERER + 0x2000 + ifb_parameters[i]),
+                       ==, ifb_values[i]);
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readq(s, RENDERER + 0x2020 + i * 8), ==,
+                       0x0001000200090007ULL + ((uint64_t)i << 16));
+    }
+    g_assert_cmphex(qtest_readq(s, RENDERER + 0x1000), ==,
+                   0x8003000000000000ULL);
+    g_assert_cmphex(qtest_readq(s, RENDERER + 0x1200), ==,
+                   0x8123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, 0x30400), ==,
+                   executed ? 0x1122335655667788ULL : 0x1122335a55667788ULL);
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+}
+
+static void test_ifb_read(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("crime-ifb-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-crime.functional-memory-transfer=on -D %s "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH, path);
+    QTestState *s = start_profile(true, options);
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    uint32_t value;
+    unsigned count = 0;
+
+    seed_ifb_state(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    for (unsigned i = 0; i < 20; i++) {
+        if (i == 16) {
+            qtest_writel(s, RENDERER + 0x29f0, 0x12345678);
+        }
+        qtest_clock_step(s, 997 + i * 101);
+        value = UINT32_MAX;
+        g_assert_cmpint(memtx_readl(s, RENDERER + 0x400, &value), ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, 0);
+        assert_run_status(s, "running");
+        assert_ifb_state(s, i >= 16);
+    }
+    qtest_system_reset(s);
+    g_assert_cmpint(memtx_readl(s, RENDERER + 0x400, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+    g_assert_cmphex(qtest_readl(s, RENDERER + 0x2018), ==, 0);
+    g_assert_cmphex(qtest_readq(s, RENDERER + 0x1000), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 0);
+    g_assert_cmphex(qtest_readq(s, 0x30400), ==, 0x1122335655667788ULL);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        if (strstr(lines[i],
+                   "sgi-crime: undefined interface-buffer diagnostic")) {
+            g_assert_nonnull(strstr(lines[i], "4-byte read"));
+            g_assert_nonnull(strstr(lines[i], "0x15000400"));
+            count++;
+        }
+    }
+    g_assert_cmpuint(count, ==, 21);
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
+static void test_ifb_refusal(void)
+{
+    const struct {
+        RendererAccess access;
+        bool hard;
+    } probes[] = {
+        { { 0x400, 1, false }, false }, { { 0x400, 2, false }, false },
+        { { 0x400, 8, false }, false }, { { 0x401, 4, false }, false },
+        { { 0x402, 4, false }, false }, { { 0x3ff, 2, false }, false },
+        { { 0x3fc, 8, false }, false }, { { 0x3fc, 4, false }, false },
+        { { 0x404, 4, false }, false }, { { 0x408, 4, false }, false },
+        { { 0x40c, 4, false }, false }, { { 0x000, 8, false }, false },
+        { { 0x200, 8, false }, false }, { { 0x4008, 4, false }, true },
+        { { 0x4000, 8, false }, true },
+        { { 0x400, 1, true }, true }, { { 0x400, 2, true }, true },
+        { { 0x400, 4, true }, true }, { { 0x400, 8, true }, true },
+        { { 0x3fc, 8, true }, true }, { { 0x3ff, 2, true }, true },
+        { { 0x401, 1, true }, true }, { { 0x403, 1, true }, true },
+        { { 0x408, 4, true }, false },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        const RendererAccess *a = &probes[i].access;
+
+        for (unsigned n = 0; n < (a->write ? 2 : 1); n++) {
+            QTestState *s = start_profile(true,
+                "-global sgi-crime.functional-memory-transfer=on "
+                "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+            uint64_t value = n ? 0x1122334455667788ULL : 0;
+            uint64_t readback;
+            MemTxResult result;
+
+            seed_ifb_state(s);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            result = a->write ?
+                memtx_write(s, RENDERER + a->offset, value, a->size) :
+                memtx_read(s, RENDERER + a->offset, &readback, a->size);
+            g_assert_cmpint(result, ==, MEMTX_ERROR);
+            assert_run_status(s, probes[i].hard ? "internal-error" : "running");
+            assert_ifb_state(s, false);
+            qtest_quit(s);
+        }
+    }
+}
+
+static void test_ifb_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            QTestState *s = start_profile(legacy, functional ?
+                "-global sgi-crime.functional-memory-transfer=on" : "");
+            uint32_t value = UINT32_MAX;
+
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_readl(s, RENDERER + 0x400, &value), ==,
+                           legacy && functional ? MEMTX_OK : MEMTX_ERROR);
+            assert_run_status(s, legacy != functional ?
+                              "internal-error" : "running");
+            if (legacy && functional) {
+                g_assert_cmphex(value, ==, 0);
+            }
+            qtest_quit(s);
+        }
+    }
+}
+
 static void test_renderer_refusal(void)
 {
     const RendererAccess accesses[] = {
         { 0x408, 4, true }, { 0x600, 8, true },
         { 0x2080, 8, true }, { 0x2081, 4, true },
         { 0x2080, 4, false }, { 0x2084, 1, true },
-        { 0x2400, 4, true }, { 0x400, 4, false },
+        { 0x2400, 4, true }, { 0x408, 4, false },
         { 0x21f0, 4, false }, { 0x21f8, 4, false },
         { 0x16fc, 4, true }, { 0x27fc, 4, true },
         { 0x3080, 4, true }, { 0x37fc, 4, true },
@@ -1220,6 +1381,9 @@ int main(int argc, char **argv)
         "malformed-stop",
     };
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/crime/renderer/ifb/read", test_ifb_read);
+    qtest_add_func("/sgi/crime/renderer/ifb/refusal", test_ifb_refusal);
+    qtest_add_func("/sgi/crime/renderer/ifb/profiles", test_ifb_profiles);
     qtest_add_func("/sgi/crime/renderer/refusal", test_renderer_refusal);
     qtest_add_func("/sgi/crime/renderer/hard-stop", test_renderer_hard_stop);
     qtest_add_func("/sgi/crime/renderer/profiles",
