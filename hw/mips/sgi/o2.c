@@ -59,6 +59,7 @@
 #define O2_MACE_BASE 0x1f000000ULL
 #define O2_ROM_BASE 0x1fc00000ULL
 #define O2_PRIVATE_SIZE 0x1008
+#define TYPE_O2_PRIVATE_ROUTER "o2-private-router"
 #define O2_RESET_ROM_VADDR 0xffffffffbfc00000ULL
 #define O2_PRIVATE_POLL_NS (1 * SCALE_MS)
 #define O2_PROM_SB64_RESET_MODE 0x00198603
@@ -82,6 +83,10 @@ typedef struct O2MachineState {
     MemoryRegion cpu_cached;
     MemoryRegion cpu_cached_physical;
     MemoryRegion private_filter;
+    IOMMUMemoryRegion private_router;
+    MemoryRegion private_ram;
+    AddressSpace private_as;
+    MemoryListener private_memory_listener;
     MemoryRegion cpu_uncached_low_ram;
     MemoryRegion cpu_uncached_full_ram;
     MemoryRegion cpu_uncached_no_ecc_ram;
@@ -125,9 +130,10 @@ typedef struct O2MachineState {
     bool private_sample_queued;
     bool private_incomplete_reported;
     bool private_low_exec_reported;
+    bool private_memory_changed;
+    bool private_router_ready;
     MIPSCPU *private_cpu;
     QEMUTimer *private_timer;
-    uint8_t private_data[O2_PRIVATE_SIZE];
     uint8_t private_backing[O2_PRIVATE_SIZE];
     int storage_event_fd;
     uint64_t storage_attempts;
@@ -721,6 +727,90 @@ static void o2_set_prom_id_word(Object *obj, bool value, Error **errp)
     s->prom_id_word = value;
 }
 
+enum {
+    O2_PRIVATE_DECODED,
+    O2_PRIVATE_RAM,
+    O2_PRIVATE_INDEXES,
+};
+
+static int o2_private_attrs_to_index(IOMMUMemoryRegion *iommu,
+                                    MemTxAttrs attrs)
+{
+    O2MachineState *s = container_of(iommu, O2MachineState, private_router);
+
+    return current_cpu == CPU(s->private_cpu) && attrs.mips_cca == 3 ?
+           O2_PRIVATE_RAM : O2_PRIVATE_DECODED;
+}
+
+static int o2_private_num_indexes(IOMMUMemoryRegion *iommu)
+{
+    return O2_PRIVATE_INDEXES;
+}
+
+static IOMMUTLBEntry o2_private_translate(IOMMUMemoryRegion *iommu,
+                                        hwaddr addr, IOMMUAccessFlags flags,
+                                        int index)
+{
+    O2MachineState *s = container_of(iommu, O2MachineState, private_router);
+
+    return (IOMMUTLBEntry) {
+        .target_as = index == O2_PRIVATE_RAM ?
+                     &s->private_as : &address_space_memory,
+        .iova = addr & ~UINT64_C(0xfff),
+        .translated_addr = addr & ~UINT64_C(0xfff),
+        .addr_mask = 0xfff,
+        .perm = IOMMU_RW,
+    };
+}
+
+static void o2_private_memory_changed(MemoryListener *listener,
+                                      MemoryRegionSection *section)
+{
+    O2MachineState *s = container_of(listener, O2MachineState,
+                                    private_memory_listener);
+
+    s->private_memory_changed = true;
+}
+
+static void o2_private_memory_commit(MemoryListener *listener)
+{
+    O2MachineState *s = container_of(listener, O2MachineState,
+                                    private_memory_listener);
+    IOMMUTLBEvent event = {
+        .type = IOMMU_NOTIFIER_UNMAP,
+        .entry = {
+            .target_as = &address_space_memory,
+            .iova = 0,
+            .addr_mask = UINT64_MAX,
+            .perm = IOMMU_NONE,
+        },
+    };
+
+    if (s->private_memory_changed) {
+        s->private_memory_changed = false;
+        memory_region_notify_iommu(&s->private_router, O2_PRIVATE_DECODED,
+                                    event);
+    }
+}
+
+static void o2_private_update_mapping(O2MachineState *s)
+{
+    memory_region_transaction_begin();
+    memory_region_set_enabled(&s->private_filter, s->private_armed);
+    memory_region_set_enabled(MEMORY_REGION(&s->private_router),
+                              s->private_active);
+    memory_region_transaction_commit();
+}
+
+static void o2_private_router_class_init(ObjectClass *klass, const void *data)
+{
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
+
+    imrc->attrs_to_index = o2_private_attrs_to_index;
+    imrc->num_indexes = o2_private_num_indexes;
+    imrc->translate = o2_private_translate;
+}
+
 static bool o2_private_pc_in_rom(const O2MachineState *s)
 {
     uint64_t pc = s->private_cpu->env.active_tc.PC;
@@ -731,6 +821,8 @@ static bool o2_private_pc_in_rom(const O2MachineState *s)
 
 static bool o2_private_selected(O2MachineState *s, MemTxAttrs attrs)
 {
+    MemTxResult result;
+
     if (current_cpu != CPU(s->private_cpu) || attrs.mips_cca != 3) {
         return false;
     }
@@ -742,6 +834,7 @@ static bool o2_private_selected(O2MachineState *s, MemTxAttrs attrs)
     }
     if (!o2_private_pc_in_rom(s)) {
         s->private_armed = false;
+        o2_private_update_mapping(s);
         trace_o2_private_phase("missed", s->private_cpu->env.active_tc.PC,
                                s->private_cpu->env.active_tc.gpr[29],
                                attrs.unspecified);
@@ -755,9 +848,10 @@ static bool o2_private_selected(O2MachineState *s, MemTxAttrs attrs)
         return false;
     }
     if (address_space_read(&address_space_memory, 0,
-                           MEMTXATTRS_UNSPECIFIED, s->private_data,
+                           MEMTXATTRS_UNSPECIFIED, s->private_backing,
                            O2_PRIVATE_SIZE) != MEMTX_OK) {
         s->private_armed = false;
+        o2_private_update_mapping(s);
         trace_o2_private_phase("unavailable",
                                s->private_cpu->env.active_tc.PC,
                                s->private_cpu->env.active_tc.gpr[29],
@@ -766,8 +860,13 @@ static bool o2_private_selected(O2MachineState *s, MemTxAttrs attrs)
                       "o2 private window: decoded low RAM unavailable\n");
         return false;
     }
+    result = address_space_write(&s->private_as, 0, MEMTXATTRS_UNSPECIFIED,
+                                 s->private_backing, O2_PRIVATE_SIZE);
+
+    assert(result == MEMTX_OK);
     s->private_active = true;
     s->private_armed = false;
+    o2_private_update_mapping(s);
     trace_o2_private_phase("enter", s->private_cpu->env.active_tc.PC,
                            s->private_cpu->env.active_tc.gpr[29],
                            attrs.unspecified);
@@ -813,6 +912,7 @@ static void o2_private_poll_cpu(CPUState *cs, run_on_cpu_data data)
     sp = s->private_cpu->env.active_tc.gpr[29];
     if (s->private_armed && !o2_private_pc_in_rom(s)) {
         s->private_armed = false;
+        o2_private_update_mapping(s);
         trace_o2_private_phase("missed", pc, sp, false);
         qemu_log_mask(LOG_UNIMP,
                       "o2 private window: missed reset-ROM trigger at "
@@ -837,7 +937,8 @@ static void o2_private_poll_cpu(CPUState *cs, run_on_cpu_data data)
     if (address_space_read(&address_space_memory, 0,
                            MEMTXATTRS_UNSPECIFIED, s->private_backing,
                            O2_PRIVATE_SIZE) != MEMTX_OK ||
-        memcmp(s->private_data, s->private_backing, O2_PRIVATE_SIZE)) {
+        memcmp(memory_region_get_ram_ptr(&s->private_ram),
+               s->private_backing, O2_PRIVATE_SIZE)) {
         if (!s->private_incomplete_reported) {
             s->private_incomplete_reported = true;
             trace_o2_private_phase("incomplete", pc, sp, false);
@@ -848,7 +949,7 @@ static void o2_private_poll_cpu(CPUState *cs, run_on_cpu_data data)
         return;
     }
     s->private_active = false;
-    memory_region_set_enabled(&s->private_filter, false);
+    o2_private_update_mapping(s);
     trace_o2_private_phase("release", pc, sp, false);
 }
 
@@ -871,13 +972,17 @@ static void o2_private_poll(void *opaque)
 static void o2_private_reset(void *opaque)
 {
     O2MachineState *s = opaque;
+    MemTxResult result;
 
     s->private_armed = true;
     s->private_active = false;
     s->private_incomplete_reported = false;
     s->private_low_exec_reported = false;
-    memset(s->private_data, 0, sizeof(s->private_data));
-    memory_region_set_enabled(&s->private_filter, true);
+    result = address_space_set(&s->private_as, 0, 0, O2_PRIVATE_SIZE,
+                               MEMTXATTRS_UNSPECIFIED);
+
+    assert(result == MEMTX_OK);
+    o2_private_update_mapping(s);
     timer_mod(s->private_timer,
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + O2_PRIVATE_POLL_NS);
 }
@@ -888,13 +993,10 @@ static MemTxResult o2_private_read(void *opaque, hwaddr addr, uint64_t *val,
     O2MachineState *s = opaque;
     uint8_t bytes[8] = { 0 };
     MemTxResult result;
+    AddressSpace *as = o2_private_selected(s, attrs) ?
+                       &s->private_as : &address_space_memory;
 
-    if (o2_private_selected(s, attrs)) {
-        *val = ldn_be_p(s->private_data + addr, size);
-        return MEMTX_OK;
-    }
-    result = address_space_read(&address_space_memory, addr, attrs,
-                                bytes, size);
+    result = address_space_read(as, addr, attrs, bytes, size);
     *val = ldn_be_p(bytes, size);
     return result;
 }
@@ -904,14 +1006,11 @@ static MemTxResult o2_private_write(void *opaque, hwaddr addr, uint64_t val,
 {
     O2MachineState *s = opaque;
     uint8_t bytes[8];
+    AddressSpace *as = o2_private_selected(s, attrs) ?
+                       &s->private_as : &address_space_memory;
 
-    if (o2_private_selected(s, attrs)) {
-        stn_be_p(s->private_data + addr, size, val);
-        return MEMTX_OK;
-    }
     stn_be_p(bytes, size, val);
-    return address_space_write(&address_space_memory, addr, attrs,
-                               bytes, size);
+    return address_space_write(as, addr, attrs, bytes, size);
 }
 
 static const MemoryRegionOps o2_private_ops = {
@@ -1281,6 +1380,12 @@ static void o2_instance_finalize(Object *obj)
 
     if (s->private_timer) {
         timer_free(s->private_timer);
+    }
+    if (s->private_router_ready) {
+        memory_listener_unregister(&s->private_memory_listener);
+        memory_region_del_subregion(&s->cpu_cached,
+                                    MEMORY_REGION(&s->private_router));
+        address_space_destroy(&s->private_as);
     }
     if (s->machine_done_registered) {
         qemu_remove_machine_init_done_notifier(&s->machine_done);
@@ -1657,6 +1762,29 @@ static void o2_init(MachineState *machine)
                               "o2.prom-private-window", O2_PRIVATE_SIZE);
         memory_region_add_subregion_overlap(&s->cpu_cached, 0,
                                             &s->private_filter, 1);
+        memory_region_init_ram_flags_nomigrate(&s->private_ram,
+                                               OBJECT(machine),
+                                               "o2.private-ram",
+                                               O2_PRIVATE_SIZE, 0,
+                                               &error_fatal);
+        address_space_init(&s->private_as, &s->private_ram, "o2.private-ram");
+        memory_region_init_iommu(&s->private_router, sizeof(s->private_router),
+                                 TYPE_O2_PRIVATE_ROUTER, OBJECT(machine),
+                                 "o2.private-router", O2_PRIVATE_SIZE);
+        memory_region_set_enabled(MEMORY_REGION(&s->private_router), false);
+        /* Exact bounds leave the eight-byte tail to subpage dispatch. */
+        memory_region_add_subregion_overlap(&s->cpu_cached, 0,
+                                            MEMORY_REGION(&s->private_router),
+                                            2);
+        s->private_memory_listener = (MemoryListener) {
+            .name = "o2.private-decoded",
+            .region_add = o2_private_memory_changed,
+            .region_del = o2_private_memory_changed,
+            .commit = o2_private_memory_commit,
+        };
+        memory_listener_register(&s->private_memory_listener,
+                                  &address_space_memory);
+        s->private_router_ready = true;
         object_property_set_link(OBJECT(cpu_dev), "memory",
                                  OBJECT(&s->cpu_cached), &error_fatal);
         s->private_cpu = MIPS_CPU(cpu_dev);
@@ -2049,6 +2177,14 @@ static const TypeInfo o2_machine_type = {
 
 static void o2_machine_register(void)
 {
+    static const TypeInfo private_router_type = {
+        .name = TYPE_O2_PRIVATE_ROUTER,
+        .parent = TYPE_IOMMU_MEMORY_REGION,
+        .instance_size = sizeof(IOMMUMemoryRegion),
+        .class_init = o2_private_router_class_init,
+    };
+
+    type_register_static(&private_router_type);
     type_register_static(&o2_machine_type);
 }
 
