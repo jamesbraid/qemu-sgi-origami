@@ -132,13 +132,19 @@ The Origin 350, Onyx 350 and Onyx 4 host profiles each select one PIC at XIO
 widget 15. Tezro selects two PIC widgets, 11 and 15, and places the modeled
 IO9 behind widget 15. The one-CPU and four-CPU Tezro deskside profiles share
 the same selected board, memory and I/O construction. The rack profile models
-only the first enclosure. No profile here attaches graphics, a G2/G2N brick,
-or a NUMAlink peer. Direct-link XIO and the PIC interrupt and DMA settings
-are emulator choices where physical routing remains unknown.
+only the first enclosure. The four-CPU Tezro tower and Onyx 350 profiles
+optionally select V12 with ``heads.widget-12=v12``. Both default to no graphics.
+The widget position follows the public close-bug Tezro and vocal-stag Onyx 350
+inventories respectively; the latter is an alternative to the living-raptor
+InfiniteReality configuration. The selected head reuses Odyssey and Bedrock PI
+credit handling. No profile attaches a G2/G2N brick or a NUMAlink peer.
+Direct-link XIO and the PIC interrupt and DMA settings are emulator choices
+where physical routing remains unknown.
 
 These profiles select an IP35 PROM 6.210 payload and a profile-specific flash
 seed. Flash read and write cycle inputs are both 16, and the machine-type
-input is 1. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
+input is 0 for the six standard profiles. The legacy Tezro trial retains its
+previous inputs. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
 clock; Tezro selects 66,666,667 Hz. The linked clock resource uses a 1968
 fresh-year base. Platform identity ``0x2001`` is a selected software input.
 Origin 350, Onyx 350 and the Onyx 4 host select L1 type ``0x37``. The Tezro

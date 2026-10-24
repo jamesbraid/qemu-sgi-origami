@@ -2917,6 +2917,45 @@ static bool sgi_machine_instantiate_odyssey(
     return true;
 }
 
+/* Attach a selected IP53 VPro to the node's Bedrock I/O widget map. */
+static bool sgi_machine_instantiate_ip53_odyssey(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXioAttachment *attachment,
+    const char *profile, Error **errp)
+{
+    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
+    SGIBedrockIOState *bedrock_io = sn1_node_bedrock_io(node);
+    SGIXioLink *link = &s->board_links[board_index];
+    g_autofree char *name = g_strdup_printf("graphics-link-%u", board_index);
+    DeviceState *dev;
+
+    if (!bedrock_io) {
+        error_setg(errp, "IP53 VPro at widget %u has no Bedrock I/O",
+                   attachment->widget);
+        return false;
+    }
+    dev = qdev_try_new("sgi-odyssey");
+    if (!dev) {
+        error_setg(errp, "IP53 VPro requires the sgi-odyssey device");
+        return false;
+    }
+    qdev_prop_set_string(dev, "profile", profile);
+    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
+    sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
+    sgi_xio_link_init(link, OBJECT(s), name, OBJECT(bedrock_io), 0,
+                      OBJECT(dev), 0);
+    if (!sgi_xio_link_connect(link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
+        !sgi_xio_link_connect(link, errp) ||
+        !sn1_node_set_ip53_pic_widget(
+            node, attachment->widget,
+            sgi_xio_port_cpu_face(OBJECT(dev), 0), errp)) {
+        return false;
+    }
+    s->io_boards[board_index] = SGI_XIO_BOARD(dev);
+    return true;
+}
+
 /*
  * Experimental Origin 300-to-V-brick route. The published enclosure has
  * its own XBridge, L1 and V12; the cable ports and nested processor address
@@ -7103,7 +7142,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
 
-        size_t bedrock_board_capacity = sgi_machine_topology_io_board_count(t);
+        size_t bedrock_board_capacity =
+            sgi_machine_topology_io_board_count(t) + s->head_count;
 
         s->io_boards = g_new0(SGIXioBoardState *, bedrock_board_capacity);
         s->board_links = g_new0(SGIXioLink, bedrock_board_capacity);
@@ -8005,6 +8045,33 @@ static bool sgi_machine_build_heads(SGIMachineState *s, Error **errp)
                                  0x0104);
             object_property_add_child(OBJECT(s), child, OBJECT(pci));
             if (!pci_realize_and_unref(pci, s->head_pci_bus, errp)) {
+                return false;
+            }
+            break;
+        }
+        case SGI_MODEL_GRAPHICS_FAMILY_ODYSSEY: {
+            const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+            SGIModelIoBoard record = { 0 };
+            SGIModelXioAttachment attachment = { 0 };
+            g_autofree char *child = g_strdup_printf("graphics-%s", name);
+            unsigned int widget;
+            unsigned int board_index =
+                sgi_machine_topology_io_board_count(t) + i;
+
+            if (!g_str_has_prefix(name, "widget-") ||
+                qemu_strtoui(name + 7, NULL, 10, &widget) ||
+                widget >= 16 || !s->bedrock_nodes || s->num_nodes != 1) {
+                error_setg(errp, "%s: Odyssey graphics at %s needs a "
+                           "single-node widget position", machine, name);
+                return false;
+            }
+            record.module_index = 0;
+            record.label = child;
+            attachment.node_index = 0;
+            attachment.crossbar_index = -1;
+            attachment.widget = widget;
+            if (!sgi_machine_instantiate_ip53_odyssey(
+                    s, &record, board_index, &attachment, c->id, errp)) {
                 return false;
             }
             break;

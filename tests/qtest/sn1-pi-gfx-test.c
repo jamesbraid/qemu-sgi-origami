@@ -189,6 +189,42 @@ static QTestState *start(const char *machine)
     return qts;
 }
 
+static QTestState *start_ip53_vpro(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = write_image();
+    g_autofree char *data = NULL;
+    g_autofree char *clock = NULL;
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    g_autofree char *quoted_data = NULL;
+    g_autofree char *quoted_clock = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-pi-gfx-vpro-data-XXXXXX", &data, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-pi-gfx-vpro-clock-XXXXXX", &clock, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted_data = g_shell_quote(data);
+    quoted_clock = g_shell_quote(clock);
+    qts = qtest_initf(
+        "-M tezro,topology=tezro-tower-multi,heads.widget-12=v12 "
+        "-cpu R16000,r16000-experimental=on,"
+        "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000 "
+        "-smp 4 -m 4G " RUN "-bios %s "
+        "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+        quoted_prom, quoted_data, quoted_clock);
+    unlink(prom);
+    unlink(data);
+    unlink(clock);
+    return qts;
+}
+
 static QTestState *start_ip53(void)
 {
     g_autoptr(GError) error = NULL;
@@ -522,6 +558,22 @@ static void test_head_returns_only_counted_stores(void)
     qtest_quit(qts);
 }
 
+static void test_ip53_odyssey_credit_return(void)
+{
+    QTestState *qts = start_ip53_vpro();
+    const uint64_t vpro_fifo = UINT64_C(0x920000000c110000);
+    const uint64_t vpro_page = vpro_fifo & UINT64_C(0xfffffe0000);
+
+    prime(qts, 0, 0, 0, PAGE_ENABLE | vpro_page, 64);
+    prime(qts, 0, 1, 0, 0, 64);
+    map(qts, 0, MAP(0, 1, 0, 12));
+    run(qts);
+    stores(qts, 0, SLOT_A, vpro_fifo, 1);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 63);
+    g_assert_cmpuint(credit(qts, 0, 1, 0), ==, 65);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -543,5 +595,7 @@ int main(int argc, char **argv)
                    test_head_returns_only_counted_stores);
     qtest_add_func("sn1/pi-gfx/ip53-host-credit-return",
                    test_ip53_host_credit_return);
+    qtest_add_func("sn1/pi-gfx/ip53-odyssey-credit-return",
+                   test_ip53_odyssey_credit_return);
     return g_test_run();
 }

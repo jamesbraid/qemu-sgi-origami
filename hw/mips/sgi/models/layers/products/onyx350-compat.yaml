@@ -27,6 +27,17 @@ layer:
     default: {clock_mhz: 800, cache_mib: 8}
     slots: [cpu0, cpu1, cpu2, cpu3]
   memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  graphics:
+    max_heads: 1
+    positions:
+      - name: widget-12
+        description: "VPro at widget 12 in the captured graphics configuration"
+        options:
+          - {id: none, default: true, fidelity: validated}
+          - id: v12
+            fidelity: implemented
+            pairing: established
+            assembly: "030-1909-008"
   data:
     machine:
       name: Onyx 350 IP53 software profile
@@ -42,7 +53,9 @@ layer:
         6.211, while the selected held payload is 6.210. This is a
         cross-version software trial and does not reproduce the captured
         firmware or establish fitted flash. Compatibility choices await
-        independent evidence review.
+        independent evidence review. The optional V12 at widget 12 follows
+        the separate vocal-stag inventory (030-1909-008 rev B), rather than
+        the living-raptor InfiniteReality configuration.
       firmware_config:
         processor_reset_mode: 0x009caf85
         processor_firmware_word: 0x569caf85

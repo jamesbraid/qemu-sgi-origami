@@ -3549,6 +3549,26 @@ class CatalogueJsonTests(unittest.TestCase):
     captured golden -- the packet's own worked examples.
     """
 
+    def test_ip53_v12_heads_are_optional_and_default_none(self):
+        profiles = ("onyx350-compat", "tezro-tower-multi")
+        catalogue = json.loads(render_catalogue_json(
+            [_resolved(name) for name in profiles]))
+        topologies = {item["name"]: item for item in catalogue["topologies"]}
+
+        for name in profiles:
+            positions = topologies[name]["graphics"]["positions"]
+            self.assertEqual(len(positions), 1, name)
+            position = positions[0]
+            self.assertEqual(position["name"], "widget-12", name)
+            options = {
+                item["configuration"]["id"]: item
+                for item in position["options"]
+            }
+            self.assertTrue(options["none"]["default"], name)
+            self.assertTrue(options["none"]["selectable"], name)
+            self.assertFalse(options["v12"]["default"], name)
+            self.assertTrue(options["v12"]["selectable"], name)
+
     def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",

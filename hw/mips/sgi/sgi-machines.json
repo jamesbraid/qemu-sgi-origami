@@ -22511,6 +22511,52 @@
       "crossbars": [],
       "description": "SGI Onyx 350 (IP53), approximate software profile",
       "generation": "sn1",
+      "graphics": {
+        "headless": true,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": false,
+            "description": "VPro at widget 12 in the captured graphics configuration",
+            "modelled": true,
+            "name": "widget-12",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "assembly": "030-1909-008",
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "second generation, 128 MB",
+                  "family": "odyssey",
+                  "family-name": "VPro",
+                  "id": "v12",
+                  "parameters": {
+                    "board-memory-mib": 128
+                  },
+                  "product": "VPro V12"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              }
+            ]
+          }
+        ]
+      },
       "io-boards": [
         {
           "carrier": "machine-placed",
@@ -35649,6 +35695,52 @@
       "crossbars": [],
       "description": "SGI Tezro tower, two/four-processor serial compatibility profile",
       "generation": "sn1",
+      "graphics": {
+        "headless": true,
+        "max-heads": 1,
+        "positions": [
+          {
+            "built-in": false,
+            "description": "VPro at widget 12 in the captured graphics configuration",
+            "modelled": true,
+            "name": "widget-12",
+            "options": [
+              {
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "",
+                  "family": "none",
+                  "family-name": "",
+                  "id": "none",
+                  "parameters": {},
+                  "product": "No graphics"
+                },
+                "default": true,
+                "fidelity": "validated",
+                "selectable": true
+              },
+              {
+                "assembly": "030-1884-002",
+                "change": "between-boots",
+                "configuration": {
+                  "configuration": "second generation, 128 MB",
+                  "family": "odyssey",
+                  "family-name": "VPro",
+                  "id": "v12",
+                  "parameters": {
+                    "board-memory-mib": 128
+                  },
+                  "product": "VPro V12"
+                },
+                "default": false,
+                "fidelity": "implemented",
+                "pairing": "established",
+                "selectable": true
+              }
+            ]
+          }
+        ]
+      },
       "io-boards": [
         {
           "carrier": "machine-placed",
