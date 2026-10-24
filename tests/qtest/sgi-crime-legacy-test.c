@@ -894,6 +894,8 @@ static void seed_renderer_state(QTestState *s)
 {
     const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
 
+    /* Refusal probes need a shape that remains unsupported. */
+    qtest_writel(s, RENDERER + 0x2060, 0x02000000);
     qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
     qtest_writeq(s, BASE + 0x18, 1U << 4);
     cause(s, 4, 1);
