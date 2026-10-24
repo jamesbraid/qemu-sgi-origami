@@ -58,7 +58,7 @@ layer:
           - family: odyssey
             reason: "VPro V12 needs Crossbow 1.4, the ER power supply 060-0035-00x and PROM 4.5 (007-4210-003), and this Octane presents Crossbow revision code 4 and the SR supply"
       - names: [widget-9, widget-10, widget-12]
-        description: "Crossbow port of an XIO graphics slot"
+        description: "Crossbow port {number}, an XIO graphics slot"
         placement: {slot: "{name}"}
         families:
           - family: mgras

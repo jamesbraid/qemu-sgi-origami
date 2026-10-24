@@ -58,7 +58,7 @@ layer:
             products:
               - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1611-001"}
       - names: [widget-9, widget-10, widget-12]
-        description: "Crossbow port of an XIO graphics slot"
+        description: "Crossbow port {number}, an XIO graphics slot"
         placement: {slot: "{name}"}
         families:
           - family: mgras

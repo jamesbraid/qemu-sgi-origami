@@ -21096,7 +21096,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 9, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -21196,7 +21196,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 10, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -21296,7 +21296,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 12, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -21713,7 +21713,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 9, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -21813,7 +21813,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 10, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -21913,7 +21913,7 @@
           },
           {
             "changeable": false,
-            "description": "Crossbow port of an XIO graphics slot",
+            "description": "Crossbow port 12, an XIO graphics slot",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -24829,7 +24829,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 6, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -24869,7 +24869,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 7, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -25395,7 +25395,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 6, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -25435,7 +25435,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 7, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -25965,7 +25965,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 6, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -26005,7 +26005,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 7, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -26508,7 +26508,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 6, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -26548,7 +26548,7 @@
           },
           {
             "changeable": false,
-            "description": "PCI option slot on the system board's Bridge",
+            "description": "PCI option slot, device 7, on the system board's Bridge",
             "families": [
               {
                 "device": "psitech-rad4",
@@ -27041,7 +27041,7 @@
         "slots": [
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 2",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27147,7 +27147,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 3",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27253,7 +27253,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 4",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27359,7 +27359,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 5",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27465,7 +27465,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 6",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27571,7 +27571,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 7",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27680,7 +27680,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 8",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27789,7 +27789,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 9",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -27898,7 +27898,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 10",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -28007,7 +28007,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 11",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -28116,7 +28116,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 12",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29295,7 +29295,7 @@
         "slots": [
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 2",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29401,7 +29401,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 3",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29507,7 +29507,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 4",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29613,7 +29613,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 5",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29719,7 +29719,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 6",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29825,7 +29825,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 7",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -29934,7 +29934,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 8",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -30043,7 +30043,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 9",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -30152,7 +30152,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 10",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -30261,7 +30261,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 11",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -30370,7 +30370,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 12",
             "families": [
               {
                 "device": "sgi-mgras",
