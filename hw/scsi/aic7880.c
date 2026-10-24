@@ -537,7 +537,8 @@ static void aic7880_host_dma(AIC7880State *s)
         aic7880_error(s, "COMMAND DMA direction is unsupported");
         return;
     }
-    if ((s->phase == AIC_PHASE_DATA && s->command_dma_wait) ||
+    if ((s->phase == AIC_PHASE_DATA && s->command_dma_wait &&
+         (control & 0x30)) ||
         (s->req && s->phase != AIC_PHASE_DATA) ||
         s->peer_nexus_disconnected || !s->host_request_pending ||
         (pci_get_word(pci->config + PCI_STATUS) &
