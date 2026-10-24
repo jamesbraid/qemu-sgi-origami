@@ -30,11 +30,20 @@ slow_qtests = {
   # sgi-heads-test starts a fresh QEMU for nearly every case; 20 subtests took
   # 65-70s at load 100-150 on 32 threads, 2026-10-23, and overran the default.
   'sgi-heads-test': 180,
+  # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
+  # host), and overran the default in full runs; three times the loaded
+  # figure, rounded up.
+  'sgi-heart-test': 180,
   # CI run 13888 exhausted the 60s default at 41/54 cases; a two-suite retry
   # passed all 54 in 25.76s. Keep three times the exhausted CI deadline.
   'sgi-ioc4-test': 180,
   'sgi-ioc3-eth-test': 500,
-  'sgi-kona-read-defense-test': 80,
+  # Alone it took 36.5 s with the host at load average 118, 2026-10-24
+  # (18 s on a quiet host); three times the loaded figure, rounded up.
+  'sgi-kona-read-defense-test': 120,
+  # 45.6 s alone at load average 118, 2026-10-24 (30 s on a quiet host);
+  # three times the loaded figure, rounded up.
+  'sgi-machine-storage-test': 150,
   'sgi-mgras-board-test': 670,
   'sgi-mgras-fifo-test': 190,
   'sgi-mgras-gl-draw-test': 760,
@@ -88,7 +97,12 @@ slow_qtests = {
   'sn0-origin2000-kona-3d-test-renderer-cpu-fragment': 420,
   'sn0-origin2000-kona-3d-test-renderer-fragment': 950,
   'sn0-origin2000-kona-3d-test-state': 180,
-  'sn0-origin2000-kona-3d-test-texture': 840,
+  # The texture group ran 645 s as one test and overran 840 s in a busy
+  # full run, so it is split in two. Alone at load average 85 to 118,
+  # 2026-10-24: texture 375 s, texture-formats 173 s; three times each,
+  # rounded up.
+  'sn0-origin2000-kona-3d-test-texture': 1140,
+  'sn0-origin2000-kona-3d-test-texture-formats': 530,
   'sn0-origin2000-kona-bringup-test': 230,
   'sn0-origin2000-kona-config-test': 120,
   # With the suspended-command checks it took 43-64 s alone, and 99 s in a
@@ -105,7 +119,9 @@ slow_qtests = {
   'sn0-origin2000-kona-fill-test-line': 240,
   'sn0-origin2000-kona-fill-test-point': 250,
   'sn0-origin2000-kona-fill-test-semantic': 240,
-  'sn0-origin2000-kona-pixel-test': 710,
+  # 376.6 s alone at load average 94, 2026-10-24 (302 s on a quiet host);
+  # three times the loaded figure, rounded up.
+  'sn0-origin2000-kona-pixel-test': 1140,
   'sn0-origin2000-kona-xdma-test': 70,
   'sn0-origin2000-pflash-test': 80,
   'sn0-origin2000-test': 430,
