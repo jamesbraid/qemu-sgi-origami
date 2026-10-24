@@ -960,10 +960,13 @@ static void assert_private_window_migration_blocked(QTestState *qts)
                             "o2-test/eight-bank-profile"));
 }
 
-static void run_private_window_backing_isolation(uint16_t offset)
+static void run_private_window_backing_isolation(uint16_t offset, bool remap)
 {
     const uint32_t program[] = {
-        mips_lui(9, 0xa000), mips_ori(9, 9, offset),
+        mips_mfc0(8, SN0_CP0_STATUS), mips_ori(8, 8, 0x80),
+        mips_mtc0(8, SN0_CP0_STATUS), 0, 0, 0, 0,
+        mips_ori(9, 0, 0x8000), mips_dsll32(9, 9),
+        mips_dsll(9, 9, 16), mips_ori(9, 9, offset),
         mips_lui(16, 0xa000), mips_ori(16, 16, 0x3000),
         mips_lw(13, 9, 0), mips_sw(13, 16, 28),
         mips_ori(14, 0, 9), mips_sw(14, 16, 32),
@@ -985,6 +988,7 @@ static void run_private_window_backing_isolation(uint16_t offset)
     };
     uint8_t image[sizeof(program)];
     uint8_t dma_bytes[4];
+    uint32_t backing = remap ? 0x91e2d3c4 : 0x11223344;
     g_autofree char *dir = g_dir_make_tmp("o2-private-window-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
     g_autofree char *log_path = g_build_filename(dir, "phase.log", NULL);
@@ -1012,6 +1016,9 @@ static void run_private_window_backing_isolation(uint16_t offset)
                       "-nodefaults -accel tcg,thread=single -S "
                       "-d trace:o2_private_phase -D %s",
                       machine, log_path);
+    if (remap) {
+        o2_program_banks(qts);
+    }
     qtest_writel(qts, offset, 0x11223344);
     assert_private_window_migration_blocked(qts);
     g_assert_cmphex(qtest_readl(qts, offset), ==, 0x11223344);
@@ -1020,7 +1027,7 @@ static void run_private_window_backing_isolation(uint16_t offset)
     qtest_writel(qts, RAM_FULL + 0x3020, 0);
     qtest_writel(qts, RAM_FULL + 0x3024, 0);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    sgi_wait_start(&wait, "O2 uncached read before private entry");
+    sgi_wait_start(&wait, "O2 nonselected CCA read before private entry");
     while (qtest_readl(qts, RAM_FULL + 0x3020) != 9) {
         sgi_wait_pause(&wait, 1000);
     }
@@ -1033,14 +1040,24 @@ static void run_private_window_backing_isolation(uint16_t offset)
         sgi_wait_pause(&wait, 1000);
     }
     assert_private_window_migration_blocked(qts);
+    if (remap) {
+        uint8_t mailbox[40];
+
+        qtest_memread(qts, RAM_FULL + 0x3000, mailbox, sizeof(mailbox));
+        qtest_memwrite(qts, RAM_FULL + RAM_BANK_SIZE + 0x3000,
+                       mailbox, sizeof(mailbox));
+        qtest_writel(qts, RAM_FULL + RAM_BANK_SIZE + offset, backing);
+        qtest_writeq(qts, CRIME + 0x210, 0x100);
+        qtest_writeq(qts, CRIME + 0x208, 0x104);
+    }
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3000), ==, 0x11223344);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3004), ==, 0x55667788);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3008), ==, 0x11223344);
-    g_assert_cmphex(qtest_readl(qts, offset), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(qts, offset), ==, backing);
     g_assert_cmpint(memtx_transaction(qts, MEMTX_DMA_AS, offset,
                                       dma_bytes, sizeof(dma_bytes), false),
                     ==, MEMTX_OK);
-    g_assert_cmphex((uint32_t)ldl_be_p(dma_bytes), ==, 0x11223344);
+    g_assert_cmphex((uint32_t)ldl_be_p(dma_bytes), ==, backing);
     qtest_writel(qts, offset, 0xaabbccdd);
     g_assert_cmphex(qtest_readl(qts, offset), ==, 0xaabbccdd);
     g_assert_cmpint(memtx_transaction(qts, MEMTX_DMA_AS, offset,
@@ -1060,6 +1077,10 @@ static void run_private_window_backing_isolation(uint16_t offset)
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014), ==, 0x55667788);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3018), ==, 0xcafebabe);
+    if (remap) {
+        qtest_writeq(qts, CRIME + 0x208, 0x100);
+        qtest_writeq(qts, CRIME + 0x210, 0x104);
+    }
     qtest_writel(qts, offset, 0x01020304);
     qtest_writel(qts, RAM_FULL + 0x300c, 0);
     qtest_writel(qts, RAM_FULL + 0x3010, 0);
@@ -1067,7 +1088,7 @@ static void run_private_window_backing_isolation(uint16_t offset)
     qtest_writel(qts, RAM_FULL + 0x3024, 0);
     qtest_system_reset(qts);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    sgi_wait_start(&wait, "O2 uncached read after reset");
+    sgi_wait_start(&wait, "O2 nonselected CCA read after reset");
     while (qtest_readl(qts, RAM_FULL + 0x3020) != 9) {
         sgi_wait_pause(&wait, 1000);
     }
@@ -1112,12 +1133,20 @@ static void run_private_window_backing_isolation(uint16_t offset)
 
 static void test_private_window_backing_isolation(void)
 {
-    run_private_window_backing_isolation(0x40);
+    run_private_window_backing_isolation(0x40, false);
 }
 
 static void test_private_window_boundary(void)
 {
-    run_private_window_backing_isolation(0x1000);
+    run_private_window_backing_isolation(0, false);
+    run_private_window_backing_isolation(0xffc, false);
+    run_private_window_backing_isolation(0x1000, false);
+    run_private_window_backing_isolation(0x1004, false);
+}
+
+static void test_private_window_backing_remap(void)
+{
+    run_private_window_backing_isolation(0x40, true);
 }
 
 static void test_private_window_other_cache_algorithms(void)
@@ -1128,7 +1157,7 @@ static void test_private_window_other_cache_algorithms(void)
     g_autofree char *log_path = g_build_filename(dir, "phase.log", NULL);
     g_autofree char *log = NULL;
     g_autofree char *machine = NULL;
-    unsigned wait_loop, branch;
+    unsigned wait_loop, branch, program_end;
     SgiWait wait;
     QTestState *qts;
 
@@ -1140,6 +1169,11 @@ static void test_private_window_other_cache_algorithms(void)
     sn0_emit(&code, mips_ori(8, 8, 0x80)); /* Keep BEV and ERL; enable KX. */
     sn0_emit_mtc0(&code, 8, SN0_CP0_STATUS);
     sn0_emit_li64(&code, 16, UINT64_C(0xffffffffa0003000));
+    sn0_emit_li64(&code, 8, UINT64_C(0xffffffffbfc00400));
+    sn0_emit(&code, mips_rtype(8, 0, 0, 0, 0x08));
+    sn0_emit_nop(&code);
+    g_assert_cmpuint(code.pos, <=, SN0_VEC_TLB_REFILL);
+    code.pos = 0x400;
     sn0_emit_li64(&code, 8, UINT64_C(0x9000000000000040));
     sn0_emit_li(&code, 9, 0x22223333);
     sn0_emit(&code, mips_sw(9, 8, 0));
@@ -1169,6 +1203,20 @@ static void test_private_window_other_cache_algorithms(void)
     sn0_emit_li64(&code, 8, UINT64_C(0xffffffffa0000040));
     sn0_emit(&code, mips_lw(13, 8, 0));
     sn0_emit(&code, mips_sw(13, 16, 16));
+    for (unsigned cca = 0; cca < 8; cca++) {
+        if (cca == 3) {
+            continue;
+        }
+        sn0_emit_li64(&code, 8, UINT64_C(0x8000000000000040) |
+                      ((uint64_t)cca << 59));
+        sn0_emit_li(&code, 11, 0x66660000 | cca);
+        sn0_emit(&code, mips_sw(11, 8, 0));
+        sn0_emit(&code, mips_lw(12, 8, 0));
+        sn0_emit(&code, mips_sw(12, 16, 32 + 4 * cca));
+        sn0_emit_li64(&code, 8, UINT64_C(0xffffffff80000040));
+        sn0_emit(&code, mips_lw(12, 8, 0));
+        sn0_emit(&code, mips_sw(12, 16, 64 + 4 * cca));
+    }
     sn0_emit_li64(&code, 8, UINT64_C(0xffffffff80001008));
     sn0_emit_li(&code, 11, 0x77778888);
     sn0_emit(&code, mips_sw(11, 8, 0));
@@ -1178,6 +1226,7 @@ static void test_private_window_other_cache_algorithms(void)
     sn0_emit(&code, mips_ori(14, 0, 3));
     sn0_emit(&code, mips_sw(14, 16, 0));
     sn0_emit_park(&code);
+    program_end = code.pos;
     code.pos = SN0_VEC_GENERAL;
     sn0_emit_li64(&code, 16, UINT64_C(0xffffffffa0003000));
     sn0_emit_mfc0(&code, 10, SN0_CP0_CAUSE);
@@ -1185,6 +1234,8 @@ static void test_private_window_other_cache_algorithms(void)
     sn0_emit(&code, mips_ori(14, 0, 1));
     sn0_emit(&code, mips_sw(14, 16, 24));
     sn0_emit_park(&code);
+    g_assert_cmpuint(code.pos, <=, 0x400);
+    code.pos = program_end;
 
     g_assert_true(g_file_set_contents(path, (const char *)code.bytes,
                                       code.pos, NULL));
@@ -1237,7 +1288,16 @@ static void test_private_window_other_cache_algorithms(void)
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3010), ==, 0x33334444);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014), ==, 0x77778888);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3018), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, 0x40), ==, 0x33334444);
+    for (unsigned cca = 0; cca < 8; cca++) {
+        if (cca == 3) {
+            continue;
+        }
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3020 + 4 * cca),
+                        ==, 0x66660000 | cca);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3040 + 4 * cca),
+                        ==, 0x55556666);
+    }
+    g_assert_cmphex(qtest_readl(qts, 0x40), ==, 0x66660007);
     g_assert_cmphex(qtest_readl(qts, 0x1008), ==, 0x77778888);
     qtest_quit(qts);
     g_clear_pointer(&log, g_free);
@@ -1359,6 +1419,7 @@ static void test_private_window_low_fetch_report(void)
 {
     SN0Image rom = { 0 };
     SN0Image low = { 0 };
+    SN0Image function = { 0 };
     g_autofree char *dir = g_dir_make_tmp("o2-private-fetch-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
     g_autofree char *log_path = g_build_filename(dir, "phase.log", NULL);
@@ -1380,12 +1441,22 @@ static void test_private_window_low_fetch_report(void)
     sn0_emit_nop(&rom);
 
     sn0_emit_li64(&low, 16, UINT64_C(0xffffffffa0003000));
+    sn0_emit_li64(&low, 8, UINT64_C(0xffffffff80000800));
+    sn0_emit(&low, mips_rtype(8, 0, 31, 0, 0x09));
+    sn0_emit_nop(&low);
+    sn0_emit(&low, mips_sw(2, 16, 16));
     sn0_emit(&low, mips_ori(14, 0, 1));
     sn0_emit(&low, mips_sw(14, 16, 0));
     wait_loop = low.pos;
     sn0_emit(&low, mips_lw(15, 16, 4));
     branch = sn0_emit_branch(&low, SN0_OPC_BEQ, 15, 0);
     sn0_patch_branch(&low, branch, wait_loop);
+    sn0_emit_li64(&low, 8, UINT64_C(0xffffffff80000800));
+    sn0_emit_li(&low, 11, mips_ori(2, 0, 0x22));
+    sn0_emit(&low, mips_sw(11, 8, 0));
+    sn0_emit(&low, mips_rtype(8, 0, 31, 0, 0x09));
+    sn0_emit_nop(&low);
+    sn0_emit(&low, mips_sw(2, 16, 20));
     sn0_emit_li64(&low, 8, UINT64_C(0xffffffff80000040));
     sn0_emit_li(&low, 11, 0x55667788);
     sn0_emit(&low, mips_sw(11, 8, 0));
@@ -1397,6 +1468,9 @@ static void test_private_window_low_fetch_report(void)
     sn0_emit(&low, mips_ori(14, 0, 2));
     sn0_emit(&low, mips_sw(14, 16, 0));
     sn0_emit_park(&low);
+    sn0_emit(&function, mips_ori(2, 0, 0x11));
+    sn0_emit(&function, mips_rtype(31, 0, 0, 0, 0x08));
+    sn0_emit_nop(&function);
 
     g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
                                       rom.pos, NULL));
@@ -1407,10 +1481,11 @@ static void test_private_window_low_fetch_report(void)
         "rom-offset=0,rom-pad-byte=238", path);
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S "
-                      "-d trace:o2_private_phase -D %s",
+                      "-d in_asm,trace:o2_private_phase -D %s",
                       machine, log_path);
     qtest_writel(qts, 0x40, 0x11223344);
     qtest_memwrite(qts, 0x80, low.bytes, low.pos);
+    qtest_memwrite(qts, 0x800, function.bytes, function.pos);
     qtest_writel(qts, RAM_FULL + 0x3000, 0);
     qtest_writel(qts, RAM_FULL + 0x3004, 0);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
@@ -1443,10 +1518,27 @@ static void test_private_window_low_fetch_report(void)
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3008), ==, 0x55667788);
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x300c), ==, 0x11223344);
     g_assert_cmphex(qtest_readl(qts, 0x40), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3010), ==, 0x11);
+    g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014), ==, 0x22);
+    g_assert_cmphex(qtest_readl(qts, 0x800), ==, mips_ori(2, 0, 0x11));
     qtest_quit(qts);
     g_clear_pointer(&log, g_free);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
     g_assert_null(strstr(log, "event release"));
+    {
+        g_auto(GStrv) blocks = g_strsplit(log, "----------------\n", -1);
+        bool ram_block = false;
+
+        /* A ROM block cannot prove that low private code resolves to RAM. */
+        for (unsigned i = 0; blocks[i]; i++) {
+            if (strstr(blocks[i], "0xffffffff80000800:") &&
+                strstr(blocks[i], "0xffffffff80000804:")) {
+                ram_block = true;
+                break;
+            }
+        }
+        g_assert_true(ram_block);
+    }
     g_assert_cmpint(unlink(log_path), ==, 0);
     g_assert_cmpint(unlink(path), ==, 0);
     g_assert_cmpint(rmdir(dir), ==, 0);
@@ -1618,6 +1710,7 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
     g_autofree char *machine = NULL;
     unsigned seed_loop, copy_loop, wait_loop, branch;
     unsigned copied = omit_boundary ? 512 : 513;
+    bool check_code = !omit_boundary && !high_sp;
     const char *phase = omit_boundary ? "event incomplete" : "event release";
     int64_t deadline;
     SgiWait wait;
@@ -1640,6 +1733,17 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
     sn0_emit(&code, mips_daddiu(10, 10, -1));
     branch = sn0_emit_branch(&code, SN0_OPC_BNE, 10, 0);
     sn0_patch_branch(&code, branch, seed_loop);
+    if (check_code) {
+        sn0_emit_li64(&code, 8, UINT64_C(0xffffffff80000800));
+        sn0_emit_li(&code, 11, mips_ori(2, 0, 0x11));
+        sn0_emit(&code, mips_sw(11, 8, 0));
+        sn0_emit_li(&code, 11, mips_rtype(31, 0, 0, 0, 0x08));
+        sn0_emit(&code, mips_sw(11, 8, 4));
+        sn0_emit(&code, mips_sw(0, 8, 8));
+        sn0_emit(&code, mips_rtype(8, 0, 31, 0, 0x09));
+        sn0_emit_nop(&code);
+        sn0_emit(&code, mips_sw(2, 16, 20));
+    }
     sn0_emit(&code, mips_ori(14, 0, 1));
     sn0_emit(&code, mips_sw(14, 16, 0));
     wait_loop = code.pos;
@@ -1675,6 +1779,12 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
     sn0_emit(&code, mips_ori(14, 0, 3));
     branch = sn0_emit_branch(&code, SN0_OPC_BNE, 15, 14);
     sn0_patch_branch(&code, branch, wait_loop);
+    if (check_code) {
+        sn0_emit_li64(&code, 8, UINT64_C(0xffffffff80000800));
+        sn0_emit(&code, mips_rtype(8, 0, 31, 0, 0x09));
+        sn0_emit_nop(&code);
+        sn0_emit(&code, mips_sw(2, 16, 24));
+    }
     sn0_emit_li64(&code, 8, UINT64_C(0xffffffff80000040));
     sn0_emit_li(&code, 11, 0xaabbccdd);
     sn0_emit(&code, mips_sw(11, 8, 0));
@@ -1721,8 +1831,12 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
         sgi_wait_pause(&wait, 1000);
     }
     for (unsigned i = 0; i < copied; i++) {
-        g_assert_cmphex(qtest_readq(qts, i * 8), ==,
-                        UINT64_C(0x11223344) + i);
+        uint64_t expected = UINT64_C(0x11223344) + i;
+
+        if (check_code && i == 0x800 / 8) {
+            expected = UINT64_C(0x3402001103e00008);
+        }
+        g_assert_cmphex(qtest_readq(qts, i * 8), ==, expected);
     }
     if (omit_boundary) {
         g_assert_cmphex(qtest_readq(qts, 0x1000), ==, 0);
@@ -1751,12 +1865,19 @@ static void run_private_window_guest_copy(bool omit_boundary, bool high_sp)
         }
         sgi_wait_pause(&wait, 1000);
     }
+    if (check_code) {
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3014), ==, 0x11);
+        qtest_writel(qts, 0x800, mips_ori(2, 0, 0x22));
+    }
     qtest_writel(qts, RAM_FULL + 0x3004, 3);
     sgi_wait_start(&wait, "O2 RAM execution after private phase check");
     while (qtest_readl(qts, RAM_FULL + 0x3010) != 5) {
         sgi_wait_pause(&wait, 1000);
     }
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    if (check_code) {
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3018), ==, 0x22);
+    }
     g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3008), ==,
                     omit_boundary ? 0 : 0xaabbccdd);
     g_assert_cmphex(qtest_readl(qts, 0x40), ==,
@@ -7793,6 +7914,8 @@ int main(int argc, char **argv)
                    test_private_window_backing_isolation);
     qtest_add_func("/o2/private-window-boundary",
                    test_private_window_boundary);
+    qtest_add_func("/o2/private-window-backing-remap",
+                   test_private_window_backing_remap);
     qtest_add_func("/o2/private-window-other-cache-algorithms",
                    test_private_window_other_cache_algorithms);
     qtest_add_func("/o2/private-window-missed-rom-trigger",
