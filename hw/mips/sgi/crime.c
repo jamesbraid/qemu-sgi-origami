@@ -356,10 +356,19 @@ typedef struct CrimeRenderPixel {
     uint32_t color;
 } CrimeRenderPixel;
 
+typedef enum CrimeRenderTranslation {
+    CRIME_RENDER_TRANSLATION_ERROR,
+    CRIME_RENDER_INVALID_TILE,
+    CRIME_RENDER_MAPPED,
+} CrimeRenderTranslation;
+
 /* Resolve through the populated-bank decoder before coherent DMA. */
-static bool crime_render_translate(SGICrimeState *s, unsigned bank,
-                                    unsigned x, unsigned y, unsigned bytes,
-                                    uint64_t *physical, uint64_t *identity)
+static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
+                                                      unsigned bank,
+                                                      unsigned x, unsigned y,
+                                                      unsigned bytes,
+                                                      uint64_t *physical,
+                                                      uint64_t *identity)
 {
     unsigned byte_x = x * bytes;
     unsigned index = (y / 128) * 16 + byte_x / 512;
@@ -368,21 +377,21 @@ static bool crime_render_translate(SGICrimeState *s, unsigned bank,
     CrimeTransferSpan span;
 
     if (bank >= 3 || x >= 2048 || y >= 2048 || index >= 256) {
-        return false;
+        return CRIME_RENDER_TRANSLATION_ERROR;
     }
     word = s->render.tlb[bank * 64 + index / 4];
     entry = word >> (48 - 16 * (index % 4));
     if (!(entry & 0x8000)) {
-        return false;
+        return CRIME_RENDER_INVALID_TILE;
     }
     address = ((uint64_t)(entry & 0x7fff) << 16) +
               (y % 128) * 512 + byte_x % 512;
     if (!crime_transfer_resolve(s, address, bytes, &span)) {
-        return false;
+        return CRIME_RENDER_TRANSLATION_ERROR;
     }
     *physical = address;
     *identity = span.offset;
-    return true;
+    return CRIME_RENDER_MAPPED;
 }
 
 static int crime_render_compare_destination(const void *a, const void *b,
@@ -672,8 +681,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     uint64_t p[128];
     uint32_t draw, clip, plane, stipple_mode;
     unsigned destination_bank, source_bank = 0, bytes, source_bytes;
-    unsigned count = 0, operation, bit = 0, repeat = 0, first = 0;
-    unsigned last = 0, max_repeat = 0;
+    unsigned count = 0, suppressed = 0, operation;
+    unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy;
     bool copy, stipple, overlap, screen_enabled = false, inside = false;
     CrimeRenderClip scissor, screen = { 0 };
@@ -796,6 +805,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 int x = cx + (int)col;
                 uint32_t mask = plane;
                 CrimeRenderPixel *pixel;
+                CrimeRenderTranslation translation;
 
                 if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
                     ((draw & 0x100000) &&
@@ -812,19 +822,27 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 if (!mask) {
                     continue;
                 }
-                pixel = &pixels[count++];
-                pixel->mask = mask;
-                pixel->color = color;
-                if (!crime_render_translate(s, destination_bank, x, y, bytes,
-                                             &pixel->destination,
-                                             &pixel->destination_id) ||
-                    (copy && !crime_render_translate(
+                pixel = &pixels[count];
+                translation = crime_render_translate(
+                    s, destination_bank, x, y, bytes,
+                    &pixel->destination, &pixel->destination_id);
+
+                if (!copy && translation == CRIME_RENDER_INVALID_TILE) {
+                    suppressed++;
+                    continue;
+                }
+                if (translation != CRIME_RENDER_MAPPED ||
+                    (copy && crime_render_translate(
                         s, source_bank, sx + x - geometry.x0,
                         sy + y - geometry.y0, bytes,
-                        &pixel->source, &pixel->source_id))) {
+                        &pixel->source, &pixel->source_id) !=
+                        CRIME_RENDER_MAPPED)) {
                     return crime_transfer_fail(offset,
                                                "invalid primitive mapping");
                 }
+                pixel->mask = mask;
+                pixel->color = color;
+                count++;
             }
         }
     }
@@ -834,8 +852,17 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
     result = crime_render_execute(offset, pixels, count, bytes, copy,
                                    operation, true);
-    if (result == MEMTX_OK && index >= 0) {
-        s->render.parameter[index] = value;
+    if (result == MEMTX_OK) {
+        if (index >= 0) {
+            s->render.parameter[index] = value;
+        }
+        if (suppressed) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: %s suppressed %u invalid destination "
+                          "fragments\n", geometry.opcode == 0 ? "point" :
+                          geometry.opcode == 1 ? "line" : "rectangle",
+                          suppressed);
+        }
     }
     return result;
 }
@@ -902,12 +929,14 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
 
             pixel->mask = 0xff;
             pixel->color = p[3] & 0xff;
-            if (!crime_render_translate(s, destination_bank, x, y, 1,
-                                         &pixel->destination,
-                                         &pixel->destination_id) ||
-                (copy && !crime_render_translate(s, source_bank, sx, sy, 1,
-                                                 &pixel->source,
-                                                 &pixel->source_id))) {
+            if (crime_render_translate(s, destination_bank, x, y, 1,
+                                        &pixel->destination,
+                                        &pixel->destination_id) !=
+                CRIME_RENDER_MAPPED ||
+                (copy && crime_render_translate(s, source_bank, sx, sy, 1,
+                                                &pixel->source,
+                                                &pixel->source_id) !=
+                 CRIME_RENDER_MAPPED)) {
                 return crime_transfer_fail(offset, "invalid tiled mapping");
             }
             if (copy && source_bank == destination_bank) {

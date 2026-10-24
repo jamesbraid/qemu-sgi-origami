@@ -14,14 +14,14 @@
 #define STATUS (RE + 0x4000)
 
 static QTestState *start_profile(const char *profile, bool banked,
-                                 const char *extra)
+                                 bool functional, const char *extra)
 {
     QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx,"
         "migrate-ram=/objects/fit/fit[0] -M none -cpu R10000 -S -d guest_errors,unimp "
         "-object memory-backend-ram,id=fit,size=%s "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
-        "crime-profile=%s,functional-memory-transfer=on%s %s",
-        banked ? "1G" : "64M", profile,
+        "crime-profile=%s,functional-memory-transfer=%s%s %s",
+        banked ? "1G" : "64M", profile, functional ? "on" : "off",
         banked ? ",eight-128m-banks=on,reset-low-ram-approx=on" : "", extra);
 
     qtest_sysbus_mmio_map(s, "/machine/peripheral/crime", 0, CRIME);
@@ -30,7 +30,7 @@ static QTestState *start_profile(const char *profile, bool banked,
 
 static QTestState *start_options(const char *extra)
 {
-    return start_profile("legacy-software", false, extra);
+    return start_profile("legacy-software", false, true, extra);
 }
 
 static QTestState *start(void)
@@ -592,6 +592,7 @@ static void test_actual_accesses(void)
     QTestState *s = start();
 
     tile(s, 0, 0, 3);
+    tile(s, 0, 1, 0x400);
     for (unsigned copy = 0; copy < 2; copy++) {
         for (unsigned clip = 0; clip < 6; clip++) {
             setup(s, 0, copy);
@@ -974,11 +975,12 @@ static void test_atomic_commands(void)
 {
     QTestState *s = start();
     const unsigned malformed[] = {
-        0x800, 0x100, 0x001, 0x300, 0x224, 0x2000,
+        0xc00, 0x100, 0x001, 0x300, 0x224, 0x2000,
     };
     uint8_t bytes[16];
 
     tile(s, 0, 0, 3);
+    tile(s, 0, 1, 0x400);
     qtest_memset(s, 0x30000, 0x5a, sizeof(bytes));
     qtest_writeq(s, CRIME + 0x18, 1U << 4);
     qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
@@ -1234,7 +1236,7 @@ static void test_migration(void)
 
 static void test_banked_decoder(void)
 {
-    QTestState *s = start_profile("legacy-software", true, "");
+    QTestState *s = start_profile("legacy-software", true, true, "");
     uint8_t missed;
 
     for (unsigned bank = 0; bank < 8; bank++) {
@@ -1274,7 +1276,7 @@ static void test_banked_decoder(void)
 
 static void test_unselected_profile(void)
 {
-    QTestState *s = start_profile("1.5", false, "");
+    QTestState *s = start_profile("1.5", false, true, "");
     uint32_t value;
     const unsigned writes[] = {
         0x1000, 0x2000, 0x2874, 0x21f0, 0x29f0, 0x3070, 0x3870,
@@ -1576,6 +1578,7 @@ static void test_native64_start(void)
         uint64_t value = bounds(1, 2, 4, 5);
 
         tile(s, 0, 0, 3);
+        tile(s, 0, 1, 0x400);
         setup(s, 0, false);
         qtest_writel(s, DE + 0x18, 0x2f8 | (n == 5 ? 0x100000 : 0));
         qtest_writel(s, DE + 0x1b0, 6);
@@ -1733,6 +1736,8 @@ typedef struct Shape {
     uint32_t primitive, draw, foreground, background, old, plane, logic;
     uint32_t stipple_mode, pattern, clip;
     uint64_t screen, scissor;
+    const uint16_t *entries;
+    unsigned *suppressed;
 } Shape;
 
 static Shape shape_default(void)
@@ -1776,6 +1781,26 @@ static void reference_fragment(const Shape *c, uint32_t *pixels,
                 !!(c->clip & (1U << (4 - n)))) {
                 return;
             }
+        }
+    }
+    if (c->entries) {
+        uint32_t enabled = 0;
+        uint32_t effective = c->draw & 0x80 ? c->plane & mask : mask;
+        unsigned tile_index = (y / 128) * 16 + (x * c->bytes) / 512;
+
+        for (unsigned b = 0; b < c->bytes; b++) {
+            unsigned lane = 3 - ((x * c->bytes + b) & 3);
+
+            if (c->draw & (1U << (3 + lane))) {
+                enabled |= 0xffU << ((c->bytes - 1 - b) * 8);
+            }
+        }
+        if (!(effective & enabled)) {
+            return;
+        }
+        if (!(c->entries[tile_index] & 0x8000)) {
+            (*c->suppressed)++;
+            return;
         }
     }
     index = (y - c->y) * c->width + x - c->x;
@@ -2371,7 +2396,7 @@ static void test_stipple_accesses(void)
         Shape c = shape_default();
 
         qtest_writeq(s, RE + 0x1000, 0x8003000000000000ULL);
-        qtest_writeq(s, RE + 0x1020, 0);
+        qtest_writeq(s, RE + 0x1020, 0x0000840000000000ULL);
         c.x0 = 510;
         c.y0 = 127;
         c.x1 = 512;
@@ -2751,7 +2776,7 @@ static void test_shape_tile_banks(void)
 
 static void test_shape_bank_decoder(void)
 {
-    QTestState *s = start_profile("legacy-software", true, "");
+    QTestState *s = start_profile("legacy-software", true, true, "");
 
     for (unsigned i = 0; i < 8; i++) {
         qtest_writeq(s, CRIME + 0x208 + i * 8, 0x100 | (i * 4));
@@ -2790,6 +2815,727 @@ static void test_shape_bank_decoder(void)
     qtest_writeq(s, CRIME + 0x210, 0x104);
     g_assert_cmphex(qtest_readb(s, 0x08030004), ==, 0x83);
     qtest_quit(s);
+}
+
+static void test_tiled_validity_fill(void)
+{
+    QTestState *s = start();
+
+    qtest_writeq(s, RE + 0x1000, 0x8003000900000000ULL);
+    qtest_memset(s, 0x301fe, 0x5a, 3);
+    qtest_memset(s, 0x90000, 0x6c, 8);
+    qtest_memset(s, 0, 0x83, 8);
+    setup(s, 0, false);
+    qtest_writel(s, DE + 0xd0, 0xb7);
+    qtest_writel(s, DE + 0x70, xy(511, 0));
+    g_assert_cmpint(memtx_writel(s, DE + 0x874, xy(513, 0)), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(s, 0x301fe), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(s, 0x301ff), ==, 0xb7);
+    g_assert_cmphex(qtest_readb(s, 0x30200), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(s, 0x90000), ==, 0x6c6c6c6c6c6c6c6cULL);
+    g_assert_cmphex(qtest_readq(s, 0), ==, 0x8383838383838383ULL);
+    g_assert_cmphex(qtest_readq(s, RE + 0x1000), ==, 0x8003000900000000ULL);
+    assert_idle(s);
+    qtest_quit(s);
+}
+
+typedef struct ValidityLog {
+    QTestState *q;
+    char *directory;
+    char *path;
+    GPtrArray *records;
+} ValidityLog;
+
+static ValidityLog validity_start(bool banked, const char *extra)
+{
+    ValidityLog v = { 0 };
+    g_autofree char *options = NULL;
+
+    v.directory = g_dir_make_tmp("crime-validity-XXXXXX", NULL);
+    v.path = g_build_filename(v.directory, "device.txt", NULL);
+    v.records = g_ptr_array_new_with_free_func(g_free);
+    options = g_strdup_printf("-D %s %s", v.path, extra);
+    v.q = start_profile("legacy-software", banked, true, options);
+    qtest_writeq(v.q, CRIME + 0x18, 1U << 4);
+    qtest_set_irq_in(v.q, "/machine/peripheral/crime", "mace", 4, 1);
+    return v;
+}
+
+static void validity_record(ValidityLog *v, const Shape *c, unsigned count)
+{
+    unsigned opcode = c->primitive >> 24;
+    const char *name = opcode == 0 ? "point" :
+                       opcode == 1 ? "line" : "rectangle";
+
+    if (count) {
+        g_ptr_array_add(v->records, g_strdup_printf(
+            "sgi-crime: %s suppressed %u invalid destination fragments",
+            name, count));
+    }
+}
+
+static void validity_finish(ValidityLog *v)
+{
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned count = 0;
+
+    qtest_quit(v->q);
+    g_assert_true(g_file_get_contents(v->path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        if (strstr(lines[i], "invalid destination fragments")) {
+            g_assert_cmpuint(count, <, v->records->len);
+            g_assert_cmpstr(lines[i], ==, g_ptr_array_index(v->records, count));
+            count++;
+        }
+    }
+    g_assert_cmpuint(count, ==, v->records->len);
+    g_ptr_array_free(v->records, true);
+    g_unlink(v->path);
+    g_rmdir(v->directory);
+    g_free(v->path);
+    g_free(v->directory);
+}
+
+static void validity_entries(uint16_t entries[256], unsigned bank)
+{
+    for (unsigned i = 0; i < 256; i++) {
+        entries[i] = 0x8000 | page_for(bank, i);
+    }
+    entries[1] &= 0x7fff;
+    entries[17] &= 0x7fff;
+}
+
+static void validity_program(QTestState *q, unsigned bank,
+                              const uint16_t entries[256])
+{
+    for (unsigned word = 0; word < 64; word++) {
+        uint64_t value = 0;
+
+        for (unsigned lane = 0; lane < 4; lane++) {
+            value |= (uint64_t)entries[word * 4 + lane] << (48 - lane * 16);
+        }
+        qtest_writeq(q, RE + 0x1000 + bank * 512 + word * 8, value);
+    }
+}
+
+static void validity_words(QTestState *q, unsigned bank,
+                            const uint16_t entries[256])
+{
+    for (unsigned word = 0; word < 64; word++) {
+        uint64_t value = qtest_readq(q, RE + 0x1000 + bank * 512 + word * 8);
+
+        for (unsigned lane = 0; lane < 4; lane++) {
+            g_assert_cmphex((value >> (48 - lane * 16)) & 0xffff, ==,
+                           entries[word * 4 + lane]);
+        }
+    }
+}
+
+static uint32_t *validity_reference(Shape *c, unsigned *count)
+{
+    *count = 0;
+    c->suppressed = count;
+    return shape_reference(c);
+}
+
+static unsigned validity_run(ValidityLog *v, Shape *c, uint16_t entries[256])
+{
+    unsigned count;
+    g_autofree uint32_t *expected = NULL;
+    uint64_t error = qtest_readq(v->q, CRIME + 0x250);
+    uint64_t address = qtest_readq(v->q, CRIME + 0x258);
+
+    c->entries = entries;
+    expected = validity_reference(c, &count);
+    validity_program(v->q, c->bank, entries);
+    shape_memory(v->q, c, NULL);
+    qtest_writeq(v->q, 0, 0x8383838383838383ULL);
+    shape_stage(v->q, c);
+    g_assert_cmpint(memtx_writel(v->q, DE + 0x9f0, 0x12345678), ==, MEMTX_OK);
+    shape_memory(v->q, c, expected);
+    validity_record(v, c, count);
+    validity_words(v->q, c->bank, entries);
+    g_assert_cmphex(qtest_readq(v->q, 0), ==, 0x8383838383838383ULL);
+    g_assert_cmphex(qtest_readq(v->q, CRIME + 0x250), ==, error);
+    g_assert_cmphex(qtest_readq(v->q, CRIME + 0x258), ==, address);
+    g_assert_cmphex(qtest_readq(v->q, CRIME + 0x10), ==, 1U << 4);
+    g_assert_cmphex(qtest_readq(v->q, CRIME + 0x18), ==, 1U << 4);
+    g_assert_cmphex(qtest_readl(v->q, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readl(v->q, DE + 0xc0), ==, c->stipple_mode);
+    g_assert_cmphex(qtest_readl(v->q, DE + 0xc4), ==, c->pattern);
+    return count;
+}
+
+static void test_validity_banks_depths(void)
+{
+    ValidityLog v = validity_start(false, "");
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned depth = 0; depth < 3; depth++) {
+            uint16_t entries[256];
+            Shape c = shape_default();
+            unsigned tile_width = 512 / (1U << depth);
+
+            validity_entries(entries, bank);
+            c.bank = bank;
+            c.bytes = 1U << depth;
+            c.x = tile_width - 2;
+            c.y = 127;
+            c.width = tile_width + 4;
+            c.height = 2;
+            c.x0 = c.x;
+            c.x1 = c.x + c.width - 1;
+            c.y0 = 127;
+            c.y1 = 128;
+            c.primitive = 0x03020000;
+            validity_run(&v, &c, entries);
+            for (unsigned position = 0; position < 3; position++) {
+                c.primitive = 0;
+                c.x0 = position == 0 ? c.x : position == 1 ?
+                       tile_width : c.x + c.width - 1;
+                c.y0 = 128;
+                c.x1 = c.y1 = 65535;
+                validity_run(&v, &c, entries);
+            }
+        }
+    }
+    validity_finish(&v);
+}
+
+static void test_validity_geometry_phase(void)
+{
+    const int delta[][2] = {
+        { 18, 8 }, { 8, 18 }, { -18, 8 }, { -8, 18 },
+        { 18, -8 }, { 8, -18 }, { -18, -8 }, { -8, -18 },
+        { 0, 0 },
+    };
+    const unsigned widths[] = { 0, 33, 65 };
+    ValidityLog v = validity_start(false, "");
+    uint16_t entries[256];
+
+    validity_entries(entries, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(delta); i++) {
+        for (unsigned reverse = 0; reverse < 2; reverse++) {
+            for (unsigned width = 0; width < ARRAY_SIZE(widths); width++) {
+                for (unsigned skip = 0; skip < 2; skip++) {
+                    Shape c = shape_default();
+
+                    c.x = 492;
+                    c.y = 108;
+                    c.width = c.height = 40;
+                    c.x0 = 512 + (reverse ? delta[i][0] : 0);
+                    c.y0 = 128 + (reverse ? delta[i][1] : 0);
+                    c.x1 = 512 + (reverse ? 0 : delta[i][0]);
+                    c.y1 = 128 + (reverse ? 0 : delta[i][1]);
+                    c.primitive |= widths[width] | (skip << 18);
+                    c.draw |= 0xa0000;
+                    c.stipple_mode = 0x030b0102;
+                    validity_run(&v, &c, entries);
+                }
+            }
+        }
+    }
+    for (unsigned direction = 0; direction < 4; direction++) {
+        Shape c = shape_default();
+
+        c.x = 508;
+        c.y = 125;
+        c.width = 520;
+        c.height = 6;
+        c.x0 = direction & 1 ? 1027 : 508;
+        c.x1 = direction & 1 ? 508 : 1027;
+        c.y0 = direction & 2 ? 125 : 130;
+        c.y1 = direction & 2 ? 130 : 125;
+        c.primitive = 0x03000000 | (direction << 16);
+        c.draw |= 0x60000;
+        c.stipple_mode = 0x030b0102;
+        validity_run(&v, &c, entries);
+        /* Command-local phase restarts even after a complete invalid tile. */
+        validity_run(&v, &c, entries);
+    }
+    validity_finish(&v);
+}
+
+static void test_validity_clips_masks(void)
+{
+    ValidityLog v = validity_start(false, "");
+    uint16_t entries[256];
+
+    validity_entries(entries, 0);
+    for (unsigned hide = 0; hide < 8; hide++) {
+        for (unsigned inside = 0; inside < (hide < 5 ? 2 : 1); inside++) {
+            Shape c = shape_default();
+
+            c.x = 510;
+            c.y = 2;
+            c.width = 516;
+            c.height = 2;
+            c.x0 = 510;
+            c.x1 = 1025;
+            c.y0 = c.y1 = 2;
+            c.primitive = 0x03020000;
+            if (hide < 5) {
+                c.clip = (1U << (9 - hide)) | (inside << (4 - hide));
+                c.screen = inside ? bounds(510, 1, 512, 4) :
+                                    bounds(512, 1, 1024, 4);
+            } else if (hide == 5) {
+                c.draw |= 1U << 20;
+                c.scissor = bounds(1, 1, 512, 4);
+            } else if (hide == 6) {
+                c.plane = 0;
+            } else {
+                c.draw |= 1U << 18;
+                c.stipple_mode = 0x001f0000;
+                c.pattern = 0;
+            }
+            g_assert_cmpuint(validity_run(&v, &c, entries), ==, 0);
+            if (hide < 5) {
+                c.screen = inside ? bounds(510, 1, 513, 4) :
+                                    bounds(513, 1, 1024, 4);
+            } else if (hide == 5) {
+                c.scissor = bounds(1, 1, 513, 4);
+            } else if (hide == 6) {
+                c.plane = UINT32_MAX;
+                c.x1 = 512;
+            } else {
+                c.pattern = 0xe0000000;
+                c.x1 = 512;
+            }
+            g_assert_cmpuint(validity_run(&v, &c, entries), ==, 1);
+        }
+    }
+    for (unsigned depth = 0; depth < 3; depth++) {
+        for (unsigned op = 0; op < 16; op++) {
+            Shape c = shape_default();
+
+            c.bytes = 1U << depth;
+            c.x = 512 / c.bytes - 2;
+            c.width = 512 / c.bytes + 4;
+            c.y = 2;
+            c.height = 2;
+            c.x0 = c.x;
+            c.x1 = c.x + c.width - 1;
+            c.y0 = c.y1 = 2;
+            c.primitive = 0x03020000;
+            c.draw = 0x200 | 0x80 | (op << 3);
+            c.logic = op;
+            c.plane = 0x5a3cc3a5;
+            validity_run(&v, &c, entries);
+            c.draw |= 0x78;
+            validity_run(&v, &c, entries);
+        }
+    }
+    validity_finish(&v);
+}
+
+static void test_validity_faults(void)
+{
+    for (unsigned fault = 0; fault < 4; fault++) {
+        bool banked = fault >= 2;
+        ValidityLog v = validity_start(banked, "");
+        uint16_t entries[256];
+        Shape c = shape_default();
+        g_autofree uint32_t *unchanged = NULL;
+        g_autofree uint32_t *expected = NULL;
+        unsigned count;
+
+        if (banked) {
+            for (unsigned i = 0; i < 8; i++) {
+                qtest_writeq(v.q, CRIME + 0x208 + i * 8, 0x100 | (i * 4));
+            }
+            qtest_writeq(v.q, CRIME + 0x210, fault == 2 ? 0x100 : 4);
+        }
+        validity_entries(entries, 0);
+        entries[2] = 0x8000 |
+                     (fault == 0 ? 0x400 : fault == 1 ? 0x1fc0 : 0x800);
+        c.x = 510;
+        c.y = 2;
+        c.width = 516;
+        c.height = 2;
+        c.x0 = 510;
+        c.x1 = 1025;
+        c.y0 = c.y1 = 2;
+        c.primitive = 0x03020000;
+        c.entries = entries;
+        validity_program(v.q, 0, entries);
+        shape_memory(v.q, &c, NULL);
+        shape_stage(v.q, &c);
+        unchanged = g_new(uint32_t, c.width * c.height);
+        for (unsigned i = 0; i < c.width * c.height; i++) {
+            unchanged[i] = 0xaa;
+        }
+        assert_failure(v.q, DE + 0x8d0, 0x6b, 4);
+        shape_memory(v.q, &c, unchanged);
+        validity_words(v.q, 0, entries);
+        /* The next valid operation exposes the retained foreground. */
+        entries[2] = 0x8000 | page_for(0, 2);
+        validity_program(v.q, 0, entries);
+        expected = validity_reference(&c, &count);
+        g_assert_cmpint(memtx_writel(v.q, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(v.q, &c, expected);
+        validity_record(&v, &c, count);
+        validity_finish(&v);
+    }
+    /* Invalid payload aliases do not participate in valid-byte uniqueness. */
+    ValidityLog v = validity_start(false, "");
+    uint16_t entries[256];
+    Shape c = shape_default();
+
+    validity_entries(entries, 0);
+    entries[1] = 3;
+    c.width = 1025;
+    c.height = 1;
+    c.x0 = c.y0 = c.y1 = 0;
+    c.x1 = 1024;
+    c.primitive = 0x03020000;
+    validity_run(&v, &c, entries);
+    entries[2] = 0x8003;
+    validity_program(v.q, 0, entries);
+    shape_memory(v.q, &c, NULL);
+    shape_stage(v.q, &c);
+    assert_failure(v.q, DE + 0x9f0, 0, 4);
+    g_assert_cmphex(qtest_readq(v.q, 0x30000), ==, 0xaaaaaaaaaaaaaaaaULL);
+    g_assert_cmphex(qtest_readq(v.q, 0x40000), ==, 0xaaaaaaaaaaaaaaaaULL);
+    validity_finish(&v);
+}
+
+static void test_validity_semantics(void)
+{
+    const uint32_t bad_draw[] = { 0x200000, 0x100, 1, 0x10000 };
+    ValidityLog v = validity_start(false, "");
+    uint16_t entries[256] = { 0 };
+    Shape c = shape_default();
+
+    for (unsigned i = 0; i < 256; i++) {
+        entries[i] = 0x1fc0;
+    }
+    c.width = c.height = 8;
+    c.x0 = 2;
+    c.y0 = 3;
+    c.x1 = 6;
+    c.y1 = 4;
+    validity_program(v.q, 0, entries);
+    qtest_writeq(v.q, 0x30000, 0x8383838383838383ULL);
+    for (unsigned i = 0; i < ARRAY_SIZE(bad_draw); i++) {
+        shape_stage(v.q, &c);
+        qtest_writel(v.q, DE + 0x18, c.draw | bad_draw[i]);
+        qtest_writel(v.q, DE + 0x1b8, 0);
+        assert_failure(v.q, DE + 0x9f0, 0, 4);
+        g_assert_cmphex(qtest_readq(v.q, 0x30000), ==, 0x8383838383838383ULL);
+    }
+    shape_stage(v.q, &c);
+    qtest_writel(v.q, DE + 0x18, c.draw | 0x80000);
+    qtest_writel(v.q, DE + 0xc0, 0x08070000);
+    assert_failure(v.q, DE + 0x9f0, 0, 4);
+    shape_stage(v.q, &c);
+    qtest_writel(v.q, DE + 0x70, xy(2048, 3));
+    assert_failure(v.q, DE + 0x9f0, 0, 4);
+    shape_stage(v.q, &c);
+    assert_failure(v.q, DE + 0x874, 0x1122334455667788ULL, 8);
+    assert_failure(v.q, DE + 0x9f8, 0, 4);
+    g_assert_cmphex(qtest_readq(v.q, 0x30000), ==, 0x8383838383838383ULL);
+    validity_finish(&v);
+}
+
+static void test_validity_copies(void)
+{
+    const unsigned rops[] = { 3, 5, 0 };
+
+    for (unsigned invalid = 1; invalid <= 3; invalid++) {
+        for (unsigned op = 0; op < ARRAY_SIZE(rops); op++) {
+            for (unsigned null = 0; null < 2; null++) {
+                ValidityLog v = validity_start(false, "");
+                uint16_t source[256], dest[256];
+
+                validity_entries(source, 0);
+                validity_entries(dest, 1);
+                source[1] = (invalid & 1 ? 0 : 0x8000) | page_for(0, 1);
+                dest[1] = (invalid & 2 ? 0 : 0x8000) | page_for(1, 1);
+                validity_program(v.q, 0, source);
+                validity_program(v.q, 1, dest);
+                setup(v.q, 0, true);
+                qtest_writel(v.q, DE + 8, 0x400);
+                qtest_writel(v.q, DE + 0x1b0, rops[op]);
+                qtest_writel(v.q, DE + 0x70, xy(511, 0));
+                qtest_writel(v.q, DE + 0x74, xy(512, 0));
+                qtest_writel(v.q, DE + 0xa0, xy(511, 0));
+                qtest_writeb(v.q, pixel_address(0, 511, 0, 1), 0xcc);
+                qtest_writeb(v.q, pixel_address(0, 512, 0, 1), 0x33);
+                qtest_writeb(v.q, pixel_address(1, 511, 0, 1), 0x5a);
+                qtest_writeb(v.q, pixel_address(1, 512, 0, 1), 0x6c);
+                assert_failure(v.q, DE + (null ? 0x9f0 : 0x874),
+                               null ? 0x12345678 : xy(512, 0), 4);
+                g_assert_cmphex(qtest_readb(v.q, pixel_address(1, 511, 0, 1)),
+                                ==, 0x5a);
+                g_assert_cmphex(qtest_readb(v.q, pixel_address(1, 512, 0, 1)),
+                                ==, 0x6c);
+                /* A zero mask skips both source and destination accesses. */
+                qtest_writel(v.q, DE + 0x1b8, 0);
+                g_assert_cmpint(memtx_writel(v.q, DE + 0x9f0, 0), ==, MEMTX_OK);
+                qtest_writel(v.q, DE + 0x1b8, UINT32_MAX);
+                qtest_writel(v.q, DE + 0x18, 0x3002f8);
+                qtest_writeq(v.q, DE + 0x48, bounds(1, 0, 512, 1));
+                g_assert_cmpint(memtx_writel(v.q, DE + 0x9f0, 0), ==, MEMTX_OK);
+                g_assert_cmphex(qtest_readb(v.q, pixel_address(1, 511, 0, 1)),
+                    ==, rops[op] == 3 ? 0xcc : rops[op] == 0 ? 0 : 0x5a);
+                g_assert_cmphex(qtest_readb(v.q, pixel_address(1, 512, 0, 1)),
+                                ==, 0x6c);
+                validity_finish(&v);
+            }
+        }
+    }
+    for (unsigned copy = 0; copy < 2; copy++) {
+        ValidityLog v = validity_start(false, "");
+        uint16_t entries[256];
+
+        validity_entries(entries, 0);
+        validity_program(v.q, 0, entries);
+        mte_setup(v.q, copy, 0, 0);
+        qtest_writel(v.q, MTE + 0x20, xy(511, 0));
+        qtest_writel(v.q, MTE + 0x28, xy(512, 0));
+        qtest_writel(v.q, MTE + 0x30, xy(511, 0));
+        qtest_writel(v.q, MTE + 0x38, xy(512, 0));
+        qtest_writeb(v.q, 0x301ff, 0x5a);
+        assert_failure(v.q, MTE + 0x870, 0, 4);
+        g_assert_cmphex(qtest_readb(v.q, 0x301ff), ==, 0x5a);
+        validity_finish(&v);
+    }
+}
+
+static void test_validity_retirement(void)
+{
+    for (unsigned r = 0; r < ARRAY_SIZE(registers); r++) {
+        const Register *reg = &registers[r];
+        ValidityLog v = validity_start(false, "");
+        g_autofree char *path = g_build_filename(v.directory, "state", NULL);
+        uint16_t entries[256];
+        Shape c = shape_default();
+        g_autofree uint32_t *expected = NULL;
+        uint64_t value, words[RENDER_WORDS];
+        unsigned count;
+
+        validity_entries(entries, 0);
+        c.x = 510;
+        c.y = 1;
+        c.width = 516;
+        c.height = 4;
+        c.x0 = 510;
+        c.x1 = 1025;
+        c.y0 = 2;
+        c.y1 = 3;
+        c.primitive = 0x03020000;
+        c.draw |= 0x60000;
+        c.stipple_mode = 0x030b0102;
+        c.screen = c.scissor = bounds(510, 1, 1026, 4);
+        if (reg->offset >= 0x20 && reg->offset <= 0x40) {
+            unsigned n = (reg->offset - 0x20) / 8;
+
+            c.clip = (1U << (9 - n)) | (1U << (4 - n));
+        } else if (reg->offset == 0x48) {
+            c.draw |= 1U << 20;
+        }
+        c.entries = entries;
+        expected = validity_reference(&c, &count);
+        validity_program(v.q, 0, entries);
+        shape_memory(v.q, &c, NULL);
+        shape_stage(v.q, &c);
+        value = shape_parameter(&c, reg->offset);
+        if (reg->offset == 0 || reg->offset == 0x78 ||
+            reg->offset == 0xa0 || reg->offset == 0xa8 || reg->offset == 0xac) {
+            value = 0x13572468U ^ reg->offset;
+        }
+        if (reg->offset == 0x50 || reg->offset == 0x58) {
+            qtest_writel(v.q, DE + reg->offset, 1);
+        } else if (reg->width == 8) {
+            qtest_writeq(v.q, DE + reg->offset, bounds(510, 1, 512, 4));
+        } else if (reg->offset == 0x60) {
+            qtest_writel(v.q, DE + 0x60, 0x02000000);
+        } else if (reg->offset == 0xd0) {
+            qtest_writel(v.q, DE + 0xd0, 0x76543210);
+        } else if (reg->offset == 0x1b0) {
+            qtest_writel(v.q, DE + 0x1b0, 3);
+        }
+        g_assert_cmpint(memtx_write(v.q, DE + 0x800 + reg->offset,
+                                    value, reg->width), ==, MEMTX_OK);
+        shape_memory(v.q, &c, expected);
+        validity_record(&v, &c, count);
+        save_renderer(v.q, path, words);
+        g_assert_cmphex(words[192 + reg->offset / 4], ==, value);
+        g_unlink(path);
+        validity_finish(&v);
+    }
+    ValidityLog v = validity_start(false, "");
+    uint16_t entries[256];
+    Shape c = shape_default();
+    unsigned count;
+    g_autofree uint32_t *expected = NULL;
+
+    validity_entries(entries, 0);
+    c.x = 510;
+    c.y = 1;
+    c.width = 516;
+    c.height = 2;
+    c.x0 = 510;
+    c.x1 = 1025;
+    c.y0 = c.y1 = 2;
+    c.primitive = 0x03020000;
+    c.draw |= 0x60000;
+    c.stipple_mode = 0x030b0102;
+    c.entries = entries;
+    expected = validity_reference(&c, &count);
+    validity_program(v.q, 0, entries);
+    shape_memory(v.q, &c, NULL);
+    shape_stage(v.q, &c);
+    qtest_writel(v.q, DE + 0x9f0, 0x11223344);
+    validity_record(&v, &c, count);
+    shape_memory(v.q, &c, expected);
+    for (unsigned i = 0; i < 4; i++) {
+        qtest_writel(v.q, DE + 0x1f0, 0x12345678 + i);
+        qtest_writel(v.q, DE + 0x1f8, 0);
+        g_assert_cmphex(qtest_readl(v.q, STATUS), ==, 0x1e000000);
+        shape_memory(v.q, &c, expected);
+    }
+    count = 0;
+    reference_shape(&c, expected);
+    qtest_writel(v.q, DE + 0x9f0, 0x55667788);
+    validity_record(&v, &c, count);
+    shape_memory(v.q, &c, expected);
+    /* All-invalid GO publishes the new logical state without RAM access. */
+    for (unsigned i = 0; i < 256; i++) {
+        entries[i] = 0x1fc0;
+    }
+    validity_program(v.q, 0, entries);
+    c.logic = 12;
+    g_clear_pointer(&expected, g_free);
+    expected = validity_reference(&c, &count);
+    shape_memory(v.q, &c, NULL);
+    qtest_writel(v.q, DE + 0x9b0, 12);
+    g_assert_cmphex(qtest_readl(v.q, DE + 0x1b0), ==, 12);
+    shape_memory(v.q, &c, expected);
+    validity_record(&v, &c, count);
+    for (unsigned i = 0; i < 256; i++) {
+        entries[i] = 0x8000 | page_for(0, i);
+    }
+    validity_program(v.q, 0, entries);
+    g_clear_pointer(&expected, g_free);
+    expected = validity_reference(&c, &count);
+    qtest_writel(v.q, DE + 0x9f0, 0);
+    shape_memory(v.q, &c, expected);
+    validity_record(&v, &c, count);
+    validity_finish(&v);
+}
+
+static void test_validity_migration(void)
+{
+    ValidityLog from = validity_start(false, "");
+    ValidityLog to = validity_start(false, "-incoming defer");
+    ValidityLog control = validity_start(false, "");
+    g_autofree char *path = g_build_filename(from.directory, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat %s", quoted);
+    uint16_t entries[256], zero[256] = { 0 };
+    uint64_t words[RENDER_WORDS];
+    Shape c = shape_default();
+
+    validity_entries(entries, 2);
+    c.bank = 2;
+    c.bytes = 4;
+    c.x = 126;
+    c.y = 125;
+    c.width = 132;
+    c.height = 6;
+    c.x0 = 126;
+    c.x1 = 257;
+    c.y0 = 125;
+    c.y1 = 130;
+    c.primitive = 0x03020000;
+    c.draw |= 0x60000;
+    c.stipple_mode = 0x030b0102;
+    c.plane = 0x5a3cc3a5;
+    c.entries = entries;
+    for (unsigned i = 0; i < 2; i++) {
+        QTestState *q = i ? control.q : from.q;
+
+        validity_program(q, 2, entries);
+        shape_memory(q, &c, NULL);
+        shape_stage(q, &c);
+    }
+    save_renderer(from.q, path, words);
+    qtest_qmp_assert_success(to.q,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to.q, "completed");
+    for (unsigned i = 0; i < 2; i++) {
+        ValidityLog *v = i ? &control : &to;
+        unsigned count;
+        g_autofree uint32_t *expected = NULL;
+
+        validity_words(v->q, 2, entries);
+        g_assert_cmphex(qtest_readl(v->q, DE + 0xc0), ==, c.stipple_mode);
+        g_assert_cmphex(qtest_readl(v->q, DE + 0xc4), ==, c.pattern);
+        c.pattern = 0x69a53c81;
+        expected = validity_reference(&c, &count);
+        qtest_writel(v->q, DE + 0x8c4, c.pattern);
+        shape_memory(v->q, &c, expected);
+        validity_record(v, &c, count);
+        g_assert_cmphex(qtest_readl(v->q, DE + 0xc4), ==, c.pattern);
+        g_assert_cmphex(qtest_readq(v->q, CRIME + 0x10), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(v->q, CRIME + 0x18), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(v->q, CRIME + 0x250), ==, 0);
+        g_assert_cmphex(qtest_readq(v->q, CRIME + 0x258), ==, 0);
+        c.pattern = 0x96a53c81;
+    }
+    qtest_system_reset(to.q);
+    validity_words(to.q, 2, zero);
+    qtest_writeq(to.q, CRIME + 0x18, 1U << 4);
+    c.pattern = 0x69a53c81;
+    c.entries = zero;
+    unsigned count;
+    g_autofree uint32_t *expected = validity_reference(&c, &count);
+
+    shape_memory(to.q, &c, NULL);
+    qtest_writeq(to.q, 0, 0x8383838383838383ULL);
+    shape_stage(to.q, &c);
+    qtest_writel(to.q, DE + 0x9f0, 0);
+    shape_memory(to.q, &c, expected);
+    g_assert_cmphex(qtest_readq(to.q, 0), ==, 0x8383838383838383ULL);
+    validity_words(to.q, 2, zero);
+    validity_record(&to, &c, count);
+    for (unsigned i = 0; i < 256; i++) {
+        entries[i] = 0x8000 | page_for(2, i);
+    }
+    validity_run(&to, &c, entries);
+    g_unlink(path);
+    validity_finish(&from);
+    validity_finish(&to);
+    validity_finish(&control);
+}
+
+static void test_validity_profiles(void)
+{
+    const char *profiles[] = { "1.5", "legacy-software" };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(profiles); i++) {
+        g_autofree char *directory =
+            g_dir_make_tmp("crime-validity-mode-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+        g_autofree char *options = g_strdup_printf("-D %s", path);
+        g_autofree char *contents = NULL;
+        QTestState *q = start_profile(profiles[i], false, i == 0, options);
+
+        qtest_memset(q, 0, 0x83, 8);
+        qtest_memset(q, 0x30000, 0x5a, 8);
+        setup(q, 0, false);
+        g_assert_cmpint(memtx_writel(q, DE + 0x9f0, 0), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(q, 0), ==, 0x8383838383838383ULL);
+        g_assert_cmphex(qtest_readq(q, 0x30000), ==, 0x5a5a5a5a5a5a5a5aULL);
+        qtest_quit(q);
+        g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+        g_assert_null(strstr(contents, "invalid destination fragments"));
+        g_unlink(path);
+        g_rmdir(directory);
+    }
 }
 
 int main(int argc, char **argv)
@@ -2860,5 +3606,25 @@ int main(int argc, char **argv)
                    test_stipple_inclusive);
     qtest_add_func("/sgi/crime/render/point-line-stipple/bank-decoder",
                    test_shape_bank_decoder);
+    qtest_add_func("/sgi/crime/render/tiled-validity/fill",
+                   test_tiled_validity_fill);
+    qtest_add_func("/sgi/crime/render/tiled-validity/banks-depths",
+                   test_validity_banks_depths);
+    qtest_add_func("/sgi/crime/render/tiled-validity/geometry-phase",
+                   test_validity_geometry_phase);
+    qtest_add_func("/sgi/crime/render/tiled-validity/clips-masks",
+                   test_validity_clips_masks);
+    qtest_add_func("/sgi/crime/render/tiled-validity/faults",
+                   test_validity_faults);
+    qtest_add_func("/sgi/crime/render/tiled-validity/semantics",
+                   test_validity_semantics);
+    qtest_add_func("/sgi/crime/render/tiled-validity/copies",
+                   test_validity_copies);
+    qtest_add_func("/sgi/crime/render/tiled-validity/retirement",
+                   test_validity_retirement);
+    qtest_add_func("/sgi/crime/render/tiled-validity/migration",
+                   test_validity_migration);
+    qtest_add_func("/sgi/crime/render/tiled-validity/profiles",
+                   test_validity_profiles);
     return g_test_run();
 }
