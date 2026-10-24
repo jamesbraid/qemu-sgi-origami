@@ -409,13 +409,15 @@ static void test_at29_full_sector_starts_busy(void)
                     seed[sector + 256]);
     g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256, 0x3c), ==,
                     MEMTX_OK);
-    qtest_clock_step(qts, 150000);
-    g_assert_cmphex(qtest_readb(qts, ROM_BASE + sector + 256), ==,
-                    seed[sector + 256]);
+    qtest_clock_step(qts, 10000000);
+    memset(data, 0xff, sizeof(data));
+    data[0] = 0x3c;
+    qtest_memread(qts, ROM_BASE + sector + 256, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
     g_assert_nonnull(strstr(log, "AT29C040A write during program cycle"));
-    g_assert_nonnull(strstr(log, "partial AT29C040A sector load"));
+    g_assert_null(strstr(log, "partial AT29C040A sector load"));
     g_assert_null(strstr(log, "cross-sector AT29C040A load"));
 }
 
@@ -584,14 +586,17 @@ static void test_at29_refused_sequences(void)
                                      i ^ 0x5a), ==, MEMTX_OK);
         qtest_clock_step(qts, 1000);
     }
-    qtest_clock_step(qts, 150000);
+    qtest_clock_step(qts, 10000000);
     qtest_memread(qts, ROM_BASE + partial, got, sizeof(got));
-    g_assert_cmpmem(got, sizeof(got), seed + partial, sizeof(got));
+    for (unsigned i = 0; i < sizeof(got); i++) {
+        g_assert_cmphex(got[i], ==, i < 255 ? (i ^ 0x5a) : 0xff);
+    }
     g_assert_cmpint(memtx_writeb(qts, ROM_BASE + crossing + 255, 0xa1),
                     ==, MEMTX_OK);
     qtest_clock_step(qts, 1000);
     g_assert_cmpint(memtx_writeb(qts, ROM_BASE + crossing + 256, 0xb2),
                     !=, MEMTX_OK);
+    qtest_clock_step(qts, 10000000);
     qtest_memread(qts, ROM_BASE + crossing, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), seed + crossing, sizeof(got));
 
@@ -622,7 +627,7 @@ static void test_at29_refused_sequences(void)
     g_assert_cmphex(qtest_readb(qts, ROM_BASE + 0x5555), ==, seed[0x5555]);
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
-    g_assert_nonnull(strstr(log, "partial AT29C040A sector load"));
+    g_assert_null(strstr(log, "partial AT29C040A sector load"));
     g_assert_nonnull(strstr(log, "cross-sector AT29C040A load"));
     g_assert_nonnull(strstr(log, "unsupported AT29C040A command"));
 }
@@ -680,40 +685,127 @@ static void test_at29_protected_command_address_data(void)
     qtest_quit(qts);
 }
 
+static void at29_assert_polling(QTestState *qts, uint32_t address,
+                                uint8_t data)
+{
+    for (unsigned alias = 0; alias < 8; alias++) {
+        uint64_t mapped = ROM_BASE + alias * 512 * 1024 + address;
+        uint8_t first = qtest_readb(qts, mapped);
+        uint8_t second = qtest_readb(qts, mapped);
+
+        g_assert_cmphex((first ^ data) & 0x80, ==, 0x80);
+        g_assert_cmphex((first ^ second) & 0x40, ==, 0x40);
+    }
+}
+
+static void at29_assert_sector(QTestState *qts, uint32_t sector,
+                               const uint8_t expected[256],
+                               const uint8_t *array)
+{
+    uint8_t got[256];
+
+    for (unsigned alias = 0; alias < 8; alias++) {
+        uint64_t mapped = ROM_BASE + alias * 512 * 1024 + sector;
+
+        qtest_memread(qts, mapped, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, 256);
+        qtest_memread(qts, mapped - 256, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), array + sector - 256, 256);
+        qtest_memread(qts, mapped + 256, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), array + sector + 256, 256);
+    }
+}
+
+static void test_at29_partial_counts(void)
+{
+    static const unsigned counts[] = { 1, 2, 7, 63, 128, 240, 255, 256 };
+    const uint32_t sector = 0x18000;
+    g_autofree char *path = NULL;
+    g_autofree uint8_t *array = make_image(512 * 1024,
+                                            "at29-partial-counts.bin", &path);
+    QTestState *qts = start_at29(path, "disabled", "unlocked", "unlocked");
+
+    qtest_writeq(qts, MACE_MISC, 1);
+    for (unsigned test = 0; test < G_N_ELEMENTS(counts); test++) {
+        uint8_t expected[256];
+        unsigned last = 0;
+        int64_t loaded;
+
+        memset(expected, 0xff, sizeof(expected));
+        for (unsigned i = 0; i < counts[test]; i++) {
+            last = (13 + i * 37) & 255;
+            expected[last] = i == 0 ? 0xff : i * 19 + test;
+            g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + last,
+                                         expected[last]), ==, MEMTX_OK);
+            if (i + 1 < counts[test]) {
+                qtest_clock_step(qts, 1000);
+            }
+        }
+        loaded = qtest_clock_step(qts, 1) - 1;
+        if (counts[test] < 256) {
+            /* Total writes cannot stand in for distinct loaded positions. */
+            for (unsigned i = counts[test]; i < 256; i++) {
+                last = 13;
+                expected[last] = i ^ 0xa5;
+                g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + last,
+                                             expected[last]), ==, MEMTX_OK);
+            }
+            loaded = qtest_clock_step(qts, 1) - 1;
+            qtest_clock_set(qts, loaded + 149999);
+            at29_assert_sector(qts, sector, array + sector, array);
+            expected[last] ^= 0x80;
+            g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + last,
+                                         expected[last]), ==, MEMTX_OK);
+            loaded += 149999;
+            qtest_clock_step(qts, 1);
+            at29_assert_sector(qts, sector, array + sector, array);
+            qtest_clock_set(qts, loaded + 149999);
+            at29_assert_sector(qts, sector, array + sector, array);
+            qtest_clock_step(qts, 1);
+        }
+        at29_assert_polling(qts, sector + last, expected[last]);
+        qtest_clock_set(qts, loaded + 9999999);
+        at29_assert_polling(qts, sector + last, expected[last]);
+        qtest_clock_step(qts, 1);
+        at29_assert_sector(qts, sector, expected, array);
+        memcpy(array + sector, expected, sizeof(expected));
+    }
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256 + 73, 0x96),
+                    ==, MEMTX_OK);
+    qtest_clock_step(qts, 10000000);
+    memset(array + sector + 256, 0xff, 256);
+    array[sector + 256 + 73] = 0x96;
+    at29_assert_sector(qts, sector + 256, array + sector + 256, array);
+    g_autofree uint8_t *got = g_malloc(512 * 1024);
+    qtest_memread(qts, ROM_BASE, got, 512 * 1024);
+    g_assert_cmpmem(got, 512 * 1024, array, 512 * 1024);
+    qtest_quit(qts);
+}
+
 static void test_at29_load_deadline(void)
 {
     const uint32_t sector = 0x36000;
     g_autofree char *path = NULL;
     g_autofree uint8_t *seed = make_image(512 * 1024,
                                            "at29-deadline.bin", &path);
-    uint8_t got[256];
-    QTestState *qts = start_at29(path, "disabled", "unlocked",
-                                 "unlocked");
+    uint8_t expected[256];
+    QTestState *qts = start_at29(path, "disabled", "unlocked", "unlocked");
 
+    memset(expected, 0xff, sizeof(expected));
+    expected[0] = 0x71;
+    expected[1] = 0x72;
     qtest_writeq(qts, MACE_MISC, 1);
-    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector, 0x71), ==,
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector, expected[0]), ==,
                     MEMTX_OK);
     qtest_clock_step(qts, 149999);
-    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 1, 0x72), ==,
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 1, expected[1]), ==,
                     MEMTX_OK);
     qtest_clock_step(qts, 150000);
-    qtest_memread(qts, ROM_BASE + sector, got, sizeof(got));
-    g_assert_cmpmem(got, sizeof(got), seed + sector, sizeof(got));
-
-    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256, 0x73), ==,
+    at29_assert_polling(qts, sector + 1, expected[1]);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 2, 0x73), !=,
                     MEMTX_OK);
-    qtest_clock_step(qts, 150000);
-    for (unsigned i = 1; i < 256; i++) {
-        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256 + i,
-                                     i ^ 0x8c), ==, MEMTX_OK);
-        qtest_clock_step(qts, 1000);
-    }
-    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 511, 0x42), ==,
-                    MEMTX_OK);
-    qtest_clock_step(qts, 150000);
-    qtest_memread(qts, ROM_BASE + sector + 256, got, sizeof(got));
-    g_assert_cmpmem(got, sizeof(got), seed + sector + 256,
-                    sizeof(got));
+    qtest_clock_step(qts, 9850000);
+    at29_assert_sector(qts, sector, expected, seed);
     qtest_quit(qts);
 }
 
@@ -727,7 +819,138 @@ static void assert_at29_migration_blocked(QTestState *qts)
     g_assert_nonnull(strstr(qdict_get_str(error, "desc"), "AT29C040A"));
 }
 
-static void test_at29_migration(void)
+static void test_at29_partial_controls(void)
+{
+    const uint32_t sector = 0x22000;
+    g_autofree char *path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+                                           "at29-partial-controls.bin", &path);
+
+    for (unsigned mode = 0; mode < 4; mode++) {
+        uint8_t expected[256];
+        QTestState *qts = start_at29(path, "disabled", "unlocked", "unlocked");
+        int64_t loaded;
+
+        memset(expected, 0xff, sizeof(expected));
+        expected[73] = 0x35;
+        expected[17] = 0x82;
+        qtest_writeq(qts, MACE_MISC, 1);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 73,
+                                     expected[73]), ==, MEMTX_OK);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 17,
+                                     expected[17]), ==, MEMTX_OK);
+        loaded = qtest_clock_step(qts, 1) - 1;
+        assert_at29_migration_blocked(qts);
+        if (mode & 1) {
+            qtest_clock_set(qts, loaded + 150000);
+            at29_assert_polling(qts, sector + 17, expected[17]);
+        }
+        if (mode < 2) {
+            qtest_writeq(qts, MACE_MISC, 0);
+        } else {
+            qtest_system_reset(qts);
+        }
+        g_assert_false(o2_write_enabled(qts));
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 17, 0x44),
+                        ==, MEMTX_OK);
+        qtest_clock_step(qts, 100000);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256, 0x55),
+                        ==, MEMTX_OK);
+        if (!(mode & 1)) {
+            qtest_clock_set(qts, loaded + 149999);
+            at29_assert_sector(qts, sector, seed + sector, seed);
+            qtest_clock_step(qts, 1);
+        }
+        assert_at29_migration_blocked(qts);
+        at29_assert_polling(qts, sector + 17, expected[17]);
+        qtest_clock_set(qts, loaded + 9999999);
+        at29_assert_polling(qts, sector + 17, expected[17]);
+        qtest_clock_step(qts, 1);
+        at29_assert_sector(qts, sector, expected, seed);
+        qtest_quit(qts);
+    }
+}
+
+static void test_at29_partial_abort(void)
+{
+    const uint32_t aborted = 0x28000;
+    const uint32_t sector = 0x2a000;
+    g_autofree char *path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+                                           "at29-partial-abort.bin", &path);
+    uint8_t expected[256];
+    QTestState *qts = start_at29(path, "disabled", "unlocked", "unlocked");
+
+    qtest_writeq(qts, MACE_MISC, 1);
+    at29_prefix(qts);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + aborted + 23, 0x86), ==,
+                    MEMTX_OK);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + aborted + 256, 0x62), !=,
+                    MEMTX_OK);
+    qtest_clock_step(qts, 10000000);
+    at29_assert_sector(qts, aborted, seed + aborted, seed);
+
+    at29_prefix(qts);
+    qtest_clock_step(qts, 150000);
+    g_assert_cmpint(memtx_writel(qts, ROM_BASE + sector, 0x12345678), !=,
+                    MEMTX_OK);
+    memset(expected, 0xff, sizeof(expected));
+    expected[19] = 0x37;
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 19, expected[19]),
+                    ==, MEMTX_OK);
+    qtest_clock_step(qts, 149999);
+    at29_assert_sector(qts, sector, seed + sector, seed);
+    qtest_clock_step(qts, 1);
+    at29_assert_polling(qts, sector + 19, expected[19]);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256, 0x62), !=,
+                    MEMTX_OK);
+    qtest_clock_step(qts, 9850000);
+    at29_assert_sector(qts, sector, expected, seed);
+    qtest_clock_step(qts, 10000000);
+    at29_assert_sector(qts, sector, expected, seed);
+    at29_assert_sector(qts, aborted, seed + aborted, seed);
+    qtest_quit(qts);
+}
+
+static void test_at29_partial_protection(void)
+{
+    const uint32_t sector = 0x2c000;
+    g_autofree char *path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+                                           "at29-partial-protection.bin",
+                                           &path);
+
+    for (unsigned protected = 0; protected < 2; protected++) {
+        uint8_t expected[256];
+        QTestState *qts = start_at29(path, protected ? "enabled" : "disabled",
+                                     "unlocked", "unlocked");
+
+        memset(expected, 0xff, sizeof(expected));
+        expected[31] = 0x35;
+        expected[4] = 0x82;
+        qtest_writeq(qts, MACE_MISC, 1);
+        at29_prefix(qts);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 73, 0xff),
+                        ==, MEMTX_OK);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 31, expected[31]),
+                        ==, MEMTX_OK);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 4, expected[4]),
+                        ==, MEMTX_OK);
+        at29_assert_sector(qts, sector, seed + sector, seed);
+        qtest_clock_step(qts, 150000);
+        at29_assert_polling(qts, sector + 4, expected[4]);
+        qtest_clock_step(qts, 9850000);
+        at29_assert_sector(qts, sector, expected, seed);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 256 + 19, 0x62),
+                        ==, MEMTX_OK);
+        at29_assert_polling(qts, sector + 256 + 19, 0x62);
+        qtest_clock_step(qts, 10000000);
+        at29_assert_sector(qts, sector, expected, seed);
+        qtest_quit(qts);
+    }
+}
+
+static void test_at29_migration_case(bool partial)
 {
     const uint32_t sector = 0x28000;
     g_autofree char *path = NULL;
@@ -737,33 +960,36 @@ static void test_at29_migration(void)
         g_build_filename(test_dir, "at29-migrate.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     uint8_t data[256], got[256];
+    unsigned count = partial ? 7 : 256;
     QTestState *from = start_at29(path, "disabled", "unlocked",
                                    "unlocked");
     QTestState *to = start_at29_extra(path, "disabled", "unlocked",
                                       "unlocked", "-incoming defer");
 
-    for (unsigned i = 0; i < sizeof(data); i++) {
+    memset(data, 0xff, sizeof(data));
+    for (unsigned i = 0; i < count; i++) {
         data[i] = i * 19 + 0x35;
     }
     qtest_writeq(from, MACE_MISC, 1);
     at29_prefix(from);
+    assert_at29_migration_blocked(from);
     g_assert_cmpint(memtx_writeb(from, ROM_BASE + sector, data[0]), ==,
                     MEMTX_OK);
     assert_at29_migration_blocked(from);
-    for (unsigned i = 1; i < sizeof(data); i++) {
+    for (unsigned i = 1; i < count; i++) {
         qtest_clock_step(from, 1000);
         g_assert_cmpint(memtx_writeb(from, ROM_BASE + sector + i, data[i]),
                         ==, MEMTX_OK);
     }
     qtest_clock_step(from, 150000);
     assert_at29_migration_blocked(from);
-    g_assert_cmphex((qtest_readb(from, ROM_BASE + sector + 255) ^
-                     data[255]) & 0x80, ==, 0x80);
+    g_assert_cmphex((qtest_readb(from, ROM_BASE + sector + (count - 1)) ^
+                     data[count - 1]) & 0x80, ==, 0x80);
     qtest_system_reset(from);
     g_assert_cmphex(qtest_readq(from, MACE_MISC) & 1, ==, 0);
     g_assert_false(o2_write_enabled(from));
-    g_assert_cmphex((qtest_readb(from, ROM_BASE + sector + 255) ^
-                     data[255]) & 0x80, ==, 0x80);
+    g_assert_cmphex((qtest_readb(from, ROM_BASE + sector + (count - 1)) ^
+                     data[count - 1]) & 0x80, ==, 0x80);
     qtest_clock_step(from, 10 * 1000 * 1000);
     qtest_memread(from, ROM_BASE + sector, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
@@ -771,6 +997,7 @@ static void test_at29_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
+    at29_assert_sector(to, sector, data, seed);
     qtest_memread(to, ROM_BASE + sector, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
     g_assert_cmphex(qtest_readq(to, MACE_MISC) & 1, ==, 0);
@@ -783,6 +1010,12 @@ static void test_at29_migration(void)
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
+}
+
+static void test_at29_migration(void)
+{
+    test_at29_migration_case(false);
+    test_at29_migration_case(true);
 }
 
 static void test_at29_migration_rejects_active_target(void)
@@ -1079,7 +1312,7 @@ static void make_at29_state(const char *path, const uint8_t *array,
                                       sizeof(state), NULL));
 }
 
-static void test_at29_backing_persistence(void)
+static void test_at29_backing_persistence_case(bool partial)
 {
     g_autofree char *seed_path = NULL;
     g_autofree uint8_t *seed = make_image(512 * 1024,
@@ -1089,6 +1322,8 @@ static void test_at29_backing_persistence(void)
     g_autofree char *extra = g_strdup_printf(
         "-drive if=none,id=o2flash,file=%s,format=raw "
         "-drive if=none,id=o2flash-state,file=%s,format=raw", backing, state);
+    g_autofree uint8_t *expected = g_memdup2(seed, 512 * 1024);
+    g_autofree uint8_t *reopened = g_malloc(512 * 1024);
     g_autofree char *stored = NULL;
     g_autofree char *metadata = NULL;
     gsize length;
@@ -1105,11 +1340,27 @@ static void test_at29_backing_persistence(void)
     }
     qtest_writeq(qts, MACE_MISC, 1);
     at29_prefix(qts);
-    at29_load_sector(qts, sector, data);
-    qtest_clock_step(qts, 10 * 1000 * 1000);
+    if (partial) {
+        memset(data, 0xff, sizeof(data));
+        data[31] = 0x35;
+        data[4] = 0x86;
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 31, data[31]),
+                        ==, MEMTX_OK);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector + 4, data[4]),
+                        ==, MEMTX_OK);
+        qtest_clock_step(qts, 150000);
+        g_assert_true(g_file_get_contents(backing, &stored, &length, NULL));
+        g_assert_cmpmem(stored, length, seed, 512 * 1024);
+        g_clear_pointer(&stored, g_free);
+        qtest_clock_step(qts, 9850000);
+    } else {
+        at29_load_sector(qts, sector, data);
+        qtest_clock_step(qts, 10 * 1000 * 1000);
+    }
     g_assert_true(g_file_get_contents(backing, &stored, &length, NULL));
     g_assert_cmpuint(length, ==, 512 * 1024);
-    g_assert_cmpmem(stored + sector, sizeof(data), data, sizeof(data));
+    memcpy(expected + sector, data, sizeof(data));
+    g_assert_cmpmem(stored, 512 * 1024, expected, 512 * 1024);
     g_assert_cmphex((uint8_t)stored[sector - 1], ==, seed[sector - 1]);
     g_assert_cmphex((uint8_t)stored[sector + 256], ==, seed[sector + 256]);
     g_assert_true(g_file_get_contents(state, &metadata, &length, NULL));
@@ -1122,8 +1373,8 @@ static void test_at29_backing_persistence(void)
     /* Existing nonvolatile state wins over fresh synthetic startup fields. */
     qts = start_at29_extra(seed_path, "disabled", "unlocked",
                              "unlocked", extra);
-    qtest_memread(qts, ROM_BASE + sector, got, sizeof(got));
-    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
+    qtest_memread(qts, ROM_BASE, reopened, 512 * 1024);
+    g_assert_cmpmem(reopened, 512 * 1024, expected, 512 * 1024);
     qtest_writeq(qts, MACE_MISC, 1);
     g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector, 0x62), ==, MEMTX_OK);
     qtest_clock_step(qts, 10 * 1000 * 1000);
@@ -1136,6 +1387,12 @@ static void test_at29_backing_persistence(void)
     g_assert_cmpmem(stored, length, seed, 512 * 1024);
 }
 
+
+static void test_at29_backing_persistence(void)
+{
+    test_at29_backing_persistence_case(false);
+    test_at29_backing_persistence_case(true);
+}
 
 static char *at29_drive(const char *id, const char *path, const char *extra)
 {
@@ -1270,10 +1527,10 @@ static void test_at29_backing_incomplete(void)
     qtest_clock_step(qts, 150000);
     g_assert_true(g_file_get_contents(array, &stored, &length, NULL));
     g_assert_cmpmem(stored, length, seed, 512 * 1024);
-    at29_load_sector(qts, 0x10000, data);
+    data[255] = 0xff;
     qtest_system_reset(qts);
     g_assert_false(o2_write_enabled(qts));
-    qtest_clock_step(qts, 10000000);
+    qtest_clock_step(qts, 9850000);
     qtest_memread(qts, ROM_BASE + 0x10000, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
     qtest_writeq(qts, MACE_MISC, 1);
@@ -1285,6 +1542,15 @@ static void test_at29_backing_incomplete(void)
     g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
     qtest_memread(qts, ROM_BASE + 0x20000, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), seed + 0x20000, sizeof(got));
+    qtest_writeq(qts, MACE_MISC, 1);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 0x30000 + 4, 0x25),
+                    ==, MEMTX_OK);
+    qtest_clock_step(qts, 150000);
+    qtest_quit(qts);
+    qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                             "unlocked", extra);
+    qtest_memread(qts, ROM_BASE + 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), seed + 0x30000, sizeof(got));
     qtest_quit(qts);
 }
 
@@ -1296,7 +1562,8 @@ static void test_at29_backing_io_errors(void)
     uint8_t data[256], got[256];
 
     memset(data, 0x6e, sizeof(data));
-    for (unsigned fault = 0; fault < 4; fault++) {
+    for (unsigned fault = 0; fault < 8; fault++) {
+        unsigned kind = fault % 4;
         g_autofree char *name = g_strdup_printf("io-%u", fault);
         g_autofree char *array = g_strdup_printf("%s/%s.raw", test_dir, name);
         g_autofree char *state = g_strdup_printf("%s/%s.state", test_dir, name);
@@ -1304,13 +1571,13 @@ static void test_at29_backing_io_errors(void)
         g_autofree char *rule = g_strdup_printf(
             "[inject-error]\nevent = \"none\"\niotype = \"%s\"\n"
             "errno = \"5\"\nimmediately = \"on\"\nonce = \"on\"\n",
-            fault & 1 ? "flush" : "write");
+            kind & 1 ? "flush" : "write");
         g_autofree char *debug = g_strdup_printf("blkdebug:%s:%s", config,
-                                                  fault < 2 ? array : state);
+                                                  kind < 2 ? array : state);
         g_autofree char *array_drive = at29_drive("o2flash",
-            fault < 2 ? debug : array, "");
+            kind < 2 ? debug : array, "");
         g_autofree char *state_drive = at29_drive("o2flash-state",
-            fault >= 2 ? debug : state, "");
+            kind >= 2 ? debug : state, "");
         g_autofree char *log_path = g_strdup_printf("%s/%s.trace",
                                                      test_dir, name);
         g_autofree char *log = NULL;
@@ -1327,7 +1594,12 @@ static void test_at29_backing_io_errors(void)
                              "unlocked", extra);
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
         qtest_writeq(qts, MACE_MISC, 1);
-        at29_load_sector(qts, 0x10000, data);
+        if (fault < 4) {
+            at29_load_sector(qts, 0x10000, data);
+        } else {
+            g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 0x10000 + 31,
+                                         0x6e), ==, MEMTX_OK);
+        }
         qtest_clock_step(qts, 10000000);
         qtest_qmp_eventwait(qts, "STOP");
         g_autoptr(QDict) reply = qtest_qmp(qts, "{'execute':'query-status'}");
@@ -1345,7 +1617,7 @@ static void test_at29_backing_io_errors(void)
         g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
         g_assert_nonnull(strstr(log, "backing-error"));
         g_assert_null(strstr(log, "program-complete"));
-        if (fault == 1 || fault == 2) {
+        if (kind == 1 || kind == 2) {
             g_autofree char *plain_array = at29_drive("o2flash", array, "");
             g_autofree char *plain_state = at29_drive("o2flash-state",
                                                         state, "");
@@ -1468,6 +1740,14 @@ int main(int argc, char **argv)
                     test_at29_command_address_data);
     g_test_add_func("/sgi/o2-rom/at29-protected-command-address-data",
                     test_at29_protected_command_address_data);
+    qtest_add_func("/sgi/o2-rom/at29-partial-controls",
+                    test_at29_partial_controls);
+    qtest_add_func("/sgi/o2-rom/at29-partial-abort",
+                    test_at29_partial_abort);
+    qtest_add_func("/sgi/o2-rom/at29-partial-protection",
+                    test_at29_partial_protection);
+    qtest_add_func("/sgi/o2-rom/at29-partial-counts",
+                    test_at29_partial_counts);
     g_test_add_func("/sgi/o2-rom/at29-load-deadline",
                     test_at29_load_deadline);
     g_test_add_func("/sgi/o2-rom/at29-migration", test_at29_migration);
