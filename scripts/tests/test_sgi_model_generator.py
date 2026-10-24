@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "d5be7335baa531d98db69852d49e51ac655e18c413f272b93ada9ecc220cc7b9"
+    "4fcd1171ef0f0b4d8ad239e441792158f8b184faa4db5846b333234adb525976"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -612,23 +612,37 @@ class FuelTests(unittest.TestCase):
                             if c["argument"].endswith("l1_node1")))
 
     def test_ip35_firmware_names_each_product_machine_type(self):
-        """Origin 300's IP35 configuration block says SN10 (1) and Fuel's
-        SN11 (2), each with the 500 MHz, 2 MiB module's mode word."""
+        """Origin 300, Fuel and the Tezro trial keep reset-mode words; the
+        six selected IP53 profiles use type zero and full firmware words."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
+        ip53_words = {
+            "origin350": 0x569cad85,
+            "onyx350-compat": 0x569caf85,
+            "tezro-tower-one": 0x549bad85,
+            "tezro-tower-multi": 0x549bad85,
+            "tezro-rack-base": 0x549bad85,
+            "onyx4-host-serial-compat": 0x569dad85,
+        }
         for topology in catalogue["topologies"]:
-            if topology["product"] not in ("origin300", "fuel", "origin350",
-                                           "onyx350", "tezro", "onyx4-host"):
+            product = topology["product"]
+            if product not in ("origin300", "fuel", "origin350",
+                               "onyx350", "tezro", "onyx4-host"):
                 self.assertNotIn("ip35-firmware", topology)
                 continue
             with self.subTest(topology=topology["name"]):
-                if topology["product"] in {"origin300", "fuel"}:
+                if product in {"origin300", "fuel"}:
+                    machine_type = 2 if product == "fuel" else 1
                     expected_mode = 0x549aa985
+                elif topology["name"] in ip53_words:
+                    machine_type = 0
+                    expected_mode = ip53_words[topology["name"]]
                 else:
+                    machine_type = 1
                     expected_mode = topology["nodes"][0]["cpu-slots"][0][
                         "assembly"]["mode-bits"]
                 self.assertEqual(topology["ip35-firmware"], {
-                    "machine-type": 2 if topology["product"] == "fuel" else 1,
+                    "machine-type": machine_type,
                     "cpu-mode-word": expected_mode})
 
     def test_overrides_follow_what_each_machine_binds(self):
