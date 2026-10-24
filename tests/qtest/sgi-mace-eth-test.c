@@ -2268,6 +2268,7 @@ static void test_rx_fifo_underflow(void)
         qtest_clock_step(qts, 1000);
     }
     g_assert_cmphex(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO), ==, 0);
+    g_assert_false(qtest_readq(qts, ETH_BASE + INT_STATUS) & (1U << 7));
     g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
     g_assert_true(qtest_get_irq(qts, 0));
     qtest_writeq(qts, ETH_BASE + INT_STATUS, 1U << 6);
@@ -2799,11 +2800,12 @@ static void fault_set(QTestState *qts, const char *property, uint64_t value)
         "'property':%s,'value':%" PRIu64 "}}", property, value);
 }
 
-static QTestState *fault_eth_start_mode(int sv[2], bool incoming, bool legacy)
+static QTestState *fault_eth_start_socket(int sv[2], bool incoming, bool legacy,
+                                         int type)
 {
     QTestState *qts;
 
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    g_assert_cmpint(socketpair(PF_UNIX, type, 0, sv), ==, 0);
     socket_timeout(sv[0]);
     qts = qtest_initf(
         "-M none -cpu R10000 -nic none "
@@ -2819,6 +2821,11 @@ static QTestState *fault_eth_start_mode(int sv[2], bool incoming, bool legacy)
         qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
     }
     return qts;
+}
+
+static QTestState *fault_eth_start_mode(int sv[2], bool incoming, bool legacy)
+{
+    return fault_eth_start_socket(sv, incoming, legacy, SOCK_STREAM);
 }
 
 static QTestState *fault_eth_start_full(int sv[2], bool incoming)
@@ -3741,6 +3748,276 @@ static bool rx_threshold_event(QTestState *qts)
     return qtest_readq(qts, ETH_BASE + INT_STATUS) & 32;
 }
 
+static void rx_host_offer(int fd, unsigned marker)
+{
+    uint8_t frame[60];
+
+    rx_sequence_frame(frame, marker);
+    g_assert_cmpint(send(fd, frame, sizeof(frame), 0), ==, sizeof(frame));
+}
+
+static void rx_host_packet(QTestState *qts, unsigned offset, unsigned marker,
+                           unsigned sequence)
+{
+    uint8_t frame[60], landed[128];
+    uint64_t vector;
+
+    rx_sequence_frame(frame, marker);
+    wait_rx_status(qts, FAULT_MEMORY + offset);
+    qtest_memread(qts, FAULT_MEMORY + offset, landed, sizeof(landed));
+    vector = eth_status(qts, FAULT_MEMORY + offset);
+    g_assert_cmpuint((vector >> 27) & 31, ==, sequence & 31);
+    g_assert_cmpuint(vector & 0xffff, ==, 64);
+    g_assert_cmphex((vector >> 32) & 0xffff, ==,
+                    rx_progress_vectors[marker].checksum);
+    g_assert_cmpmem(landed + 34, sizeof(frame), frame, sizeof(frame));
+    g_assert_cmpmem(landed + 94, 4, rx_progress_vectors[marker].fcs, 4);
+    for (unsigned i = 8; i < 32; i++) {
+        g_assert_cmphex(landed[i], ==, 0x59);
+    }
+    g_assert_cmphex(landed[32], ==, 0);
+    g_assert_cmphex(landed[33], ==, 0);
+    for (unsigned i = 98; i < sizeof(landed); i++) {
+        g_assert_cmphex(landed[i], ==, 0x59);
+    }
+}
+
+static void test_rx_host_admission(void)
+{
+    for (unsigned grouped = 0; grouped < 2; grouped++) {
+        int sv[2];
+        QTestState *qts = fault_eth_start_socket(sv, false, true, SOCK_DGRAM);
+        uint8_t guard[128], before[sizeof(guard)];
+        uint64_t control = rx_retirement_control(2, false);
+
+        memset(guard, 0x59, sizeof(guard));
+        rx_retirement_config(qts, 2, 0, false);
+        for (unsigned i = 0; i < 4; i++) {
+            rx_host_offer(sv[0], i);
+            if (!grouped && i < 2) {
+                rx_host_packet(qts, 0x8000 + 4096 * i, i, i);
+            }
+        }
+        rx_host_packet(qts, 0x8000, 0, 0);
+        rx_host_packet(qts, 0x9000, 1, 1);
+        wait_fifo_count(qts, 0);
+
+        for (unsigned i = 2; i < 34; i++) {
+            unsigned offset = 0xa000 + (i & 1) * 4096;
+            unsigned port = (i - 2) % 16;
+            uint64_t status;
+
+            qtest_memwrite(qts, FAULT_MEMORY + offset, guard, sizeof(guard));
+            if (i >= 4) {
+                rx_host_offer(sv[0], i);
+            }
+            /* This flush retries the held offer without a readiness query. */
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+            qtest_clock_step(qts, 0);
+            status = qtest_readq(qts, ETH_BASE + INT_STATUS);
+            g_assert_cmpuint((status >> 25) & 31, ==, i & 31);
+            g_assert_cmphex(status & 0xc0, ==, 0);
+            g_assert_cmphex(status & 32, ==, 32);
+            g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                             ==, 0);
+            qtest_memread(qts, FAULT_MEMORY + offset, before, sizeof(before));
+            g_assert_cmpmem(before, sizeof(before), guard, sizeof(guard));
+            if (i < 18) {
+                qtest_writel(qts, ETH_BASE + RX_FIFO_PORT + 8 * port + 4,
+                             RAM_FULL + offset);
+            } else {
+                qtest_writeq(qts, ETH_REPEAT + RX_FIFO_PORT + 8 * port,
+                             RAM_FULL + offset);
+            }
+            rx_host_packet(qts, offset, i, i);
+            wait_fifo_count(qts, 0);
+        }
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_host_gather_admission(void)
+{
+    for (unsigned delayed = 0; delayed < 2; delayed++) {
+        int sv[2];
+        QTestState *qts = fault_eth_start_socket(sv, false, true, SOCK_DGRAM);
+        uint8_t guard[128];
+        unsigned consumed = delayed ? 13 : 4;
+        uint64_t control = rx_retirement_control(4, true);
+
+        memset(guard, 0x59, sizeof(guard));
+        rx_retirement_config(qts, 4, delayed ? 2 : 0, true);
+        for (unsigned i = 0; i <= consumed; i++) {
+            rx_host_offer(sv[0], i);
+        }
+        for (unsigned i = 0; i < consumed; i++) {
+            unsigned offset = delayed && i < 10 ? 0x8000 + i * 256 :
+                              0x8000 + (delayed ? i - 9 : i) * 4096;
+
+            rx_host_packet(qts, offset, i, i);
+        }
+        wait_fifo_count(qts, 0);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+        qtest_clock_step(qts, 0);
+        g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
+                         ==, consumed);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xc0, ==, 0);
+        qtest_memwrite(qts, FAULT_MEMORY + 0xc000, guard, sizeof(guard));
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0xc000);
+        rx_host_packet(qts, 0xc000, consumed, consumed);
+        wait_fifo_count(qts, 0);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_host_nonpacket_drops(void)
+{
+    for (unsigned kind = 0; kind < 3; kind++) {
+        int sv[2];
+        QTestState *qts = fault_eth_start_socket(sv, false, true, SOCK_DGRAM);
+        uint8_t frame[1515], guard[128];
+        unsigned length = kind == 0 ? 60 : kind == 1 ? 14 : sizeof(frame);
+
+        memset(guard, 0x59, sizeof(guard));
+        memset(frame, 0, sizeof(frame));
+        rx_sequence_frame(frame, 0);
+        if (kind == 0) {
+            frame[0] = 4;
+        }
+        rx_retirement_config(qts, 0, 0, false);
+        qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
+        qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+        g_assert_cmpint(send(sv[0], frame, length, 0), ==, length);
+        sgi_wait_socket_read(sv[0]);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                     rx_retirement_control(0, false));
+        qtest_clock_step(qts, 0);
+        g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
+                         ==, 0);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xc0, ==, 0);
+        qtest_memwrite(qts, FAULT_MEMORY + 0x8000, guard, sizeof(guard));
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+        rx_host_offer(sv[0], 0);
+        rx_host_packet(qts, 0x8000, 0, 0);
+        wait_fifo_count(qts, 0);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_host_control_transitions(void)
+{
+    for (unsigned mode = 0; mode < 4; mode++) {
+        int sv[2];
+        QTestState *qts = fault_eth_start_socket(sv, false, true, SOCK_DGRAM);
+        uint8_t guard[128], landed[sizeof(guard)];
+        uint64_t control = rx_retirement_control(1, false);
+        unsigned sequence = mode == 1 ? 0 : 1;
+
+        memset(guard, 0x59, sizeof(guard));
+        rx_retirement_config(qts, 1, 0, false);
+        rx_host_offer(sv[0], 0);
+        rx_host_packet(qts, 0x8000, 0, 0);
+        wait_fifo_count(qts, 0);
+        qtest_memwrite(qts, FAULT_MEMORY + 0x9000, guard, sizeof(guard));
+        rx_host_offer(sv[0], 1);
+        sgi_wait_socket_read(sv[0]);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+        qtest_clock_step(qts, 0);
+
+        if (mode == 0) {
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+        } else if (mode == 1) {
+            qtest_system_reset(qts);
+            mdio_write(qts, 8, 0, 0x2100);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
+        } else if (mode == 2) {
+            qtest_qmp_assert_success(qts,
+                "{'execute':'set_link','arguments':{'name':'n0','up':false}}");
+            qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+        } else {
+            /* The normal NIC destruction must complete the pending sender. */
+            qtest_qmp_assert_success(qts,
+                "{'execute':'qom-set','arguments':"
+                "{'path':'/machine/peripheral/mace/eth',"
+                "'property':'realized','value':false}}");
+            qtest_quit(qts);
+            close(sv[0]);
+            close(sv[1]);
+            continue;
+        }
+        qtest_clock_step(qts, 0);
+        qtest_memread(qts, FAULT_MEMORY + 0x9000, landed, sizeof(landed));
+        g_assert_cmpmem(landed, sizeof(landed), guard, sizeof(guard));
+        if (mode == 2) {
+            qtest_qmp_assert_success(qts,
+                "{'execute':'set_link','arguments':{'name':'n0','up':true}}");
+        }
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x9000);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+        rx_host_offer(sv[0], 2);
+        rx_host_packet(qts, 0x9000, 2, sequence);
+        wait_fifo_count(qts, 0);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_host_dma_fault(void)
+{
+    int sv[2];
+    QTestState *qts = fault_eth_start_socket(sv, false, true, SOCK_DGRAM);
+    uint8_t guard[128], partial[sizeof(guard)], after[sizeof(guard)];
+    uint64_t control = rx_retirement_control(1, false);
+    SgiWait wait;
+
+    memset(guard, 0x59, sizeof(guard));
+    rx_retirement_config(qts, 0, 0, false);
+    qtest_memwrite(qts, FAULT_MEMORY + 0x9000, guard, sizeof(guard));
+    rx_host_offer(sv[0], 0);
+    sgi_wait_socket_read(sv[0]);
+    fault_set(qts, "fault-start", 0x9022);
+    fault_set(qts, "fault-end", 0x905d);
+    fault_set(qts, "fault-mode", 2);
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x9000);
+    sgi_wait_start(&wait, "MACE deferred offer reaches RX DMA fault");
+    while (qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
+        sgi_wait_pause(&wait, 1000);
+        qtest_clock_step(qts, 0);
+    }
+    fault_set(qts, "fault-mode", 0);
+    qtest_memread(qts, FAULT_MEMORY + 0x9000, partial, sizeof(partial));
+    g_assert_false(eth_status(qts, FAULT_MEMORY + 0x9000) >> 63);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+    g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
+    rx_host_offer(sv[0], 1);
+    sgi_wait_socket_read(sv[0]);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+    qtest_clock_step(qts, 0);
+    qtest_memread(qts, FAULT_MEMORY + 0x9000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), partial, sizeof(partial));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
+    qtest_memwrite(qts, FAULT_MEMORY + 0xa000, guard, sizeof(guard));
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0xa000);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
+    rx_host_offer(sv[0], 2);
+    rx_host_packet(qts, 0xa000, 2, 0);
+    wait_fifo_count(qts, 0);
+    qtest_memread(qts, FAULT_MEMORY + 0x9000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), partial, sizeof(partial));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 static void test_rx_threshold_retirement(void)
 {
     for (unsigned legacy = 0; legacy < 2; legacy++) {
@@ -4015,19 +4292,21 @@ static void test_rx_threshold_other_causes(void)
 {
     int sv[2];
     QTestState *qts = rx_retirement_start(sv, 1, 0, false);
-    uint8_t frame[60] = { 0 };
 
     rx_retirement_packet(qts, sv[0], 0x8000, 0);
-    socket_send_frame(sv[0], frame, sizeof(frame));
-    sgi_wait_socket_read(sv[0]);
-    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x60, ==, 0x60);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, (3U << 5) | (1U << 7));
+    qtest_qmp_assert_success(qts,
+        "{'execute':'set_link','arguments':{'name':'n0','up':false}}");
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x24, ==, 0x24);
     qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
-    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x60, ==, 0x40);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x24, ==, 4);
     g_assert_true(qtest_get_irq(qts, 3));
     qtest_writeq(qts, ETH_BASE + INT_STATUS, 32);
     g_assert_true(qtest_get_irq(qts, 3));
-    qtest_writeq(qts, ETH_BASE + INT_STATUS, 64);
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 4);
     g_assert_false(qtest_get_irq(qts, 3));
+    qtest_qmp_assert_success(qts,
+        "{'execute':'set_link','arguments':{'name':'n0','up':true}}");
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(2, false));
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
                  rx_retirement_control(1, false) | 3);
@@ -4195,6 +4474,16 @@ static void test_rx_threshold_migration_mismatch(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/mace/ethernet/rx-host-admission",
+                   test_rx_host_admission);
+    qtest_add_func("/sgi/mace/ethernet/rx-host-gather-admission",
+                   test_rx_host_gather_admission);
+    qtest_add_func("/sgi/mace/ethernet/rx-host-nonpacket-drops",
+                   test_rx_host_nonpacket_drops);
+    qtest_add_func("/sgi/mace/ethernet/rx-host-control-transitions",
+                   test_rx_host_control_transitions);
+    qtest_add_func("/sgi/mace/ethernet/rx-host-dma-fault",
+                   test_rx_host_dma_fault);
     qtest_add_func("/sgi/mace/ethernet/rx-threshold-retirement",
                    test_rx_threshold_retirement);
     qtest_add_func("/sgi/mace/ethernet/rx-threshold-legacy-machine",
