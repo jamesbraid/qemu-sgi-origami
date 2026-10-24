@@ -2180,6 +2180,79 @@ static void test_rtc_alias(void)
     qtest_quit(qts);
 }
 
+static void test_nvram_window(void)
+{
+    QTestState *qts = qtest_init(
+        "-M none -cpu R10000 -S -device sgi-xio-test-target,id=fabric "
+        "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0] "
+        "-device ds1744,id=clock "
+        "-device sgi-ioc4,bus=head-e.0,addr=0,"
+        "clock=/machine/peripheral/clock/memory-region");
+    static const uint8_t frozen[] = {
+        0x60, 0x59, 0x59, 0x23, 0x82, 0x31, 0x12, 0x24,
+    };
+    static const uint32_t firmware_offsets[] = {
+        0x8000e, 0x804bc, 0x87fcb, 0x87fd0,
+    };
+    unsigned i;
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
+    ioc4_map(qts);
+    qtest_irq_intercept_out_named(qts, CHIP, "head-e-pci-intx");
+
+    qtest_writeb(qts, BAR + 0x80000, 0xa5);
+    qtest_writeb(qts, BAR + 0x87ff7, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, BAR + 0x80000), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, BAR + 0x87ff7), ==, 0x5a);
+    for (i = 0; i < ARRAY_SIZE(firmware_offsets); i++) {
+        qtest_writeb(qts, BAR + firmware_offsets[i], 0x31 + i);
+        g_assert_cmphex(qtest_readb(qts, BAR + firmware_offsets[i]), ==,
+                        0x31 + i);
+    }
+
+    rtc_write_time(qts, 0x59, 0x59, 0x23, 0x31, 0x12, 0x24, 0x20);
+    qtest_writeb(qts, RTC(0), 0x40);
+    for (i = 0; i < ARRAY_SIZE(frozen); i++) {
+        g_assert_cmphex(qtest_readb(qts, RTC(i)), ==, frozen[i]);
+    }
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    ioc4_map(qts);
+    g_assert_cmphex(qtest_readb(qts, BAR + 0x80000), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, BAR + 0x87ff7), ==, 0x5a);
+    for (i = 0; i < ARRAY_SIZE(firmware_offsets); i++) {
+        g_assert_cmphex(qtest_readb(qts, BAR + firmware_offsets[i]), ==,
+                        0x31 + i);
+    }
+    for (i = 0; i < ARRAY_SIZE(frozen); i++) {
+        g_assert_cmphex(qtest_readb(qts, RTC(i)), ==, frozen[i]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_nvram_rejects_unsupported_size(void)
+{
+    const char *args =
+        "-M none -cpu R10000 -S "
+        "-device sgi-xio-test-target,id=fabric "
+        "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0] "
+        "-device sgi-ioc4,bus=head-e.0,addr=0,"
+        "clock=/machine/peripheral/fabric/fabric.ram[0]";
+
+    if (g_test_subprocess()) {
+        qtest_quit(qtest_init(args));
+        g_assert_not_reached();
+    }
+
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr(
+        "*clock region must be 0x800 or 0x8000 bytes*");
+}
+
 static void test_rtc_rejects_wide_access(void)
 {
     QTestState *qts = ioc4_start_full(33333333, false, true);
@@ -2756,6 +2829,9 @@ int main(int argc, char **argv)
                    test_xbridge_unaligned_split);
     qtest_add_func("/sgi-ioc4/rtc-absent", test_rtc_absent);
     qtest_add_func("/sgi-ioc4/rtc-alias", test_rtc_alias);
+    qtest_add_func("/sgi-ioc4/nvram-window", test_nvram_window);
+    qtest_add_func("/sgi-ioc4/nvram-rejects-unsupported-size",
+                   test_nvram_rejects_unsupported_size);
     qtest_add_func("/sgi-ioc4/rtc-rejects-wide-access",
                    test_rtc_rejects_wide_access);
     qtest_add_func("/sgi-ioc4/rtc-reset", test_rtc_reset);

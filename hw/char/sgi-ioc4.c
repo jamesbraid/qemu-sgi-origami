@@ -30,9 +30,12 @@
 #define IOC4_PCI_STATUS_COMPAT 0x0220
 #define IOC4_BAR_SIZE 0x100000
 #define IOC4_UART_BASE 0x380
+#define IOC4_NVRAM_BAR 0x80000
+#define IOC4_NVRAM_SIZE 0x8000
 #define IOC4_CLOCK_BAR 0x87ff8
 #define IOC4_CLOCK_NATIVE 0x7f8
 #define IOC4_CLOCK_SIZE 8
+#define IOC4_LEGACY_NVRAM_SIZE 0x800
 #define IOC4_KBC_BASE 0x200
 #define IOC4_KBC_SIZE SGI_IOC3_KBC_MMIO_SIZE
 #define IOC4_KBC_IRQ 0x40
@@ -1318,15 +1321,29 @@ static void ioc4_exit(PCIDevice *dev)
 static void ioc4_realize(PCIDevice *dev, Error **errp)
 {
     SGIIOC4State *s = (SGIIOC4State *)dev;
+    uint64_t clock_offset = IOC4_CLOCK_NATIVE;
+    uint64_t clock_size = IOC4_CLOCK_SIZE;
+    uint64_t clock_bar = IOC4_CLOCK_BAR;
     int i;
 
     if (s->clock_hz != 33333333 && s->clock_hz != 66666667) {
         error_setg(errp, "sgi-ioc4 clock-hz must be 33333333 or 66666667");
         return;
     }
-    if (s->clock && memory_region_size(s->clock) < 0x800) {
-        error_setg(errp, "sgi-ioc4 clock region must be at least 0x800 bytes");
-        return;
+    if (s->clock) {
+        uint64_t region_size = memory_region_size(s->clock);
+
+        if (region_size == IOC4_NVRAM_SIZE) {
+            clock_offset = 0;
+            clock_size = IOC4_NVRAM_SIZE;
+            clock_bar = IOC4_NVRAM_BAR;
+        } else if (region_size != IOC4_LEGACY_NVRAM_SIZE) {
+            error_setg(errp,
+                       "sgi-ioc4 clock region must be 0x800 or 0x8000 bytes "
+                       "(got 0x%" PRIx64 ")",
+                       region_size);
+            return;
+        }
     }
 
     s->dma_migration_mode = s->serial_dma_experimental;
@@ -1340,12 +1357,11 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
     if (s->clock && !s->clock_alias_initialized) {
         memory_region_init_alias(&s->clock_alias, OBJECT(s),
                                  "sgi-ioc4-clock", s->clock,
-                                 IOC4_CLOCK_NATIVE, IOC4_CLOCK_SIZE);
+                                 clock_offset, clock_size);
         s->clock_alias_initialized = true;
     }
     if (s->clock) {
-        memory_region_add_subregion(&s->bar, IOC4_CLOCK_BAR,
-                                    &s->clock_alias);
+        memory_region_add_subregion(&s->bar, clock_bar, &s->clock_alias);
         s->clock_alias_mapped = true;
     }
     for (i = 0; i < IOC4_PORTS; i++) {
