@@ -296,8 +296,10 @@ static bool aic7880_pio_pending(AIC7880State *s)
                !s->peer_nexus_disconnected && s->req &&
                s->scsi_data_pos < s->scsi_data_len;
     }
-    return s->phase == AIC_PHASE_COMMAND ||
-           s->phase == AIC_PHASE_STATUS ||
+    if (s->phase == AIC_PHASE_COMMAND) {
+        return !s->req && (!s->cdb_need || s->cdb_len < s->cdb_need);
+    }
+    return s->phase == AIC_PHASE_STATUS ||
            s->phase == AIC_PHASE_MSG_IN ||
            s->phase == AIC_PHASE_MSG_OUT;
 }
