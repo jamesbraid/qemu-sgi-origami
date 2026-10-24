@@ -1187,7 +1187,10 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
          * monitor has just programmed, and refuse a write instead of passing
          * it to the part as a command cycle.
          */
-        sn1_apply_cpu_config(node, memory_region_get_ram_ptr(stored));
+        /* A backed IP53 image already has its authored configuration header. */
+        if (!node->ip53_assembly_validated) {
+            sn1_apply_cpu_config(node, memory_region_get_ram_ptr(stored));
+        }
         memory_region_set_log(stored, true, DIRTY_MEMORY_VGA);
         /* Node 0 keeps the RAM names its snapshots carry. */
         node->prom_view_names[0] = node->nasid ?

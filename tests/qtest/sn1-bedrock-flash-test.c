@@ -39,6 +39,8 @@ static unsigned count_lines(const char *text, const char *needle);
 #define FLASH_SIZE (16 * 1024 * 1024)
 #define SECTOR_SIZE (64 * 1024)
 #define IP53_PROM_SIZE 0x100000
+#define IP53_CONFIG_OFFSET 0x60
+#define IP53_CONFIG_SIZE 0x50
 #define IP53_EXECUTION_SIZE 1476264ULL
 #define IP53_RESET 0x1fc00000ULL
 #define IP53_LOCAL_HIGH (HUB + 0x1fc00000ULL)
@@ -1411,6 +1413,46 @@ static void test_ip53_execution_views(void)
     g_assert_cmpint(unlink(clock), ==, 0);
 }
 
+static void test_ip53_backed_config_preserved(void)
+{
+    g_autofree char *image = flash_image("ip53-config-preserved");
+    g_autofree char *data = sized_image("ip53-config-preserved-rtc-data",
+                                        0x800);
+    g_autofree char *clock = sized_image("ip53-config-preserved-rtc-clock",
+                                         16);
+    uint8_t seed[IP53_CONFIG_SIZE];
+    uint8_t observed[IP53_CONFIG_SIZE];
+    QTestState *s;
+
+    for (size_t i = 0; i < sizeof(seed); i++) {
+        seed[i] = 0x80 + i;
+    }
+    image_write(image, IP53_CONFIG_OFFSET, seed, sizeof(seed));
+    s = ip53_flash_start(image, data, clock, "");
+
+    qtest_memread(s, IP53_RESET + IP53_CONFIG_OFFSET, observed,
+                  sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), seed, sizeof(seed));
+    qtest_memread(s, IP53_LOCAL_HIGH + IP53_CONFIG_OFFSET, observed,
+                  sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), seed, sizeof(seed));
+
+    qtest_system_reset(s);
+    qtest_memread(s, IP53_RESET + IP53_CONFIG_OFFSET, observed,
+                  sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), seed, sizeof(seed));
+    qtest_memread(s, IP53_LOCAL_HIGH + IP53_CONFIG_OFFSET, observed,
+                  sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), seed, sizeof(seed));
+
+    qtest_quit(s);
+    image_read(image, IP53_CONFIG_OFFSET, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), seed, sizeof(seed));
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(data), ==, 0);
+    g_assert_cmpint(unlink(clock), ==, 0);
+}
+
 static void test_ip53_execution_view_migration(void)
 {
     g_autoptr(GError) error = NULL;
@@ -2657,6 +2699,8 @@ int main(int argc, char **argv)
                    test_ip53_guest_store_refuses_reset_view);
     qtest_add_func("sn1/bedrock-flash/ip53-execution-views",
                    test_ip53_execution_views);
+    qtest_add_func("sn1/bedrock-flash/ip53-backed-config-preserved",
+                   test_ip53_backed_config_preserved);
     qtest_add_func("sn1/bedrock-flash/ip53-execution-view-migration",
                    test_ip53_execution_view_migration);
     qtest_add_func("sn1/bedrock-flash/program", test_program);
