@@ -972,6 +972,37 @@ static void test_interrupt_mask_upper(void)
     g_rmdir(directory);
 }
 
+static void test_interrupt_mask_upper_refusal(void)
+{
+    static const uint64_t upper[] = {
+        0x0000000100000000ULL, 0xa1b2c3d400000000ULL,
+        0xffffffff00000000ULL,
+    };
+
+    for (unsigned functional = 0; functional < 2; functional++) {
+        for (unsigned u = 0; u < ARRAY_SIZE(upper); u++) {
+            QTestState *s = start_profile(false, functional ?
+                "-global sgi-crime.functional-memory-transfer=on" : "");
+
+            qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+            cause(s, 4, 1);
+            qtest_writeq(s, BASE + 0x18, UINT32_MAX);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, UINT32_MAX);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+            assert_outputs(s, 1);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writeq(s, BASE + 0x18,
+                                        upper[u] | (1U << 8)), ==, MEMTX_ERROR);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, UINT32_MAX);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 1U << 4);
+            assert_outputs(s, 1);
+            assert_run_status(s, functional ? "internal-error" : "running");
+            qtest_quit(s);
+        }
+    }
+}
+
 static void seed_renderer_state(QTestState *s)
 {
     const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
@@ -2324,6 +2355,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/crime/legacy/register-access", test_register_access);
     qtest_add_func("/sgi/crime/legacy/interrupt-mask-upper",
                    test_interrupt_mask_upper);
+    qtest_add_func("/sgi/crime/1.5/interrupt-mask-upper-refusal",
+                   test_interrupt_mask_upper_refusal);
     qtest_add_func("/sgi/crime/legacy/banks", test_banks);
     qtest_add_func("/sgi/crime/legacy/immutable", test_immutable);
     qtest_add_func("/sgi/crime/legacy/level-latches", test_level_latches);
