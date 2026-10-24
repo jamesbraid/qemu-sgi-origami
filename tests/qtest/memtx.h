@@ -14,9 +14,9 @@
 #define MEMTX_DMA_AS -2
 
 /* Raw bytes, including failed-read data; no translated CPU-load semantics. */
-static inline MemTxResult memtx_transaction(QTestState *qts, int cpu,
-                                            uint64_t addr, uint8_t *bytes,
-                                            unsigned size, bool write)
+static inline MemTxResult memtx_request(QTestState *qts, int cpu,
+                                        uint64_t addr, uint8_t *bytes,
+                                        unsigned size, bool write, bool scalar)
 {
     g_autofree char *request = NULL;
     g_autoptr(QDict) reply = NULL;
@@ -30,9 +30,11 @@ static inline MemTxResult memtx_transaction(QTestState *qts, int cpu,
         for (unsigned i = 0; i < size; i++) {
             snprintf(hex + 2 * i, 3, "%02x", bytes[i]);
         }
-        request = g_strdup_printf("write %d 0x%" PRIx64 " %s", cpu, addr, hex);
+        request = g_strdup_printf("%s %d 0x%" PRIx64 " %s",
+                                   scalar ? "store" : "write", cpu, addr, hex);
     } else {
-        request = g_strdup_printf("read %d 0x%" PRIx64 " %u", cpu, addr, size);
+        request = g_strdup_printf("%s %d 0x%" PRIx64 " %u",
+                                   scalar ? "load" : "read", cpu, addr, size);
     }
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
@@ -55,11 +57,20 @@ static inline MemTxResult memtx_transaction(QTestState *qts, int cpu,
     return result;
 }
 
-static inline MemTxResult memtx_read(QTestState *qts, uint64_t addr,
-                                     uint64_t *value, unsigned size)
+static inline MemTxResult memtx_transaction(QTestState *qts, int cpu,
+                                            uint64_t addr, uint8_t *bytes,
+                                            unsigned size, bool write)
+{
+    return memtx_request(qts, cpu, addr, bytes, size, write, false);
+}
+
+static inline MemTxResult memtx_read_mode(QTestState *qts, uint64_t addr,
+                                          uint64_t *value, unsigned size,
+                                          bool scalar)
 {
     uint8_t bytes[8];
-    MemTxResult result = memtx_transaction(qts, -1, addr, bytes, size, false);
+    MemTxResult result = memtx_request(qts, -1, addr, bytes, size,
+                                       false, scalar);
     bool big = qtest_big_endian(qts);
 
     *value = 0;
@@ -69,8 +80,9 @@ static inline MemTxResult memtx_read(QTestState *qts, uint64_t addr,
     return result;
 }
 
-static inline MemTxResult memtx_write(QTestState *qts, uint64_t addr,
-                                      uint64_t value, unsigned size)
+static inline MemTxResult memtx_write_mode(QTestState *qts, uint64_t addr,
+                                           uint64_t value, unsigned size,
+                                           bool scalar)
 {
     uint8_t bytes[8];
     bool big = qtest_big_endian(qts);
@@ -78,7 +90,32 @@ static inline MemTxResult memtx_write(QTestState *qts, uint64_t addr,
     for (unsigned i = 0; i < size; i++) {
         bytes[i] = value >> (8 * (big ? size - 1 - i : i));
     }
-    return memtx_transaction(qts, -1, addr, bytes, size, true);
+    return memtx_request(qts, -1, addr, bytes, size, true, scalar);
+}
+
+static inline MemTxResult memtx_read(QTestState *qts, uint64_t addr,
+                                     uint64_t *value, unsigned size)
+{
+    return memtx_read_mode(qts, addr, value, size, false);
+}
+
+static inline MemTxResult memtx_write(QTestState *qts, uint64_t addr,
+                                      uint64_t value, unsigned size)
+{
+    return memtx_write_mode(qts, addr, value, size, false);
+}
+
+/* Scalar accesses preserve the requested width at MemoryRegion dispatch. */
+static inline MemTxResult memtx_load(QTestState *qts, uint64_t addr,
+                                     uint64_t *value, unsigned size)
+{
+    return memtx_read_mode(qts, addr, value, size, true);
+}
+
+static inline MemTxResult memtx_store(QTestState *qts, uint64_t addr,
+                                      uint64_t value, unsigned size)
+{
+    return memtx_write_mode(qts, addr, value, size, true);
 }
 
 #define MEMTX_ADAPTER(suffix, type, size) \

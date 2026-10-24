@@ -173,7 +173,7 @@ static void test_transaction_fixture(gconstpointer data)
         g_assert(qdict_haskey(response, "error"));
         qobject_unref(response);
     }
-    /* Unaligned RAM exercises all typed widths in the target byte order. */
+    /* Unaligned RAM preserves buffer bytes in the target byte order. */
     for (unsigned size = 1; size <= 8; size *= 2) {
         uint64_t expected = UINT64_C(0x8877665544332211) >> (8 * (8 - size));
         uint64_t value;
@@ -281,11 +281,102 @@ static void test_transaction_scratch(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_scalar_transactions(void)
+{
+    const char *cpu_model = get_cpu_model_by_arch(qtest_get_arch());
+    static const uint8_t payload[] = { 0x11, 0x22, 0x33, 0x44,
+                                       0x55, 0x66, 0x77, 0x88 };
+    static const char *bad[] = {
+        "load -1 0 3", "load 99 0 4", "load -3 0 4",
+        "store -1 0 xyz", "store -1 0 001122", "load -1 0 4 extra",
+        "load -1 0xfffffffffffffffc 8",
+        "store -1 0xfffffffffffffffc 1122334455667788",
+    };
+    QTestState *qts;
+    uint8_t got[8];
+    uint64_t value;
+
+    if (!cpu_model || !qtest_has_device("memory-transaction-test")) {
+        g_test_skip("Memory transaction fixture or CPU unavailable");
+        return;
+    }
+    qts = qtest_initf("-machine none -m 1M -cpu \"%s\" "
+        "-device memory-transaction-test,id=memtx,fault-memory=on,"
+        "fault-memory-base=0x200000", cpu_model);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
+        "'value':'store -1 0x100 1122334455667788'}}", MEMTX_TEST_PATH);
+    qtest_memread(qts, 0x100, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), payload, sizeof(payload));
+    for (unsigned size = 1; size <= 8; size *= 2) {
+        uint64_t expected = UINT64_C(0x8877665544332211) >> (8 * (8 - size));
+
+        g_assert_cmpuint(memtx_store(qts, 0x100, expected, size), ==, MEMTX_OK);
+        g_assert_cmpuint(memtx_load(qts, 0x100, &value, size), ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, expected);
+        /* Buffer and scalar requests must describe the same raw bytes. */
+        g_assert_cmpuint(memtx_read(qts, 0x100, &value, size), ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, expected);
+        g_assert_cmpuint(memtx_store(qts, 0x200000, expected, size),
+                         ==, MEMTX_OK);
+        g_assert_cmpuint(memtx_load(qts, 0x200000, &value, size),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, expected);
+        if (size > 1) {
+            qtest_memwrite(qts, 0x200000, payload, sizeof(payload));
+            g_assert_cmpuint(memtx_store(qts, 0x200001, 0, size),
+                             !=, MEMTX_OK);
+            g_assert_cmpuint(memtx_load(qts, 0x200001, &value, size),
+                             !=, MEMTX_OK);
+            qtest_memread(qts, 0x200000, got, sizeof(got));
+            g_assert_cmpmem(got, sizeof(got), payload, sizeof(payload));
+            g_assert_cmpuint(memtx_write(qts, 0x200001, 0, size),
+                             ==, MEMTX_OK);
+        }
+    }
+    qtest_memwrite(qts, 0x200008, payload, sizeof(payload));
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'fault-start',"
+        "'value':8}}", MEMTX_TEST_PATH);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'fault-end',"
+        "'value':15}}", MEMTX_TEST_PATH);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'fault-mode',"
+        "'value':3}}", MEMTX_TEST_PATH);
+    g_assert_cmpuint(memtx_store(qts, 0x200008, 0, 8), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_load(qts, 0x200008, &value, 8), ==, MEMTX_ERROR);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'fault-mode',"
+        "'value':0}}", MEMTX_TEST_PATH);
+    qtest_memread(qts, 0x200008, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), payload, sizeof(payload));
+    g_assert_cmpuint(memtx_load(qts, 0x10000000000ULL, &value, 8),
+                     ==, MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_store(qts, 0x10000000000ULL, 0, 8),
+                     ==, MEMTX_DECODE_ERROR);
+    for (unsigned i = 0; i < ARRAY_SIZE(bad); i++) {
+        g_autoptr(QDict) reply = qtest_qmp_assert_failure_ref(qts,
+            "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
+            "'value':%s}}", MEMTX_TEST_PATH, bad[i]);
+    }
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'realized',"
+        "'value':false}}", MEMTX_TEST_PATH);
+    g_autoptr(QDict) reply = qtest_qmp_assert_failure_ref(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':'request',"
+        "'value':'store -1 0 11223344'}}", MEMTX_TEST_PATH);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("machine/none/cpu_option", test_machine_cpu_cli);
+    qtest_add_func("machine/none/scalar_transactions",
+                   test_scalar_transactions);
     qtest_add_func("machine/none/memory_transaction_result",
                    test_memory_transaction_result);
 

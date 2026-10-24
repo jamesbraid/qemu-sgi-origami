@@ -70,6 +70,60 @@ static const MemoryRegionOps fault_memory_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+/* LE scalars retain the protocol's address-order byte payload. */
+static MemTxResult transaction_scalar(AddressSpace *as, uint64_t address,
+                                      uint8_t *bytes, unsigned size, bool write)
+{
+    MemTxResult result;
+    uint64_t value = ldn_le_p(bytes, size);
+
+    if (write) {
+        switch (size) {
+        case 1:
+            address_space_stb(as, address, value, MEMTXATTRS_UNSPECIFIED,
+                              &result);
+            break;
+        case 2:
+            address_space_stw_le(as, address, value, MEMTXATTRS_UNSPECIFIED,
+                                 &result);
+            break;
+        case 4:
+            address_space_stl_le(as, address, value, MEMTXATTRS_UNSPECIFIED,
+                                 &result);
+            break;
+        case 8:
+            address_space_stq_le(as, address, value, MEMTXATTRS_UNSPECIFIED,
+                                 &result);
+            break;
+        default:
+            g_assert_not_reached();
+        }
+    } else {
+        switch (size) {
+        case 1:
+            value = address_space_ldub(as, address, MEMTXATTRS_UNSPECIFIED,
+                                       &result);
+            break;
+        case 2:
+            value = address_space_lduw_le(as, address, MEMTXATTRS_UNSPECIFIED,
+                                          &result);
+            break;
+        case 4:
+            value = address_space_ldl_le(as, address, MEMTXATTRS_UNSPECIFIED,
+                                         &result);
+            break;
+        case 8:
+            value = address_space_ldq_le(as, address, MEMTXATTRS_UNSPECIFIED,
+                                         &result);
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        stn_le_p(bytes, size, value);
+    }
+    return result;
+}
+
 /*
  * -2 uses global memory as a synthetic DMA observer, without an IOMMU.
  * -1 selects first_cpu; nonnegative indices select that CPU.
@@ -85,6 +139,7 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
     CPUState *cpu;
     bool dma;
     bool write;
+    bool scalar;
     MemTxResult result;
     GString *reply;
 
@@ -94,11 +149,12 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
         return;
     }
     if (g_strv_length(args) != 4 ||
-        (strcmp(args[0], "read") && strcmp(args[0], "write")) ||
+        (strcmp(args[0], "read") && strcmp(args[0], "write") &&
+         strcmp(args[0], "load") && strcmp(args[0], "store")) ||
         qemu_strtoi(args[1], NULL, 0, &index) || index < -2 ||
         qemu_strtou64(args[2], NULL, 0, &address)) {
-        error_setg(errp, "Expected read ADDRESS_SPACE ADDRESS SIZE or "
-                   "write ADDRESS_SPACE ADDRESS HEXBYTES");
+        error_setg(errp, "Expected read/load ADDRESS_SPACE ADDRESS SIZE or "
+                   "write/store ADDRESS_SPACE ADDRESS HEXBYTES");
         return;
     }
     dma = index == -2;
@@ -107,7 +163,8 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
         error_setg(errp, "CPU %d has no address space", index);
         return;
     }
-    write = !strcmp(args[0], "write");
+    scalar = !strcmp(args[0], "load") || !strcmp(args[0], "store");
+    write = !strcmp(args[0], "write") || !strcmp(args[0], "store");
     if (write) {
         size = strlen(args[3]) / 2;
         if (strlen(args[3]) != size * 2) {
@@ -138,6 +195,11 @@ static void transaction_request(Object *obj, const char *request, Error **errp)
             }
             bytes[i] = high << 4 | low;
         }
+    }
+    if (scalar) {
+        result = transaction_scalar(dma ? &address_space_memory : cpu->as,
+                                     address, bytes, size, write);
+    } else if (write) {
         result = dma ?
             dma_memory_write(&address_space_memory, address, bytes, size,
                              MEMTXATTRS_UNSPECIFIED) :
