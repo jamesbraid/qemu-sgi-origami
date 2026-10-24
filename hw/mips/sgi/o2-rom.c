@@ -461,6 +461,11 @@ static MemTxResult at29_write_byte(SGIO2ROMState *s, uint32_t address,
     uint32_t command_address = address & 0x7fff;
 
     at29_advance(s, now, false);
+    if (s->backing_failed) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-o2-rom: programming refused after backing failure\n");
+        return MEMTX_ERROR;
+    }
     if (s->at29_phase == AT29_BUSY) {
         if (!s->at29_trace_busy_write_seen &&
             trace_event_get_state_backends(TRACE_O2_AT29_LOAD)) {
@@ -580,11 +585,6 @@ static MemTxResult o2_rom_write(void *opaque, hwaddr offset, uint64_t value,
     }
     if (!s->write_enabled) {
         return MEMTX_OK;
-    }
-    if (s->backing_failed) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-o2-rom: programming refused after backing failure\n");
-        return MEMTX_ERROR;
     }
     if (s->at29_diagnostic) {
         return at29_write_byte(s, offset, value);
