@@ -1263,23 +1263,20 @@ static void test_gl_texture_ordinary_volume_point(gconstpointer data)
 #define TEX_SLICE_D              4
 #define TEX_SLICE_BYTES          (TEX_SLICE_W * TEX_SLICE_H * 4)
 
-static void tex_load_volume_slices(QTestState *t, const uint8_t *image)
+static void tex_load_volume_slices_shape(QTestState *t, const uint8_t *image,
+                                         uint32_t w, uint32_t h, uint32_t d)
 {
-    static const uint32_t box[6] = {
-        0, 0, TEX_SLICE_W, TEX_SLICE_H, TEX_SLICE_H << 16 | TEX_SLICE_W, 0,
-    };
-    static const uint32_t load[6] = {
-        TEX_SLICE_W, 0, 0, 0x100, 0xffffffff, 1,
-    };
+    uint32_t bytes = w * h * 4;
+    uint32_t box[6] = { 0, 0, w, h, h << 16 | w, 0 };
+    uint32_t load[6] = { w, 0, 0, 0x100, 0xffffffff, 1 };
     static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
     uint32_t unpack[6] = {
-        TEX_SLICE_BYTES / 4, tex_unpack_word(4), 0x464, 0xb, 0xc,
+        bytes / 4, tex_unpack_word(4), 0x464, 0xb, 0xc,
         tex_unpack_scale(1),
     };
 
     tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
-    tex_record(t, TEX_TL_SPEC, ctz32(TEX_SLICE_H) << 8 |
-                               (ctz32(TEX_SLICE_W) + 1) << 4);
+    tex_record(t, TEX_TL_SPEC, ctz32(h) << 8 | (ctz32(w) + 1) << 4);
     gl_word(t, TEX_SAVE_RSS);
     gl_word(t, 0xffffffff);
     gl_word(t, 0x1400000);
@@ -1287,10 +1284,9 @@ static void tex_load_volume_slices(QTestState *t, const uint8_t *image)
     gl_word(t, 0);
     gl_word(t, 3);
     gl_ge_load(t, GL_GE_ERAM, 0xe3d, load, ARRAY_SIZE(load));
-    for (uint32_t z = 0; z < TEX_SLICE_D; z++) {
+    for (uint32_t z = 0; z < d; z++) {
         gl_word(t, TEX_LOAD_OPEN);
-        gl_pixels_program(t, GL_PIX_4UB, TEX_SLICE_BYTES / 4, 0, 0,
-                          TEX_SLICE_W - 1, TEX_SLICE_H - 1, 1);
+        gl_pixels_program(t, GL_PIX_4UB, bytes / 4, 0, 0, w - 1, h - 1, 1);
         gl_ge_load(t, GL_GE_ERAM, GL_GE_UNPACK, unpack, ARRAY_SIZE(unpack));
         gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
         gl_word(t, TEX_PAIRS);
@@ -1300,15 +1296,21 @@ static void tex_load_volume_slices(QTestState *t, const uint8_t *image)
         gl_word(t, 0x159);
         gl_word(t, 0xc00080);
         gl_word(t, GL_PIXELS_HDR);
-        gl_word(t, TEX_SLICE_BYTES / 4);
+        gl_word(t, bytes / 4);
         for (int i = 1; i < 8; i++) {
             gl_word(t, draw[i]);
         }
-        gl_pixels_dma_on(t, 0, image + z * TEX_SLICE_BYTES, TEX_SLICE_BYTES,
-                         TEX_SLICE_BYTES, 1, TEX_SLICE_BYTES, 0xa7);
+        gl_pixels_dma_on(t, 0, image + z * bytes, bytes, bytes, 1, bytes,
+                         0xa7);
         gl_word(t, TEX_LOAD_CLOSE);
     }
     gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_load_volume_slices(QTestState *t, const uint8_t *image)
+{
+    tex_load_volume_slices_shape(t, image, TEX_SLICE_W, TEX_SLICE_H,
+                                 TEX_SLICE_D);
 }
 
 /*
@@ -1391,6 +1393,55 @@ static void test_gl_texture_volume_slices(gconstpointer data)
         tex_quad_volume_z(t, (z + 0.5f) / TEX_SLICE_D);
         g_assert_cmphex(gl_window_pixel(t, 32, 24), ==,
                         f[0] << 16 | f[1] << 8 | f[2]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The pixel-texture probe's 2x2x1 3-D texture as the IRIX client sends it:
+ * one slice into a slice-pair level twice the slice's width (a 4x2 level
+ * at TXMIPMAP 0x100, as a guest trace of the probe shows), then TXSIZE
+ * 0x1112 and MDDMA_CNTRL 0x3c040045 for the pixel-texture draw. The draw
+ * samples the 2x2 slice, not the 4x2 level: the probe's red and green
+ * bytes 0x40 and 0xbf pick the four texels.
+ */
+static void test_gl_texture_pixel_texture_volume_slice(gconstpointer data)
+{
+    static const uint8_t slice[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x00, 0xff,
+        0x40, 0xbf, 0x00, 0xff, 0xbf, 0xbf, 0x00, 0xff,
+    };
+    static const uint32_t texels[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    QTestState *t = texture_board_start(data);
+    uint32_t res = tex_re_count(t);
+
+    tex_load_volume_slices_shape(t, slice, 2, 2, 1);
+    tex_bind(t, 0x40859, 0x815804);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 0x100);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, 0x1112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    for (uint32_t pass = 0; pass < res; pass++) {
+        tex_pixel_texture_pass(t, res, pass, pixels, 2, 0x3c040045,
+                               0x3c040044);
+    }
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, x, y), ==, texels[y * 2 + x]);
+        }
     }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
@@ -5903,6 +5954,9 @@ int main(int argc, char **argv)
     add_texture_board_cases(
         "sn0/origin2000/mgras/gl-texture-pixel-texture-passes",
         test_gl_texture_pixel_texture_passes);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-pixel-texture-volume-slice",
+        test_gl_texture_pixel_texture_volume_slice);
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-pixel-texture-pass-migration/mxi",
         "mxi", test_gl_texture_pixel_texture_pass_migration);

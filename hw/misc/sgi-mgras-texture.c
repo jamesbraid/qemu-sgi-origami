@@ -2890,9 +2890,21 @@ static bool mgras_tex_captured_pixel_endpoint(const SGIMgrasTexture *t)
         return false;
     }
     depth_size = 1u << ((t->txsize >> 19) & 0xf);
+    /*
+     * The tuple names the bounded software view only when that view's
+     * bytes are what the draw reads. The client also sends it for a 2x2
+     * one-slice texture it loaded slice by slice into TRAM, as a 4x2
+     * slice-pair level (a model trace of the pixel-texture probe); that
+     * texture is the TRAM volume, and reading the pair level as a 4x2
+     * picture sampled the right-hand, empty slice for every s above 1/2.
+     */
     if (depth_size == 1) {
         return t->txsize == 0x1112 && width == 2 && height == 2 &&
-               t->mddma_cntrl == 0x3c040045;
+               t->mddma_cntrl == 0x3c040045 &&
+               t->volume_width == 2 && t->volume_height == 2 &&
+               t->volume_depth == 1 && t->volume_mode == 0x26 &&
+               t->volume_level == 0 && t->volume_base == t->base &&
+               t->volume_bytes == 16;
     }
     if (depth_size > 4) {
         if (!mgras_tex_captured_deep_volume_shape(width, height,
