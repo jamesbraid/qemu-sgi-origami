@@ -14238,6 +14238,64 @@ static void test_command_dma_zero_done_irq(void)
     qtest_quit(qts);
 }
 
+static void test_command_dma_preserves_pio_clears(void)
+{
+    static const uint8_t ready[6] = { 0 };
+
+    for (unsigned phase = 0; phase < 4; phase++) {
+        QTestState *qts = start_disk();
+
+        if (phase == 1) {
+            attention_select(qts, 0x48);
+        } else {
+            manual_command(qts, ready, phase >= 2 ? 6 : 0);
+            qtest_writeb(qts, REG_BASE + 1, 8);
+            if (phase >= 2) {
+                manual_wait_phase(qts, 0xc0);
+            }
+            if (phase == 3) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+                qtest_writeb(qts, REG_BASE + 3, 0xe0);
+            }
+        }
+        for (unsigned clear = 0; clear < 3; clear++) {
+            qtest_writeb(qts, REG_BASE + 1, 0);
+            qtest_writeb(qts, REG_BASE + 1, 8);
+            if (clear != 1) {
+                qtest_writeb(qts, REG_BASE + 0xb, 2);
+            }
+            if (clear != 0) {
+                qtest_writeb(qts, REG_BASE + 0xc, 1);
+            }
+            for (unsigned write = 0; write < 4; write++) {
+                qtest_writeb(qts, REG_BASE + 0x93, write & 1 ? 4 : 0);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 2, ==,
+                                clear == 1 ? 2 : 0);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xc) & 1, ==,
+                                clear == 0 ? 1 : 0);
+            }
+        }
+        qtest_quit(qts);
+    }
+    {
+        static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, 0, 6, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+        qtest_writeb(qts, REG_BASE + 0xc, 1);
+        for (unsigned write = 0; write < 4; write++) {
+            qtest_writeb(qts, REG_BASE + 0x93, write & 1 ? 0x3c : 0x34);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 2, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xc) & 1, ==, 0);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, 4);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 2, ==, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xc) & 1, ==, 1);
+        qtest_quit(qts);
+    }
+}
+
 static void test_command_dma_inquiry(void)
 {
     static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
@@ -14276,6 +14334,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("aic7880/command-dma/inquiry", test_command_dma_inquiry);
+    qtest_add_func("aic7880/command-dma/preserves-pio-clears",
+                   test_command_dma_preserves_pio_clears);
     qtest_add_func("aic7880/command-dma/done", test_command_dma_done);
     qtest_add_func("aic7880/command-dma/zero-done-irq",
                    test_command_dma_zero_done_irq);
