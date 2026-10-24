@@ -535,7 +535,7 @@ static inline void mgras_select_xmap(QTestState *s, uint8_t select,
     qtest_writeb(s, REG_XMAP_INDEX, index);
 }
 #define REG_XMAP_OVERLAY_MODE   MGRAS_REG(0x071e80)
-#define MGRAS_TWO_RE_ARGS       " -global sgi-mgras.board=ssi"
+#define MGRAS_TWO_RE_ARGS       ",product=ssi"
 
 /* The PP1SELECT value naming PP1 n: RE n / 2, its PP1 n % 2. */
 static inline uint8_t mgras_pp1_select_one(unsigned int n)

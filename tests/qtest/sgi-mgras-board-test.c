@@ -385,7 +385,7 @@ static void test_xmap_revision_and_fifo_capacity(void)
 static QTestState *mgras_two_re_board_start(const char *board)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s", board);
+        MACHINE_ARGS ",product=%s", board);
 
     return qtest_init(args);
 }
@@ -589,7 +589,7 @@ static void test_two_re_board_draws_one_set_of_planes(gconstpointer data)
 {
     const char *board = data;
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s", board);
+        MACHINE_ARGS ",product=%s", board);
     QTestState *s = qtest_init(args);
 
     mgras_enter_context(s);
@@ -1424,7 +1424,7 @@ static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
 static QTestState *mgras_board_init(const MgrasBoardExpect *e)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s", e->board);
+        MACHINE_ARGS ",product=%s", e->board);
 
     return qtest_init(args);
 }
@@ -1558,7 +1558,7 @@ static void test_board_record(gconstpointer data)
 {
     const MgrasBoardRecordExpect *e = data;
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s"
+        MACHINE_ARGS ",product=%s"
         " -global sgi-mgras.board-record=on"
         " -global sgi-mgras.board-record-barcode=SIMTEST001"
         " -global sgi-mgras.board-record-serial=0x123456789abc", e->board);
@@ -1745,7 +1745,7 @@ static void test_board_pp1s_follow_re_count(gconstpointer data)
  */
 static void test_board_ge_revision_until_query(void)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=esi");
+    QTestState *s = qtest_init(MACHINE_ARGS ",product=esi");
 
     g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
     g_assert_cmphex(qtest_readl(s, REG_GE_REVISION), ==, 3);
@@ -1816,7 +1816,7 @@ static void test_board_accepted(gconstpointer data)
     tmpfs = g_dir_make_tmp("sn0-mgras-accepted-XXXXXX", &err);
     g_assert_no_error(err);
     log = g_strdup_printf("%s/unimp.log", tmpfs);
-    s = qtest_initf(MACHINE_ARGS " -global sgi-mgras.board=%s -d unimp -D %s",
+    s = qtest_initf(MACHINE_ARGS ",product=%s -d unimp -D %s",
                     e->board, log);
     g_assert_cmphex(qtest_readl(s, REG_BOARD_INVENTORY) >> 24, ==,
                     e->version1);
@@ -1862,13 +1862,12 @@ static void test_board_screen_fits_row_buffers(gconstpointer data)
 static void test_board_unknown_refused(void)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000",
-        "-global", "sgi-mgras.board=vpro",
-        "-device", "sgi-mgras,slot=io3",
+        qtest_qemu_binary(NULL), "-M", "origin2000,x-uncatalogued-graphics=on",
+        "-device", "sgi-mgras,slot=io3,product=vpro",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    assert_qemu_rejects(args, "unknown board 'vpro'");
+    assert_qemu_rejects(args, "unknown product 'vpro'");
 }
 
 

@@ -4163,273 +4163,244 @@
     },
     "generation": "SN0",
     "graphics": {
-      "headless": false,
-      "max_heads": 1,
-      "positions": [
+      "headless": true,
+      "headless_note": "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped",
+      "max_pipes": 1,
+      "slots": [
         {
-          "built_in": true,
-          "description": "Xtown in XIO slot 3, cabled to the graphics module's Ktown",
-          "modelled": true,
+          "changeable": false,
+          "default": {
+            "family": "kona",
+            "product": "ir3",
+            "settings": [
+              {
+                "name": "geometry",
+                "value": "ge16-4"
+              },
+              {
+                "name": "rm-type",
+                "value": "rm9"
+              },
+              {
+                "name": "rm-count",
+                "value": "1"
+              },
+              {
+                "name": "texture-mb",
+                "value": "256"
+              },
+              {
+                "name": "display",
+                "value": "dg5-2"
+              }
+            ]
+          },
+          "description": "Xtown in XIO slot 3, cabled to the graphics module's Ktown: the rack's InfiniteReality pipe",
+          "families": [
+            {
+              "device": "sgi-kona",
+              "family": "kona",
+              "name": "InfiniteReality",
+              "products": [
+                {
+                  "assembly": "030-1398-001",
+                  "description": "GE16 geometry board, RM9 raster managers, 64 MB texture per RM",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant",
+                    "presents the TM7 as its 64 MB texture board, which is inferred",
+                    "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  ],
+                  "name": "InfiniteReality2E",
+                  "pairing": "established",
+                  "product": "ir2e",
+                  "settings": [
+                    {
+                      "changeable": false,
+                      "default": "ge16-4",
+                      "description": "geometry board",
+                      "name": "geometry",
+                      "values": [
+                        {
+                          "description": "GE16-4, four geometry engines",
+                          "evidence": "030-1398-001, true-wombat",
+                          "value": "ge16-4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "rm9",
+                      "description": "raster-manager board",
+                      "name": "rm-type",
+                      "values": [
+                        {
+                          "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                          "evidence": "030-1402-001, true-wombat",
+                          "value": "rm9"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "1",
+                      "description": "raster-manager boards in the pipe",
+                      "name": "rm-count",
+                      "values": [
+                        {
+                          "description": "one raster manager",
+                          "value": "1"
+                        },
+                        {
+                          "description": "two raster managers",
+                          "value": "2"
+                        },
+                        {
+                          "description": "four raster managers",
+                          "value": "4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "64",
+                      "description": "texture memory on each raster manager, in MB",
+                      "name": "texture-mb",
+                      "values": [
+                        {
+                          "description": "64 MB",
+                          "evidence": "TM7 030-1053-001, whole-tetra",
+                          "value": "64"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "dg5-2",
+                      "description": "display generator board",
+                      "name": "display",
+                      "values": [
+                        {
+                          "description": "DG5-2, 2 channels",
+                          "evidence": "030-1055-001, fancy-akita",
+                          "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-8, 8 channels",
+                          "evidence": "030-1087-001, whole-tetra",
+                          "value": "dg5-8"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "assembly": "030-1398-001",
+                  "description": "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  ],
+                  "name": "InfiniteReality3",
+                  "pairing": "established",
+                  "product": "ir3",
+                  "settings": [
+                    {
+                      "changeable": false,
+                      "default": "ge16-4",
+                      "description": "geometry board",
+                      "name": "geometry",
+                      "values": [
+                        {
+                          "description": "GE16-4, four geometry engines",
+                          "evidence": "030-1398-001, true-wombat",
+                          "value": "ge16-4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "rm9",
+                      "description": "raster-manager board",
+                      "name": "rm-type",
+                      "values": [
+                        {
+                          "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
+                          "evidence": "030-1402-001, true-wombat",
+                          "value": "rm9"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "1",
+                      "description": "raster-manager boards in the pipe",
+                      "name": "rm-count",
+                      "values": [
+                        {
+                          "description": "one raster manager",
+                          "value": "1"
+                        },
+                        {
+                          "description": "two raster managers",
+                          "value": "2"
+                        },
+                        {
+                          "description": "four raster managers",
+                          "value": "4"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "256",
+                      "description": "texture memory on each raster manager, in MB",
+                      "name": "texture-mb",
+                      "values": [
+                        {
+                          "description": "256 MB",
+                          "evidence": "030-1588-001, true-wombat",
+                          "value": "256"
+                        }
+                      ]
+                    },
+                    {
+                      "changeable": false,
+                      "default": "dg5-2",
+                      "description": "display generator board",
+                      "name": "display",
+                      "values": [
+                        {
+                          "description": "DG5-2, 2 channels",
+                          "evidence": "030-1055-001, fancy-akita",
+                          "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-8, 8 channels",
+                          "evidence": "030-1087-001, whole-tetra",
+                          "value": "dg5-8"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
           "name": "io3",
-          "options": [
+          "placement": [
             {
-              "assembly": "030-1398-001",
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir3-ge16-4-rm1",
-                "parameters": {
-                  "display_channels": 2,
-                  "display_generator": "DG5-2",
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM10",
-                  "raster_manager_count": 1,
-                  "texture_mib": 256
-                },
-                "product": "InfiniteReality3"
-              },
-              "default": true,
-              "fidelity": "approximated",
-              "limitations": [
-                "presents the IRIX name InfiniteReality2 and a 64 MiB texture pool",
-                "presents no RM, TM or DG board record",
-                "configuration reply carries 0 RM records",
-                "one display channel at 1280x1024"
-              ],
-              "pairing": "established",
-              "selectable": true
-            },
+              "name": "slot",
+              "value": "io3"
+            }
+          ],
+          "refusals": [
             {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 1 RM10, 256 MB texture, DG5-2 with GVO",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir3-ge16-4-rm1-gvo",
-                "options": [
-                  "gvo"
-                ],
-                "parameters": {
-                  "display_channels": 2,
-                  "display_generator": "DG5-2",
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM10",
-                  "raster_manager_count": 1,
-                  "texture_mib": 256
-                },
-                "product": "InfiniteReality3"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 2 RM10, 256 MB texture, DG5-2",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir3-ge16-4-rm2",
-                "parameters": {
-                  "display_channels": 2,
-                  "display_generator": "DG5-2",
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM10",
-                  "raster_manager_count": 2,
-                  "texture_mib": 256
-                },
-                "product": "InfiniteReality3"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 4 RM10, 256 MB texture, DG5-2",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir3-ge16-4-rm4",
-                "parameters": {
-                  "display_channels": 2,
-                  "display_generator": "DG5-2",
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM10",
-                  "raster_manager_count": 4,
-                  "texture_mib": 256
-                },
-                "product": "InfiniteReality3"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16, 1 RM9, 64 MB texture",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir2-ge16-rm1",
-                "parameters": {
-                  "geometry_board": "GE16",
-                  "raster_manager": "RM9",
-                  "raster_manager_count": 1,
-                  "texture_mib": 64
-                },
-                "product": "InfiniteReality2"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16, 2 RM9, 64 MB texture",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir2-ge16-rm2",
-                "parameters": {
-                  "geometry_board": "GE16",
-                  "raster_manager": "RM9",
-                  "raster_manager_count": 2,
-                  "texture_mib": 64
-                },
-                "product": "InfiniteReality2"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16, 4 RM9, 64 MB texture",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir2-ge16-rm4",
-                "parameters": {
-                  "geometry_board": "GE16",
-                  "raster_manager": "RM9",
-                  "raster_manager_count": 4,
-                  "texture_mib": 64
-                },
-                "product": "InfiniteReality2"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 1 RM11, 1024 MB texture per RM",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir4-ge16-4-rm1",
-                "parameters": {
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM11",
-                  "raster_manager_count": 1,
-                  "texture_mib": 1024
-                },
-                "product": "InfiniteReality4"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 2 RM11, 1024 MB texture per RM",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir4-ge16-4-rm2",
-                "parameters": {
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM11",
-                  "raster_manager_count": 2,
-                  "texture_mib": 1024
-                },
-                "product": "InfiniteReality4"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
-            },
-            {
-              "change": "at-creation",
-              "configuration": {
-                "configuration": "GE16-4, 4 RM11, 1024 MB texture per RM",
-                "family": "kona",
-                "family_name": "InfiniteReality",
-                "id": "ir4-ge16-4-rm4",
-                "parameters": {
-                  "geometry_board": "GE16-4",
-                  "raster_manager": "RM11",
-                  "raster_manager_count": 4,
-                  "texture_mib": 1024
-                },
-                "product": "InfiniteReality4"
-              },
-              "default": false,
-              "refused": "the model presents one configuration",
-              "selectable": false
+              "family": "kona",
+              "product": "ir2",
+              "reason": "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
             }
           ]
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io2",
-          "options": [],
-          "reason": "the model builds one pipe"
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io4",
-          "options": [],
-          "reason": "the model builds one pipe"
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io5",
-          "options": [],
-          "reason": "the model builds one pipe"
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io6",
-          "options": [],
-          "reason": "the model builds one pipe"
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io7",
-          "options": [],
-          "reason": "the model builds one pipe"
-        },
-        {
-          "built_in": false,
-          "description": "an Xtown slot for a further pipe",
-          "modelled": false,
-          "name": "io8",
-          "options": [],
-          "reason": "the model builds one pipe"
         }
       ]
     },

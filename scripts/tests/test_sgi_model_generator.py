@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "bf77a497f262dca9d99f39a78d86d3f7260f18da26680fd7497e5583b5033b07"
+    "3a8468d42f3cc42086b5f81a5a78e5255fa103e14ea2ecb236766fcff0df81e7"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -260,24 +260,27 @@ class GeneratorTests(unittest.TestCase):
             self.assertFalse((tree / "assets").exists())
 
 
-class GraphicsHeadTests(unittest.TestCase):
-    """The graphics positions and options heads.<position>=<id> selects."""
+class GraphicsPipeTests(unittest.TestCase):
+    """The graphics slots, products and refusals each topology lists."""
 
     @classmethod
     def setUpClass(cls):
         cls.catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
-        cls.configurations = model_graphics.load_graphics_configurations(
-            INPUTS)
+        cls.families = model_graphics.load_graphics_products(INPUTS)
 
-    def section(self, options, name="io3", **position):
-        return {"max_heads": 1, "positions": [
-            {"name": name, "description": "XIO slot", **position,
-             "options": options}]}
+    def section(self, products, name="io3", **slot):
+        return {"max_pipes": 1, "headless": True, "slots": [
+            {"name": name, "description": "XIO slot",
+             "placement": {"slot": "{name}"}, **slot,
+             "families": [{"family": "mgras", "products": products}]}]}
 
     def resolve(self, section):
-        return model_graphics.resolve_graphics(
-            "test", section, self.configurations)
+        return model_graphics.resolve_graphics("test", section, self.families)
+
+    def topology(self, name):
+        return next(item for item in self.catalogue["topologies"]
+                    if item["name"] == name)
 
     def test_every_record_keeps_the_rules(self):
         seen = {}
@@ -285,91 +288,135 @@ class GraphicsHeadTests(unittest.TestCase):
             graphics = topology.get("graphics")
             if graphics is None:
                 continue
-            headless = True
-            for position in graphics["positions"]:
-                self.assertRegex(position["name"], r"^[A-Za-z][A-Za-z0-9_-]*$")
-                self.assertEqual("reason" in position, not position["modelled"])
-                ids = [option["configuration"]["id"]
-                       for option in position["options"]]
-                self.assertEqual(len(ids), len(set(ids)))
-                defaults = [option for option in position["options"]
-                            if option["default"]]
-                self.assertEqual(len(defaults), int(position["modelled"]))
-                for option in position["options"]:
-                    self.assertEqual("fidelity" in option, option["selectable"])
-                    self.assertEqual("refused" in option,
-                                     not option["selectable"])
-                    configuration = option["configuration"]
-                    self.assertEqual(
-                        seen.setdefault(configuration["id"], configuration),
-                        configuration)
-                if defaults and defaults[0]["configuration"]["family"] != "none":
-                    headless = False
-            self.assertEqual(graphics["headless"], headless)
+            self.assertEqual(graphics["max-pipes"], 1)
+            self.assertEqual("headless-refused" in graphics,
+                             not graphics["headless"])
+            names = [slot["name"] for slot in graphics["slots"]]
+            self.assertEqual(len(names), len(set(names)))
+            defaults = [slot for slot in graphics["slots"] if "default" in slot]
+            self.assertLessEqual(len(defaults), 1)
+            if not defaults:
+                self.assertTrue(graphics["headless"])
+            for slot in graphics["slots"]:
+                self.assertFalse(slot["changeable"])
+                for refusal in slot.get("refusals", []):
+                    self.assertFalse(refusal["reason"].endswith("."))
+                for family in slot["families"]:
+                    for product in family["products"]:
+                        key = (family["family"], product["product"])
+                        summary = (product["name"], product["description"])
+                        self.assertEqual(seen.setdefault(key, summary),
+                                         summary)
+                        for setting in product["settings"]:
+                            self.assertFalse(setting["changeable"])
+                            self.assertIn(setting["default"],
+                                          [v["value"] for v in
+                                           setting["values"]])
+                pipe = slot.get("default")
+                if pipe is None:
+                    continue
+                family = next(item for item in slot["families"]
+                              if item["family"] == pipe["family"])
+                product = next(item for item in family["products"]
+                               if item["product"] == pipe["product"])
+                values = {item["name"]: item["value"]
+                          for item in pipe["settings"]}
+                self.assertEqual(sorted(values),
+                                 sorted(s["name"] for s in product["settings"]))
+                for refusal in slot.get("refusals", []):
+                    self.assertFalse(model_graphics.refusal_matches(
+                        refusal, pipe["family"], pipe["product"], values))
+
+    def test_unmodelled_hardware_is_absent(self):
+        text = json.dumps([topology.get("graphics")
+                           for topology in self.catalogue["topologies"]])
+        for absent in ('"ir4"', '"reality"', '"v6"', '"v8"', '"v10"',
+                       '"rad1"', '"rad4c-km"', "gvo", "dplex"):
+            self.assertNotIn(absent, text)
 
     def test_gigachannel_graphics_is_at_io6(self):
-        topology = next(item for item in self.catalogue["topologies"]
-                        if item["name"] == "origin200-gigachannel")
-        names = [position["name"]
-                 for position in topology["graphics"]["positions"]]
+        names = [slot["name"] for slot in
+                 self.topology("origin200-gigachannel")["graphics"]["slots"]]
         self.assertEqual(names, ["io6", "pci-5", "pci-6", "pci-7"])
 
-    def test_one_id_is_offered_at_many_positions(self):
-        graphics = self.resolve({"max_heads": 1, "positions": [
+    def test_slots_need_their_node_count(self):
+        slots = {slot["name"]: slot for slot in
+                 self.topology("origin2000-rack")["graphics"]["slots"]}
+        self.assertNotIn("requires", slots["io3"])
+        self.assertEqual(slots["io12"]["requires"], {"min-nodes": 2})
+
+    def test_pci_placement(self):
+        slots = {slot["name"]: slot for slot in
+                 self.topology("origin200-dual")["graphics"]["slots"]}
+        self.assertEqual(slots["m0-pci-6"]["placement"],
+                         [{"name": "bus", "value": "pci"},
+                          {"name": "addr", "value": "6"}])
+
+    def test_one_section_names_many_slots(self):
+        graphics = self.resolve({"max_pipes": 1, "headless": True, "slots": [
             {"names": ["io2", "io3"], "description": "XIO slot",
-             "options": [{"id": "none", "default": True,
-                          "fidelity": "validated"},
-                         {"id": "si", "fidelity": "implemented"}]}]})
-        self.assertEqual([item["name"] for item in graphics["positions"]],
+             "placement": {"slot": "{name}"},
+             "families": [{"family": "mgras", "products": [
+                 {"product": "si", "fidelity": "implemented"}]}]}]})
+        self.assertEqual([slot["name"] for slot in graphics["slots"]],
                          ["io2", "io3"])
-        self.assertTrue(graphics["headless"])
+        self.assertEqual(graphics["slots"][1]["placement"],
+                         [{"name": "slot", "value": "io3"}])
 
-    def test_refused_option_carries_no_fidelity(self):
-        with self.assertRaisesRegex(ResolutionError, "fidelity"):
-            self.resolve(self.section([
-                {"id": "none", "default": True, "fidelity": "validated"},
-                {"id": "mxi", "refused": "no texture",
-                 "fidelity": "implemented"}]))
-        with self.assertRaisesRegex(ResolutionError, "fidelity"):
-            self.resolve(self.section([
-                {"id": "none", "default": True}]))
+    def test_unknown_product_is_refused(self):
+        with self.assertRaisesRegex(ResolutionError, "does not list"):
+            self.resolve(self.section([{"product": "vpro",
+                                        "fidelity": "implemented"}]))
 
-    def test_one_id_once_per_position(self):
-        with self.assertRaisesRegex(ResolutionError, "twice"):
-            self.resolve(self.section([
-                {"id": "none", "default": True, "fidelity": "validated"},
-                {"id": "si", "fidelity": "implemented"},
-                {"id": "si", "fidelity": "implemented"}]))
+    def test_approximation_needs_its_limitations(self):
+        with self.assertRaisesRegex(ResolutionError, "without limitations"):
+            self.resolve(self.section([{"product": "si",
+                                        "fidelity": "approximated"}]))
 
-    def test_position_names_are_not_numeric(self):
-        with self.assertRaisesRegex(ResolutionError, "QAPI name"):
-            self.resolve(self.section([
-                {"id": "none", "default": True, "fidelity": "validated"}],
-                name="6"))
+    def test_reason_has_no_final_full_stop(self):
+        with self.assertRaisesRegex(ResolutionError, "final full stop"):
+            self.resolve(self.section(
+                [{"product": "si", "fidelity": "implemented"}],
+                refusals=[{"family": "kona", "reason": "not here."}]))
 
-    def test_modelled_position_needs_one_default(self):
-        with self.assertRaisesRegex(ResolutionError, "exactly one default"):
-            self.resolve(self.section([
-                {"id": "none", "fidelity": "validated"},
-                {"id": "si", "fidelity": "implemented"}]))
+    def test_default_must_not_be_refused(self):
+        with self.assertRaisesRegex(ResolutionError, "default is refused"):
+            self.resolve(self.section(
+                [{"product": "si", "fidelity": "implemented"}],
+                default={"family": "mgras", "product": "si"},
+                refusals=[{"family": "mgras", "product": "si",
+                           "reason": "no"}]))
 
-    def test_unknown_id_is_refused(self):
-        with self.assertRaisesRegex(ResolutionError, "unknown configuration"):
-            self.resolve(self.section([
-                {"id": "infinite-reality", "default": True,
-                 "fidelity": "validated"}]))
+    def test_no_default_means_headless(self):
+        section = self.section([{"product": "si", "fidelity": "implemented"}])
+        section["headless"] = False
+        section["headless_refused"] = "it needs a pipe"
+        with self.assertRaisesRegex(ResolutionError, "headless"):
+            self.resolve(section)
 
-    def test_one_id_names_one_configuration(self):
-        first = self.resolve(self.section([
-            {"id": "none", "default": True, "fidelity": "validated"},
-            {"id": "si", "fidelity": "implemented"}]))
-        second = copy.deepcopy(first)
-        second["positions"][0]["options"][1]["configuration"]["product"] = (
-            "something else")
-        with self.assertRaisesRegex(ValueError, "different configurations"):
-            model_graphics.check_one_configuration_per_id([
-                {"name": "a", "graphics": first},
-                {"name": "b", "graphics": second}])
+    def test_product_offered_elsewhere_needs_a_refusal(self):
+        here = self.resolve(self.section(
+            [{"product": "si", "fidelity": "implemented"}]))
+        there = self.resolve(self.section(
+            [{"product": "si", "fidelity": "implemented"},
+             {"product": "ssi", "fidelity": "implemented"}]))
+        with self.assertRaisesRegex(ValueError, "neither offers nor refuses"):
+            model_graphics.check_catalogue([{"name": "a", "graphics": here},
+                                            {"name": "b", "graphics": there}])
+        here = self.resolve(self.section(
+            [{"product": "si", "fidelity": "implemented"}],
+            refusals=[{"family": "mgras", "product": "ssi",
+                       "reason": "two boards do not fit"}]))
+        model_graphics.check_catalogue([{"name": "a", "graphics": here},
+                                        {"name": "b", "graphics": there}])
+
+    def test_refusal_of_unoffered_product_is_refused(self):
+        here = self.resolve(self.section(
+            [{"product": "si", "fidelity": "implemented"}],
+            refusals=[{"family": "mgras", "product": "ssi",
+                       "reason": "two boards do not fit"}]))
+        with self.assertRaisesRegex(ValueError, "which no slot offers"):
+            model_graphics.check_catalogue([{"name": "a", "graphics": here}])
 
 
 class StorageTests(unittest.TestCase):

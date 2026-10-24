@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """
 Boots IRIX 6.5.30 to the 4Dwm desktop on the Origin 2000 with four nodes,
-the BaseIO-G and a sgi-mgras board=esi in IO3, checks hinv's graphics
+the BaseIO-G and a sgi-mgras product=esi in IO3, checks hinv's graphics
 line, and runs the desktop, lit 3D and pixel transfer against
 colour-statistics references. lib_mgras_boot.run_board owns the sequence.
 """

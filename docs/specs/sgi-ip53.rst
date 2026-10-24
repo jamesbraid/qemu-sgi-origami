@@ -133,11 +133,13 @@ widget 15. Tezro selects two PIC widgets, 11 and 15, and places the modeled
 IO9 behind widget 15. The one-CPU and four-CPU Tezro deskside profiles share
 the same selected board, memory and I/O construction. The rack profile models
 only the first enclosure. The four-CPU Tezro tower and Onyx 350 profiles
-optionally select V12 with ``heads.widget-12=v12``. Both default to no graphics.
-The widget position follows the public close-bug Tezro and vocal-stag Onyx 350
-inventories respectively; the latter is an alternative to the living-raptor
-InfiniteReality configuration. The selected head reuses Odyssey and Bedrock PI
-credit handling. No profile attaches a G2/G2N brick or a NUMAlink peer.
+take an optional V12 in graphics slot ``widget-12``
+(``-device sgi-odyssey,slot=widget-12,product=v12``). Both default to no
+graphics. The widget position follows the public close-bug Tezro and
+vocal-stag Onyx 350 inventories respectively; the latter is an alternative to
+the living-raptor InfiniteReality configuration. The pipe links to that port
+of the PXBOW of the PIC that owns widget 0, reuses Odyssey and Bedrock PI
+credit handling, and is marked alive and routed once it has realized. No profile attaches a G2/G2N brick or a NUMAlink peer.
 Direct-link XIO and the PIC interrupt and DMA settings are emulator choices
 where physical routing remains unknown.
 

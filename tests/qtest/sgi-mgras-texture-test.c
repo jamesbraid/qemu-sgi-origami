@@ -185,15 +185,13 @@ static void test_gl_native_texcoord_contexts(void)
  * TEXMODE1 0x40859, 0x5f04, the border colour, TXADDR and TXMIPMAP by
  * 0xec10, and TXSIZE, TXLOD and TXCLAMPSIZE.
  */
-#define TEX_ARGS MACHINE_ARGS " -global sgi-mgras.board=si-t " \
-    "-global sgi-mgras.x-unimplemented-board=on"
+#define TEX_ARGS MACHINE_ARGS ",product=si-t"
 #define TEX_WHITE             0xffffff
 
 static QTestState *texture_board_start(const char *board)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s "
-        "-global sgi-mgras.x-unimplemented-board=on", board);
+        MACHINE_ARGS ",product=%s", board);
 
     return tex_start(args);
 }
@@ -423,8 +421,7 @@ static void tex_color_table_continue(QTestState *t, uint32_t offset,
 }
 
 #define TEX_COLOR_TABLE_MIGRATION_ARGS \
-    MIGRATION_ARGS " -global sgi-mgras.board=%s " \
-    "-global sgi-mgras.x-unimplemented-board=on"
+    MIGRATION_ARGS ",product=%s"
 
 static void test_gl_texture_color_table_migration(gconstpointer data)
 {
@@ -2450,8 +2447,7 @@ static const uint8_t tex_four_slice_migration_image[64] = {
 };
 
 #define TEX_VOLUME_MIGRATION_ARGS \
-    MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
-    "-global sgi-mgras.x-unimplemented-board=on"
+    MIGRATION_ARGS ",product=si-t"
 
 static void test_gl_texture_volume_depth4_migration(void)
 {
@@ -3348,8 +3344,7 @@ static void test_gl_texture_textureless_board_ignores(void)
  */
 #define TEX_NODE_ARGS \
     "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 -m 128M " \
-    "-device sgi-mgras,slot=io3 -global sgi-mgras.board=si-t " \
-    "-global sgi-mgras.x-unimplemented-board=on"
+    "-device sgi-mgras,slot=io3,product=si-t"
 
 static void test_gl_texture_load_from_another_node(void)
 {
@@ -4457,7 +4452,6 @@ static void test_gl_texture_raster_records_are_not_logged(void)
  * an odd row; a quad two pixels tall with t from 0 to 0.25 keeps both in
  * texel row 0 of the 4-by-2 level, so each must read that row's texels.
  */
-#define MXI_BOARD_FLAG " -global sgi-mgras.x-unimplemented-board=on"
 #define MXI_TEX_BASE_HDR      0x0000eb04
 #define MXI_ROW_EVEN          16
 #define MXI_ROW_ODD           17
@@ -4465,7 +4459,7 @@ static void test_gl_texture_raster_records_are_not_logged(void)
 static QTestState *mxi_start(const char *board)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s" MXI_BOARD_FLAG, board);
+        MACHINE_ARGS ",product=%s", board);
 
     return tex_start(args);
 }
@@ -4831,8 +4825,7 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     tmpfs = g_dir_make_tmp("sn0-mgras-tram-restore-XXXXXX", &err);
     g_assert_no_error(err);
     log = g_strdup_printf("%s/unimp.log", tmpfs);
-    args = g_strdup_printf(MACHINE_ARGS " -global sgi-mgras.board=%s"
-                           MXI_BOARD_FLAG " -d unimp -D %s",
+    args = g_strdup_printf(MACHINE_ARGS ",product=%s -d unimp -D %s",
                            (const char *)data, log);
     t = tex_start(args);
 

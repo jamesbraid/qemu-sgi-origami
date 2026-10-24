@@ -1869,7 +1869,8 @@ static void test_mgras_in_a_gigachannel_cabinet(const void *data)
 static void test_odyssey_fitted_at_a_named_slot(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000 -display none -device sgi-odyssey,slot=io5");
+        "-M origin2000,x-uncatalogued-graphics=on -display none "
+        "-device sgi-odyssey,slot=io5");
     g_autofree char *head = qom_child_type(qts, "/machine/module0", "io5");
     uint8_t bytes[4];
 
@@ -1920,7 +1921,8 @@ static void test_odyssey_bad_nic_serial_does_not_leak_fabric(void)
         return;
     }
     s = qtest_init(
-        "-M origin2000 -display none -device sgi-odyssey,slot=io5,"
+        "-M origin2000,x-uncatalogued-graphics=on -display none "
+        "-device sgi-odyssey,slot=io5,"
         "nic-serial=0x1000000000000 -S");
     qtest_quit(s);
 }

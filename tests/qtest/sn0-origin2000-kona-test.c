@@ -80,7 +80,7 @@
 #define KONA_EEPROM_CHECKED_VALUE 2
 
 #define MACHINE_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
     "-device sgi-kona,id=kona0,slot=io4"
 
 /*
@@ -1315,7 +1315,7 @@ static void test_onewire_other_identity_parts_empty(void)
     uint8_t identity[8];
 
     s = qtest_init(
-        "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona1\","
+        "-M origin2000,x-uncatalogued-graphics=on -device '{\"driver\":\"sgi-kona\",\"id\":\"kona1\","
         "\"slot\":\"io4\","
         "\"other-identity-parts\":[]}'");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
@@ -1408,7 +1408,7 @@ static void test_onewire_other_identity_parts_unknown_rejected(void)
      * look at other-identity-parts at all.
      */
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000",
+        qtest_qemu_binary(NULL), "-M", "origin2000,x-uncatalogued-graphics=on",
         "-device",
         "{\"driver\":\"sgi-kona\",\"slot\":\"io4\","
         "\"other-identity-parts\":[\"999-9999-999\"]}",
@@ -1432,7 +1432,7 @@ static void test_onewire_other_identity_parts_unknown_rejected(void)
 static void test_onewire_other_identity_parts_duplicate_rejected(void)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000",
+        qtest_qemu_binary(NULL), "-M", "origin2000,x-uncatalogued-graphics=on",
         "-device",
         "{\"driver\":\"sgi-kona\",\"slot\":\"io4\","
         "\"other-identity-parts\":[\"030-1067-001\",\"030-1067-001\"]}",
@@ -1457,7 +1457,7 @@ static void test_onewire_board_part_configures_geometry_record(void)
     uint8_t identity[8];
 
     s = qtest_init(
-        "-M origin2000 -device sgi-kona,id=kona2,slot=io4,"
+        "-M origin2000,x-uncatalogued-graphics=on -device sgi-kona,id=kona2,slot=io4,"
         "board-part=030-1129-002");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);
 
@@ -1481,7 +1481,8 @@ static void test_onewire_product_names_records(void)
     QTestState *s;
     uint8_t identity[8];
 
-    s = qtest_init("-M origin2000 -device sgi-kona,id=kona3,slot=io4,"
+    s = qtest_init("-M origin2000,x-uncatalogued-graphics=on "
+                   "-device sgi-kona,id=kona3,slot=io4,"
                    "product=ir3");
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(s, REG_ONEWIRE, identity);
@@ -1493,7 +1494,8 @@ static void test_onewire_product_names_records(void)
                                  "F", "KTOWN");
     qtest_quit(s);
 
-    s = qtest_init("-M origin2000 -device sgi-kona,id=kona4,slot=io4,"
+    s = qtest_init("-M origin2000,x-uncatalogued-graphics=on "
+                   "-device sgi-kona,id=kona4,slot=io4,"
                    "product=ir2");
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(s, REG_ONEWIRE, identity);
@@ -1513,7 +1515,7 @@ static void test_onewire_product_names_records(void)
 static void test_board_part_invalid_is_rejected(void)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000",
+        qtest_qemu_binary(NULL), "-M", "origin2000,x-uncatalogued-graphics=on",
         "-device",
         "sgi-kona,id=kona2,slot=io4,"
         "board-part=030-1129",
@@ -1640,7 +1642,7 @@ static void test_nic_search_rom_walks_rack_and_deskside(void)
     g_assert_true(seen_ktown);
 
     s = qtest_init(
-        "-M origin2000 -device '{\"driver\":\"sgi-kona\",\"id\":\"kona3\","
+        "-M origin2000,x-uncatalogued-graphics=on -device '{\"driver\":\"sgi-kona\",\"id\":\"kona3\","
         "\"slot\":\"io4\","
         "\"other-identity-parts\":[]}'");
     g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0);

@@ -16,7 +16,7 @@
 #define HEART 0x0ff00000ULL
 #define HEART_PENDING 0x10030
 #define VPRO_WIDGET 11
-#define VPRO_PATH "/machine/module0/odyssey"
+#define VPRO_PATH "/machine/module0/widget-11"
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
     "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
     "r12000-scache-block-words=32"
@@ -49,19 +49,26 @@
 
 static char *flash_path;
 
-static QTestState *start(bool octane2, const char *graphics,
-                         const char *profile)
+/*
+ * Start an Octane or Octane2 with a VPro of @product in port 11, or none
+ * for NULL. The catalogue offers only the V12, and only on the Octane2,
+ * whose Crossbow and supply the upgrade guide allows; every other case is
+ * a register contract of the board, so it skips the catalogue.
+ */
+static QTestState *start(bool octane2, const char *product)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
-    g_autofree char *global = profile ?
-        g_strdup_printf("-global sgi-odyssey.profile=%s", profile) :
-        g_strdup("");
+    bool offered = octane2 && product && g_str_equal(product, "v12");
+    g_autofree char *graphics = product ?
+        g_strdup_printf("-device sgi-odyssey,slot=widget-11,product=%s",
+                        product) : g_strdup("-vga none");
 
-    return qtest_initf("-M %s,graphics-board=%s -m %uM -cpu %s -bios %s "
-                       "-S %s",
-                       octane2 ? "octane2" : "octane", graphics,
+    return qtest_initf("-M %s%s -m %uM -cpu %s -bios %s -S %s",
+                       octane2 ? "octane2" : "octane",
+                       offered || !product ? "" :
+                       ",x-uncatalogued-graphics=on",
                        octane2 ? 256 : 128,
-                       octane2 ? OCTANE2_CPU : "R10000", quoted, global);
+                       octane2 ? OCTANE2_CPU : "R10000", quoted, graphics);
 }
 
 static const char *qom_type(QTestState *qts, const char *path)
@@ -81,7 +88,7 @@ static const char *qom_type(QTestState *qts, const char *path)
 /* The board answers as Odyssey at widget 11 through both windows. */
 static void test_widget_identity(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro", NULL);
+    QTestState *qts = start(GPOINTER_TO_INT(data), "v12");
 
     g_assert_cmpstr(qom_type(qts, VPRO_PATH), ==, "sgi-odyssey");
     g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_IDENTITY), ==,
@@ -113,7 +120,7 @@ static const VProProfileCase profile_cases[] = {
 static void test_profile_identity_and_routing(gconstpointer data)
 {
     const VProProfileCase *profile = data;
-    QTestState *qts = start(profile->octane2, "vpro", profile->name);
+    QTestState *qts = start(profile->octane2, profile->name);
     uint32_t identity = qtest_readl(qts, VPRO_SHORT + ODSY_IDENTITY);
     uint32_t memory = qtest_readl(qts, VPRO_SHORT + ODSY_MEMORY_CONFIG);
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
@@ -143,7 +150,7 @@ static void test_profile_identity_and_routing(gconstpointer data)
 /* Without a graphics board the slot's link stays down. */
 static void test_absent(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "none", NULL);
+    QTestState *qts = start(GPOINTER_TO_INT(data), NULL);
 
     g_assert_null(qom_type(qts, VPRO_PATH));
     g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
@@ -157,7 +164,7 @@ static void test_absent(gconstpointer data)
  */
 static void test_interrupt_reaches_heart(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro", NULL);
+    QTestState *qts = start(GPOINTER_TO_INT(data), "v12");
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
 
     qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);

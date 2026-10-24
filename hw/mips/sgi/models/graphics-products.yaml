@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Every graphics product QEMU builds, by family, once: the device that
+# builds it, the product= value, its name and summary, and every value
+# each of the family's settings can take anywhere (docs/specs/sgi-sn.rst,
+# Graphics pipes). A product layer's graphics section names the slots a
+# topology has and which of these products and values each slot offers;
+# it never restates a name or description.
+#
+# Only what QEMU builds is listed. Products and values the models do not
+# present (VPro V6, V8 and V10, Reality, InfiniteReality4, GVO) belong in
+# the datasheets, not here.
+graphics_products_version: 1
+families:
+  # IMPACT (MGRAS): OCTANE Technical Report Table 4.1; E-series counts
+  # inferred from the first-generation pattern.
+  - family: mgras
+    device: sgi-mgras
+    name: IMPACT
+    products:
+      - {product: si, name: Solid IMPACT (SI),
+         description: "1 GE11, 1 RE4, no texture"}
+      - {product: si-t, name: SI with texture,
+         description: "1 GE11, 1 RE4, 1 TE1, 4 MB texture"}
+      - {product: ssi, name: SSI,
+         description: "2 GE11, 2 RE4, no texture"}
+      - {product: mxi, name: MXI,
+         description: "2 GE11, 2 RE4, 2 TE1, 8 MB texture"}
+      - {product: esi, name: ESI,
+         description: "1 GE12, 1 RE4, no texture"}
+      - {product: esi-t, name: ESI with texture,
+         description: "1 GE12, 1 RE4, 1 TE1, 4 MB texture"}
+      - {product: essi, name: ESSI,
+         description: "2 GE12, 2 RE4, no texture"}
+      - {product: emxi, name: EMXI,
+         description: "2 GE12, 2 RE4, 2 TE1, 8 MB texture"}
+    settings: []
+
+  # VPro (Odyssey).
+  - family: odyssey
+    device: sgi-odyssey
+    name: VPro
+    products:
+      - {product: v12, name: VPro V12,
+         description: "second generation, 128 MB board memory"}
+    settings: []
+
+  # InfiniteReality (KONA). Product names follow hinv: the GE14 board set
+  # prints InfiniteReality2, the GE16 board set InfiniteReality2E.
+  - family: kona
+    device: sgi-kona
+    name: InfiniteReality
+    products:
+      - {product: ir2, name: InfiniteReality2,
+         description: "GE14 geometry board, RM7 raster managers, 64 MB texture per RM"}
+      - {product: ir2e, name: InfiniteReality2E,
+         description: "GE16 geometry board, RM9 raster managers, 64 MB texture per RM"}
+      - {product: ir3, name: InfiniteReality3,
+         description: "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM"}
+    settings:
+      - name: geometry
+        description: "geometry board"
+        values:
+          - {value: ge14-4, description: "GE14-4, four geometry engines",
+             evidence: "030-1129-002, whole-tetra"}
+          - {value: ge14-2, description: "GE14-2, two geometry engines",
+             evidence: "030-1051-002, fancy-akita"}
+          - {value: ge16-4, description: "GE16-4, four geometry engines",
+             evidence: "030-1398-001, true-wombat"}
+      - name: rm-type
+        description: "raster-manager board"
+        values:
+          - {value: rm7, description: "RM7",
+             evidence: "030-1054-001, whole-tetra"}
+          - {value: rm9, description: "RM9; gfxinfo names the InfiniteReality3 board RM10",
+             evidence: "030-1402-001, true-wombat"}
+      - name: rm-count
+        description: "raster-manager boards in the pipe"
+        values:
+          - {value: "1", description: "one raster manager"}
+          - {value: "2", description: "two raster managers"}
+          - {value: "4", description: "four raster managers"}
+      - name: texture-mb
+        description: "texture memory on each raster manager, in MB"
+        values:
+          - {value: "64", description: "64 MB",
+             evidence: "TM7 030-1053-001, whole-tetra"}
+          - {value: "256", description: "256 MB",
+             evidence: "030-1588-001, true-wombat"}
+      - name: display
+        description: "display generator board"
+        values:
+          - {value: dg5-8, description: "DG5-8, 8 channels",
+             evidence: "030-1087-001, whole-tetra"}
+          - {value: dg5-2, description: "DG5-2, 2 channels",
+             evidence: "030-1055-001, fancy-akita"}
+
+  # PsiTech.
+  - family: psitech
+    device: psitech-rad4
+    name: PsiTech
+    products:
+      - {product: rad4, name: RAD4, description: "PCI 12d1:0104"}
+      - {product: rad4-km, name: RAD4-KM,
+         description: "PCI 12d1:0105, keyboard and mouse"}
+    settings: []

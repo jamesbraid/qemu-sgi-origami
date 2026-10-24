@@ -375,32 +375,41 @@
       "generation": "sn1",
       "graphics": {
         "headless": false,
-        "max-heads": 1,
-        "positions": [
+        "headless-refused": "this topology exists to fit its V12, so use origin300 for no graphics",
+        "max-pipes": 1,
+        "slots": [
           {
-            "built-in": true,
-            "description": "the XIO cable port, widget 11",
-            "modelled": true,
-            "name": "widget-11",
-            "options": [
+            "changeable": false,
+            "default": {
+              "family": "odyssey",
+              "product": "v12",
+              "settings": []
+            },
+            "description": "the XIO cable port, widget 11, wired straight to a V12",
+            "families": [
               {
-                "change": "at-creation",
-                "configuration": {
-                  "configuration": "second generation, 128 MB",
-                  "family": "odyssey",
-                  "family-name": "VPro",
-                  "id": "v12",
-                  "parameters": {
-                    "board-memory-mib": 128
-                  },
-                  "product": "VPro V12"
-                },
-                "default": true,
-                "fidelity": "approximated",
-                "limitations": [
-                  "not an SGI configuration: SGI documented no V12 wired directly to an Origin 300"
-                ],
-                "selectable": true
+                "device": "sgi-odyssey",
+                "family": "odyssey",
+                "name": "VPro",
+                "products": [
+                  {
+                    "description": "second generation, 128 MB board memory",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "not an SGI configuration: SGI documented the V-brick for Onyx 3000, not the Origin 300"
+                    ],
+                    "name": "VPro V12",
+                    "product": "v12",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "widget-11",
+            "placement": [
+              {
+                "name": "slot",
+                "value": "widget-11"
               }
             ]
           }

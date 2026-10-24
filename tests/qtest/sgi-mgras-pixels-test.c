@@ -4835,7 +4835,7 @@ static void test_gl_readpixels_dma_deep_two_re(gconstpointer data)
     QTestState *s;
     g_autofree char *log = NULL;
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s", (const char *)data);
+        MACHINE_ARGS ",product=%s", (const char *)data);
     char *log_path = gl_eviction_log_start(&s, args);
 
     gl_pixels_context(s, 0);
@@ -4925,8 +4925,7 @@ static void test_gl_readpixels_dma_client_buffer_selection(void)
 
     for (int i = 0; i < ARRAY_SIZE(boards); i++) {
         g_autofree char *args = g_strdup_printf(
-            MACHINE_ARGS " -global sgi-mgras.board=%s "
-            "-global sgi-mgras.x-unimplemented-board=on", boards[i]);
+            MACHINE_ARGS ",product=%s", boards[i]);
         QTestState *s = qtest_init(args);
         uint8_t got[16];
 

@@ -18,7 +18,8 @@ sgi_machines_embed_c = custom_target('sgi-machines-embed.c.inc',
 # the way ui/shader/meson.build's generated headers reach ui/shader.c
 # through the shared genh list.
 mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
-            if_true: [files('sgi-machines.c', 'machine-storage.c',
+            if_true: [files('sgi-machines.c', 'sgi-graphics.c',
+                            'machine-storage.c',
                             'board-mac.c', 'sgi-cpu.c'),
                       sgi_machines_embed_c],
             if_false: files('sgi-machines-qmp-stub.c'))

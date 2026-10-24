@@ -27,7 +27,7 @@ from .model_composition import (
     validate_initialization_policy, validate_io9_clock_links,
 )
 
-from . import synthetic_serial
+from . import model_graphics, synthetic_serial
 from .model_shared import (
     _compile_r10000_reset_mode, _integer, _required, _validate_integer, num,
 )
@@ -3238,6 +3238,7 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
     if machine.get("graphics"):
         topology["graphics"] = copy.deepcopy(machine["graphics"])
+        model_graphics.attach_slot_requirements(topology)
     if pci_host_bridges:
         topology["pci_host_bridges"] = pci_host_bridges
     return topology

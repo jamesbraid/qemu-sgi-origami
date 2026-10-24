@@ -19,8 +19,13 @@
 #include "sgi-mips-emit.h"
 #include "sgi-migrate.h"
 
-#define MACHINE "-M origin300,topology=origin300-v12-direct " \
-                "-cpu R14000 -smp 2 -S"
+/*
+ * The board's register contract: its own property defaults, which -global
+ * changes here, rather than the catalogue's V12, which a launch takes.
+ */
+#define MACHINE "-M origin300,topology=origin300-v12-direct," \
+                "x-uncatalogued-graphics=on -cpu R14000 -smp 2 -S " \
+                "-device sgi-odyssey,slot=widget-11"
 
 /*
  * The connector's crosstalk position, repeated from the machine's own
@@ -1035,7 +1040,7 @@ static void test_memory_configuration_follows_properties(void)
 }
 
 /*
- * "profile" presents each marketed board's identity. The IRIX 6.5.30
+ * "product" presents each marketed board's identity. The IRIX 6.5.30
  * kernel turns widget revision 1-3 into BUZZ A and 9-15 into BUZZ B, and
  * gfxinfo prints the minor number as the revision's offset less one, so
  * revision 2 is "A.1" and revision 10 is "B.1". Public captures show A.1
@@ -1058,7 +1063,7 @@ static void test_profile_selects_identity_and_memory(void)
 
     for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
         g_autofree char *extra =
-            g_strdup_printf(" -global sgi-odyssey.profile=%s",
+            g_strdup_printf(" -global sgi-odyssey.product=%s",
                             cases[i].profile);
         QTestState *qts = board_start(extra);
 
@@ -1079,7 +1084,7 @@ static void test_profile_selects_identity_and_memory(void)
  */
 static void test_v12_profile_memory_word_bits(void)
 {
-    QTestState *qts = board_start(" -global sgi-odyssey.profile=v12");
+    QTestState *qts = board_start(" -global sgi-odyssey.product=v12");
     uint32_t config = reg_read(qts, ODSY_MEMORY_CONFIG);
 
     g_assert_cmphex(config, ==, 0xa1000000);
@@ -1162,7 +1167,7 @@ static void test_backend_version_is_pinned(void)
 
     for (size_t i = 0; i < ARRAY_SIZE(profiles); i++) {
         g_autofree char *profile =
-            g_strdup_printf(" -global sgi-odyssey.profile=%s", profiles[i]);
+            g_strdup_printf(" -global sgi-odyssey.product=%s", profiles[i]);
 
         qts = board_start(profile);
         g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION),
@@ -1200,7 +1205,7 @@ static void test_board_memory_bound_is_a_guest_error(void)
     g_assert_cmpint(close(fd), ==, 0);
 
     quoted = g_shell_quote(log_path);
-    extra = g_strdup_printf(" -global sgi-odyssey.profile=v10"
+    extra = g_strdup_printf(" -global sgi-odyssey.product=v10"
                             " -d guest_errors -D %s", quoted);
     qts = board_start(extra);
 
@@ -1275,11 +1280,11 @@ static void test_profile_names_its_board(void)
         const char *extra;
         const char *record;
     } cases[] = {
-        { " -global sgi-odyssey.profile=v12", "Name:ODY128VERSIONB;" },
-        { " -global sgi-odyssey.profile=v10", "Name:ODY32VERSIONB;" },
-        { " -global sgi-odyssey.profile=v8", "Name:ODY128;" },
-        { " -global sgi-odyssey.profile=v6", "Name:ODY32;" },
-        { " -global sgi-odyssey.profile=v6"
+        { " -global sgi-odyssey.product=v12", "Name:ODY128VERSIONB;" },
+        { " -global sgi-odyssey.product=v10", "Name:ODY32VERSIONB;" },
+        { " -global sgi-odyssey.product=v8", "Name:ODY128;" },
+        { " -global sgi-odyssey.product=v6", "Name:ODY32;" },
+        { " -global sgi-odyssey.product=v6"
           " -global sgi-odyssey.nic-record=Name:TEST", "Name:TEST;" },
     };
 

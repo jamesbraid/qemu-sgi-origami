@@ -54,7 +54,7 @@
 #define KONA_QOM_PATH "/machine/module0/kona0"
 
 #define MACHINE_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
     "-device sgi-kona,id=kona0,slot=io4," \
     "fabric-hub-widget=9"
 
@@ -560,15 +560,15 @@ static void video_get(QTestState *s, uint32_t command, uint32_t channel,
 #define GET_VAMPIRE         0x3a
 #define GET_CHANNEL_ENABLES 0x42
 
-/* A configured deskside pipe with the display generator `dg`. */
+/* A configured deskside pipe with display board `dg` (display=). */
 static QTestState *kona_init_dg(const char *dg, char **log)
 {
     g_autofree char *args = g_strdup_printf(
-        "-M origin2000,nodes=1 -smp 1 -m 64M "
+        "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M "
         "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
         "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
         "\"other-identity-parts\":[],\"product\":\"ir2\","
-        "\"display-generator\":\"%s\"}'", dg);
+        "\"display\":\"%s\"}'", dg);
 
     return kona_init_logged(args, "guest_errors,unimp", log);
 }
@@ -587,7 +587,7 @@ static void test_configured_channels_answer(void)
         const char *dg;
         uint32_t mask;
     } boards[] = {
-        { "030-1055-001", 0x3 }, { "030-1087-001", 0xff },
+        { "dg5-2", 0x3 }, { "dg5-8", 0xff },
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(boards); i++) {
@@ -639,7 +639,7 @@ static void test_channel_setters(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
-    QTestState *s = kona_init_dg("030-1055-001", &log);
+    QTestState *s = kona_init_dg("dg5-2", &log);
     uint32_t format[383] = { 1, 1 };
     uint32_t reply[19];
 
@@ -696,7 +696,7 @@ static void test_channel_setters(void)
 static void test_one_channel_load_leaves_channel_off(void)
 {
     g_autofree char *log = NULL;
-    QTestState *s = kona_init_dg("030-1055-001", &log);
+    QTestState *s = kona_init_dg("dg5-2", &log);
     uint32_t format[383] = { 0, 1 };
     uint32_t reply[19];
 

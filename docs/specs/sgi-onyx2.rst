@@ -517,8 +517,13 @@ IRIX reads the pipe's board records through the pipe itself.
      - RM7 030-1054-001, TM7 030-1053-001 per assembly
      - RM9 030-1402-001
    * - DG
-     - DG5-2 030-1087-001
-     - DG5-2 030-1242-001
+     - 030-1087-001, which reports eight channels: a DG5-8 by a
+       community-compiled list of SGI PCA numbers; fancy-akita's DG5-2
+       030-1055-001
+     - DG5-2 base 030-1242-001 rev D
+   * - DGOPT
+     - absent
+     - GVO 030-1184-002 rev B on true-wombat
    * - BP
      - ``No NIC serial number available.``
      - ``No NIC serial number available.``
@@ -535,14 +540,24 @@ reading; the pipe reports the RM, TM, DG and DGOPT records in its answer to
 the configuration request. Serials are placeholders, so the part numbers
 above are the captured identity and the serials are an approximation.
 
-The rack's pipe presents true-wombat's configuration, ``sgi-kona``
-``product=ir3``: hinv prints ``Graphics board: InfiniteReality3`` and
-``gfxinfo -v`` prints one RM10 board with 256MB of texture memory and the
-records above. The deskside's pipe passes the model layer's part through
-under the placeholder name ``GEOM-BD`` and keeps the unconfigured answer
-(no RM records) until the catalogue can name its configuration; ``-global
-sgi-kona.product=ir2`` presents whole-tetra's. The ``product`` property and
-the boards it takes are described in ``hw/misc/sgi-kona.c``.
+Each chassis fits its catalogue default pipe unless a graphics
+``-device`` replaces it (:ref:`sgi-sn-graphics-pipes`). With ``-vga
+none`` or ``-nodefaults`` and no pipe ``-device`` either starts with no
+graphics, though SGI sold no Onyx2 without a pipe. The rack's default is
+true-wombat's configuration with a plain DG5-2 in place of its DG5-2
+with GVO, which has no video output in the model: ``sgi-kona``
+``product=ir3``, one RM and ``display=dg5-2``, so hinv prints
+``Graphics board: InfiniteReality3`` and ``gfxinfo -v`` prints one RM10
+board with 256MB of texture memory. The plain DG5-2 presents
+fancy-akita's 030-1055-001 in the rack too, since no capture shows a
+plain DG5-2 in an Onyx2 rack (inferred). The deskside's default is
+whole-tetra's: ``product=ir2``, GE14-4, two RM7 boards and
+``display=dg5-8``. Both pipes take the slot's own records above, the
+geometry board's part and, on the rack, the Ktown, whichever pipe
+``-device`` names the slot. ``-global`` on ``sgi-kona`` is checked like
+any other property and chooses nothing the catalogue does not offer.
+The ``product`` property and the boards it takes are described in
+``hw/misc/sgi-kona.c``.
 
 .. _sgi-onyx2-unknowns:
 

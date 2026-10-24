@@ -4067,7 +4067,8 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
 static void test_xio_connector_takes_no_board(const void *data)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        qtest_qemu_binary(NULL), "-M",
+        "origin300,x-uncatalogued-graphics=on", "-cpu", "R14000",
         "-smp", "2", "-bios", prom_path,
         "-device", "sgi-mgras,slot=xio-connector",
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL

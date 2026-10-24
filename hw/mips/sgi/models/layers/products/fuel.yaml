@@ -20,17 +20,6 @@ layer:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0]
   memory_kits_per_node: [fuel-512-test-map]
-  # Graphics heads heads.<position>=<id> selects; the ids are
-  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
-  # Graphics heads).
-  graphics:
-    max_heads: 1
-    positions:
-      - name: widget-13
-        description: "the graphics connector at XBridge widget 13"
-        options:
-          - {id: none, default: true, fidelity: validated}
-          - {id: v12, refused: "the fuel-vpro topology fits it"}
   data:
     machine:
       name: Fuel

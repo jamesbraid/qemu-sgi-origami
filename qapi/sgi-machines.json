@@ -1411,12 +1411,10 @@
             'cpu-mode-word': 'uint32' } }
 
 ##
-# @SGIModelGraphicsFamily:
+# @SGIModelGraphicsFamilyKind:
 #
-# The chip set a graphics head belongs to, which QEMU models with one
+# The chip set a graphics pipe belongs to, which QEMU builds with one
 # device type.
-#
-# @none: no head; the position is empty
 #
 # @mgras: IMPACT (sgi-mgras)
 #
@@ -1428,91 +1426,21 @@
 #
 # Since: 11.2
 ##
-{ 'enum': 'SGIModelGraphicsFamily',
-  'data': ['none', 'mgras', 'odyssey', 'kona', 'psitech'] }
-
-##
-# @SGIModelGraphicsParameters:
-#
-# The configuration parameters of a graphics product; each is present
-# only where the product has it.
-#
-# @geometry-engines: geometry engines fitted
-#
-# @raster-engines: raster engines fitted
-#
-# @texture-mib: texture memory, per Raster Manager where the product
-#     has them
-#
-# @board-memory-mib: memory on the board itself
-#
-# @geometry-board: geometry board designation (GE14-4, GE16)
-#
-# @raster-manager: Raster Manager type (RM7, RM10)
-#
-# @raster-manager-count: Raster Managers fitted
-#
-# @display-generator: display generator (DG5-2, DG5-8)
-#
-# @display-channels: display channels the head drives
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelGraphicsParameters',
-  'data': { '*geometry-engines': 'uint32',
-            '*raster-engines': 'uint32',
-            '*texture-mib': 'uint32',
-            '*board-memory-mib': 'uint32',
-            '*geometry-board': 'str',
-            '*raster-manager': 'str',
-            '*raster-manager-count': 'uint32',
-            '*display-generator': 'str',
-            '*display-channels': 'uint32' } }
-
-##
-# @SGIModelGraphicsConfiguration:
-#
-# One graphics product configuration.  The same @id names the same
-# product, parameters and options in every topology that lists it.
-#
-# @id: the value `heads.<position>=` selects; frozen once listed
-#
-# @family: the chip set
-#
-# @family-name: the family's marketing name (IMPACT, VPro,
-#     InfiniteReality, PsiTech)
-#
-# @product: the product's name
-#
-# @configuration: a one-line human summary of the configuration
-#
-# @parameters: the configuration's parameters
-#
-# @options: fitted options (gvo, dcd, ...), absent when none
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelGraphicsConfiguration',
-  'data': { 'id': 'str',
-            'family': 'SGIModelGraphicsFamily',
-            'family-name': 'str',
-            'product': 'str',
-            'configuration': 'str',
-            'parameters': 'SGIModelGraphicsParameters',
-            '*options': ['str'] } }
+{ 'enum': 'SGIModelGraphicsFamilyKind',
+  'data': ['mgras', 'odyssey', 'kona', 'psitech'] }
 
 ##
 # @SGIModelGraphicsFidelity:
 #
-# How closely a selectable head matches the product it names.
+# How closely a product QEMU builds at a slot matches the real one.
 #
 # @validated: a stated guest acceptance passed on this machine and
-#     position
+#     slot
 #
 # @implemented: built and register-tested without that acceptance
 #
-# @approximated: a disclosed stand-in; see @SGIModelGraphicsOption's
-#     limitations
+# @approximated: a disclosed stand-in; see
+#     @SGIModelGraphicsProduct's limitations
 #
 # Since: 11.2
 ##
@@ -1534,154 +1462,241 @@
   'data': ['established', 'inferred'] }
 
 ##
-# @SGIModelGraphicsChange:
+# @SGIModelGraphicsProperty:
 #
-# When a head selection may change.
+# One `-device` property and its value.
 #
-# @at-creation: fixed when the machine is created
+# @name: the property
 #
-# @between-boots: may change between cold starts
+# @value: its value, spelled as `-device` takes it
 #
 # Since: 11.2
 ##
-{ 'enum': 'SGIModelGraphicsChange',
-  'data': ['at-creation', 'between-boots'] }
+{ 'struct': 'SGIModelGraphicsProperty',
+  'data': { 'name': 'str',
+            'value': 'str' } }
 
 ##
-# @SGIModelGraphicsRequirementKind:
+# @SGIModelGraphicsValue:
 #
-# What a graphics requirement constrains.
+# One value a setting offers.
 #
-# @crossbow-revision: the machine's Crossbow revision
+# @value: the value, spelled as `-device` takes it (dg5-8)
 #
-# @power-supply: the machine's power supply part
+# @description: what it is, in words
 #
-# @prom-revision: the machine's PROM revision
-#
-# @guest-release: the guest operating system release
+# @evidence: the part number or capture behind it
 #
 # Since: 11.2
 ##
-{ 'enum': 'SGIModelGraphicsRequirementKind',
-  'data': ['crossbow-revision', 'power-supply', 'prom-revision',
-           'guest-release'] }
+{ 'struct': 'SGIModelGraphicsValue',
+  'data': { 'value': 'str',
+            'description': 'str',
+            '*evidence': 'str' } }
+
+##
+# @SGIModelGraphicsSetting:
+#
+# One setting a product leaves open at a slot: a property of the
+# family's device.
+#
+# @name: the device property (rm-count)
+#
+# @description: what it selects
+#
+# @values: the values offered at this slot; a setting with one value
+#     is still listed
+#
+# @default: the value a pipe takes when `-device` leaves the property
+#     unset; one of @values
+#
+# @changeable: whether the value may change between boots of one
+#     machine
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsSetting',
+  'data': { 'name': 'str',
+            'description': 'str',
+            'values': ['SGIModelGraphicsValue'],
+            'default': 'str',
+            'changeable': 'bool' } }
+
+##
+# @SGIModelGraphicsProduct:
+#
+# One product a slot offers.  Its @name and @description are the same
+# everywhere it appears.
+#
+# @product: the `product=` value
+#
+# @name: the product's name ("SI with texture")
+#
+# @description: a one-line summary of its boards
+#
+# @fidelity: how closely QEMU builds it here
+#
+# @limitations: each stated approximation and known bug
+#
+# @pairing: how it is known that this machine takes this product;
+#     absent where SGI sold no such pairing
+#
+# @assembly: the board part this slot presents
+#
+# @settings: the settings it leaves open here
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsProduct',
+  'data': { 'product': 'str',
+            'name': 'str',
+            'description': 'str',
+            'fidelity': 'SGIModelGraphicsFidelity',
+            '*limitations': ['str'],
+            '*pairing': 'SGIModelGraphicsEvidence',
+            '*assembly': 'str',
+            'settings': ['SGIModelGraphicsSetting'] } }
+
+##
+# @SGIModelGraphicsFamily:
+#
+# One family a slot takes and the products it offers there.
+#
+# @family: the chip set
+#
+# @device: the `-device` type that builds it
+#
+# @name: the family's name (IMPACT, VPro, InfiniteReality, PsiTech)
+#
+# @products: the products offered at this slot
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsFamily',
+  'data': { 'family': 'SGIModelGraphicsFamilyKind',
+            'device': 'str',
+            'name': 'str',
+            'products': ['SGIModelGraphicsProduct'] } }
+
+##
+# @SGIModelGraphicsPipe:
+#
+# A pipe with every setting resolved.
+#
+# @family: the chip set
+#
+# @product: the `product=` value
+#
+# @settings: every setting the product has at the slot
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsPipe',
+  'data': { 'family': 'SGIModelGraphicsFamilyKind',
+            'product': 'str',
+            'settings': ['SGIModelGraphicsProperty'] } }
+
+##
+# @SGIModelGraphicsRefusal:
+#
+# A combination a slot does not take, and why.  It matches a requested
+# pipe when its @family matches, its @product matches if it names one,
+# and every setting it lists has the requested value.
+#
+# @family: the chip set
+#
+# @product: the product, when the refusal is about one
+#
+# @settings: the setting values it is about
+#
+# @reason: why, a phrase without a final full stop, shown verbatim
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsRefusal',
+  'data': { 'family': 'SGIModelGraphicsFamilyKind',
+            '*product': 'str',
+            '*settings': ['SGIModelGraphicsProperty'],
+            'reason': 'str' } }
 
 ##
 # @SGIModelGraphicsRequirement:
 #
-# One condition a head needs of its machine.
+# The conditions under which a slot exists.
 #
-# @kind: what it constrains
-#
-# @value: the condition
-#
-# @evidence: where it is stated
-#
-# @met: whether this topology's model meets it; absent when unknown
+# @min-nodes: the slot's Crossbow port belongs to a node board the
+#     machine fits only from this many nodes (`nodes=`)
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelGraphicsRequirement',
-  'data': { 'kind': 'SGIModelGraphicsRequirementKind',
-            'value': 'str',
-            'evidence': 'str',
-            '*met': 'bool' } }
+  'data': { '*min-nodes': 'uint32' } }
 
 ##
-# @SGIModelGraphicsOption:
+# @SGIModelGraphicsSlot:
 #
-# One configuration a position lists.
+# One place a graphics pipe can go.
 #
-# @configuration: the configuration
+# @name: the slot's stable name (io4, widget-11, pci-5)
 #
-# @default: this is what the position holds when `heads.` does not
-#     name it; exactly one option of a modelled position
+# @description: where this is on the real machine, in words
 #
-# @selectable: `heads.` may select it
+# @placement: the `-device` properties that put a pipe here (slot=io4;
+#     bus=pci and addr=5)
 #
-# @refused: why it is not selectable; present exactly when
-#     @selectable is false
+# @default: the pipe the machine fits here when no SGI graphics
+#     `-device` and no `-vga none` is given; at most one slot of a
+#     topology has one
 #
-# @fidelity: present exactly when @selectable is true
+# @changeable: whether the pipe in this slot may be added, removed or
+#     replaced between boots of one machine
 #
-# @limitations: each stated approximation
+# @requires: the conditions under which the slot exists; absent when
+#     it always does
 #
-# @pairing: how it is known this machine takes this product
+# @families: the families the slot takes, with what each offers
 #
-# @assembly: the board part this position presents
-#
-# @change: when the selection may change
-#
-# @accepted-memory-mib: per-node memory sizes this head allows,
-#     intersected with the offering's; absent means no narrowing
-#
-# @processors: processor-option ids this head allows; absent means
-#     any
-#
-# @requires: conditions the head needs of the machine
+# @refusals: the combinations the slot does not take, with reasons
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelGraphicsOption',
-  'data': { 'configuration': 'SGIModelGraphicsConfiguration',
-            'default': 'bool',
-            'selectable': 'bool',
-            '*refused': 'str',
-            '*fidelity': 'SGIModelGraphicsFidelity',
-            '*limitations': ['str'],
-            '*pairing': 'SGIModelGraphicsEvidence',
-            '*assembly': 'str',
-            'change': 'SGIModelGraphicsChange',
-            '*accepted-memory-mib': ['uint64'],
-            '*processors': ['str'],
-            '*requires': ['SGIModelGraphicsRequirement'] } }
-
-##
-# @SGIModelGraphicsPosition:
-#
-# One place a graphics head can go.
-#
-# @name: the `heads.<name>=` key: an XIO slot label, `widget-N` or
-#     `pci-N`, prefixed `m<module>-` when two modules share it
-#
-# @description: where this is on the real machine
-#
-# @built-in: the topology itself fits the head
-#
-# @modelled: QEMU can build a head here
-#
-# @reason: why not, present exactly when @modelled is false
-#
-# @options: the configurations listed here
-#
-# Since: 11.2
-##
-{ 'struct': 'SGIModelGraphicsPosition',
+{ 'struct': 'SGIModelGraphicsSlot',
   'data': { 'name': 'str',
             'description': 'str',
-            'built-in': 'bool',
-            'modelled': 'bool',
-            '*reason': 'str',
-            'options': ['SGIModelGraphicsOption'] } }
+            'placement': ['SGIModelGraphicsProperty'],
+            '*default': 'SGIModelGraphicsPipe',
+            'changeable': 'bool',
+            '*requires': 'SGIModelGraphicsRequirement',
+            'families': ['SGIModelGraphicsFamily'],
+            '*refusals': ['SGIModelGraphicsRefusal'] } }
 
 ##
 # @SGIModelGraphics:
 #
-# The graphics heads a topology takes, which `heads.<position>=<id>`
-# selects.
+# The graphics pipes a topology takes.  Each pipe is a `-device` of
+# its family's device type, and QEMU refuses one this record does not
+# offer.
 #
-# @headless: the machine may run with no head
+# @max-pipes: most pipes the topology builds at once
 #
-# @max-heads: most positions that may hold a head at once
+# @headless: whether the machine may run with no pipe; `-vga none`
+#     skips the default pipe
 #
-# @positions: every position the machine has, modelled or not
+# @headless-refused: why not, present exactly when @headless is false
+#
+# @headless-note: what running without a pipe means for this
+#     machine, where it is allowed but SGI shipped no such product
+#
+# @slots: every slot QEMU can put a pipe in
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelGraphics',
-  'data': { 'headless': 'bool',
-            'max-heads': 'uint32',
-            'positions': ['SGIModelGraphicsPosition'] } }
+  'data': { 'max-pipes': 'uint32',
+            'headless': 'bool',
+            '*headless-refused': 'str',
+            '*headless-note': 'str',
+            'slots': ['SGIModelGraphicsSlot'] } }
 
 ##
 # @SGIModelTopology:
@@ -1754,8 +1769,8 @@
 #     the nodes' own part first; absent where the topology offers no
 #     choice
 #
-# @graphics: the graphics heads `heads.<position>=` may select; absent
-#     where the topology has no graphics position
+# @graphics: the graphics pipes the topology takes; absent where it
+#     has no graphics slot
 #
 # Since: 11.2
 ##

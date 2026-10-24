@@ -318,8 +318,11 @@ static void test_rack_places_kona_at_io3(void)
     assert_widget(qts, 8, BRIDGE_PART, BRIDGE_MFG);
     /* The pipe is known by the slot IRIX names it under, io3. */
     g_assert_true(qom_has_child(qts, "/machine/module0", "io3"));
-    g_assert_cmphex(qom_uint(qts, "/machine/crossbow0",
-                             "startup-links-alive") &
+    /*
+     * The pipe attaches to the realized Crossbow, live, so the links
+     * alive say it is there, not the configured startup mask.
+     */
+    g_assert_cmphex(qom_uint(qts, "/machine/crossbow0", "links-alive") &
                     0xff00, ==, 0x8700);
     qtest_quit(qts);
 }
@@ -332,18 +335,22 @@ static void test_deskside_places_kona_at_io4(void)
     assert_widget(qts, 15, BRIDGE_PART, BRIDGE_MFG);
     g_assert_true(qom_has_child(qts, "/machine/module0", "io4"));
     /* Widgets 9 and A are the two Hubs; nothing else is fitted. */
-    g_assert_cmphex(qom_uint(qts, "/machine/crossbow0",
-                             "startup-links-alive") &
+    /*
+     * The pipe attaches to the realized Crossbow, live, so the links
+     * alive say it is there, not the configured startup mask.
+     */
+    g_assert_cmphex(qom_uint(qts, "/machine/crossbow0", "links-alive") &
                     0xff00, ==, 0x8700);
     g_assert_false(qom_has_child(qts, "/machine", "crossbow1"));
     qtest_quit(qts);
 }
 
 /*
- * The rack's pipe presents true-wombat's InfiniteReality3: the class word
- * kona_attach reads after selector 0x8800 is 1, and its 0x1e9 answer
- * names board set 5 and one RM. The deskside keeps the unconfigured
- * answer, board set 0 and no RM.
+ * Each chassis's default pipe presents its catalogue configuration. The
+ * rack's is true-wombat's InfiniteReality3: the class word kona_attach
+ * reads after selector 0x8800 is 1, and its 0x1e9 answer names board set
+ * 5 and one RM. The deskside's is whole-tetra's InfiniteReality2: class
+ * word 0, board set 1 and two RMs.
  */
 static void assert_kona_configuration(const char *args, unsigned int widget,
                                       uint32_t product, uint32_t board_set,
@@ -374,9 +381,9 @@ static void test_rack_kona_presents_ir3(void)
     assert_kona_configuration(RACK_ARGS, 15, 1, 5, 1);
 }
 
-static void test_deskside_kona_unconfigured(void)
+static void test_deskside_kona_presents_ir2(void)
 {
-    assert_kona_configuration(DESKSIDE_ARGS, 8, 0, 0, 0);
+    assert_kona_configuration(DESKSIDE_ARGS, 8, 0, 1, 2);
 }
 
 int main(int argc, char **argv)
@@ -396,7 +403,7 @@ int main(int argc, char **argv)
                    test_deskside_kona_reset);
     qtest_add_func("sn0/onyx2/rack-kona-presents-ir3",
                    test_rack_kona_presents_ir3);
-    qtest_add_func("sn0/onyx2/deskside-kona-unconfigured",
-                   test_deskside_kona_unconfigured);
+    qtest_add_func("sn0/onyx2/deskside-kona-presents-ir2",
+                   test_deskside_kona_presents_ir2);
     return g_test_run();
 }

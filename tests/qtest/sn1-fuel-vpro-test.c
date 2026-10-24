@@ -75,17 +75,24 @@ static char *create_prom(void)
     return path;
 }
 
+/*
+ * Start @topology with its default pipe, or with a VPro of @profile in
+ * widget 13. The catalogue offers the V12 alone; the other profiles are
+ * the board's register contract, so they skip it.
+ */
 static QTestState *fuel_start_profile(const char *topology,
                                       const char *profile)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
-    g_autofree char *global = profile ?
-        g_strdup_printf("-global sgi-odyssey.profile=%s", profile) :
-        g_strdup("");
+    g_autofree char *device = profile ?
+        g_strdup_printf("-device sgi-odyssey,slot=widget-13,product=%s",
+                        profile) : g_strdup("");
+    bool offered = !profile || g_str_equal(profile, "v12");
 
-    return qtest_initf("-M fuel,topology=%s "
+    return qtest_initf("-M fuel,topology=%s%s "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
-                       topology, quoted, global);
+                       topology, offered ? "" : ",x-uncatalogued-graphics=on",
+                       quoted, device);
 }
 
 static QTestState *fuel_start(const char *topology)

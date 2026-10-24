@@ -8,8 +8,10 @@ SGI Octane and Octane2 (IP30)
 
 The ``octane`` and ``octane2`` machines (``hw/mips/sgi/octane.c``) each
 build one IP30 board with one processor, a serial console and the
-onboard I/O, booting a stock IP30 PROM that the user supplies. Graphics
-are optional and outside this page. This page is the hardware contract
+onboard I/O, booting a stock IP30 PROM that the user supplies. Each fits
+a default graphics pipe, which ``-vga none`` leaves out and a graphics
+``-device`` replaces (:ref:`sgi-ip30-graphics`); the boards themselves
+are outside this page. This page is the hardware contract
 the machine models in ``hw/mips/sgi/models/`` cite for these two
 products: what is fitted, how it is wired, what the emulator chose
 where the hardware is not known, and which sources back each statement.
@@ -322,8 +324,8 @@ capture), so memory size does not fix processor speed.
 ``octane2`` (established for one machine, :ref:`sgi-ip30-octane2-hinv`):
 the inventory reports one 360 MHz R12000 chip revision 3.5 with 2 MiB secondary cache,
 256 MiB, HEART revision F, board ``030-1467-001`` revision B and Crossbow
-ASIC revision 1.4. Its V12 graphics board is not part of the emulated
-configuration.
+ASIC revision 1.4. Its V12 graphics board at widget 11 is the
+``octane2`` machine's default pipe (:ref:`sgi-ip30-graphics`).
 
 .. _sgi-ip30-components:
 
@@ -648,6 +650,38 @@ fabric. Dual-processor Octanes exist (Technical Report page 7-1) but are
 not modelled; the
 capacity notes restrict both machines to the single-processor profile.
 This is a scope limit, not a hardware claim.
+
+.. _sgi-ip30-graphics:
+
+Graphics ports
+==============
+
+A graphics pipe is a ``-device sgi-mgras`` or ``-device sgi-odyssey``
+in one of the four Crossbow ports the Octane gives graphics boards,
+named ``slot=widget-9`` to ``slot=widget-12``, checked against the
+catalogue as every SGI machine's pipes are (:ref:`sgi-sn-graphics-pipes`).
+Published inventories show IMPACT boards at widgets 10, 11 and 12, the
+stock IDE probes 9 to 12, and the Octane2 inventory above shows its V12
+at 11 (established). The default pipe is an SI at ``widget-11`` on
+``octane`` and a V12 there on ``octane2``; that SGI shipped either
+machine with no graphics is unknown, and both accept ``-vga none``.
+The catalogue offers every IMPACT product in every port and the V12 only
+at ``widget-11`` on ``octane2``; on ``octane`` it refuses VPro with the
+upgrade guide's conditions (007-4210-003, preface), Crossbow 1.4 and the
+ER supply, which this model's Crossbow revision code 4 and SR supply do
+not meet.
+
+A port starts empty, its presence clear, as it is with no board. A board
+claims its port when it realizes: it takes its fabric from the port's
+link, attaches to the realized Crossbow, and maps its 64 GiB long window
+at widget times 64 GiB of physical space, through HEART's port with the
+widget number in address bits 51:48. The machine's init-done notifier
+then brings the link alive with the same pre-reset health restore the
+HEART and Bridge links get. On an IMPACT board the machine sets the
+serial-number record the PROM names the board by, whose barcode and ROM
+serial are the marked synthetic ``EMUG00``, and 32-bit DMA page-list
+entries, which IRIX 6.5.30's X server and kernel and the Linux IMPACTSR
+driver write.
 
 .. _sgi-ip30-board-identity:
 

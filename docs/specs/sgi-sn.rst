@@ -614,77 +614,139 @@ path on any Scalable Node machine in this tree. A guest reaches its
 kernel or standalone program through the PROM's own TFTP netboot or a
 disk image, the same as real hardware.
 
-.. _sgi-sn-graphics-heads:
+.. _sgi-sn-graphics-pipes:
 
-Graphics heads
+Graphics pipes
 ==============
 
-``heads.<position>=<id>`` selects the graphics head a position holds, on
-the Scalable Node products and on ``octane`` and ``octane2``. A position
-is a place a head can go: an XIO slot by its label (``io6``), a Crossbow
-port on IP30 and IP34 (``widget-11``) or an Origin 200 PCI option slot
-(``pci-5``), prefixed ``m<module>-`` where two modules share the label.
-An id names one product configuration (``si-t``, ``v12``,
-``ir3-ge16-4-rm1``); the same id means the same product, parameters and
-options in every topology that lists it, and an id never changes once
-listed. ``query-sgi-machines`` lists each topology's positions under
-``graphics``, with every id a position offers or refuses, the default,
-whether the machine may run headless, and the most heads it builds at
-once. The ids and their configurations live in
-``hw/mips/sgi/models/graphics-heads.yaml``; each product layer lists the
-ids its positions take.
+A graphics pipe is one ``-device`` of its family's device type, on the
+Scalable Node products and on ``octane`` and ``octane2``:
+``sgi-mgras`` (IMPACT), ``sgi-odyssey`` (VPro), ``sgi-kona``
+(InfiniteReality) and ``psitech-rad4`` (PsiTech RAD4). It is placed with
+the properties QEMU already has for it: ``slot=`` names an XIO slot by
+its label (``io6``) or an IP30 or IP34 Crossbow port (``widget-11``), and
+a PsiTech card is a PCI card placed with ``bus=`` and ``addr=``.
+``product=`` names the product, and an InfiniteReality pipe takes its
+further settings, ``geometry``, ``rm-type``, ``rm-count``,
+``texture-mb`` and ``display``, as properties of the same names::
 
-A position not named holds its default, which is what the machine built
-before the option existed, so a command line without ``heads`` is
-unchanged. The Octane's ``graphics-board=`` and ``graphics-widget=``
-still work without it; naming both is refused. For example::
+    -M origin200,topology=origin200-gigachannel -device sgi-mgras,slot=io6,product=si-t
+    -M onyx2,topology=onyx2-deskside -device sgi-kona,slot=io4,product=ir2,geometry=ge14-2,display=dg5-2
+    -M origin200 -device psitech-rad4,bus=pci,addr=5,product=rad4
 
-    -M origin200,topology=origin200-gigachannel,heads.io6=si-t
-    -M octane2,heads.widget-11=v12
+``query-sgi-machines`` lists, under each topology's ``graphics`` record,
+every slot QEMU can put a pipe in, with a plain description, the
+``-device`` properties that reach it, the families it takes, each
+family's products with every setting's values and default, the pipe the
+machine fits by default, whether the machine may run without a pipe, and
+the reason for each combination it refuses. It lists only what QEMU
+builds: a product or value it does not model appears nowhere, not even
+as a refusal. The products, their names and every setting's values live
+once in ``hw/mips/sgi/models/graphics-products.yaml``; each product layer
+lists its slots and what each offers, and ``scripts/sgi-model.py``
+checks the rules below before it emits the records:
 
-The machine fits each head as the matching ``-device`` would: an MGRAS
-board by XIO slot name with ``board=`` set to the id, a VPro board with
-``profile=`` set to the id, and a PsiTech board on the first module's
-onboard PCI bus with ``device-id`` 0x104 (``rad4``) or 0x105
-(``rad4-km``). A built-in position's head is the topology's own I/O
-board record; naming its default changes nothing.
+* a default names a family, product and values its slot offers, and no
+  refusal matches it; at most one slot of a topology has one;
+* where one slot offers a product or a setting value and another slot of
+  the same family does not, that slot carries a refusal with the reason;
+* no refusal names a product or value no slot offers;
+* a reason is a phrase with no final full stop;
+* a topology with no default pipe may run without one;
+* a slot exists from the node count its Crossbow port's node board needs,
+  given as ``requires``.
 
-``heads`` is one property holding a dictionary, because positions vary
-per topology and no fixed structure fits them. Machine properties apply
-in no fixed order, so the dictionary is checked against the topology at
-realize. A position name is never purely numeric, since a numeric key
-fragment would be read as a list index. The name is ``heads`` because
-every machine already has the boolean ``graphics`` property that
-``-nographic`` sets.
+A refusal matches a requested pipe when its family matches, its product
+matches if it names one, and every setting it lists has the requested
+value. Every slot and setting is ``changeable: false`` until a machine's
+graphics can change between boots.
 
-QEMU refuses a selection with one of these messages, where ``<machine>``
-is the ``-M`` name and ``<reason>`` is the catalogue's own text:
+Default pipes follow QEMU's display-adapter convention. A machine that
+ships with graphics fits its catalogue default unless a graphics
+``-device`` or ``-vga none`` is given: ``octane`` an SI at ``widget-11``,
+``octane2`` a V12 at ``widget-11``, the Onyx2 desksides whole-tetra's
+InfiniteReality2 and the racks true-wombat's InfiniteReality3 with a
+plain DG5-2, and ``fuel-vpro``, ``origin300-v12-direct`` and
+``origin300-vbrick`` their V12. The Origin 200 and Origin 2000 fit none.
+Any graphics ``-device`` replaces the default, whichever slot it names,
+so an Octane with ``-device sgi-mgras,slot=widget-9`` leaves
+``widget-11`` empty. A ``-device`` that leaves a setting unset takes the
+slot's default for it: a bare ``-device sgi-kona,slot=io4`` on the
+deskside is its InfiniteReality2.
+
+``-vga none``, and ``-nodefaults``, skip the default pipe. With no pipe
+``-device`` the machine then starts with no graphics, even an Onyx2,
+which SGI never sold that way; the catalogue says so in
+``headless-note``. ``fuel-vpro`` and the two Origin 300 graphics
+topologies refuse to run with no pipe at all, with the catalogue's
+``headless-refused`` reason. No
+SGI machine takes a PC display adapter, so any other ``-vga`` value is
+refused. A machine sees only the adapter type ``-vga`` leaves behind, and
+with no ``-vga`` QEMU picks Cirrus where the binary has it, so
+``-vga cirrus`` cannot be told from no ``-vga`` and is taken as the
+default.
+
+The machine checks each pipe before it realizes, as its pre-plug handler,
+so the check sees the device's final property values, ``-global``
+included. It fits the default once every ``-device`` exists, from its
+machine-init-done notifier: the device is created while the machine
+initializes, so it is not taken for a hot-plugged one, and realized only
+when no ``-device`` turned out to be a pipe. The Onyx2's InfiniteReality
+pipe and the VPro wired to a Fuel or Origin 300 XBridge port are slots of
+the topology's own I/O board records: the builder fits nothing there,
+and the pipe that claims the slot takes the record's port, identity
+records and the Hub its packets go to, keeping the QOM name the builder
+gave it (``io4``, ``io3``, ``graphics-slot``, ``rear-panel``,
+``vbrick-v12``). A Crossbow port such a record names starts empty, as an
+empty XIO slot's does, until its pipe attaches.
+
+QEMU refuses a pipe with one of these messages, where ``<machine>`` is
+the ``-M`` name, ``<t>`` the topology and ``<reason>`` the catalogue's
+own text, given where a refusal matches:
 
 .. list-table::
    :header-rows: 1
 
    * - Case
      - Message
-   * - Unknown position
-     - ``<machine>: topology '<t>' has no graphics position '<p>'; its
-       positions are <p1>, <p2>, ...``
-   * - Id not listed at the position
-     - ``<machine>: topology '<t>' offers no graphics '<id>' at <p>; it
-       offers <id1>, <id2>, ...``
-   * - Refused id
-     - ``<machine>: topology '<t>' does not build <product> (<id>) at
-       <p>: <reason>``
-   * - Position not modelled
-     - ``<machine>: topology '<t>' cannot fit graphics at <p>: <reason>``
-   * - Too many heads
-     - ``<machine>: topology '<t>' builds at most <n> graphics head(s);
-       <p1> and <p2> both select one``
-   * - Octane ``graphics-board=`` beside ``heads``
-     - ``<machine>: heads.<p> and graphics-board both select a graphics
-       board; use heads.<p>``
+   * - ``-vga`` other than ``none``
+     - ``<machine>: -vga <type> is not a display an SGI machine takes; use
+       -vga none for no graphics, or a graphics -device such as sgi-mgras``
+   * - No pipe where the topology needs one
+     - ``<machine>: topology '<t>' does not run without a graphics pipe,
+       which -vga none or -nodefaults asks for: <reason>``
+   * - No slot given
+     - ``<machine>: <device> needs slot= naming one of the graphics slots
+       of topology '<t>': <slot> (<placement>), ...``, or ``bus= and
+       addr=`` for a PCI card
+   * - Slot not in the record
+     - ``<machine>: topology '<t>' has no graphics slot <slot>; its
+       graphics slots are <slot> (<placement>), ...``
+   * - Family not taken at the slot
+     - ``<machine>: graphics slot <slot> of topology '<t>' takes
+       <devices>, not <device>[: <reason>]``
+   * - Product not offered at the slot
+     - ``<machine>: graphics slot <slot> of topology '<t>' does not offer
+       <device> product=<p>; it offers <products>[: <reason>]``
+   * - Setting value not offered
+     - ``<machine>: graphics slot <slot> of topology '<t>' does not offer
+       <device> product=<p> with <setting>=<value>; it offers
+       <values>[: <reason>]``
+   * - Slot the node count does not fit
+     - ``<machine>: graphics slot <slot> of topology '<t>' exists from
+       nodes=<n>, and this machine fits <m>``
+   * - More pipes than the topology builds
+     - ``<machine>: topology '<t>' builds at most <n> graphics pipe, and
+       <slot> already holds one``
+   * - Topology with no graphics record
+     - ``<machine>: topology '<t>' has no graphics slots, so it takes no
+       <device>``
 
-A topology with no graphics position says ``it has no graphics
-positions`` in place of the list.
+The machine property ``x-uncatalogued-graphics=on`` skips all of this:
+the machine fits no default pipe, accepts any ``-vga`` and checks no
+graphics ``-device``. It is for register-contract qtests that use a
+machine to carry a board in a slot or combination no SGI system had, such
+as the InfiniteReality pipe the KONA qtests fit to an Origin 2000.
 
 What each topology offers today:
 
@@ -692,52 +754,62 @@ What each topology offers today:
    :header-rows: 1
 
    * - Topologies
-     - Positions
+     - Slots
      - Default
-     - Selectable
+     - Offers
    * - ``origin200``, ``origin200-gigachannel-loopback``
-     - ``pci-5`` to ``pci-7``
-     - ``none``
-     - ``rad4``, ``rad4-km``
+     - ``pci-5`` to ``pci-7``: ``bus=pci``, ``addr=5`` to ``7``
+     - none
+     - ``rad4`` (validated at ``pci-5``), ``rad4-km``
    * - ``origin200-dual``
-     - ``m0-pci-5`` to ``m0-pci-7``; the second module's are listed, not
-       modelled
-     - ``none``
-     - ``rad4``, ``rad4-km``
+     - ``m0-pci-5`` to ``m0-pci-7``, the first module's: ``bus=pci``
+     - none
+     - as ``origin200``
    * - ``origin200-gigachannel``
-     - ``io6`` (established by owner inventories), ``pci-5`` to ``pci-7``
-     - ``none``
-     - ``si``, ``si-t``, ``esi``, ``ssi``, ``essi`` at ``io6``; RAD4 as
-       above
+     - ``io6``, and ``pci-5`` to ``pci-7``
+     - none
+     - every IMPACT product at ``io6``; RAD4 as above
    * - ``origin2000-deskside``, ``origin2000-rack``
-     - every XIO slot, ``io2`` to ``io12``
-     - ``none``
-     - ``si``, ``si-t``, ``esi``, ``ssi``, ``essi``
+     - every empty XIO slot, ``io2`` to ``io12``; ``io7`` up from two
+       nodes
+     - none
+     - every IMPACT product
    * - ``onyx2-deskside``
-     - ``io4``, built in
-     - ``ir2-ge14-4-rm2``, approximated
-     - its default
+     - ``io4``
+     - ``ir2``: GE14-4, two RM7, 64 MB, ``dg5-8``
+     - ``ir2``, ``ir2e``; one or two RMs; ``dg5-8``, ``dg5-2``
    * - ``onyx2-rack``
-     - ``io3``, built in; further Xtown slots listed, not modelled
-     - ``ir3-ge16-4-rm1``, approximated
-     - its default
-   * - ``octane``, ``octane2``
-     - ``widget-9`` to ``widget-12``; the PCI cage, not modelled
-     - ``none``
-     - the five MGRAS ids; ``v12`` at ``widget-11`` on ``octane2``
-   * - ``fuel``
+     - ``io3``
+     - ``ir3``: GE16-4, one RM, 256 MB, ``dg5-2``
+     - ``ir2e``, ``ir3``; one, two or four RMs; ``dg5-2``, ``dg5-8``
+   * - ``octane``
+     - ``widget-9`` to ``widget-12``
+     - ``si`` at ``widget-11``
+     - every IMPACT product
+   * - ``octane2``
+     - ``widget-9`` to ``widget-12``
+     - ``v12`` at ``widget-11``
+     - every IMPACT product; ``v12`` at ``widget-11``
+   * - ``fuel-vpro``
      - ``widget-13``
-     - ``none``
-     - none (``fuel-vpro`` fits the V12)
-   * - ``fuel-vpro``, ``origin300-v12-direct``, ``origin300-vbrick``
-     - ``widget-13`` or ``widget-11``, built in
      - ``v12``
-     - its default
+     - ``v12``
+   * - ``origin300-v12-direct``, ``origin300-vbrick``
+     - ``widget-11``
+     - ``v12``, approximated: not an SGI configuration
+     - ``v12``
+   * - ``tezro-tower-multi``, ``onyx350-compat``
+     - ``widget-12`` on the PIC fabric
+     - none
+     - ``v12``
 
-``esi-t``, ``mxi`` and ``emxi``, the VPro profiles other than V12, and
-InfiniteReality configurations other than each Onyx2 pipe's own are
-listed as refused, each with its reason, until the models present them.
-At most one head is built at once on every topology today.
+The IMPACT products are ``si``, ``si-t``, ``ssi``, ``mxi``, ``esi``,
+``esi-t``, ``essi`` and ``emxi``. ``fuel`` has no graphics record: its
+topology has no widget 13 port to fit a pipe to, so the V12 is
+``fuel-vpro``'s.
+A display board reports its real channel count, two on ``dg5-2`` and
+eight on ``dg5-8``, and every channel scans out.
+At most one pipe is built at once on every topology today.
 
 .. _sgi-sn-firmware-supply:
 

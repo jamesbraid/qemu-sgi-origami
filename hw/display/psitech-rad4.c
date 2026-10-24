@@ -17,7 +17,7 @@
  * not from vendor source or a copied instruction listing.
  *
  * This file also answers the PCI identity 12d1:0105 (RAD4-KM), selected by
- * the device-id property. Two facts are
+ * product=rad4-km. Two facts are
  * established for that identity: the PCI vendor/device pair itself, and the
  * guest-visible outcome that IRIX's
  * rad4pci driver, the same driver package as plain RAD4's, attaches to it
@@ -534,15 +534,15 @@ struct PsitechRad4State {
     PCIDevice pci;
 
     /*
-     * Selects the PCI identity this instance answers as: RAD4_DEVICE_ID
-     * (0x0104, plain RAD4) or RAD4_KM_DEVICE_ID
-     * (0x0105, RAD4-KM), a settable property mirroring how
-     * hw/misc/sgi-ioc3.c's subsystem-id property selects a
-     * board identity on one shared implementation. Every register below
-     * behaves identically regardless of this
-     * value; see the file header for what that reuse does and does not claim
-     * for RAD4-KM.
+     * The "product" property, rad4 or rad4-km, and the PCI identity realize
+     * resolves it to: RAD4_DEVICE_ID (0x0104, plain RAD4) or
+     * RAD4_KM_DEVICE_ID (0x0105, RAD4-KM), one board identity on one shared
+     * implementation, as hw/misc/sgi-ioc3.c's subsystem-id property
+     * selects one. Every register below behaves identically regardless of
+     * this value; see the file header for what that reuse does and does not
+     * claim for RAD4-KM.
      */
+    char *product;
     uint16_t device_id;
 
     MemoryRegion bar0;
@@ -3048,6 +3048,15 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     PsitechRad4State *s = PSITECH_RAD4(dev);
     Object *obj = OBJECT(dev);
 
+    if (!s->product || g_str_equal(s->product, "rad4")) {
+        s->device_id = RAD4_DEVICE_ID;
+    } else if (g_str_equal(s->product, "rad4-km")) {
+        s->device_id = RAD4_KM_DEVICE_ID;
+    } else {
+        error_setg(errp, "psitech-rad4: unknown product '%s'; the products "
+                   "are rad4 and rad4-km", s->product);
+        return;
+    }
     if (!rad4_eeprom_realize(s, errp)) {
         return;
     }
@@ -3261,19 +3270,17 @@ static const VMStateDescription vmstate_psitech_rad4 = {
 };
 
 /*
- * device-id defaults to plain RAD4; "-device psitech-rad4,device-id=0x105"
- * (RAD4_KM_DEVICE_ID) selects the RAD4-KM
- * identity instead, over this same shared implementation, the way
- * hw/misc/sgi-ioc3.c's own "subsystem-id" property
- * selects a board identity.
+ * product defaults to plain RAD4; "-device psitech-rad4,product=rad4-km"
+ * selects the RAD4-KM identity (RAD4_KM_DEVICE_ID) instead, over this same
+ * shared implementation, the way hw/misc/sgi-ioc3.c's own "subsystem-id"
+ * property selects a board identity.
  *
  * eeprom optionally names a raw drive holding the serial EEPROM image
  * (rad4_eeprom_realize()), so a mode the guest stores there survives a
  * restart of QEMU, not only a guest reboot.
  */
 static const Property psitech_rad4_properties[] = {
-    DEFINE_PROP_UINT16("device-id", PsitechRad4State, device_id,
-                       RAD4_DEVICE_ID),
+    DEFINE_PROP_STRING("product", PsitechRad4State, product),
     DEFINE_PROP_DRIVE("eeprom", PsitechRad4State, eeprom_blk),
     DEFINE_PROP_BOOL("overlay-index-compat", PsitechRad4State,
                      overlay_index_compat, true),

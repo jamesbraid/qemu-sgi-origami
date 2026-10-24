@@ -48,34 +48,56 @@ layer:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu-a, cpu-b]
   memory_kits_per_node: [kit-64, kit-64]
-  # Graphics heads heads.<position>=<id> selects; the ids are
-  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
-  # Graphics heads).
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes).
   graphics:
-    max_heads: 1
-    positions:
+    max_pipes: 1
+    headless: true
+    headless_note: "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped"
+    slots:
       - name: io4
-        description: "XIO slot 4, Crossbow widget 8"
-        built_in: true
-        options:
-          - id: ir2-ge14-4-rm2
-            default: true
-            fidelity: approximated
-            pairing: established
-            assembly: "030-1129-002"
-            limitations:
-              - "presents no RM, TM or DG board record"
-              - "configuration reply carries 0 RM records"
-              - "one display channel at 1280x1024"
-          - {id: ir2-ge14-4-rm1, refused: "the model presents one configuration"}
-          - {id: ir2-ge14-2-rm1, refused: "the model presents one configuration"}
-          - {id: ir2-ge14-2-rm2, refused: "the model presents one configuration"}
-          - {id: ir2-ge16-rm1, refused: "the model presents one configuration"}
-          - {id: ir2-ge16-rm2, refused: "the model presents one configuration"}
-          - {id: reality-ge14-rm1, refused: "the model presents one configuration"}
-          - {id: reality-ge14-rm2, refused: "the model presents one configuration"}
-          - {id: ir4-ge16-4-rm1, refused: "the model presents one configuration"}
-          - {id: ir4-ge16-4-rm2, refused: "the model presents one configuration"}
+        description: "XIO slot 4, Crossbow widget 8: the deskside's InfiniteReality pipe"
+        placement: {slot: io4}
+        default:
+          family: kona
+          product: ir2
+          settings: {geometry: ge14-4, rm-count: "2", display: dg5-8}
+        families:
+          - family: kona
+            products:
+              - product: ir2
+                fidelity: approximated
+                limitations:
+                  - "a GE14-2 presents the GE14-4's board words"
+                pairing: established
+                assembly: "030-1129-002"
+                settings:
+                  geometry: {values: [ge14-4, ge14-2], default: ge14-4}
+                  rm-type: {values: [rm7]}
+                  rm-count: {values: ["1", "2"], default: "2"}
+                  texture-mb: {values: ["64"]}
+                  display: {values: [dg5-8, dg5-2], default: dg5-8}
+              - product: ir2e
+                fidelity: approximated
+                limitations:
+                  - "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant"
+                  - "presents the TM7 as its 64 MB texture board, which is inferred"
+                pairing: established
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2"], default: "2"}
+                  texture-mb: {values: ["64"]}
+                  display: {values: [dg5-8, dg5-2], default: dg5-8}
+        refusals:
+          - family: kona
+            settings: {rm-count: "4"}
+            reason: "a pipe with no Ktown is an Onyx2 deskside pipe, which holds at most two raster managers"
+          - family: kona
+            product: ir3
+            reason: "no manual or capture places an InfiniteReality3 in an Onyx2 deskside"
   data:
     machine:
       name: Onyx2 deskside with one InfiniteReality pipe

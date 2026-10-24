@@ -245,7 +245,9 @@ DECLARE_CLASS_CHECKERS(SGIXioSlotsClass, SGI_XIO_SLOTS, TYPE_SGI_XIO_SLOTS)
  * does not: a module's two Crossbows number their widgets alike. `name`
  * is the slot's machine-wide name (io5, or m<N>-io5 where two modules
  * share the label) and `label` its IRIX label (io5); the caller frees
- * both.
+ * both. `own_identity` is set by a slot whose board takes the identity
+ * serials the machine's own record of it gives, so the board keeps them
+ * rather than having them offset by `position`.
  */
 typedef struct SGIXioSlotPlace {
     uint32_t module;
@@ -253,6 +255,7 @@ typedef struct SGIXioSlotPlace {
     uint32_t position;
     char *name;
     char *label;
+    bool own_identity;
 } SGIXioSlotPlace;
 
 struct SGIXioSlotsClass {

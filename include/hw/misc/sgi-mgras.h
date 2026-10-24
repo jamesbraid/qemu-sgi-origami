@@ -299,7 +299,7 @@ struct SGIMgrasClass {
  * the model cannot render is refused by name rather than by decoding.
  */
 typedef struct SGIMgrasBoard {
-    const char *name;           /* the "board" property value */
+    const char *name;           /* the "product" property value */
     const char *hinv_name;      /* what IRIX 6.5.x hinv prints for it */
     uint8_t ge_count;
     uint8_t re_count;
@@ -599,7 +599,7 @@ void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric);
 
-/* Whether `name` is a board the "board" property accepts. */
+/* Whether `name` is a board the "product" property accepts. */
 bool sgi_mgras_board_known(const char *name);
 
 struct SGIMgrasState {
@@ -942,8 +942,7 @@ struct SGIMgrasState {
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;
-    char *board_name;
-    bool unimplemented_board;
+    char *product;
     const SGIMgrasBoard *board;
     /*
      * The board's screen, copied from its descriptor at realize. Signed so

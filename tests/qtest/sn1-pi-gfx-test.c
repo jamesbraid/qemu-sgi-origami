@@ -212,12 +212,13 @@ static QTestState *start_ip53_vpro(void)
     quoted_data = g_shell_quote(data);
     quoted_clock = g_shell_quote(clock);
     qts = qtest_initf(
-        "-M tezro,topology=tezro-tower-multi,heads.widget-12=v12 "
+        "-M tezro,topology=tezro-tower-multi "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000 "
         "-smp 4 -m 4G " RUN "-bios %s "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
-        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+        "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
+        "-device sgi-odyssey,slot=widget-12,product=v12",
         quoted_prom, quoted_data, quoted_clock);
     unlink(prom);
     unlink(data);

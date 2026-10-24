@@ -507,7 +507,8 @@ static GPtrArray *catalogue_cases(void)
  */
 static MachineCase slot_graphics_case = {
     .name = (char *)"origin2000-slot-graphics",
-    .args = (char *)"origin2000,topology=origin2000-rack -cpu R10000 "
+    .args = (char *)"origin2000,topology=origin2000-rack,"
+            "x-uncatalogued-graphics=on -cpu R10000 "
             "-smp 8 -m 256M "
             "-device sgi-mgras,slot=io2,board-record=on "
             "-device sgi-mgras,slot=io5,board-record=on "

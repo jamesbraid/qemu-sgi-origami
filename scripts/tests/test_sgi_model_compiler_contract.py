@@ -3549,25 +3549,27 @@ class CatalogueJsonTests(unittest.TestCase):
     captured golden -- the packet's own worked examples.
     """
 
-    def test_ip53_v12_heads_are_optional_and_default_none(self):
-        profiles = ("onyx350-compat", "tezro-tower-multi")
+    def test_ip53_v12_slot_is_optional_with_no_default(self):
+        assemblies = {"onyx350-compat": "030-1909-008",
+                      "tezro-tower-multi": "030-1884-002"}
         catalogue = json.loads(render_catalogue_json(
-            [_resolved(name) for name in profiles]))
+            [_resolved(name) for name in assemblies]))
         topologies = {item["name"]: item for item in catalogue["topologies"]}
 
-        for name in profiles:
-            positions = topologies[name]["graphics"]["positions"]
-            self.assertEqual(len(positions), 1, name)
-            position = positions[0]
-            self.assertEqual(position["name"], "widget-12", name)
-            options = {
-                item["configuration"]["id"]: item
-                for item in position["options"]
-            }
-            self.assertTrue(options["none"]["default"], name)
-            self.assertTrue(options["none"]["selectable"], name)
-            self.assertFalse(options["v12"]["default"], name)
-            self.assertTrue(options["v12"]["selectable"], name)
+        for name, assembly in assemblies.items():
+            graphics = topologies[name]["graphics"]
+            self.assertTrue(graphics["headless"], name)
+            self.assertEqual([slot["name"] for slot in graphics["slots"]],
+                             ["widget-12"], name)
+            slot = graphics["slots"][0]
+            self.assertNotIn("default", slot, name)
+            self.assertEqual(slot["placement"],
+                             [{"name": "slot", "value": "widget-12"}], name)
+            [family] = slot["families"]
+            self.assertEqual(family["device"], "sgi-odyssey", name)
+            [product] = family["products"]
+            self.assertEqual((product["product"], product["assembly"]),
+                             ("v12", assembly), name)
 
     def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
         profile_names = (

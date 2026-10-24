@@ -2179,17 +2179,19 @@ typedef struct SGIKonaTexture {
     SGIKonaBoardSpec board;
 } SGIKonaTexture;
 
-typedef struct SGIKonaDisplay {
-    SGIKonaBoardSpec board;
-    uint32_t channels;
-    uint32_t external_gamma;
-} SGIKonaDisplay;
-
 typedef struct SGIKonaOption {
     const char *id;
     SGIKonaBoardSpec board;
     uint32_t code;
 } SGIKonaOption;
+
+typedef struct SGIKonaDisplay {
+    const char *id;
+    SGIKonaBoardSpec board;
+    uint32_t channels;
+    uint32_t external_gamma;
+    const SGIKonaOption *option;
+} SGIKonaDisplay;
 
 #define SGI_KONA_PRODUCT_CHOICES 2
 
@@ -2251,26 +2253,29 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
 };
 
 /*
- * Display generators. 030-1087-001: whole-tetra's deskside board, whose
- * gfxinfo reports eight channels and 64K of external gamma; its name and
- * revision are not given, and that it is a DG5-2 is not established.
- * 030-1055-001: fancy-akita's DG5-2 (owner list, revision unreadable),
- * two channels. 030-1242-001: true-wombat's DG5-2, revision D, two
- * channels.
- */
-static const SGIKonaDisplay sgi_kona_displays[] = {
-    { { "", "030-1087-001", "" }, 8, 1 },
-    { { "DG5-2", "030-1055-001", "" }, 2, 0 },
-    { { "DG5-2", "030-1242-001", "D" }, 2, 0 },
-};
-
-/*
  * true-wombat's GVO option, configmon revision B, and the code gfxinfo
  * prints "GVO option detected" for. The option's identity only: the model
  * has no GVO video output.
  */
 static const SGIKonaOption sgi_kona_gvo = {
     "gvo", { "GVO", "030-1184-002", "B" }, 6,
+};
+
+/*
+ * Display boards, by the "display" type: the board names a
+ * community-compiled list of SGI PCA numbers gives, each presenting the
+ * parts a capture shows for it.
+ * dg5-8, 030-1087-001: whole-tetra's board, whose gfxinfo reports eight
+ * channels and 64K of external gamma; the record's name and revision are
+ * not given. dg5-2, 030-1055-001: fancy-akita's DG5-2 (owner list,
+ * revision unreadable), two channels. dg5-2-gvo: true-wombat's DG5-2 base
+ * for an option board, 030-1242-001 revision D, with its GVO record; the
+ * model has no GVO output, so the machine catalogue does not offer it.
+ */
+static const SGIKonaDisplay sgi_kona_displays[] = {
+    { "dg5-8", { "", "030-1087-001", "" }, 8, 1, NULL },
+    { "dg5-2", { "DG5-2", "030-1055-001", "" }, 2, 0, NULL },
+    { "dg5-2-gvo", { "DG5-2", "030-1242-001", "D" }, 2, 0, &sgi_kona_gvo },
 };
 
 static const SGIKonaProduct sgi_kona_products[] = {
@@ -2345,8 +2350,7 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
     if (sgi_kona_unset(s->product)) {
         if (!sgi_kona_unset(s->geometry) || !sgi_kona_unset(s->rm_type) ||
             s->rm_count || s->texture_mb || s->channels ||
-            !sgi_kona_unset(s->display_generator) ||
-            !sgi_kona_unset(s->video_option)) {
+            !sgi_kona_unset(s->display)) {
             error_setg(errp, "sgi-kona: set product to configure the pipe");
             return false;
         }
@@ -2423,21 +2427,21 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
         goto refused;
     }
 
-    dg_part = sgi_kona_unset(s->display_generator) ?
-              (ktown ? "030-1242-001" : "030-1087-001") :
-              s->display_generator;
     for (i = 0; i < ARRAY_SIZE(sgi_kona_displays); i++) {
-        if (g_str_equal(dg_part, sgi_kona_displays[i].board.part)) {
-            c->display = &sgi_kona_displays[i];
+        const SGIKonaDisplay *d = &sgi_kona_displays[i];
+
+        if (g_str_equal(d->id, sgi_kona_unset(s->display) ?
+                        (ktown ? "dg5-2" : "dg5-8") : s->display)) {
+            c->display = d;
         }
     }
     if (!c->display) {
-        error_setg(errp, "sgi-kona: display generator '%s' is not one a "
-                   "capture names: 030-1087-001, 030-1055-001 or "
-                   "030-1242-001", dg_part);
+        error_setg(errp, "sgi-kona: display '%s' is not a display board the "
+                   "model presents: dg5-8, dg5-2 or dg5-2-gvo", s->display);
         goto refused;
     }
     c->channels = c->display->channels;
+    dg_part = c->display->board.part;
     if (s->channels && s->channels != c->display->channels) {
         error_setg(errp, "sgi-kona: channels %u: display generator %s "
                    "reports %u", s->channels, dg_part,
@@ -2445,20 +2449,7 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
         goto refused;
     }
 
-    if (!sgi_kona_unset(s->video_option) &&
-        !g_str_equal(s->video_option, "none")) {
-        if (!g_str_equal(s->video_option, sgi_kona_gvo.id)) {
-            error_setg(errp, "sgi-kona: video option '%s': only gvo has "
-                       "been captured", s->video_option);
-            goto refused;
-        }
-        if (!g_str_equal(dg_part, "030-1242-001")) {
-            error_setg(errp, "sgi-kona: video option gvo has been captured "
-                       "only beside display generator 030-1242-001");
-            goto refused;
-        }
-        c->option = &sgi_kona_gvo;
-    }
+    c->option = c->display->option;
     sgi_kona_texture_set_memory(&s->textures, (uint64_t)c->texture->mb * MiB);
     return true;
 
@@ -16583,8 +16574,7 @@ static const Property sgi_kona_properties[] = {
     DEFINE_PROP_UINT32("rm-count", SGIKonaState, rm_count, 0),
     DEFINE_PROP_UINT32("texture-mb", SGIKonaState, texture_mb, 0),
     DEFINE_PROP_UINT32("channels", SGIKonaState, channels, 0),
-    DEFINE_PROP_STRING("display-generator", SGIKonaState, display_generator),
-    DEFINE_PROP_STRING("video-option", SGIKonaState, video_option),
+    DEFINE_PROP_STRING("display", SGIKonaState, display),
 };
 
 static int sgi_kona_pre_save(void *opaque)

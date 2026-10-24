@@ -37,7 +37,7 @@
 #include "sgi-test.h"
 
 #define MACHINE_ARGS \
-    "-M origin2000 -device sgi-mgras,slot=io3 " \
+    "-M origin2000,x-uncatalogued-graphics=on -device sgi-mgras,slot=io3 " \
     "-device sgi-kona,id=kona0,slot=io4"
 
 #define MGRAS_MODULE_PATH "/machine/module0"
