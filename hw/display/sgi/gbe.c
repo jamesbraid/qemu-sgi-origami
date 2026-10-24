@@ -53,6 +53,7 @@ struct SGIO2GBEState {
     uint64_t reference_hz, ttl_hz, differential_hz;
     uint32_t ctrl, dot, sysclk;
     uint32_t vt[20], ovr[3], frm[4], did[2];
+    uint32_t invalid_timing_reported;
     uint32_t wid[32], cmap[CMAP_COUNT], gmap[256], crs[5], glyph[64];
     uint8_t wid_written[32], cmap_written[CMAP_COUNT], gmap_written[256];
     uint8_t crs_written[3], glyph_written[64];
@@ -100,10 +101,14 @@ static void table_input(uint8_t *flags, const char *name)
     }
 }
 
-static unsigned interval(unsigned start, unsigned end, unsigned period)
+static unsigned interval(SGIO2GBEState *s, unsigned index, unsigned start,
+                         unsigned end, unsigned period)
 {
     if (!period || start > period || end > period) {
-        unsupported("timing interval");
+        if (!(s->invalid_timing_reported & BIT(index))) {
+            unsupported("timing interval");
+            s->invalid_timing_reported |= BIT(index);
+        }
         return 0;
     }
     return (end % period + period - start % period) % period;
@@ -114,9 +119,11 @@ static unsigned distance(unsigned point, unsigned start, unsigned period)
     return (point + period - start % period) % period;
 }
 
-static bool in_signal(unsigned p, uint32_t reg, unsigned period)
+static bool in_signal(SGIO2GBEState *s, unsigned index, unsigned p,
+                      unsigned period)
 {
-    unsigned n = interval(hi(reg), lo(reg), period);
+    uint32_t reg = s->vt[index];
+    unsigned n = interval(s, index, hi(reg), lo(reg), period);
     return n && distance(p, hi(reg), period) < n;
 }
 
@@ -246,13 +253,13 @@ static void outputs(SGIO2GBEState *s)
     bool levels[TIMING_COUNT] = { 0 };
 
     if (xp && yp) {
-        levels[0] = in_signal(y, s->vt[2], yp);
-        levels[1] = in_signal(x, s->vt[3], xp);
-        levels[2] = in_signal(y, s->vt[4], yp);
-        levels[3] = in_signal(x, s->vt[5], xp);
-        levels[4] = in_signal(x, s->vt[10], xp);
-        levels[5] = in_signal(y, s->vt[11], yp);
-        levels[6] = in_signal(x, s->vt[12], xp);
+        levels[0] = in_signal(s, 2, y, yp);
+        levels[1] = in_signal(s, 3, x, xp);
+        levels[2] = in_signal(s, 4, y, yp);
+        levels[3] = in_signal(s, 5, x, xp);
+        levels[4] = in_signal(s, 10, x, xp);
+        levels[5] = in_signal(s, 11, y, yp);
+        levels[6] = in_signal(s, 12, x, xp);
     }
     levels[0] = !(control & 2) && (levels[0] ^ !!(control & 1));
     levels[1] = !(control & 8) && (levels[1] ^ !!(control & 4));
@@ -364,8 +371,8 @@ static void geometry(SGIO2GBEState *s)
         return;
     }
     SGIScanoutMode mode = {
-        .width = interval(lo(s->vt[15]), hi(s->vt[15]), lo(s->vt[1])),
-        .height = interval(lo(s->vt[16]), hi(s->vt[16]), hi(s->vt[1])),
+        .width = interval(s, 15, lo(s->vt[15]), hi(s->vt[15]), lo(s->vt[1])),
+        .height = interval(s, 16, lo(s->vt[16]), hi(s->vt[16]), hi(s->vt[1])),
         /* The GBE counter timer owns retrace and descriptor fetch ordering. */
         .clock_hz = 0,
     };
@@ -654,8 +661,8 @@ static void resolve_row(void *opaque, unsigned y, uint32_t *dst)
     SGIO2GBEState *s = opaque;
     unsigned xp = lo(s->vt[1]), yp = hi(s->vt[1]);
     unsigned w = s->scanout.mode.width;
-    unsigned producer = interval(hi(s->vt[13]), lo(s->vt[13]), xp);
-    unsigned ph = interval(hi(s->vt[14]), lo(s->vt[14]), yp);
+    unsigned producer = interval(s, 13, hi(s->vt[13]), lo(s->vt[13]), xp);
+    unsigned ph = interval(s, 14, hi(s->vt[14]), lo(s->vt[14]), yp);
     GBEPlaneRow cache[2] = { 0 };
     unsigned ry = yp ? (lo(s->vt[16]) + y) % yp : 0;
     unsigned py = yp ? distance(ry, hi(s->vt[14]), yp) : 0;
@@ -841,8 +848,22 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             unsupported("capture alignment");
             goto done;
         }
-        s->vt[index] = v & (index == 0 ? FREEZE | FIELDS :
-                            index == 6 ? 127 : FIELDS);
+        v &= index == 0 ? FREEZE | FIELDS : index == 6 ? 127 : FIELDS;
+        if (s->vt[index] != v) {
+            /* Repeated evaluation of unchanged invalid timing is noisy. */
+            s->invalid_timing_reported &= ~BIT(index);
+            if (index == 1) {
+                if (lo(s->vt[1]) != lo(v)) {
+                    s->invalid_timing_reported &= ~(BIT(3) | BIT(5) |
+                        BIT(10) | BIT(12) | BIT(13) | BIT(15));
+                }
+                if (hi(s->vt[1]) != hi(v)) {
+                    s->invalid_timing_reported &= ~(BIT(2) | BIT(4) |
+                        BIT(11) | BIT(14) | BIT(16));
+                }
+            }
+        }
+        s->vt[index] = v;
         if (index <= 1 && !(s->vt[0] & FREEZE) &&
             lo(s->vt[1]) && hi(s->vt[1])) {
             s->vt[0] = (lo(s->vt[0]) % lo(s->vt[1])) |
@@ -850,7 +871,7 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         }
         if (index == 1 || index == 13) {
             unsigned xp = lo(s->vt[1]);
-            unsigned raw = interval(hi(s->vt[13]), lo(s->vt[13]), xp);
+            unsigned raw = interval(s, 13, hi(s->vt[13]), lo(s->vt[13]), xp);
             if (raw && raw + 2 > xp) {
                 unsupported("horizontal producer length");
             }
@@ -1008,6 +1029,7 @@ static void reset_enter(Object *obj, ResetType type)
     s->dot = 0;
     pll_status(s);
     s->sysclk = 8;
+    s->invalid_timing_reported = 0;
     memset(s->vt, 0, sizeof(s->vt));
     s->vt[0] = FREEZE;
     memset(s->ovr, 0, sizeof(s->ovr));
@@ -1062,6 +1084,7 @@ static int pre_save(void *opaque)
 static int post_load(void *opaque, int version)
 {
     SGIO2GBEState *s = opaque;
+    s->invalid_timing_reported = 0;
     if (s->list_count[0] > LIST_ENTRIES ||
         s->list_count[1] > LIST_ENTRIES ||
         (plane_held(s, 0) && s->list_count[0]) ||

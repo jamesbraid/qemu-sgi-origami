@@ -576,6 +576,66 @@ static void test_dma_reset_did_cursor(void)
     qtest_quit(q);
 }
 
+static unsigned timing_reports(const char *path)
+{
+    g_autofree char *data = NULL;
+    const char *p;
+    unsigned count = 0;
+
+    g_assert_true(g_file_get_contents(path, &data, NULL, NULL));
+    p = data;
+    while ((p = strstr(p, "sgi-o2-gbe: unsupported timing interval"))) {
+        count++;
+        p++;
+    }
+    return count;
+}
+
+static void test_invalid_timing_reports(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-timing-reports-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "timing.txt", NULL);
+    g_autofree char *args = g_strdup_printf("-d unimp -D %s", log);
+    QTestState *q = start(args);
+    unsigned count;
+
+    mode(q);
+    count = timing_reports(log);
+    wr(q, VT(2), 68 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 1100);
+    for (unsigned i = 0; i < 20; i++) {
+        g_assert_cmphex(rd(q, VT(0)), ==, 11);
+    }
+    wr(q, VT(2), (68 << 12) | 0xff000000u);
+    wr(q, VT(7), 3);
+    g_assert_cmpuint(timing_reports(log), ==, count);
+
+    /* Each interval reports independently, and changes rearm only its axis. */
+    wr(q, VT(3), 98 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+    wr(q, VT(2), 69 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+    wr(q, VT(1), 96 | 67 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+    wr(q, VT(1), 96 | 66 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+    wr(q, VT(2), 0);
+    g_assert_cmpuint(timing_reports(log), ==, count);
+    wr(q, VT(2), 69 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, ++count);
+
+    qtest_system_reset(q);
+    mode(q);
+    count = timing_reports(log);
+    wr(q, VT(2), 69 << 12);
+    g_assert_cmpuint(timing_reports(log), ==, count + 1);
+    qtest_quit(q);
+    g_unlink(log);
+    g_rmdir(dir);
+}
+
 static void test_clock(void)
 {
     QTestState *q = start("");
@@ -1969,6 +2029,8 @@ int main(int argc, char **argv)
                    test_dma_reset_dma_sentinels);
     qtest_add_func("/sgi-gbe/dma-reset/did-cursor", test_dma_reset_did_cursor);
     qtest_add_func("/sgi-gbe/clock", test_clock);
+    qtest_add_func("/sgi-gbe/invalid-timing-reports",
+                   test_invalid_timing_reports);
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
     qtest_add_func("/sgi-gbe/formats", test_formats);
     qtest_add_func("/sgi-gbe/shadow-bounds", test_shadow_and_bounds);
