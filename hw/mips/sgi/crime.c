@@ -1569,6 +1569,12 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
         }
         break;
     case 0x0018:
+        if (s->legacy_software && (value >> 32)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: ignoring legacy interrupt-mask upper "
+                          "bits 0x%" PRIx32 "\n", (uint32_t)(value >> 32));
+            value = (uint32_t)value;
+        }
         if (crime_enable_valid(s, value)) {
             s->enable = value;
             crime_update_irq(s);

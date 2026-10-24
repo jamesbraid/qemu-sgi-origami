@@ -890,6 +890,59 @@ static void assert_run_status(QTestState *s, const char *expected)
     g_assert_cmpstr(qdict_get_str(status, "status"), ==, expected);
 }
 
+static void test_interrupt_mask_upper(void)
+{
+    static const uint64_t upper[] = {
+        0, 0x0000000100000000ULL, 0xa1b2c3d400000000ULL,
+        0xffffffff00000000ULL,
+    };
+    static const uint32_t masks[] = { 0, 1U << 4, 1U << 8, 1U << 30 };
+    g_autofree char *directory = g_dir_make_tmp("crime-mask-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+
+    for (unsigned functional = 0; functional < 2; functional++) {
+        g_autofree char *options = g_strdup_printf("%s -D %s",
+            functional ? "-global sgi-crime.functional-memory-transfer=on" : "",
+            path);
+        g_autofree char *contents = NULL;
+        QTestState *s = start_profile(true, options);
+
+        qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+        cause(s, 4, 1);
+        qtest_writeq(s, BASE + 0x20, 1U << 30);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        for (unsigned u = 0; u < ARRAY_SIZE(upper); u++) {
+            qtest_writeq(s, BASE + 0x18, 1U << 4);
+            for (unsigned m = 0; m < ARRAY_SIZE(masks); m++) {
+                g_assert_cmpint(memtx_writeq(s, BASE + 0x18,
+                                            upper[u] | masks[m]), ==, MEMTX_OK);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, masks[m]);
+                assert_outputs(s, masks[m] && masks[m] != (1U << 8));
+                assert_run_status(s, "running");
+            }
+        }
+        if (functional) {
+            qtest_writeq(s, BASE + 0x18, (1U << 4) | (1U << 30));
+            for (unsigned u = 0; u < ARRAY_SIZE(upper); u++) {
+                for (unsigned bit = 22; bit <= 27; bit++) {
+                    g_assert_cmpint(memtx_writeq(s, BASE + 0x18,
+                        upper[u] | (1U << bit) | (1U << 8)), !=, MEMTX_OK);
+                    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==,
+                                    (1U << 4) | (1U << 30));
+                    assert_outputs(s, 1);
+                    assert_stopped(s);
+                }
+            }
+        }
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+        g_assert_nonnull(strstr(contents,
+                               "ignoring legacy interrupt-mask upper bits"));
+    }
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
 static void seed_renderer_state(QTestState *s)
 {
     const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
@@ -2019,6 +2072,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/crime/legacy/error-enable-refusal",
                    test_error_enable_refusal);
     qtest_add_func("/sgi/crime/legacy/register-access", test_register_access);
+    qtest_add_func("/sgi/crime/legacy/interrupt-mask-upper",
+                   test_interrupt_mask_upper);
     qtest_add_func("/sgi/crime/legacy/banks", test_banks);
     qtest_add_func("/sgi/crime/legacy/immutable", test_immutable);
     qtest_add_func("/sgi/crime/legacy/level-latches", test_level_latches);
