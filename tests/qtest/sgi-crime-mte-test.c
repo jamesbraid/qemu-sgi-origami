@@ -456,7 +456,10 @@ static void test_healthy_memory(void)
     g_assert_cmpint(memtx_writeq(s, BASE + 0x260, 0), !=, MEMTX_OK);
     g_assert_cmpint(memtx_readq(s, BASE + 0x268, &value), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x268, 0), !=, MEMTX_OK);
-    g_assert_cmpint(memtx_writeq(s, BASE + 0x270, 1), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_store(s, BASE + 0x270, 0xa5, 8), ==, MEMTX_OK);
+    g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x100, 8), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, 8), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xa5);
     page_pair(s, 0, 0, 3, 9);
     qtest_writel(s, MTE, CLEAR_A);
     qtest_writel(s, MTE + 8, UINT32_MAX);

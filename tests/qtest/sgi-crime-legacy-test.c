@@ -757,7 +757,7 @@ static void test_register_access(void)
                         !=, MEMTX_OK);
     }
     g_assert_cmpint(memtx_writeq(s, BASE + 0x200, 1), !=, MEMTX_OK);
-    g_assert_cmpint(memtx_writeq(s, BASE + 0x270, 1), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x100, 8), !=, MEMTX_OK);
     g_assert_cmpint(memtx_writeq(s, BASE + 0x48, 1), !=, MEMTX_OK);
     assert_stopped(s);
     qtest_quit(s);
@@ -1370,6 +1370,624 @@ static void test_renderer_cpu(gconstpointer data)
     g_rmdir(directory);
 }
 
+static void test_ecc_replacement_stage(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy, "");
+        uint64_t value;
+
+        g_assert_cmpint(memtx_store(s, BASE + 0x270, 0xa5, 8), ==, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, 8), ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, 0xa5);
+        qtest_quit(s);
+    }
+}
+
+static const char *const ecc_error_properties[] = {
+    "cpu-error-address", "cpu-error-status", "memory-error-address",
+    "memory-error-status",
+};
+static const unsigned ecc_observed_registers[] = {
+    0, 8, 0x10, 0x18, 0x20, 0x28, 0x200,
+};
+
+typedef struct EccSnapshot {
+    uint64_t registers[ARRAY_SIZE(ecc_observed_registers)];
+    uint64_t errors[ARRAY_SIZE(ecc_error_properties)];
+    uint8_t ram[32];
+    unsigned outputs;
+} EccSnapshot;
+
+static uint64_t ecc_load(QTestState *s, unsigned offset)
+{
+    uint64_t value;
+
+    g_assert_cmpint(memtx_load(s, BASE + offset, &value, 8), ==, MEMTX_OK);
+    return value;
+}
+
+static void ecc_store(QTestState *s, unsigned offset, uint64_t value)
+{
+    g_assert_cmpint(memtx_store(s, BASE + offset, value, 8), ==, MEMTX_OK);
+}
+
+static char *ecc_options(bool functional, const char *log, const char *extra)
+{
+    return g_strdup_printf("%s -device sgi-crime-test-fixture,id=inject,crime="
+        CRIME_PATH " -D %s %s",
+        functional ? "-global sgi-crime.functional-memory-transfer=on" : "",
+        log, extra);
+}
+
+static void ecc_seed(QTestState *s, bool errors)
+{
+    const uint64_t values[] = {
+        0xfedcba9876543210ULL, 5, 0x23456789, 7U << 25,
+    };
+
+    qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+    ecc_store(s, 0x18, (1U << 4) | (1U << 28));
+    cause(s, 4, 1);
+    ecc_store(s, 0x20, 1U << 28);
+    qtest_memset(s, 0x30000, 0x6c, 32);
+    for (unsigned i = 0; i < ARRAY_SIZE(ecc_error_properties); i++) {
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':%s,'value':%" PRIu64 "}}",
+            ecc_error_properties[i], errors ? values[i] : 0);
+    }
+}
+
+static EccSnapshot ecc_snapshot(QTestState *s)
+{
+    EccSnapshot snapshot = { 0 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(ecc_observed_registers); i++) {
+        snapshot.registers[i] = ecc_load(s, ecc_observed_registers[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(ecc_error_properties); i++) {
+        g_autoptr(QDict) reply = qtest_qmp(s,
+            "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':%s}}", ecc_error_properties[i]);
+
+        snapshot.errors[i] = qdict_get_uint(reply, "return");
+    }
+    qtest_memread(s, 0x30000, snapshot.ram, sizeof(snapshot.ram));
+    for (unsigned i = 0; i < 5; i++) {
+        snapshot.outputs |= qtest_get_irq(s, i) << i;
+    }
+    return snapshot;
+}
+
+static void ecc_unchanged(QTestState *s, const EccSnapshot *before,
+                           unsigned control, unsigned byte)
+{
+    EccSnapshot after = ecc_snapshot(s);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(ecc_observed_registers); i++) {
+        g_assert_cmphex(after.registers[i], ==,
+            ecc_observed_registers[i] == 0x200 ? control :
+                                               before->registers[i]);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(ecc_error_properties); i++) {
+        g_assert_cmphex(after.errors[i], ==, before->errors[i]);
+    }
+    g_assert_cmpmem(after.ram, sizeof(after.ram),
+                    before->ram, sizeof(before->ram));
+    g_assert_cmpuint(after.outputs, ==, before->outputs);
+    g_assert_cmphex(ecc_load(s, 0x270), ==, byte);
+}
+
+static void ecc_no_first_use(const char *path)
+{
+    g_autofree char *contents = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    g_assert_null(strstr(contents, "healthy-memory approximation:"));
+}
+
+static void test_ecc_replacement_values(void)
+{
+    const unsigned repeated[] = { 0xa5, 0x3c, 0xf0, 0, 255, 0x81, 0xa5 };
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            for (unsigned seeded = 0; seeded < 2; seeded++) {
+                g_autofree char *dir =
+                    g_dir_make_tmp("crime-ecc-values-XXXXXX", NULL);
+                g_autofree char *log =
+                    g_build_filename(dir, "device.txt", NULL);
+                g_autofree char *options = ecc_options(functional, log, "");
+                QTestState *s = start_profile(legacy, options);
+                EccSnapshot before;
+
+                g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
+                ecc_seed(s, seeded);
+                before = ecc_snapshot(s);
+                qtest_qmp_assert_success(s, "{'execute':'cont'}");
+                for (unsigned value = 0; value <= 255; value++) {
+                    uint8_t raw[8];
+
+                    ecc_store(s, 0x270, value);
+                    g_assert_cmphex(ecc_load(s, 0x270), ==, value);
+                    qtest_memread(s, BASE + 0x270, raw, sizeof(raw));
+                    for (unsigned i = 0; i < 7; i++) {
+                        g_assert_cmphex(raw[i], ==, 0);
+                    }
+                    g_assert_cmphex(raw[7], ==, value);
+                    ecc_unchanged(s, &before, 0, value);
+                }
+                for (unsigned i = 0; i < ARRAY_SIZE(repeated); i++) {
+                    ecc_store(s, 0x270, repeated[i]);
+                    ecc_store(s, 0x270, repeated[i]);
+                    g_assert_cmphex(ecc_load(s, 0x270), ==, repeated[i]);
+                    ecc_unchanged(s, &before, 0, repeated[i]);
+                }
+                assert_run_status(s, "running");
+                qtest_system_reset(s);
+                g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
+                g_assert_cmphex(ecc_load(s, 0x200), ==, 0);
+                qtest_quit(s);
+                ecc_no_first_use(log);
+                g_unlink(log);
+                g_rmdir(dir);
+            }
+        }
+    }
+}
+
+static void test_ecc_replacement_refusal(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            g_autofree char *dir =
+                g_dir_make_tmp("crime-ecc-refuse-XXXXXX", NULL);
+            g_autofree char *log = g_build_filename(dir, "device.txt", NULL);
+            g_autofree char *options = ecc_options(functional, log, "");
+            QTestState *s = start_profile(legacy, options);
+            uint64_t value;
+            EccSnapshot before;
+
+            ecc_seed(s, true);
+            if (functional) {
+                ecc_store(s, 0x200, 1);
+            }
+            ecc_store(s, 0x270, 0xa5);
+            before = ecc_snapshot(s);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            for (unsigned bit = 8; bit < 64; bit++) {
+                for (unsigned mixed = 0; mixed < 2; mixed++) {
+                    uint64_t bad = (1ULL << bit) | (mixed ? 0x3c : 0);
+
+                    g_assert_cmpint(memtx_store(s, BASE + 0x270, bad, 8),
+                                    !=, MEMTX_OK);
+                    ecc_unchanged(s, &before, functional, 0xa5);
+                }
+            }
+            for (unsigned size = 1; size < 8; size *= 2) {
+                g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x3c, size),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, size),
+                                !=, MEMTX_OK);
+                ecc_unchanged(s, &before, functional, 0xa5);
+                g_assert_cmpint(memtx_store(s, BASE + 0x278 - size, 0x3c, size),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x278 - size,
+                                          &value, size),
+                                !=, MEMTX_OK);
+                ecc_unchanged(s, &before, functional, 0xa5);
+            }
+            for (unsigned delta = 1; delta < 8; delta++) {
+                g_assert_cmpint(memtx_store(s, BASE + 0x270 + delta, 0x3c, 8),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x270 + delta, &value, 8),
+                                !=, MEMTX_OK);
+                ecc_unchanged(s, &before, functional, 0xa5);
+                g_assert_cmpint(memtx_store(s, BASE + 0x270 - delta, 0x3c, 8),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x270 - delta, &value, 8),
+                                !=, MEMTX_OK);
+                ecc_unchanged(s, &before, functional, 0xa5);
+            }
+            if (legacy || functional) {
+                assert_stopped(s);
+            }
+            qtest_quit(s);
+            g_unlink(log);
+            g_rmdir(dir);
+        }
+    }
+}
+
+static void test_ecc_replacement_controls(void)
+{
+    const unsigned staged[] = { 0xa5, 0x3c, 0x81 };
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            for (unsigned old = 0; old <= functional; old++) {
+                for (unsigned zero = 0; zero < 2; zero++) {
+                    g_autofree char *dir =
+                        g_dir_make_tmp("crime-ecc-control-XXXXXX", NULL);
+                    g_autofree char *log =
+                        g_build_filename(dir, "device.txt", NULL);
+                    g_autofree char *options = ecc_options(functional, log, "");
+                    QTestState *s = start_profile(legacy, options);
+                    unsigned byte = zero ? 0 : 0xa5;
+                    EccSnapshot before;
+
+                    ecc_seed(s, !zero);
+                    ecc_store(s, 0x270, byte);
+                    if (legacy || functional) {
+                        ecc_store(s, 0x200, old);
+                    }
+                    before = ecc_snapshot(s);
+                    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+                    if (functional) {
+                        for (unsigned control = 0; control < 2; control++) {
+                            ecc_store(s, 0x200, control);
+                            ecc_unchanged(s, &before, control, byte);
+                            for (unsigned i = 0; i < ARRAY_SIZE(staged); i++) {
+                                ecc_store(s, 0x270, staged[i]);
+                                ecc_unchanged(s, &before, control, staged[i]);
+                            }
+                            ecc_store(s, 0x270, byte);
+                        }
+                        ecc_store(s, 0x200, old);
+                    } else {
+                        g_assert_cmpint(memtx_store(s, BASE + 0x200, 1, 8),
+                                        !=, MEMTX_OK);
+                        ecc_unchanged(s, &before, old, byte);
+                        if (!legacy) {
+                            g_assert_cmpint(memtx_store(s, BASE + 0x200, 0, 8),
+                                            !=, MEMTX_OK);
+                        }
+                    }
+                    for (unsigned control = 2; control <= 3; control++) {
+                        g_assert_cmpint(memtx_store(s, BASE + 0x200,
+                                                   control, 8),
+                                        !=, MEMTX_OK);
+                        ecc_unchanged(s, &before, old, byte);
+                    }
+                    for (unsigned bit = 2; bit < 64; bit++) {
+                        g_assert_cmpint(memtx_store(s, BASE + 0x200,
+                                                   1ULL << bit, 8),
+                                        !=, MEMTX_OK);
+                        ecc_unchanged(s, &before, old, byte);
+                    }
+                    if (legacy || functional) {
+                        assert_stopped(s);
+                    }
+                    qtest_quit(s);
+                    g_unlink(log);
+                    g_rmdir(dir);
+                }
+            }
+        }
+    }
+}
+
+static void test_ecc_replacement_peers(void)
+{
+    const unsigned staged[] = { 0x35, 0xc7 };
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            uint8_t ram[2][32];
+            EccSnapshot snapshots[2];
+
+            for (unsigned peer = 0; peer < 2; peer++) {
+                g_autofree char *dir =
+                    g_dir_make_tmp("crime-ecc-peer-XXXXXX", NULL);
+                g_autofree char *log =
+                    g_build_filename(dir, "device.txt", NULL);
+                g_autofree char *options = ecc_options(functional, log, "");
+                QTestState *s = start_profile(legacy, options);
+                EccSnapshot before;
+                uint64_t value;
+
+                ecc_seed(s, true);
+                ecc_store(s, 0x270, staged[peer]);
+                before = ecc_snapshot(s);
+                g_assert_cmpint(memtx_store(s, 0x30008,
+                                           0x1122334455667788ULL, 8),
+                                ==, MEMTX_OK);
+                stq_be_p(before.ram + 8, 0x1122334455667788ULL);
+                ecc_unchanged(s, &before, 0, staged[peer]);
+                if (functional) {
+                    ecc_store(s, 0x200, 1);
+                    g_assert_cmpint(memtx_store(s, 0x15001700,
+                        0x8000003080000031ULL, 8), ==, MEMTX_OK);
+                    g_assert_cmpint(memtx_store(s, 0x15003000,
+                                               (4U << 2) | 2, 4),
+                                    ==, MEMTX_OK);
+                    g_assert_cmpint(memtx_store(s, 0x15003008, UINT32_MAX, 4),
+                                    ==, MEMTX_OK);
+                    g_assert_cmpint(memtx_store(s, 0x15003018, 0x5b, 4),
+                                    ==, MEMTX_OK);
+                    g_assert_cmpint(memtx_store(s, 0x15003030, 8, 4),
+                                    ==, MEMTX_OK);
+                    g_assert_cmpint(memtx_store(s, 0x15003838, 15, 4),
+                                    ==, MEMTX_OK);
+                    memset(before.ram + 8, 0x5b, 8);
+                    ecc_unchanged(s, &before, 1, staged[peer]);
+                    g_assert_cmpint(memtx_load(s, BASE + 0x260, &value, 8),
+                                    ==, MEMTX_OK);
+                    g_assert_cmphex(value, ==, 0);
+                } else {
+                    g_assert_cmpint(memtx_load(s, BASE + 0x260, &value, 8),
+                                    !=, MEMTX_OK);
+                }
+                if (legacy || functional) {
+                    g_assert_cmphex(ecc_load(s, 0x250), ==, before.errors[3]);
+                    g_assert_cmphex(ecc_load(s, 0x258), ==, before.errors[2]);
+                } else {
+                    g_assert_cmpint(memtx_load(s, BASE + 0x250, &value, 8),
+                                    !=, MEMTX_OK);
+                    g_assert_cmpint(memtx_load(s, BASE + 0x258, &value, 8),
+                                    !=, MEMTX_OK);
+                }
+                g_assert_cmpint(memtx_load(s, BASE + 0x268, &value, 8),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_store(s, BASE + 0x268, 0, 8),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(s, BASE + 0x248, &value, 8),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_store(s, BASE + 0x260, 0, 8),
+                                !=, MEMTX_OK);
+                ecc_unchanged(s, &before, functional, staged[peer]);
+                snapshots[peer] = ecc_snapshot(s);
+                qtest_memread(s, 0x30000, ram[peer], sizeof(ram[peer]));
+                qtest_quit(s);
+                if (!functional) {
+                    ecc_no_first_use(log);
+                }
+                g_unlink(log);
+                g_rmdir(dir);
+            }
+            g_assert_cmpmem(ram[0], sizeof(ram[0]), ram[1], sizeof(ram[1]));
+            g_assert_cmpmem(snapshots[0].registers,
+                            sizeof(snapshots[0].registers),
+                            snapshots[1].registers,
+                            sizeof(snapshots[1].registers));
+            g_assert_cmpmem(snapshots[0].errors, sizeof(snapshots[0].errors),
+                            snapshots[1].errors, sizeof(snapshots[1].errors));
+            g_assert_cmpuint(snapshots[0].outputs, ==, snapshots[1].outputs);
+        }
+    }
+}
+
+static void ecc_migration_seed(QTestState *s, bool legacy)
+{
+    ecc_seed(s, true);
+    if (!legacy) {
+        for (unsigned i = 0; i < 2; i++) {
+            qtest_qmp_assert_success(s,
+                "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+                "'property':%s,'value':0}}", ecc_error_properties[i]);
+        }
+    }
+}
+
+static void test_ecc_replacement_migration(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            for (unsigned control = 0; control <= functional; control++) {
+                g_autofree char *dir =
+                    g_dir_make_tmp("crime-ecc-move-XXXXXX", NULL);
+                g_autofree char *path = g_build_filename(dir, "state", NULL);
+                g_autofree char *from_log =
+                    g_build_filename(dir, "from.txt", NULL);
+                g_autofree char *to_log = g_build_filename(dir, "to.txt", NULL);
+                g_autofree char *quoted = g_shell_quote(path);
+                g_autofree char *outgoing =
+                    g_strdup_printf("exec:cat > %s", quoted);
+                g_autofree char *incoming =
+                    g_strdup_printf("exec:cat %s", quoted);
+                g_autofree char *from_options =
+                    ecc_options(functional, from_log, "");
+                g_autofree char *to_options = ecc_options(functional, to_log,
+                                                         "-incoming defer");
+                QTestState *from = start_profile(legacy, from_options);
+                QTestState *to = start_profile(legacy, to_options);
+                EccSnapshot before;
+                uint8_t ram[32];
+                g_autofree char *stream = NULL;
+                gsize length;
+                const char name[] = "sgi-crime/ecc-replacement";
+                const char *state;
+
+                ecc_migration_seed(from, legacy);
+                qtest_irq_intercept_out_named(to, CRIME_PATH, "cpu-ip");
+                ecc_store(from, 0x270, 0xa5);
+                if (legacy || functional) {
+                    ecc_store(from, 0x200, control);
+                }
+                before = ecc_snapshot(from);
+                ecc_store(to, 0x270, 0x3c);
+                sgi_migrate_stopped(from, outgoing);
+                g_assert_true(g_file_get_contents(path, &stream,
+                                                  &length, NULL));
+                state = memmem(stream, length, name, sizeof(name) - 1);
+                g_assert_nonnull(state);
+                state += sizeof(name) - 1;
+                g_assert_cmphex(ldl_be_p(state), ==, 1);
+                g_assert_cmphex(ldq_be_p(state + 4), ==, 0xa5);
+                qtest_qmp_assert_success(to,
+                    "{'execute':'migrate-incoming','arguments':{'uri':%s}}",
+                    incoming);
+                sgi_wait_migration(to, "completed");
+                ecc_unchanged(to, &before, control, 0xa5);
+                ecc_store(to, 0x270, 0x81);
+                ecc_unchanged(to, &before, control, 0x81);
+                g_assert_cmpint(memtx_store(to, BASE + 0x200, 2, 8),
+                                !=, MEMTX_OK);
+                ecc_unchanged(to, &before, control, 0x81);
+                g_assert_cmpint(memtx_store(to, BASE + 0x200, 3, 8),
+                                !=, MEMTX_OK);
+                ecc_unchanged(to, &before, control, 0x81);
+                qtest_system_reset(to);
+                g_assert_cmphex(ecc_load(to, 0x270), ==, 0);
+                g_assert_cmphex(ecc_load(to, 0x200), ==, 0);
+                qtest_memread(to, 0x30000, ram, sizeof(ram));
+                g_assert_cmpmem(ram, sizeof(ram),
+                                before.ram, sizeof(before.ram));
+                assert_outputs(to, 0);
+                qtest_quit(from);
+                qtest_quit(to);
+                g_unlink(path);
+                g_unlink(from_log);
+                g_unlink(to_log);
+                g_rmdir(dir);
+            }
+        }
+    }
+}
+
+static void test_ecc_replacement_invalid_stream(void)
+{
+    const char name[] = "sgi-crime/ecc-replacement";
+    const char transfer[] = "sgi-crime/linear-transfer";
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned fault = 0; fault < 10; fault++) {
+            g_autofree char *dir =
+                g_dir_make_tmp("crime-ecc-invalid-XXXXXX", NULL);
+            g_autofree char *path = g_build_filename(dir, "state", NULL);
+            g_autofree char *from_log = g_build_filename(dir, "from.txt", NULL);
+            g_autofree char *to_log = g_build_filename(dir, "to.txt", NULL);
+            g_autofree char *quoted = g_shell_quote(path);
+            g_autofree char *outgoing =
+                g_strdup_printf("exec:cat > %s", quoted);
+            g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+            g_autofree char *from_options = ecc_options(true, from_log, "");
+            g_autofree char *to_options = ecc_options(fault != 8, to_log,
+                                                     "-incoming defer");
+            g_autofree char *stream = NULL;
+            gsize size;
+            char *state;
+            QTestState *from = start_profile(legacy, from_options);
+            QTestState *to = start_profile(fault == 7 ? !legacy : legacy,
+                                           to_options);
+            EccSnapshot before;
+
+            ecc_migration_seed(from, legacy);
+            ecc_store(from, 0x270, 0xa5);
+            ecc_store(from, 0x200, 1);
+            ecc_seed(to, true);
+            ecc_store(to, 0x270, 0x5a);
+            ecc_store(to, 0x18, (1U << 8) | (1U << 28));
+            cause(to, 4, 0);
+            cause(to, 8, 1);
+            before = ecc_snapshot(to);
+            sgi_migrate_stopped(from, outgoing);
+            g_assert_true(g_file_get_contents(path, &stream, &size, NULL));
+            state = memmem(stream, size, name, sizeof(name) - 1);
+            g_assert_nonnull(state);
+            state += sizeof(name) - 1;
+            g_assert_cmphex(ldl_be_p(state), ==, 1);
+            g_assert_cmphex(ldq_be_p(state + 4), ==, 0xa5);
+            switch (fault) {
+            case 0:
+                stq_be_p(state + 4, 0x100);
+                break;
+            case 1:
+                stq_be_p(state + 4, 0x80000000000000a5ULL);
+                break;
+            case 2: {
+                char *first = state - (sizeof(name) - 1) - 2;
+                size_t length = 2 + sizeof(name) - 1 + 4 + 8;
+
+                g_assert_cmphex((uint8_t)first[0], ==, 5);
+                g_assert_cmpuint((uint8_t)first[1], ==, sizeof(name) - 1);
+                memmove(first, first + length,
+                        size - (first - stream) - length);
+                size -= length;
+                break;
+            }
+            case 3:
+                stl_be_p(state, 0);
+                break;
+            case 4:
+                stl_be_p(state, 2);
+                break;
+            case 5: case 6:
+                state = memmem(stream, size, transfer, sizeof(transfer) - 1);
+                g_assert_nonnull(state);
+                state += sizeof(transfer) - 1 + 4;
+                /* Existing public transfer test's accepted-control field. */
+                g_assert_cmphex(ldq_be_p(state + 2 + 256 + 40), ==, 1);
+                stq_be_p(state + 2 + 256 + 40, fault == 5 ? 2 : 3);
+                break;
+            case 7: case 8:
+                /* The destination rejects the intact profile/feature tag. */
+                break;
+            case 9: {
+                const char profile[] = "sgi-crime/profile";
+
+                state = memmem(stream, size, profile, sizeof(profile) - 1);
+                g_assert_nonnull(state);
+                state += sizeof(profile) - 1 + 4;
+                state[0] = 2;
+                break;
+            }
+            default:
+                g_assert_not_reached();
+            }
+            g_assert_true(g_file_set_contents(path, stream, size, NULL));
+            qtest_qmp_assert_success(to,
+                "{'execute':'migrate-incoming',"
+                "'arguments':{'uri':%s,'exit-on-error':false}}", incoming);
+            wait_failed(to);
+            ecc_unchanged(to, &before, 0, 0x5a);
+            qtest_quit(from);
+            qtest_quit(to);
+            g_unlink(path);
+            g_unlink(from_log);
+            g_unlink(to_log);
+            g_rmdir(dir);
+        }
+    }
+}
+
+static void test_ecc_replacement_width_stop(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            for (unsigned load = 0; load < 2; load++) {
+                g_autofree char *dir =
+                    g_dir_make_tmp("crime-ecc-width-XXXXXX", NULL);
+                g_autofree char *log =
+                    g_build_filename(dir, "device.txt", NULL);
+                g_autofree char *options = ecc_options(functional, log, "");
+                QTestState *s = start_profile(legacy, options);
+                EccSnapshot before;
+                uint64_t value;
+
+                ecc_seed(s, true);
+                ecc_store(s, 0x270, 0xa5);
+                before = ecc_snapshot(s);
+                qtest_qmp_assert_success(s, "{'execute':'cont'}");
+                if (load) {
+                    g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, 2),
+                                    !=, MEMTX_OK);
+                } else {
+                    g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x3c, 4),
+                                    !=, MEMTX_OK);
+                }
+                if (legacy || functional) {
+                    assert_stopped(s);
+                }
+                ecc_unchanged(s, &before, 0, 0xa5);
+                qtest_quit(s);
+                g_unlink(log);
+                g_rmdir(dir);
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *faults[] = {
@@ -1430,5 +2048,21 @@ int main(int argc, char **argv)
                         test_feature_mismatch);
     qtest_add_data_func("/sgi/crime/legacy/feature-inert-renderer",
                         "empty-renderer-status", test_feature_mismatch);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/stage",
+                   test_ecc_replacement_stage);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/values",
+                   test_ecc_replacement_values);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/refusal",
+                   test_ecc_replacement_refusal);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/controls",
+                   test_ecc_replacement_controls);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/peers",
+                   test_ecc_replacement_peers);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/migration",
+                   test_ecc_replacement_migration);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/invalid-stream",
+                   test_ecc_replacement_invalid_stream);
+    qtest_add_func("/sgi/crime/legacy/ecc-replacement/width-stop",
+                   test_ecc_replacement_width_stop);
     return g_test_run();
 }

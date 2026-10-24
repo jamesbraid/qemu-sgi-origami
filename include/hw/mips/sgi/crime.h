@@ -71,6 +71,9 @@ struct SGICrimeState {
     int64_t timer_epoch_ns;
     uint32_t memory_error_status;
     uint32_t memory_error_address;
+    uint8_t ecc_replacement;
+    uint64_t incoming_ecc_replacement;
+    bool ecc_state_received;
     uint64_t decoded_base;
     uint64_t alias_base;
     uint16_t bank_control[SGI_CRIME_BANK_COUNT];
