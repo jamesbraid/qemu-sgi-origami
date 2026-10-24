@@ -1408,7 +1408,8 @@ class PicIo9DescriptorTests(unittest.TestCase):
             ("unsupported link kind", lambda model: model["links"][0].update(
                 kind="physical-byte-bus"), "unsupported kind"),
             ("wrong source", lambda model: model["links"][0].update(
-                source="fixture-bcm5701"), "must source a DS1742"),
+                source="fixture-bcm5701"),
+             "must source a supported timekeeper"),
             ("wrong kind", lambda model: model["links"][0].update(
                 target="fixture-bcm5701"), "must target an IOC4"),
             ("duplicate", lambda model: model["links"].append(
