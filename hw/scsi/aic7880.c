@@ -321,6 +321,13 @@ static void aic7880_manual_clear(AIC7880State *s)
     s->manual_data = 0;
 }
 
+static void aic7880_pio_retire(AIC7880State *s)
+{
+    s->regs[REG_SSTAT1] &= ~0x11;
+    s->regs[REG_SSTAT0] &= ~2;
+    s->regs[REG_SCSISIGI] &= ~2;
+}
+
 static void aic7880_pio_phase(AIC7880State *s)
 {
     s->regs[REG_SSTAT1] &= ~0x10;
@@ -332,9 +339,7 @@ static void aic7880_pio_phase(AIC7880State *s)
 
 static void aic7880_pio_present(AIC7880State *s)
 {
-    s->regs[REG_SSTAT1] &= ~0x11;
-    s->regs[REG_SSTAT0] &= ~2;
-    s->regs[REG_SCSISIGI] &= ~2;
+    aic7880_pio_retire(s);
     if (aic7880_pio_pending(s)) {
         s->regs[REG_SSTAT1] |= 1;
         s->regs[REG_SCSISIGI] |= 2;
@@ -720,6 +725,8 @@ static void aic7880_cancel(SCSIRequest *req)
         s->peer_data_len = s->peer_data_pos = 0;
         s->req = NULL;
         scsi_req_unref(req);
+        aic7880_pio_retire(s);
+        aic7880_update_scsi_irq(s);
     }
 }
 
@@ -832,6 +839,8 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
         return;
     }
     if (!len) {
+        aic7880_pio_present(s);
+        aic7880_update_scsi_irq(s);
         scsi_req_continue(req);
         return;
     }
@@ -1471,9 +1480,7 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
             }
             s->scsi_data_pos++;
         }
-        s->regs[REG_SCSISIGI] &= ~2;
-        s->regs[REG_SSTAT1] &= ~0x11;
-        s->regs[REG_SSTAT0] &= ~2;
+        aic7880_pio_retire(s);
     } else if (falling) {
         aic7880_manual_clear(s);
         aic7880_pio_advance(s);
@@ -2080,9 +2087,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_error(s, "command PIO outside COMMAND phase");
             break;
         }
-        s->regs[REG_SSTAT0] &= ~0x02;
-        s->regs[REG_SSTAT1] &= ~0x11;
-        s->regs[REG_SCSISIGI] &= ~0x02;
+        aic7880_pio_retire(s);
         if (!aic7880_collect_cdb(s, val)) {
             break;
         }
