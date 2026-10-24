@@ -209,6 +209,10 @@ typedef struct SGIMachineL1Config {
     uint8_t reported_type;
     int32_t revision[3];
     const char *mac_eeprom;
+    bool has_cpu_context;
+    uint32_t cpu_mode_word;
+    uint64_t cpu_clock_hz;
+    uint64_t hub_clock_hz;
 } SGIMachineL1Config;
 
 typedef struct SGIMachineIoConfig {
@@ -405,6 +409,7 @@ struct SGIMachineState {
     bool management_registered;
     bool ip53_fingerprint_enabled;
     bool ip53_fingerprint_registered;
+    bool ip53_fingerprint_finalized;
     uint8_t ip53_local_fingerprint[32];
     uint8_t ip53_incoming_fingerprint[32];
     /* Each Bedrock node's share of machine->ram, in node order. */
@@ -811,6 +816,63 @@ unsigned int sgi_machine_bedrock_node_index(MachineState *machine,
     return SN1_NODE(node)->nasid;
 }
 
+static bool sgi_machine_set_l1_cpu_context(SGIMachineState *s,
+                                           DeviceState *l1,
+                                           unsigned int node_index,
+                                           Error **errp)
+{
+    static const char *const properties[] = {
+        "cpu-context-present", "cpu-mode-word", "cpu-clock-hz",
+        "hub-clock-hz",
+    };
+    g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelController **controllers = NULL;
+    const SGIModelL1CPUContext *context;
+    size_t node_count, module_count, controller_count;
+    const SGIModelNode *node;
+    int32_t controller_index;
+
+    for (size_t i = 0; i < ARRAY_SIZE(properties); i++) {
+        const GlobalProperty *prop = qdev_find_global_prop(OBJECT(l1),
+                                                            properties[i]);
+
+        if (prop) {
+            error_setg(errp, "machine-owned L1 CPU context property '%s' "
+                       "cannot be overridden with -global %s.%s",
+                       properties[i], prop->driver, prop->property);
+            return false;
+        }
+    }
+    if (!s->view || s->view->generation != SGI_MODEL_GENERATION_SN1) {
+        return true;
+    }
+    nodes = sgi_model_node_array(s->view->nodes, &node_count);
+    modules = sgi_model_module_array(s->view->modules, &module_count);
+    controllers = sgi_model_controller_array(s->view->controllers,
+                                              &controller_count);
+    if (node_index >= node_count) {
+        return true;
+    }
+    node = nodes[node_index];
+    if (node->module_index >= module_count) {
+        return true;
+    }
+    controller_index = modules[node->module_index]->controller_index;
+    if (controller_index < 0 || controller_index >= controller_count ||
+        !controllers[controller_index]->l1) {
+        return true;
+    }
+    context = controllers[controller_index]->l1->cpu_context;
+    if (context) {
+        qdev_prop_set_bit(l1, "cpu-context-present", true);
+        qdev_prop_set_uint32(l1, "cpu-mode-word", context->cpu_mode_word);
+        qdev_prop_set_uint64(l1, "cpu-clock-hz", context->cpu_clock_hz);
+        qdev_prop_set_uint64(l1, "hub-clock-hz", context->hub_clock_hz);
+    }
+    return true;
+}
+
 bool sgi_machine_set_l1_identity_records(MachineState *machine,
                                          DeviceState *l1,
                                          unsigned int node_index,
@@ -865,6 +927,9 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
             }
         }
         qdev_prop_set_array(l1, records->name, files);
+    }
+    if (!sgi_machine_set_l1_cpu_context(s, l1, node_index, errp)) {
+        return false;
     }
     return sgi_machine_set_l1_defaults(s, l1, node_index, errp);
 }
@@ -4810,8 +4875,11 @@ static bool sgi_machine_ip53_fingerprint(
           sgi_machine_compare_board_ids);
 
     sgi_machine_fingerprint_update(checksum, domain, sizeof(domain));
-    /* Version 12 distinguishes the PIC requester-width DMA policy. */
-    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 12 : 5);
+    /*
+     * Version 13 distinguishes the PIC requester-width DMA policy and the
+     * optional L1 CPU-context identity.
+     */
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 13 : 6);
     sgi_machine_fingerprint_u8(checksum, runtime_permission);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 1 : 0);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 0);
@@ -4862,6 +4930,17 @@ static bool sgi_machine_ip53_fingerprint(
         sgi_machine_fingerprint_u8(
             checksum,
             l1_config[node_config[i].controller_index].reported_type);
+        {
+            const SGIMachineL1Config *l1 =
+                &l1_config[node_config[i].controller_index];
+
+            sgi_machine_fingerprint_u8(checksum, l1->has_cpu_context);
+            if (l1->has_cpu_context) {
+                sgi_machine_fingerprint_u32(checksum, l1->cpu_mode_word);
+                sgi_machine_fingerprint_u64(checksum, l1->cpu_clock_hz);
+                sgi_machine_fingerprint_u64(checksum, l1->hub_clock_hz);
+            }
+        }
         sgi_machine_fingerprint_u64(checksum, node->identity->clock_hz);
         sgi_machine_fingerprint_u32(checksum,
                                     node->identity->ni_revision);
@@ -5024,6 +5103,34 @@ static int sgi_machine_ip53_fingerprint_pre_save(void *opaque)
     return 0;
 }
 
+static void sgi_machine_finalize_ip53_fingerprint(SGIMachineState *s)
+{
+    static const uint8_t domain[] = "sgi-ip53-effective-l1-eeprom";
+    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    uint8_t digest[32], eeprom_digest[32];
+    gsize digest_length = sizeof(digest);
+
+    g_assert(!s->ip53_fingerprint_finalized);
+    g_assert(s->bedrock_nodes);
+    g_checksum_update(checksum, domain, sizeof(domain));
+    g_checksum_update(checksum, s->ip53_local_fingerprint,
+                      sizeof(s->ip53_local_fingerprint));
+    sgi_machine_fingerprint_u32(checksum, s->num_nodes);
+    for (unsigned i = 0; i < s->num_nodes; i++) {
+        DeviceState *controller = SN1_NODE(s->bedrock_nodes[i])->l1;
+
+        g_assert(controller);
+        sgi_machine_fingerprint_u32(checksum, i);
+        sgi_l1_eeprom_digest(controller, eeprom_digest);
+        sgi_machine_fingerprint_update(checksum, eeprom_digest,
+                                       sizeof(eeprom_digest));
+    }
+    g_checksum_get_digest(checksum, digest, &digest_length);
+    g_assert(digest_length == sizeof(digest));
+    memcpy(s->ip53_local_fingerprint, digest, sizeof(digest));
+    s->ip53_fingerprint_finalized = true;
+}
+
 static bool sgi_machine_ip53_fingerprint_post_load(void *opaque,
                                                     int version_id,
                                                     Error **errp)
@@ -5059,6 +5166,7 @@ static const VMStateDescription vmstate_sgi_machine_ip53_fingerprint = {
 static void sgi_machine_register_ip53_fingerprint(SGIMachineState *s)
 {
     if (s->ip53_fingerprint_enabled) {
+        sgi_machine_finalize_ip53_fingerprint(s);
         vmstate_register_any(NULL, &vmstate_sgi_machine_ip53_fingerprint, s);
         s->ip53_fingerprint_registered = true;
     }
@@ -6338,8 +6446,7 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         SGIMachineL1Config *resolved = &s->l1_config[i];
         uint64_t value;
         bool present;
-
-        bool owns_node = false;
+        size_t owner_node = node_count;
 
         if (!config) {
             continue;
@@ -6347,11 +6454,11 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         for (size_t n = 0; n < node_count; n++) {
             if (nodes[n]->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK &&
                 s->node_config[n].controller_index == i) {
-                owns_node = true;
+                owner_node = n;
                 break;
             }
         }
-        if (!owns_node) {
+        if (owner_node == node_count) {
             error_setg(errp, "topology '%s' controller '%s' has L1 "
                        "configuration without a modeled Bedrock node",
                        t->name, controllers[i]->id);
@@ -6395,6 +6502,43 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         }
         if (present) {
             resolved->mac_eeprom = s->fuel_mac_eeprom;
+        }
+        if (config->cpu_context) {
+            const SGIModelL1CPUContext *context = config->cpu_context;
+            const SGIModelNode *node = nodes[owner_node];
+            const SGIModelProcessor *processor = NULL;
+            const SGIModelCpuSlotList *slot;
+
+            for (slot = node->cpu_slots; slot; slot = slot->next) {
+                if (slot->value->assembly) {
+                    processor = slot->value->assembly;
+                    break;
+                }
+            }
+            if (!node->has_board_kind ||
+                node->board_kind != SGI_MODEL_BOARD_KIND_IP53 ||
+                !t->ip35_firmware ||
+                context->cpu_mode_word != t->ip35_firmware->cpu_mode_word ||
+                !processor || !processor->has_mode_bits ||
+                (context->cpu_mode_word & 0x01ffffff) !=
+                (processor->mode_bits & 0x01ffffff) ||
+                context->cpu_clock_hz != processor->clock_hz ||
+                !node->identity || !node->identity->has_clock_hz ||
+                context->hub_clock_hz != node->identity->clock_hz ||
+                !context->cpu_clock_hz || !context->hub_clock_hz ||
+                context->cpu_clock_hz % 1000000 ||
+                context->hub_clock_hz % 1000000 ||
+                context->cpu_clock_hz / 1000000 > UINT32_MAX ||
+                context->hub_clock_hz / 1000000 > UINT32_MAX) {
+                error_setg(errp, "topology '%s' controller '%s' has an "
+                           "invalid IP53 CPU context", t->name,
+                           controllers[i]->id);
+                return false;
+            }
+            resolved->has_cpu_context = true;
+            resolved->cpu_mode_word = context->cpu_mode_word;
+            resolved->cpu_clock_hz = context->cpu_clock_hz;
+            resolved->hub_clock_hz = context->hub_clock_hz;
         }
     }
     for (i = 0; i < board_count; i++) {

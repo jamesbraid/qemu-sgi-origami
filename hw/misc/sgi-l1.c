@@ -3020,6 +3020,14 @@ static void l1_ia_text(GByteArray *area, const char *text)
     l1_ia_field(area, L1_IA_ASCII, text, strlen(text));
 }
 
+static void l1_ia_u32(GByteArray *area, uint32_t value)
+{
+    uint8_t data[4];
+
+    stl_be_p(data, value);
+    l1_ia_field(area, L1_IA_BINARY, (const char *)data, sizeof(data));
+}
+
 /* Pads to a multiple of eight bytes and appends the zero-sum checksum. */
 static void l1_ia_finish(SGIL1EEPROM *record, GByteArray *area)
 {
@@ -3039,6 +3047,12 @@ static void l1_ia_finish(SGIL1EEPROM *record, GByteArray *area)
     record->invalid = false;
 }
 
+typedef struct SGIL1CPUContext {
+    uint32_t mode_word;
+    uint32_t cpu_mhz;
+    uint32_t hub_mhz;
+} SGIL1CPUContext;
+
 /* The chassis area: both identity strings the placeholder "NA". */
 static void l1_build_chassis_area(SGIL1EEPROM *record)
 {
@@ -3055,9 +3069,10 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
 
 /*
  * A board area: placeholder manufacturer "SYNTHETIC", a marked synthetic
- * serial and a zero date, the given name, part and revision, zeroed unknown
- * binary fields, and for an I/O board the twelve ASCII hex digits of its
- * station address after them. The serial is component @letter's, instance
+ * serial and a zero date, the given name, part and revision, and zeroed
+ * placeholder fields. An optional IP53 CPU context is separate from the
+ * identity prefix. An I/O board also carries its station address. The serial
+ * is component @letter's, instance
  * @index: "EMUN00" for node 0's board. On the model, with "000000" here
  * the stock IP35 PROM reported after every reset that the NVRAM did not
  * belong to this system and reinitialized it, and with the marked serials
@@ -3066,17 +3081,21 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
 static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
                                 const char *part, const char *revision,
                                 const uint8_t *mac, char letter,
-                                unsigned int index)
+                                unsigned int index,
+                                const SGIL1CPUContext *cpu_context)
 {
     static const char zeros[4];
     GByteArray *area = g_byte_array_new();
     uint8_t header[6] = { 0 };
-    uint8_t fru_file = 0, eof = L1_IA_EOF;
+    uint8_t fru_file = 0, eof = L1_IA_EOF, type_three = 0x03;
     char serial[SGI_SYNTHETIC_TEXT_MIN_WIDTH + 1];
 
     sgi_synthetic_text_serial(serial, SGI_SYNTHETIC_TEXT_MIN_WIDTH, letter,
                               index);
     g_byte_array_append(area, header, sizeof(header));
+    if (cpu_context) {
+        area->data[0] = 0x02;
+    }
     l1_ia_text(area, "SYNTHETIC");
     l1_ia_text(area, name);
     l1_ia_text(area, serial);
@@ -3085,6 +3104,21 @@ static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
     l1_ia_text(area, revision);
     l1_ia_field(area, L1_IA_BINARY, zeros, 1);
     l1_ia_text(area, "00");
+    if (cpu_context) {
+        l1_ia_field(area, L1_IA_BINARY, (const char *)&type_three, 1);
+        static const char empty;
+
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_u32(area, cpu_context->mode_word);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_u32(area, cpu_context->hub_mhz);
+        l1_ia_u32(area, cpu_context->cpu_mhz);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
+    }
     for (unsigned i = 0; i < 3; i++) {
         l1_ia_field(area, L1_IA_BINARY, zeros, sizeof(zeros));
     }
@@ -3146,6 +3180,8 @@ static bool l1_component_selected(SGIL1State *s, unsigned component)
 static bool l1_build_identity(SGIL1State *s, Error **errp)
 {
     bool io8 = false, mac_text = false, system_board = false;
+    SGIL1CPUContext cpu_context;
+    const SGIL1CPUContext *cpu_context_ptr = NULL;
     uint8_t mac[6];
 
     if (s->mac_record && s->mac_record[0]) {
@@ -3186,6 +3222,28 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
                    "revision");
         return false;
     }
+    if ((s->cpu_mode_word || s->cpu_clock_hz || s->hub_clock_hz) &&
+        !s->cpu_context_present) {
+        error_setg(errp, "L1 CPU context values need cpu-context-present");
+        return false;
+    }
+    if (s->cpu_context_present &&
+        (!s->cpu_clock_hz || !s->hub_clock_hz ||
+         s->cpu_clock_hz % 1000000 || s->hub_clock_hz % 1000000 ||
+         s->cpu_clock_hz / 1000000 > UINT32_MAX ||
+         s->hub_clock_hz / 1000000 > UINT32_MAX)) {
+        error_setg(errp, "L1 CPU context clocks must be positive integral "
+                   "MHz values that fit 32 bits");
+        return false;
+    }
+    if (s->cpu_context_present) {
+        cpu_context = (SGIL1CPUContext) {
+            .mode_word = s->cpu_mode_word,
+            .cpu_mhz = s->cpu_clock_hz / 1000000,
+            .hub_mhz = s->hub_clock_hz / 1000000,
+        };
+        cpu_context_ptr = &cpu_context;
+    }
     if (s->node_board_name &&
         (strlen(s->node_board_name) > 0x3f ||
          strlen(s->node_board_part) > 0x3f ||
@@ -3199,14 +3257,19 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         return false;
     }
 
-    if (s->node_board_name && !l1_component_selected(s, 0)) {
+    if ((s->node_board_name || s->cpu_context_present) &&
+        !l1_component_selected(s, 0)) {
         if (!s->records[0].length) {
             l1_build_chassis_area(&s->records[0]);
         }
         if (!s->records[16].length) {
-            l1_build_board_area(&s->records[16], s->node_board_name,
-                                s->node_board_part, s->node_board_revision,
-                                NULL, 'N', s->identity_index);
+            l1_build_board_area(&s->records[16],
+                                s->node_board_name ? s->node_board_name : "",
+                                s->node_board_part ? s->node_board_part : "",
+                                s->node_board_revision ?
+                                    s->node_board_revision : "",
+                                NULL, 'N', s->identity_index,
+                                cpu_context_ptr);
         }
     }
     if (io8 && !l1_component_selected(s, 1)) {
@@ -3215,7 +3278,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         }
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], "IO8", "NOTOBSERVED0", "00",
-                                mac, 'I', s->identity_index);
+                                mac, 'I', s->identity_index, NULL);
         }
         /* A supplied board area carries its own address, if it has one. */
         s->board_mac_valid = l1_io8_board_mac(&s->records[17], s->board_mac);
@@ -3239,7 +3302,7 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
         if (!s->records[17].length) {
             l1_build_board_area(&s->records[17], s->node_board_name,
                                 s->node_board_part, s->node_board_revision,
-                                s->board_mac, 'N', s->identity_index);
+                                s->board_mac, 'N', s->identity_index, NULL);
         }
     }
     return true;
@@ -3592,6 +3655,59 @@ bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6])
     return true;
 }
 
+void sgi_l1_eeprom_digest(DeviceState *dev, uint8_t digest[32])
+{
+    static const uint8_t domain[] = "sgi-l1-effective-eeprom";
+    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
+    SGIL1State *s = SGI_L1(dev);
+    gsize digest_length = 32;
+
+    g_assert(qdev_is_realized(dev));
+    g_checksum_update(checksum, domain, sizeof(domain));
+    for (unsigned area = 0; area < 3; area++) {
+        for (unsigned component = 0; component < 16; component++) {
+            const SGIL1EEPROM *record =
+                &s->records[area * 16 + component];
+            uint8_t metadata[7] = { area, component, record->invalid };
+
+            stl_be_p(metadata + 3, record->length);
+            g_checksum_update(checksum, metadata, sizeof(metadata));
+            if (record->length) {
+                g_checksum_update(checksum, record->data, record->length);
+            }
+        }
+    }
+    for (unsigned component = 0; component < ARRAY_SIZE(s->selected);
+         component++) {
+        const SGIL1SelectedEEPROM *record = &s->selected[component];
+        uint8_t metadata[4] = { 3, component, record->present, record->kind };
+
+        g_checksum_update(checksum, metadata, sizeof(metadata));
+        if (record->present) {
+            for (unsigned area = 0; area < ARRAY_SIZE(record->start); area++) {
+                uint8_t selected_area[10] = {
+                    area, record->status[area],
+                };
+
+                stl_be_p(selected_area + 2, record->start[area]);
+                stl_be_p(selected_area + 6, record->length[area]);
+                g_checksum_update(checksum, selected_area,
+                                  sizeof(selected_area));
+                if (record->status[area] == 0 && record->length[area]) {
+                    g_assert(record->start[area] <= record->capacity);
+                    g_assert(record->length[area] <=
+                             record->capacity - record->start[area]);
+                    g_checksum_update(checksum,
+                                      record->image + record->start[area],
+                                      record->length[area]);
+                }
+            }
+        }
+    }
+    g_checksum_get_digest(checksum, digest, &digest_length);
+    g_assert(digest_length == 32);
+}
+
 static char *l1_display_get(Object *obj, Error **errp)
 {
     return g_strdup((char *)SGI_L1(obj)->display[1]);
@@ -3855,6 +3971,11 @@ static const Property l1_properties[] = {
     DEFINE_PROP_STRING("mac-record", SGIL1State, mac_record),
     DEFINE_PROP_STRING("node-board-name", SGIL1State, node_board_name),
     DEFINE_PROP_STRING("node-board-part", SGIL1State, node_board_part),
+    DEFINE_PROP_BOOL("cpu-context-present", SGIL1State,
+                     cpu_context_present, false),
+    DEFINE_PROP_UINT32("cpu-mode-word", SGIL1State, cpu_mode_word, 0),
+    DEFINE_PROP_UINT64("cpu-clock-hz", SGIL1State, cpu_clock_hz, 0),
+    DEFINE_PROP_UINT64("hub-clock-hz", SGIL1State, hub_clock_hz, 0),
     DEFINE_PROP_UINT8("identity-index", SGIL1State, identity_index, 0),
     DEFINE_PROP_STRING("node-board-revision", SGIL1State,
                        node_board_revision),

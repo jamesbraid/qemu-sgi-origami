@@ -22493,6 +22493,11 @@
           "id": "l1",
           "kind": "l1",
           "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 800000000,
+              "cpu-mode-word": 1453109125,
+              "hub-clock-hz": 200000000
+            },
             "reported-type": 55,
             "revision": {
               "major": 1,
@@ -22550,7 +22555,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 10268549,
+        "cpu-mode-word": 1453109125,
         "machine-type": 1
       },
       "junk-uart": -1,
@@ -34915,6 +34920,11 @@
           "id": "l1",
           "kind": "l1",
           "l1": {
+            "cpu-context": {
+              "cpu-clock-hz": 700000000,
+              "cpu-mode-word": 1453108613,
+              "hub-clock-hz": 200000000
+            },
             "reported-type": 55,
             "revision": {
               "major": 1,
@@ -34972,7 +34982,7 @@
         }
       ],
       "ip35-firmware": {
-        "cpu-mode-word": 10268037,
+        "cpu-mode-word": 1453108613,
         "machine-type": 1
       },
       "junk-uart": -1,

@@ -206,6 +206,10 @@ struct SGIL1State {
     char *node_board_name;
     char *node_board_part;
     char *node_board_revision;
+    bool cpu_context_present;
+    uint32_t cpu_mode_word;
+    uint64_t cpu_clock_hz;
+    uint64_t hub_clock_hz;
     /* The instance the synthetic board-area serials name: the node's. */
     uint8_t identity_index;
     /* The address the identity records carry, for the onboard Ethernet. */
@@ -257,6 +261,7 @@ struct SGIL1State {
 };
 
 bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6]);
+void sgi_l1_eeprom_digest(DeviceState *dev, uint8_t digest[32]);
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */
 struct SGIL1UARTState {

@@ -303,6 +303,8 @@
 #
 # Reported identity and allowed inputs for a node's shared controller.
 #
+# @cpu-context: selected firmware inputs for the node board's CPU
+#     context record
 # @reported-type: raw type response, when known
 # @revision: reported version, when available
 # @mac-eeprom-input: input supplying this controller's MAC EEPROM
@@ -311,9 +313,28 @@
 # Since: 11.2
 ##
 { 'struct': 'SGIModelL1Config',
-  'data': { '*reported-type': 'uint8',
+  'data': { '*cpu-context': 'SGIModelL1CPUContext',
+            '*reported-type': 'uint8',
             '*revision': 'SGIModelL1Revision',
             '*mac-eeprom-input': 'SGIModelInputBinding' } }
+
+##
+# @SGIModelL1CPUContext:
+#
+# Selected IP53 firmware values for a generated type-3 CPU context.
+# Clock fields use hertz; the L1 record stores integer MHz values.
+# These are emulator inputs, not physical EEPROM contents.
+#
+# @cpu-mode-word: full 32-bit firmware Config0 word
+# @cpu-clock-hz: selected processor clock
+# @hub-clock-hz: selected Hub clock
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1CPUContext',
+  'data': { 'cpu-mode-word': 'uint32',
+            'cpu-clock-hz': 'uint64',
+            'hub-clock-hz': 'uint64' } }
 
 ##
 # @SGIModelPciFunctionKind:
@@ -1379,8 +1400,9 @@
 # @machine-type: the configuration block's machine type: 1 (SN10) for
 #     Origin 300, 2 (SN11) for Fuel
 #
-# @cpu-mode-word: the whole reset-mode word the block records for the
-#     fitted processor module
+# @cpu-mode-word: firmware configuration value copied to the PROM
+#     IP53 profiles may carry the full word separately from CPU reset
+#     input
 #
 # Since: 11.2
 ##

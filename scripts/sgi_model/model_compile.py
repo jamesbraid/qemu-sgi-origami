@@ -3091,6 +3091,7 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
         modules = [_compile_module(model, module["id"], module["index"],
                                     graph["nodes"], controllers, graph["io_peers"])
                    for module in graph["modules"]]
+        _attach_ip53_l1_cpu_context(model, nodes, modules, controllers)
         if generation == "SN0":
             _check_module_onewire_parts(model, modules)
         used_l1 = set()
@@ -3244,9 +3245,10 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
 
 def _compile_ip35_firmware(model: dict) -> dict:
     """The product values an IP35 PROM's flash configuration block
-    carries, from the product's own `machine.emulation.ip35_firmware`.
-    Every SN1 product authors them; Origin 300 and Fuel differ in machine
-    type, so neither may default to the other's.
+    carries. IP53 products may source the full word from their firmware
+    configuration; other products keep their existing explicit values.
+    Origin 300 and Fuel differ in machine type, so neither may default to
+    the other's.
     """
     machine = model["machine"]
     firmware = machine.get("emulation", {}).get("ip35_firmware")
@@ -3262,11 +3264,14 @@ def _compile_ip35_firmware(model: dict) -> dict:
             raise CompileError(
                 "machine.firmware_config is absent; the IP53 runtime "
                 "profile needs its firmware values")
+        mode_word = ("processor_firmware_word"
+                     if "processor_firmware_word" in firmware else
+                     "processor_reset_mode")
         return {
             "machine_type": _integer(
                 firmware, "machine_type", "machine.firmware_config", 32),
             "cpu_mode_word": _integer(
-                firmware, "processor_reset_mode", "machine.firmware_config", 32),
+                firmware, mode_word, "machine.firmware_config", 32),
         }
     if not isinstance(firmware, dict):
         raise CompileError(
@@ -3274,6 +3279,72 @@ def _compile_ip35_firmware(model: dict) -> dict:
             "needs its IP35 flash configuration values")
     return {"machine_type": firmware["machine_type"],
             "cpu_mode_word": firmware["cpu_mode_word"]}
+
+
+def _attach_ip53_l1_cpu_context(model: dict, nodes: list[dict],
+                                modules: list[dict],
+                                controllers: list[dict]) -> None:
+    """Attach the selected full firmware word and resolved node clocks to
+    each L1 that owns an opted-in IP53 node.
+    """
+    firmware = model.get("machine", {}).get("firmware_config", {})
+    if (not isinstance(firmware, dict) or
+            "processor_firmware_word" not in firmware):
+        return
+
+    word = _integer(firmware, "processor_firmware_word",
+                    "machine.firmware_config", 32)
+    for node in nodes:
+        if node.get("board_kind") != "ip53":
+            raise CompileError(
+                "processor_firmware_word requires an IP53 Bedrock node")
+        assembly = next((slot["assembly"] for slot in node["cpu_slots"]
+                         if slot.get("assembly") is not None), None)
+        if not assembly:
+            raise CompileError(f"IP53 node '{node['id']}' has no fitted CPU")
+        reset_mode = _integer(assembly, "mode_bits",
+                              f"IP53 node '{node['id']}' processor", 32)
+        if (word & 0x01ffffff) != (reset_mode & 0x01ffffff):
+            raise CompileError(
+                f"processor_firmware_word low 25 bits disagree with the "
+                f"fitted reset mode on IP53 node '{node['id']}'")
+        cpu_hz = _integer(assembly, "clock_hz",
+                          f"IP53 node '{node['id']}' processor", 64)
+        for cpu_slot in node["cpu_slots"]:
+            fitted = cpu_slot.get("assembly")
+            if fitted is None:
+                continue
+            slot_mode = _integer(fitted, "mode_bits",
+                                 f"IP53 node '{node['id']}' processor", 32)
+            slot_hz = _integer(fitted, "clock_hz",
+                               f"IP53 node '{node['id']}' processor", 64)
+            if ((word & 0x01ffffff) != (slot_mode & 0x01ffffff) or
+                    cpu_hz != slot_hz):
+                raise CompileError(
+                    f"IP53 node '{node['id']}' CPUs do not share the "
+                    "context reset mode and clock")
+        hub_hz = _integer(node.get("identity", {}), "clock_hz",
+                          f"IP53 node '{node['id']}' Hub", 64)
+        for label, frequency in (("CPU", cpu_hz), ("Hub", hub_hz)):
+            if frequency == 0 or frequency % 1_000_000:
+                raise CompileError(
+                    f"IP53 node '{node['id']}' {label} clock must be a "
+                    "positive integral number of MHz")
+            if frequency // 1_000_000 > 0xffffffff:
+                raise CompileError(
+                    f"IP53 node '{node['id']}' {label} clock does not fit "
+                    "the L1 CPU context")
+        module = modules[node["module_index"]]
+        controller_index = module["controller_index"]
+        if (controller_index < 0 or controller_index >= len(controllers) or
+                "l1" not in controllers[controller_index]):
+            raise CompileError(
+                f"IP53 node '{node['id']}' has no configured L1 controller")
+        controllers[controller_index]["l1"]["cpu_context"] = {
+            "cpu_mode_word": word,
+            "cpu_clock_hz": cpu_hz,
+            "hub_clock_hz": hub_hz,
+        }
 
 
 def _compile_ip27_firmware(model: dict) -> dict:
