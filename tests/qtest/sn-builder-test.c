@@ -2869,26 +2869,24 @@ typedef struct IP53RuntimeTestFixture {
 
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     const char *binary_var, const char *machine, const char *extra,
-    const char *memory, const char *reset_mode);
+    const char *cpus, const char *memory, const char *reset_mode);
 
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary(
     const char *binary_var, const char *machine, const char *extra)
 {
     return ip53_runtime_test_start_with_binary_profile(
-        binary_var, machine, extra, "2G", "0x009cad85");
+        binary_var, machine, extra, "4", "2G", "0x009cad85");
 }
 
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     const char *binary_var, const char *machine, const char *extra,
-    const char *memory, const char *reset_mode)
+    const char *cpus, const char *memory, const char *reset_mode)
 {
     g_autoptr(GError) err = NULL;
     g_autofree char *arguments = NULL;
     const char *scache_bytes = g_str_has_prefix(
         machine, "onyx4-host,") ? "0x1000000" :
-        g_str_has_prefix(
-            machine, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial")
-        ? "0x400000" : "0x800000";
+        g_str_has_prefix(machine, "tezro,") ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int flash_fd, data_fd, clock_fd;
 
@@ -2908,13 +2906,13 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     g_assert_cmpint(ftruncate(clock_fd, 16), ==, 0);
     g_assert_cmpint(close(clock_fd), ==, 0);
     arguments = g_strdup_printf(
-        "-M %s -m %s -smp 4 "
+        "-M %s -m %s -smp %s "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=%s,r16000-scache-bytes=%s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-display none -S %s", machine, memory, reset_mode, scache_bytes,
+        "-display none -S %s", machine, memory, cpus, reset_mode, scache_bytes,
         fixture->flash_path, fixture->data_path,
         fixture->clock_path,
         extra ? extra : "");
@@ -2934,7 +2932,8 @@ static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture);
 static void test_onyx4_host_ip53_compatibility_construction(void)
 {
     IP53RuntimeTestFixture *fixture = ip53_runtime_test_start_with_binary_profile(
-        NULL, "onyx4-host,ip53-experimental=on", NULL, "8G", "0x009dad85");
+        NULL, "onyx4-host,ip53-experimental=on", NULL, "4", "8G",
+        "0x009dad85");
     QTestState *qts = fixture->qts;
     g_autofree char *pic = qom_child_type(qts, "/machine", "pic-pic");
     g_autofree char *ioc4 = qom_child_type(
@@ -3013,7 +3012,7 @@ static void test_tezro_trial_builds_two_pic_hosts(void)
     IP53RuntimeTestFixture *fixture =
         ip53_runtime_test_start_with_binary_profile(
         NULL, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial,"
-        "ip53-experimental=on", NULL, "4G", "0x009bad85");
+        "ip53-experimental=on", NULL, "4", "4G", "0x009bad85");
     g_autofree char *pic_b = qom_child_type(fixture->qts, "/machine",
                                            "pic-pic-xio-b");
     g_autofree char *pic_f = qom_child_type(fixture->qts, "/machine",
@@ -3091,12 +3090,39 @@ static void test_tezro_trial_builds_two_pic_hosts(void)
     ip53_runtime_test_stop(fixture);
 }
 
+static void test_tezro_named_serial_profiles_build(void)
+{
+    static const struct {
+        const char *topology;
+        const char *cpus;
+    } profiles[] = {
+        { "tezro-tower-one", "1" },
+        { "tezro-tower-multi", "4" },
+        { "tezro-rack-base", "1" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "tezro,topology=%s,ip53-experimental=on", profiles[i].topology);
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, machine, NULL, profiles[i].cpus, "4G", "0x009bad85");
+        g_autofree char *pic = qom_child_type(
+            fixture->qts, "/machine", "pic-pic-xio-f");
+
+        g_assert_true(qom_get_bool(fixture->qts, "/machine",
+                                   "ip53-experimental"));
+        g_assert_cmpstr(pic, ==, "sgi-pic");
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
 static IP53RuntimeTestFixture *ip53_onyx350_runtime_test_start(
     const char *extra)
 {
     return ip53_runtime_test_start_with_binary_profile(
         NULL, "onyx350,topology=onyx350-compat,ip53-experimental=on",
-        extra, "8G", "0x009caf85");
+        extra, "4", "8G", "0x009caf85");
 }
 
 static void ip53_runtime_test_stop(IP53RuntimeTestFixture *fixture)
@@ -8922,6 +8948,8 @@ int main(int argc, char **argv)
                    test_onyx4_host_ip53_compatibility_construction);
     qtest_add_func("sn/builder/tezro-trial-builds-two-pic-hosts",
                    test_tezro_trial_builds_two_pic_hosts);
+    qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
+                   test_tezro_named_serial_profiles_build);
     qtest_add_func(
         "sn/builder/ip53-origin-to-onyx-machine-type-migration-refused",
         test_ip53_origin_to_onyx_machine_type_migration_refused);
