@@ -1258,7 +1258,8 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * The overlay planes as a colour target, a bit beside the bank and slot
  * bits. The IRIX 6.5.30 IP27GR532 libGLcore.so's draw-buffer routine
  * (__glMgrasDrawBuffer, 0xd95f810) sends 0x48 as the triple's first word
- * for GL_FRONT and GL_BACK, and 0x43 for GL_FRONT_AND_BACK, when a flag in
+ * for GL_FRONT, and for GL_BACK on a shallow visual (a deep visual's
+ * GL_BACK sends 4 first), and 0x43 for GL_FRONT_AND_BACK, when a flag in
  * its context (offset 0xce4) is set, and 1 to 0xf otherwise; established
  * from that listing. SceneViewer's logo context, the only context of that
  * program's overlay scene graph (SoXtRenderArea::setOverlaySceneGraph on
@@ -1268,6 +1269,12 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * the overlay. That bit 6 names the overlay planes is inferred from those
  * observations; what bits 3:0 add beside it is unknown, and the model
  * draws such a word into the overlay alone.
+ *
+ * Overlay index stores pass the same ownership test as the main planes:
+ * the drawable's clip rectangles and the main planes' two-bit clip ID
+ * under the context's accept mask (mgras_gl_owns()). Whether the board
+ * gates overlay writes by the main planes' clip ID is not established;
+ * gating them so is a model choice.
  */
 #define MGRAS_GL_OVERLAY_TARGET  0x10
 
