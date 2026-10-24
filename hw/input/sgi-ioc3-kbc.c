@@ -109,13 +109,14 @@ static void sgi_ioc3_kbc_drained(SGIIOC3KBCState *s)
 static void sgi_ioc3_kbc_fill(SGIIOC3KBCState *s, unsigned int port)
 {
     SGIIOC3KBCPort *p = &s->port[port];
-    PS2State *ps2 = sgi_ioc3_kbc_ps2(s, port);
+    PS2State *ps2;
     unsigned int clamp = sgi_ioc3_kbc_clamp(s, port);
     bool arrived = false;
 
-    if (s->filling) {
+    if (!s->ports_present || s->filling) {
         return;
     }
+    ps2 = sgi_ioc3_kbc_ps2(s, port);
     s->filling = true;
 
     while (!ps2_queue_empty(ps2)) {
@@ -254,17 +255,29 @@ static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr) {
     case SGI_IOC3_KBC_CONTROL:
         s->control = val & SGI_IOC3_KBC_CONTROL_MASK;
+        if (val & (SGI_IOC3_KBC_CTRL_EMULATION |
+                   SGI_IOC3_KBC_CTRL_FAST_CLOCK)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-ioc3-kbc: emulation/fast-clock effects "
+                          "are not modeled\n");
+        }
         /* Releasing a clamp lets a stopped device start sending again. */
         sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_KBD);
         sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_AUX);
         return;
 
     case SGI_IOC3_KBC_KBD_TRANSMIT:
-        ps2_write_keyboard(&s->kbd, val & 0xff);
-        return;
-
     case SGI_IOC3_KBC_AUX_TRANSMIT:
-        ps2_write_mouse(&s->mouse, val & 0xff);
+        if (!s->ports_present) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-ioc3-kbc: transmit on an unwired port\n");
+            return;
+        }
+        if (addr == SGI_IOC3_KBC_KBD_TRANSMIT) {
+            ps2_write_keyboard(&s->kbd, val & 0xff);
+        } else {
+            ps2_write_mouse(&s->mouse, val & 0xff);
+        }
         return;
 
     default:
@@ -290,6 +303,15 @@ static void sgi_ioc3_kbc_realize(DeviceState *dev, Error **errp)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
 
+    if (!s->ports_present) {
+        return;
+    }
+    if (!s->ports_initialized) {
+        object_initialize_child(OBJECT(s), "kbd", &s->kbd, TYPE_PS2_KBD_DEVICE);
+        object_initialize_child(OBJECT(s), "mouse", &s->mouse,
+                                TYPE_PS2_MOUSE_DEVICE);
+        s->ports_initialized = true;
+    }
     if (!qdev_realize(DEVICE(&s->kbd), BUS(&s->kbc_bus), errp)) {
         return;
     }
@@ -308,8 +330,10 @@ static void sgi_ioc3_kbc_unrealize(DeviceState *dev)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
 
-    qdev_unrealize(DEVICE(&s->kbd));
-    qdev_unrealize(DEVICE(&s->mouse));
+    if (s->ports_present) {
+        qdev_unrealize(DEVICE(&s->kbd));
+        qdev_unrealize(DEVICE(&s->mouse));
+    }
 }
 
 static void sgi_ioc3_kbc_init(Object *obj)
@@ -319,8 +343,6 @@ static void sgi_ioc3_kbc_init(Object *obj)
 
     qbus_init(&s->kbc_bus, sizeof(s->kbc_bus), TYPE_SGI_IOC3_KBC_BUS,
              DEVICE(obj), "kbc-bus");
-    object_initialize_child(obj, "kbd", &s->kbd, TYPE_PS2_KBD_DEVICE);
-    object_initialize_child(obj, "mouse", &s->mouse, TYPE_PS2_MOUSE_DEVICE);
 
     memory_region_init_io(&s->mmio, obj, &sgi_ioc3_kbc_ops, s, "sgi-ioc3.kbc",
                           SGI_IOC3_KBC_MMIO_SIZE);
@@ -400,7 +422,8 @@ static void sgi_ioc3_kbc_set_activate_keyboard(Object *obj, bool value,
                                                Error **errp)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(obj);
-    QemuInputHandlerState *hs = PS2_DEVICE(&s->kbd)->hs;
+    QemuInputHandlerState *hs = s->ports_initialized
+                                ? PS2_DEVICE(&s->kbd)->hs : NULL;
     g_autofree char *path = NULL;
 
     if (!hs) {

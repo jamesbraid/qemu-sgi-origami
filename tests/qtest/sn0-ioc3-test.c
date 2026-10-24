@@ -6008,11 +6008,8 @@ static void test_the_board_is_a_property(const void *data)
 }
 
 /*
- * What a board fits, as the bus can see it. Each probe writes a register the
- * sub-device stores in and reads it back: a window with nothing behind it
- * swallows the write and reads zero, so one probe answers both ways round
- * and neither answer is a bare "reads zero", which half the live registers
- * here also do.
+ * Most population probes use register storage. PS/2 instead needs a reply
+ * from the external device: its core registers exist on unwired boards too.
  */
 static bool serial_port_is_fitted(QTestState *qts, uint64_t port)
 {
@@ -6022,11 +6019,22 @@ static bool serial_port_is_fitted(QTestState *qts, uint64_t port)
 
 static bool ps2_is_fitted(QTestState *qts, uint64_t base)
 {
+    uint32_t keyboard, mouse;
+
     qtest_writel(qts, base + 0x09c, 0xffffffff);
-    return qtest_readl(qts, base + 0x09c) ==
-           (0x0000ffff | KBC_K_TO_EN | KBC_M_TO_EN |
-            KBC_K_CLAMP_1 | KBC_M_CLAMP_1 |
-            KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
+    g_assert_cmphex(qtest_readl(qts, base + 0x09c), ==, 0x00fcffff);
+    qtest_writel(qts, base + 0x09c, 0);
+    qtest_writel(qts, base + 0x0a8, 0xff);
+    qtest_writel(qts, base + 0x0ac, 0xff);
+    keyboard = qtest_readl(qts, base + 0x0a0);
+    mouse = qtest_readl(qts, base + 0x0a4);
+    if (!keyboard) {
+        g_assert_cmphex(mouse, ==, 0);
+        return false;
+    }
+    g_assert_cmphex(keyboard, ==, 0xc0faaa00);
+    g_assert_cmphex(mouse, ==, 0xe8faaa00);
+    return true;
 }
 
 static bool timekeeper_is_fitted(QTestState *qts, uint64_t base)
@@ -6089,13 +6097,107 @@ static void assert_ioc3_population(QTestState *qts, bool eth, bool serial_a,
     g_assert_cmpint(ioc3_has_child(qts, path, "eth"), ==, eth);
     g_assert_cmpint(ioc3_has_child(qts, path, "serial[0]"), ==, serial_a);
     g_assert_cmpint(ioc3_has_child(qts, path, "serial[1]"), ==, serial_b);
-    g_assert_cmpint(ioc3_has_child(qts, path, "kbc"), ==, kbc);
+    g_assert_true(ioc3_has_child(qts, path, "kbc"));
+    g_assert_cmpint(ioc3_has_child(qts,
+                    "/machine/peripheral/test-ioc3/kbc", "kbd"), ==, kbc);
+    g_assert_cmpint(ioc3_has_child(qts,
+                    "/machine/peripheral/test-ioc3/kbc", "mouse"), ==, kbc);
     g_assert_cmpint(ioc3_has_child(qts, path, "parallel"), ==, parallel);
     g_assert_cmpint(ioc3_has_child(qts, path, "onewire-part"), ==, onewire);
     g_assert_cmpint(ioc3_has_child(qts, path, "rtc"), ==,
                     g_str_equal(timekeeper, "rtc"));
     g_assert_cmpint(ioc3_has_child(qts, path, "ds1685"), ==,
                     g_str_equal(timekeeper, "ds1685"));
+}
+
+#define EMPTY_KBC_PATH "/machine/peripheral/test-ioc3/kbc"
+#define EMPTY_IOC3_ARGS "-M origin200 " \
+    "-device sgi-ioc3,id=test-ioc3,addr=3,population=0"
+
+static void assert_empty_kbc(QTestState *qts)
+{
+    g_assert_true(ioc3_has_child(qts, "/machine/peripheral/test-ioc3", "kbc"));
+    g_assert_false(ioc3_has_child(qts, EMPTY_KBC_PATH, "kbd"));
+    g_assert_false(ioc3_has_child(qts, EMPTY_KBC_PATH, "mouse"));
+    g_assert_cmphex(qtest_readl(qts, TEST_IOC3_BASE + 0xa0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, TEST_IOC3_BASE + 0xa4), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, TEST_IOC3_BASE + 0x1c) & INT_KEYBOARD,
+                    ==, 0);
+}
+
+static void assert_empty_kbc_routes_to_native(QTestState *qts)
+{
+    QDict *response = qtest_qmp(qts,
+        "{'execute':'qom-set', 'arguments':{'path':%s,"
+        " 'property':'activate-keyboard', 'value':true}}", EMPTY_KBC_PATH);
+
+    /* An empty core cannot register or activate a phantom input handler. */
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
+    ps2_key_down(qts, "a");
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    assert_empty_kbc(qts);
+}
+
+/* Empty ports retain registers without devices, replies or input routing. */
+static void test_empty_ps2_core(const void *data)
+{
+    static const struct {
+        uint32_t write;
+        uint32_t read;
+    } patterns[] = {
+        { 0xffffffff, 0x00fcffff },
+        { 0x00030000, 0 },
+        { 0x00003000, 0x00003000 },
+        { 0x00a455aa, 0x00a455aa },
+    };
+    QTestState *qts = qtest_init(EMPTY_IOC3_ARGS);
+
+    sn0_ioc3_attach(qts);
+    test_ioc3_attach(qts);
+    assert_empty_kbc(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(patterns); i++) {
+        qtest_writel(qts, TEST_IOC3_BASE + 0x9c, patterns[i].write);
+        g_assert_cmphex(qtest_readl(qts, TEST_IOC3_BASE + 0x9c), ==,
+                        patterns[i].read);
+        qtest_writel(qts, TEST_IOC3_BASE + 0xa8, 0xff);
+        qtest_writel(qts, TEST_IOC3_BASE + 0xac, 0xff);
+        assert_empty_kbc(qts);
+    }
+    assert_empty_kbc_routes_to_native(qts);
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+    test_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, TEST_IOC3_BASE + 0x9c), ==, 0);
+    qtest_writel(qts, TEST_IOC3_BASE + 0xa8, 0xff);
+    qtest_writel(qts, TEST_IOC3_BASE + 0xac, 0xff);
+    assert_empty_kbc_routes_to_native(qts);
+    qtest_quit(qts);
+}
+
+static void test_empty_ps2_core_migration(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("ioc3-empty-kbc-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from = qtest_init(EMPTY_IOC3_ARGS);
+    QTestState *to;
+
+    g_assert_nonnull(dir);
+    sn0_ioc3_attach(from);
+    test_ioc3_attach(from);
+    qtest_writel(from, TEST_IOC3_BASE + 0x9c, 0x00fcffff);
+    assert_empty_kbc(from);
+    to = qtest_initf(EMPTY_IOC3_ARGS " -incoming %s", uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    sn0_ioc3_attach(to);
+    test_ioc3_attach(to);
+    g_assert_cmphex(qtest_readl(to, TEST_IOC3_BASE + 0x9c), ==, 0x00fcffff);
+    qtest_writel(to, TEST_IOC3_BASE + 0xa8, 0xff);
+    qtest_writel(to, TEST_IOC3_BASE + 0xac, 0xff);
+    assert_empty_kbc_routes_to_native(to);
+    qtest_quit(to);
+    g_rmdir(dir);
 }
 
 /* The semantic population is instance data. Keep the MENET4 identity while
@@ -6144,9 +6246,24 @@ static void test_a_released_chip_takes_its_ps2_devices(const void *data)
     QTestState *qts = qtest_init(
         "-M none -display none -device sgi-ioc3-release-fixture,id=release");
 
+    QDict *response;
+
     g_assert_true(ioc3_has_child(qts, "/machine/peripheral/release", "chip"));
     g_assert_false(ioc3_has_child(qts, "/machine/peripheral/release",
                                   "ioc3"));
+    g_assert_false(ioc3_has_child(qts, "/machine/peripheral/release",
+                                  "empty-ioc3"));
+    response = qtest_qmp(qts, "{'execute':'query-mice'}");
+
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_true(qlist_empty(qdict_get_qlist(response, "return")));
+    qobject_unref(response);
+    response = qtest_qmp(qts,
+        "{'execute':'input-send-event', 'arguments':{'events':"
+        "[{'type':'key', 'data':{'down':true, 'key':"
+        "{'type':'qcode', 'data':'a'}}}]}}");
+    g_assert_true(qdict_haskey(response, "error"));
+    qobject_unref(response);
     qtest_quit(qts);
 }
 
@@ -6527,6 +6644,10 @@ int main(int argc, char **argv)
                         test_the_ps2_receive_overflows_without_a_clamp);
     qtest_add_data_func("sn0/ioc3/ps2-clamp-after-one-splits-a-reply", NULL,
                         test_the_ps2_clamp_after_one_splits_a_reply);
+    qtest_add_data_func("sn0/ioc3/ps2-empty-core", NULL,
+                        test_empty_ps2_core);
+    qtest_add_data_func("sn0/ioc3/ps2-empty-core-migration", NULL,
+                        test_empty_ps2_core_migration);
     qtest_add_data_func("sn0/ioc3/ps2-backlog-survives-a-migration", NULL,
                         test_the_ps2_backlog_survives_a_migration);
     qtest_add_data_func("sn0/ioc3/serial-dma-indices-take-a-write", NULL,

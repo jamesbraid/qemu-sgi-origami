@@ -2015,19 +2015,16 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
         }
     }
 
-    /* On the chip's own bus, so a reset of the IOC3 reaches it. */
-    if (s->board->kbc) {
-        if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
-            return;
-        }
-        memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE,
-                                    sysbus_mmio_get_region(
-                                        SYS_BUS_DEVICE(&s->kbc_dev), 0));
-        sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc_dev), 0,
-                           qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
-    } else {
-        object_unparent(OBJECT(&s->kbc_dev));
+    /* Chip register decode is independent of the board's external ports. */
+    s->kbc_dev.ports_present = s->board->kbc;
+    if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
+        return;
     }
+    memory_region_add_subregion(&s->bar, SGI_IOC3_KBC_BASE,
+                                sysbus_mmio_get_region(
+                                    SYS_BUS_DEVICE(&s->kbc_dev), 0));
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc_dev), 0,
+                       qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
 
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
     if (s->board->parallel) {
@@ -2187,9 +2184,7 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     if (s->board->eth) {
         qdev_unrealize(DEVICE(&s->eth));
     }
-    if (s->board->kbc) {
-        qdev_unrealize(DEVICE(&s->kbc_dev));
-    }
+    qdev_unrealize(DEVICE(&s->kbc_dev));
     if (s->board->parallel) {
         qdev_unrealize(DEVICE(&s->parallel_dev));
     }

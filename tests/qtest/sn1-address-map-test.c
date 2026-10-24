@@ -1520,8 +1520,13 @@ static void test_io8_ioc3_attachment(const void *data)
     g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
                                 IO8_IOC3_PARALLEL_ECR), ==, 1);
 
-    io8_ioc3_writel(qts, IO8_IOC3_KBC_CONTROL, 0xffff);
-    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_KBC_CONTROL), ==, 0);
+    io8_ioc3_writel(qts, IO8_IOC3_KBC_CONTROL, 0xffffffff);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_KBC_CONTROL), ==, 0x00fcffff);
+    io8_ioc3_writel(qts, IO8_IOC3_KBC_CONTROL + 0x0c, 0xff);
+    io8_ioc3_writel(qts, IO8_IOC3_KBC_CONTROL + 0x10, 0xff);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_KBC_CONTROL + 4), ==, 0);
+    g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_KBC_CONTROL + 8), ==, 0);
+    g_assert_cmphex(io8_ioc3_readl(qts, 0x1c) & (1u << 22), ==, 0);
     io8_ioc3_writel(qts, IO8_IOC3_PIN_CONTROL_SET,
                     IOC3_PIN_MICROLAN_ENABLE);
     io8_ioc3_writel(qts, IO8_IOC3_MICROLAN_CONTROL,
@@ -1867,6 +1872,7 @@ static void test_io8_ioc3_migration(const void *data)
         "-rtc base=2026-08-11T12:30:05,clock=vm -incoming defer");
     io8_ioc3_attach(from);
     io8_ioc3_attach(to);
+    io8_ioc3_writel(from, IO8_IOC3_KBC_CONTROL, 0x00a43000);
 
     phy_write(from, 1, 0, 0x1200);
     phy_write(from, 1, 0x19, 3);
@@ -1893,6 +1899,12 @@ static void test_io8_ioc3_migration(const void *data)
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
     sgi_wait_migration(to, "completed");
+    g_assert_cmphex(io8_ioc3_readl(to, IO8_IOC3_KBC_CONTROL), ==, 0x00a43000);
+    io8_ioc3_writel(to, IO8_IOC3_KBC_CONTROL + 0x0c, 0xff);
+    io8_ioc3_writel(to, IO8_IOC3_KBC_CONTROL + 0x10, 0xff);
+    g_assert_cmphex(io8_ioc3_readl(to, IO8_IOC3_KBC_CONTROL + 4), ==, 0);
+    g_assert_cmphex(io8_ioc3_readl(to, IO8_IOC3_KBC_CONTROL + 8), ==, 0);
+    g_assert_cmphex(io8_ioc3_readl(to, 0x1c) & (1u << 22), ==, 0);
     g_assert_cmphex(io8_ioc3_readl(to, 0x34) & (1u << 5), ==, 1u << 5);
     g_assert_cmphex(phy_read(to, 1, 3), ==, 0xffff);
     qtest_clock_step(to, INT64_C(4000000000));

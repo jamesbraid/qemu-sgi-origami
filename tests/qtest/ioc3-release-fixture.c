@@ -47,7 +47,7 @@ static void ioc3_release_fixture_realize(DeviceState *dev, Error **errp)
 {
     SGIIOC3ReleaseFixtureState *s = SGI_IOC3_RELEASE_FIXTURE(dev);
     DeviceState *chip;
-    PCIDevice *ioc3;
+    PCIDevice *ioc3, *empty;
 
     memory_region_init(&s->sink, OBJECT(s), "sgi-ioc3-release-fixture.sink",
                        64 * KiB);
@@ -68,6 +68,17 @@ static void ioc3_release_fixture_realize(DeviceState *dev, Error **errp)
     if (!pci_realize_and_unref(ioc3, PCI_HOST_BRIDGE(chip)->bus, errp)) {
         return;
     }
+
+    /* Release an empty core while a populated controller is still alive. */
+    empty = pci_new(PCI_DEVFN(RELEASE_FIXTURE_IOC3_DEVICE + 1, 0),
+                     TYPE_SGI_IOC3);
+    object_property_add_child(OBJECT(s), "empty-ioc3", OBJECT(empty));
+    qdev_prop_set_uint32(DEVICE(empty), "population", 0);
+    if (!pci_realize_and_unref(empty, PCI_HOST_BRIDGE(chip)->bus, errp)) {
+        return;
+    }
+    object_unparent(OBJECT(empty));
+    drain_call_rcu();
 
     object_unparent(OBJECT(ioc3));
     drain_call_rcu();
