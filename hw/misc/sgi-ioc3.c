@@ -485,6 +485,13 @@ static bool sgi_ioc3_int_out_command_valid(uint32_t value)
 }
 
 /* Fitted board inputs remain independent of the software output latch. */
+static void sgi_ioc3_update_gpio5(SGIIOC3State *s)
+{
+    /* Logical board request; the composition supplies the connection. */
+    qemu_set_irq(s->gpio5_reset_request,
+                 (s->pin_control & (1u << 5)) && !(s->pin_data & (1u << 5)));
+}
+
 static uint32_t sgi_ioc3_pin_data(SGIIOC3State *s)
 {
     return (s->pin_data & ~s->pin_input_mask) | s->pin_input_values;
@@ -542,6 +549,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         uint32_t bit = 1u << pin;
 
         s->pin_data = (s->pin_data & ~bit) | ((val & 1) ? bit : 0);
+        sgi_ioc3_update_gpio5(s);
         return;
     }
 
@@ -613,12 +621,15 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case SGI_IOC3_PIN_CONTROL_SET:
         s->pin_control |= val;
+        sgi_ioc3_update_gpio5(s);
         break;
     case SGI_IOC3_PIN_CONTROL_CLR:
         s->pin_control &= ~val;
+        sgi_ioc3_update_gpio5(s);
         break;
     case SGI_IOC3_PIN_DATA:
         s->pin_data = val;
+        sgi_ioc3_update_gpio5(s);
         break;
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -2138,6 +2149,8 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
 
     /* The SuperIO line is board wiring, not the PCI pin. */
     qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
+    qdev_init_gpio_out_named(DEVICE(dev), &s->gpio5_reset_request,
+                             "gpio5-reset-request", 1);
 }
 
 /*
@@ -2220,6 +2233,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->microlan_control = 0;
     s->pin_control = 0;
     s->pin_data = 0;
+    sgi_ioc3_update_gpio5(s);
     s->chip_control = 0;
     s->int_out = 0;
     s->int_out_active = 0;

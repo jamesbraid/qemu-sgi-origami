@@ -149,6 +149,12 @@ static bool sgi_ioc3_eth_rx_pending(SGIIOC3EthState *s, uint64_t buf_addr)
     return false;
 }
 
+static bool sgi_ioc3_eth_phy_enabled(SGIIOC3EthState *s)
+{
+    return s->phy_ics1890 ? ics1890_data_enabled(&s->ics_phy) :
+                           dp83840_data_enabled(&s->phy);
+}
+
 /*
  * Whether a frame can be staged now. *buf_addr is the receive ring entry
  * read on the way, when one was read and the read succeeded, so a receive
@@ -171,7 +177,7 @@ static bool sgi_ioc3_eth_rx_ready(SGIIOC3EthState *s, uint64_t *buf_addr,
         return false;
     }
 
-    if (s->phy_ics1890 && !ics1890_data_enabled(&s->ics_phy)) {
+    if (!sgi_ioc3_eth_phy_enabled(s)) {
         return false;
     }
 
@@ -711,13 +717,13 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
 
         trace_sgi_ioc3_eth_tx((uint32_t)len, loopback);
 
-        if (len > 0) {
+        if (len > 0 && (sgi_ioc3_eth_mac_loopback(s) ||
+                        sgi_ioc3_eth_phy_enabled(s))) {
             if (loopback) {
                 sgi_ioc3_eth_deliver(s, s->frame, len,
                                      sgi_ioc3_eth_mac_loopback(s), true,
                                      NULL);
-            } else if (!s->phy_ics1890 ||
-                       ics1890_data_enabled(&s->ics_phy)) {
+            } else {
                 s->defer_backend_rx = true;
                 qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
             }
@@ -826,23 +832,27 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                            SGI_IOC3_ENET_MII_PHY_MASK;
         unsigned int reg = val & SGI_IOC3_ENET_MII_REG_MASK;
 
-        /* Only the configured address answers, or a scan finds phantoms. */
+        unsigned int address = s->phy_ics1890 ? s->phy_addr :
+                               dp83840_address(&s->phy);
+        bool responds = phy == address &&
+                        (s->phy_ics1890 || !s->phy.reset_held);
+
+        /* Unmatched accesses must not run PHY register side effects. */
         if (val & SGI_IOC3_ENET_MII_READ) {
-            s->mii_data = phy == s->phy_addr
+            s->mii_data = responds
                           ? (s->phy_ics1890 ? ics1890_read(&s->ics_phy, reg) :
                              dp83840_read(&s->phy, reg))
                           : SGI_IOC3_ENET_MII_ABSENT;
-        } else if (phy == s->phy_addr) {
+        } else if (responds) {
             bool was_looping = sgi_ioc3_eth_looping_back(s);
-            bool phy_was_enabled = !s->phy_ics1890 ||
-                                   ics1890_data_enabled(&s->ics_phy);
+            bool phy_was_enabled = sgi_ioc3_eth_phy_enabled(s);
 
             if (s->phy_ics1890) {
                 ics1890_write(&s->ics_phy, reg, s->mii_data_w);
             } else {
                 dp83840_write(&s->phy, reg, s->mii_data_w);
             }
-            if (!phy_was_enabled && ics1890_data_enabled(&s->ics_phy)) {
+            if (!phy_was_enabled && sgi_ioc3_eth_phy_enabled(s)) {
                 replay_bh_schedule_event(s->rx_flush_bh);
             }
 
@@ -973,6 +983,19 @@ static bool sgi_ioc3_eth_mac_unset(const MACAddr *mac)
     return memcmp(mac, &zero, sizeof(*mac)) == 0;
 }
 
+static void sgi_ioc3_eth_phy_reset(void *opaque, int n, int level)
+{
+    SGIIOC3EthState *s = opaque;
+    bool was_enabled = sgi_ioc3_eth_phy_enabled(s);
+
+    if (!s->phy_ics1890) {
+        dp83840_set_reset(&s->phy, level);
+    }
+    if (!was_enabled && sgi_ioc3_eth_phy_enabled(s)) {
+        replay_bh_schedule_event(s->rx_flush_bh);
+    }
+}
+
 static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
@@ -1021,6 +1044,7 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
     s->nic = qemu_new_nic(&sgi_ioc3_eth_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), dev->id,
                           &dev->mem_reentrancy_guard, s);
+    qdev_init_gpio_in_named(dev, sgi_ioc3_eth_phy_reset, "phy-reset", 1);
     s->rx_flush_bh = qemu_bh_new_guarded(sgi_ioc3_eth_rx_flush, s,
                                          &dev->mem_reentrancy_guard);
     if (!sgi_net_rx_latency_init(&s->rx_latency, s->rx_arrival_latency_us,

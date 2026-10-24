@@ -1646,6 +1646,21 @@ static void mii_write(QTestState *qts, unsigned int reg, uint16_t val)
     ioc3_writel(qts, ENET_MII_CONTROL, (PHY_ADDRESS << MII_PHY_SHIFT) | reg);
 }
 
+static uint16_t mii_read_at(QTestState *qts, unsigned int address,
+                            unsigned int reg)
+{
+    ioc3_writel(qts, ENET_MII_CONTROL,
+                (address << MII_PHY_SHIFT) | reg | MII_CTL_READ);
+    return ioc3_readl(qts, ENET_MII_DATA_R);
+}
+
+static void mii_write_at(QTestState *qts, unsigned int address,
+                         unsigned int reg, uint16_t value)
+{
+    ioc3_writel(qts, ENET_MII_DATA_W, value);
+    ioc3_writel(qts, ENET_MII_CONTROL, (address << MII_PHY_SHIFT) | reg);
+}
+
 /*
  * set_link is the cable being pulled: the link and completion bits must drop
  * and return, or a carrier-watching guest trusts a dead interface.
@@ -3057,7 +3072,7 @@ static void test_dp83843_restart_modes(const void *data)
         g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
         phy_assert_negotiation(qts, false);
         qtest_clock_step(qts, PHY_NEGOTIATE_NS);
-        phy_assert_negotiation(qts, true);
+        phy_assert_negotiation(qts, !(modes[i] & BMCR_PDOWN));
     }
     /* Management clearing, including power down, preserves the deadline. */
     for (i = 0; i < 2; i++) {
@@ -3069,6 +3084,8 @@ static void test_dp83843_restart_modes(const void *data)
                          (i ? PHY_BREAK_LINK_NS : 1) - 1);
         phy_assert_negotiation(qts, false);
         qtest_clock_step(qts, 1);
+        phy_assert_negotiation(qts, false);
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
         phy_assert_negotiation(qts, true);
     }
     ioc3_quit(qts);
@@ -3096,6 +3113,7 @@ typedef struct PHYMigrationCase {
     bool force_before;
     bool force_after;
     bool clear_request;
+    bool subset_state;
 } PHYMigrationCase;
 
 static const PHYMigrationCase phy_migration_cases[] = {
@@ -3106,6 +3124,8 @@ static const PHYMigrationCase phy_migration_cases[] = {
     { 750, false, true },
     { 2000, false, true },
     { .elapsed_ms = 750, .clear_request = true },
+    { .elapsed_ms = 750, .subset_state = true },
+    { .elapsed_ms = 3500, .subset_state = true },
 };
 
 static void test_dp83843_register_migration(const void *data)
@@ -3120,6 +3140,8 @@ static void test_dp83843_register_migration(const void *data)
     const PHYMigrationCase *test = data;
     int64_t elapsed = test->elapsed_ms * INT64_C(1000000);
     int64_t source_time;
+    unsigned int address = 31;
+    bool complete = elapsed >= PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS;
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -3127,10 +3149,10 @@ static void test_dp83843_register_migration(const void *data)
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
     from = ioc3_attach_socket_dp83843(from_sv[1], 2, "");
-    mii_write(from, PHY_ANNPTR, 0x1234);
-    mii_write(from, PHY_BMCR, 0x7300);
-    g_assert_cmphex(mii_read(from, PHY_ANNPTR), ==, 0x1234);
-    g_assert_cmphex(mii_read(from, MII_LBR) & 0x0030, ==, 0x0030);
+    mii_write_at(from, address, PHY_ANNPTR, 0x1234);
+    mii_write_at(from, address, PHY_BMCR, 0x7300);
+    g_assert_cmphex(mii_read_at(from, address, PHY_ANNPTR), ==, 0x1234);
+    g_assert_cmphex(mii_read_at(from, address, MII_LBR) & 0x0030, ==, 0x0030);
 
     if (elapsed >= PHY_BREAK_LINK_NS) {
         qtest_clock_step(from, PHY_BREAK_LINK_NS);
@@ -3138,18 +3160,32 @@ static void test_dp83843_register_migration(const void *data)
     } else {
         source_time = qtest_clock_step(from, elapsed);
     }
-    phy_assert_negotiation(from, false);
-    g_assert_cmphex(mii_read(from, PHY_BMCR) & BMCR_RESTART, ==,
+    g_assert_cmphex(mii_read_at(from, address, PHY_BMSR) & BMSR_AN_COMP,
+                    ==, complete ? BMSR_AN_COMP : 0);
+    g_assert_cmphex(mii_read_at(from, address, PHY_BMCR) & BMCR_RESTART, ==,
                     elapsed < PHY_BREAK_LINK_NS ? BMCR_RESTART : 0);
     if (test->clear_request) {
         /* Management clear changes readback without cancelling the timer. */
-        mii_write(from, PHY_BMCR, BMCR_AUTOEN | BMCR_LOOPBACK |
+        mii_write_at(from, address, PHY_BMCR, BMCR_AUTOEN | BMCR_LOOPBACK |
                   BMCR_SPEED100 | BMCR_DUPLEX);
-        g_assert_cmphex(mii_read(from, PHY_BMCR) & BMCR_RESTART, ==, 0);
+        g_assert_cmphex(mii_read_at(from, address, PHY_BMCR) & BMCR_RESTART,
+                        ==, 0);
     }
     if (test->force_before) {
-        mii_write(from, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        mii_write_at(from, address, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
         phy_assert_forced_link(from, true);
+    }
+
+    if (test->subset_state) {
+        mii_write_at(from, address, 0x16, 0x0002);
+        mii_write_at(from, address, 0x13, 0x1234);
+        mii_write_at(from, address, 0x14, 0x5678);
+        mii_write_at(from, address, 0x15, 0x9abc);
+        mii_write_at(from, address, 0x19, 3);
+        address = 3;
+        mii_write_at(from, address, 0x11, 1);
+        mii_write_at(from, address, 0x11, 2);
+        mii_write_at(from, address, 4, 1);
     }
 
     /* The fixture keeps one host PCI bus handle; the VM stays alive. */
@@ -3163,37 +3199,57 @@ static void test_dp83843_register_migration(const void *data)
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
     sgi_wait_migration(to, "completed");
-    g_assert_cmphex(mii_read(to, PHY_ANNPTR), ==, 0x1234);
-    g_assert_cmphex(mii_read(to, MII_LBR) & 0x0030, ==, 0x0030);
+    g_assert_cmphex(mii_read_at(to, address, PHY_ANNPTR), ==, 0x1234);
+    g_assert_cmphex(mii_read_at(to, address, MII_LBR) & 0x0030, ==, 0x0030);
 
+    if (test->subset_state) {
+        g_assert_cmphex(mii_read_at(to, 31, 3), ==, 0xffff);
+        g_assert_cmphex(mii_read_at(to, address, 0x19), ==, 3);
+        g_assert_cmphex(mii_read_at(to, address, 0x11), ==, 2);
+        g_assert_cmphex(mii_read_at(to, address, 0x12), ==, 0x8000);
+        g_assert_cmphex(mii_read_at(to, address, 0x12), ==, 0);
+        g_assert_cmphex(mii_read_at(to, address, 0x16), ==, 2);
+        g_assert_cmphex(mii_read_at(to, address, 0x13), ==, 0x1234);
+        g_assert_cmphex(mii_read_at(to, address, 0x14), ==, 0x5678);
+        g_assert_cmphex(mii_read_at(to, address, 0x15), ==, 0x9abc);
+        g_assert_cmphex(mii_read_at(to, address, 0x13), ==, 0);
+    }
     qtest_clock_set(to, source_time);
-    g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==,
+    g_assert_cmphex(mii_read_at(to, address, PHY_BMCR) & BMCR_RESTART,
+                    ==,
                     elapsed < PHY_BREAK_LINK_NS && !test->force_before &&
                     !test->clear_request ?
                     BMCR_RESTART : 0);
-    phy_assert_negotiation(to, false);
+    g_assert_cmphex(mii_read_at(to, address, PHY_BMSR) & BMSR_AN_COMP,
+                    ==, complete ? BMSR_AN_COMP : 0);
     if (test->force_after) {
-        mii_write(to, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        mii_write_at(to, address, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
     }
     if (test->force_before || test->force_after) {
         phy_assert_forced_link(to, true);
         qtest_clock_step(to, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
         phy_assert_forced_link(to, true);
+    } else if (complete) {
+        /* ANAR edits after completion must not alter the migrated result. */
+        g_assert_cmphex(mii_read_at(to, address, 0x10) & 7, ==, 5);
     } else {
         if (elapsed < PHY_BREAK_LINK_NS) {
             qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed - 1);
-            g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==,
+            g_assert_cmphex(mii_read_at(to, address, PHY_BMCR) & BMCR_RESTART,
+                    ==,
                             test->clear_request ? 0 : BMCR_RESTART);
             qtest_clock_step(to, 1);
-            g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==, 0);
-            phy_assert_negotiation(to, false);
+            g_assert_cmphex(mii_read_at(to, address, PHY_BMCR) & BMCR_RESTART,
+                    ==, 0);
+            g_assert_cmphex(mii_read_at(to, address, 1) & 0x20, ==, 0);
             elapsed = PHY_BREAK_LINK_NS;
         }
         qtest_clock_step(to,
                          PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS - elapsed - 1);
-        phy_assert_negotiation(to, false);
+        g_assert_cmphex(mii_read_at(to, address, 1) & 0x20, ==, 0);
         qtest_clock_step(to, 1);
-        phy_assert_negotiation(to, true);
+        g_assert_cmphex(mii_read_at(to, address, 1) & 0x20, ==,
+                        test->subset_state ? 0 : 0x20);
     }
 
     qtest_quit(from);
@@ -3204,11 +3260,325 @@ static void test_dp83843_register_migration(const void *data)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void phy_assert_subset_reset(QTestState *qts)
+{
+    static const struct { unsigned int reg; uint16_t value; } reset[] = {
+        { 0, 0x3100 }, { 1, 0x7849 }, { 2, 0x2000 }, { 3, 0x5c10 },
+        { 4, 0x01e1 }, { 5, 0 }, { 6, 4 }, { 7, 0x2001 },
+        { 0x10, 0x0200 }, { 0x11, 0 }, { 0x12, 0 },
+        { 0x13, 0 }, { 0x14, 0 }, { 0x15, 0 }, { 0x16, 0x20 },
+        { 0x17, 0 }, { 0x18, 0 }, { 0x19, 31 },
+    };
+    unsigned int i;
+
+    for (i = 0; i < G_N_ELEMENTS(reset); i++) {
+        g_assert_cmphex(mii_read(qts, reset[i].reg), ==, reset[i].value);
+    }
+}
+
+static void test_dp83843_subset_reset(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    unsigned int phase;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    phy_assert_subset_reset(qts);
+    for (phase = 0; phase < 2; phase++) {
+        mii_write(qts, 0, 0x1200);
+        mii_write(qts, 0x13, 0x1234);
+        mii_write(qts, 0x14, 0x5678);
+        mii_write(qts, 0x15, 0x9abc);
+        mii_write(qts, 0x11, 1);
+        if (phase) {
+            qtest_system_reset(qts);
+            qpci_config_writel(ioc3_dev, PCI_BASE_ADDRESS_0, ioc3_window.addr);
+            qpci_device_enable(ioc3_dev);
+        } else {
+            mii_write(qts, 0, 0x8000);
+        }
+        /* Do not arm the idle BMSR settling timer until old timers expire. */
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_subset_reset(qts);
+    }
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_subset_masks(const void *data)
+{
+    static const struct { unsigned int reg; uint16_t mask; } fields[] = {
+        { 4, 0xa5ff }, { 7, 0xb7ff }, { 0x11, 3 },
+        { 0x16, 0xffef }, { 0x17, 0x7fb0 }, { 0x18, 0x1ffc },
+        { 0x19, 0x3bff },
+    };
+    unsigned int i, bit;
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    for (i = 0; i < G_N_ELEMENTS(fields); i++) {
+        for (bit = 0; bit < 18; bit++) {
+            uint16_t value = bit < 16 ? 1u << bit : bit == 16 ? 0xffff : 0;
+            unsigned int address = fields[i].reg == 0x19 ? value & 31 : 31;
+
+            mii_write(qts, 0, 0x8000);
+            mii_write(qts, 0, 0x2000);
+            mii_write(qts, fields[i].reg, value);
+            g_assert_cmphex(mii_read_at(qts, address, fields[i].reg), ==,
+                            value & fields[i].mask);
+            mii_write_at(qts, address, 0, 0x8000);
+        }
+    }
+    mii_write(qts, 0, 0x217f);
+    g_assert_cmphex(mii_read(qts, 0), ==, 0x2100);
+    for (i = 1; i <= 6; i++) {
+        uint16_t before;
+
+        if (i == 4) {
+            continue;
+        }
+        mii_write(qts, 0, 0x8000);
+        before = mii_read(qts, i);
+        mii_write(qts, i, 0xffff);
+        g_assert_cmphex(mii_read(qts, i), ==, before);
+    }
+    for (i = 0x13; i <= 0x15; i++) {
+        mii_write(qts, 0x11, 2);
+        mii_write(qts, i, 0xffff);
+        g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+        g_assert_cmphex(mii_read(qts, i), ==, 0xffff);
+        g_assert_cmphex(mii_read(qts, i), ==, 0);
+        g_assert_cmphex(mii_read(qts, 0x10) & 0xe000, ==, 0);
+        g_assert_cmphex(mii_read(qts, 0x16) & 0x10, ==, 0);
+    }
+    mii_write(qts, 0x10, 0xffff);
+    mii_write(qts, 0x12, 0xffff);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void phy_assert_mode(QTestState *qts, uint16_t expected)
+{
+    uint16_t status = mii_read(qts, 0x10);
+    uint16_t basic = mii_read(qts, 1);
+
+    g_assert_cmphex(status & 0x0827, ==, expected);
+    g_assert_cmphex(basic & 0x24, ==,
+                    ((expected & 1) ? 4 : 0) | (expected & 0x20));
+}
+
+static void test_dp83843_subset_modes(const void *data)
+{
+    static const uint16_t abilities[] = { 0x01e1, 0x00e1, 0x0061, 0x0021, 1 };
+    static const uint16_t status[] = { 0x0825, 0x0821, 0x0827, 0x0823, 0 };
+    unsigned int i;
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    /* PHYSTS reads do not start the BMSR-triggered initial settle. */
+    phy_assert_mode(qts, 0);
+    mii_write(qts, 0, 0x8000);
+    mii_read(qts, 0x10);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+    g_assert_cmphex(mii_read(qts, 0x10), ==, 0x0200);
+    for (i = 0; i < G_N_ELEMENTS(abilities); i++) {
+        mii_write(qts, 4, abilities[i]);
+        mii_write(qts, 0, 0x1200);
+        phy_assert_mode(qts, 0);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_mode(qts, status[i]);
+        mii_write(qts, 4, 0x01e1);
+        phy_assert_mode(qts, status[i]);
+    }
+    mii_write(qts, 0, 0x1200);
+    mii_write(qts, 4, 0x0041);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+    phy_assert_mode(qts, 0x0827);
+    mii_write(qts, 0, 0x2100);
+    phy_assert_mode(qts, 0x0805);
+    g_assert_cmphex(mii_read(qts, 0x18) & 0x80, ==, 0x80);
+    mii_write(qts, 0, 0);
+    phy_assert_mode(qts, 0x0803);
+    g_assert_cmphex(mii_read(qts, 0x18) & 0x80, ==, 0);
+    /* Unsupported media/coding selections invalidate the old result. */
+    for (i = 0; i < 6; i++) {
+        static const unsigned int regs[] = {
+            0x19, 0x19, 0x18, 0x18, 0x18, 0x17,
+        };
+        static const uint16_t values[] = { 0x003f, 0x021f, 0x0020, 0x0200,
+                                          0x1800, 0x0400 };
+
+        mii_write(qts, 0, 0x8000);
+        mii_write(qts, 0, 0x3100);
+        mii_write(qts, regs[i], values[i]);
+        phy_assert_mode(qts, 0);
+    }
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_subset_events(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    mii_write(qts, 0x11, 2);
+    mii_write(qts, 0, 0x3100);
+    g_assert_cmphex(mii_read(qts, 0x10) & 0x100, ==, 0x100);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    mii_write(qts, 0, 0x3100);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    mii_write(qts, 0, 0x1200);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0x8000);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    qtest_clock_step(qts, PHY_NEGOTIATE_NS);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0x8000);
+    g_assert_cmphex(mii_read(qts, 0x10) & 0x100, ==, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'set_link','arguments':"
+                             "{'name':'n0','up':false}}");
+    mii_write(qts, 0x11, 0);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0x8000);
+    qtest_qmp_assert_success(qts, "{'execute':'set_link','arguments':"
+                             "{'name':'n0','up':true}}");
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    mii_write(qts, 0x11, 1);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0x8000);
+    g_assert_cmphex(mii_read(qts, 0x10) & 0x100, ==, 0x100);
+    mii_write_at(qts, 30, 0x11, 0);
+    mii_write(qts, 0x11, 0);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0x8000);
+    g_assert_cmphex(mii_read(qts, 0x12), ==, 0);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_subset_address(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    mii_write(qts, 0x19, 3);
+    g_assert_cmphex(mii_read(qts, 3), ==, 0xffff);
+    mii_write(qts, 0, 0x8000);
+    g_assert_cmphex(mii_read_at(qts, 3, 0x19), ==, 3);
+    mii_write_at(qts, 3, 0x19, 0);
+    g_assert_cmphex(mii_read_at(qts, 0, 0) & 0x400, ==, 0);
+    mii_write_at(qts, 0, 0, 0x8000);
+    phy_assert_subset_reset(qts);
+    ioc3_quit(qts);
+    close(sv[0]);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2,
+                                   "-global sgi-ioc3.phy-addr=0");
+    g_assert_cmphex(mii_read_at(qts, 0, 0), ==, 0x3500);
+    mii_write_at(qts, 0, 0x19, 3);
+    qtest_system_reset(qts);
+    qpci_config_writel(ioc3_dev, PCI_BASE_ADDRESS_0, ioc3_window.addr);
+    qpci_device_enable(ioc3_dev);
+    g_assert_cmphex(mii_read_at(qts, 0, 0), ==, 0x3500);
+    g_assert_cmphex(mii_read_at(qts, 0, 0x19), ==, 0);
+    g_assert_cmphex(mii_read_at(qts, 3, 3), ==, 0xffff);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_subset_controls(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    mii_write(qts, 0x16, 0xffff);
+    g_assert_cmphex(mii_read(qts, 0x16), ==, 0xbfef);
+    g_assert_cmphex(mii_read(qts, 0x16) & 0x10, ==, 0);
+    mii_write(qts, 0, 0x2000);
+    mii_write(qts, 0x16, 0);
+    mii_write(qts, 0x19, 0x003f);
+    mii_write(qts, 0x16, 0);
+    g_assert_cmphex(mii_read(qts, 0x16) & 0x4000, ==, 0x4000);
+    mii_write(qts, 0x17, 0);
+    g_assert_cmphex(mii_read(qts, 0x17), ==, 0x1000);
+    mii_write(qts, 0, 0x1000);
+    g_assert_cmphex(mii_read(qts, 0x16) & 0x4000, ==, 0);
+    phy_assert_mode(qts, 0);
+    mii_write(qts, 0x19, 31);
+    g_assert_cmphex(mii_read(qts, 0x17), ==, 0);
+    phy_assert_mode(qts, 0);
+    mii_write(qts, 0, 0x2100);
+    mii_write(qts, 0x17, 0x4000);
+    phy_assert_mode(qts, 0x0805);
+    mii_write(qts, 0x16, 0);
+    mii_write(qts, 0x19, 0x021f);
+    g_assert_cmphex(mii_read(qts, 0x16) & 0x30, ==, 0);
+    g_assert_cmphex(mii_read(qts, 0x18) & 0x80, ==, 0x80);
+    mii_write(qts, 0x16, 0xffff);
+    mii_write(qts, 0x13, 0xffff);
+    mii_read(qts, 0x13);
+    g_assert_cmphex(mii_read(qts, 0x16) & 0x10, ==, 0);
+    g_assert_cmphex(mii_read(qts, 0x10) & 0xe000, ==, 0);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_older_phy_address_unchanged(const void *data)
+{
+    const char *options[] = { "", "-global sgi-ioc3.phy-ics1890=on" };
+    unsigned int i;
+
+    for (i = 0; i < G_N_ELEMENTS(options); i++) {
+        int sv[2];
+        QTestState *qts;
+        uint16_t identity;
+
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        qts = ioc3_attach_socket_options(sv[1], 2, options[i]);
+        identity = mii_read(qts, 3);
+        mii_write(qts, 0x19, 3);
+        g_assert_cmphex(mii_read(qts, 3), ==, identity);
+        g_assert_cmphex(mii_read_at(qts, 3, 3), ==, 0xffff);
+        ioc3_quit(qts);
+        close(sv[0]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-controls", NULL,
+                        test_dp83843_subset_controls);
+    qtest_add_data_func("sgi-ioc3-eth/older-phy-address-unchanged", NULL,
+                        test_older_phy_address_unchanged);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-pending-migration",
+                        &phy_migration_cases[7],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-resolved-migration",
+                        &phy_migration_cases[8],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-reset", NULL,
+                        test_dp83843_subset_reset);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-masks", NULL,
+                        test_dp83843_subset_masks);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-modes", NULL,
+                        test_dp83843_subset_modes);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-events", NULL,
+                        test_dp83843_subset_events);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-subset-address", NULL,
+                        test_dp83843_subset_address);
     qtest_add_data_func("sgi-ioc3-eth/dma-direct-swap-controls", NULL,
                         test_dma_swap_controls);
     qtest_add_data_func("sgi-ioc3-eth/dma-translated-swap-controls",

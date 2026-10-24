@@ -38,6 +38,98 @@ enum {
     DP83843_RESTART_NEGOTIATE,
 };
 
+enum {
+    DP83843_MODE_NONE,
+    DP83843_MODE_100_FD,
+    DP83843_MODE_100_HD,
+    DP83843_MODE_10_FD,
+    DP83843_MODE_10_HD,
+};
+
+static bool dp83843_media_supported(DP83840State *s)
+{
+    return !(s->phy_control & 0x0220) &&
+           !(s->loopback_bypass & 0x1a20) && !(s->pcs_config & 0x3f80);
+}
+
+bool dp83840_data_enabled(DP83840State *s)
+{
+    return !s->dp83843 || (!s->reset_held && dp83843_media_supported(s) &&
+           !(s->control & (MII_BMCR_PDOWN | MII_BMCR_ISOLATE)));
+}
+
+uint8_t dp83840_address(DP83840State *s)
+{
+    return s->dp83843 ? s->phy_control & 31 : s->addr;
+}
+
+static bool dp83843_link(DP83840State *s)
+{
+    bool negotiated = (s->control & MII_BMCR_AUTOEN) != 0;
+
+    return !s->reset_held && !s->link_down && dp83843_media_supported(s) &&
+           !(s->control & MII_BMCR_PDOWN) &&
+           (negotiated ? s->autoneg_done && s->resolved_mode : s->forced_link);
+}
+
+static uint16_t dp83843_status(DP83840State *s)
+{
+    uint16_t status = (s->control & MII_BMCR_AUTOEN) ? 0x0200 : 0;
+    bool full, speed100;
+
+    if (dp83840_in_loopback(s)) {
+        status |= 0x0008;
+    }
+    if (!dp83843_link(s)) {
+        return status;
+    }
+    status |= 1;
+    if (s->control & MII_BMCR_AUTOEN) {
+        status |= 0x20;
+        speed100 = s->resolved_mode <= DP83843_MODE_100_HD;
+        full = s->resolved_mode == DP83843_MODE_100_FD ||
+               s->resolved_mode == DP83843_MODE_10_FD;
+    } else {
+        speed100 = (s->control & MII_BMCR_SPEED100) != 0;
+        full = (s->control & MII_BMCR_FD) != 0;
+    }
+    status |= (speed100 ? 0 : 2) | (full ? 4 : 0);
+    if (!(s->control & MII_BMCR_ISOLATE)) {
+        status |= 0x0800;
+    }
+    return status;
+}
+
+static void dp83843_event(DP83840State *s, uint16_t before)
+{
+    uint16_t after = dp83843_status(s);
+
+    if (s->dp83843 && (s->interrupt_control & 2) &&
+        (((before ^ after) & 1) || (~before & after & 0x20))) {
+        s->interrupt_pending = true;
+    }
+}
+
+static void dp83843_resolve(DP83840State *s)
+{
+    static const uint16_t abilities[] = {
+        MII_ANAR_TXFD, MII_ANAR_TX, MII_ANAR_10FD, MII_ANAR_10,
+    };
+    unsigned int i;
+
+    s->resolved_mode = DP83843_MODE_NONE;
+    if (!(s->control & MII_BMCR_AUTOEN) || !dp83843_media_supported(s)) {
+        return;
+    }
+    for (i = 0; i < ARRAY_SIZE(abilities); i++) {
+        if (s->advertise & abilities[i]) {
+            s->resolved_mode = i + 1;
+            return;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "dp83843: no common advertised mode\n");
+}
+
 /* The link bit latches low on hardware; the live level satisfies both reads. */
 static uint16_t dp83840_status(DP83840State *s)
 {
@@ -47,6 +139,12 @@ static uint16_t dp83840_status(DP83840State *s)
 
     if (s->dp83843) {
         status |= MII_BMSR_MFPS;
+    }
+    if (s->dp83843) {
+        uint16_t phy_status = dp83843_status(s);
+
+        return status | ((phy_status & 1) ? MII_BMSR_LINK_ST : 0) |
+               (phy_status & MII_BMSR_AN_COMP);
     }
     if (s->autoneg_done && !s->link_down) {
         status |= MII_BMSR_LINK_ST | MII_BMSR_AN_COMP;
@@ -59,13 +157,17 @@ static uint16_t dp83840_status(DP83840State *s)
 
 void dp83840_update_link(DP83840State *s, bool link_down)
 {
+    uint16_t before = dp83843_status(s);
+
     trace_dp83840_update_link(link_down ? "down" : "up");
     s->link_down = link_down;
+    dp83843_event(s, before);
 }
 
 static void dp83840_settle_done(void *opaque)
 {
     DP83840State *s = opaque;
+    uint16_t before = dp83843_status(s);
 
     if (s->restart_phase == DP83843_RESTART_BREAK_LINK) {
         /* Approximate request self-clear at resumed negotiation. */
@@ -76,6 +178,10 @@ static void dp83840_settle_done(void *opaque)
     }
     s->restart_phase = DP83843_RESTART_IDLE;
     s->autoneg_done = true;
+    if (s->dp83843) {
+        dp83843_resolve(s);
+    }
+    dp83843_event(s, before);
 }
 
 /*
@@ -97,6 +203,47 @@ static uint16_t dp83840_status_read(DP83840State *s)
 
 static uint16_t dp83840_read_impl(DP83840State *s, int reg)
 {
+    if (s->dp83843) {
+        uint16_t value;
+
+        switch (reg) {
+        case 0x10:
+            value = dp83843_status(s) | (s->interrupt_pending ? 0x100 : 0);
+            s->interrupt_pending = false;
+            return value;
+        case 0x11:
+            return s->interrupt_control;
+        case 0x12:
+            value = s->interrupt_pending ? 0x8000 : 0;
+            s->interrupt_pending = false;
+            return value;
+        case 0x13 ... 0x15:
+            value = s->counters[reg - 0x13];
+            s->counters[reg - 0x13] = 0;
+            return value;
+        case 0x16:
+            value = s->pcs_control;
+            if (s->control & MII_BMCR_AUTOEN) {
+                value &= ~0x4000;
+            } else if (s->phy_control & 0x20) {
+                value |= 0x4000;
+            }
+            return value;
+        case 0x17:
+            return s->pcs_config | ((s->phy_control & 0x20) ? 0x1000 : 0);
+        case 0x18:
+            value = s->loopback_bypass;
+            if ((dp83843_status(s) & 4) || (s->phy_control & 0x200)) {
+                value |= 0x80;
+            }
+            return value;
+        case 0x19:
+            return s->phy_control;
+        case 0x1c:
+            qemu_log_mask(LOG_UNIMP, "dp83843: reserved register 0x1c read\n");
+            return 0;
+        }
+    }
     switch (reg) {
     case MII_BMCR:
         return s->control;
@@ -150,15 +297,77 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
 
 uint16_t dp83840_read(DP83840State *s, int reg)
 {
-    uint16_t val = dp83840_read_impl(s, reg);
+    uint16_t val;
 
+    if (s->dp83843 && s->reset_held) {
+        return 0xffff;
+    }
+    val = dp83840_read_impl(s, reg);
+    if (s->dp83843 && (s->interrupt_control & 1)) {
+        s->interrupt_pending = true;
+    }
     trace_dp83840_read(val, reg);
     return val;
 }
 
-void dp83840_write(DP83840State *s, int reg, uint16_t val)
+static void dp83840_write_impl(DP83840State *s, int reg, uint16_t val)
 {
-    trace_dp83840_write(val, reg);
+    if (s->dp83843) {
+        uint16_t mask;
+
+        switch (reg) {
+        case 0x10:
+        case 0x12:
+            return;
+        case 0x11:
+            s->interrupt_control = val & 3;
+            return;
+        case 0x13 ... 0x15:
+            s->counters[reg - 0x13] = val;
+            return;
+        case 0x16:
+            if (val & ~0x20) {
+                qemu_log_mask(LOG_UNIMP,
+                              "dp83843: analog PCSR effects unmodeled\n");
+            }
+            mask = (s->control & MII_BMCR_AUTOEN) ||
+                   (s->phy_control & 0x20) ? 0xbfef : 0xffef;
+            s->pcs_control = (s->pcs_control & ~mask) | (val & mask);
+            return;
+        case 0x17:
+            if (val & 0x4000) {
+                qemu_log_mask(LOG_UNIMP, "dp83843: LED stretch unmodeled\n");
+            }
+            s->pcs_config = val & 0x7fb0;
+            return;
+        case 0x18:
+            if (val & 0x055c) {
+                qemu_log_mask(LOG_UNIMP,
+                              "dp83843: 10BASE-T controls unmodeled\n");
+            }
+            s->loopback_bypass = val & 0x1ffc;
+            return;
+        case 0x19:
+            s->phy_control = val & 0x3bff;
+            if (val & ~31) {
+                qemu_log_mask(LOG_UNIMP,
+                              "dp83843: PHY output/control effects unmodeled\n");
+            }
+            return;
+        case 0x1c:
+            qemu_log_mask(LOG_UNIMP, "dp83843: reserved register 0x1c write\n");
+            return;
+        case MII_ANAR:
+            s->advertise = val & 0xa5ff;
+            return;
+        case MII_BMCR:
+            if (val & MII_BMCR_CTST) {
+                qemu_log_mask(LOG_UNIMP, "dp83843: collision test unmodeled\n");
+            }
+            val &= 0xff80;
+            break;
+        }
+    }
 
     switch (reg) {
     case MII_BMCR:
@@ -180,6 +389,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
             if ((val & (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) ==
                 (MII_BMCR_AUTOEN | MII_BMCR_ANRESTART)) {
                 s->autoneg_done = false;
+                s->resolved_mode = DP83843_MODE_NONE;
                 s->forced_link = false;
                 s->settle_armed = true;
                 s->restart_phase = DP83843_RESTART_BREAK_LINK;
@@ -263,6 +473,39 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
     }
 }
 
+void dp83840_write(DP83840State *s, int reg, uint16_t val)
+{
+    uint16_t before = dp83843_status(s);
+
+    if (s->dp83843 && s->reset_held) {
+        return;
+    }
+    trace_dp83840_write(val, reg);
+    dp83840_write_impl(s, reg, val);
+    if (!s->dp83843) {
+        return;
+    }
+    if (!dp83843_media_supported(s)) {
+        s->resolved_mode = DP83843_MODE_NONE;
+        s->forced_link = false;
+        qemu_log_mask(LOG_UNIMP, "dp83843: unsupported media configuration\n");
+    }
+    if (reg == MII_BMCR && !(val & MII_BMCR_RESET)) {
+        if (!(s->control & MII_BMCR_AUTOEN)) {
+            s->resolved_mode = DP83843_MODE_NONE;
+            s->autoneg_done = false;
+            s->forced_link = dp83843_media_supported(s) &&
+                !(s->control & (MII_BMCR_ISOLATE | MII_BMCR_PDOWN));
+        } else if (s->autoneg_done && !s->resolved_mode) {
+            dp83843_resolve(s);
+        }
+    }
+    dp83843_event(s, before);
+    if (s->interrupt_control & 1) {
+        s->interrupt_pending = true;
+    }
+}
+
 /*
  * Three switches select loopback on the DP83840A; the diagnostic uses more
  * than one. The DP83843's register 0x17 (DP83840_PCS_CONFIG's address,
@@ -289,6 +532,15 @@ void dp83840_reset(DP83840State *s)
 
     /* Link down: SGI's diagnostic probes the not-yet-settled state. */
     s->control = DP83840_CONTROL_RESET_VALUE;
+    if (s->dp83843 && !s->addr) {
+        s->control |= MII_BMCR_ISOLATE;
+    }
+    s->phy_control = s->addr;
+    s->pcs_control = 0x20;
+    s->interrupt_control = 0;
+    memset(s->counters, 0, sizeof(s->counters));
+    s->interrupt_pending = false;
+    s->resolved_mode = DP83843_MODE_NONE;
     s->advertise = DP83840_ADVERTISE_RESET;
     s->next_page = DP83843_ANNPTR_RESET;
     /* The DP83843 selects the normal copper strap configuration here. */
@@ -307,7 +559,21 @@ void dp83840_reset(DP83840State *s)
 
 static void dp83840_reset_hold(Object *obj, ResetType type)
 {
-    dp83840_reset(DP83840(obj));
+    DP83840State *s = DP83840(obj);
+
+    s->reset_held = false;
+    dp83840_reset(s);
+}
+
+void dp83840_set_reset(DP83840State *s, bool held)
+{
+    if (!s->dp83843 || s->reset_held == held) {
+        return;
+    }
+    if (held) {
+        dp83840_reset(s);
+    }
+    s->reset_held = held;
 }
 
 static void dp83840_realize(DeviceState *dev, Error **errp)
@@ -324,6 +590,28 @@ static void dp83840_unrealize(DeviceState *dev)
     timer_free(s->settle_timer);
     s->settle_timer = NULL;
 }
+
+static bool dp83843_vmstate_needed(void *opaque)
+{
+    return DP83840(opaque)->dp83843;
+}
+
+static const VMStateDescription vmstate_dp83843 = {
+    .name = "dp83840/dp83843",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = dp83843_vmstate_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(phy_control, DP83840State),
+        VMSTATE_UINT16(pcs_control, DP83840State),
+        VMSTATE_UINT16(interrupt_control, DP83840State),
+        VMSTATE_UINT16_ARRAY(counters, DP83840State, 3),
+        VMSTATE_UINT8(resolved_mode, DP83840State),
+        VMSTATE_BOOL(interrupt_pending, DP83840State),
+        VMSTATE_BOOL(reset_held, DP83840State),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static const VMStateDescription vmstate_dp83840 = {
     .name = "dp83840",
@@ -344,7 +632,11 @@ static const VMStateDescription vmstate_dp83840 = {
         VMSTATE_INT64(restart_complete_ns, DP83840State),
         VMSTATE_BOOL(forced_link, DP83840State),
         VMSTATE_END_OF_LIST()
-    }
+    },
+    .subsections = (const VMStateDescription * const[]) {
+        &vmstate_dp83843,
+        NULL,
+    },
 };
 
 static const Property dp83840_properties[] = {
