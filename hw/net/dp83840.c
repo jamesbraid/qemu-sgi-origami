@@ -68,6 +68,8 @@ static void dp83840_settle_done(void *opaque)
     DP83840State *s = opaque;
 
     if (s->restart_phase == DP83843_RESTART_BREAK_LINK) {
+        /* Approximate request self-clear at resumed negotiation. */
+        s->control &= ~MII_BMCR_ANRESTART;
         s->restart_phase = DP83843_RESTART_NEGOTIATE;
         timer_mod(s->settle_timer, s->restart_complete_ns);
         return;
@@ -160,7 +162,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
 
     switch (reg) {
     case MII_BMCR:
-        /* Reset and restart self-clear, or a polling driver hangs. */
+        /* Reset self-clears; DP83843 restart clears at negotiation entry. */
         if (val & MII_BMCR_RESET) {
             dp83840_reset(s);
             return;
@@ -186,7 +188,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
                     DP83843_BREAK_LINK_NS + DP83843_NEGOTIATE_NS;
                 timer_mod(s->settle_timer,
                           s->restart_complete_ns - DP83843_NEGOTIATE_NS);
-                s->control = val & ~MII_BMCR_ANRESTART;
+                s->control = val;
                 return;
             }
             if (s->restart_phase != DP83843_RESTART_IDLE ||
