@@ -1712,6 +1712,9 @@ static void o2_init(MachineState *machine)
         gbe = qdev_new("sgi-o2-gbe");
         object_property_add_child(OBJECT(machine), "gbe", OBJECT(gbe));
         qdev_prop_set_bit(gbe, "functional-display", true);
+        object_property_set_str(OBJECT(gbe), "dma-view",
+                                s->legacy_crime_software ?
+                                "legacy-software" : "crime-1.5", &error_fatal);
         qdev_prop_set_uint64(gbe, "external-ttl-hz", s->gbe_external_ttl_hz);
         object_property_set_link(
             OBJECT(gbe), "ram",

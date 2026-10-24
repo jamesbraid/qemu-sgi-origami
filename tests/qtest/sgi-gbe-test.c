@@ -27,13 +27,20 @@ static void wr(QTestState *q, unsigned a, uint32_t v)
     qtest_writel(q, BASE + a, v);
 }
 
-static QTestState *start(const char *extra)
+static QTestState *start_view(bool legacy, const char *memory,
+                               const char *extra)
 {
-    QTestState *q = qtest_initf("-M none -cpu R10000 -m 64M -display none "
-        "-device sgi-o2-gbe,id=gbe,functional-display=on,"
-        "ram=/objects/ram/ram[0] %s", extra);
+    QTestState *q = qtest_initf("-M none -cpu R10000 -m %s -display none "
+        "-device sgi-o2-gbe,id=gbe,functional-display=on,dma-view=%s,"
+        "ram=/objects/ram/ram[0] %s", memory,
+        legacy ? "legacy-software" : "crime-1.5", extra);
     qtest_sysbus_mmio_map(q, PATH, 0, BASE);
     return q;
+}
+
+static QTestState *start(const char *extra)
+{
+    return start_view(false, "64M", extra);
 }
 
 /* 97 clocks x 67 lines at 10 MHz; visible 31 x 4, producer 31 x 4. */
@@ -1296,6 +1303,239 @@ static void test_fractional_and_changed_clock(void)
     qtest_quit(q);
 }
 
+
+static void dma_address_setup(QTestState *q, bool legacy)
+{
+    uint32_t base = legacy ? 0 : 0x40000000u;
+
+    mode(q);
+    palette(q);
+    qtest_writew(q, 0xd50020, (base + 0xd60000) >> 16);
+    qtest_writew(q, 0xd50080, (base + 0xd70000) >> 16);
+    qtest_writel(q, 0xd60000, 0x123456a7);
+    qtest_writel(q, 0xd60004, 0xabcdefa7);
+    qtest_writel(q, 0xd70000, 0x987654a7);
+    qtest_writel(q, 0xd70004, 0x334455a7);
+    wr(q, 0x30000, 2 << 13 | 1 << 5);
+    wr(q, 0x30004, 128 << 16);
+    wr(q, 0x3000c, (base + 0xd50020) | 1);
+    wr(q, VT(0), 0);
+    frame(q);
+}
+
+static void test_dma_address_fields(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        g_autofree char *dir = g_dir_make_tmp("gbe-address-log-XXXXXX", NULL);
+        g_autofree char *log = g_build_filename(dir, "dma.txt", NULL);
+        g_autofree char *args = g_strdup_printf("-d guest_errors -D %s", log);
+        QTestState *q = start_view(legacy, "64M", args);
+        unsigned faults = 0;
+        uint32_t base = legacy ? 0 : 0x40000000u;
+        uint32_t first = base + 0xd50020, second = base + 0xd50080;
+        uint16_t entry = (base + 0xd60000) >> 16;
+        uint8_t table[514] = { 0 };
+        const uint32_t invalid_lists[] = {
+            first ^ 0x40000000u, 0x80000020, 0xffffffe0,
+            legacy ? 0x10000020 : 0x80000020,
+        };
+        const uint16_t invalid_tiles[] = {
+            bswap16(entry), entry ^ 0x4000, 0x8000, 0xffff,
+            legacy ? 0x1000 : 0x8000,
+        };
+
+        dma_address_setup(q, legacy);
+        g_assert_cmphex(rd(q, 0x30008), ==, first | 1);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        wr(q, 0x3000c, second | 1);
+        g_assert_cmphex(rd(q, 0x30008), ==, first | 1);
+        frame(q);
+        g_assert_cmphex(rd(q, 0x30008), ==, second | 1);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x334455);
+        wr(q, 0x3000c, first | 1);
+        frame(q);
+        for (unsigned i = 0; i < ARRAY_SIZE(invalid_lists); i++) {
+            wr(q, 0x3000c, invalid_lists[i] | 1);
+            frame(q);
+            g_assert_cmphex(rd(q, 0x30008), ==, invalid_lists[i] | 1);
+            g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+            g_assert_cmpuint(dma_faults(log), ==, ++faults);
+        }
+        wr(q, 0x3000c, first | 1);
+        for (unsigned i = 0; i < ARRAY_SIZE(invalid_tiles); i++) {
+            qtest_writew(q, 0xd50020, invalid_tiles[i]);
+            frame(q);
+            g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+            g_assert_cmpuint(dma_faults(log), ==, ++faults);
+        }
+        qtest_writew(q, 0xd50020, 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+        g_assert_cmpuint(dma_faults(log), ==, faults);
+        qtest_writew(q, 0xd50020, entry);
+        qtest_writew(q, 0xd50100, (base + 0xd80000) >> 16);
+        qtest_writel(q, 0xd80000, 0x07000900);
+        wr(q, CMAP(4359), 0x89abcd00);
+        wr(q, CMAP(4361), 0x76543200);
+        wr(q, 0x20000, 1 << 5);
+        wr(q, 0x20008, (base + 0xd50100) | 1);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+        wr(q, 0x3000c, (first ^ 0x40000000u) | 1);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0);
+        wr(q, 0x3000c, first | 1);
+        frame(q);
+        qtest_writew(q, 0xd50100, ((base ^ 0x40000000u) + 0xd80000) >> 16);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        qtest_writew(q, 0xd50100, 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        wr(q, 0x20008, ((base ^ 0x40000000u) + 0xd50100) | 1);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        wr(q, 0x20008, 0);
+        stl_be_p(table, 2047 | 1 << 19);
+        stw_be_p(table + 512, 2047 | 1 << 11);
+        qtest_memwrite(q, 0xd90000, table, sizeof(table));
+        wr(q, WID(0), 3);
+        wr(q, WID(1), 3 | 1 << 5);
+        wr(q, CMAP(0xa7), 0x13579b00);
+        wr(q, CMAP(0x1a7), 0x24681300);
+        wr(q, 0x40004, (base + 0xd90000) >> 16 | 1 << 16);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x246813);
+        const uint32_t invalid_did[] = {
+            ((base ^ 0x40000000u) + 0xd90000) >> 16,
+            0x8000, 0xffff, legacy ? 0x1000 : 0x8000,
+        };
+        for (unsigned i = 0; i < ARRAY_SIZE(invalid_did); i++) {
+            wr(q, 0x40004, invalid_did[i] | 1 << 16);
+            frame(q);
+            g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x13579b);
+        }
+        qtest_system_reset(q);
+        g_autoptr(QDict) view = qtest_qmp(q,
+            "{'execute':'qom-get','arguments':{'path':%s,"
+            "'property':'dma-view'}}", PATH);
+        g_assert_cmpstr(qdict_get_str(view, "return"), ==,
+                        legacy ? "legacy-software" : "crime-1.5");
+        g_autoptr(QDict) immutable = qtest_qmp(q,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'dma-view','value':%s}}", PATH,
+            legacy ? "crime-1.5" : "legacy-software");
+        g_assert_true(qdict_haskey(immutable, "error"));
+        qtest_quit(q);
+        g_unlink(log);
+        g_rmdir(dir);
+    }
+}
+
+static void test_dma_address_boundaries(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *q = start_view(legacy, "1G", "");
+        uint32_t base = legacy ? 0 : 0x40000000u;
+        uint32_t end = legacy ? 0x10000000u : 0x80000000u;
+
+        mode(q);
+        palette(q);
+        wr(q, WID(0), 3);
+        wr(q, CMAP(0xa7), 0x12345600);
+        wr(q, VT(1), 1024 | 200 << 12);
+        wr(q, VT(4), 128 | 129 << 12);
+        wr(q, VT(15), 511 | 512 << 12);
+        wr(q, VT(16), 127 | 128 << 12);
+        wr(q, VT(13), 491 | 1005 << 12);
+        wr(q, VT(14), 128);
+        qtest_writew(q, 0x10020, (end - 65536) >> 16);
+        qtest_writeb(q, end - base - 1, 0xa7);
+        wr(q, 0x30000, 1 << 5);
+        wr(q, 0x30004, 128 << 16);
+        wr(q, 0x3000c, (base + 0x10020) | 1);
+        wr(q, VT(0), 0);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0x123456);
+        qtest_writew(q, 0x10020, end >> 16);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        wr(q, 0x3000c, (end + 32) | 1);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        /* Crossing spans also fail the independent 8 KiB list-page bound. */
+        wr(q, 0x30000, 17 << 5);
+        wr(q, 0x3000c, (end - 32) | 1);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        wr(q, 0x3000c, 0xffffffe1);
+        qtest_clock_step(q, 20500000);
+        g_assert_cmphex(screen(q, 1, 1, 0, 0), ==, 0);
+        g_assert_cmphex(qtest_readb(q, end - base - 1), ==, 0xa7);
+        qtest_quit(q);
+    }
+}
+
+static void test_dma_address_migration(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned mismatch = 0; mismatch < 2; mismatch++) {
+            g_autofree char *dir = g_dir_make_tmp("gbe-view-migrate-XXXXXX",
+                                                 NULL);
+            g_autofree char *sock = g_build_filename(dir, "migration.sock",
+                                                    NULL);
+            g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+            QTestState *from = start_view(legacy, "64M", "");
+            QTestState *to = start_view(legacy ^ mismatch, "64M",
+                                       "-incoming defer");
+            uint32_t base = legacy ? 0 : 0x40000000u;
+            QTestState *control = mismatch ? NULL :
+                                  start_view(legacy, "64M", "");
+
+            if (control) {
+                dma_address_setup(control, legacy);
+                qtest_writew(control, 0xd50020, (base + 0xd70000) >> 16);
+                qtest_irq_intercept_out_named(control, PATH, "sysbus-irq");
+            }
+            dma_address_setup(from, legacy);
+            qtest_writew(from, 0xd50020, (base + 0xd70000) >> 16);
+            qtest_irq_intercept_out_named(to, PATH, "sysbus-irq");
+            qtest_qmp_assert_success(to,
+                "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+                "'exit-on-error':false}}", uri);
+            qtest_qmp_assert_success(from,
+                "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+            sgi_wait_migration(to, mismatch ? "failed" : "completed");
+            if (mismatch) {
+                g_assert_cmphex(rd(to, 0x30008), ==, 0);
+                g_assert_cmphex(rd(to, 0x3000c), ==, 0);
+                g_assert_cmphex(rd(to, VT(0)), ==, 0x80000000u);
+            } else {
+                g_assert_cmphex(rd(to, 0x30008), ==, (base + 0xd50020) | 1);
+                g_assert_cmphex(screen(to, 31, 4, 0, 0), ==, 0x123456);
+                g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 0);
+                wr(to, WID(0), 3 | 5 << 2);
+                g_assert_cmphex(screen(to, 31, 4, 0, 0), ==, 0x123456);
+                frame(to);
+                frame(control);
+                g_assert_cmphex(rd(to, VT(0)), ==, rd(control, VT(0)));
+                g_assert_cmphex(screen(to, 31, 4, 0, 0), ==, 0x987654);
+                g_assert_cmphex(screen(to, 31, 4, 0, 0), ==,
+                                screen(control, 31, 4, 0, 0));
+                g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==,
+                                 qtest_get_irq_raise_count(control, 0));
+                qtest_quit(control);
+            }
+            qtest_quit(from);
+            qtest_quit(to);
+            g_unlink(sock);
+            g_rmdir(dir);
+        }
+    }
+}
+
 #define CRIME_BASE 0x14000000u
 #define MTE_BASE 0x15003000u
 #define MTE_TLB 0x15001700u
@@ -1316,6 +1556,148 @@ static QTestState *start_board(const char *image, bool legacy)
                      0x100 | bank << 2);
     }
     return q;
+}
+
+
+static void test_dma_address_board_domains(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-address-domain-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "synthetic.bin", NULL);
+
+    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
+    for (int legacy = 1; legacy >= 0; legacy--) {
+        QTestState *q = start_board(image, legacy);
+        uint32_t base = legacy ? 0 : 0x40000000u;
+        uint32_t list = base + 0xd50020;
+        uint32_t tile = base + 0xd60000;
+
+        mode(q);
+        palette(q);
+        qtest_writew(q, 0x40d50020, tile >> 16);
+        qtest_writel(q, 0x40d60000, 0x123456ab);
+        qtest_writel(q, 0x40d60004, 0xabcdef01);
+        wr(q, 0x30000, 2 << 13 | 1 << 5);
+        wr(q, 0x30004, 128 << 16);
+        wr(q, 0x3000c, list | 1);
+        wr(q, VT(0), 0);
+        frame(q);
+        g_assert_cmphex(rd(q, 0x30008), ==, list | 1);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+        /* The opposite raw domain must not become a second RAM alias. */
+        wr(q, 0x3000c, (list ^ 0x40000000u) | 1);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+        wr(q, 0x3000c, list | 1);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+        qtest_quit(q);
+    }
+    g_unlink(image);
+    g_rmdir(dir);
+}
+
+
+static void dma_board_copy(QTestState *q, bool legacy, uint32_t source,
+                           uint32_t destination, unsigned sx, unsigned dx)
+{
+    uint32_t mode = 1u << 11 | (legacy ? 1 << 2 : 4 << 5 | 5 << 2);
+
+    if (legacy) {
+        qtest_writeq(q, 0x15001000,
+                     (uint64_t)(0x8000 | source >> 16) << 48);
+        qtest_writeq(q, 0x15001200,
+                     (uint64_t)(0x8000 | destination >> 16) << 48);
+    } else {
+        qtest_writeq(q, MTE_TLB,
+                     (uint64_t)(0x80000000u | source >> 12) << 32);
+        qtest_writeq(q, MTE_TLB + 128,
+                     (uint64_t)(0x80000000u | destination >> 12) << 32);
+    }
+    qtest_writel(q, MTE_BASE + 8, UINT32_MAX);
+    qtest_writel(q, MTE_BASE + 0x20, legacy ? sx << 16 : sx);
+    qtest_writel(q, MTE_BASE + 0x28, legacy ? (sx + 7) << 16 : sx + 7);
+    qtest_writel(q, MTE_BASE + 0x30, legacy ? dx << 16 : dx);
+    qtest_writel(q, MTE_BASE + 0x38, legacy ? (dx + 7) << 16 : dx + 7);
+    qtest_writel(q, MTE_BASE + 0x40, 1);
+    qtest_writel(q, MTE_BASE + 0x48, 1);
+    qtest_writel(q, MTE_BASE + 0x800, mode);
+}
+
+static void test_dma_address_mte_banks(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-dma-banks-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "synthetic.bin", NULL);
+    const uint8_t source[] = {
+        0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17,
+        0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7,
+    };
+
+    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *q = start_board(image, legacy);
+        uint32_t base = legacy ? 0 : 0x40000000u;
+        uint8_t actual[24];
+
+        mode(q);
+        palette(q);
+        wr(q, WID(0), 3);
+        wr(q, CMAP(0), 0);
+        wr(q, CMAP(0x17), 0x12345600);
+        wr(q, CMAP(0xa7), 0xabcdef00);
+        wr(q, CMAP(4359), 0x89abcd00);
+        qtest_memwrite(q, 0x40030000, source, sizeof(source));
+        qtest_writel(q, 0x40040000, 0x07000000);
+        qtest_writew(q, LIST + 32, (base + 0x08020000) >> 16);
+        qtest_writew(q, LIST + 128, (base + 0x40000) >> 16);
+        wr(q, 0x30000, 1 << 5);
+        wr(q, 0x30004, 128 << 16);
+        wr(q, 0x3000c, (base + 0x10020) | 1);
+        wr(q, 0x20000, 1 << 5);
+        wr(q, 0x20008, (base + 0x10080) | 1);
+        /* Only admitted MTE operations populate either destination tile. */
+        dma_board_copy(q, legacy, 0x40030000, 0x48020000, 0, 0);
+        dma_board_copy(q, legacy, 0x40030000, 0x48020000, 8, 16);
+        dma_board_copy(q, legacy, 0x40030000, 0x50020000, 8, 0);
+        dma_board_copy(q, legacy, 0x40030000, 0x50020000, 0, 16);
+        qtest_memread(q, 0x48020000, actual, sizeof(actual));
+        g_assert_cmpmem(actual, 8, source, 8);
+        g_assert_cmpmem(actual + 16, 8, source + 8, 8);
+        wr(q, VT(0), 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x123456);
+        g_assert_cmphex(screen(q, 31, 4, 7, 0), ==, 0x123456);
+        g_assert_cmphex(screen(q, 31, 4, 8, 0), ==, 0);
+        g_assert_cmphex(screen(q, 31, 4, 16, 0), ==, 0xabcdef);
+        g_assert_cmphex(screen(q, 31, 4, 23, 0), ==, 0xabcdef);
+        /* Overlap keeps the lower numbered bank, then remapping selects 2. */
+        qtest_writeq(q, CRIME_BASE + 0x208 + 2 * 8, 0x104);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x123456);
+        qtest_writeq(q, CRIME_BASE + 0x208 + 1 * 8, 0x108);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+        g_assert_cmphex(screen(q, 31, 4, 16, 0), ==, 0x123456);
+        qtest_writeq(q, CRIME_BASE + 0x208 + 2 * 8, 0x108);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        qtest_writeq(q, CRIME_BASE + 0x208 + 1 * 8, 4);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        qtest_writeq(q, CRIME_BASE + 0x208 + 1 * 8, 0x104);
+        qtest_writeq(q, CRIME_BASE + 0x208 + 2 * 8, 0x108);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x123456);
+        g_assert_cmphex(screen(q, 31, 4, 16, 0), ==, 0xabcdef);
+        qtest_memread(q, 0x40030000, actual, sizeof(source));
+        g_assert_cmpmem(actual, sizeof(source), source, sizeof(source));
+        qtest_quit(q);
+    }
+    g_unlink(image);
+    g_rmdir(dir);
 }
 
 static void assert_cpu_route(QTestState *q, bool legacy, bool active)
@@ -1590,6 +1972,15 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/cursor-boundaries", test_cursor_boundaries);
     qtest_add_func("/sgi-gbe/fractional-clock",
                    test_fractional_and_changed_clock);
+    qtest_add_func("/sgi-gbe/dma-address/fields", test_dma_address_fields);
+    qtest_add_func("/sgi-gbe/dma-address/boundaries",
+                   test_dma_address_boundaries);
+    qtest_add_func("/sgi-gbe/dma-address/migration",
+                   test_dma_address_migration);
+    qtest_add_func("/sgi-gbe/dma-address/mte-banks",
+                   test_dma_address_mte_banks);
+    qtest_add_func("/sgi-gbe/dma-address/board-domains",
+                   test_dma_address_board_domains);
     qtest_add_func("/sgi-gbe/board-interrupts", test_board_interrupts);
     qtest_add_func("/sgi-gbe/dma-reset/board", test_board_dma_reset);
     qtest_add_func("/sgi-gbe/board-mte-scanout", test_board_mte_scanout);
