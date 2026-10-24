@@ -1185,6 +1185,13 @@ static bool sgi_machine_ip53_experiment_policy(
         g_strcmp0(t->name, "tezro-rack-base") == 0;
     bool onyx4_host_runtime_profile = g_strcmp0(
         t->name, "onyx4-host-serial-compat") == 0;
+    bool normal_candidate =
+        (origin350 && origin350_topology) ||
+        (onyx350 && onyx350_topology) ||
+        (tezro && (g_strcmp0(t->name, "tezro-tower-one") == 0 ||
+                   g_strcmp0(t->name, "tezro-tower-multi") == 0 ||
+                   g_strcmp0(t->name, "tezro-rack-base") == 0)) ||
+        (onyx4_host && onyx4_host_runtime_profile);
 
     bool registered_ip53_product =
         (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
@@ -1216,12 +1223,91 @@ static bool sgi_machine_ip53_experiment_policy(
                    "runtime profile");
         return false;
     }
-    if (registered_ip53_product && !s->ip53_experimental) {
+    if (registered_ip53_product && !s->ip53_experimental &&
+        !normal_candidate) {
         error_setg(errp, "%s requires ip53-experimental=on", smc->product);
         return false;
     }
-    *allow_ip53_experiment = s->ip53_experimental;
+    *allow_ip53_experiment = s->ip53_experimental || normal_candidate;
     return true;
+}
+
+/*
+ * The normal-selection exception is deliberately a complete resolved tuple.
+ * Keep the early product/topology admission above broad enough to resolve the
+ * descriptor, then authorize its IP53 behavior only after population and
+ * memory selection have been checked.
+ */
+static bool sgi_machine_ip53_normal_tuple(
+    SGIMachineClass *smc, const SGIModelTopology *t, MachineState *machine,
+    const unsigned int *requested, unsigned int node_count,
+    const SGIModelNode **nodes, const SGIModelProcessor *processor,
+    const SGIModelProcessorOption *processor_option)
+{
+    static const struct {
+        const char *product;
+        const char *topology;
+        unsigned int cpus;
+        unsigned int fitted_cpus;
+        uint64_t memory_mib;
+        uint64_t clock_hz;
+        unsigned int cache_mib;
+        uint32_t mode;
+    } profiles[] = {
+        { "origin350", "origin350", 4, 4, 2048, 700000000, 8,
+          0x009cad85 },
+        { "onyx350", "onyx350-compat", 4, 4, 8192, 800000000, 8,
+          0x009caf85 },
+        { "tezro", "tezro-tower-one", 1, 1, 4096, 700000000, 4,
+          0x009bad85 },
+        { "tezro", "tezro-tower-multi", 4, 4, 4096, 700000000, 4,
+          0x009bad85 },
+        { "tezro", "tezro-rack-base", 1, 4, 4096, 700000000, 4,
+          0x009bad85 },
+        { "onyx4-host", "onyx4-host-serial-compat", 4, 4, 8192,
+          1000000000, 16, 0x009dad85 },
+    };
+    size_t i;
+
+    if (node_count != 1 || machine->smp.cpus != machine->smp.max_cpus ||
+        !processor ||
+        (processor_option && processor_option->assembly != processor)) {
+        return false;
+    }
+    for (i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        const SGIModelCpuSlotList *slot;
+        unsigned int fitted_count = 0;
+
+        if (g_strcmp0(smc->product, profiles[i].product) ||
+            g_strcmp0(t->name, profiles[i].topology) ||
+            machine->smp.cpus != profiles[i].cpus ||
+            requested[0] != profiles[i].cpus ||
+            machine->ram_size != profiles[i].memory_mib * MiB ||
+            processor->clock_hz != profiles[i].clock_hz ||
+            processor->cache_mib != profiles[i].cache_mib ||
+            !processor->has_mode_bits ||
+            processor->mode_bits != profiles[i].mode ||
+            g_strcmp0(processor->kind, "R16000")) {
+            continue;
+        }
+        for (slot = nodes[0]->cpu_slots; slot; slot = slot->next) {
+            const SGIModelProcessor *assembly = slot->value->assembly;
+
+            if (!assembly) {
+                continue;
+            }
+            if (g_strcmp0(assembly->kind, "R16000") ||
+                assembly->clock_hz != profiles[i].clock_hz ||
+                assembly->cache_mib != profiles[i].cache_mib ||
+                !assembly->has_mode_bits ||
+                assembly->mode_bits != profiles[i].mode) {
+                return false;
+            }
+            fitted_count++;
+        }
+        return fitted_count == profiles[i].fitted_cpus;
+    }
+    return false;
 }
 
 /*
@@ -6739,6 +6825,16 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
 
+    if (allow_ip53_experiment && !s->ip53_experimental &&
+        !sgi_machine_ip53_normal_tuple(
+            smc, t, machine, requested, node_count, nodes, s->processor,
+            s->processor_option)) {
+        error_setg(errp, "%s: topology '%s' does not match an approved normal "
+                   "IP53 serial profile tuple; pass ip53-experimental=on for "
+                   "an already-admitted experimental profile", mc->name,
+                   t->name);
+        return false;
+    }
     s->ip53_experiment_authorized = allow_ip53_experiment;
 
     /*

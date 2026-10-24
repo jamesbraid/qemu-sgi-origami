@@ -2847,12 +2847,6 @@ static void test_ip53_runtime_permission_refusals(void)
         const char *message;
         bool qtest;
     } cases[] = {
-        { "origin350,topology=origin350",
-          "2G", "4", "R16000",
-          "origin350 requires ip53-experimental=on", false },
-        { "onyx350,topology=onyx350-compat",
-          "8G", "4", "R16000",
-          "onyx350 requires ip53-experimental=on", false },
         { "onyx350,ip53-experimental=on",
           "8G", "4", "R16000",
           "Onyx 350 runtime trial requires explicit "
@@ -3134,6 +3128,13 @@ typedef struct IP53RuntimeTestFixture {
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     const char *binary_var, const char *machine, const char *extra,
     const char *cpus, const char *memory, const char *reset_mode);
+static IP53RuntimeTestFixture *ip53_runtime_test_start_normal_selection(
+    const char *machine, const char *extra, const char *cpus,
+    const char *memory);
+static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
+    const char *binary_var, const char *machine, const char *extra,
+    const char *cpus, const char *memory, const char *reset_mode,
+    bool explicit_cpu_properties);
 
 static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary(
     const char *binary_var, const char *machine, const char *extra)
@@ -3146,8 +3147,26 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     const char *binary_var, const char *machine, const char *extra,
     const char *cpus, const char *memory, const char *reset_mode)
 {
+    return ip53_runtime_test_start_options(
+        binary_var, machine, extra, cpus, memory, reset_mode, true);
+}
+
+static IP53RuntimeTestFixture *ip53_runtime_test_start_normal_selection(
+    const char *machine, const char *extra, const char *cpus,
+    const char *memory)
+{
+    return ip53_runtime_test_start_options(
+        NULL, machine, extra, cpus, memory, NULL, false);
+}
+
+static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
+    const char *binary_var, const char *machine, const char *extra,
+    const char *cpus, const char *memory, const char *reset_mode,
+    bool explicit_cpu_properties)
+{
     g_autoptr(GError) err = NULL;
     g_autofree char *arguments = NULL;
+    g_autofree char *cpu = NULL;
     const char *scache_bytes = g_str_has_prefix(
         machine, "onyx4-host,") ? "0x1000000" :
         g_str_has_prefix(machine, "tezro,") ? "0x400000" : "0x800000";
@@ -3169,14 +3188,16 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_with_binary_profile(
     g_assert_no_error(err);
     g_assert_cmpint(ftruncate(clock_fd, 16), ==, 0);
     g_assert_cmpint(close(clock_fd), ==, 0);
+    cpu = explicit_cpu_properties ?
+        g_strdup_printf("R16000,r16000-experimental=on,"
+                        "r16000-reset-mode=%s,r16000-scache-bytes=%s",
+                        reset_mode, scache_bytes) : g_strdup("R16000");
     arguments = g_strdup_printf(
-        "-M %s -m %s -smp %s "
-        "-cpu R16000,r16000-experimental=on,"
-        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
+        "-M %s -m %s -smp %s -cpu %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-display none -S %s", machine, memory, cpus, reset_mode, scache_bytes,
+        "-display none -S %s", machine, memory, cpus, cpu,
         fixture->flash_path, fixture->data_path,
         fixture->clock_path,
         extra ? extra : "");
@@ -3379,6 +3400,141 @@ static void test_tezro_named_serial_profiles_build(void)
         g_assert_cmpstr(pic, ==, "sgi-pic");
         ip53_runtime_test_stop(fixture);
     }
+}
+
+static void test_tezro_legacy_experimental_populations(void)
+{
+    static const struct {
+        const char *topology;
+        const char *cpus;
+    } profiles[] = {
+        { "tezro-tower-multi", "2" },
+        { "tezro-rack-base", "2" },
+        { "tezro-rack-base", "4" },
+        { "tezro-deskside-700mhz-4mib-serial-trial", "4" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "tezro,topology=%s,ip53-experimental=on", profiles[i].topology);
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, machine, NULL, profiles[i].cpus, "4G", "0x009bad85");
+        g_autoptr(QDict) response = qtest_qmp(
+            fixture->qts, "{'execute':'query-cpus-fast'}");
+
+        g_assert_cmpuint(qlist_size(qdict_get_qlist(response, "return")), ==,
+                         atoi(profiles[i].cpus));
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
+static void test_ip53_normal_selection_profiles(void)
+{
+    static const struct {
+        const char *machine;
+        const char *cpus;
+        const char *memory;
+        uint32_t mode;
+        uint64_t cache_bytes;
+        uint64_t clock_hz;
+        unsigned int cpu_count;
+    } profiles[] = {
+        { "origin350,topology=origin350", "4", "2G", 0x009cad85,
+          8 * MiB, 700000000, 4 },
+        { "onyx350,topology=onyx350-compat", "4", "8G", 0x009caf85,
+          8 * MiB, 800000000, 4 },
+        { "tezro,topology=tezro-tower-one", "1", "4G", 0x009bad85,
+          4 * MiB, 700000000, 1 },
+        { "tezro,topology=tezro-tower-multi", "4", "4G", 0x009bad85,
+          4 * MiB, 700000000, 4 },
+        { "tezro,topology=tezro-rack-base", "1", "4G", 0x009bad85,
+          4 * MiB, 700000000, 1 },
+        { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
+          0x009dad85, 16 * MiB, 1000000000, 4 },
+    };
+    static const char *const selectors[] = { NULL, "off", "on" };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(profiles); i++) {
+        for (size_t j = 0; j < G_N_ELEMENTS(selectors); j++) {
+            g_autofree char *machine = selectors[j] ?
+                g_strdup_printf("%s,ip53-experimental=%s",
+                                profiles[i].machine, selectors[j]) :
+                g_strdup(profiles[i].machine);
+            IP53RuntimeTestFixture *fixture =
+                ip53_runtime_test_start_normal_selection(
+                    machine, NULL, profiles[i].cpus, profiles[i].memory);
+            QTestState *qts = fixture->qts;
+            g_autoptr(QDict) response = qtest_qmp(
+                qts, "{'execute':'query-cpus-fast'}");
+            QList *cpus = qdict_get_qlist(response, "return");
+            const QListEntry *entry;
+            unsigned int cpu_count = 0;
+
+            g_assert_cmpint(qom_get_bool(qts, "/machine",
+                                         "ip53-experimental"), ==,
+                            selectors[j] && g_str_equal(selectors[j], "on"));
+            g_assert_cmpuint(qom_get_uint(qts, "/machine/cpu-refclk",
+                                          "qtest-clock-period"), ==,
+                CLOCK_PERIOD_FROM_HZ(profiles[i].clock_hz));
+            for (entry = qlist_first(cpus); entry; entry = qlist_next(entry)) {
+                QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+                const char *path = qdict_get_str(cpu, "qom-path");
+
+                g_assert_true(qom_get_bool(qts, path,
+                                           "r16000-experimental"));
+                g_assert_cmphex(qom_get_uint(qts, path,
+                                             "r16000-reset-mode"), ==,
+                                profiles[i].mode);
+                g_assert_cmpuint(qom_get_uint(qts, path,
+                                              "r16000-scache-bytes"), ==,
+                                 profiles[i].cache_bytes);
+                cpu_count++;
+            }
+            g_assert_cmpuint(cpu_count, ==, profiles[i].cpu_count);
+            ip53_runtime_test_stop(fixture);
+        }
+    }
+}
+
+static void test_ip53_normal_selection_migration_direction(
+    const char *source_selector, const char *destination_selector)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp(
+        "sn-builder-ip53-normal-migrate-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *source = source_selector ?
+        g_strdup_printf("origin350,ip53-experimental=%s", source_selector) :
+        g_strdup("origin350");
+    g_autofree char *destination = destination_selector ?
+        g_strdup_printf("origin350,ip53-experimental=%s",
+                            destination_selector) :
+        g_strdup("origin350");
+    IP53RuntimeTestFixture *from, *to;
+
+    g_assert_no_error(error);
+    from = ip53_runtime_test_start_normal_selection(
+        source, NULL, "4", "2G");
+    to = ip53_runtime_test_start_normal_selection(
+        destination, "-incoming defer", "4", "2G");
+    qtest_qmp_assert_success(to->qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from->qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from->qts, "completed", 30);
+    sgi_wait_migration_status(to->qts, "completed", 30);
+    ip53_runtime_test_stop(to);
+    ip53_runtime_test_stop(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_ip53_normal_selection_migration(void)
+{
+    test_ip53_normal_selection_migration_direction(NULL, "on");
+    test_ip53_normal_selection_migration_direction("on", NULL);
 }
 
 static IP53RuntimeTestFixture *ip53_onyx350_runtime_test_start(
@@ -5071,6 +5227,74 @@ static void test_ip53_runtime_cpu_property_refusals(void)
         args[12] = data_drive;
         args[14] = clock_drive;
         assert_qemu_rejects(args, cases[i].message);
+    }
+
+    {
+        static const char *const globals[] = {
+            "R16000-mips64-cpu.r16000-experimental=off",
+            "R16000-mips64-cpu.r16000-reset-mode=0x009cad84",
+            "R16000-mips64-cpu.r16000-scache-bytes=0x400000",
+        };
+        static const char *const messages[] = {
+            "IP53 CPU property r16000-experimental conflicts with the "
+            "authorized descriptor",
+            "IP53 CPU property r16000-reset-mode conflicts with the "
+            "authorized descriptor",
+            "IP53 CPU property r16000-scache-bytes conflicts with the "
+            "authorized descriptor",
+        };
+
+        for (unsigned int i = 0; i < G_N_ELEMENTS(globals); i++) {
+            const char *args[] = {
+                qtest_qemu_binary(NULL), "-M", "origin350", "-m", "2G",
+                "-smp", "4", "-cpu", "R16000", "-global", globals[i],
+                "-bios", bios, "-drive", NULL, "-drive", NULL,
+                "-display", "none", NULL,
+            };
+            g_autofree char *data_drive = g_strdup_printf(
+                "if=none,id=sgi-ds1742-data-io9,file=%s,format=raw", data_path);
+            g_autofree char *clock_drive = g_strdup_printf(
+                "if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+                clock_path);
+
+            args[14] = data_drive;
+            args[16] = clock_drive;
+            assert_qemu_rejects(args, messages[i]);
+        }
+    }
+
+    {
+        static const struct {
+            const char *machine;
+            const char *memory;
+            const char *smp;
+            const char *message;
+        } fitted_cases[] = {
+            { "origin350", "2G", "4,maxcpus=8",
+              "Invalid SMP CPUs 8. The max CPUs supported by machine "
+              "'origin350' is 4" },
+            { "tezro,topology=tezro-rack-base", "4G", "1,maxcpus=4",
+              "does not match an approved normal IP53 serial profile tuple" },
+        };
+
+        for (unsigned int i = 0; i < G_N_ELEMENTS(fitted_cases); i++) {
+            const char *args[] = {
+                qtest_qemu_binary(NULL), "-M", fitted_cases[i].machine,
+                "-m", fitted_cases[i].memory, "-smp", fitted_cases[i].smp,
+                "-cpu",
+                "R16000", "-bios", bios, "-drive", NULL, "-drive", NULL,
+                "-display", "none", NULL,
+            };
+            g_autofree char *data_drive = g_strdup_printf(
+                "if=none,id=sgi-ds1742-data-io9,file=%s,format=raw", data_path);
+            g_autofree char *clock_drive = g_strdup_printf(
+                "if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw",
+                clock_path);
+
+            args[12] = data_drive;
+            args[14] = clock_drive;
+            assert_qemu_rejects(args, fitted_cases[i].message);
+        }
     }
     g_unlink(bios);
     g_unlink(data_path);
@@ -9223,6 +9447,12 @@ int main(int argc, char **argv)
                    test_tezro_trial_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
+    qtest_add_func("sn/builder/tezro-legacy-experimental-populations",
+                   test_tezro_legacy_experimental_populations);
+    qtest_add_func("sn/builder/ip53-normal-selection-profiles",
+                   test_ip53_normal_selection_profiles);
+    qtest_add_func("sn/builder/ip53-normal-selection-migration",
+                   test_ip53_normal_selection_migration);
     qtest_add_func(
         "sn/builder/ip53-origin-to-onyx-machine-type-migration-refused",
         test_ip53_origin_to_onyx_machine_type_migration_refused);
