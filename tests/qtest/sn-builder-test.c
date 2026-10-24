@@ -1268,7 +1268,7 @@ static void test_origin300_vbrick_projects_v12(const void *data)
     g_assert_cmpstr(type, ==, "sgi-xbridge");
     g_clear_pointer(&type, g_free);
     type = qom_child_type(qts, "/machine/module1", "vbrick-l1");
-    g_assert_cmpstr(type, ==, "container");
+    g_assert_cmpstr(type, ==, "sgi-l1");
     g_clear_pointer(&type, g_free);
     type = qom_child_type(qts, "/machine/module1", "vbrick-v12");
     g_assert_cmpstr(type, ==, "sgi-odyssey");
