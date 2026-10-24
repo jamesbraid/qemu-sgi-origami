@@ -840,7 +840,6 @@ static void aic7880_process_command(AIC7880State *s)
         s->error_pending || !(s->regs[REG_DFCNTRL] & 0x10)) {
         return;
     }
-    aic7880_pio_present(s);
     count = aic7880_count(s, REG_STCNT);
     if (!count) {
         s->regs[REG_SSTAT0] |= 4;
@@ -869,6 +868,7 @@ static void aic7880_process_command(AIC7880State *s)
         s->host_fifo_read++;
         s->host_fifo_len--;
         s->command_dma_wait = true;
+        aic7880_pio_present(s);
         aic7880_advance_scsi(s, 1);
         aic7880_fifo_status(s);
         count--;
@@ -1804,7 +1804,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         s->regs[addr] = val & ~0x08; /* SELBUSB is inert on one channel. */
         break;
-    case REG_DFCNTRL:
+    case REG_DFCNTRL: {
+        bool command_was_owned = aic7880_command_dma_owned(s);
+
         if ((val & 0x38) && aic7880_manual_busy(s)) {
             aic7880_error(s, "DMA enable during a manual byte");
             break;
@@ -1826,7 +1828,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->regs[REG_SSTAT0] &= ~4;
         }
         s->regs[addr] = val & ~DFC_FIFORESET;
-        aic7880_pio_present(s);
+        if (command_was_owned != aic7880_command_dma_owned(s)) {
+            aic7880_pio_present(s);
+        }
         if (val & DFC_FIFORESET) {
             if (s->host_fifo_len && s->req && !s->command_fifo_stale) {
                 scsi_req_cancel(s->req);
@@ -1852,6 +1856,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         aic7880_process_scsi_data(s);
         aic7880_update_scsi_irq(s);
         break;
+    }
     case REG_DFDAT:
         if ((s->regs[REG_DFCNTRL] & 0x30) || s->req ||
             s->selected) {
