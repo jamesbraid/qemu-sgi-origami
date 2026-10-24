@@ -4811,6 +4811,146 @@ static void o2_storage_step_to(QTestState *qts, unsigned slot,
     g_assert_cmphex(o2_storage_seq_pc(qts, slot), ==, target);
 }
 
+
+static void o2_aic_assert_selection(QTestState *qts, unsigned slot,
+                                     uint8_t status0, uint8_t status1,
+                                     uint8_t interrupt, uint8_t signals)
+{
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x0b)),
+                    ==, status0);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x0c)),
+                    ==, status1);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x91)),
+                    ==, interrupt);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x03)),
+                    ==, signals);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x92)), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x9e)), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4,
+                    ==, 4);
+}
+
+static void test_storage_high_id_selection_timeout(void)
+{
+    static const unsigned ids[] = { 8, 15 };
+    uint8_t program[4], guarded[32], after[32];
+    size_t length = 0;
+
+    o2_storage_emit_value(program, &length, 0x40, 0x00); /* ENSELO */
+    for (unsigned i = 0; i < sizeof(guarded); i++) {
+        guarded[i] = 7 * i + 3;
+    }
+    for (unsigned permutation = 0; permutation < 2; permutation++) {
+        for (unsigned setting = 0; setting < 4; setting++) {
+            QTestState *qts = qtest_init(MEMTX_TEST_DEVICE
+                "-M o2-test -cpu R10000 -m 64M -nodefaults -nic none "
+                "-accel qtest -S "
+                "-device scsi-cd,bus=aic0.0,scsi-id=0");
+            int64_t interval = 256000000LL >> setting;
+            unsigned first = permutation + 1, second = 3 - first;
+            unsigned remaining = 1u << (second - 1);
+
+            /* -S leaves virtual callbacks disabled until qtest enables them. */
+            qtest_clock_timers(qts, true);
+            qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+            qtest_writel(qts, MACE_PCI + 8, 3);
+            qtest_writeq(qts, CRIME + 0x18, 3ULL << 8);
+            qtest_memwrite(qts, RAM_FULL + 0x100, guarded, sizeof(guarded));
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                unsigned target = ids[(slot - 1) ^ permutation];
+
+                o2_storage_configure_aic(qts, slot);
+                o2_storage_load_stepped_program(qts, slot, program, length);
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x05),
+                             target << 4 | 7);
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x02),
+                             setting << 3 | 4);
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x11),
+                             slot == 1 ? 0x80 : 0);
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+                g_assert_cmphex(qtest_readb(qts,
+                                            o2_storage_aic_slot(slot, 0x05)),
+                                ==, target << 4 | 7);
+                o2_aic_assert_selection(qts, slot, 0x10, 0, 0, 0x08);
+            }
+            o2_aic_assert_irqs(qts, 0, 0, false);
+            qtest_clock_step(qts, interval - 1);
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                o2_aic_assert_selection(qts, slot, 0x10, 0, 0, 0x08);
+            }
+            o2_aic_assert_irqs(qts, 0, 0, false);
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, 1), ==, 0);
+            qtest_clock_step(qts, 1);
+            o2_aic_assert_selection(qts, 1, 0x10, 0x80, 4, 0);
+            o2_aic_assert_selection(qts, 2, 0x10, 0x80, 0, 0);
+            o2_aic_assert_irqs(qts, 1, 1, true);
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, 1), ==, 1);
+            /* A live source defeats an early host-latch clear. */
+            qtest_writeb(qts, o2_storage_aic_slot(1, 0x92), 4);
+            o2_aic_assert_selection(qts, 1, 0x10, 0x80, 4, 0);
+            o2_aic_assert_irqs(qts, 1, 1, true);
+            qtest_writeb(qts, o2_storage_aic_slot(1, 0x87), 4);
+            o2_aic_assert_irqs(qts, 0, 0, false);
+            qtest_writeb(qts, o2_storage_aic_slot(1, 0x87), 6);
+            o2_aic_assert_irqs(qts, 1, 1, true);
+            qtest_writel(qts, MACE_PCI + 8, 2);
+            o2_aic_assert_irqs(qts, 1, 0, false);
+            qtest_writel(qts, MACE_PCI + 8, 3);
+            o2_aic_assert_irqs(qts, 1, 1, true);
+            qtest_writeq(qts, CRIME + 0x18, 1ULL << 9);
+            o2_aic_assert_irqs(qts, 1, 1, false);
+            qtest_writeq(qts, CRIME + 0x18, 3ULL << 8);
+            o2_aic_assert_irqs(qts, 1, 1, true);
+            /* Unmask the second controller's already expired selection. */
+            qtest_writeb(qts, o2_storage_aic_slot(2, 0x11), 0x80);
+            o2_aic_assert_selection(qts, 2, 0x10, 0x80, 4, 0);
+            o2_aic_assert_irqs(qts, 3, 3, true);
+            qtest_clock_step(qts, 399);
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                o2_aic_assert_selection(qts, slot, 0x10, 0x80, 4, 0);
+            }
+            qtest_clock_step(qts, 1);
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                qtest_writeb(qts, o2_storage_aic_slot(slot, 0x11), 0x88);
+                o2_aic_assert_selection(qts, slot, 0x10, 0x88, 4, 0);
+            }
+            /* Keep BUSFREE alive after clearing only SELTO on this chip. */
+            qtest_writeb(qts, o2_storage_aic_slot(first, 0x0c), 0x80);
+            qtest_writeb(qts, o2_storage_aic_slot(first, 0x92), 4);
+            o2_aic_assert_selection(qts, first, 0x10, 0x08, 4, 0);
+            o2_aic_assert_selection(qts, second, 0x10, 0x88, 4, 0);
+            o2_aic_assert_irqs(qts, 3, 3, true);
+            qtest_writeb(qts, o2_storage_aic_slot(first, 0x0c), 0x08);
+            o2_aic_assert_selection(qts, first, 0x10, 0, 4, 0);
+            qtest_writeb(qts, o2_storage_aic_slot(first, 0x0b), 0x10);
+            o2_aic_assert_selection(qts, first, 0, 0, 4, 0);
+            qtest_writeb(qts, o2_storage_aic_slot(first, 0x92), 4);
+            o2_aic_assert_selection(qts, first, 0, 0, 0, 0);
+            o2_aic_assert_irqs(qts, remaining, remaining, true);
+            /* Reverse source-clear order on the independent controller. */
+            qtest_writeb(qts, o2_storage_aic_slot(second, 0x0b), 0x10);
+            qtest_writeb(qts, o2_storage_aic_slot(second, 0x0c), 0x08);
+            qtest_writeb(qts, o2_storage_aic_slot(second, 0x92), 4);
+            o2_aic_assert_selection(qts, second, 0, 0x80, 4, 0);
+            o2_aic_assert_irqs(qts, remaining, remaining, true);
+            qtest_writeb(qts, o2_storage_aic_slot(second, 0x0c), 0x80);
+            o2_aic_assert_selection(qts, second, 0, 0, 4, 0);
+            qtest_writeb(qts, o2_storage_aic_slot(second, 0x92), 4);
+            o2_aic_assert_selection(qts, second, 0, 0, 0, 0);
+            o2_aic_assert_irqs(qts, 0, 0, false);
+            unsigned raises = qtest_get_irq_raise_count(qts, 1);
+            qtest_clock_step(qts, interval + 400);
+            o2_aic_assert_selection(qts, 1, 0, 0, 0, 0);
+            o2_aic_assert_selection(qts, 2, 0, 0, 0, 0);
+            o2_aic_assert_irqs(qts, 0, 0, false);
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, 1), ==, raises);
+            qtest_memread(qts, RAM_FULL + 0x100, after, sizeof(after));
+            g_assert_cmpmem(after, sizeof(after), guarded, sizeof(guarded));
+            qtest_quit(qts);
+        }
+    }
+}
+
 static void o2_storage_assert_diagnostic_stop(QTestState *qts, unsigned slot)
 {
     unsigned failed_pc = o2_storage_seq_pc(qts, slot);
@@ -7530,6 +7670,8 @@ int main(int argc, char **argv)
                    test_full_identity_ethernet_aic);
     qtest_add_func("/o2/storage-queue-before-completion-interrupt",
                    test_storage_queue_before_completion_interrupt);
+    qtest_add_func("/o2/storage-high-id-selection-timeout",
+                   test_storage_high_id_selection_timeout);
     qtest_add_func("/o2/storage-second-controller-dma-irq",
                    test_storage_second_controller_dma_irq);
     qtest_add_func("/o2/storage-second-controller-dma-irq-tcg",
