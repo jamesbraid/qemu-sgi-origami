@@ -675,7 +675,8 @@ static void crime_render_sample(const CrimeRenderGeometry *g, unsigned i,
 }
 
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
-                                           int index, uint64_t value)
+                                           unsigned index, uint64_t value,
+                                           unsigned words)
 {
     uint64_t p[128];
     uint32_t draw, clip, plane, stipple_mode;
@@ -690,8 +691,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     MemTxResult result;
 
     memcpy(p, s->render.parameter, sizeof(p));
-    if (index >= 0) {
-        p[index] = value;
+    if (words) {
+        p[index] = words == 2 ? value >> 32 : value;
+    }
+    if (words == 2) {
+        p[index + 1] = (uint32_t)value;
     }
     draw = p[0x18 / 4];
     clip = p[0x10 / 4];
@@ -852,8 +856,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     result = crime_render_execute(offset, pixels, count, bytes, copy,
                                    operation, true);
     if (result == MEMTX_OK) {
-        if (index >= 0) {
-            s->render.parameter[index] = value;
+        for (unsigned i = 0; i < words; i++) {
+            s->render.parameter[index + i] = p[index + i];
         }
         if (suppressed) {
             qemu_log_mask(LOG_UNIMP,
@@ -1138,8 +1142,15 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
-        if (reg && size == reg->size) {
-            return crime_render_de_commit(s, offset, reg->offset / 4, value);
+        if (reg) {
+            bool paired = size == 8 &&
+                (reg->offset == 0x070 || reg->offset == 0x0a8 ||
+                 reg->offset == 0x0c0);
+
+            if (size == reg->size || paired) {
+                return crime_render_de_commit(s, offset, reg->offset / 4,
+                                               value, paired ? 2 : 1);
+            }
         }
         if (size == 4) {
             if (offset == 0x10021f0 || offset == CRIME_TRANSFER + 0x70 ||
@@ -1148,7 +1159,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
                 return MEMTX_OK;
             }
             if (offset == 0x10029f0) {
-                return crime_render_de_commit(s, offset, -1, 0);
+                return crime_render_de_commit(s, offset, 0, 0, 0);
             }
             if (offset == CRIME_TRANSFER + 0x870) {
                 return crime_transfer_commit(s, offset,
