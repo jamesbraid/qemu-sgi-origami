@@ -3,7 +3,7 @@
  *
  * The four byte-wide 16550A ports and their local interrupt controller are
  * modeled. The IP53 profile also selects bounded serial DMA, ATA register
- * readback and a byte-bus clock alias. Keyboard/mouse and GPIO are unmodeled.
+ * readback and a byte-bus clock alias. PS/2 input is optional; GPIO is absent.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
@@ -15,11 +15,14 @@
 #include "hw/char/serial.h"
 #include "hw/core/irq.h"
 #include "hw/core/resettable.h"
+#include "hw/input/sgi-ioc3-kbc.h"
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "exec/memop.h"
 #include "migration/vmstate.h"
+#include "system/memory.h"
 #include "system/dma.h"
 
 #define TYPE_SGI_IOC4 "sgi-ioc4"
@@ -30,6 +33,11 @@
 #define IOC4_CLOCK_BAR 0x87ff8
 #define IOC4_CLOCK_NATIVE 0x7f8
 #define IOC4_CLOCK_SIZE 8
+#define IOC4_KBC_BASE 0x200
+#define IOC4_KBC_SIZE SGI_IOC3_KBC_MMIO_SIZE
+#define IOC4_KBC_IRQ 0x40
+#define IOC4_KBC_WRITE_PENDING 0x03
+#define IOC4_KBC_RX_MASK 0xe0ffffff
 #define IOC4_ATA_READBACK 0x148
 #define IOC4_DMA_PORT_BASE(n) (0x310 + 0x1c * (n))
 #define IOC4_DMA_CONTROL(n) (IOC4_DMA_PORT_BASE(n) + 0x00)
@@ -63,6 +71,14 @@
 
 typedef struct SGIIOC4State SGIIOC4State;
 typedef struct SGIIOC4Port SGIIOC4Port;
+typedef struct SGIIOC4BusState SGIIOC4BusState;
+
+#define TYPE_SGI_IOC4_BUS "sgi-ioc4-bus"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC4BusState, SGI_IOC4_BUS)
+
+struct SGIIOC4BusState {
+    BusState parent_obj;
+};
 
 struct SGIIOC4Port {
     SGIIOC4State *ioc4;
@@ -105,9 +121,14 @@ struct SGIIOC4State {
     PCIDevice parent_obj;
     MemoryRegion bar;
     MemoryRegion clock_alias;
+    MemoryRegion kbc_be;
     MemoryRegion *clock;
+    MemoryRegion *kbc_mmio;
+    BusState kbc_bus;
+    SGIIOC3KBCState kbc;
     bool clock_alias_initialized;
     bool clock_alias_mapped;
+    bool kbc_realized;
     SerialState uart[IOC4_PORTS];
     SGIIOC4Port dma[IOC4_PORTS];
     uint64_t dma_base[2];
@@ -122,6 +143,8 @@ struct SGIIOC4State {
     bool serial_dma_experimental;
     bool pci_status_compat;
     bool ata_readback_compat;
+    bool ps2_input;
+    uint8_t ps2_input_mode;
     uint32_t ata_readback;
     IRQState uart_irq[IOC4_PORTS];
     uint32_t serial_pending;
@@ -191,6 +214,17 @@ static void ioc4_update_irq(SGIIOC4State *s)
                 !!((s->serial_pending & s->serial_enable) |
                    (s->uart_level & s->serial_enable) |
                    (s->other_pending & s->other_enable)));
+}
+
+static void ioc4_kbc_irq(void *opaque, int n, int level)
+{
+    SGIIOC4State *s = opaque;
+
+    (void)n;
+    if (level) {
+        s->other_pending |= IOC4_KBC_IRQ;
+        ioc4_update_irq(s);
+    }
 }
 
 static void ioc4_uart_irq(void *opaque, int n, int level)
@@ -997,6 +1031,57 @@ static const MemoryRegionOps ioc4_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+static bool ioc4_kbc_accepts(void *opaque, hwaddr addr, unsigned size,
+                             bool is_write, MemTxAttrs attrs)
+{
+    if (size != 4 || (addr & 3)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc4: unsupported KBC %s width %u at 0x%"
+                      HWADDR_PRIx "\n", is_write ? "write" : "read",
+                      size, addr + IOC4_KBC_BASE);
+        return false;
+    }
+    return true;
+}
+
+static MemTxResult ioc4_kbc_read(void *opaque, hwaddr addr, uint64_t *value,
+                                 unsigned size, MemTxAttrs attrs)
+{
+    SGIIOC4State *s = opaque;
+    uint64_t raw = 0;
+    MemTxResult result;
+
+    result = memory_region_dispatch_read(s->kbc_mmio, addr, &raw,
+                                         size_memop(size) | MO_LE, attrs);
+    if (addr == SGI_IOC3_KBC_CONTROL) {
+        *value = raw & ~IOC4_KBC_WRITE_PENDING;
+    } else {
+        *value = raw & IOC4_KBC_RX_MASK;
+    }
+    return result;
+}
+
+static MemTxResult ioc4_kbc_write(void *opaque, hwaddr addr, uint64_t value,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    SGIIOC4State *s = opaque;
+
+    if (addr == SGI_IOC3_KBC_CONTROL) {
+        value &= ~IOC4_KBC_WRITE_PENDING;
+    }
+    return memory_region_dispatch_write(s->kbc_mmio, addr, value,
+                                       size_memop(size) | MO_LE, attrs);
+}
+
+static const MemoryRegionOps ioc4_kbc_be_ops = {
+    .read_with_attrs = ioc4_kbc_read,
+    .write_with_attrs = ioc4_kbc_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8,
+               .unaligned = false, .accepts = ioc4_kbc_accepts },
+    .impl = { .min_access_size = 4, .max_access_size = 4 },
+};
+
 static bool ioc4_uart_accepts(void *opaque, hwaddr addr, unsigned size,
                               bool is_write, MemTxAttrs attrs)
 {
@@ -1177,6 +1262,7 @@ static const VMStateDescription vmstate_ioc4 = {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
         VMSTATE_UINT8_EQUAL(pci_status_compat_mode, SGIIOC4State),
         VMSTATE_UINT8_EQUAL(ata_readback_compat_mode, SGIIOC4State),
+        VMSTATE_UINT8_EQUAL(ps2_input_mode, SGIIOC4State),
         VMSTATE_UINT32(ata_readback, SGIIOC4State),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC4State),
         VMSTATE_STRUCT_ARRAY(uart, SGIIOC4State, IOC4_PORTS, 0,
@@ -1201,6 +1287,12 @@ static void ioc4_exit(PCIDevice *dev)
 {
     SGIIOC4State *s = (SGIIOC4State *)dev;
     int i;
+
+    if (s->kbc_realized) {
+        memory_region_del_subregion(&s->bar, &s->kbc_be);
+        qdev_unrealize(DEVICE(&s->kbc));
+        s->kbc_realized = false;
+    }
 
     for (i = 0; i < IOC4_PORTS; i++) {
         SGIIOC4Port *p = &s->dma[i];
@@ -1281,6 +1373,28 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
         memory_region_add_subregion(&s->bar, IOC4_UART_BASE + 8 * i,
                                     &uart->io);
     }
+
+    s->kbc.ports_present = s->ps2_input;
+    s->ps2_input_mode = s->ps2_input;
+    if (!qdev_realize(DEVICE(&s->kbc), BUS(&s->kbc_bus), errp)) {
+        for (i = 0; i < IOC4_PORTS; i++) {
+            memory_region_del_subregion(&s->bar, &s->uart[i].io);
+            qdev_unrealize(DEVICE(&s->uart[i]));
+        }
+        if (s->clock_alias_mapped) {
+            memory_region_del_subregion(&s->bar, &s->clock_alias);
+            s->clock_alias_mapped = false;
+        }
+        return;
+    }
+    s->kbc_realized = true;
+    s->kbc_mmio = sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->kbc), 0);
+    memory_region_init_io(&s->kbc_be, OBJECT(s), &ioc4_kbc_be_ops, s,
+                          "sgi-ioc4-kbc", IOC4_KBC_SIZE);
+    memory_region_add_subregion(&s->bar, IOC4_KBC_BASE, &s->kbc_be);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc), 0,
+                       qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
+
     for (i = 0; i < IOC4_PORTS; i++) {
         SGIIOC4Port *p = &s->dma[i];
 
@@ -1304,6 +1418,7 @@ static const Property ioc4_properties[] = {
                      false),
     DEFINE_PROP_BOOL("ata-readback-compat", SGIIOC4State,
                      ata_readback_compat, false),
+    DEFINE_PROP_BOOL("ps2-input", SGIIOC4State, ps2_input, false),
     DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_CHR("chardev1", SGIIOC4State, uart[0].chr),
@@ -1316,6 +1431,11 @@ static void ioc4_instance_init(Object *obj)
 {
     SGIIOC4State *s = (SGIIOC4State *)obj;
     int i;
+
+    qbus_init(&s->kbc_bus, sizeof(s->kbc_bus), TYPE_SGI_IOC4_BUS,
+              DEVICE(obj), "kbc-bus");
+    object_initialize_child(obj, "kbc", &s->kbc, TYPE_SGI_IOC3_KBC);
+    qdev_init_gpio_in_named(DEVICE(obj), ioc4_kbc_irq, "kbc-irq", 1);
 
     s->clock_hz = 33333333;
     s->dma_ring_size[0] = IOC4_RING_1K;
@@ -1355,21 +1475,28 @@ static void ioc4_class_init(ObjectClass *klass, const void *data)
                                        &ic->parent_phases);
 }
 
-static const TypeInfo ioc4_info = {
-    .name = TYPE_SGI_IOC4,
-    .parent = TYPE_PCI_DEVICE,
-    .instance_size = sizeof(SGIIOC4State),
-    .class_size = sizeof(SGIIOC4Class),
-    .instance_init = ioc4_instance_init,
-    .class_init = ioc4_class_init,
-    .interfaces = (const InterfaceInfo[]) {
-        { INTERFACE_CONVENTIONAL_PCI_DEVICE },
-        { },
+static const TypeInfo ioc4_types[] = {
+    {
+        .name = TYPE_SGI_IOC4,
+        .parent = TYPE_PCI_DEVICE,
+        .instance_size = sizeof(SGIIOC4State),
+        .class_size = sizeof(SGIIOC4Class),
+        .instance_init = ioc4_instance_init,
+        .class_init = ioc4_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { },
+        },
+    },
+    {
+        .name = TYPE_SGI_IOC4_BUS,
+        .parent = TYPE_SYSTEM_BUS,
+        .instance_size = sizeof(SGIIOC4BusState),
     },
 };
 
 static void ioc4_register_types(void)
 {
-    type_register_static(&ioc4_info);
+    type_register_static_array(ioc4_types, ARRAY_SIZE(ioc4_types));
 }
 type_init(ioc4_register_types)
