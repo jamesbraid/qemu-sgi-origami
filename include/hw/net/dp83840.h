@@ -76,6 +76,14 @@ struct DP83840State {
     uint16_t loopback_bypass;
     uint16_t tenbt_config;
 
+    uint16_t phy_control;
+    uint16_t pcs_control;
+    uint16_t interrupt_control;
+    uint16_t counters[3];
+    uint8_t resolved_mode;
+    bool interrupt_pending;
+    bool reset_held;
+
     bool autoneg_done;
     bool forced_link;   /* DP83843 restart cancelled by forced mode */
 
@@ -88,6 +96,9 @@ struct DP83840State {
     int64_t restart_complete_ns;
 };
 
+uint8_t dp83840_address(DP83840State *s);
+bool dp83840_data_enabled(DP83840State *s);
+void dp83840_set_reset(DP83840State *s, bool held);
 void dp83840_reset(DP83840State *s);
 void dp83840_update_link(DP83840State *s, bool link_down);
 bool dp83840_in_loopback(DP83840State *s);

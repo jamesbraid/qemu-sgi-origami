@@ -1746,10 +1746,26 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     io8_ioc3_writel(qts, IO8_IOC3_ENET_RX_PRODUCE,
                     8 | IOC3_ENET_RX_PRODUCE_ARM);
 
+    if (data) {
+        io8_ioc3_writel(qts, 0x54, 0);
+        io8_ioc3_writel(qts, 0x34, 1u << 5);
+    }
     stl_be_p(packet, sizeof(frame));
     memcpy(packet + 4, frame, sizeof(frame));
     g_assert_cmpint(write(sv[0], packet, sizeof(packet)), ==,
                     (int)sizeof(packet));
+    if (data) {
+        int64_t until = g_get_monotonic_time() + 100 * G_TIME_SPAN_MILLISECOND;
+
+        do {
+            qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+            g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME),
+                            ==, 0);
+            g_usleep(1000);
+        } while (g_get_monotonic_time() < until);
+        /* Release must flush the queued frame without another input. */
+        io8_ioc3_writel(qts, 0x54, 1);
+    }
     sgi_wait_start(&w, "IOC3 receive");
     for (;;) {
         if (io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME) == 8) {
@@ -1796,6 +1812,41 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     g_assert_cmpint(close(sv[0]), ==, 0);
 }
 
+static void test_io8_phy_gpio_reset(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    io8_ioc3_attach(qts);
+    phy_write(qts, 1, 0x19, 3);
+    phy_write(qts, 3, 0x13, 0x5678);
+    /* Disabled output and unrelated pins cannot assert the board request. */
+    io8_ioc3_writel(qts, 0x54, 0);
+    g_assert_cmphex(phy_read(qts, 3, 0x19), ==, 3);
+    io8_ioc3_writel(qts, 0x34, 1u << 4);
+    g_assert_cmphex(phy_read(qts, 3, 0x19), ==, 3);
+    io8_ioc3_writel(qts, 0x34, 1u << 5);
+    g_assert_cmphex(phy_read(qts, 1, 3), ==, 0xffff);
+    g_assert_cmphex(phy_read(qts, 3, 3), ==, 0xffff);
+    phy_write(qts, 1, 0x11, 1);
+    io8_ioc3_writel(qts, 0x34, 1u << 5);
+    io8_ioc3_writel(qts, 0x54, 0);
+    qtest_clock_step(qts, INT64_C(4000000000));
+    io8_ioc3_writel(qts, 0x54, 1);
+    g_assert_cmphex(phy_read(qts, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(phy_read(qts, 1, 0x13), ==, 0);
+    g_assert_cmphex(phy_read(qts, 1, 0x12), ==, 0);
+    g_assert_cmphex(phy_read(qts, 1, 0x10), ==, 0x200);
+    phy_write(qts, 1, 0x13, 0x1234);
+    /* MAC reset is independent of the board's PHY request. */
+    io8_ioc3_writel(qts, 0xf0, 1u << 31);
+    g_assert_cmphex(phy_read(qts, 1, 0x13), ==, 0x1234);
+    io8_ioc3_writel(qts, 0x3c, 0);
+    g_assert_cmphex(phy_read(qts, 1, 3), ==, 0xffff);
+    io8_ioc3_writel(qts, 0x38, 1u << 5);
+    g_assert_cmphex(phy_read(qts, 1, 3), ==, 0x5c10);
+    qtest_quit(qts);
+}
+
 static void test_io8_ioc3_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -1817,6 +1868,11 @@ static void test_io8_ioc3_migration(const void *data)
     io8_ioc3_attach(from);
     io8_ioc3_attach(to);
 
+    phy_write(from, 1, 0, 0x1200);
+    phy_write(from, 1, 0x19, 3);
+    io8_ioc3_writel(from, 0x54, 0);
+    io8_ioc3_writel(from, 0x34, 1u << 5);
+    g_assert_cmphex(phy_read(from, 1, 3), ==, 0xffff);
     qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0 + 0x100,
                  0xc3);
     qtest_writeb(from, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
@@ -1837,6 +1893,13 @@ static void test_io8_ioc3_migration(const void *data)
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration(from, "completed");
     sgi_wait_migration(to, "completed");
+    g_assert_cmphex(io8_ioc3_readl(to, 0x34) & (1u << 5), ==, 1u << 5);
+    g_assert_cmphex(phy_read(to, 1, 3), ==, 0xffff);
+    qtest_clock_step(to, INT64_C(4000000000));
+    io8_ioc3_writel(to, 0x54, 1);
+    g_assert_cmphex(phy_read(to, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(phy_read(to, 1, 0x10), ==, 0x200);
+
 
     g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW +
                                 IO8_IOC3_BYTEBUS_DEV0 + 0x100), ==, 0xc3);
@@ -6860,6 +6923,10 @@ int main(int argc, char **argv)
                         test_io8_ioc3_superio_interrupt);
     qtest_add_data_func("origin300/ioc3/ethernet-dma-interrupt", NULL,
                         test_io8_ioc3_ethernet_dma_interrupt);
+    qtest_add_data_func("origin300/ioc3/held-phy-receive", GINT_TO_POINTER(1),
+                        test_io8_ioc3_ethernet_dma_interrupt);
+    qtest_add_data_func("origin300/ioc3/phy-gpio-reset", NULL,
+                        test_io8_phy_gpio_reset);
     qtest_add_data_func("origin300/ioc3/identical-build-migration", NULL,
                         test_io8_ioc3_migration);
     qtest_add_data_func("origin300/io8-ioc3/transceiver-identity", NULL,

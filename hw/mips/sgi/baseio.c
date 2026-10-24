@@ -699,6 +699,9 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     if (!ioc3) {
         return false;
     }
+    qdev_connect_gpio_out_named(DEVICE(ioc3), "gpio5-reset-request", 0,
+        qdev_get_gpio_in_named(DEVICE(&SGI_IOC3(ioc3)->eth),
+                               "phy-reset", 0));
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_IOC3_SUBSYSTEM_VENDOR);
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,

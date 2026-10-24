@@ -476,6 +476,7 @@ struct SGIIOC3State {
 
     MemoryRegion main;
     qemu_irq superio_irq;
+    qemu_irq gpio5_reset_request;
     uint32_t int_status;
     uint32_t int_enable;
 

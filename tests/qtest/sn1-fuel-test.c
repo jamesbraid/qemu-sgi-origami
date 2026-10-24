@@ -765,6 +765,13 @@ static void test_fuel_ioc3_phy(const void *data)
     QTestState *qts = fuel_start(data);
 
     fuel_map_ioc3(qts);
+    /* Fuel has the same PHY type but no IO-8 GPIO5 reset connection. */
+    fuel_phy_write(qts, 1, 0x13, 0x5678);
+    qtest_writel(qts, IOC3_WINDOW + 0x54, 0);
+    qtest_writel(qts, IOC3_WINDOW + 0x34, 1u << 5);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
+    g_assert_cmphex(fuel_phy_read(qts, 1, 0x13), ==, 0x5678);
+
     g_assert_cmphex(fuel_phy_read(qts, 1, 0), !=, 0xffff);
     g_assert_cmphex(fuel_phy_read(qts, 1, 2), ==, 0x2000);
     g_assert_cmphex(fuel_phy_read(qts, 1, 3), ==, 0x5c10);
