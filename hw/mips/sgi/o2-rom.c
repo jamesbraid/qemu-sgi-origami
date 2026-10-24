@@ -313,6 +313,16 @@ static void at29_complete(SGIO2ROMState *s, int64_t now, bool timer_callback)
     at29_idle(s);
 }
 
+static void at29_start_program(SGIO2ROMState *s, int64_t last_load)
+{
+    s->at29_phase = AT29_BUSY;
+    s->at29_poll_toggle = false;
+    s->at29_trace_poll_reads = 0;
+    s->at29_trace_busy_write_seen = false;
+    memory_region_rom_device_set_romd(&s->storage, false);
+    at29_schedule(s, last_load + AT29_CYCLE_NS);
+}
+
 static void at29_advance(SGIO2ROMState *s, int64_t now,
                            bool timer_callback)
 {
@@ -328,10 +338,8 @@ static void at29_advance(SGIO2ROMState *s, int64_t now,
             at29_idle(s);
             break;
         case AT29_LOADING:
-            at29_trace_timeout(s, now, timer_callback, "partial");
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-o2-rom: partial AT29C040A sector load\n");
-            at29_idle(s);
+            at29_start_program(s, s->at29_deadline_ns - AT29_LOAD_NS);
+            at29_trace_timeout(s, now, timer_callback, "program-start");
             break;
         case AT29_BUSY:
             at29_complete(s, now, timer_callback);
@@ -386,13 +394,7 @@ static MemTxResult at29_load_byte(SGIO2ROMState *s, uint32_t address,
     s->at29_last_address = address;
     s->at29_last_data = value;
     if (first_load && s->at29_loaded_count == AT29_SECTOR_SIZE) {
-        timer_del(s->at29_timer);
-        s->at29_phase = AT29_BUSY;
-        s->at29_poll_toggle = false;
-        s->at29_trace_poll_reads = 0;
-        s->at29_trace_busy_write_seen = false;
-        memory_region_rom_device_set_romd(&s->storage, false);
-        at29_schedule(s, now + AT29_CYCLE_NS);
+        at29_start_program(s, now);
     } else {
         at29_schedule(s, now + AT29_LOAD_NS);
     }
@@ -426,6 +428,7 @@ static MemTxResult at29_start_load(SGIO2ROMState *s, uint32_t address,
     s->at29_enable_protection = prefixed;
     s->at29_loaded_count = 0;
     s->at29_trace_load_attempts = 0;
+    memset(s->at29_load, 0xff, sizeof(s->at29_load));
     memset(s->at29_loaded, 0, sizeof(s->at29_loaded));
     return at29_load_byte(s, address, value, now);
 }
