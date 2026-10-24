@@ -3168,7 +3168,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             s->gl_context[i].iris_colour_last > 1 ||
             (s->gl_context[i].client_read_bank >=
                  MGRAS_CLIENT_READ_DEEP_FRONT &&
-             (strcmp(s->board->name, "ssi") || !s->slot[0])) ||
+             !sgi_mgras_deep_reads(s)) ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
@@ -6257,12 +6257,12 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                    payload[2] == 0x405) {
             s->gl_context[s->gl_current].client_read_bank =
                 MGRAS_CLIENT_READ_BACK;
-        } else if (!strcmp(s->board->name, "ssi") && s->slot[0] &&
+        } else if (sgi_mgras_deep_reads(s) &&
                    payload[0] == 0 && payload[1] == 2 &&
                    payload[2] == 0x404) {
             s->gl_context[s->gl_current].client_read_bank =
                 MGRAS_CLIENT_READ_DEEP_FRONT;
-        } else if (!strcmp(s->board->name, "ssi") && s->slot[0] &&
+        } else if (sgi_mgras_deep_reads(s) &&
                    payload[0] == 2 && payload[1] == 0 &&
                    payload[2] == 0x405) {
             s->gl_context[s->gl_current].client_read_bank =

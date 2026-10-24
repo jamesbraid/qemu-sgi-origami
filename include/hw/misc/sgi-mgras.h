@@ -974,4 +974,16 @@ struct SGIMgrasState {
     bool dirty;
 };
 
+/*
+ * Whether the client's deep front and back read-buffer selections reach a
+ * deep bank: on a board with two REs, whose second RE's slots hold the
+ * deep visual's pixels. SSI's captured reads ground the rule; MXI, EMXI
+ * and ESSI run the same client branch, which picks the pair from the
+ * visual's fields, not the board (docs/datasheets/mgras-dual-re.md).
+ */
+static inline bool sgi_mgras_deep_reads(const SGIMgrasState *s)
+{
+    return s->board->re_count == 2 && s->slot[0];
+}
+
 #endif
