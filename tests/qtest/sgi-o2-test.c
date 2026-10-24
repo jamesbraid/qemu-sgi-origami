@@ -1963,6 +1963,103 @@ static void test_coherent_ram(void)
     qtest_quit(qts);
 }
 
+static void run_uncached_mmio(unsigned cca, unsigned uc)
+{
+    SN0Image rom = { 0 }, code = { 0 };
+    g_autofree char *dir = g_dir_make_tmp("o2-uncached-mmio-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
+    uint64_t attributes = ((uint64_t)uc << 62) | (cca << 3) | 7;
+    uint32_t outcome;
+    SgiWait wait;
+    QTestState *qts;
+
+    sn0_emit_park(&rom);
+    rom.pos = SN0_VEC_GENERAL;
+    sn0_emit_li64(&rom, 16, UINT64_C(0xffffffffa0003000));
+    sn0_emit_mfc0(&rom, 10, SN0_CP0_CAUSE);
+    sn0_emit(&rom, mips_sw(10, 16, 4));
+    sn0_emit_mfc0(&rom, 10, SN0_CP0_EPC);
+    sn0_emit(&rom, mips_sw(10, 16, 8));
+    sn0_emit(&rom, mips_ori(10, 0, 2));
+    sn0_emit(&rom, mips_sw(10, 16, 0));
+    sn0_emit_park(&rom);
+    g_assert_true(g_file_set_contents(path, (const char *)rom.bytes,
+                                      rom.pos, NULL));
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "crime-profile=legacy-software,reset-low-ram-approx=on,"
+        "functional-memory-transfer=on,prom-private-window=on,"
+        "prom-sb64-reset=on,gbe11-registers=on,prom-id-word=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "rom-offset=0,rom-pad-byte=238 -cpu R10000 -m 1G -nodefaults "
+        "-accel tcg,thread=single -S "
+        "-device loader,addr=0xffffffffa0002000,cpu-num=0", path);
+    g_assert_cmphex(qtest_readl(qts, GBE + 0x58000), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, MACE_PERIPH), ==, 1);
+    sn0_emit_mtc0(&code, 0, SN0_CP0_INDEX);
+    sn0_emit_mtc0(&code, 0, SN0_CP0_PAGEMASK);
+    sn0_emit_li(&code, 8, 0x00400000);
+    sn0_emit_mtc0(&code, 8, SN0_CP0_ENTRYHI);
+    sn0_emit_li64(&code, 8, (UINT64_C(0x16058000) >> 6) | attributes);
+    sn0_emit_dmtc0(&code, 8, SN0_CP0_ENTRYLO0);
+    sn0_emit_li64(&code, 8, (UINT64_C(0x1f310000) >> 6) | attributes);
+    sn0_emit_dmtc0(&code, 8, SN0_CP0_ENTRYLO1);
+    sn0_emit_tlbwi(&code);
+    sn0_emit_li(&code, 8, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(&code, 8, SN0_CP0_STATUS);
+    sn0_emit_li64(&code, 16, UINT64_C(0xffffffffa0003000));
+    sn0_emit_li(&code, 8, 0x00400000);
+    sn0_emit(&code, mips_lw(10, 8, 0));
+    sn0_emit(&code, mips_sw(10, 16, 12));
+    sn0_emit(&code, mips_ld(11, 8, 0x1000));
+    sn0_emit(&code, mips_sd(11, 16, 16));
+    sn0_emit(&code, mips_ori(10, 0, 1));
+    sn0_emit(&code, mips_sw(10, 16, 0));
+    sn0_emit_park(&code);
+    qtest_memwrite(qts, 0x2000, code.bytes, code.pos);
+    qtest_writeq(qts, RAM_FULL + 0x1000, UINT64_C(0x91e2d3c456789abc));
+    qtest_writel(qts, RAM_FULL + 0x3000, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    sgi_wait_start(&wait, "O2 mapped MMIO CCA=%u UC=%u", cca, uc);
+    while (!(outcome = qtest_readl(qts, RAM_FULL + 0x3000))) {
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    if (uc == 1 || uc == 2) {
+        g_assert_cmpuint(outcome, ==, 2);
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x3004) & 0x7c, ==, 7 << 2);
+    } else {
+        if (outcome != 1) {
+            g_error("O2 mapped MMIO CCA=%u UC=%u raised Cause=0x%08x "
+                    "EPC=0x%08x", cca, uc,
+                    qtest_readl(qts, RAM_FULL + 0x3004),
+                    qtest_readl(qts, RAM_FULL + 0x3008));
+        }
+        g_assert_cmphex(qtest_readl(qts, RAM_FULL + 0x300c), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, RAM_FULL + 0x3010), ==, 1);
+    }
+    g_assert_cmphex(qtest_readq(qts, 0x1000), ==,
+                    UINT64_C(0x91e2d3c456789abc));
+    g_assert_cmphex(qtest_readq(qts, RAM_NO_ECC + 0x1000), ==,
+                    UINT64_C(0x91e2d3c456789abc));
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_uncached_mmio(void)
+{
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    for (unsigned cca = 2; cca <= 7; cca += 5) {
+        for (unsigned uc = 0; uc < 4; uc++) {
+            run_uncached_mmio(cca, uc);
+        }
+    }
+}
+
 static void test_uncached_window(void)
 {
     const uint64_t entry = RAM_FULL + 0x2000;
@@ -2105,7 +2202,7 @@ static void test_uncached_128m_boundary(void)
     qtest_quit(qts);
 }
 
-static void assert_banked_carrier_mapping(QTestState *qts, bool mapped)
+static void assert_banked_ram_mapping(QTestState *qts, bool mapped)
 {
     const char *views[] = {
         "low", "high", "full", "no-ecc",
@@ -2113,14 +2210,14 @@ static void assert_banked_carrier_mapping(QTestState *qts, bool mapped)
 
     for (unsigned i = 0; i < ARRAY_SIZE(views); i++) {
         g_autofree char *path = g_strdup_printf(
-            "/machine/crime/sgi-crime.carrier-%s-ram[0]", views[i]);
+            "/machine/crime/sgi-crime.%s-ram[0]", views[i]);
         g_autoptr(QDict) reply = qtest_qmp(qts,
             "{'execute':'qom-get','arguments':{'path':%s,"
             "'property':'container'}}", path);
 
         g_assert_false(qdict_haskey(reply, "error"));
         g_assert_cmpstr(qdict_get_str(reply, "return"), ==,
-                        mapped ? "/machine/o2.cpu-uncached[0]" : "");
+                        mapped ? "/machine/unattached/system[0]" : "");
     }
 }
 
@@ -2161,7 +2258,7 @@ static void test_banked_uncached_window_with_profile(bool approx)
                       "-accel tcg,thread=single -S "
                       "-device loader,addr=0xffffffffa0002000,cpu-num=0",
                       machine);
-    assert_banked_carrier_mapping(qts, true);
+    assert_banked_ram_mapping(qts, true);
     if (approx) {
         uint8_t byte;
 
@@ -2215,11 +2312,11 @@ static void test_banked_uncached_window_with_profile(bool approx)
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':'/machine/crime',"
         "'property':'realized','value':false}}");
-    assert_banked_carrier_mapping(qts, false);
+    assert_banked_ram_mapping(qts, false);
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':'/machine/crime',"
         "'property':'realized','value':true}}");
-    assert_banked_carrier_mapping(qts, true);
+    assert_banked_ram_mapping(qts, true);
 
     qtest_writeq(qts, CRIME + 0x210, 0x10c);
     qtest_writeq(qts, CRIME + 0x218, 0x104);
@@ -7934,6 +8031,7 @@ int main(int argc, char **argv)
                    test_private_window_high_sp_release);
     qtest_add_func("/o2/coherent-ram", test_coherent_ram);
     qtest_add_func("/o2/uncached-window", test_uncached_window);
+    qtest_add_func("/o2/uncached-mmio", test_uncached_mmio);
     qtest_add_func("/o2/uncached-128m-boundary",
                    test_uncached_128m_boundary);
     qtest_add_func("/o2/banked-uncached-window",

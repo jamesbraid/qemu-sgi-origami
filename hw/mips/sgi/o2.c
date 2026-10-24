@@ -87,9 +87,7 @@ typedef struct O2MachineState {
     MemoryRegion private_ram;
     AddressSpace private_as;
     MemoryListener private_memory_listener;
-    MemoryRegion cpu_uncached_low_ram;
-    MemoryRegion cpu_uncached_full_ram;
-    MemoryRegion cpu_uncached_no_ecc_ram;
+    MemoryRegion cpu_uncached_physical;
     Clock *cpuclk;
     PCIBus *pci_bus;
     PCIDevice *aic[2];
@@ -1025,25 +1023,6 @@ static const MemoryRegionOps o2_private_ops = {
     .impl.unaligned = true,
 };
 
-static void o2_map_uncached_flat_ram(O2MachineState *s, MemoryRegion *ram,
-                                     uint64_t size)
-{
-    uint64_t base = 1ULL << MIPS_UNCACHED_WINDOW_SHIFT;
-
-    memory_region_init_alias(&s->cpu_uncached_low_ram, OBJECT(s),
-                             "o2.cpu-uncached.low-ram", ram, 0, size);
-    memory_region_add_subregion(&s->cpu_uncached, base,
-                                &s->cpu_uncached_low_ram);
-    memory_region_init_alias(&s->cpu_uncached_full_ram, OBJECT(s),
-                             "o2.cpu-uncached.full-ram", ram, 0, size);
-    memory_region_add_subregion(&s->cpu_uncached, base + 0x40000000ULL,
-                                &s->cpu_uncached_full_ram);
-    memory_region_init_alias(&s->cpu_uncached_no_ecc_ram, OBJECT(s),
-                             "o2.cpu-uncached.no-ecc-ram", ram, 0, size);
-    memory_region_add_subregion(&s->cpu_uncached, base + 0x80000000ULL,
-                                &s->cpu_uncached_no_ecc_ram);
-}
-
 static void o2_get_cpu_clock_hz(Object *obj, Visitor *v, const char *name,
                                 void *opaque, Error **errp)
 {
@@ -1728,10 +1707,12 @@ static void o2_init(MachineState *machine)
                              "o2.cpu-physical", get_system_memory(),
                              0, 1ULL << MIPS_UNCACHED_WINDOW_SHIFT);
     memory_region_add_subregion(&s->cpu_uncached, 0, &s->cpu_physical);
-    if (!s->banked_ram) {
-        /* The flat diagnostic fits do not decode bank controls. */
-        o2_map_uncached_flat_ram(s, machine->ram, machine->ram_size);
-    }
+    memory_region_init_alias(&s->cpu_uncached_physical, OBJECT(machine),
+                             "o2.cpu-uncached.physical", get_system_memory(),
+                             0, 1ULL << MIPS_UNCACHED_WINDOW_SHIFT);
+    memory_region_add_subregion(&s->cpu_uncached,
+                                1ULL << MIPS_UNCACHED_WINDOW_SHIFT,
+                                &s->cpu_uncached_physical);
     cpu_dev = qdev_new(machine->cpu_type);
     if (object_property_get_bool(OBJECT(cpu_dev),
                                  "cache-data-visibility", &error_fatal)) {
@@ -1821,14 +1802,6 @@ static void o2_init(MachineState *machine)
     qdev_prop_set_bit(crime, "empty-renderer-status",
                       s->empty_renderer_status);
     qdev_prop_set_bit(crime, "prom-id-word", s->prom_id_word);
-    if (s->banked_ram) {
-        /* CRIME detaches its UC=0 aliases on unrealize. */
-        object_property_set_link(OBJECT(crime), "decoded-carrier",
-                                 OBJECT(&s->cpu_uncached), &error_fatal);
-        object_property_set_uint(OBJECT(crime), "decoded-base",
-                                 1ULL << MIPS_UNCACHED_WINDOW_SHIFT,
-                                 &error_fatal);
-    }
     object_property_set_link(OBJECT(crime), "ram", OBJECT(machine->ram),
                              &error_fatal);
     if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(crime), &err)) {
