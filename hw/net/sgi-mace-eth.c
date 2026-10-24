@@ -578,7 +578,7 @@ static uint64_t sgi_mace_eth_read(void *opaque, hwaddr offset, unsigned size)
         case MACE_ETH_DMA_CONTROL:
             return s->dma_control;
         case MACE_ETH_INT_STATUS:
-            return s->int_status | ((uint64_t)s->rx_read << 8) |
+            return s->int_status | (sgi_mace_eth_fifo_info(s) & 0x1f00) |
                    ((uint64_t)s->tx_read << 16) |
                    ((uint64_t)s->rx_sequence << 25);
         case MACE_ETH_RX_FIFO_INFO:
