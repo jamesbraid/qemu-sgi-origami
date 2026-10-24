@@ -22,9 +22,9 @@
  *
  * The controls are the sequences the window must leave alone: an
  * exception between the sample and the write, a target behind the latest
- * Count read, the read-Count-minus-one disarm public drivers use, the
- * Count=1/Compare=0 disarm the IP30 kernel issues, and a target that is
- * still ahead.
+ * Count read, a target equal to it, the read-Count-minus-one disarm
+ * public drivers use, the Count=1/Compare=0 disarm the IP30 kernel
+ * issues, and a target that is still ahead.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -54,6 +54,7 @@ typedef enum TimerSequence {
     SEQ_CROSSED,
     SEQ_CROSSED_READ,
     SEQ_BEHIND_READ,
+    SEQ_EQUAL_READ,
     SEQ_EXCEPTION,
     SEQ_READ_MINUS_ONE,
     SEQ_DISARM,
@@ -70,6 +71,7 @@ static const TimerCase cases[] = {
     { "crossed-after-write", SEQ_CROSSED, true },
     { "crossed-after-read", SEQ_CROSSED_READ, true },
     { "behind-latest-read", SEQ_BEHIND_READ, false },
+    { "target-equals-read", SEQ_EQUAL_READ, false },
     { "exception-between", SEQ_EXCEPTION, false },
     { "read-minus-one", SEQ_READ_MINUS_ONE, false },
     { "count-one-compare-zero", SEQ_DISARM, false },
@@ -125,6 +127,12 @@ static void build_image(SN0Image *p, TimerSequence seq)
         emit_spacing(p);
         sn0_emit(p, mips_mfc0(SN0_R_T8, CP0_COUNT));
         sn0_emit(p, mips_mtc0(SN0_R_A0, CP0_COMPARE));
+        break;
+    case SEQ_EQUAL_READ:
+        /* A target equal to the sample is a full wrap ahead, not crossed. */
+        sn0_emit(p, mips_mfc0(SN0_R_T8, CP0_COUNT));
+        emit_spacing(p);
+        sn0_emit(p, mips_mtc0(SN0_R_T8, CP0_COMPARE));
         break;
     case SEQ_EXCEPTION:
         sn0_emit(p, mips_mtc0(SN0_R_ZERO, CP0_COUNT));
