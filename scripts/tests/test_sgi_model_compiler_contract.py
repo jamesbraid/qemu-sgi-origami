@@ -691,16 +691,23 @@ class Ip53CpuContextTests(unittest.TestCase):
     def test_full_firmware_word_and_node_clocks_reach_the_l1(self):
         for name, word, cpu_hz, reset in (
                 ("origin350", 0x569cad85, 700_000_000, 0x009cad85),
-                ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85)):
+                ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85),
+                ("tezro-tower-one", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro-tower-multi", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro-rack-base", 0x549bad85, 700_000_000, 0x009bad85),
+                ("onyx4-host-serial-compat", 0x569dad85, 1_000_000_000,
+                 0x009dad85)):
             with self.subTest(profile=name):
                 model = _resolved(name)
-                model["machine"]["firmware_config"][
-                    "processor_firmware_word"] = word
+                firmware = model["machine"]["firmware_config"]
+                self.assertEqual(firmware["processor_firmware_word"], word)
+                self.assertEqual(firmware["machine_type"], 0)
 
                 topology = compile_model(model)
 
                 self.assertEqual(topology["ip35_firmware"]["cpu_mode_word"],
                                  word)
+                self.assertEqual(topology["ip35_firmware"]["machine_type"], 0)
                 self.assertEqual(
                     topology["controllers"][0]["l1"]["cpu_context"], {
                         "cpu_mode_word": word,
@@ -711,6 +718,7 @@ class Ip53CpuContextTests(unittest.TestCase):
                     "topologies"][0]
                 self.assertEqual(emitted["ip35-firmware"]["cpu-mode-word"],
                                  word)
+                self.assertEqual(emitted["ip35-firmware"]["machine-type"], 0)
                 self.assertEqual(
                     emitted["controllers"][0]["l1"]["cpu-context"], {
                         "cpu-mode-word": word,
@@ -721,13 +729,8 @@ class Ip53CpuContextTests(unittest.TestCase):
                     model["machine"]["firmware_config"][
                         "processor_reset_mode"], reset)
 
-    def test_profiles_without_full_word_keep_legacy_firmware_value(self):
-        profiles = {
-            "tezro-tower-one": 0x009bad85,
-            "tezro-tower-multi": 0x009bad85,
-            "tezro-rack-base": 0x009bad85,
-            "onyx4-host-serial-compat": 0x009dad85,
-        }
+    def test_unselected_tezro_trial_keeps_legacy_firmware_value(self):
+        profiles = {"tezro-deskside-700mhz-4mib-serial-trial": 0x009bad85}
         for name, reset_mode in profiles.items():
             with self.subTest(profile=name):
                 topology = compile_model(_resolved(name))
