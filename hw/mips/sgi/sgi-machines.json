@@ -3810,12 +3810,7 @@
         "cache-mib": 8,
         "clock-hz": 800000000,
         "id": "r16000-800mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "onyx350",
       "prom-dialogue": "none",
@@ -3974,12 +3969,7 @@
         "cache-mib": 16,
         "clock-hz": 1000000000,
         "id": "r16000-1000mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "onyx4-host",
       "prom-dialogue": "none",
@@ -16980,12 +16970,7 @@
         "cache-mib": 8,
         "clock-hz": 700000000,
         "id": "r16000-700mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "origin350",
       "prom-dialogue": "none",
@@ -17306,12 +17291,7 @@
         "cache-mib": 4,
         "clock-hz": 700000000,
         "id": "r16000-700mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "tezro",
       "prom-dialogue": "none",
@@ -17719,6 +17699,164 @@
         }
       ],
       "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R16000",
+      "dimms-per-node": [
+        6
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Tezro tower, two/four-processor serial compatibility profile",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [],
+      "launch-recipe": "ip53-discovery",
+      "machine-options": "tezro,topology=tezro-tower-multi,nodes=1",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "unsupported",
+      "networks": [],
+      "nodes": 1,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r16000-experimental",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r16000-scache-bytes",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 4,
+        "clock-hz": 700000000,
+        "id": "r16000-700mhz",
+        "part": "R16000"
+      },
+      "product": "tezro",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
+          "board-ids": [
+            "io9"
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "kind": "ds1742",
+          "part": "ds1742",
+          "scope": "board",
+          "size": 2048
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        }
+      ],
+      "scsi-adapters": [],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "tezro-tower-multi"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_0",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-0",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_1",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-1",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_2",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-2",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc4_serial_3",
+          "kind": "second-port",
+          "launcher-name": "ioc4-serial-3",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
         2
       ],
       "default-cpu-model": "R16000",
@@ -17882,169 +18020,6 @@
         }
       ],
       "cpus-per-node": [
-        4
-      ],
-      "default-cpu-model": "R16000",
-      "dimms-per-node": [
-        6
-      ],
-      "disk-bus": "scsi.0",
-      "display-name": "Tezro tower, two/four-processor serial compatibility profile",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": false,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
-      "hardware-inputs": [],
-      "identity-inputs": [],
-      "init-inputs": [
-        {
-          "kind": "ip35-prom",
-          "name": "boot-prom",
-          "required": true
-        }
-      ],
-      "install-media": [],
-      "launch-recipe": "ip53-discovery",
-      "machine-options": "tezro,topology=tezro-tower-multi,nodes=1",
-      "memory-per-node-mib": {
-        "accepted": [
-          4096
-        ],
-        "default": 4096
-      },
-      "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
-      "networks": [],
-      "nodes": 1,
-      "overrides": [
-        {
-          "property": "bedrock-revision",
-          "target": "machine"
-        },
-        {
-          "property": "board-id-word",
-          "target": "machine"
-        },
-        {
-          "property": "l1-revision",
-          "target": "machine"
-        },
-        {
-          "property": "l1-type-code",
-          "target": "machine"
-        },
-        {
-          "property": "mac",
-          "target": "machine"
-        },
-        {
-          "property": "r16000-experimental",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-reset-mode",
-          "target": "cpu"
-        },
-        {
-          "property": "r16000-scache-bytes",
-          "target": "cpu"
-        }
-      ],
-      "processor": {
-        "cache-mib": 4,
-        "clock-hz": 700000000,
-        "id": "r16000-700mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
-      },
-      "product": "tezro",
-      "prom-dialogue": "none",
-      "resources": [
-        {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 1,
-          "kind": "boot-flash",
-          "scope": "board",
-          "size": 16777216
-        }
-      ],
-      "scsi-adapters": [],
-      "smdk": {
-        "diagnostic-mac-bootarg": false,
-        "discovery-prerequisites": [],
-        "package-path": "assets/boot/smdk",
-        "requires-boot-flash": false,
-        "requires-network-identity": false,
-        "tftp-mode": "fixed"
-      },
-      "smp": 4,
-      "storage": [
-        {
-          "initial": "boot-prom",
-          "name": "node0-flash",
-          "read-only": false,
-          "size": 16777216
-        }
-      ],
-      "supported-guests": [],
-      "synthesized-firmware-toggle": false,
-      "topology": "tezro-tower-multi"
-    },
-    {
-      "console": "l1-uart",
-      "consoles": [
-        {
-          "argument": "-serial chardev:l1",
-          "kind": "console",
-          "launcher-name": "l1",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc4_serial_0",
-          "kind": "second-port",
-          "launcher-name": "ioc4-serial-0",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc4_serial_1",
-          "kind": "second-port",
-          "launcher-name": "ioc4-serial-1",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc4_serial_2",
-          "kind": "second-port",
-          "launcher-name": "ioc4-serial-2",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc4_serial_3",
-          "kind": "second-port",
-          "launcher-name": "ioc4-serial-3",
-          "node": 0
-        }
-      ],
-      "cpus-per-node": [
         1
       ],
       "default-cpu-model": "R16000",
@@ -18121,12 +18096,7 @@
         "cache-mib": 4,
         "clock-hz": 700000000,
         "id": "r16000-700mhz",
-        "part": "R16000",
-        "required-properties": [
-          "r16000-experimental",
-          "r16000-reset-mode",
-          "r16000-scache-bytes"
-        ]
+        "part": "R16000"
       },
       "product": "tezro",
       "prom-dialogue": "none",
@@ -35545,12 +35515,12 @@
           "supported-cpu-populations": [
             {
               "cpus-per-node": [
-                2
+                4
               ]
             },
             {
               "cpus-per-node": [
-                4
+                2
               ]
             }
           ],
