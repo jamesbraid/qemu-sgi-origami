@@ -544,16 +544,3 @@ DeviceState *sgi_graphics_new_default(const SGIModelGraphicsSlot *slot)
     }
     return dev;
 }
-
-bool sgi_graphics_check_headless(const char *machine, const char *topology,
-                                 const SGIModelGraphics *g,
-                                 unsigned int pipes, Error **errp)
-{
-    if (pipes || !g || g->headless) {
-        return true;
-    }
-    error_setg(errp, "%s: topology '%s' does not run without a graphics "
-               "pipe, which -vga none or -nodefaults asks for: %s", machine,
-               topology, g->headless_refused);
-    return false;
-}

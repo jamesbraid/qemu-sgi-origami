@@ -74,12 +74,4 @@ const SGIModelGraphicsSlot *sgi_graphics_pipe_slot(
  */
 DeviceState *sgi_graphics_new_default(const SGIModelGraphicsSlot *slot);
 
-/*
- * Refuse a machine left with no pipe where @g's topology may not run
- * without one: with -vga none, or -nodefaults, and no pipe -device.
- */
-bool sgi_graphics_check_headless(const char *machine, const char *topology,
-                                 const SGIModelGraphics *g,
-                                 unsigned int pipes, Error **errp);
-
 #endif /* HW_MIPS_SGI_SGI_GRAPHICS_H */

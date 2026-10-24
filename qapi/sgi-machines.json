@@ -1679,13 +1679,12 @@
 #
 # @max-pipes: most pipes the topology builds at once
 #
-# @headless: whether the machine may run with no pipe; `-vga none`
-#     skips the default pipe
+# @headless: whether a launcher offers this topology without
+#     graphics.  QEMU itself starts any topology with no pipe on
+#     `-vga none` or `-nodefaults` and never refuses one by this flag.
 #
-# @headless-refused: why not, present exactly when @headless is false
-#
-# @headless-note: what running without a pipe means for this
-#     machine, where it is allowed but SGI shipped no such product
+# @headless-refused: why a launcher does not offer it, present
+#     exactly when @headless is false
 #
 # @slots: every slot QEMU can put a pipe in
 #
@@ -1695,7 +1694,6 @@
   'data': { 'max-pipes': 'uint32',
             'headless': 'bool',
             '*headless-refused': 'str',
-            '*headless-note': 'str',
             'slots': ['SGIModelGraphicsSlot'] } }
 
 ##

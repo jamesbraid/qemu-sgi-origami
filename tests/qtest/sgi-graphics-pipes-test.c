@@ -326,9 +326,9 @@ static const char *device_for(const char *family)
 }
 
 /*
- * What the first implementation lists: which topologies run headless and
- * why the rest do not, each default, the refusals a launcher shows, and
- * nothing QEMU does not build.
+ * What the first implementation lists: which topologies a launcher offers
+ * without graphics and why not the rest, each default, the refusals a
+ * launcher shows, and nothing QEMU does not build.
  */
 static void test_catalogue_records(void)
 {
@@ -345,11 +345,18 @@ static void test_catalogue_records(void)
         { "origin2000-rack", true, NULL },
         { "octane", true, NULL },
         { "octane2", true, NULL },
-        { "onyx2-deskside", true, NULL },
-        { "onyx2-rack", true, NULL },
+        { "onyx2-deskside", false,
+          "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 "
+          "with no pipe is an Origin 2000, so use origin2000-deskside or "
+          "origin2000-rack" },
+        { "onyx2-rack", false,
+          "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 "
+          "with no pipe is an Origin 2000, so use origin2000-deskside or "
+          "origin2000-rack" },
         { "onyx350-compat", true, NULL },
         { "tezro-tower-multi", true, NULL },
-        { "fuel", true, NULL },
+        { "fuel", false,
+          "every Fuel has its VPro graphics slot at widget 13" },
         { "origin300-v12-direct", false,
           "this topology exists to fit its V12, so use origin300 for no "
           "graphics" },
@@ -377,13 +384,6 @@ static void test_catalogue_records(void)
             g_assert_false(qdict_haskey(g, "headless-refused"));
         }
     }
-    /* An Onyx2 runs headless, though SGI shipped none that way. */
-    g_assert_cmpstr(qdict_get_str(graphics_record("onyx2-rack"),
-                                  "headless-note"), ==,
-                    "SGI sold no Onyx2 without an InfiniteReality pipe, so "
-                    "an Onyx2 started with -vga none or -nodefaults and no "
-                    "pipe -device is not a configuration SGI shipped");
-    g_assert_false(qdict_haskey(graphics_record("octane"), "headless-note"));
     /* The Origin 300's XIO connector is a cable port, not a slot. */
     g_assert_null(qdict_get(topology_record("origin300"), "graphics"));
 
@@ -582,12 +582,16 @@ static void test_device_replaces_default(void)
     qtest_quit(qts);
 }
 
-/* -vga none skips the default where the catalogue allows no pipe. */
-static void test_vga_none_allowed(void)
+/*
+ * -vga none skips the default on every topology, whatever the catalogue's
+ * headless flag tells a launcher.
+ */
+static void test_vga_none(void)
 {
     static const char *const topologies[] = {
         "octane", "octane2", "origin2000-rack", "origin200",
-        "onyx2-deskside", "onyx2-rack", "fuel",
+        "onyx2-deskside", "onyx2-rack", "fuel", "origin300-v12-direct",
+        "origin300-vbrick",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
@@ -607,24 +611,6 @@ static void test_vga_none_allowed(void)
 
         g_assert_null(type);
         qtest_quit(qts);
-    }
-}
-
-/* ... and is refused, with the record's reason, where it does not. */
-static void test_vga_none_refused(void)
-{
-    static const char *const topologies[] = {
-        "origin300-v12-direct", "origin300-vbrick",
-    };
-
-    for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
-        g_autofree char *message = g_strdup_printf(
-            "topology '%s' does not run without a graphics pipe, which -vga "
-            "none or -nodefaults asks for: %s", topologies[i],
-            qdict_get_str(graphics_record(topologies[i]),
-                          "headless-refused"));
-
-        assert_refused(launch_for(topologies[i]), "-vga none", message);
     }
     /* A pipe -device beside -vga none is still a pipe. */
     {
@@ -923,10 +909,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-graphics-pipes/catalogue", test_catalogue_records);
     qtest_add_func("/sgi-graphics-pipes/device-replaces-default",
                    test_device_replaces_default);
-    qtest_add_func("/sgi-graphics-pipes/vga-none/allowed",
-                   test_vga_none_allowed);
-    qtest_add_func("/sgi-graphics-pipes/vga-none/refused",
-                   test_vga_none_refused);
+    qtest_add_func("/sgi-graphics-pipes/vga-none", test_vga_none);
     qtest_add_func("/sgi-graphics-pipes/vga-other", test_vga_other_refused);
     qtest_add_func("/sgi-graphics-pipes/refusals", test_refusals);
     qtest_add_func("/sgi-graphics-pipes/ip53-v12", test_ip53_v12);

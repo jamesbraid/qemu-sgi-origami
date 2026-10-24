@@ -20754,7 +20754,8 @@
       "description": "SGI Fuel (IP34)",
       "generation": "sn1",
       "graphics": {
-        "headless": true,
+        "headless": false,
+        "headless-refused": "every Fuel has its VPro graphics slot at widget 13",
         "max-pipes": 1,
         "slots": [
           {
@@ -22154,8 +22155,8 @@
       "description": "SGI Onyx2 deskside, one InfiniteReality pipe on XIO4",
       "generation": "sn0",
       "graphics": {
-        "headless": true,
-        "headless-note": "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped",
+        "headless": false,
+        "headless-refused": "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack",
         "max-pipes": 1,
         "slots": [
           {
@@ -22935,8 +22936,8 @@
       "description": "SGI Onyx2 rack, one InfiniteReality pipe cabled from IO3",
       "generation": "sn0",
       "graphics": {
-        "headless": true,
-        "headless-note": "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped",
+        "headless": false,
+        "headless-refused": "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack",
         "max-pipes": 1,
         "slots": [
           {

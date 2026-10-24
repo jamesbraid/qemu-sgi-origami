@@ -964,11 +964,6 @@ static void octane_machine_done(Notifier *notifier, void *data)
             sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         }
     }
-    if (!s->uncatalogued_graphics) {
-        sgi_graphics_check_headless(MACHINE_GET_CLASS(s)->name,
-                                    s->model->name, s->model->graphics,
-                                    s->pipes, &error_fatal);
-    }
     for (unsigned int i = 0; i < OCTANE_GRAPHICS_WIDGETS; i++) {
         if (sgi_xio_link_complete(&s->graphics_links[i])) {
             sgi_xbow_mark_widget_alive(s->crossbow,
