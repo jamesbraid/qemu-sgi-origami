@@ -174,19 +174,49 @@ void mace_serial_dma_ack(MACESerialDMA *s, uint32_t value)
     serial_update_irq(s);
 }
 
-static hwaddr channel_address(MACESerialChannel *c)
+static MemTxResult channel_transfer(MACESerialChannel *c)
 {
-    return (*c->dma->ring_base & 0xffff8000U) + 0x4000 +
-           0x2000 * c->port + (c->receive ? 0x1000 : 0) +
-           (c->receive ? c->write : c->read);
+    MACESerialDMA *s = c->dma;
+    hwaddr ring = (*s->ring_base & 0xffff8000U) + 0x4000ULL +
+                  0x2000 * c->port + (c->receive ? 0x1000 : 0);
+    unsigned pointer = c->receive ? c->write : c->read;
+    hwaddr raw = ring + pointer;
+    hwaddr address = raw;
+    size_t length = sizeof(c->data);
+    MemTxResult result = MEMTX_DECODE_ERROR;
+
+    if (pointer > 0x1000 - length || raw > UINT32_MAX - (length - 1) ||
+        (raw >> 30) != ((raw + length - 1) >> 30) || raw >= 0xc0000000) {
+        goto out;
+    }
+    if (raw < 0x40000000) {
+        if (!s->ring_offsets) {
+            goto out;
+        }
+        /* Selected legacy compatibility policy, not a physical DMA alias. */
+        address += 0x40000000;
+    }
+    if (c->receive) {
+        result = dma_memory_write(s->as, address, c->data, length,
+                                  MEMTXATTRS_UNSPECIFIED);
+    } else {
+        result = dma_memory_read(s->as, address, c->data, length,
+                                 MEMTXATTRS_UNSPECIFIED);
+    }
+out:
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-mace: port %u %s DMA raw=0x%08" HWADDR_PRIx
+                      " address=0x%08" HWADDR_PRIx " length=%zu result=%u\n",
+                      c->port + 1, c->receive ? "RX" : "TX", raw, address,
+                      length, result);
+    }
+    return result;
 }
 
 static void channel_fault(MACESerialChannel *c)
 {
     c->fault = true;
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "sgi-mace: port %u %s DMA memory transaction failed\n",
-                  c->port + 1, c->receive ? "RX" : "TX");
 }
 
 static void delay_update(MACESerialChannel *c)
@@ -241,8 +271,7 @@ static void tx_service(MACESerialChannel *c)
             if (!channel_depth(c)) {
                 return;
             }
-            if (dma_memory_read(s->as, channel_address(c), c->data, 32,
-                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            if (channel_transfer(c) != MEMTX_OK) {
                 channel_fault(c);
                 return;
             }
@@ -301,8 +330,7 @@ static bool rx_publish(MACESerialChannel *c)
     if (!c->count || channel_depth(c) == RING_CAPACITY) {
         return false;
     }
-    if (dma_memory_write(c->dma->as, channel_address(c), c->data, 32,
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+    if (channel_transfer(c) != MEMTX_OK) {
         channel_fault(c);
         return false;
     }
@@ -508,6 +536,7 @@ const VMStateDescription vmstate_mace_serial_dma = {
     .name = "sgi-mace/serial-dma",
     .version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(ring_offsets, MACESerialDMA),
         VMSTATE_STRUCT_ARRAY(channel, MACESerialDMA, 4, 0,
                              vmstate_mace_serial_channel, MACESerialChannel),
         VMSTATE_END_OF_LIST()

@@ -37,6 +37,7 @@ struct MACESerialDMA {
     void (*update_irq)(void *opaque, uint32_t status);
     void *opaque;
     QEMUBH *bh;
+    uint8_t ring_offsets;
     bool servicing;
     bool loading;
     bool modem_pause[2];

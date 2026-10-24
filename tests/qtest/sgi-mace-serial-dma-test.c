@@ -14,6 +14,13 @@
 #define BASE 0x1f318000ULL
 #define RING 0x1f310000ULL
 
+typedef enum SerialProfile {
+    SERIAL_STANDALONE,
+    SERIAL_O2_LITERAL,
+    SERIAL_O2_LEGACY,
+    SERIAL_OFFSET_STANDALONE,
+} SerialProfile;
+
 typedef struct SerialFixture {
     QTestState *qts;
     char *dir;
@@ -28,9 +35,11 @@ static uint64_t uart_address(unsigned port)
     return 0x1f390000ULL + port * 0x8000;
 }
 
-static SerialFixture fixture_start_extra(const char *extra)
+static SerialFixture fixture_start_config(const char *extra,
+                                           SerialProfile profile)
 {
     SerialFixture t = { 0 };
+    bool o2 = profile == SERIAL_O2_LITERAL || profile == SERIAL_O2_LEGACY;
     g_autofree char *cwd = g_get_current_dir();
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
 
@@ -39,22 +48,40 @@ static SerialFixture fixture_start_extra(const char *extra)
     t.ram = g_build_filename(t.dir, "ram", NULL);
     t.fd = g_open(t.ram, O_CREAT | O_EXCL | O_RDWR, 0600);
     g_assert_cmpint(t.fd, >=, 0);
-    g_assert_cmpint(ftruncate(t.fd, 64 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(ftruncate(t.fd, (o2 ? 1024 : 64) * 1024 * 1024), ==, 0);
     for (unsigned p = 0; p < 2; p++) {
         t.path[p] = g_strdup_printf("%s/%u", t.dir, p);
     }
-    t.qts = qtest_initf("-M none -cpu R10000 %s "
-        "-object memory-backend-file,id=dma,size=64M,mem-path=%s,share=on "
-        "-chardev socket,id=a,path=%s,server=on,wait=off "
-        "-chardev socket,id=b,path=%s,server=on,wait=off "
-        "-device sgi-mace,id=mace,ram=/objects/dma/dma[0],"
-        "chardev-a=a,chardev-b=b "
-        "-device sgi-serial-peer,id=peer-a,uart=/machine/peripheral/mace/uart-a,"
-        "ram=/objects/dma/dma[0] "
-        "-device sgi-serial-peer,id=peer-b,uart=/machine/peripheral/mace/uart-b",
-        extra, t.ram, t.path[0], t.path[1]);
-    qtest_sysbus_mmio_map(t.qts, "/machine/peripheral/mace", 0, 0x1f000000);
-    qtest_irq_intercept_out_named(t.qts, "/machine/peripheral/mace", "crime");
+    if (o2) {
+        t.qts = qtest_initf(
+            "-M o2-test,bank-profile=8x128m-synthetic,crime-profile=%s,"
+            "memory-backend=dma,mace-eth-low-dma-compat=on -m 1G "
+            "-cpu R10000 -nodefaults %s "
+            "-object memory-backend-file,id=dma,size=1G,mem-path=%s,share=on "
+            "-chardev socket,id=a,path=%s,server=on,wait=off "
+            "-chardev socket,id=b,path=%s,server=on,wait=off "
+            "-global sgi-mace.chardev-a=a -global sgi-mace.chardev-b=b "
+            "-device sgi-serial-peer,id=peer-a,uart=/machine/mace/uart-a "
+            "-device sgi-serial-peer,id=peer-b,uart=/machine/mace/uart-b",
+            profile == SERIAL_O2_LEGACY ? "legacy-software" : "1.5", extra,
+            t.ram, t.path[0], t.path[1]);
+    } else {
+        t.qts = qtest_initf("-M none -cpu R10000 %s "
+            "-object memory-backend-file,id=dma,size=64M,mem-path=%s,share=on "
+            "-chardev socket,id=a,path=%s,server=on,wait=off "
+            "-chardev socket,id=b,path=%s,server=on,wait=off "
+            "-device %s,id=mace,ram=/objects/dma/dma[0],"
+            "chardev-a=a,chardev-b=b "
+            "-device sgi-serial-peer,id=peer-a,uart=/machine/peripheral/mace/uart-a,"
+            "ram=/objects/dma/dma[0] "
+            "-device sgi-serial-peer,id=peer-b,uart=/machine/peripheral/mace/uart-b",
+            extra, t.ram, t.path[0], t.path[1],
+            profile == SERIAL_OFFSET_STANDALONE ?
+            "sgi-mace-serial-offset-test" : "sgi-mace");
+        qtest_sysbus_mmio_map(t.qts, "/machine/peripheral/mace", 0, 0x1f000000);
+        qtest_irq_intercept_out_named(t.qts, "/machine/peripheral/mace",
+                                      "crime");
+    }
     qtest_writeq(t.qts, RING, 0x40000000);
     for (unsigned p = 0; p < 2; p++) {
         t.uart[p] = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -68,6 +95,11 @@ static SerialFixture fixture_start_extra(const char *extra)
         qtest_writeb(t.qts, uart_address(p) + 0x200, 1);
     }
     return t;
+}
+
+static SerialFixture fixture_start_extra(const char *extra)
+{
+    return fixture_start_config(extra, SERIAL_STANDALONE);
 }
 
 static SerialFixture fixture_start(void)
@@ -1064,9 +1096,348 @@ static void test_uart_gpio_levels(void)
     fixture_stop(&from);
 }
 
+static void serial_reset(SerialFixture *t)
+{
+    for (unsigned p = 0; p < 2; p++) {
+        qtest_writeq(t->qts, BASE + p * 0x4000, 0x400);
+        qtest_writeq(t->qts, BASE + p * 0x4000 + 0x20, 0x400);
+    }
+}
+
+static void serial_banks(SerialFixture *t, uint64_t control)
+{
+    /* Equal selectors leave only bank zero's decoded range populated. */
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(t->qts, 0x14000208 + bank * 8, control);
+    }
+}
+
+static void test_ring_address_classes(void)
+{
+    static const uint32_t offsets[] = {
+        0, 0x00118000, 0x08008000, 0x1f310000, 0x20008000, 0x3fff8000,
+    };
+    static const uint32_t classes[] = { 0, 0x40000000, 0x80000000 };
+
+    if (!qtest_has_machine("o2-test")) {
+        g_test_skip("O2 test machine is unavailable");
+        return;
+    }
+    for (unsigned profile = 0; profile < 2; profile++) {
+        SerialFixture t = fixture_start_config("",
+            profile ? SERIAL_O2_LEGACY : SERIAL_O2_LITERAL);
+
+        for (unsigned o = 0; o < G_N_ELEMENTS(offsets); o++) {
+            uint32_t offset = offsets[o];
+            off_t backing = offset & 0x07ffffff;
+            uint8_t expected[0x8020], actual[sizeof(expected)];
+
+            serial_banks(&t, 0x100 | (offset >> 25 & 0x1c));
+            for (unsigned a = 0; a < G_N_ELEMENTS(classes); a++) {
+                uint32_t raw = classes[a] + offset;
+                bool succeeds = profile || a;
+
+                serial_reset(&t);
+                memset(expected, 0xa5, sizeof(expected));
+                for (unsigned p = 0; p < 2; p++) {
+                    uint8_t *block = expected + 0x4000 + p * 0x2000;
+
+                    memset(block, 0, 32);
+                    packet_pair(block, 0, 0x60, 0x35 + p * 0x47);
+                    packet_pair(block, 1, 0x40, 0xe2 - p * 0x31);
+                }
+                g_assert_cmpint(pwrite(t.fd, expected, sizeof(expected),
+                                        backing), ==, sizeof(expected));
+                qtest_writeq(t.qts, RING, raw);
+                g_assert_cmphex(qtest_readq(t.qts, RING), ==, raw);
+                for (unsigned p = 0; p < 2; p++) {
+                    uint64_t base = BASE + p * 0x4000;
+                    uint8_t bytes[] = { 0x35 + p * 0x47, 0xe2 - p * 0x31 };
+
+                    qtest_writeq(t.qts, base, 0);
+                    qtest_writeq(t.qts, base + 0x10, 32);
+                    qtest_writeq(t.qts, base, 0x200);
+                    qtest_writeq(t.qts, base + 0x20, 0x2a0);
+                    peer_set(&t, p, "receive", 0x91 - p * 0x56);
+                    if (succeeds) {
+                        uint8_t *rx = expected + 0x5000 + p * 0x2000;
+
+                        pointer_wait(&t, base + 8, 32);
+                        pointer_wait(&t, base + 0x30, 32);
+                        uart_expect(&t, p, bytes, sizeof(bytes));
+                        for (unsigned word = 0; word < 4; word++) {
+                            memset(rx + word * 8, 0, 4);
+                            memset(rx + word * 8 + 4, 0xff, 4);
+                        }
+                        rx[0] = 0x80;
+                        rx[4] = 0x91 - p * 0x56;
+                        g_assert_true(qtest_readq(t.qts, RING + 0x10) &
+                                      (1U << (22 + 6 * p)));
+                        g_assert_true(qtest_readq(t.qts, RING + 0x10) &
+                                      (1U << (24 + 6 * p)));
+                    } else {
+                        g_assert_cmphex(qtest_readq(t.qts, base + 8), ==, 0);
+                        g_assert_cmphex(qtest_readq(t.qts, base + 0x30), ==, 0);
+                        g_assert_true(qtest_readq(t.qts, RING + 0x10) &
+                                      (1U << (23 + 6 * p)));
+                        g_assert_false(qtest_readq(t.qts, RING + 0x10) &
+                                       (1U << (22 + 6 * p)));
+                        uart_empty(&t, p);
+                    }
+                }
+                g_assert_cmpint(pread(t.fd, actual, sizeof(actual), backing),
+                                ==, sizeof(actual));
+                /* Includes audio/scratch pages and unused serial blocks. */
+                g_assert_cmpmem(actual, sizeof(actual), expected,
+                                sizeof(expected));
+                g_assert_cmphex(qtest_readq(t.qts, RING), ==, raw);
+                qtest_writeq(t.qts, RING, raw ^ 0x8000);
+                g_assert_cmphex(qtest_readq(t.qts, RING), ==, raw);
+            }
+        }
+        fixture_stop(&t);
+    }
+}
+
+static void test_ring_address_faults(void)
+{
+    static const uint32_t bases[] = {
+        0, 0x40000000, 0x80000000, 0xc0000000, 0xffff8000,
+    };
+
+    if (!qtest_has_machine("o2-test")) {
+        g_test_skip("O2 test machine is unavailable");
+        return;
+    }
+    SerialFixture t = fixture_start_config("", SERIAL_O2_LEGACY);
+
+    for (unsigned fault = 0; fault < 3; fault++) {
+        /* A hole, a wrong fitted geometry, then a reserved address class. */
+        for (unsigned a = fault == 2 ? 3 : 0; a < G_N_ELEMENTS(bases); a++) {
+            uint8_t guard[0x8000], actual[sizeof(guard)];
+
+            serial_reset(&t);
+            serial_banks(&t, fault == 0 ? 0x104 : fault == 1 ? 0 : 0x100);
+            memset(guard, 0x59, sizeof(guard));
+            g_assert_cmpint(pwrite(t.fd, guard, sizeof(guard), 0),
+                            ==, sizeof(guard));
+            qtest_writeq(t.qts, RING, bases[a]);
+            for (unsigned p = 0; p < 2; p++) {
+                uint64_t base = BASE + p * 0x4000;
+
+                qtest_writeq(t.qts, base, 0);
+                qtest_writeq(t.qts, base + 0x10, 0xfe0);
+                qtest_writeq(t.qts, base, 0x200);
+                qtest_writeq(t.qts, base + 0x20, 0x200);
+                peer_set(&t, p, "receive", 0x37 + p * 0x41);
+                g_assert_cmphex(qtest_readq(t.qts, base + 8), ==, 0);
+                g_assert_cmphex(qtest_readq(t.qts, base + 0x30), ==, 0);
+                g_assert_true(qtest_readq(t.qts, RING + 0x10) &
+                              (1U << (23 + p * 6)));
+                g_assert_false(qtest_readq(t.qts, RING + 0x10) &
+                               (1U << (25 + p * 6)));
+                qtest_writeq(t.qts, base, 0);
+                qtest_writeq(t.qts, base, 0x200);
+                qtest_writeq(t.qts, base + 0x20, 0);
+                qtest_writeq(t.qts, base + 0x20, 0x200);
+                g_assert_cmphex(qtest_readq(t.qts, base + 8), ==, 0);
+                g_assert_cmphex(qtest_readq(t.qts, base + 0x30), ==, 0);
+                uart_empty(&t, p);
+            }
+            serial_banks(&t, 0x100);
+            for (unsigned p = 0; p < 2; p++) {
+                uint64_t base = BASE + p * 0x4000;
+
+                qtest_writeq(t.qts, base, 0);
+                qtest_writeq(t.qts, base, 0x200);
+                qtest_writeq(t.qts, base + 0x20, 0);
+                qtest_writeq(t.qts, base + 0x20, 0x200);
+                g_assert_cmphex(qtest_readq(t.qts, base + 8), ==, 0);
+                g_assert_cmphex(qtest_readq(t.qts, base + 0x30), ==, 0);
+                uart_empty(&t, p);
+            }
+            g_assert_cmpint(pread(t.fd, actual, sizeof(actual), 0),
+                            ==, sizeof(actual));
+            g_assert_cmpmem(actual, sizeof(actual), guard, sizeof(guard));
+        }
+    }
+    fixture_stop(&t);
+}
+
+static void test_low_ring_wrap(void)
+{
+    if (!qtest_has_machine("o2-test")) {
+        g_test_skip("O2 test machine is unavailable");
+        return;
+    }
+    SerialFixture t = fixture_start_config("", SERIAL_O2_LEGACY);
+    uint8_t ring[4096] = { 0 }, actual[32];
+    static const uint32_t bases[] = {
+        0, 0x3fff8000, 0x7fff8000, 0xbfff8000,
+    };
+
+    for (unsigned a = 0; a < G_N_ELEMENTS(bases); a++) {
+        off_t backing = a ? 0x07ff8000 : 0;
+
+        serial_reset(&t);
+        serial_banks(&t, a ? 0x11c : 0x100);
+        qtest_writeq(t.qts, RING, bases[a]);
+        for (unsigned p = 0; p < 2; p++) {
+            uint64_t base = BASE + p * 0x4000;
+            uint8_t bytes[] = { 0x29 + p, 0xd1 - p };
+
+            memset(ring, 0, sizeof(ring));
+            packet_pair(ring, 0, 0x60, bytes[0]);
+            packet_pair(ring + 0xfe0, 15, 0x60, bytes[1]);
+            g_assert_cmpint(pwrite(t.fd, ring, sizeof(ring),
+                                    backing + 0x4000 + p * 0x2000),
+                            ==, sizeof(ring));
+            qtest_writeq(t.qts, base, 0);
+            qtest_writeq(t.qts, base + 0x10, 0xfe0);
+            qtest_writeq(t.qts, base, 0x200);
+            pointer_wait(&t, base + 8, 0xfe0);
+            qtest_writeq(t.qts, base + 0x10, 0);
+            pointer_wait(&t, base + 8, 0);
+            uart_expect(&t, p, bytes, sizeof(bytes));
+            uart_empty(&t, p);
+            qtest_writeq(t.qts, base + 0x20, 0x200);
+            for (unsigned i = 0; i < 127; i++) {
+                peer_set(&t, p, "receive", i ^ (p ? 0xb3 : 0x59));
+                pointer_wait(&t, base + 0x30, (i + 1) * 32);
+            }
+            qtest_writeq(t.qts, base + 0x28, 32);
+            peer_set(&t, p, "receive", 0xe7 - p);
+            pointer_wait(&t, base + 0x30, 0);
+            g_assert_cmpint(pread(t.fd, actual, 32,
+                                   backing + 0x5fe0 + p * 0x2000), ==, 32);
+            g_assert_cmphex(actual[0], ==, 0x80);
+            g_assert_cmphex(actual[4], ==, 0xe7 - p);
+        }
+    }
+    qtest_system_reset(t.qts);
+    serial_banks(&t, 0x100);
+    qtest_writeq(t.qts, RING, 0);
+    ring_write(&t, 0, 0, ring, 32);
+    qtest_writeq(t.qts, BASE, 0);
+    qtest_writeq(t.qts, BASE + 0x10, 32);
+    qtest_writeq(t.qts, BASE, 0x200);
+    pointer_wait(&t, BASE + 8, 32);
+    uart_expect(&t, 0, (const uint8_t[]){ 0x2a }, 1);
+    fixture_stop(&t);
+}
+
+static void test_migrate_low_ring(void)
+{
+    SerialFixture from = fixture_start_config("", SERIAL_OFFSET_STANDALONE);
+    SerialFixture to = fixture_start_config("-incoming defer",
+                                           SERIAL_OFFSET_STANDALONE);
+    g_autofree char *path = g_build_filename(from.dir, "migration", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", path);
+    uint8_t block[32] = { 0 }, actual[32];
+
+    qtest_writeq(from.qts, RING, 0);
+    for (unsigned p = 0; p < 2; p++) {
+        uint64_t base = BASE + p * 0x4000;
+
+        memset(block, 0, sizeof(block));
+        packet_pair(block, 0, 0x40, 0x39 + p);
+        packet_pair(block, 1, 0xe0, 10);
+        packet_pair(block, 2, 0x40, 0xa3 - p);
+        ring_write(&from, p, 0, block, sizeof(block));
+        qtest_writeq(from.qts, base, 0);
+        qtest_writeq(from.qts, base + 0x10, 32);
+        qtest_writeq(from.qts, base, 0x200);
+        uart_expect(&from, p, (const uint8_t[]){ 0x39 + p }, 1);
+        qtest_writeq(from.qts, base, 0);
+        qtest_writeq(from.qts, base + 0x20, 0x200);
+        peer_set(&from, p, "receive", 0x72 + p);
+        pointer_wait(&from, base + 0x30, 32);
+    }
+    qtest_qmp_assert_success(to.qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from.qts, uri);
+    sgi_wait_migration(to.qts, "completed");
+    g_assert_cmphex(qtest_readq(to.qts, RING), ==, 0);
+    qtest_clock_step(to.qts, 20 * 1000000);
+    for (unsigned p = 0; p < 2; p++) {
+        uint64_t base = BASE + p * 0x4000;
+
+        uart_empty(&to, p);
+        g_assert_cmphex(qtest_readq(to.qts, base + 0x30), ==, 32);
+        g_assert_cmpint(pread(to.fd, actual, 32, 0x5000 + p * 0x2000), ==, 32);
+        g_assert_cmphex(actual[4], ==, 0x72 + p);
+        qtest_writeq(to.qts, base, 0x200);
+    }
+    qtest_clock_step(to.qts, 9 * 1000000);
+    uart_empty(&to, 0);
+    uart_empty(&to, 1);
+    qtest_clock_step(to.qts, 1000000);
+    for (unsigned p = 0; p < 2; p++) {
+        uint64_t base = BASE + p * 0x4000;
+
+        pointer_wait(&to, base + 8, 32);
+        uart_expect(&to, p, (const uint8_t[]){ 0xa3 - p }, 1);
+        uart_empty(&to, p);
+        g_assert_cmphex(qtest_readq(to.qts, base + 0x30), ==, 32);
+        g_assert_true(qtest_readq(to.qts, RING + 0x10) &
+                      (1U << (22 + p * 6)));
+    }
+    fixture_stop(&to);
+    g_unlink(path);
+    fixture_stop(&from);
+}
+
+static void test_migrate_ring_policy_mismatch(void)
+{
+    SerialFixture from = fixture_start_config("", SERIAL_OFFSET_STANDALONE);
+    SerialFixture to = fixture_start_extra("-incoming defer");
+    g_autofree char *path = g_build_filename(from.dir, "migration", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", path);
+    uint8_t block[32] = { 0 };
+    SgiWait wait;
+
+    packet_pair(block, 0, 0xc0, 10);
+    packet_pair(block, 1, 0x40, 0x93);
+    ring_write(&from, 0, 0, block, sizeof(block));
+    qtest_writeq(from.qts, RING, 0);
+    qtest_writeq(from.qts, BASE, 0);
+    qtest_writeq(from.qts, BASE + 0x10, 32);
+    qtest_writeq(from.qts, BASE, 0x200);
+    qtest_writeq(from.qts, BASE, 0);
+    qtest_qmp_assert_success(to.qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from.qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_start(&wait, "serial ring policy mismatch rejection");
+    for (;;) {
+        g_autoptr(QDict) reply = qtest_qmp_assert_success_ref(to.qts,
+            "{'execute':'query-migrate'}");
+
+        if (!strcmp(qdict_get_str(reply, "status"), "failed")) {
+            break;
+        }
+        sgi_wait_pause(&wait, 1000);
+    }
+    uart_empty(&to, 0);
+    g_assert_cmphex(qtest_readq(to.qts, BASE + 8), ==, 0);
+    fixture_stop(&to);
+    g_unlink(path);
+    fixture_stop(&from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/mace-serial-dma/ring-address-classes",
+                   test_ring_address_classes);
+    qtest_add_func("/sgi/mace-serial-dma/ring-address-faults",
+                   test_ring_address_faults);
+    qtest_add_func("/sgi/mace-serial-dma/low-ring-wrap", test_low_ring_wrap);
+    qtest_add_func("/sgi/mace-serial-dma/migrate-low-ring",
+                   test_migrate_low_ring);
+    qtest_add_func("/sgi/mace-serial-dma/migrate-ring-policy-mismatch",
+                   test_migrate_ring_policy_mismatch);
     qtest_add_func("/sgi/mace-serial-dma/registers", test_registers);
     qtest_add_func("/sgi/mace-serial-dma/base-validation",
                    test_base_validation);
