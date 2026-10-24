@@ -4884,16 +4884,10 @@ static void test_software_attention_precommand(void)
     attention_select(qts, 0x40);
     attention_write(qts, 0x06, 0);
     qtest_writeb(qts, REG_BASE + 0x03, 0xb0);
-    /* ATN latches after CDB delivery starts without entering Message Out. */
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xf0, ==, 0x90);
-    qtest_writeb(qts, REG_BASE + 0x0c, 0x40);
-    qtest_writeb(qts, REG_BASE + 0x03, 0x80);
-    for (unsigned i = 0; i < 5; i++) {
-        attention_write(qts, 0x06, 0);
-    }
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe0, ==, 0xc0);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 2);
+    /* Attention is unsupported after delivery of the first CDB byte. */
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xf0, ==, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
     qtest_quit(qts);
 }
 
@@ -11362,15 +11356,13 @@ static void test_manual_signals(void)
         manual_signal_write(qts, 0xc2, sequencer);
         /* The selected target keeps BSY asserted after BSYO falls. */
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xef, ==, 0xc6);
-        manual_signal_write(qts, 0xd0, sequencer);
-        manual_signal_write(qts, 0xc0, sequencer);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf3, ==, 0xd2);
+        manual_signal_write(qts, 0xcc, sequencer);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xef, ==, 0xce);
         qtest_writeb(qts, REG_BASE + 1, 2);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf3, ==, 0xd2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xef, ==, 0xce);
         qtest_writeb(qts, REG_BASE + 0x87, 6);
-        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf3, ==, 0xd2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xef, ==, 0xce);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, status);
-        qtest_writeb(qts, REG_BASE + 0x0c, 0x40);
         manual_finish(qts, status);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
         qtest_quit(qts);
@@ -12047,7 +12039,8 @@ static void test_manual_resets(void)
 
             manual_counters(qts);
             g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
-            qtest_writeb(qts, REG_BASE + 3, high ? 0xdd : 0xdc);
+            qtest_writeb(qts, REG_BASE + 3, high ? 0xcd : 0xcc);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 1, ==, high);
             manual_capture(qts, &before);
             qtest_writeb(qts, REG_BASE + 0x87, 6);
             manual_unchanged(qts, &before);
@@ -12272,13 +12265,372 @@ static void test_manual_selection_bus_free(void)
 
     qtest_writeb(qts, REG_BASE + 2, 4);
     start_missing_selection(qts);
-    qtest_writeb(qts, REG_BASE + 3, 0x1c);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0x1c, ==, 0x1c);
+    qtest_writeb(qts, REG_BASE + 3, 0x0c);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0x0c, ==, 0x0c);
     qtest_clock_step(qts, 256000400);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x88, ==, 0x88);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0x1f, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
     qtest_quit(qts);
+}
+
+static void test_manual_attention_atomic(void)
+{
+    QTestState *qts = manual_status();
+    ManualGuard before;
+
+    manual_counters(qts);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x11);
+    manual_capture(qts, &before);
+    /* Forbidden attention cannot commit an otherwise legal STATUS ACK. */
+    qtest_writeb(qts, REG_BASE + 3, 0xdd);
+    manual_unchanged(qts, &before);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 2);
+    manual_ack(qts, 0xc0, 2, true, false);
+    g_assert_cmphex(manual_incoming(qts, 0xe0, false), ==, 0);
+    manual_check_counters(qts);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+    qtest_quit(qts);
+}
+
+static void manual_attention_irq(QTestState *qts)
+{
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    qtest_writeb(qts, REG_BASE + 0x87, 6);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x11);
+}
+
+static void manual_attention_signal(QTestState *qts, uint8_t value,
+                                    bool sequencer)
+{
+    manual_signal_write(qts, value, sequencer);
+    if (sequencer) {
+        /* The refused first instruction ran; its following SEQINT did not. */
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x63), ==, 0);
+    }
+}
+
+static void manual_attention_byte(QTestState *qts, uint8_t phase, uint8_t byte,
+                                 unsigned variant, bool sequencer)
+{
+    uint8_t expected = variant ? 0x80 : phase;
+    uint8_t word = expected | 0x1d;
+    ManualGuard before;
+    bool irq;
+
+    if (variant == 2) {
+        qtest_writeb(qts, REG_BASE + 0x0c, 1);
+    }
+    manual_attention_irq(qts);
+    manual_capture(qts, &before);
+    irq = qtest_get_irq(qts, 11);
+    manual_attention_signal(qts, word, sequencer);
+    manual_unchanged(qts, &before);
+    g_assert_cmpint(qtest_get_irq(qts, 11), ==, irq);
+    if (phase) {
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, byte);
+    }
+
+    /* A refused sequencer instruction stops it; the paused host can recover. */
+    qtest_writeb(qts, REG_BASE + 3, word & ~0x10);
+    if (variant == 1) {
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf3, ==, phase | 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0x11);
+        if (phase) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, byte);
+        }
+        qtest_writeb(qts, REG_BASE + 3, phase | 0x0d);
+    }
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, phase | 0x0d);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
+    if (phase) {
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, byte);
+    }
+    qtest_writeb(qts, REG_BASE + 3, phase | 0x0d);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, phase | 1);
+    qtest_writeb(qts, REG_BASE + 3, phase);
+    qtest_writeb(qts, REG_BASE + 0x11, 0);
+    qtest_writeb(qts, REG_BASE + 0x92, 4);
+    manual_check_counters(qts);
+}
+
+static void test_manual_attention_precommand(void)
+{
+    for (unsigned message = 0; message < 2; message++) {
+        for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+            QTestState *qts = start_disk();
+            ManualGuard before;
+
+            attention_select(qts, message ? 0x48 : 0x40);
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+            if (message) {
+                qtest_writeb(qts, REG_BASE + 0x0c, 0x40);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0,
+                                ==, 0xa0);
+            }
+            manual_counters(qts);
+            manual_signal_write(qts, 0xb0, sequencer);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0, ==, 0xb0);
+            manual_capture(qts, &before);
+            manual_signal_write(qts, 0xb0, sequencer);
+            manual_unchanged(qts, &before);
+            manual_signal_write(qts, 0xa0, sequencer);
+            manual_unchanged(qts, &before);
+            if (message) {
+                qtest_writeb(qts, REG_BASE + 6, 0x80);
+            } else {
+                static const uint8_t negotiation[] = { 1, 2, 3, 1 };
+
+                for (unsigned i = 0; i < sizeof(negotiation); i++) {
+                    qtest_writeb(qts, REG_BASE + 6, negotiation[i]);
+                }
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0, ==, 0xb0);
+            manual_capture(qts, &before);
+            /* A retained one cannot restart an already complete message. */
+            manual_signal_write(qts, 0xb0, sequencer);
+            manual_unchanged(qts, &before);
+            manual_signal_write(qts, 0xa0, sequencer);
+            manual_unchanged(qts, &before);
+            qtest_writeb(qts, REG_BASE + 0x0c, 0x40);
+            if (!message) {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0,
+                                ==, 0xe0);
+                qtest_writeb(qts, REG_BASE + 3, 0xe0);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 7);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 7);
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0, ==, 0x80);
+            for (unsigned i = 0; i < 6; i++) {
+                attention_write(qts, 6, 0);
+            }
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+            qtest_writeb(qts, REG_BASE + 1, 0);
+            manual_finish(qts, 2);
+            manual_check_counters(qts);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_manual_attention_incoming(void)
+{
+    static const uint8_t inquiry[] = { 0x12, 0, 0, 0, 36, 0 };
+    static const uint8_t phases[] = { 0x40, 0xc0, 0xe0 };
+
+    for (unsigned kind = 0; kind < ARRAY_SIZE(phases); kind++) {
+        for (unsigned variant = 0; variant < 3; variant++) {
+            for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+                QTestState *qts;
+                uint8_t phase = phases[kind];
+                uint8_t byte;
+
+                g_test_message("phase=0x%02x variant=%u sequencer=%u",
+                               phase, variant, sequencer);
+                if (kind == 0) {
+                    qts = start_selected_disk(NULL);
+                    manual_command(qts, inquiry, sizeof(inquiry));
+                } else if (kind == 1) {
+                    qts = manual_status_fifo();
+                } else {
+                    qts = manual_status();
+                    g_assert_cmphex(manual_incoming(qts, 0xc0, false), ==, 2);
+                }
+                manual_wait_phase(qts, phase);
+                manual_counters(qts);
+                byte = qtest_readb(qts, REG_BASE + 6);
+                manual_attention_byte(qts, phase, byte, variant, sequencer);
+                if (kind == 0) {
+                    g_assert_cmphex(byte, ==, manual_fifo_payload[0]);
+                    for (unsigned i = 1; i < sizeof(manual_fifo_payload); i++) {
+                        g_assert_cmphex(manual_incoming(qts, 0x40, false),
+                                        ==, manual_fifo_payload[i]);
+                    }
+                    manual_finish(qts, 0);
+                } else if (kind == 1) {
+                    g_assert_cmphex(byte, ==, 0);
+                    g_assert_cmphex(manual_incoming(qts, 0xe0, false), ==, 0);
+                    manual_check_fifo(qts);
+                } else {
+                    g_assert_cmphex(byte, ==, 0);
+                }
+                manual_check_counters(qts);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_manual_attention_outgoing(void)
+{
+    static const uint8_t cdb[10] = { 0x2a, 0, 0, 0, 0, 1, 0, 0, 1, 0 };
+
+    for (unsigned variant = 0; variant < 3; variant++) {
+        for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+            g_autofree char *path = NULL;
+            uint8_t payload[512], got[512];
+            QTestState *qts;
+            int fd = g_file_open_tmp("aic7880-attention-XXXXXX", &path, NULL);
+
+            g_test_message("DATA OUT variant=%u sequencer=%u",
+                           variant, sequencer);
+            g_assert_cmpint(fd, >=, 0);
+            g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
+            close(fd);
+            qts = start_file_disk(path, NULL);
+            prepare_coupled_target(qts, 512);
+            manual_command(qts, cdb, sizeof(cdb));
+            manual_wait_phase(qts, 0);
+            manual_counters(qts);
+            for (unsigned i = 0; i < sizeof(payload); i++) {
+                payload[i] = (i * 61 + 0x37 + variant) ^ (i >> 4);
+            }
+            qtest_writeb(qts, REG_BASE + 6, payload[0]);
+            manual_attention_byte(qts, 0, payload[0], variant, sequencer);
+            for (unsigned i = 1; i < sizeof(payload); i++) {
+                qtest_writeb(qts, REG_BASE + 6, payload[i]);
+                manual_ack(qts, 0, payload[i], false, false);
+            }
+            manual_finish(qts, 0);
+            manual_check_counters(qts);
+            qtest_quit(qts);
+            fd = open(path, O_RDONLY);
+            g_assert_cmpint(fd, >=, 0);
+            g_assert_cmpint(pread(fd, got, sizeof(got), 512), ==, sizeof(got));
+            g_assert_cmpmem(got, sizeof(got), payload, sizeof(payload));
+            close(fd);
+            g_unlink(path);
+        }
+    }
+}
+
+static void test_manual_attention_late_cdb(void)
+{
+    for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+        QTestState *qts = start_disk();
+        ManualGuard before;
+        bool irq;
+
+        attention_select(qts, 0x40);
+        attention_write(qts, 6, 0);
+        qtest_writeb(qts, REG_BASE + 0x92, 1);
+        manual_counters(qts);
+        manual_attention_irq(qts);
+        manual_capture(qts, &before);
+        irq = qtest_get_irq(qts, 11);
+        /* Message Out phase bits cannot admit attention after CDB byte 0. */
+        manual_attention_signal(qts, 0xbc, sequencer);
+        manual_unchanged(qts, &before);
+        g_assert_cmpint(qtest_get_irq(qts, 11), ==, irq);
+        manual_check_counters(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_manual_attention_disconnected(void)
+{
+    for (unsigned ack = 0; ack < 2; ack++) {
+        for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+            uint8_t program[64];
+            QTestState *qts = start_peer_disk();
+            ManualGuard before;
+            bool irq;
+
+            start_program(qts, program,
+                          build_selected_inquiry_identify(program, 0xc0));
+            qtest_writeb(qts, REG_BASE + 0x93, 0);
+            qtest_writeb(qts, REG_BASE + 1, 0);
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+            manual_wait_phase(qts, 0x40);
+            peer_event(qts, "disconnect:0:0");
+            g_assert_cmphex(manual_incoming(qts, 0xe0, false), ==, 4);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+            manual_counters(qts);
+            manual_attention_irq(qts);
+            manual_capture(qts, &before);
+            irq = qtest_get_irq(qts, 11);
+            manual_attention_signal(qts, 0xbc | ack, sequencer);
+            manual_unchanged(qts, &before);
+            g_assert_cmpint(qtest_get_irq(qts, 11), ==, irq);
+            manual_check_counters(qts);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_manual_attention_ack_refused(void)
+{
+    for (unsigned message = 0; message < 2; message++) {
+        for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+            QTestState *qts = start_disk();
+            ManualGuard before;
+            bool irq;
+
+            attention_select(qts, message ? 0x48 : 0x40);
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+            if (message) {
+                qtest_writeb(qts, REG_BASE + 0x0c, 0x40);
+            }
+            qtest_writeb(qts, REG_BASE + 3, message ? 0xa0 : 0x80);
+            qtest_writeb(qts, REG_BASE + 1, 0);
+            manual_counters(qts);
+            manual_attention_irq(qts);
+            manual_capture(qts, &before);
+            irq = qtest_get_irq(qts, 11);
+            /* New attention is admissible, but manual ACK is not. */
+            manual_attention_signal(qts, 0x5d, sequencer);
+            manual_unchanged(qts, &before);
+            g_assert_cmpint(qtest_get_irq(qts, 11), ==, irq);
+            qtest_writeb(qts, REG_BASE + 3, 0xb0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xf0, ==, 0xb0);
+            manual_check_counters(qts);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_manual_attention_resets(void)
+{
+    for (unsigned reset = 0; reset < 3; reset++) {
+        for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+            QTestState *qts = start_disk();
+            ManualGuard before;
+
+            attention_select(qts, 0x40);
+            qtest_writeb(qts, REG_BASE + 0x92, 1);
+            manual_signal_write(qts, 0xbc, sequencer);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xfc, ==, 0xbc);
+            manual_counters(qts);
+            manual_capture(qts, &before);
+            qtest_writeb(qts, REG_BASE + 1, 10);
+            manual_unchanged(qts, &before);
+            qtest_writeb(qts, REG_BASE + 0x87, 6);
+            manual_unchanged(qts, &before);
+            if (reset == 0) {
+                qtest_writeb(qts, REG_BASE + 0x87, 1);
+            } else if (reset == 1) {
+                qtest_system_reset(qts);
+                config_writel(qts, 0x14, REG_BASE);
+                config_writew(qts, 4, 6);
+            } else {
+                qtest_writeb(qts, REG_BASE, 1);
+                qtest_writeb(qts, REG_BASE, 0);
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
+            qtest_memread(qts, 0x18000, before.ram, sizeof(before.ram));
+            for (unsigned i = 0; i < sizeof(before.ram); i++) {
+                g_assert_cmphex(before.ram[i], ==, 0xa7);
+            }
+            qtest_quit(qts);
+        }
+    }
 }
 
 int main(int argc, char **argv)
@@ -12811,5 +13163,21 @@ int main(int argc, char **argv)
                    test_manual_nonempty_fifo_refused);
     qtest_add_func("aic7880/manual/selection-bus-free",
                    test_manual_selection_bus_free);
+    qtest_add_func("aic7880/manual/attention-atomic",
+                   test_manual_attention_atomic);
+    qtest_add_func("aic7880/manual/attention-precommand",
+                   test_manual_attention_precommand);
+    qtest_add_func("aic7880/manual/attention-incoming",
+                   test_manual_attention_incoming);
+    qtest_add_func("aic7880/manual/attention-outgoing",
+                   test_manual_attention_outgoing);
+    qtest_add_func("aic7880/manual/attention-late-cdb",
+                   test_manual_attention_late_cdb);
+    qtest_add_func("aic7880/manual/attention-disconnected",
+                   test_manual_attention_disconnected);
+    qtest_add_func("aic7880/manual/attention-ack-refused",
+                   test_manual_attention_ack_refused);
+    qtest_add_func("aic7880/manual/attention-resets",
+                   test_manual_attention_resets);
     return g_test_run();
 }
