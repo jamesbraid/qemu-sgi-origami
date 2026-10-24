@@ -115,6 +115,21 @@ static const Register registers[] = {
     { 0x1b8, 4, true },
 };
 static const unsigned modes[] = { 0, 0x124, 0x228 };
+static const unsigned wide_slots[] = {
+    0x060, 0x078, 0x0d0, 0x000, 0x008, 0x010,
+    0x018, 0x050, 0x058, 0x0d8, 0x1b0, 0x1b8,
+};
+
+static bool wide_state_write(unsigned offset)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(wide_slots); i++) {
+        if (wide_slots[i] == offset) {
+            return true;
+        }
+    }
+    return offset == 0x70 || offset == 0xa8;
+}
+
 
 static void assert_stopped(QTestState *s)
 {
@@ -216,8 +231,10 @@ static void test_registers(void)
         }
         for (unsigned width = 1; width <= 8; width *= 2) {
             if (width != r->width) {
-                g_assert_cmpint(memtx_write(s, DE + r->offset, 0, width),
-                                !=, MEMTX_OK);
+                if (width != 8 || !wide_state_write(r->offset)) {
+                    g_assert_cmpint(memtx_write(s, DE + r->offset, 0, width),
+                                    !=, MEMTX_OK);
+                }
                 g_assert_cmpint(memtx_read(s, DE + r->offset, &value, width),
                                 !=, MEMTX_OK);
             }
@@ -1061,7 +1078,7 @@ static void test_malformed_access_stops(void)
         unsigned offset;
         unsigned width;
     } accesses[] = {
-        { 0x2008, 8 }, { 0x1000, 4 }, { 0x2874, 8 },
+        { 0x2008, 2 }, { 0x1000, 4 }, { 0x2874, 8 },
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
@@ -1263,6 +1280,14 @@ static void test_unselected_profile(void)
         g_assert_cmpint(memtx_write(s, RE + writes[i], 0,
                                    writes[i] == 0x1000 ? 8 : 4), !=, MEMTX_OK);
     }
+    for (unsigned i = 0; i < ARRAY_SIZE(wide_slots); i++) {
+        g_assert_cmpint(memtx_writeq(s, DE + wide_slots[i],
+                                    0x1122334455667788ULL), !=, MEMTX_OK);
+    }
+    g_assert_cmpint(memtx_writeq(s, DE + 0x70, 0x1122334455667788ULL),
+                    !=, MEMTX_OK);
+    g_assert_cmpint(memtx_writeq(s, DE + 0xa8, 0x1122334455667788ULL),
+                    !=, MEMTX_OK);
     g_assert_cmpint(memtx_readl(s, DE, &value), !=, MEMTX_OK);
     qtest_quit(s);
 }
@@ -1326,6 +1351,358 @@ static void test_rom_canary(void)
     g_rmdir(directory);
 }
 
+static void test_wide_slot(void)
+{
+    QTestState *s = start();
+
+    qtest_writel(s, DE + 0x50, 0x89abcdef);
+    qtest_writel(s, DE + 0x58, 0x99aabbcc);
+    qtest_writeq(s, 0x30000, 0x123456789abcdef0ULL);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x50, 0x1122334455667788ULL),
+                    ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, DE + 0x50), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(s, DE + 0x58), ==, 0x99aabbcc);
+    g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x123456789abcdef0ULL);
+    assert_idle(s);
+    qtest_quit(s);
+}
+
+/* Public same-build model format: 192 TLB and 128 logical state words. */
+#define RENDER_WORDS (192 + 128)
+
+static void saved_renderer(const char *path, uint64_t words[RENDER_WORDS])
+{
+    const char name[] = "sgi-crime/renderer";
+    g_autofree char *stream = NULL;
+    gsize length;
+    const char *state;
+
+    g_assert_true(g_file_get_contents(path, &stream, &length, NULL));
+    state = memmem(stream, length, name, sizeof(name) - 1);
+    g_assert_nonnull(state);
+    state += sizeof(name) - 1;
+    g_assert_cmpuint(length - (state - stream), >=, 4 + RENDER_WORDS * 8);
+    g_assert_cmphex(ldl_be_p(state), ==, 1);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        words[i] = ldq_be_p(state + 4 + i * 8);
+    }
+}
+
+static void save_renderer(QTestState *s, const char *path,
+                          uint64_t words[RENDER_WORDS])
+{
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+
+    sgi_migrate_stopped(s, uri);
+    saved_renderer(path, words);
+}
+
+static void test_wide_slot_state(void)
+{
+    const uint64_t patterns[] = {
+        0x1122334455667788ULL, 0x5566778811223344ULL,
+        0x89abcdef00000000ULL, 0x000000009abcdef0ULL,
+    };
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-wide-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "state", NULL);
+
+    for (unsigned pattern = 0; pattern < ARRAY_SIZE(patterns); pattern++) {
+        QTestState *s = start();
+        uint64_t expected[RENDER_WORDS] = { 0 };
+        uint64_t actual[RENDER_WORDS];
+
+        qtest_writeq(s, 0x30000, 0x123456789abcdef0ULL);
+        qtest_writeq(s, RE + 0x1000, 0x8001800280038004ULL);
+        expected[0] = 0x8001800280038004ULL;
+        for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+            const Register *r = &registers[i];
+            uint64_t value = r->width == 8 ?
+                0x123456789abcde00ULL | i : 0xa0000000U | r->offset;
+
+            g_assert_cmpint(memtx_write(s, DE + r->offset, value, r->width),
+                            ==, MEMTX_OK);
+            expected[192 + r->offset / 4] = value;
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(wide_slots); i++) {
+            unsigned offset = wide_slots[i];
+
+            g_assert_cmpint(memtx_writeq(s, DE + offset, patterns[pattern]),
+                            ==, MEMTX_OK);
+            expected[192 + offset / 4] = patterns[pattern] >> 32;
+            for (unsigned r = 0; r < ARRAY_SIZE(registers); r++) {
+                if (registers[r].readable) {
+                    uint64_t value;
+
+                    g_assert_cmpint(memtx_read(s, DE + registers[r].offset,
+                        &value, registers[r].width), ==, MEMTX_OK);
+                    g_assert_cmphex(value, ==,
+                        expected[192 + registers[r].offset / 4]);
+                }
+            }
+            g_assert_cmphex(qtest_readq(s, 0x30000), ==,
+                           0x123456789abcdef0ULL);
+            assert_idle(s);
+        }
+        save_renderer(s, path, actual);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(actual[i], ==, expected[i]);
+        }
+        qtest_quit(s);
+        g_unlink(path);
+    }
+    g_rmdir(directory);
+}
+
+static void test_wide_pairs(void)
+{
+    QTestState *s = start();
+
+    tile(s, 0, 0, 3);
+    for (unsigned wide = 0; wide < 2; wide++) {
+        setup(s, 0, false);
+        qtest_writel(s, DE + 0xd0, 0x6b);
+        for (unsigned y = 0; y < 4; y++) {
+            qtest_memset(s, 0x30000 + y * 512, 0x5a, 8);
+        }
+        if (wide) {
+            g_assert_cmpint(memtx_writeq(s, DE + 0x70,
+                ((uint64_t)xy(2, 1) << 32) | xy(5, 2)), ==, MEMTX_OK);
+        } else {
+            qtest_writel(s, DE + 0x70, xy(2, 1));
+            qtest_writel(s, DE + 0x74, xy(5, 2));
+        }
+        for (unsigned y = 0; y < 4; y++) {
+            g_assert_cmphex(qtest_readb(s, 0x30002 + y * 512), ==, 0x5a);
+        }
+        qtest_writel(s, DE + 0x9f0, 0);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 8; x++) {
+                g_assert_cmphex(qtest_readb(s, 0x30000 + y * 512 + x), ==,
+                    y >= 1 && y <= 2 && x >= 2 && x <= 5 ? 0x6b : 0x5a);
+            }
+        }
+    }
+    /* A native low member changes only that member of the earlier pair. */
+    qtest_writeq(s, DE + 0x70, ((uint64_t)xy(2, 1) << 32) | xy(5, 2));
+    qtest_writel(s, DE + 0x74, xy(3, 1));
+    qtest_memset(s, 0x30200, 0x5a, 8);
+    qtest_writel(s, DE + 0x9f0, 0);
+    g_assert_cmphex(qtest_readl(s, 0x30200), ==, 0x5a5a6b6b);
+    g_assert_cmphex(qtest_readl(s, 0x30204), ==, 0x5a5a5a5a);
+    for (unsigned low_first = 0; low_first < 2; low_first++) {
+        setup(s, 0, true);
+        qtest_writel(s, DE + 0x70, xy(4, 0));
+        qtest_writel(s, DE + 0x74, xy(5, 0));
+        qtest_writel(s, DE + 0xa0, xy(1, 0));
+        qtest_writew(s, 0x30001, 0x1234);
+        qtest_writew(s, 0x30004, 0x5a5a);
+        qtest_writeq(s, DE + 0xa8, 0x0000000200000003ULL);
+        g_assert_cmphex(qtest_readw(s, 0x30004), ==, 0x5a5a);
+        assert_failure(s, DE + 0x9f0, 0, 4);
+        qtest_writel(s, DE + (low_first ? 0xac : 0xa8), 1);
+        assert_failure(s, DE + 0x9f0, 0, 4);
+        qtest_writel(s, DE + (low_first ? 0xa8 : 0xac), 1);
+        qtest_writel(s, DE + 0x9f0, 0);
+        g_assert_cmphex(qtest_readw(s, 0x30004), ==, 0x1234);
+    }
+    qtest_quit(s);
+}
+
+static void test_wide_rejected(void)
+{
+    const unsigned rejected[] = {
+        0x2054, 0x205c, 0x20a0, 0x20a4, 0x2074, 0x20ac,
+        0x2870, 0x2874, 0x28a8, 0x29f0, 0x29f8,
+        0x3000, 0x3070, 0x3078, 0x3800, 0x400,
+    };
+    QTestState *s = start();
+    uint64_t value;
+    uint32_t word;
+
+    tile(s, 0, 0, 3);
+    setup(s, 0x228, false);
+    qtest_writel(s, DE + 0x70, 0);
+    qtest_writel(s, DE + 0x74, 0);
+    qtest_writel(s, DE + 0xa0, xy(1, 0));
+    qtest_writel(s, DE + 0xd0, 0x1234abcd);
+    qtest_writeq(s, 0x30000, 0x5a5a5a5a5a5a5a5aULL);
+    for (unsigned i = 0; i < ARRAY_SIZE(rejected); i++) {
+        assert_failure(s, RE + rejected[i], 0x1122334455667788ULL, 8);
+        g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x5a5a5a5a5a5a5a5aULL);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(wide_slots); i++) {
+        unsigned offset = wide_slots[i];
+
+        g_assert_cmpint(memtx_readq(s, DE + offset, &value), !=, MEMTX_OK);
+        for (unsigned width = 1; width <= 2; width *= 2) {
+            assert_failure(s, DE + offset, 0x1234, width);
+        }
+        for (unsigned delta = 1; delta <= 4; delta *= 2) {
+            assert_failure(s, DE + offset + delta, 0x1122334455667788ULL, 8);
+        }
+    }
+    for (unsigned pair = 0; pair < 2; pair++) {
+        unsigned offset = pair ? 0xa8 : 0x70;
+
+        g_assert_cmpint(memtx_readq(s, DE + offset, &value), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_readl(s, DE + offset, &word), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_readl(s, DE + offset + 4, &word), !=, MEMTX_OK);
+        for (unsigned delta = 1; delta <= 4; delta *= 2) {
+            assert_failure(s, DE + offset + delta, 0x1122334455667788ULL, 8);
+        }
+    }
+    /* Refused source-address pair did not overwrite its admitted first word. */
+    qtest_writel(s, DE + 0x18, 0x2002f8);
+    qtest_writel(s, DE + 0x70, xy(2, 0));
+    qtest_writel(s, DE + 0x74, xy(2, 0));
+    qtest_writel(s, DE, 0x228);
+    qtest_writeq(s, 0x30000, 0x1122334455667788ULL);
+    qtest_writel(s, DE + 0x9f0, 0);
+    g_assert_cmphex(qtest_readl(s, 0x30008), ==, 0x55667788);
+    qtest_quit(s);
+}
+
+static void test_native64_start(void)
+{
+    for (unsigned n = 0; n < 6; n++) {
+        QTestState *s = start();
+        unsigned offset = 0x20 + n * 8;
+        uint64_t value = bounds(1, 2, 4, 5);
+
+        tile(s, 0, 0, 3);
+        setup(s, 0, false);
+        qtest_writel(s, DE + 0x18, 0x2f8 | (n == 5 ? 0x100000 : 0));
+        qtest_writel(s, DE + 0x1b0, 6);
+        qtest_writel(s, DE + 0xd0, 0xcc);
+        if (n < 5) {
+            qtest_writel(s, DE + 0x10, (1U << (9 - n)) | (1U << (4 - n)));
+        }
+        qtest_writel(s, DE + 0x70, xy(0, 0));
+        qtest_writel(s, DE + 0x74, xy(5, 5));
+        qtest_writeq(s, DE + offset, bounds(3, 2, 4, 5));
+        for (unsigned y = 0; y < 6; y++) {
+            qtest_memset(s, 0x30000 + y * 512, 0x5a, 6);
+        }
+        g_assert_cmpint(memtx_writeq(s, DE + 0x800 + offset, value),
+                        ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, DE + offset), ==, value);
+        for (unsigned y = 0; y < 6; y++) {
+            for (unsigned x = 0; x < 6; x++) {
+                g_assert_cmphex(qtest_readb(s, 0x30000 + y * 512 + x), ==,
+                    x >= 1 && x < 4 && y >= 2 && y < 5 ? 0x96 : 0x5a);
+            }
+        }
+        assert_idle(s);
+        assert_failure(s, DE + 0x800 + offset, bounds(5, 2, 4, 6), 8);
+        g_assert_cmphex(qtest_readq(s, DE + offset), ==, value);
+        for (unsigned y = 0; y < 6; y++) {
+            for (unsigned x = 0; x < 6; x++) {
+                g_assert_cmphex(qtest_readb(s, 0x30000 + y * 512 + x), ==,
+                    x >= 1 && x < 4 && y >= 2 && y < 5 ? 0x96 : 0x5a);
+            }
+        }
+        qtest_writel(s, DE + 0x9f0, 0);
+        for (unsigned y = 0; y < 6; y++) {
+            for (unsigned x = 0; x < 6; x++) {
+                g_assert_cmphex(qtest_readb(s, 0x30000 + y * 512 + x),
+                               ==, 0x5a);
+            }
+        }
+        /* Prospective bounds expose a missing tile; failure keeps old clip. */
+        value = bounds(511, 2, 512, 5);
+        qtest_writeq(s, DE + offset, value);
+        qtest_writel(s, DE + 0x70, xy(511, 2));
+        qtest_writel(s, DE + 0x74, xy(512, 4));
+        for (unsigned y = 2; y < 5; y++) {
+            qtest_writeb(s, 0x301ff + y * 512, 0x5a);
+        }
+        assert_failure(s, DE + 0x800 + offset, bounds(511, 2, 513, 5), 8);
+        g_assert_cmphex(qtest_readq(s, DE + offset), ==, value);
+        for (unsigned y = 2; y < 5; y++) {
+            g_assert_cmphex(qtest_readb(s, 0x301ff + y * 512), ==, 0x5a);
+        }
+        qtest_writel(s, DE + 0x9f0, 0);
+        for (unsigned y = 2; y < 5; y++) {
+            g_assert_cmphex(qtest_readb(s, 0x301ff + y * 512), ==, 0x96);
+        }
+        qtest_quit(s);
+    }
+}
+
+static void test_wide_migration(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("crime-wide-move-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "from", NULL);
+    g_autofree char *next = g_build_filename(directory, "to", NULL);
+    g_autofree char *zero = g_build_filename(directory, "reset", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat %s", quoted);
+    QTestState *from = start();
+    QTestState *to = start_options("-incoming defer");
+    QTestState *reset;
+    uint64_t expected[RENDER_WORDS];
+    uint64_t actual[RENDER_WORDS];
+
+    tile(from, 0, 0, 3);
+    setup(from, 0x228, false);
+    qtest_writel(from, DE + 0xd8, 0x99aabbcc);
+    qtest_writeq(from, DE + 0xd0, 0x1234abcddecafbadULL);
+    qtest_writeq(from, DE + 0x60, 0x03020000cafefeedULL);
+    qtest_writeq(from, DE + 0x70, ((uint64_t)xy(1, 1) << 32) | xy(2, 2));
+    qtest_writeq(from, DE + 0xa8, 0x2233444455667788ULL);
+    qtest_writeq(from, DE + 0x50, 0xdeadbeef11223344ULL);
+    qtest_writeq(from, DE + 0x58, 0x000000009abcdef0ULL);
+    for (unsigned y = 0; y < 4; y++) {
+        qtest_memset(from, 0x30000 + y * 512, 0x5a, 16);
+    }
+    save_renderer(from, path, expected);
+    g_assert_cmphex(expected[192 + 0x70 / 4], ==, xy(1, 1));
+    g_assert_cmphex(expected[192 + 0x74 / 4], ==, xy(2, 2));
+    g_assert_cmphex(expected[192 + 0xa8 / 4], ==, 0x22334444);
+    g_assert_cmphex(expected[192 + 0xac / 4], ==, 0x55667788);
+    g_assert_cmphex(expected[192 + 0xd0 / 4], ==, 0x1234abcd);
+    g_assert_cmphex(expected[192 + 0x60 / 4], ==, 0x03020000);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readl(to, DE + 0x50), ==, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(to, DE + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readl(to, DE + 0xd8), ==, 0x99aabbcc);
+    save_renderer(to, next, actual);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(actual[i], ==, expected[i]);
+    }
+    qtest_writel(to, DE + 0x50, 0);
+    qtest_writel(to, DE + 0x9f0, 0);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            g_assert_cmphex(qtest_readl(to, 0x30000 + y * 512 + x * 4), ==,
+                x >= 1 && x <= 2 && y >= 1 && y <= 2 ?
+                0x1234abcd : 0x5a5a5a5a);
+        }
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    reset = start();
+    for (unsigned i = 0; i < ARRAY_SIZE(wide_slots); i++) {
+        qtest_writeq(reset, DE + wide_slots[i], 0x1122334455667788ULL);
+    }
+    qtest_writeq(reset, DE + 0x70, 0x135724689abcdef0ULL);
+    qtest_writeq(reset, DE + 0xa8, 0x1234567887654321ULL);
+    qtest_system_reset(reset);
+    save_renderer(reset, zero, actual);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(actual[i], ==, 0);
+    }
+    qtest_quit(reset);
+    g_unlink(path);
+    g_unlink(next);
+    g_unlink(zero);
+    g_rmdir(directory);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1353,5 +1730,11 @@ int main(int argc, char **argv)
     if (qtest_has_machine("o2-test")) {
         qtest_add_func("/sgi/crime/render/rom-canary", test_rom_canary);
     }
+    qtest_add_func("/sgi/crime/render/wide-slot", test_wide_slot);
+    qtest_add_func("/sgi/crime/render/wide-slot-state", test_wide_slot_state);
+    qtest_add_func("/sgi/crime/render/wide-pairs", test_wide_pairs);
+    qtest_add_func("/sgi/crime/render/wide-rejected", test_wide_rejected);
+    qtest_add_func("/sgi/crime/render/native64-start", test_native64_start);
+    qtest_add_func("/sgi/crime/render/wide-migration", test_wide_migration);
     return g_test_run();
 }
