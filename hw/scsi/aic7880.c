@@ -279,15 +279,8 @@ static bool aic7880_manual_busy(AIC7880State *s)
 
 static bool aic7880_host_fifo_accessible(AIC7880State *s)
 {
-    if ((s->regs[REG_DFCNTRL] & 0x30) || s->peer_nexus_disconnected ||
-        aic7880_manual_busy(s)) {
-        return false;
-    }
-    if (!s->selected && !s->req) {
-        return true;
-    }
-    return s->selected && s->req &&
-           (s->phase == AIC_PHASE_COMMAND || s->phase == AIC_PHASE_DATA);
+    return !(s->regs[REG_DFCNTRL] & 0x30) &&
+           !s->peer_nexus_disconnected && !aic7880_manual_busy(s);
 }
 
 static void aic7880_manual_clear(AIC7880State *s)
@@ -549,7 +542,7 @@ static void aic7880_host_dma(AIC7880State *s)
 
     aic7880_fifo_status(s);
     if (s->phase == AIC_PHASE_COMMAND && s->selected && !s->req &&
-        !from_memory && count && (control & 0x38)) {
+        !from_memory && count && (control & 0x30)) {
         aic7880_error(s, "COMMAND DMA direction is unsupported");
         return;
     }
@@ -571,7 +564,8 @@ static void aic7880_host_dma(AIC7880State *s)
         (from_memory || s->phase != AIC_PHASE_STATUS)) {
         return;
     }
-    if ((s->selected && !s->req && s->phase != AIC_PHASE_COMMAND &&
+    if ((s->selected && !s->req && !aic7880_host_fifo_accessible(s) &&
+         s->phase != AIC_PHASE_COMMAND &&
          (from_memory || s->phase != AIC_PHASE_STATUS)) ||
         count > UINT32_MAX - addr) {
         aic7880_error(s, "unsupported host-only DMA transfer");
