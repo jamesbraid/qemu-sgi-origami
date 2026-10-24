@@ -666,7 +666,7 @@ static void test_migration_invalid_state(gconstpointer data)
         case 4:
         case 5: {
             char *first = state - 4 - (sizeof(subsection) - 1) - 2;
-            size_t length = 2 + sizeof(subsection) - 1 + 4 + 314;
+            size_t length = 2 + sizeof(subsection) - 1 + 4 + 346;
 
             memmove(first, first + length, size - (first - stream) - length);
             size -= length;
@@ -769,6 +769,516 @@ static void test_translated_code(void)
     qtest_quit(s);
 }
 
+#define CLIP_TLB 0x150016e0ULL
+#define CLIP_MODE (6U << 2)
+#define CLIP_STATE_BYTES 346
+#define CLIP_STATE_OFFSET 314
+
+static void clip_entries(uint16_t entries[16])
+{
+    for (unsigned i = 0; i < 16; i++) {
+        entries[i] = 0x8000 | (3 + i * 6);
+    }
+}
+
+static void clip_program(QTestState *s, const uint16_t entries[16])
+{
+    for (unsigned word = 0; word < 4; word++) {
+        uint64_t value = 0;
+
+        for (unsigned lane = 0; lane < 4; lane++) {
+            value = (value << 16) | entries[word * 4 + lane];
+        }
+        g_assert_cmpint(memtx_writeq(s, CLIP_TLB + word * 8, value), ==,
+                        MEMTX_OK);
+    }
+}
+
+static void clip_setup(QTestState *s, unsigned x0, unsigned y0,
+                        unsigned x1, unsigned y1, uint32_t fill)
+{
+    qtest_writel(s, MTE, CLIP_MODE | (7U << 5));
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x18, fill);
+    qtest_writel(s, MTE + 0x20, UINT32_MAX);
+    qtest_writel(s, MTE + 0x28, 0x87654321);
+    qtest_writel(s, MTE + 0x30, (x0 << 16) | y0);
+    qtest_writel(s, MTE + 0x38, (x1 << 16) | y1);
+    qtest_writel(s, MTE + 0x40, UINT32_MAX);
+    qtest_writel(s, MTE + 0x48, 1);
+}
+
+static void clip_save(QTestState *s, const char *path,
+                       uint8_t bytes[CLIP_STATE_BYTES])
+{
+    const char section[] = "sgi-crime/linear-transfer";
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+    g_autofree char *stream = NULL;
+    gsize length;
+    const char *state;
+
+    sgi_migrate_stopped(s, uri);
+    g_assert_true(g_file_get_contents(path, &stream, &length, NULL));
+    state = memmem(stream, length, section, sizeof(section) - 1);
+    g_assert_nonnull(state);
+    state += sizeof(section) - 1;
+    g_assert_cmpuint(length - (state - stream), >=, 4 + CLIP_STATE_BYTES);
+    g_assert_cmphex(ldl_be_p(state), ==, 1);
+    memcpy(bytes, state + 4, CLIP_STATE_BYTES);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+}
+
+static void test_clip_programming(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-clip-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    const uint64_t words[] = {
+        0, UINT64_MAX, 0x8123834585678789ULL, 0x13579bdf02468aceULL,
+    };
+    uint8_t state[CLIP_STATE_BYTES], previous[CLIP_STATE_BYTES];
+    uint64_t expected[4] = { 0 };
+    QTestState *s = start();
+
+    clip_save(s, path, previous);
+    qtest_memset(s, 0x30000, 0x5a, 64);
+    for (unsigned pass = 0; pass < ARRAY_SIZE(words); pass++) {
+        for (unsigned word = 0; word < 4; word++) {
+            g_assert_cmpint(memtx_writeq(s, CLIP_TLB + word * 8, words[pass]),
+                            ==, MEMTX_OK);
+            expected[word] = words[pass];
+            clip_save(s, path, state);
+            g_assert_cmpmem(state, CLIP_STATE_OFFSET,
+                            previous, CLIP_STATE_OFFSET);
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmphex(ldq_be_p(state + CLIP_STATE_OFFSET + i * 8),
+                                ==, expected[i]);
+            }
+            assert_bytes(s, 0x30000, 64, 0x5a);
+            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            memcpy(previous, state, sizeof(state));
+        }
+    }
+    qtest_system_reset(s);
+    clip_save(s, path, state);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(ldq_be_p(state + CLIP_STATE_OFFSET + i * 8), ==, 0);
+    }
+    assert_bytes(s, 0x30000, 64, 0x5a);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_clip_start_forms(void)
+{
+    const unsigned offsets[] = { 0, 8, 0x18, 0x20, 0x28, 0x30, 0x38,
+                                 0x40, 0x48, 0x70 };
+    uint16_t entries[16];
+
+    clip_entries(entries);
+    for (unsigned command = 0; command < ARRAY_SIZE(offsets); command++) {
+        QTestState *s = start();
+        unsigned offset = offsets[command];
+        uint32_t value;
+        uint64_t a = 0x30000 + 127 * 512, b = 0x90000;
+
+        clip_program(s, entries);
+        /* Framebuffer C points elsewhere; it does not select CLIP storage. */
+        qtest_writeq(s, 0x15001400, 0x800f000000000000ULL);
+        clip_setup(s, 255, 127, 256, 128, 0x80808080);
+        value = offset == 0x70 ? 0x13579bdf :
+                offset == 0x30 ? (255U << 16) | 127 :
+                offset == 0x38 ? (256U << 16) | 128 :
+                                qtest_readl(s, MTE + offset);
+        if (offset != 0x70) {
+            qtest_writel(s, MTE + offset, offset == 0x18 ? 0x55 : 0);
+        }
+        qtest_memset(s, a + 254, 0x5a, 4);
+        qtest_memset(s, b + 254, 0x6c, 4);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x800 + offset, value), ==,
+                        MEMTX_OK);
+        assert_bytes(s, a + 255, 2, 0x80);
+        assert_bytes(s, b + 255, 2, 0x80);
+        g_assert_cmphex(qtest_readb(s, a + 254), ==, 0x5a);
+        g_assert_cmphex(qtest_readb(s, a + 257), ==, 0x5a);
+        g_assert_cmphex(qtest_readb(s, b + 254), ==, 0x6c);
+        g_assert_cmphex(qtest_readb(s, b + 257), ==, 0x6c);
+        g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+        qtest_quit(s);
+    }
+}
+
+static void test_clip_bitmap(void)
+{
+    uint16_t entries[16];
+    uint8_t page[65536];
+    const uint32_t fills[] = { 0, 0x80808080, 0x7f7f7f7f };
+    QTestState *s = start();
+
+    clip_entries(entries);
+    clip_program(s, entries);
+    for (unsigned pass = 0; pass < ARRAY_SIZE(fills); pass++) {
+        for (unsigned entry = 0; entry < 8; entry++) {
+            qtest_memset(s, (entries[entry] & 0x7fff) * 65536ULL,
+                         0xa5, sizeof(page));
+        }
+        clip_setup(s, 256, 0, 511, 1023, fills[pass]);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+        for (unsigned entry = 0; entry < 8; entry++) {
+            qtest_memread(s, (entries[entry] & 0x7fff) * 65536ULL,
+                         page, sizeof(page));
+            for (unsigned i = 0; i < sizeof(page); i++) {
+                g_assert_cmphex(page[i], ==,
+                                i % 512 >= 256 ? fills[pass] & 0xff : 0xa5);
+            }
+        }
+    }
+    uint64_t last = (entries[15] & 0x7fff) * 65536ULL + 65535;
+
+    qtest_memset(s, last - 1, 0x5a, 3);
+    clip_setup(s, 511, 2047, 511, 2047, 0x123456b7);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(s, last - 1), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(s, last), ==, 0xb7);
+    g_assert_cmphex(qtest_readb(s, last + 1), ==, 0x5a);
+    /* Sharing a page with framebuffer C is ordinary coherent RAM sharing. */
+    qtest_writeq(s, 0x15001400, (uint64_t)entries[0] << 48);
+    qtest_writel(s, MTE, 2U << 2);
+    qtest_writel(s, MTE + 0x30, 255U << 16);
+    qtest_writel(s, MTE + 0x38, 255U << 16);
+    qtest_writel(s, MTE + 0x18, 0x3c);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(s, 0x300ff), ==, 0x3c);
+    qtest_quit(s);
+}
+
+static void clip_stopped(QTestState *s)
+{
+    g_autoptr(QDict) status =
+        qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "internal-error");
+}
+
+static void test_clip_aliases(void)
+{
+    for (unsigned alias = 0; alias < 2; alias++) {
+        for (unsigned disjoint = 0; disjoint < 2; disjoint++) {
+            uint16_t entries[16];
+            uint8_t page[65536];
+            QTestState *s = start();
+
+            clip_entries(entries);
+            entries[1] = entries[0] | (alias ? 0x4000 : 0);
+            clip_program(s, entries);
+            qtest_memset(s, 0x30000, 0x5a, sizeof(page));
+            clip_setup(s, 7, disjoint ? 127 : 0, 9, 128, 0x80);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==,
+                            disjoint ? MEMTX_OK : MEMTX_ERROR);
+            if (!disjoint) {
+                clip_stopped(s);
+            }
+            qtest_memread(s, 0x30000, page, sizeof(page));
+            for (unsigned i = 0; i < sizeof(page); i++) {
+                bool changed = disjoint && i % 512 >= 7 && i % 512 <= 9 &&
+                               (i / 512 == 0 || i / 512 == 127);
+
+                g_assert_cmphex(page[i], ==, changed ? 0x80 : 0x5a);
+            }
+            qtest_quit(s);
+        }
+    }
+}
+
+static void test_clip_failure(void)
+{
+    const struct { unsigned index; uint32_t value; } faults[] = {
+        { 0, CLIP_MODE | (1U << 11) }, { 0, CLIP_MODE | (1U << 10) },
+        { 0, CLIP_MODE | (1U << 8) }, { 0, CLIP_MODE | (2U << 8) },
+        { 1, 0 }, { 1, 0xfffffffe }, { 9, 0 }, { 9, UINT32_MAX },
+        { 6, (512U << 16) | 127 }, { 7, (512U << 16) | 128 },
+        { 6, (7U << 16) | 2048 }, { 7, (9U << 16) | 2048 },
+        { 6, (10U << 16) | 127 }, { 6, (7U << 16) | 129 },
+        { 0, 7U << 2 }, { 0, (1U << 11) | (6U << 5) | (4U << 2) },
+    };
+    const uint32_t good[10] = {
+        CLIP_MODE | (7U << 5), UINT32_MAX, 0, 0x55, UINT32_MAX, 0x87654321,
+        (7U << 16) | 127, (9U << 16) | 128, UINT32_MAX, 1,
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-clip-failure-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned fault = 0; fault < ARRAY_SIZE(faults) + 4; fault++) {
+        uint16_t entries[16];
+        uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES], page[65536];
+        QTestState *s = start_options(
+            "-device sgi-crime-test-fixture,id=inject,"
+            "crime=/machine/peripheral/crime");
+
+        clip_entries(entries);
+        clip_setup(s, 7, 127, 9, 128, 0x55);
+        if (fault < ARRAY_SIZE(faults)) {
+            qtest_writel(s, MTE + faults[fault].index * 8,
+                         faults[fault].value);
+        } else {
+            switch (fault - ARRAY_SIZE(faults)) {
+            case 0:
+                entries[0] = 0;
+                break;
+            case 1:
+                entries[1] = 0;
+                break;
+            case 2:
+                entries[1] = 0x8400;
+                break;
+            case 3:
+                entries[1] = 0x9400;
+                break;
+            }
+        }
+        clip_program(s, entries);
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':'memory-error-status','value':234881024}}");
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':'memory-error-address','value':74565}}");
+        qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+        qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+        qtest_writeq(s, BASE + 0x18, 1U << 4);
+        qtest_memset(s, 0x30000, 0x5a, sizeof(page));
+        qtest_memset(s, 0x90000, 0x6c, sizeof(page));
+        clip_save(s, path, before);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_assert_cmpint(memtx_writel(s, MTE + 0x818, 0x99), ==, MEMTX_ERROR);
+        clip_stopped(s);
+        g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 234881024);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 74565);
+        g_assert_cmpint(qtest_get_irq(s, 0), ==, 1);
+        assert_bytes(s, 0x30000, sizeof(page), 0x5a);
+        assert_bytes(s, 0x90000, sizeof(page), 0x6c);
+        clip_save(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        if (fault < ARRAY_SIZE(faults)) {
+            qtest_writel(s, MTE + faults[fault].index * 8,
+                         good[faults[fault].index]);
+        }
+        clip_entries(entries);
+        clip_program(s, entries);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+        for (unsigned entry = 0; entry < 2; entry++) {
+            qtest_memread(s, entry ? 0x90000 : 0x30000, page, sizeof(page));
+            for (unsigned i = 0; i < sizeof(page); i++) {
+                bool changed = i % 512 >= 7 && i % 512 <= 9 &&
+                               i / 512 == (entry ? 0 : 127);
+
+                g_assert_cmphex(page[i], ==,
+                                changed ? 0x55 : entry ? 0x6c : 0x5a);
+            }
+        }
+        qtest_quit(s);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_clip_accesses(void)
+{
+    const struct {
+        int offset;
+        unsigned width;
+        bool write, hard;
+    } accesses[] = {
+        { 0, 8, false, true }, { 0, 4, false, true },
+        { 0, 1, true, true }, { 0, 2, true, true }, { 0, 4, true, true },
+        { 1, 8, true, true }, { 4, 8, true, true }, { -4, 8, true, true },
+        { 24, 4, true, true }, { 25, 8, true, true },
+        { 0x800, 8, true, true }, { 0x800, 8, false, true },
+        { -8, 8, true, false }, { -8, 8, false, false },
+    };
+    uint16_t entries[16];
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-clip-access-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start();
+
+    clip_entries(entries);
+    clip_program(s, entries);
+    clip_setup(s, 7, 0, 9, 0, 0x55);
+    clip_save(s, path, before);
+    for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
+        uint64_t value;
+        uint64_t address = CLIP_TLB + accesses[i].offset;
+        MemTxResult result;
+
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        result = accesses[i].write ?
+            memtx_write(s, address, 0x1122334455667788ULL, accesses[i].width) :
+            memtx_read(s, address, &value, accesses[i].width);
+        g_assert_cmpint(result, ==, MEMTX_ERROR);
+        if (accesses[i].hard) {
+            clip_stopped(s);
+        }
+        clip_save(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            const char *previous = selected_profile;
+
+            if (legacy && functional) {
+                continue;
+            }
+            selected_profile = legacy ? "legacy-software" : "1.5";
+            s = start_profile(functional, "");
+            selected_profile = previous;
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmpint(memtx_writeq(s, CLIP_TLB + i * 8,
+                    0x8123834585678789ULL), ==, MEMTX_ERROR);
+            }
+            clip_save(s, path, after);
+            for (unsigned i = CLIP_STATE_OFFSET; i < CLIP_STATE_BYTES; i++) {
+                g_assert_cmpuint(after[i], ==, 0);
+            }
+            qtest_quit(s);
+        }
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_clip_migration(void)
+{
+    uint16_t entries[16];
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-clip-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+    QTestState *s = start(), *to = start_options("-incoming defer");
+
+    clip_entries(entries);
+    clip_program(s, entries);
+    clip_setup(s, 255, 127, 256, 128, 0x80808080);
+    qtest_memset(s, 0x30000 + 127 * 512 + 254, 0x5a, 4);
+    qtest_memset(s, 0x90000 + 254, 0x6c, 4);
+    clip_save(s, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+    sgi_wait_migration(to, "completed");
+    clip_save(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    assert_bytes(to, 0x30000 + 127 * 512 + 254, 4, 0x5a);
+    assert_bytes(to, 0x90000 + 254, 4, 0x6c);
+    g_assert_cmpint(memtx_writel(to, MTE + 0x870, 0), ==, MEMTX_OK);
+    assert_bytes(to, 0x30000 + 127 * 512 + 255, 2, 0x80);
+    assert_bytes(to, 0x90000 + 255, 2, 0x80);
+    qtest_system_reset(to);
+    clip_save(to, path, after);
+    for (unsigned i = CLIP_STATE_OFFSET; i < CLIP_STATE_BYTES; i++) {
+        g_assert_cmpuint(after[i], ==, 0);
+    }
+    assert_bytes(to, 0x30000 + 127 * 512 + 255, 2, 0x80);
+    assert_bytes(to, 0x90000 + 255, 2, 0x80);
+    qtest_quit(s);
+    qtest_quit(to);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_clip_invalid_stream(void)
+{
+    const char section[] = "sgi-crime/linear-transfer";
+    g_autofree char *dir = g_dir_make_tmp("crime-clip-invalid-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+    for (unsigned fault = 0; fault < 5; fault++) {
+        const char *previous = selected_profile;
+        QTestState *from, *to;
+        uint16_t entries[16], old[16];
+        uint8_t snapshot[CLIP_STATE_BYTES];
+        g_autofree char *stream = NULL;
+        gsize length;
+        char *state;
+
+        selected_profile = fault == 3 ? "1.5" : "legacy-software";
+        from = start_profile(fault != 4, "");
+        to = start_profile(fault != 4, "-incoming defer");
+        selected_profile = previous;
+        clip_entries(entries);
+        clip_entries(old);
+        for (unsigned i = 0; i < 16; i++) {
+            old[i] += 2;
+        }
+        if (fault < 3) {
+            clip_program(from, entries);
+            clip_setup(from, 1, 1, 2, 2, 0x99);
+            clip_program(to, old);
+            clip_setup(to, 7, 0, 9, 0, 0x55);
+        }
+        qtest_writeq(to, BASE + 0x18, 1U << 4);
+        clip_save(from, path, snapshot);
+        g_assert_true(g_file_get_contents(path, &stream, &length, NULL));
+        state = memmem(stream, length, section, sizeof(section) - 1);
+        g_assert_nonnull(state);
+        state += sizeof(section) - 1 + 4;
+        switch (fault) {
+        case 0:
+            memmove(state + CLIP_STATE_OFFSET, state + CLIP_STATE_BYTES,
+                    length - (state + CLIP_STATE_BYTES - stream));
+            length -= CLIP_STATE_BYTES - CLIP_STATE_OFFSET;
+            break;
+        case 1:
+            length = state - stream + CLIP_STATE_OFFSET + 17;
+            break;
+        case 2:
+            state[0] = 2;
+            break;
+        case 3:
+        case 4:
+            stq_be_p(state + CLIP_STATE_OFFSET, 0x8123834585678789ULL);
+            break;
+        }
+        g_assert_true(g_file_set_contents(path, stream, length, NULL));
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming',"
+            "'arguments':{'uri':%s,'exit-on-error':false}}", incoming);
+        wait_migration_failed(to);
+        g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, 1U << 4);
+        if (fault < 3) {
+            /* Incoming RAM may arrive before device validation rejects load. */
+            g_assert_cmphex(qtest_readl(to, MTE), ==, CLIP_MODE | (7U << 5));
+            g_assert_cmphex(qtest_readl(to, MTE + 0x18), ==, 0x55);
+            for (unsigned i = 0; i < 16; i++) {
+                uint64_t old_address = (old[i] & 0x7fff) * 65536ULL + 7;
+                uint64_t new_address = (entries[i] & 0x7fff) * 65536ULL + 7;
+
+                qtest_memset(to, old_address, 0x5a, 3);
+                qtest_memset(to, new_address, 0x6c, 3);
+                qtest_writel(to, MTE + 0x30, (7U << 16) | (i * 128));
+                qtest_writel(to, MTE + 0x38, (9U << 16) | (i * 128));
+                g_assert_cmpint(memtx_writel(to, MTE + 0x870, 0), ==,
+                                MEMTX_OK);
+                assert_bytes(to, old_address, 3, 0x55);
+                assert_bytes(to, new_address, 3, 0x6c);
+            }
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 typedef struct TransferCase {
     const char *name;
     GTestFunc function;
@@ -825,6 +1335,17 @@ int main(int argc, char **argv)
         { "migration-absent-disabled-section", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(5), NULL },
     };
+    static const TransferCase clip_tests[] = {
+        { "programming", test_clip_programming, NULL, NULL, "legacy-software" },
+        { "start-forms", test_clip_start_forms, NULL, NULL, "legacy-software" },
+        { "bitmap", test_clip_bitmap, NULL, NULL, "legacy-software" },
+        { "aliases", test_clip_aliases, NULL, NULL, "legacy-software" },
+        { "failure", test_clip_failure, NULL, NULL, "legacy-software" },
+        { "accesses", test_clip_accesses, NULL, NULL, "legacy-software" },
+        { "migration", test_clip_migration, NULL, NULL, "legacy-software" },
+        { "invalid-stream", test_clip_invalid_stream, NULL, NULL,
+          "legacy-software" },
+    };
     const char *profiles[] = { "1.5", "legacy-software" };
 
     g_test_init(&argc, &argv, NULL);
@@ -838,6 +1359,12 @@ int main(int argc, char **argv)
             test->profile = profiles[profile];
             qtest_add_data_func_full(name, test, run_transfer_case, g_free);
         }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(clip_tests); i++) {
+        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/clip/%s",
+                                               clip_tests[i].name);
+
+        qtest_add_data_func(name, &clip_tests[i], run_transfer_case);
     }
     return g_test_run();
 }
