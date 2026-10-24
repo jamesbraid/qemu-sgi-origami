@@ -139,7 +139,7 @@ static void test_ioc3s_enumerate(const void *data)
 
 /*
  * Devices 0-2 carry Ethernet and both serial ports; device 3 Ethernet only.
- * No chip carries a clock, a keyboard controller or a parallel port.
+ * No chip has a clock, external PS/2 devices or a parallel port.
  */
 static void test_populations(const void *data)
 {
@@ -150,7 +150,10 @@ static void test_populations(const void *data)
     for (d = 0; d < MENET_IOC3S; d++) {
         g_autofree char *path = g_strdup_printf("%s/ioc3-%u", c->board_path,
                                                 d);
+        g_autofree char *kbc_path = g_strdup_printf("%s/kbc", path);
+        g_autoptr(QDict) response = NULL;
         bool superio = d < 3;
+        uint64_t base = IOC3_WINDOW(c, d);
 
         g_assert_true(qom_has_child(qts, path, "eth"));
         g_assert_true(qom_has_child(qts, path, "onewire-part"));
@@ -158,7 +161,24 @@ static void test_populations(const void *data)
         g_assert_cmpint(qom_has_child(qts, path, "serial[1]"), ==, superio);
         g_assert_false(qom_has_child(qts, path, "rtc"));
         g_assert_false(qom_has_child(qts, path, "ds1685"));
-        g_assert_false(qom_has_child(qts, path, "kbc"));
+        g_assert_true(qom_has_child(qts, path, "kbc"));
+        g_assert_false(qom_has_child(qts, kbc_path, "kbd"));
+        g_assert_false(qom_has_child(qts, kbc_path, "mouse"));
+        response = qtest_qmp(qts,
+            "{'execute':'qom-set', 'arguments':{'path':%s,"
+            " 'property':'activate-keyboard', 'value':true}}", kbc_path);
+        g_assert_true(qdict_haskey(response, "error"));
+
+        /* Chip registers stay decoded without devices on the board. */
+        ioc3_map(qts, c, d);
+        qtest_writel(qts, base + 0x09c, 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, base + 0x09c), ==, 0x00fcffff);
+        qtest_writel(qts, base + 0x0a8, 0xff);
+        qtest_writel(qts, base + 0x0ac, 0xff);
+        g_assert_cmphex(qtest_readl(qts, base + 0x0a0), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, base + 0x0a4), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, INT_STATUS(c, d)) & (1u << 22),
+                        ==, 0);
         g_assert_false(qom_has_child(qts, path, "parallel"));
         g_assert_false(qom_has_child(qts, path, "onewire-board-part"));
     }
