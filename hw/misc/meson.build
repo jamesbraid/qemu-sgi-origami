@@ -262,3 +262,5 @@ system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_SGI_BIC_BOARD_INTERFACE',
 
 system_ss.add(when: ['CONFIG_SGI_KONA', 'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/kona-read-fixture.c'))
+
+system_ss.add(when: 'CONFIG_TSB12LV22', if_true: files('tsb12lv22.c'))

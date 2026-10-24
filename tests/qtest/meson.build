@@ -425,6 +425,7 @@ sgi_board_qtests = \
 # memory a card transfers into, under -M none.  Each card carries its own
 # device guard; drop the lot if the head's two devices are not configured.
 sgi_bridge_card_qtests = \
+  (config_all_devices.has_key('CONFIG_TSB12LV22') ? ['tsb12lv22-test'] : []) + \
   (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
