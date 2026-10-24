@@ -1177,23 +1177,15 @@ static bool sgi_machine_ip53_experiment_policy(
     bool onyx4_host = g_strcmp0(smc->product, "onyx4-host") == 0;
     bool origin350_topology = g_strcmp0(t->name, "origin350") == 0;
     bool onyx350_topology = g_strcmp0(t->name, "onyx350-compat") == 0;
-    const SGIModelPciHostBridgeList *host_entry;
-    bool tezro_runtime_profile = g_strcmp0(
-        t->name, "tezro-deskside-700mhz-4mib-serial-trial") == 0;
+    bool tezro_runtime_profile =
+        g_strcmp0(t->name,
+                  "tezro-deskside-700mhz-4mib-serial-trial") == 0 ||
+        g_strcmp0(t->name, "tezro-tower-one") == 0 ||
+        g_strcmp0(t->name, "tezro-tower-multi") == 0 ||
+        g_strcmp0(t->name, "tezro-rack-base") == 0;
     bool onyx4_host_runtime_profile = g_strcmp0(
         t->name, "onyx4-host-serial-compat") == 0;
 
-    for (host_entry = t->pci_host_bridges; host_entry;
-         host_entry = host_entry->next) {
-        const SGIModelPciHostBridge *host = host_entry->value;
-
-        if (host->has_compatibility_profile &&
-            host->compatibility_profile ==
-                SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL) {
-            tezro_runtime_profile = true;
-            break;
-        }
-    }
     bool registered_ip53_product =
         (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
         (tezro && tezro_runtime_profile) ||
