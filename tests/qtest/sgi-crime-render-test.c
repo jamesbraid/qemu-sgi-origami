@@ -1149,6 +1149,10 @@ static void test_unsupported(void)
         assert_stopped(s);
     }
     for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+        unsigned offset = registers[i].offset;
+        bool paired = offset == 0x70 || offset == 0xa8 || offset == 0xc0;
+        unsigned wrong_width = registers[i].width == 8 ? 4 : paired ? 2 : 8;
+
         start_before_failure(s);
         g_assert_cmpint(memtx_read(s, DE + 0x800 + registers[i].offset,
                                   &value, registers[i].width), !=, MEMTX_OK);
@@ -1156,7 +1160,7 @@ static void test_unsupported(void)
         assert_failure(s, DE + 0x800 + registers[i].offset + 1, 0,
                        registers[i].width);
         assert_failure(s, DE + 0x800 + registers[i].offset, 0,
-                       registers[i].width == 8 ? 4 : 8);
+                       wrong_width);
     }
     for (unsigned engine = 0; engine < 2; engine++) {
         uint64_t null = engine ? MTE + 0x70 : DE + 0x1f0;
@@ -1529,7 +1533,7 @@ static void test_wide_rejected(void)
 {
     const unsigned rejected[] = {
         0x2054, 0x205c, 0x20a0, 0x20a4, 0x2074, 0x20ac,
-        0x2870, 0x2874, 0x28a8, 0x29f0, 0x29f8,
+        0x2874, 0x28ac, 0x28c4, 0x29f0, 0x29f8,
         0x3000, 0x3070, 0x3078, 0x3800, 0x400,
     };
     QTestState *s = start();
@@ -2241,7 +2245,8 @@ static void test_stipple_state(void)
     g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x123456789abcdef0ULL);
     for (unsigned offset = 0xc0; offset <= 0xc4; offset += 4) {
         g_assert_cmpint(memtx_readq(s, DE + offset, &value), !=, MEMTX_OK);
-        assert_failure(s, DE + 0x800 + offset, 0x1122334455667788ULL, 8);
+        assert_failure(s, DE + 0x800 + offset, 0x1122334455667788ULL,
+                       offset == 0xc0 ? 2 : 8);
         for (unsigned delta = 1; delta <= 4; delta *= 2) {
             if (offset + delta == 0xc8) {
                 g_assert_cmpint(memtx_writeq(s, DE + 0xc8,
@@ -3547,9 +3552,342 @@ static void test_validity_profiles(void)
     }
 }
 
+/* Restore a paused qtest source after observing its migration state. */
+static void save_paired_renderer(QTestState *s, const char *path,
+                                 uint64_t words[RENDER_WORDS])
+{
+    save_renderer(s, path, words);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+}
+
+static const unsigned paired_start_offsets[] = { 0x70, 0xa8, 0xc0 };
+
+static void test_paired_start_shapes(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-paired-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *control_path = g_build_filename(dir, "control", NULL);
+
+    for (unsigned pair = 0; pair < ARRAY_SIZE(paired_start_offsets); pair++) {
+        unsigned offset = paired_start_offsets[pair];
+
+        for (unsigned depth = 0; depth < 3; depth++) {
+            for (unsigned kind = 0; kind < 3; kind++) {
+                Shape c = shape_default();
+                QTestState *s = start(), *control = start();
+                uint64_t value, words[RENDER_WORDS], expected[RENDER_WORDS];
+                g_autofree uint32_t *pixels = NULL;
+
+                c.width = 12;
+                c.height = 8;
+                c.bytes = 1U << depth;
+                c.x0 = 2;
+                c.y0 = 1;
+                c.x1 = 8;
+                c.y1 = 5;
+                c.primitive = kind == 2 ? 0x03020000 : kind << 24;
+                c.stipple_mode = 0x01050000;
+                c.pattern = 0xa53c96e1;
+                c.draw |= kind == 1 ? 0xa0000 : kind == 2 ? 0x60000 : 0;
+                c.plane = 0x5ac33ca5;
+                c.draw |= 1U << 20;
+                c.scissor = bounds(1, 1, 10, 7);
+                value = pair == 0 ? ((uint64_t)xy(c.x0, c.y0) << 32) |
+                                     xy(c.x1, c.y1) :
+                        pair == 1 ? 0x1357246889abcdefULL :
+                                    ((uint64_t)c.stipple_mode << 32) |
+                                    c.pattern;
+                pixels = shape_reference(&c);
+                for (unsigned peer = 0; peer < 2; peer++) {
+                    QTestState *q = peer ? control : s;
+
+                    map_region(q, 0, c.bytes, 0, 0, 11, 7);
+                    shape_memory(q, &c, NULL);
+                    shape_stage(q, &c);
+                    qtest_writel(q, DE + offset, pair == 0 ? xy(1, 2) : 2);
+                    qtest_writel(q, DE + offset + 4,
+                                 pair == 0 ? xy(4, 3) : 3);
+                }
+                g_assert_cmpint(memtx_writeq(s, DE + 0x800 + offset, value),
+                                ==, MEMTX_OK);
+                qtest_writeq(control, DE + offset, value);
+                qtest_writel(control, DE + 0x9f0, 0);
+                shape_memory(s, &c, pixels);
+                shape_memory(control, &c, pixels);
+                assert_idle(s);
+                qtest_writel(s, DE + 0x1f0, 0);
+                qtest_writel(s, DE + 0x1f8, 0);
+                shape_memory(s, &c, pixels);
+                save_paired_renderer(s, path, words);
+                save_paired_renderer(control, control_path, expected);
+                g_assert_cmpmem(words, sizeof(words),
+                                expected, sizeof(expected));
+                g_assert_cmphex(words[192 + offset / 4], ==, value >> 32);
+                g_assert_cmphex(words[192 + offset / 4 + 1], ==,
+                                (uint32_t)value);
+                qtest_quit(s);
+                qtest_quit(control);
+            }
+        }
+    }
+    g_unlink(path);
+    g_unlink(control_path);
+    g_rmdir(dir);
+}
+
+static void test_paired_start_rollback(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-paired-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "before", NULL);
+    g_autofree char *after = g_build_filename(dir, "after", NULL);
+
+    for (unsigned pair = 0; pair < ARRAY_SIZE(paired_start_offsets); pair++) {
+        unsigned offset = paired_start_offsets[pair];
+
+        for (unsigned fault = 0; fault < 3; fault++) {
+            QTestState *s = start();
+            Shape c = shape_default();
+            uint64_t words[RENDER_WORDS], expected[RENDER_WORDS], value;
+            g_autofree uint32_t *pixels = NULL;
+
+            c.width = 12;
+            c.height = 8;
+            c.x0 = 2;
+            c.y0 = 1;
+            c.x1 = 8;
+            c.y1 = 5;
+            c.draw |= 0xa0000;
+            c.stipple_mode = 0x01050000;
+            map_region(s, 0, 1, 0, 0, 11, 7);
+            shape_memory(s, &c, NULL);
+            shape_stage(s, &c);
+            value = pair == 0 ? ((uint64_t)xy(3, 2) << 32) | xy(9, 6) :
+                    pair == 1 ? 0x1357246889abcdefULL : 0x0206000096a53c81ULL;
+            if (fault == 0) {
+                qtest_writel(s, DE + 0x50, 1);
+            } else if (pair == 0) {
+                value = fault == 1 ? ((uint64_t)xy(2048, 2) << 32) |
+                                        xy(9, 6) :
+                                     ((uint64_t)xy(3, 2) << 32) | xy(2048, 6);
+            } else if (pair == 2 && fault == 1) {
+                value |= 1ULL << 63;
+            } else {
+                /* A valid tile payload outside the fixture's populated RAM. */
+                tile(s, 0, 0, 0x400);
+            }
+            save_paired_renderer(s, path, expected);
+            assert_failure(s, DE + 0x800 + offset, value, 8);
+            pixels = g_new(uint32_t, c.width * c.height);
+            for (unsigned i = 0; i < c.width * c.height; i++) {
+                pixels[i] = c.old & 0xff;
+            }
+            /* Inspect backing RAM even when the programmed tile is bad. */
+            for (unsigned y = 0; y < c.height; y++) {
+                for (unsigned x = 0; x < c.width; x++) {
+                    g_assert_cmphex(qtest_readb(s, 0x30000 + y * 512 + x),
+                                    ==, c.old & 0xff);
+                }
+            }
+            save_paired_renderer(s, after, words);
+            g_assert_cmpmem(words, sizeof(words), expected, sizeof(expected));
+            qtest_writel(s, DE + 0x50, 0);
+            tile(s, 0, 0, 3);
+            reference_shape(&c, pixels);
+            qtest_writel(s, DE + 0x9f0, 0);
+            shape_memory(s, &c, pixels);
+            qtest_quit(s);
+        }
+    }
+    g_unlink(path);
+    g_unlink(after);
+    g_rmdir(dir);
+}
+
+static void test_paired_start_copy(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-paired-copy-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "before", NULL);
+    g_autofree char *after = g_build_filename(dir, "after", NULL);
+
+    for (unsigned pair = 0; pair < ARRAY_SIZE(paired_start_offsets); pair++) {
+        unsigned offset = paired_start_offsets[pair];
+        QTestState *s = start();
+        uint64_t words[RENDER_WORDS], expected[RENDER_WORDS];
+        uint64_t value = pair == 0 ? ((uint64_t)xy(4, 0) << 32) | xy(5, 0) :
+                         pair == 1 ? 0x0000000100000001ULL :
+                                     0xfedcba9813579bdfULL;
+
+        tile(s, 0, 0, 3);
+        setup(s, 0, true);
+        qtest_writel(s, DE + 0x1b0, 6);
+        qtest_writel(s, DE + 0x70, xy(4, 0));
+        qtest_writel(s, DE + 0x74, xy(5, 0));
+        qtest_writel(s, DE + 0xa0, xy(1, 0));
+        qtest_writew(s, 0x30001, 0x1234);
+        qtest_writew(s, 0x30004, 0x5a5a);
+        if (pair == 0) {
+            qtest_writel(s, DE + 0x70, xy(6, 0));
+            qtest_writel(s, DE + 0x74, xy(7, 0));
+        } else if (pair == 1) {
+            qtest_writeq(s, DE + 0xa8, 0x0000000200000003ULL);
+        }
+        g_assert_cmpint(memtx_writeq(s, DE + 0x800 + offset, value), ==,
+                        MEMTX_OK);
+        g_assert_cmphex(qtest_readw(s, 0x30004), ==, 0x486e);
+        g_assert_cmphex(qtest_readw(s, 0x30001), ==, 0x1234);
+        for (unsigned member = 0; member < 2; member++) {
+            qtest_writew(s, 0x30004, 0x5a5a);
+            save_paired_renderer(s, path, expected);
+            if (pair == 1) {
+                uint64_t invalid = member ? 0x0000000100000002ULL :
+                                           0x0000000200000001ULL;
+
+                assert_failure(s, DE + 0x8a8, invalid, 8);
+            } else {
+                /* The second source fragment fails after a valid first one. */
+                qtest_writel(s, DE + 0xa0, xy(511, 0));
+                save_paired_renderer(s, after, expected);
+                assert_failure(s, DE + 0x800 + offset, value, 8);
+            }
+            g_assert_cmphex(qtest_readw(s, 0x30004), ==, 0x5a5a);
+            g_assert_cmphex(qtest_readw(s, 0x30001), ==, 0x1234);
+            save_paired_renderer(s, after, words);
+            g_assert_cmpmem(words, sizeof(words), expected, sizeof(expected));
+            qtest_writel(s, DE + 0xa0, xy(1, 0));
+            qtest_writel(s, DE + 0x9f0, 0);
+            g_assert_cmphex(qtest_readw(s, 0x30004), ==, 0x486e);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            qtest_qmp_assert_success(s, "{'execute':'stop'}");
+        }
+        qtest_quit(s);
+    }
+    g_unlink(path);
+    g_unlink(after);
+    g_rmdir(dir);
+}
+
+static void test_paired_start_accesses(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-paired-access-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "before", NULL);
+    g_autofree char *after = g_build_filename(dir, "after", NULL);
+
+    for (unsigned pair = 0; pair < ARRAY_SIZE(paired_start_offsets); pair++) {
+        unsigned offset = paired_start_offsets[pair];
+        QTestState *s = start();
+        uint64_t value, words[RENDER_WORDS], expected[RENDER_WORDS];
+
+        tile(s, 0, 0, 3);
+        setup(s, 0, false);
+        qtest_writeq(s, DE + offset, 0x1357246889abcdefULL);
+        save_paired_renderer(s, path, expected);
+        for (unsigned width = 1; width <= 2; width *= 2) {
+            assert_failure(s, DE + 0x800 + offset, 0, width);
+        }
+        for (unsigned delta = 1; delta <= 4; delta *= 2) {
+            assert_failure(s, DE + 0x800 + offset + delta, 0, 8);
+        }
+        for (unsigned width = 4; width <= 8; width *= 2) {
+            start_before_failure(s);
+            g_assert_cmpint(memtx_read(s, DE + 0x800 + offset, &value, width),
+                            ==, MEMTX_ERROR);
+            assert_stopped(s);
+        }
+        save_paired_renderer(s, after, words);
+        g_assert_cmpmem(words, sizeof(words), expected, sizeof(expected));
+        qtest_quit(s);
+        for (unsigned legacy = 0; legacy < 2; legacy++) {
+            for (unsigned functional = 0; functional < 2; functional++) {
+                if (legacy && functional) {
+                    continue;
+                }
+                s = start_profile(legacy ? "legacy-software" : "1.5", false,
+                                  functional, "");
+                g_assert_cmpint(memtx_writeq(s, DE + 0x800 + offset,
+                                            0x1357246889abcdefULL),
+                                ==, MEMTX_ERROR);
+                save_paired_renderer(s, after, words);
+                for (unsigned i = 0; i < RENDER_WORDS; i++) {
+                    g_assert_cmphex(words[i], ==, 0);
+                }
+                qtest_quit(s);
+            }
+        }
+    }
+    g_unlink(path);
+    g_unlink(after);
+    g_rmdir(dir);
+}
+
+static void test_paired_start_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-paired-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+    for (unsigned pair = 0; pair < ARRAY_SIZE(paired_start_offsets); pair++) {
+        unsigned offset = paired_start_offsets[pair];
+        QTestState *s = start(), *to = start_options("-incoming defer");
+        Shape c = shape_default();
+        uint64_t words[RENDER_WORDS], expected[RENDER_WORDS], value;
+        g_autofree uint32_t *pixels = NULL;
+
+        c.width = 12;
+        c.height = 8;
+        c.x0 = 2;
+        c.y0 = 1;
+        c.x1 = 8;
+        c.y1 = 5;
+        c.draw |= 0xa0000;
+        c.stipple_mode = 0x01050000;
+        value = pair == 0 ? ((uint64_t)xy(c.x0, c.y0) << 32) |
+                             xy(c.x1, c.y1) :
+                pair == 1 ? 0x1357246889abcdefULL :
+                            ((uint64_t)c.stipple_mode << 32) | c.pattern;
+        map_region(s, 0, 1, 0, 0, 11, 7);
+        shape_stage(s, &c);
+        shape_memory(s, &c, NULL);
+        qtest_writeq(s, DE + 0x800 + offset, value);
+        pixels = shape_reference(&c);
+        shape_memory(s, &c, pixels);
+        save_paired_renderer(s, path, expected);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+        sgi_wait_migration(to, "completed");
+        shape_memory(to, &c, pixels);
+        assert_failure(to, DE + 0x804 + offset, value, 8);
+        save_paired_renderer(to, path, words);
+        g_assert_cmpmem(words, sizeof(words), expected, sizeof(expected));
+        reference_shape(&c, pixels);
+        qtest_writel(to, DE + 0x9f0, 0);
+        shape_memory(to, &c, pixels);
+        qtest_system_reset(to);
+        save_paired_renderer(to, path, words);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(words[i], ==, 0);
+        }
+        qtest_quit(s);
+        qtest_quit(to);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/crime/render/paired-start/accesses",
+                   test_paired_start_accesses);
+    qtest_add_func("/sgi/crime/render/paired-start/migration",
+                   test_paired_start_migration);
+    qtest_add_func("/sgi/crime/render/paired-start/shapes",
+                   test_paired_start_shapes);
+    qtest_add_func("/sgi/crime/render/paired-start/rollback",
+                   test_paired_start_rollback);
+    qtest_add_func("/sgi/crime/render/paired-start/copy",
+                   test_paired_start_copy);
     qtest_add_func("/sgi/crime/render/fill", test_fill);
     qtest_add_func("/sgi/crime/render/registers", test_registers);
     qtest_add_func("/sgi/crime/render/tile-boundaries", test_tile_boundaries);
