@@ -753,6 +753,9 @@ static void aic7880_process_scsi_data(AIC7880State *s)
             s->host_fifo_len -= len;
         }
         s->scsi_data_pos += len;
+        if (len) {
+            aic7880_pio_present(s);
+        }
         aic7880_advance_scsi(s, len);
         aic7880_fifo_status(s);
         aic7880_host_dma(s);
@@ -1296,6 +1299,8 @@ static void aic7880_pio_advance(AIC7880State *s)
             SCSIRequest *req = s->req;
 
             s->scsi_data_len = s->scsi_data_pos = 0;
+            aic7880_pio_present(s);
+            aic7880_update_scsi_irq(s);
             scsi_req_continue(req);
         } else {
             aic7880_pio_present(s);
