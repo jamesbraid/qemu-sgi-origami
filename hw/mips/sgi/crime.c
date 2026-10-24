@@ -1042,6 +1042,14 @@ static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
 {
     unsigned index;
 
+    if (s->legacy_software && offset == 0x1000400 && size == 4) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: undefined interface-buffer diagnostic "
+                      "%u-byte read at 0x%" HWADDR_PRIx "\n", size,
+                      (hwaddr)(0x14000000ULL + offset));
+        *value = 0;
+        return MEMTX_OK;
+    }
     if (s->legacy_software && crime_render_state_access(offset, size)) {
         return crime_render_state_read(s, offset, value, size);
     }
