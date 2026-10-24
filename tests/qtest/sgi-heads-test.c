@@ -30,6 +30,8 @@
 
 static char *octane_flash;
 static char *sn1_prom;
+static char *ip53_data;
+static char *ip53_clock;
 static QDict *catalogue;
 
 /* How to launch each topology that has graphics positions. */
@@ -60,6 +62,12 @@ static const Launch launches[] = {
       SN1_PROM },
     { "fuel-vpro", "fuel,topology=fuel-vpro", "-cpu R14000 -smp 1 -m 512M",
       SN1_PROM },
+    { "onyx350-compat", "onyx350,topology=onyx350-compat",
+      "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
+      "r16000-scache-bytes=0x800000 -smp 4 -m 8G", SN1_PROM },
+    { "tezro-tower-multi", "tezro,topology=tezro-tower-multi",
+      "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
+      "r16000-scache-bytes=0x400000 -smp 4 -m 4G", SN1_PROM },
     { "origin300-v12-direct", "origin300,topology=origin300-v12-direct",
       "-cpu R14000 -smp 2", SN1_PROM },
     { "origin300-vbrick", "origin300,topology=origin300-vbrick",
@@ -87,11 +95,23 @@ static QTestState *start(const Launch *l, const char *heads,
                          const char *more)
 {
     const char *bios = bios_path(l);
+    bool needs_ip53_io9 = g_str_equal(l->topology, "onyx350-compat") ||
+                          g_str_equal(l->topology, "tezro-tower-multi");
     g_autofree char *quoted = bios ? g_shell_quote(bios) : NULL;
+    g_autofree char *quoted_data = needs_ip53_io9 ?
+        g_shell_quote(ip53_data) : NULL;
+    g_autofree char *quoted_clock = needs_ip53_io9 ?
+        g_shell_quote(ip53_clock) : NULL;
+    g_autofree char *storage = needs_ip53_io9 ?
+        g_strdup_printf("-drive if=none,id=sgi-ds1742-data-io9,file=%s,"
+                        "format=raw -drive if=none,id=sgi-ds1742-clock-io9,"
+                        "file=%s,format=raw", quoted_data, quoted_clock) :
+        g_strdup("");
+    g_autofree char *extra = g_strdup_printf("%s %s", storage, more);
 
     return qtest_initf("-M %s%s -display none -S %s %s%s %s", l->machine,
                        heads, l->extra, bios ? "-bios " : "",
-                       bios ? quoted : "", more);
+                       bios ? quoted : "", extra);
 }
 
 /* The same launch as an argument vector, expecting a refusal. */
@@ -214,8 +234,13 @@ static void head_probe(const char *topology, const char *family,
         *path = g_strdup(ip30 ? "/machine/module0/mgras" : position);
         *property = "board";
     } else if (g_str_equal(family, "odyssey")) {
-        g_assert_true(ip30);
-        *path = g_strdup("/machine/module0/odyssey");
+        if (g_str_equal(topology, "onyx350-compat") ||
+            g_str_equal(topology, "tezro-tower-multi")) {
+            *path = g_strdup("/machine/module0/graphics-widget-12");
+        } else {
+            g_assert_true(ip30);
+            *path = g_strdup("/machine/module0/odyssey");
+        }
         *property = "profile";
     } else if (g_str_equal(family, "psitech")) {
         *path = g_strdup_printf("/machine/head-%s", position);
@@ -516,6 +541,59 @@ static void test_absent(void)
     type = qom_string(qts, VPRO_FUEL_PATH, "type");
     g_assert_cmpstr(type, ==, "sgi-odyssey");
     qtest_quit(qts);
+
+    {
+        static const char *const topologies[] = {
+            "onyx350-compat", "tezro-tower-multi",
+        };
+        const uint64_t vpro =
+            SPACE_IO + UINT64_C(12) * UINT64_C(0x1000000);
+
+        for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
+            qts = start(launch_for(topologies[i]), "", "");
+            g_assert_null(qom_string(qts, "/machine/module0/graphics-widget-12",
+                                     "profile"));
+            g_assert_cmphex(qtest_readl(qts, vpro + 0x0004), !=,
+                            UINT32_C(0xac013047));
+            qtest_quit(qts);
+        }
+    }
+}
+
+/* A selected IP53 V12 uses the existing Odyssey device and Bedrock PI. */
+static void test_ip53_v12_identity_and_interrupt(void)
+{
+    static const char *const cases[] = {
+        "onyx350-compat", "tezro-tower-multi",
+    };
+    const uint64_t vpro = SPACE_IO + UINT64_C(12) * UINT64_C(0x1000000);
+    const uint64_t bedrock = SPACE_IO + UINT64_C(0x01800000);
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        const Launch *l = launch_for(cases[i]);
+        QTestState *qts = start(l, ",heads.widget-12=v12", "");
+        g_autofree char *profile = qom_string(qts,
+            "/machine/module0/graphics-widget-12", "profile");
+        uint64_t bit = UINT64_C(1) << 5;
+
+        g_assert_cmphex(qtest_readl(qts, vpro + 0x0004), ==,
+                        UINT32_C(0xac013047));
+        g_assert_cmphex(qtest_readl(qts, vpro + 0x0024) & 0xf, ==, 12);
+        g_assert_cmpstr(profile, ==, "v12");
+        qtest_writel(qts, vpro + 0x0034,
+                     (5u << 24) | (10u << 16) |
+                     (uint32_t)(((UINT64_C(1) << 47) |
+                                 UINT64_C(0x01800000) | 0x90) >> 32));
+        qtest_writel(qts, vpro + 0x003c,
+                     (uint32_t)((UINT64_C(1) << 47) |
+                                UINT64_C(0x01800000) | 0x90));
+        g_assert_cmphex(qtest_readq(qts, bedrock + 0x98) & bit, ==, 0);
+        qtest_writel(qts, vpro + 0x1034, 0x200);
+        g_assert_cmphex(qtest_readq(qts, bedrock + 0x98) & bit, ==, bit);
+        qtest_writel(qts, vpro + 0x101c, 0x200);
+        g_assert_cmphex(qtest_readq(qts, bedrock + 0x98) & bit, ==, 0);
+        qtest_quit(qts);
+    }
 }
 
 /* A built-in position takes its own default by name, as with no heads. */
@@ -570,6 +648,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     octane_flash = temporary("sgi-heads-flash-XXXXXX", 4, 0xff);
     sn1_prom = temporary("sgi-heads-prom-XXXXXX.bin", PROM_SIZE, 0);
+    ip53_data = temporary("sgi-heads-ip53-data-XXXXXX", 0x800, 0);
+    ip53_clock = temporary("sgi-heads-ip53-clock-XXXXXX", 16, 0);
 
     qts = qtest_init("-M none");
     reply = qtest_qmp(qts, "{'execute':'query-sgi-machines'}");
@@ -583,6 +663,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-heads/nographic", test_nographic);
     qtest_add_func("/sgi-heads/absent", test_absent);
     qtest_add_func("/sgi-heads/built-in-by-name", test_built_in_by_name);
+    qtest_add_func("/sgi-heads/ip53-v12-identity-and-interrupt",
+                   test_ip53_v12_identity_and_interrupt);
     for (size_t i = 0; i < G_N_ELEMENTS(launches); i++) {
         g_autofree char *path = g_strdup_printf("/sgi-heads/offered/%s",
                                                 launches[i].topology);
@@ -593,7 +675,11 @@ int main(int argc, char **argv)
     qobject_unref(catalogue);
     unlink(octane_flash);
     unlink(sn1_prom);
+    unlink(ip53_data);
+    unlink(ip53_clock);
     g_free(octane_flash);
     g_free(sn1_prom);
+    g_free(ip53_data);
+    g_free(ip53_clock);
     return result;
 }
