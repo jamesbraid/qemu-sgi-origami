@@ -34581,6 +34581,31 @@
         "machine-type": 1
       },
       "junk-uart": -1,
+      "l1-management": {
+        "associations": [
+          {
+            "from": 1,
+            "reachable": true,
+            "to": 0
+          }
+        ],
+        "attachments": [
+          {
+            "issuer": 1,
+            "owner": 0
+          }
+        ],
+        "owners": [
+          {
+            "controller-index": 0,
+            "identity": 201
+          },
+          {
+            "controller-index": 1,
+            "identity": 202
+          }
+        ]
+      },
       "modules": [
         {
           "controller-index": 1,
@@ -34594,7 +34619,7 @@
         {
           "controller-index": 0,
           "id": "graphics-vbrick",
-          "initial-module-number": 0,
+          "initial-module-number": 2,
           "nodes": [],
           "serial": ""
         }

@@ -31,11 +31,17 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     size_t controllers = QAPI_LIST_LENGTH(t->controllers);
     size_t routers = QAPI_LIST_LENGTH(t->routers);
     const SGIModelRouterList *router;
+    bool vbrick = false;
     g_autofree bool *router_ports = g_new0(bool, MAX(routers * 8, 1));
     g_autofree bool *assigned = g_new0(bool, MAX(peers, 1));
     g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
     g_autofree bool *node_connected = g_new0(bool, MAX(nodes, 1));
 
+    for (const SGIModelIoBoardList *board = t->io_boards; board;
+         board = board->next) {
+        vbrick |= board->value->populated &&
+                  board->value->preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK;
+    }
     for (const SGIModelNodeList *n = t->nodes; n; n = n->next) {
         const SGIModelNode *node = n->value;
 
@@ -99,7 +105,7 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         }
         return true;
     }
-    if (!peers || t->generation != SGI_MODEL_GENERATION_SN1 ||
+    if (t->generation != SGI_MODEL_GENERATION_SN1 || (!peers && !vbrick) ||
         (routers && nodes < 2) ||
         QAPI_LIST_LENGTH(t->io_assemblies) != peers || !t->l1_management ||
         QAPI_LIST_LENGTH(t->l1_management->owners) != controllers) {

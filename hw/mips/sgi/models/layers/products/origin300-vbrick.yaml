@@ -124,6 +124,19 @@ layer:
           notes: >-
             The Origin 300's bounded emulator views alias one operator-supplied
             payload. They do not identify a fitted flash part or physical decoder.
+        # Synthetic management association, independent of the XIO cable.
+        initial_module_numbers:
+          - component: graphics-vbrick
+            number: 2
+            reason: Synthetic distinct enclosure location for reference discovery.
+        l1_management:
+          owners:
+            - {controller: graphics-l1, identity: 201}
+            - {controller: l1, identity: 202}
+          associations:
+            - {from: 1, to: 0, reachable: true}
+          attachments:
+            - {issuer: 1, owner: 0}
         synthetic_identities:
           - component: bedrock
             serial: "0x51454d554e00"
