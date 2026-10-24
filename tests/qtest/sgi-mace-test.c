@@ -586,6 +586,64 @@ static void test_pci_control_bits(void)
     g_assert_cmpuint(memtx_writel(s, MACE_PCI_CONTROL, 1u << 9), ==,
                      MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, 0);
+    g_assert_cmpuint(memtx_writel(s, MACE_PCI_CONTROL, 0x8000), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, 0x8000);
+    g_assert_false(qtest_get_irq(s, 7));
+    qtest_writel(s, MACE_PCI_CONTROL, 1);
+    qtest_set_irq_in(s, "/machine/peripheral/mace", "pci", 0, 1);
+    g_assert_true(qtest_get_irq(s, 8));
+    qtest_writel(s, MACE_PCI_CONTROL, 0x8001);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, 0x8001);
+    g_assert_true(qtest_get_irq(s, 8));
+    g_assert_cmpuint(memtx_writel(s, MACE_PCI_CONTROL, 0x8801), ==,
+                     MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, 0x8001);
+    g_assert_true(qtest_get_irq(s, 8));
+    qtest_writel(s, MACE_PCI_CONTROL, 1);
+    g_assert_true(qtest_get_irq(s, 8));
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_pci_flush(void)
+{
+    QTestState *s = mace_start_pci_card();
+    static const uint32_t payloads[] = { 0, 1, 0x89abcdef, UINT32_MAX };
+    uint32_t flags, error_address, control = 0x80008001;
+
+    qtest_writel(s, MACE_PCI_CONTROL, control);
+    qtest_set_irq_in(s, "/machine/peripheral/mace", "pci", 0, 1);
+    qtest_writel(s, MACE_PCI_CFGADDR, 5u << 11);
+    qtest_readl(s, MACE_PCI_CFGDATA);
+    flags = qtest_readl(s, MACE_PCI_ERROR_FLAGS);
+    error_address = qtest_readl(s, MACE_PCI_ERROR_ADDR);
+    qtest_writel(s, MACE_PCI_CFGADDR, 1u << 11);
+    for (unsigned i = 0; i < ARRAY_SIZE(payloads); i++) {
+        g_assert_cmpint(memtx_writel(s, MACE_PCI_REVISION, payloads[i]),
+                        ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_REVISION), ==, 1);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, control);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_CFGDATA), ==, 0x00121000);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_ERROR_FLAGS), ==, flags);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_ERROR_ADDR), ==, error_address);
+        g_assert_true(qtest_get_irq(s, 7));
+        g_assert_true(qtest_get_irq(s, 8));
+    }
+    g_assert_cmpint(memtx_writeb(s, MACE_PCI_REVISION, 0xa5), ==, MEMTX_ERROR);
+    g_assert_cmpint(memtx_writew(s, MACE_PCI_REVISION, 0xa5c3),
+                    ==, MEMTX_ERROR);
+    g_assert_cmpint(memtx_writeq(s, MACE_PCI_REVISION, UINT64_MAX),
+                    ==, MEMTX_ERROR);
+    g_assert_cmpint(memtx_writel(s, MACE_PCI_REVISION + 1, 0xa5c319e7),
+                    ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_REVISION), ==, 1);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_CONTROL), ==, control);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_ERROR_FLAGS), ==, flags);
+    g_assert_cmphex(qtest_readl(s, MACE_PCI_ERROR_ADDR), ==, error_address);
+    g_assert_true(qtest_get_irq(s, 7));
+    g_assert_true(qtest_get_irq(s, 8));
     qtest_quit(s);
 }
 
@@ -669,7 +727,7 @@ static void test_pci_state_migration(void)
     uri = g_strdup_printf("unix:%s", socket);
     from = mace_start();
     to = mace_start_extra("-incoming defer");
-    qtest_writel(from, MACE_PCI_CONTROL, 0xff000501);
+    qtest_writel(from, MACE_PCI_CONTROL, 0xff008501);
     qtest_set_irq_in(from, path, "pci", 0, 1);
     qtest_writel(from, MACE_PCI_CFGADDR, 5u << 11);
     qtest_readl(from, MACE_PCI_CFGDATA);
@@ -680,7 +738,7 @@ static void test_pci_state_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
-    g_assert_cmphex(qtest_readl(to, MACE_PCI_CONTROL), ==, 0xff000501);
+    g_assert_cmphex(qtest_readl(to, MACE_PCI_CONTROL), ==, 0xff008501);
     g_assert_cmphex(qtest_readl(to, MACE_PCI_ERROR_ADDR), ==, 5u << 11);
     g_assert_true(qtest_readl(to, MACE_PCI_ERROR_FLAGS) & (1u << 31));
     g_assert_true(qtest_get_irq(to, 7));
@@ -733,6 +791,7 @@ int main(int argc, char **argv)
                    test_pci_bridge_rom_refused);
     qtest_add_func("/sgi/mace/pci-absent-device", test_pci_absent_device);
     qtest_add_func("/sgi/mace/pci-control-bits", test_pci_control_bits);
+    qtest_add_func("/sgi/mace/pci-flush", test_pci_flush);
     qtest_add_func("/sgi/mace/pci-control-master-abort",
                    test_pci_control_master_abort);
     qtest_add_func("/sgi/mace/pci-interrupt-inputs",
