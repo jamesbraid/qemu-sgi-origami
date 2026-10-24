@@ -11616,6 +11616,19 @@ static void test_manual_file_data(void)
         qtest_writeb(qts, REG_BASE + 6, payload[i] ^ 0xff);
         qtest_writeb(qts, REG_BASE + 6, payload[i]);
         if (i == 4) {
+            uint8_t idle[4];
+            size_t n = 0;
+
+            emit(idle, &n, branch_word(8, 0, 0x65, 0));
+            start_program(qts, idle, n);
+            qtest_writeb(qts, REG_BASE + 1, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+            manual_capture(qts, &before);
+            qtest_writeb(qts, REG_BASE + 6, payload[i] ^ 0x69);
+            manual_unchanged(qts, &before);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+        }
+        if (i == 5) {
             manual_capture(qts, &before);
             qtest_writeb(qts, REG_BASE + 1, 8);
             manual_unchanged(qts, &before);
@@ -11965,23 +11978,35 @@ static void test_manual_rate_refusals(void)
 
 static void test_manual_unpaused_host(void)
 {
-    uint8_t program[4];
-    QTestState *qts = manual_status();
-    ManualGuard before;
-    size_t n = 0;
+    for (unsigned operation = 0; operation < 3; operation++) {
+        QTestState *qts = manual_status();
+        uint8_t program[4];
+        ManualGuard before;
+        size_t n = 0;
 
-    emit(program, &n, branch_word(8, 0, 0x65, 0));
-    start_program(qts, program, n);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
-    manual_capture(qts, &before);
-    qtest_readb(qts, REG_BASE + 6);
-    qtest_writeb(qts, REG_BASE + 6, 0xa9);
-    qtest_writeb(qts, REG_BASE + 3, 0xc1);
-    qtest_writeb(qts, REG_BASE + 1, 2);
-    manual_unchanged(qts, &before);
-    qtest_writeb(qts, REG_BASE + 0x87, 6);
-    manual_finish(qts, 2);
-    qtest_quit(qts);
+        manual_counters(qts);
+        emit(program, &n, branch_word(8, 0, 0x65, 0));
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+        qtest_writeb(qts, REG_BASE + 1, 0x80);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 1), ==, 0x80);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xc2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 0);
+        manual_capture(qts, &before);
+        if (operation == 0) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 0xff);
+        } else if (operation == 1) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 0xff);
+        } else {
+            qtest_writeb(qts, REG_BASE + 3, 0xc8);
+        }
+        manual_unchanged(qts, &before);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+        manual_finish(qts, 2);
+        manual_check_counters(qts);
+        qtest_quit(qts);
+    }
 }
 
 static void test_manual_target_delay(void)
