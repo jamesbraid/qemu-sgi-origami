@@ -1158,10 +1158,11 @@ static void test_migration_carries_channels(void)
  * A stream whose channel state disagrees with the scanout mode it carries
  * is refused. The source loads channel 1 with a 1000x600 format; the
  * stream is saved to a file, and the first 1000x600 in it, which is the
- * channel array's entry for channel 1 (enabled, then the format's width
- * and height), is changed to 1004x600 while channel 1's scanout keeps
- * its 1000x600 mode. The destination must refuse the stream rather than
- * resolve 1004-pixel rows into 1000-pixel frame lines.
+ * channel array's entry for channel 1, is changed to 1004x600 while
+ * channel 1's scanout keeps its 1000x600 mode. The pattern is that
+ * entry's loaded byte, then the format's width and height; the enabled
+ * byte before it is also 1. The destination must refuse the stream
+ * rather than resolve 1004-pixel rows into 1000-pixel frame lines.
  */
 static void test_migration_refuses_mismatched_channel_mode(void)
 {
