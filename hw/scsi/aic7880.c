@@ -74,6 +74,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define REG_ALLZEROS 0x6a
 #define REG_FLAGS    0x6b
 #define REG_FUNCTION1 0x6e
+#define REG_STACK    0x6f
 #define REG_DSCOMMAND 0x84
 #define REG_DSPCISTATUS 0x86
 #define REG_HCNTRL   0x87
@@ -179,7 +180,8 @@ struct AIC7880State {
     uint8_t qin_tail;
     uint8_t qin_count;
     uint16_t return_pc[4];
-    uint8_t return_depth;
+    uint8_t return_ptr;
+    uint8_t stack_byte;
     uint32_t scsi_data_len;
     uint32_t scsi_data_pos;
     uint8_t host_fifo[256];
@@ -1138,7 +1140,9 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->expected_phase = 0;
     s->qout_head = s->qout_tail = s->qout_count = 0;
     s->qin_head = s->qin_tail = s->qin_count = 0;
-    s->return_depth = 0;
+    memset(s->return_pc, 0, sizeof(s->return_pc));
+    s->return_ptr = 0;
+    s->stack_byte = 0;
     s->scsi_data_len = s->scsi_data_pos = 0;
     s->host_fifo_read = 0;
     s->host_fifo_write = 0;
@@ -1589,6 +1593,15 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
         return s->seqaddr & 0xff;
     case REG_SEQADDR1:
         return (s->seqaddr >> 8) & 1;
+    case REG_STACK: {
+        uint8_t data = s->return_pc[s->return_ptr] >> (8 * s->stack_byte);
+
+        if (s->stack_byte) {
+            s->return_ptr = (s->return_ptr + 1) % ARRAY_SIZE(s->return_pc);
+        }
+        s->stack_byte ^= 1;
+        return data;
+    }
     case REG_ERROR:
         return aic7880_error_status(s);
     case REG_HCNT_RSVD:
@@ -2358,7 +2371,6 @@ static void aic7880_run(AIC7880State *s)
         uint16_t at = s->seqaddr;
         uint8_t op, imm, result;
         uint8_t updated_flags = s->regs[REG_FLAGS];
-        uint8_t return_depth_before;
         uint8_t src, dst;
         uint32_t error_before;
         AICShiftKind shift_kind = AIC_SHIFT_INVALID;
@@ -2434,11 +2446,11 @@ static void aic7880_run(AIC7880State *s)
             }
             if (taken) {
                 if (op == 0x0b) {
-                    if (s->return_depth == ARRAY_SIZE(s->return_pc)) {
-                        aic7880_error(s, "sequencer return stack full");
-                        goto done;
-                    }
-                    s->return_pc[s->return_depth++] = s->seqaddr;
+                    s->return_ptr = (s->return_ptr +
+                                     ARRAY_SIZE(s->return_pc) - 1) %
+                                    ARRAY_SIZE(s->return_pc);
+                    s->return_pc[s->return_ptr] = s->seqaddr &
+                                                  (AIC_SEQ_INSNS - 1);
                 }
                 s->seqaddr = target;
             }
@@ -2459,10 +2471,6 @@ static void aic7880_run(AIC7880State *s)
         }
         if (op > 5) {
             aic7880_bad_opcode(s, op);
-            goto done;
-        }
-        if ((insn & (1u << 24)) && !s->return_depth) {
-            aic7880_error(s, "sequencer return without call");
             goto done;
         }
         if (dst == REG_HCNTRL) {
@@ -2541,7 +2549,6 @@ static void aic7880_run(AIC7880State *s)
             result = aic7880_shift_byte(shift_kind, shift_count, result);
         }
         error_before = s->error_serial;
-        return_depth_before = s->return_depth;
         if (dst == REG_INTSTAT) {
             if (result & 1) {
                 s->regs[REG_INTSTAT] = (s->regs[REG_INTSTAT] & 0x0f) |
@@ -2580,11 +2587,9 @@ static void aic7880_run(AIC7880State *s)
         if (op >= 2 && op <= 4 && s->error_serial == error_before) {
             s->regs[REG_FLAGS] = updated_flags;
         }
-        if ((insn & (1u << 24)) && s->error_serial == error_before &&
-            return_depth_before &&
-            s->return_depth == return_depth_before) {
-            /* The destination write reported no controller error. */
-            s->seqaddr = s->return_pc[--s->return_depth];
+        if ((insn & (1u << 24)) && s->error_serial == error_before) {
+            s->seqaddr = s->return_pc[s->return_ptr];
+            s->return_ptr = (s->return_ptr + 1) % ARRAY_SIZE(s->return_pc);
         }
         if (s->regs[REG_SEQCTL] & SEQ_STEP) {
             s->regs[REG_HCNTRL] |= HOST_PAUSE;
@@ -2926,7 +2931,7 @@ static int aic7880_post_load(void *opaque, int version_id)
         s->qin_tail >= aic7880_queue_slots(s)) {
         return -EINVAL;
     }
-    if (s->return_depth > ARRAY_SIZE(s->return_pc)) {
+    if (s->return_ptr >= ARRAY_SIZE(s->return_pc) || s->stack_byte > 1) {
         return -EINVAL;
     }
     if (s->host_fifo_len > sizeof(s->host_fifo) ||
@@ -2941,8 +2946,8 @@ static int aic7880_post_load(void *opaque, int version_id)
           s->host_fifo_len == sizeof(s->host_fifo) : !s->host_fifo_len))) {
         return -EINVAL;
     }
-    for (unsigned i = 0; i < s->return_depth; i++) {
-        if (s->return_pc[i] > AIC_SEQ_INSNS) {
+    for (unsigned i = 0; i < ARRAY_SIZE(s->return_pc); i++) {
+        if (s->return_pc[i] >= AIC_SEQ_INSNS) {
             return -EINVAL;
         }
     }
@@ -3012,7 +3017,8 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(qin_tail, AIC7880State),
         VMSTATE_UINT8(qin_count, AIC7880State),
         VMSTATE_UINT16_ARRAY(return_pc, AIC7880State, 4),
-        VMSTATE_UINT8(return_depth, AIC7880State),
+        VMSTATE_UINT8(return_ptr, AIC7880State),
+        VMSTATE_UINT8(stack_byte, AIC7880State),
         VMSTATE_UINT8_ARRAY(host_fifo, AIC7880State, 256),
         VMSTATE_UINT8(host_fifo_read, AIC7880State),
         VMSTATE_UINT8(host_fifo_write, AIC7880State),
