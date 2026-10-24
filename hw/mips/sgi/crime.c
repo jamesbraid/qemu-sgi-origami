@@ -1426,11 +1426,8 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         *value = s->functional_memory_transfer ? s->transfer.ecc_enable : 0;
         break;
     case 0x0270:
-        if (s->legacy_software) {
-            *value = 0;
-            break;
-        }
-        /* fall through */
+        *value = s->ecc_replacement;
+        break;
     case 0x0260:
         if (s->functional_memory_transfer) {
             *value = 0;
@@ -1479,6 +1476,14 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
             crime_transfer_fail(offset, "invalid register width or alignment") :
             MEMTX_ERROR;
     }
+    if (offset == 0x200 && (value & 2)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-crime: unsupported ECC replacement request "
+                      "at 0x14000200 value 0x%" PRIx64 "\n", value);
+        return (s->functional_memory_transfer || s->legacy_software) ?
+            crime_transfer_fail(offset, "unsupported ECC replacement") :
+            MEMTX_ERROR;
+    }
     if (offset >= 0x208 && offset <= 0x240 && s->eight_128m_banks) {
         unsigned bank = (offset - 0x208) / 8;
 
@@ -1507,7 +1512,6 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
         case 0x0010:
         case 0x0030:
         case 0x0250:
-        case 0x0270:
             if (!value) {
                 return MEMTX_OK;
             }
@@ -1549,7 +1553,6 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
             }
             break;
         case 0x0250:
-        case 0x0270:
             if (!value) {
                 return MEMTX_OK;
             }
@@ -1559,6 +1562,12 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
         }
     }
     switch (offset) {
+    case 0x0270:
+        if (value <= UINT8_MAX) {
+            s->ecc_replacement = value;
+            return MEMTX_OK;
+        }
+        break;
     case 0x0018:
         if (crime_enable_valid(s, value)) {
             s->enable = value;
@@ -1625,6 +1634,7 @@ static void crime_reset_enter(Object *obj, ResetType type)
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->memory_error_status = 0;
     s->memory_error_address = 0;
+    s->ecc_replacement = 0;
     s->reset_low_ram_active = s->reset_low_ram_approx;
     if (s->reset_low_ram_active) {
         qemu_log_mask(LOG_UNIMP,
@@ -1673,7 +1683,7 @@ static int crime_post_load(void *opaque, int version_id)
     uint32_t hardware;
 
     if (!s->transfer_state_received || !s->profile_state_received ||
-        !s->render_state_received) {
+        !s->render_state_received || !s->ecc_state_received) {
         return -EINVAL;
     }
     if ((incoming->hardware & software_mask) ||
@@ -1704,6 +1714,7 @@ static int crime_post_load(void *opaque, int version_id)
     s->timer_base = incoming->timer_base;
     s->timer_fraction = incoming->timer_fraction;
     s->transfer = s->incoming_transfer;
+    s->ecc_replacement = s->incoming_ecc_replacement;
     s->render = s->incoming_render;
     s->healthy_memory_reported = false;
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -1864,6 +1875,37 @@ static const VMStateDescription vmstate_crime_render = {
     },
 };
 
+static bool crime_ecc_pre_save(void *opaque, Error **errp)
+{
+    SGICrimeState *s = opaque;
+
+    s->incoming_ecc_replacement = s->ecc_replacement;
+    return true;
+}
+
+static int crime_ecc_post_load(void *opaque, int version_id)
+{
+    SGICrimeState *s = opaque;
+
+    if (s->incoming_ecc_replacement > UINT8_MAX) {
+        return -EINVAL;
+    }
+    s->ecc_state_received = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_crime_ecc = {
+    .name = TYPE_SGI_CRIME "/ecc-replacement",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save_errp = crime_ecc_pre_save,
+    .post_load = crime_ecc_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(incoming_ecc_replacement, SGICrimeState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int crime_pre_load(void *opaque)
 {
     SGICrimeState *s = opaque;
@@ -1871,6 +1913,7 @@ static int crime_pre_load(void *opaque)
     s->transfer_state_received = false;
     s->profile_state_received = false;
     s->render_state_received = false;
+    s->ecc_state_received = false;
     return 0;
 }
 
@@ -1893,6 +1936,7 @@ static const VMStateDescription vmstate_crime = {
         &vmstate_crime_transfer,
         &vmstate_crime_profile,
         &vmstate_crime_render,
+        &vmstate_crime_ecc,
         NULL
     },
 };
