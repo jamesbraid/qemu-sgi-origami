@@ -561,14 +561,15 @@ static void test_bare_card_has_no_board_record(const void *data)
 
 /*
  * The dual-serial card enumerates as an IOC3 with the uncaptured subsystem
- * placeholder, and has serial ports and nothing else.
+ * placeholder. It has serial ports and no external PS/2 devices.
  */
 static void test_sio_enumerates(const void *data)
 {
     const ShoehornCase *c = data;
     QTestState *qts = qtest_init(c->args);
     static const char *const absent[] = {
-        "eth", "kbc", "parallel", "rtc", "ds1685", "onewire-part",
+        "eth", "kbc/kbd", "kbc/mouse", "parallel", "rtc", "ds1685",
+        "onewire-part",
     };
     size_t i;
 
@@ -590,6 +591,27 @@ static void test_sio_enumerates(const void *data)
 
         g_assert_false(qdict_haskey(response, "error"));
     }
+    {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+            "{'execute':'qom-list', 'arguments':{'path':"
+            " '/machine/module0/io4/sio-ufc/kbc'}}");
+        g_autoptr(QDict) activate = qtest_qmp(qts,
+            "{'execute':'qom-set', 'arguments':{'path':"
+            " '/machine/module0/io4/sio-ufc/kbc',"
+            " 'property':'activate-keyboard', 'value':true}}");
+
+        g_assert_true(qdict_haskey(response, "return"));
+        g_assert_true(qdict_haskey(activate, "error"));
+    }
+    cad_duo_map(qts, c);
+    qtest_writel(qts, CAD_DUO_WINDOW(c) + 0x09c, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, CAD_DUO_WINDOW(c) + 0x09c), ==,
+                    0x00fcffff);
+    qtest_writel(qts, CD_KBD_TRANSMIT(c), 0xff);
+    qtest_writel(qts, CAD_DUO_WINDOW(c) + 0x0ac, 0xff);
+    g_assert_cmphex(qtest_readl(qts, CAD_DUO_WINDOW(c) + 0x0a0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CAD_DUO_WINDOW(c) + 0x0a4), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CD_INT_STATUS(c)) & INT_KEYBOARD, ==, 0);
     qtest_quit(qts);
 }
 
