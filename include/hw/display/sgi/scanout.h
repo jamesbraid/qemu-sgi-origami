@@ -95,6 +95,12 @@ typedef struct SGIScanout {
  */
 void sgi_scanout_init(SGIScanout *s, DeviceState *dev,
                       const SGIHeadOps *ops, void *opaque);
+/*
+ * The same, for a family with several outputs: the console is dev's head
+ * `head`, which a screendump's "head" argument names.
+ */
+void sgi_scanout_init_head(SGIScanout *s, DeviceState *dev, uint32_t head,
+                           const SGIHeadOps *ops, void *opaque);
 void sgi_scanout_cleanup(SGIScanout *s);
 
 /* A new mode: new frame, everything dirty, retrace phase restarted now. */
