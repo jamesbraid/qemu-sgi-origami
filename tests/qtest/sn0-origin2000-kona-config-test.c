@@ -162,6 +162,8 @@ static void expected_block(const Expected *e, uint8_t *b)
     stl_be_p(b + 0x14, e->channels);
     stl_be_p(b + 0x18, e->option);
     stl_be_p(b + 0x20, e->gamma);
+    /* The display generator's own channel count, which setmon checks. */
+    stl_be_p(b + 0x44, e->channels);
     stl_be_p(b + 0x54, e->engines);
     stl_be_p(b + 0x58, e->rms);
     stl_be_p(b + 0x5c, e->occupancy);

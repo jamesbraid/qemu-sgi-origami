@@ -520,7 +520,8 @@ const SGIKonaVideoCommand sgi_kona_video_commands[] = {
     /* sender and wait, 6 sites */
     { SGI_KONA_VIDEO_GET_CHANNEL_CONFIG, "GetChannelConfig", 1, 7, 76 },
     { 0x14, "Resize", 8, NR, 0 }, /* sender, 2 sites */
-    { 0x15, "GetResize", 1, 8, 72 }, /* sender and wait, 9 sites */
+    /* sender and wait, 9 sites */
+    { SGI_KONA_VIDEO_GET_RESIZE, "GetResize", 1, 8, 72 },
     { 0x16, "LoadFormat", 383, NR, 0 }, /* sender, 1 site */
     { 0x17, "EnableChannel", 3, NR, 0 }, /* sender, 5 sites */
     { 0x18, "DisableChannel", 1, NR, 0 }, /* sender, 1 site */

@@ -15,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qemu/bswap.h"
+#include "qemu/host-utils.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-migrate.h"
@@ -522,47 +523,165 @@ static void test_channel_config_reply(void)
     qtest_quit(s);
 }
 
-/*
- * The channel count a configured pipe reports is presentation only:
- * whole-tetra's configuration reports eight channels in its 0x1e9 answer,
- * but the video commands still describe the one channel the model scans
- * out. GetBoardConfig answers the same single-channel reply as an
- * unconfigured pipe, and GetChannelConfig for channel 1 is logged as
- * unsupported and answers nothing.
- */
-static void test_configured_channels_presentation_only(void)
+/* One video command with its checksum, the number plus the data words. */
+static void video_send(QTestState *s, uint32_t command, const uint32_t *data,
+                       unsigned count)
 {
-    static const uint32_t expected[] = { 6, 1, 1, 0, 0, 0, 8 };
-    g_autofree char *log = NULL;
-    g_autofree char *found = NULL;
-    QTestState *s = kona_init_logged(
+    uint32_t sum = command;
+
+    for (unsigned i = 0; i < count; i++) {
+        sum += data[i];
+    }
+    video_command(s, command, data, count, sum);
+}
+
+/*
+ * A Get's reply data, `words` of it, after checking the page holds reply
+ * `id` and its checksum; the page is refilled first.
+ */
+static void video_get(QTestState *s, uint32_t command, uint32_t channel,
+                      uint32_t id, uint32_t *reply, unsigned words)
+{
+    uint32_t sum = id;
+
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    video_send(s, command, &channel, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, id);
+    for (unsigned w = 0; w < words; w++) {
+        reply[w] = guest_word(s, RETURN_PAGE + 12 + 4 * w);
+        sum += reply[w];
+    }
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * words), ==, sum);
+}
+
+#define GET_RESIZE          0x15
+#define GET_VAMPIRE         0x3a
+#define GET_CHANNEL_ENABLES 0x42
+
+/* A configured deskside pipe with the display generator `dg`. */
+static QTestState *kona_init_dg(const char *dg, char **log)
+{
+    g_autofree char *args = g_strdup_printf(
         "-M origin2000,nodes=1 -smp 1 -m 64M "
         "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\","
         "\"slot\":\"io4\",\"fabric-hub-widget\":9,"
-        "\"other-identity-parts\":[],\"product\":\"ir2\"}'",
-        "guest_errors,unimp", &log);
+        "\"other-identity-parts\":[],\"product\":\"ir2\","
+        "\"display-generator\":\"%s\"}'", dg);
 
-    guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
-    guest_fill_word(s, RETURN_PAGE, 0);
-    kona_register_return_page(s, RETURN_PAGE);
-    video_command(s, GET_BOARD_CONFIG, (uint32_t[]){ 0 }, 1,
-                  GET_BOARD_CONFIG);
-    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
-    for (size_t i = 0; i < ARRAY_SIZE(expected); i++) {
-        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * i), ==,
-                        expected[i]);
+    return kona_init_logged(args, "guest_errors,unimp", log);
+}
+
+/*
+ * A configured pipe describes every channel its display generator has:
+ * GetBoardConfig's board mask has a bit for each physical channel, two
+ * for fancy-akita's DG5-2 030-1055-001 and eight for whole-tetra's
+ * 030-1087-001, and GetChannelConfig answers each one present (0x1), the
+ * channels past 0 not yet running. A channel past the board's last gets
+ * no reply and is logged.
+ */
+static void test_configured_channels_answer(void)
+{
+    static const struct {
+        const char *dg;
+        uint32_t mask;
+    } boards[] = {
+        { "030-1055-001", 0x3 }, { "030-1087-001", 0xff },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(boards); i++) {
+        unsigned channels = ctpop32(boards[i].mask);
+        g_autofree char *log = NULL;
+        g_autofree char *found = NULL;
+        g_autofree char *refused = NULL;
+        QTestState *s = kona_init_dg(boards[i].dg, &log);
+        uint32_t reply[19];
+
+        kona_register_return_page(s, RETURN_PAGE);
+        video_get(s, GET_BOARD_CONFIG, 0, 6, reply, 5);
+        g_assert_cmphex(reply[1], ==, boards[i].mask);
+        g_assert_cmphex(reply[3], ==, 0);
+        video_get(s, GET_CHANNEL_CONFIG, 0, 7, reply, 19);
+        g_assert_cmphex(reply[0], ==, 0xf);
+        video_get(s, GET_CHANNEL_CONFIG, channels - 1, 7, reply, 19);
+        g_assert_cmphex(reply[0], ==, 0x1);
+        video_get(s, GET_VAMPIRE, channels - 1, 16, reply, 6);
+        g_assert_cmphex(reply[0], ==, channels - 1);
+
+        guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
+        guest_fill_word(s, RETURN_PAGE, 0);
+        video_send(s, GET_CHANNEL_CONFIG, (uint32_t[]){ channels }, 1);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x5a5a5a5a);
+        assert_textport_in_step(s);
+        qtest_quit(s);
+
+        found = kona_log_read(log);
+        refused = g_strdup_printf("unsupported video channel %u for 0x13",
+                                  channels);
+        g_assert_nonnull(strstr(found, refused));
     }
-    guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
-    guest_fill_word(s, RETURN_PAGE, 0);
-    video_command(s, GET_CHANNEL_CONFIG, (uint32_t[]){ 1 }, 1,
-                  GET_CHANNEL_CONFIG + 1);
-    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
-    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x5a5a5a5a);
+}
+
+/*
+ * The channel setters as the X server's combination load sends them for a
+ * 640x480 channel 1 taking (640, 0) of the managed area: DisableChannel,
+ * LoadFormat with the format's active lines and pixels in words 23 and
+ * 24, Resize with the rectangle's top row counted from the bottom, an
+ * unblank, then the two EnableChannel passes. GetChannelConfig then
+ * answers it present, enabled and active (0xd), GetResize gives the
+ * rectangle back and GetChannelEnables word 1 says it runs.
+ * DisableChannel stops it again. A setter naming a channel the board does
+ * not have changes nothing and is logged.
+ */
+static void test_channel_setters(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_dg("030-1055-001", &log);
+    uint32_t format[383] = { 1, 1 };
+    uint32_t reply[19];
+
+    kona_register_return_page(s, RETURN_PAGE);
+    format[19] = 60 << 16;
+    format[23] = 480;
+    format[24] = 640;
+    video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
+    video_send(s, 0x1f, (uint32_t[]){ 1, 1 }, 2);
+    video_send(s, 0x16, format, ARRAY_SIZE(format));
+    video_send(s, 0x14, (uint32_t[]){ 1, 640, 1023, 640, 480, 1, 1, 0 }, 8);
+    video_send(s, 0x1e, (uint32_t[]){ 1, 3 }, 2);
+    video_send(s, 0x1f, (uint32_t[]){ 1, 0 }, 2);
+    video_send(s, 0x17, (uint32_t[]){ 1, 1, 0 }, 3);
+    video_send(s, 0x17, (uint32_t[]){ 1, 0, 1 }, 3);
+
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xd);
+    g_assert_cmphex(reply[18], ==, 3);
+    video_get(s, GET_RESIZE, 1, 8, reply, 18);
+    g_assert_cmphex(reply[0], ==, 640);
+    g_assert_cmphex(reply[1], ==, 1023);
+    g_assert_cmphex(reply[2], ==, 640);
+    g_assert_cmphex(reply[3], ==, 480);
+    video_get(s, GET_CHANNEL_ENABLES, 1, 19, reply, 2);
+    g_assert_cmphex(reply[1], ==, 1);
+    video_get(s, GET_RESIZE, 0, 8, reply, 18);
+    g_assert_cmphex(reply[0], ==, 0);
+    g_assert_cmphex(reply[2], ==, 1280);
+
+    video_send(s, 0x18, (uint32_t[]){ 1 }, 1);
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+    video_get(s, GET_CHANNEL_ENABLES, 1, 19, reply, 2);
+    g_assert_cmphex(reply[1], ==, 0);
+
+    video_send(s, 0x18, (uint32_t[]){ 2 }, 1);
     assert_textport_in_step(s);
     qtest_quit(s);
 
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "unsupported video channel 1 for 0x13"));
+    g_assert_nonnull(strstr(found, "unsupported video channel 2 for 0x18"));
 }
 
 /*
@@ -575,7 +694,14 @@ static void test_resize_reply(void)
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(MACHINE_ARGS, "guest_errors,unimp",
                                     &log);
-    static const uint32_t expected[] = { 0, 1023, 1280, 1024 };
+    /*
+     * The input rectangle, then the whole managed area to pan over, steps
+     * of one pixel and the managed area as the largest size.
+     */
+    static const uint32_t expected[18] = {
+        0, 1023, 1280, 1024, 0, 1023, 1280, 1024, 1, 1, 1, 1, 1280, 1024,
+    };
+    uint32_t sum = 8;
 
     guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
     guest_fill_word(s, RETURN_PAGE, 0);
@@ -585,9 +711,10 @@ static void test_resize_reply(void)
     g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 8);
     for (unsigned i = 0; i < 18; i++) {
         g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * i), ==,
-                        i < 4 ? expected[i] : 0);
+                        expected[i]);
+        sum += expected[i];
     }
-    g_assert_cmphex(guest_word(s, RETURN_PAGE + 84), ==, 0xd07);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 84), ==, sum);
     guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
     guest_fill_word(s, RETURN_PAGE, 0);
     video_command(s, 0x15, (uint32_t[]){ 1 }, 1, 0x16);
@@ -603,13 +730,21 @@ static void test_resize_reply(void)
 
 static void test_zero_data_replies(void)
 {
+    /*
+     * GetChannelBlanking, GetVampire and GetChannelFormatInfo describe a
+     * channel, so they name channel 0, the one an unconfigured pipe has;
+     * GetVampire's word 0 is that channel's own number, 0.
+     */
     static const struct {
         uint32_t command;
         uint32_t id;
         uint32_t bytes;
+        uint32_t data;
     } gets[] = {
-        { 0x26, 12, 4 }, { 0x20, 9, 4 }, { 0x3a, 16, 24 },
-        { 0x45, 20, 4 }, { 0x4a, 23, 20 }, { 0x4c, 24, 16 }, { 0x55, 28, 4 },
+        { 0x26, 12, 4, 0xffffffff }, { 0x20, 9, 4, 0 },
+        { 0x3a, 16, 24, 0 }, { 0x45, 20, 4, 0xffffffff },
+        { 0x4a, 23, 20, 0 }, { 0x4c, 24, 16, 0xffffffff },
+        { 0x55, 28, 4, 0xffffffff },
     };
     QTestState *s = qtest_init(MACHINE_ARGS);
 
@@ -619,8 +754,8 @@ static void test_zero_data_replies(void)
 
         guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
         guest_fill_word(s, RETURN_PAGE, 0);
-        video_command(s, gets[i].command, (uint32_t[]){ 0xffffffff }, 1,
-                      gets[i].command - 1);
+        video_command(s, gets[i].command, &gets[i].data, 1,
+                      gets[i].command + gets[i].data);
         g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
         g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0x5a5a5a5a);
         g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, gets[i].id);
@@ -1248,9 +1383,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-video/resize-reply", test_resize_reply);
     qtest_add_func("sn0/origin2000/kona-video/channel-config-reply",
                    test_channel_config_reply);
-    qtest_add_func("sn0/origin2000/kona-video/"
-                   "configured-channels-presentation-only",
-                   test_configured_channels_presentation_only);
+    qtest_add_func("sn0/origin2000/kona-video/configured-channels-answer",
+                   test_configured_channels_answer);
+    qtest_add_func("sn0/origin2000/kona-video/channel-setters",
+                   test_channel_setters);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
