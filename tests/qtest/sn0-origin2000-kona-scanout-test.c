@@ -1154,6 +1154,52 @@ static void test_migration_carries_channels(void)
     g_rmdir(dir);
 }
 
+/*
+ * A stream whose channel state disagrees with the scanout mode it carries
+ * is refused. The source loads channel 1 with a 1000x600 format; the
+ * stream is saved to a file, and the first 1000x600 in it, which is the
+ * channel array's entry for channel 1 (enabled, then the format's width
+ * and height), is changed to 1004x600 while channel 1's scanout keeps
+ * its 1000x600 mode. The destination must refuse the stream rather than
+ * resolve 1004-pixel rows into 1000-pixel frame lines.
+ */
+static void test_migration_refuses_mismatched_channel_mode(void)
+{
+    static const uint8_t entry[] = {
+        0x01, 0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x02, 0x58,
+    };
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *path = g_build_filename(dir, "stream", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+    g_autofree char *dest_args = NULL;
+    gchar *data = NULL;
+    gsize len = 0;
+    uint8_t *at;
+    QTestState *from, *to;
+
+    from = qtest_init(DG5_2_ARGS);
+    kona_load_channel(from, 1, 1000, 600, 0, 0, 1000, 600);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    g_assert_true(g_file_get_contents(path, &data, &len, NULL));
+    at = memmem(data, len, entry, sizeof(entry));
+    g_assert_nonnull(at);
+    at[4] = 0xec;
+    g_assert_true(g_file_set_contents(path, data, len, NULL));
+    g_free(data);
+
+    dest_args = g_strdup_printf("%s -incoming defer", DG5_2_ARGS);
+    to = qtest_init(dest_args);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(to,
+        "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1214,6 +1260,9 @@ int main(int argc, char **argv)
                    test_channel_gamma_map);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-channels",
                    test_migration_carries_channels);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "migration-refuses-mismatched-channel-mode",
+                   test_migration_refuses_mismatched_channel_mode);
 
     ret = g_test_run();
     qtest_quit(qts);

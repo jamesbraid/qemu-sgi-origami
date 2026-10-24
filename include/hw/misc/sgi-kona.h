@@ -814,6 +814,7 @@ typedef enum SGIKonaBitmapState {
 
 typedef struct SGIKonaChannel {
     bool enabled;
+    bool loaded;                /* a LoadFormat since its DisableChannel */
     uint32_t format_width;
     uint32_t format_height;
     uint32_t input_x;

@@ -685,6 +685,48 @@ static void test_channel_setters(void)
 }
 
 /*
+ * A one-channel combination loaded on a two-channel board, in the order
+ * the X server sends it: DisableChannel and a blank for both channels,
+ * LoadFormat, Resize and an unblank for channel 0 only, then the master's
+ * EnableChannel pair, which names physical channel 1 whatever channel the
+ * master is ([1, 1, 0], then [1, 0, 1]). Channel 1 had no LoadFormat
+ * since its DisableChannel, so it stays off: GetChannelConfig answers it
+ * present only (0x1) and GetChannelEnables word 1 is 0. Channel 0 runs.
+ */
+static void test_one_channel_load_leaves_channel_off(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *s = kona_init_dg("030-1055-001", &log);
+    uint32_t format[383] = { 0, 1 };
+    uint32_t reply[19];
+
+    kona_register_return_page(s, RETURN_PAGE);
+    format[19] = 60 << 16;
+    format[23] = 1024;
+    format[24] = 1280;
+    for (uint32_t c = 0; c < 2; c++) {
+        video_send(s, 0x18, &c, 1);
+        video_send(s, 0x1f, (uint32_t[]){ c, 1 }, 2);
+    }
+    video_send(s, 0x16, format, ARRAY_SIZE(format));
+    video_send(s, 0x14, (uint32_t[]){ 0, 0, 1023, 1280, 1024, 1, 1, 0 }, 8);
+    video_send(s, 0x1f, (uint32_t[]){ 0, 0 }, 2);
+    video_send(s, 0x17, (uint32_t[]){ 1, 1, 0 }, 3);
+    video_send(s, 0x17, (uint32_t[]){ 1, 0, 1 }, 3);
+
+    video_get(s, GET_CHANNEL_CONFIG, 1, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0x1);
+    video_get(s, GET_CHANNEL_ENABLES, 1, 19, reply, 2);
+    g_assert_cmphex(reply[1], ==, 0);
+    video_get(s, GET_CHANNEL_CONFIG, 0, 7, reply, 19);
+    g_assert_cmphex(reply[0], ==, 0xf);
+    video_get(s, GET_CHANNEL_ENABLES, 0, 19, reply, 2);
+    g_assert_cmphex(reply[1], ==, 1);
+    qtest_quit(s);
+    g_free(kona_log_read(log));
+}
+
+/*
  * Every other Get answers its reply id, zero data at its reply size and
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
  * smallest (one word); the rest follow the model's video command table.
@@ -1387,6 +1429,9 @@ int main(int argc, char **argv)
                    test_configured_channels_answer);
     qtest_add_func("sn0/origin2000/kona-video/channel-setters",
                    test_channel_setters);
+    qtest_add_func("sn0/origin2000/kona-video/"
+                   "one-channel-load-leaves-channel-off",
+                   test_one_channel_load_leaves_channel_off);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
