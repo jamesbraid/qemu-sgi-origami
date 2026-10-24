@@ -3,6 +3,7 @@
 /* Synthetic UART input/status for DMA tests, not a physical serial peer. */
 #include "qemu/osdep.h"
 #include "hw/char/serial.h"
+#include "hw/mips/sgi/mace.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -130,8 +131,38 @@ static const TypeInfo peer_type = {
     .class_init = peer_class_init,
 };
 
+static DeviceRealize mace_offset_parent_realize;
+
+static void mace_offset_realize(DeviceState *dev, Error **errp)
+{
+    ERRP_GUARD();
+
+    if (!qtest_enabled()) {
+        error_setg(errp, "serial ring offset fixture requires qtest");
+        return;
+    }
+    sgi_mace_enable_serial_ring_offsets(dev, errp);
+    if (*errp) {
+        return;
+    }
+    mace_offset_parent_realize(dev, errp);
+}
+
+static void mace_offset_class_init(ObjectClass *oc, const void *data)
+{
+    device_class_set_parent_realize(DEVICE_CLASS(oc), mace_offset_realize,
+                                    &mace_offset_parent_realize);
+}
+
+static const TypeInfo mace_offset_type = {
+    .name = "sgi-mace-serial-offset-test",
+    .parent = TYPE_SGI_MACE,
+    .class_init = mace_offset_class_init,
+};
+
 static void peer_register_types(void)
 {
     type_register_static(&peer_type);
+    type_register_static(&mace_offset_type);
 }
 type_init(peer_register_types)
