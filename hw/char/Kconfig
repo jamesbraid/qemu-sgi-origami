@@ -47,6 +47,7 @@ config SGI_IOC4
     bool
     depends on PCI
     select SERIAL
+    select SGI_IOC3_KBC
 
 config SGI_IOC3_PARALLEL
     bool

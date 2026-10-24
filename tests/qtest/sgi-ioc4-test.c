@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
+#include "qobject/qjson.h"
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -19,6 +20,13 @@
 #define PCI_ADDRESS 0x01000000u
 #define UART(n) (BAR + 0x380 + 8 * (n))
 #define RTC(n) (BAR + 0x87ff8 + (n))
+#define KBC_CONTROL 0x200
+#define KBC_KBD_RECEIVE 0x204
+#define KBC_AUX_RECEIVE 0x208
+#define KBC_KBD_TRANSMIT 0x20c
+#define KBC_AUX_TRANSMIT 0x210
+#define KBC_OTHER_IRQ 0x40
+#define KBC_WRITE_PENDING 0x03
 #define PASS(n) (0x40u << (8 * (n)))
 #define DMA_RAM_PATH "/machine/peripheral/fabric"
 #define DMA_RAM_BASE UINT64_C(0x20000000)
@@ -67,6 +75,8 @@
 
 static uint32_t reg_read(QTestState *qts, unsigned offset);
 static void reg_write(QTestState *qts, unsigned offset, uint32_t value);
+static char *ioc4_log_file_new(void);
+static char *ioc4_log_file_take(const char *path);
 static void ioc4_wait_migration_failed(QTestState *qts);
 
 static uint64_t ioc4_target_property(QTestState *qts, const char *property)
@@ -111,6 +121,149 @@ static QTestState *ioc4_start_full(unsigned clock_hz, bool incoming,
 static QTestState *ioc4_start(unsigned clock_hz)
 {
     return ioc4_start_full(clock_hz, false, false);
+}
+
+static QTestState *ioc4_start_ps2(bool ports_present, bool incoming,
+                                  const char *log)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -d unimp,guest_errors,invalid_mem -D %s "
+        "-device sgi-xio-test-target,id=fabric "
+        "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0] %s"
+        "-device sgi-ioc4,bus=head-e.0,addr=0,ps2-input=%s",
+        log, incoming ? "-incoming defer " : "",
+        ports_present ? "on" : "off");
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
+    ioc4_map(qts);
+    return qts;
+}
+
+static void ioc4_send_ps2_key(QTestState *qts, const char *qcode)
+{
+    QDict *response = qtest_qmp(qts,
+        "{'execute':'input-send-event','arguments':{'events':["
+        "{'type':'key','data':{'down':true,'key':"
+        "{'type':'qcode','data':%s}}}]}}", qcode);
+
+    if (!qdict_haskey(response, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
+        g_error("IOC4 PS/2 key event failed: %s", text->str);
+    }
+    qobject_unref(response);
+}
+
+static void test_ps2_adapter(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *qts = ioc4_start_ps2(true, false, log);
+
+    qtest_irq_intercept_out_named(qts, CHIP, "head-e-pci-intx");
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
+    reg_write(qts, KBC_CONTROL, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00fcfffc);
+    reg_write(qts, KBC_CONTROL, 0);
+    qtest_readb(qts, BAR + KBC_CONTROL);
+    qtest_writew(qts, BAR + KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+
+    reg_write(qts, KBC_KBD_TRANSMIT, 0xff000000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
+    reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL) & KBC_WRITE_PENDING, ==, 0);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+
+    ioc4_send_ps2_key(qts, "a");
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_false(qtest_get_irq(qts, 0));
+    reg_write(qts, 0x14, KBC_OTHER_IRQ);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0x1f000000, ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+
+    qtest_writeb(qts, UART(0) + 3, 0x80);
+    qtest_writeb(qts, UART(0), 0x34);
+    qtest_writeb(qts, UART(0) + 1, 0x12);
+    qtest_writeb(qts, UART(0) + 3, 0x03);
+    qtest_writeb(qts, UART(0) + 2, 0x01);
+    qtest_writeb(qts, UART(0) + 1, 0x02);
+    reg_write(qts, 0x10, PASS(0));
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(0), ==, PASS(0));
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    reg_write(qts, 0x1c, KBC_OTHER_IRQ);
+    g_assert_true(qtest_get_irq(qts, 0));
+    reg_write(qts, 0x14, KBC_OTHER_IRQ);
+    g_assert_true(qtest_get_irq(qts, 0));
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(0), ==, PASS(0));
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_writeb(qts, UART(0) + 1, 0);
+    reg_write(qts, 0x08, PASS(0));
+    g_assert_false(qtest_get_irq(qts, 0));
+
+    reg_write(qts, KBC_AUX_TRANSMIT, 0xff);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0xe0faaa00);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL) & KBC_WRITE_PENDING, ==, 0);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    reg_write(qts, KBC_AUX_TRANSMIT, 0xf4);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0x80fa0000);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    {
+        QDict *response = qtest_qmp(qts,
+        "{'execute':'input-send-event','arguments':{'events':["
+        "{'type':'rel','data':{'axis':'x','value':4}},"
+        "{'type':'btn','data':{'down':true,'button':'left'}}]}}");
+        if (!qdict_haskey(response, "return")) {
+            g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
+            g_error("IOC4 PS/2 mouse event failed: %s", text->str);
+        }
+        qobject_unref(response);
+    }
+    qtest_clock_step(qts, 10 * 1000000ULL);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0xe0090400);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    ioc4_map(qts);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x14) & KBC_OTHER_IRQ, ==, 0);
+    reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+    g_assert_nonnull(strstr(contents, "unsupported KBC read width 1"));
+    g_assert_nonnull(strstr(contents, "unsupported KBC write width 2"));
+}
+
+static void test_ps2_unplugged_registers(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_ps2(false, false, log);
+
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
+    reg_write(qts, KBC_CONTROL, UINT32_MAX);
+    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00fcfffc);
+    reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    reg_write(qts, KBC_AUX_TRANSMIT, 0xff);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x0c), ==, 0);
+    qtest_quit(qts);
+    g_free(ioc4_log_file_take(log));
 }
 
 static QTestState *ioc4_start_readback(bool incoming, bool enabled)
@@ -2395,6 +2548,81 @@ static void ioc4_wait_migration_failed(QTestState *qts)
     }
 }
 
+static void test_ps2_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ps2-migration-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    g_autofree char *from_log = ioc4_log_file_new();
+    g_autofree char *to_log = ioc4_log_file_new();
+    g_autofree char *from_contents = NULL, *to_contents = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ioc4_start_ps2(true, false, from_log);
+    to = ioc4_start_ps2(true, true, to_log);
+    qtest_irq_intercept_out_named(to, CHIP, "head-e-pci-intx");
+    ioc4_send_ps2_key(from, "a");
+    reg_write(from, 0x14, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(from, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_true(qtest_get_irq(to, 0));
+    g_assert_cmphex(reg_read(to, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(to, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    g_assert_true(qtest_get_irq(to, 0));
+    reg_write(to, 0x0c, KBC_OTHER_IRQ);
+    g_assert_false(qtest_get_irq(to, 0));
+
+    qtest_quit(from);
+    qtest_quit(to);
+    from_contents = ioc4_log_file_take(from_log);
+    to_contents = ioc4_log_file_take(to_log);
+    g_assert_nonnull(from_contents);
+    g_assert_nonnull(to_contents);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_ps2_migration_mode_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ps2-profile-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    g_autofree char *from_log = ioc4_log_file_new();
+    g_autofree char *to_log = ioc4_log_file_new();
+    g_autofree char *from_contents = NULL, *to_contents = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ioc4_start_ps2(true, false, from_log);
+    to = ioc4_start_ps2(false, true, to_log);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    ioc4_wait_migration_failed(to);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    from_contents = ioc4_log_file_take(from_log);
+    to_contents = ioc4_log_file_take(to_log);
+    g_assert_nonnull(from_contents);
+    g_assert_nonnull(to_contents);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_dma_migration_profile_mismatch(void)
 {
     GError *error = NULL;
@@ -2534,6 +2762,12 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/ata-readback-migration-mode-mismatch",
                    test_ata_readback_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
+    qtest_add_func("/sgi-ioc4/ps2-adapter", test_ps2_adapter);
+    qtest_add_func("/sgi-ioc4/ps2-unplugged-registers",
+                   test_ps2_unplugged_registers);
+    qtest_add_func("/sgi-ioc4/ps2-migration", test_ps2_migration);
+    qtest_add_func("/sgi-ioc4/ps2-migration-mode-mismatch",
+                   test_ps2_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/interrupts", test_interrupts);
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);
     qtest_add_func("/sgi-ioc4/dma-chardev-reconnect",
