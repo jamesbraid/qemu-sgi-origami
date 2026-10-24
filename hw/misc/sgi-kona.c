@@ -803,6 +803,7 @@ static void sgi_kona_channels_default(SGIKonaChannel *channel)
     }
     channel[0] = (SGIKonaChannel) {
         .enabled = true,
+        .loaded = true,
         .format_width = SGI_KONA_FB_WIDTH,
         .format_height = SGI_KONA_FB_HEIGHT,
         .input_x = 0,
@@ -3374,12 +3375,12 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  * board mask's bit number.
  *
  * - DisableChannel [channel]: the channel stops; its console shows no
- *   mode.
+ *   mode, and it holds no format until the next LoadFormat.
  * - LoadFormat [channel, 1, ...]: the channel's format; words 23 and 24
  *   are the format's active lines and pixels, the channel's output size.
  *   The channel runs.
- * - EnableChannel [channel, on, own timing]: word 1 nonzero runs the
- *   channel; zero leaves it as it is.
+ * - EnableChannel [channel, on, own timing]: word 1 nonzero runs a
+ *   channel that holds a format; otherwise it changes nothing.
  * - Resize [channel, x, top row from the bottom, width, height, 1,
  *   flicker, 0]: the input rectangle.
  * - ChannelBlanking [channel, blank]: nonzero shows the channel black.
@@ -3396,10 +3397,12 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
  * or the second pass would turn every channel off, and a master channel
  * 0 would get no EnableChannel at all. So the model runs a channel from
  * its LoadFormat, and takes EnableChannel's word 1 only as a request to
- * run. Every sequence the shipped senders make leaves the same channels
- * running under this reading; what words 1 and 2, and the literal 1, mean
- * to the display generator is unknown. A hardware trace of a load would
- * settle it.
+ * run a channel that has had a LoadFormat since its last DisableChannel.
+ * The literal [1, 1, 0] then cannot start channel 1 when the combination
+ * leaves it off: the load disabled it and loaded no format for it. With
+ * that condition, a load leaves running exactly the channels it loaded a
+ * format for; what words 1 and 2, and the literal 1, mean to the display
+ * generator is unknown. A hardware trace of a load would settle it.
  *
  * Approximated: a vampire channel, one that takes another channel's
  * timing and pixels, and a channel bound to an X window are logged as
@@ -3448,6 +3451,7 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     switch (command) {
     case SGI_KONA_VIDEO_DISABLE_CHANNEL:
         ch->enabled = false;
+        ch->loaded = false;
         break;
     case SGI_KONA_VIDEO_LOAD_FORMAT:
         if (!d[23] || !d[24] || d[23] > SGI_SCANOUT_MAX_DIM ||
@@ -3459,10 +3463,11 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         }
         ch->format_width = d[24];
         ch->format_height = d[23];
+        ch->loaded = true;
         ch->enabled = true;
         break;
     case SGI_KONA_VIDEO_ENABLE_CHANNEL:
-        if (d[1]) {
+        if (d[1] && ch->loaded) {
             ch->enabled = true;
         }
         break;
@@ -16959,10 +16964,39 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
     return 0;
 }
 
+/*
+ * Every channel's scanout presents the mode its channel state gives: the
+ * channel's rows are resolved at its format's width into a frame
+ * allocated for the scanout's mode, so a stream whose two disagree is
+ * refused rather than let a row run past its frame.
+ */
+static int sgi_kona_channels_match_modes(SGIKonaState *s)
+{
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        const SGIScanout *so = sgi_kona_channel_scanout(s, c);
+        SGIKonaChannelView v;
+        uint32_t w = 0, h = 0;
+
+        if (sgi_kona_channel_view(s, c, &v)) {
+            w = v.out_width;
+            h = v.out_height;
+        }
+        if (so->mode.width != w || so->mode.height != h ||
+            so->frame_width != w || so->frame_height != h) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
 static int sgi_kona_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
     int result = sgi_kona_post_load_validate(opaque, version_id);
+
+    if (!result) {
+        result = sgi_kona_channels_match_modes(s);
+    }
 
     sgi_kona_gamma_update(s);
     if (result) {
@@ -17118,6 +17152,7 @@ static const VMStateDescription vmstate_sgi_kona_channel = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(enabled, SGIKonaChannel),
+        VMSTATE_BOOL(loaded, SGIKonaChannel),
         VMSTATE_UINT32(format_width, SGIKonaChannel),
         VMSTATE_UINT32(format_height, SGIKonaChannel),
         VMSTATE_UINT32(input_x, SGIKonaChannel),
