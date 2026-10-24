@@ -120,6 +120,19 @@ static bool sgi_mace_eth_link_ready(SGIMACEEthState *s)
     return !(s->phy->regs[0] & 0x1000) || s->phy->autoneg_done;
 }
 
+static bool sgi_mace_eth_rx_available(SGIMACEEthState *s)
+{
+    unsigned offset = ((s->dma_control >> 12) & 7) * 8 + 2;
+
+    if (!s->rx_count) {
+        return false;
+    }
+    /* Closing a gathered buffer consumes an address before the next frame. */
+    return !s->rx_gather_open ||
+           s->rx_gather_cursor + offset + 1514 + 4 <= 4096 ||
+           s->rx_count > 1;
+}
+
 static void sgi_mace_eth_rx_retire(SGIMACEEthState *s)
 {
     if (s->rx_threshold_retirement &&
@@ -230,6 +243,8 @@ static void sgi_mace_eth_fifo_advance(uint8_t *index, bool *generation)
 
 static void sgi_mace_eth_fifo_push(SGIMACEEthState *s, uint32_t address)
 {
+    bool resume = s->rx_threshold_retirement && !sgi_mace_eth_rx_available(s);
+
     if (s->rx_count == 16) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-mace-eth: RX address FIFO overrun is unsupported\n");
@@ -240,6 +255,9 @@ static void sgi_mace_eth_fifo_push(SGIMACEEthState *s, uint32_t address)
     s->rx_count++;
     sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
+    if (resume && sgi_mace_eth_rx_available(s)) {
+        sgi_mace_eth_schedule_flush(s);
+    }
 }
 
 static uint32_t sgi_mace_eth_fifo_pop(SGIMACEEthState *s)
@@ -289,13 +307,19 @@ static bool sgi_mace_eth_accept(SGIMACEEthState *s, const uint8_t *frame,
     return false;
 }
 
+static bool sgi_mace_eth_rx_ready(SGIMACEEthState *s)
+{
+    return !s->rx_stopped && !(s->mac_control & MACE_ETH_MAC_RESET) &&
+           (s->dma_control & MACE_ETH_RX_ENABLE) &&
+           sgi_mace_eth_link_ready(s);
+}
+
 static bool sgi_mace_eth_can_receive(NetClientState *nc)
 {
     SGIMACEEthState *s = qemu_get_nic_opaque(nc);
 
-    return !s->rx_stopped && !(s->mac_control & MACE_ETH_MAC_RESET) &&
-           (s->dma_control & MACE_ETH_RX_ENABLE) &&
-           sgi_mace_eth_link_ready(s);
+    return sgi_mace_eth_rx_ready(s) &&
+           (!s->rx_threshold_retirement || sgi_mace_eth_rx_available(s));
 }
 
 static ssize_t sgi_mace_eth_receive(NetClientState *nc,
@@ -310,11 +334,11 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
     unsigned end;
     MemTxResult result;
 
-    if (!sgi_mace_eth_can_receive(nc) ||
+    if (!sgi_mace_eth_rx_ready(s) ||
         !sgi_mace_eth_accept(s, frame, size, &match)) {
         return size;
     }
-    if (!s->rx_count) {
+    if (!s->rx_count && !s->rx_threshold_retirement) {
         s->int_status |= MACE_ETH_RX_UNDERFLOW_INT;
         sgi_mace_eth_update_irq(s);
         return size;
@@ -326,6 +350,10 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-mace-eth: oversized RX frame is unsupported\n");
         return size;
+    }
+    /* Queued retries bypass can_receive. */
+    if (s->rx_threshold_retirement && !sgi_mace_eth_rx_available(s)) {
+        return 0;
     }
     if (s->rx_gather_open && bucket + offset + 1514 + sizeof(fcs) > 4096) {
         sgi_mace_eth_rx_close(s);
