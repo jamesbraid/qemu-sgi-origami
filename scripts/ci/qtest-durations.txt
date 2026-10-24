@@ -101,7 +101,9 @@ qtest-mips64/sn0-onyx2-test 3
 # The sn0-origin2000-kona-3d-test groups are estimates, not measurements:
 # the whole test's median of 1113 s in the runs above, shared out by each
 # group's share of its cases' times in one serial run in the CI image
-# (2026-10-18). The next refresh replaces them.
+# (2026-10-18). texture and texture-formats share the old texture
+# group's 160 s in the 375:173 ratio of their 2026-10-24 times alone.
+# The next refresh replaces them.
 qtest-mips64/sn0-origin2000-kona-3d-test-draw 136
 qtest-mips64/sn0-origin2000-kona-3d-test-index 104
 qtest-mips64/sn0-origin2000-kona-3d-test-read 137
@@ -110,7 +112,8 @@ qtest-mips64/sn0-origin2000-kona-3d-test-renderer-cpu 118
 qtest-mips64/sn0-origin2000-kona-3d-test-renderer-cpu-fragment 104
 qtest-mips64/sn0-origin2000-kona-3d-test-renderer-fragment 147
 qtest-mips64/sn0-origin2000-kona-3d-test-state 57
-qtest-mips64/sn0-origin2000-kona-3d-test-texture 160
+qtest-mips64/sn0-origin2000-kona-3d-test-texture 109
+qtest-mips64/sn0-origin2000-kona-3d-test-texture-formats 51
 qtest-mips64/sn0-origin2000-kona-bringup-test 6
 qtest-mips64/sn0-origin2000-kona-context-test 99
 qtest-mips64/sn0-origin2000-kona-dma-test 2
