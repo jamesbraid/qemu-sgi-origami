@@ -6294,7 +6294,10 @@ static uint32_t odyssey_front_face(uint32_t pattern_mode)
  * and keep what the other context left, so while a GL_POLYGON is held open
  * its begin flag is set aside for the one call. APPROXIMATION: this follows
  * the model's hold, not any board behaviour; for every other primitive the
- * shared layer's rule stands.
+ * shared layer's rule stands. The hold is right only because the model saves
+ * no GL_POLYGON vertices to the shadow, so the kernel's restart replays
+ * nothing: if the model ever saves them, it must stop holding at the same
+ * time, or the polygon draws twice.
  */
 static void odyssey_gl_feed_raster_state(SGIOdysseyState *s, uint16_t op,
                                          const uint32_t *args, unsigned n)
