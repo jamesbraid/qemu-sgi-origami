@@ -1743,6 +1743,7 @@ static void o2_init(MachineState *machine)
     mace = qdev_new("sgi-mace");
     if (s->legacy_crime_software) {
         sgi_mace_enable_serial_ring_offsets(mace, &error_fatal);
+        sgi_mace_enable_rx_threshold_retirement(mace, &error_fatal);
     }
     if (blk_by_name("nvram0")) {
         qdev_prop_set_drive(mace, "drive", blk_by_name("nvram0"));

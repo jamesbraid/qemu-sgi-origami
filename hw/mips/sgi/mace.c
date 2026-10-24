@@ -179,6 +179,16 @@ static void mace_rtc_irq(void *opaque, int n, int level)
     mace_update_irqs(s);
 }
 
+void sgi_mace_enable_rx_threshold_retirement(DeviceState *dev, Error **errp)
+{
+    if (qdev_is_realized(dev)) {
+        error_setg(errp, "sgi-mace RX threshold policy must be selected "
+                         "before realize");
+        return;
+    }
+    SGI_MACE(dev)->eth.rx_threshold_retirement = 1;
+}
+
 void sgi_mace_enable_serial_ring_offsets(DeviceState *dev, Error **errp)
 {
     if (qdev_is_realized(dev)) {

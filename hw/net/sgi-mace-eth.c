@@ -120,6 +120,14 @@ static bool sgi_mace_eth_link_ready(SGIMACEEthState *s)
     return !(s->phy->regs[0] & 0x1000) || s->phy->autoneg_done;
 }
 
+static void sgi_mace_eth_rx_retire(SGIMACEEthState *s)
+{
+    if (s->rx_threshold_retirement &&
+        s->rx_count == ((s->dma_control >> 4) & 31)) {
+        s->int_status &= ~MACE_ETH_RX_THRESHOLD_INT;
+    }
+}
+
 static void sgi_mace_eth_update_irq(SGIMACEEthState *s)
 {
     unsigned threshold = (s->dma_control >> 4) & 31;
@@ -135,7 +143,8 @@ static void sgi_mace_eth_update_irq(SGIMACEEthState *s)
         s->tx_read == s->tx_write && sgi_mace_eth_link_ready(s)) {
         s->int_status |= MACE_ETH_TX_EMPTY_INT;
     }
-    if (rx_active && !s->rx_delay && !s->rx_pending &&
+    if (!s->rx_threshold_retirement && rx_active &&
+        !s->rx_delay && !s->rx_pending &&
         s->rx_count != threshold) {
         s->int_status |= MACE_ETH_RX_THRESHOLD_INT;
     }
@@ -206,6 +215,7 @@ static void sgi_mace_eth_rx_reinit_finish(SGIMACEEthState *s)
     s->rx_write = 0;
     s->rx_read_generation = false;
     s->rx_write_generation = false;
+    sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
     s->rx_reinit_seen = 0;
 }
@@ -228,6 +238,7 @@ static void sgi_mace_eth_fifo_push(SGIMACEEthState *s, uint32_t address)
     s->rx_fifo[s->rx_write] = address & UINT32_C(0xfffff000);
     sgi_mace_eth_fifo_advance(&s->rx_write, &s->rx_write_generation);
     s->rx_count++;
+    sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
 }
 
@@ -241,6 +252,7 @@ static uint32_t sgi_mace_eth_fifo_pop(SGIMACEEthState *s)
     address = s->rx_fifo[s->rx_read];
     sgi_mace_eth_fifo_advance(&s->rx_read, &s->rx_read_generation);
     s->rx_count--;
+    sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
     return address;
 }
@@ -371,6 +383,8 @@ static ssize_t sgi_mace_eth_receive(NetClientState *nc,
             timer_mod(s->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       s->rx_delay * MACE_ETH_RX_TICK_NS);
         }
+    } else if (s->rx_threshold_retirement) {
+        sgi_mace_eth_rx_expire(s);
     }
     return size;
 
@@ -696,6 +710,7 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
                 s->tx_reinit_seen = 0;
             }
             s->dma_control = value & 0xffff;
+            sgi_mace_eth_rx_retire(s);
             if (!rx_enable_requested) {
                 sgi_mace_eth_rx_close(s);
                 sgi_mace_eth_rx_cancel(s);
@@ -765,6 +780,7 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
         case MACE_ETH_RX_INT_ALIAS:
             s->dma_control = (s->dma_control & ~UINT64_C(0x3f0)) |
                              (value & UINT64_C(0x3f0));
+            sgi_mace_eth_rx_retire(s);
             sgi_mace_eth_update_irq(s);
             return;
         case MACE_ETH_MDIO_DATA:
@@ -837,6 +853,7 @@ static int sgi_mace_eth_post_load(void *opaque, int version_id)
 {
     SGIMACEEthState *s = opaque;
 
+    sgi_mace_eth_rx_retire(s);
     sgi_mace_eth_update_irq(s);
     sgi_mace_eth_schedule_flush(s);
     return 0;
@@ -848,6 +865,7 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
     .minimum_version_id = 1,
     .post_load = sgi_mace_eth_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(rx_threshold_retirement, SGIMACEEthState),
         VMSTATE_UINT64(mac_control, SGIMACEEthState),
         VMSTATE_UINT64(dma_control, SGIMACEEthState),
         VMSTATE_UINT64(station, SGIMACEEthState),
