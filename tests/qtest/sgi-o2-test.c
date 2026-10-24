@@ -3377,6 +3377,103 @@ static uint16_t o2_aic_config_readw(QTestState *qts, unsigned slot,
     return qtest_readw(qts, MACE_CFGDATA + 2 - (offset & 2));
 }
 
+static void test_mace_pci_unused_aic_config(void)
+{
+    static const unsigned fields[] = { 0x18, 0x1c, 0x20, 0x24, 0x30 };
+    static const uint32_t payloads[] = {
+        UINT32_MAX, 0, 0x81000001, 0x52a739c6,
+    };
+    QTestState *qts = o2_start();
+    uint32_t unmapped, error_address;
+
+    qtest_irq_intercept_out_named(qts, "/machine/mace", "crime");
+    qtest_writel(qts, MACE_PCI + 8, 0x80000003);
+    qtest_set_irq_in(qts, "/machine/mace", "pci", 0, 1);
+    g_assert_true(qtest_get_irq(qts, 8));
+    g_assert_false(qtest_get_irq(qts, 7));
+    g_assert_cmpint(memtx_readl(qts, O2_PCI_HIGH_VIEW + 0x1000000, &unmapped),
+                    !=, MEMTX_OK);
+    for (unsigned slot = 1; slot <= 2; slot++) {
+        uint32_t bar0 = 0x2001 + (slot - 1) * 0x100;
+        uint32_t bar1 = 0x80010000 + (slot - 1) * 0x1000;
+
+        g_assert_cmphex(o2_aic_config_read(qts, slot, 0), ==, 0x80789004);
+        o2_aic_config_write(qts, slot, 4, 0);
+        o2_aic_config_write(qts, slot, 0x10, UINT32_MAX);
+        g_assert_cmphex(o2_aic_config_read(qts, slot, 0x10), ==, 0xffffff01);
+        o2_aic_config_write(qts, slot, 0x10, bar0);
+        o2_aic_config_write(qts, slot, 0x14, UINT32_MAX);
+        g_assert_cmphex(o2_aic_config_read(qts, slot, 0x14), ==, 0xfffff000);
+        o2_aic_config_write(qts, slot, 0x14, bar1);
+        o2_aic_config_write(qts, slot, 4, 6);
+        for (unsigned r = 0; r < ARRAY_SIZE(fields); r++) {
+            for (unsigned i = 0; i < ARRAY_SIZE(payloads); i++) {
+                qtest_writel(qts, MACE_CFGADDR, slot << 11 | fields[r]);
+                g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, payloads[i]),
+                                ==, MEMTX_OK);
+                for (unsigned lane = 0; lane < 4; lane++) {
+                    g_assert_cmpint(memtx_writeb(qts, MACE_CFGDATA + lane,
+                                                 payloads[i]), ==, MEMTX_OK);
+                }
+                for (unsigned lane = 0; lane < 4; lane += 2) {
+                    g_assert_cmpint(memtx_writew(qts, MACE_CFGDATA + lane,
+                                                 payloads[i]), ==, MEMTX_OK);
+                }
+                g_assert_cmphex(qtest_readl(qts, MACE_CFGDATA), ==, 0);
+                g_assert_cmphex(o2_aic_config_read(qts, slot, 0x10), ==, bar0);
+                g_assert_cmphex(o2_aic_config_read(qts, slot, 0x14), ==, bar1);
+                g_assert_cmphex(o2_aic_config_readw(qts, slot, 4), ==, 6);
+                g_assert_cmphex(qtest_readl(qts, MACE_PCI + 4) &
+                                ((1u << 31) | (1u << 19)), ==, 0);
+                g_assert_false(qtest_get_irq(qts, 7));
+                g_assert_true(qtest_get_irq(qts, 8));
+                g_assert_cmpint(memtx_readl(qts, O2_PCI_HIGH_VIEW + 0x1000000,
+                                             &unmapped), !=, MEMTX_OK);
+            }
+        }
+        qtest_writel(qts, MACE_CFGADDR, slot << 11 | 4);
+        g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, 0xe), ==, MEMTX_ERROR);
+        g_assert_cmphex(o2_aic_config_readw(qts, slot, 4), ==, 6);
+    }
+    const uint32_t absent[] = { 3u << 11, (1u << 11) | (1u << 8) };
+    for (unsigned dev = 0; dev < ARRAY_SIZE(absent); dev++) {
+        for (unsigned r = 0; r < ARRAY_SIZE(fields); r++) {
+            uint32_t address = absent[dev] | fields[r];
+
+            qtest_writel(qts, MACE_PCI + 4, 0);
+            qtest_writel(qts, MACE_CFGADDR, address);
+            g_assert_cmphex(qtest_readl(qts, MACE_CFGDATA), ==, UINT32_MAX);
+            g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, 0x63a591e7),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readl(qts, MACE_PCI + 4) &
+                            ((1u << 31) | (1u << 19)), ==,
+                            (1u << 31) | (1u << 19));
+            g_assert_cmphex(qtest_readl(qts, MACE_PCI), ==, address);
+            g_assert_true(qtest_get_irq(qts, 7));
+            qtest_writel(qts, MACE_PCI + 4, 1u << 31);
+            g_assert_true(qtest_get_irq(qts, 7));
+            qtest_writel(qts, MACE_PCI + 4, 0);
+            g_assert_false(qtest_get_irq(qts, 7));
+            g_assert_true(qtest_get_irq(qts, 8));
+        }
+    }
+    qtest_writel(qts, MACE_CFGADDR, absent[1] | fields[0]);
+    qtest_readl(qts, MACE_CFGDATA);
+    error_address = qtest_readl(qts, MACE_PCI);
+    for (unsigned slot = 1; slot <= 2; slot++) {
+        for (unsigned r = 0; r < ARRAY_SIZE(fields); r++) {
+            qtest_writel(qts, MACE_CFGADDR, slot << 11 | fields[r]);
+            g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, 0xa5c3197e),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readl(qts, MACE_CFGDATA), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, MACE_PCI), ==, error_address);
+            g_assert_true(qtest_get_irq(qts, 7));
+            g_assert_true(qtest_get_irq(qts, 8));
+        }
+    }
+    qtest_quit(qts);
+}
+
 static unsigned o2_aic_bus_level(QTestState *qts)
 {
     g_autoptr(QDict) reply = qtest_qmp(qts,
@@ -3444,7 +3541,8 @@ static void test_aic_pci_diagnostic(void)
     g_assert_cmphex(o2_aic_config_read(qts, 2, 4) & 7, ==, 6);
     qtest_writel(qts, MACE_CFGADDR, 1u << 11 | 0x18);
     g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, 0x80003000),
-                    !=, MEMTX_OK);
+                    ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, MACE_CFGDATA), ==, 0);
     qtest_writel(qts, MACE_CFGADDR, 1u << 11 | 4);
     g_assert_cmpint(memtx_writel(qts, MACE_CFGDATA, 0x00000008),
                     !=, MEMTX_OK);
@@ -3744,6 +3842,66 @@ static uint32_t o2_mace_copy_range(QTestState *qts, uint64_t source,
     o2_mace_card_set(qts, "test-length", length);
     o2_mace_card_set(qts, "test-command", 2);
     return o2_mace_card_get(qts, "test-result");
+}
+
+static void test_mace_pci_fresh_reads(void)
+{
+    QTestState *qts = o2_mace_banked_dma_start();
+    static const uint64_t offsets[] = { 0x17d, RAM_BANK_SIZE - 7 };
+    uint8_t source[32], original[32], expected[32], got[32];
+
+    o2_program_banks(qts);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'" MACE_DMA_CARD "',"
+        "'property':'test-master-enable','value':true}}");
+    for (unsigned c = 0; c < ARRAY_SIZE(offsets); c++) {
+        uint64_t offset = offsets[c];
+        uint64_t base = (offset & ~3ULL) - 8;
+        uint64_t destination = 0x3000 + 8 + (offset & 3);
+
+        for (unsigned i = 0; i < sizeof(source); i++) {
+            source[i] = 0x31 + 13 * i;
+        }
+        qtest_memwrite(qts, RAM_FULL + base, source, sizeof(source));
+        for (unsigned phase = 0; phase < 3; phase++) {
+            if (phase) {
+                for (unsigned i = 0; i < 7; i++) {
+                    source[((offset + i) ^ 3) - base] = 0x80 + 19 * i + phase;
+                }
+                qtest_memwrite(qts, RAM_FULL + base, source, sizeof(source));
+            }
+            qtest_writel(qts, MACE_PCI + 8, phase == 1 ? 0x8000 : 0);
+            if (phase == 2) {
+                g_assert_cmpint(memtx_writel(qts, MACE_PCI + 0xc, 0x97ac0123),
+                                ==, MEMTX_OK);
+            }
+            memset(expected, 0xa6, sizeof(expected));
+            qtest_memwrite(qts, RAM_FULL + 0x3000, expected, sizeof(expected));
+            g_assert_cmpint(o2_mace_copy_range(qts, MACE_NATIVE_DMA + offset,
+                MACE_NATIVE_DMA + destination, 7), ==, MEMTX_OK);
+            for (unsigned i = 0; i < 7; i++) {
+                expected[((destination + i) ^ 3) - 0x3000] =
+                    source[((offset + i) ^ 3) - base];
+            }
+            qtest_memread(qts, RAM_FULL + 0x3000, got, sizeof(got));
+            g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+            qtest_memread(qts, RAM_FULL + base, original, sizeof(original));
+            g_assert_cmpmem(original, sizeof(original), source, sizeof(source));
+        }
+    }
+    /* A read ending at the decoded bank boundary must not fetch beyond it. */
+    qtest_writeq(qts, CRIME + 0x208 + 8, 0x11c);
+    g_assert_cmpint(o2_mace_copy_range(qts,
+        MACE_NATIVE_DMA + RAM_BANK_SIZE - 7, MACE_NATIVE_DMA + 0x3001, 7),
+        ==, MEMTX_OK);
+    memset(expected, 0xc9, sizeof(expected));
+    qtest_memwrite(qts, RAM_FULL + 0x3000, expected, sizeof(expected));
+    g_assert_cmpint(o2_mace_copy_range(qts,
+        MACE_NATIVE_DMA + RAM_BANK_SIZE - 7, MACE_NATIVE_DMA + 0x3001, 8),
+        ==, MEMTX_ERROR);
+    qtest_memread(qts, RAM_FULL + 0x3000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_quit(qts);
 }
 
 static void check_mace_native_bytes(QTestState *qts, uint64_t offset,
@@ -7550,6 +7708,10 @@ static void test_storage_diagnostic_rejections(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/o2/mace-pci-functional/unused-aic-config",
+                   test_mace_pci_unused_aic_config);
+    qtest_add_func("/o2/mace-pci-functional/fresh-reads",
+                   test_mace_pci_fresh_reads);
     qtest_add_func("/o2/ram-aliases", test_ram_aliases);
     qtest_add_func("/o2/banked-registers", test_banked_registers);
     qtest_add_func("/o2/banked-approx-reset-ram",

@@ -40,7 +40,7 @@
 #define MACE_PCI_CFGDATA     0x0cfc
 #define MACE_PCI_MASTER_ABORT (1U << 31)
 #define MACE_PCI_ADDR_VALID   (1U << 19)
-#define MACE_PCI_SUPPORTED_CONTROL (0xff0005ffU)
+#define MACE_PCI_SUPPORTED_CONTROL (0xff0085ffU)
 #define MACE_PCI_NO_PIN 8
 #define MACE_UART_A        0x390000
 #define MACE_UART_B        0x398000
@@ -293,6 +293,30 @@ static bool mace_pci_onboard_aic(SGIMACEState *s, uint32_t addr)
            dev && object_dynamic_cast(OBJECT(dev), "aic7880");
 }
 
+static bool mace_pci_unused_aic_region(SGIMACEState *s, uint32_t addr)
+{
+    PCIDevice *dev;
+    unsigned reg = addr & 0xfc;
+
+    if (!mace_pci_onboard_aic(s, addr)) {
+        return false;
+    }
+    dev = pci_find_device(PCI_HOST_BRIDGE(s)->bus,
+                          addr >> 16, (addr >> 8) & 0xff);
+    if (reg >= PCI_BASE_ADDRESS_2 && reg <= PCI_BASE_ADDRESS_5) {
+        unsigned bar = (reg - PCI_BASE_ADDRESS_0) / 4;
+        PCIIORegion *previous = &dev->io_regions[bar - 1];
+
+        /* An unregistered slot can hold the upper half of a 64-bit BAR. */
+        return !dev->io_regions[bar].size &&
+               !(previous->size &&
+                 (previous->type & PCI_BASE_ADDRESS_MEM_TYPE_64));
+    }
+    return reg == PCI_ROM_ADDRESS && !dev->has_rom &&
+           (!dev->romfile || !dev->romfile[0]) &&
+           !dev->io_regions[PCI_ROM_SLOT].size;
+}
+
 static bool mace_pci_byte_test_card(SGIMACEState *s, uint32_t addr)
 {
     unsigned devfn = (addr >> 8) & 0xff;
@@ -334,7 +358,8 @@ static MemTxResult mace_pci_read(void *opaque, hwaddr offset, uint64_t *value,
     uint32_t addr;
 
     if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
-        size <= 4 && offset + size <= MACE_PCI_CFGDATA + 4) {
+        size <= 4 && !(offset & (size - 1)) &&
+        offset + size <= MACE_PCI_CFGDATA + 4) {
         addr = mace_pci_config_address(s, offset, size);
         if (!mace_pci_config_claimed(s, addr)) {
             mace_pci_master_abort(s, addr);
@@ -388,7 +413,8 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
     uint32_t addr, unsupported;
 
     if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
-        size <= 4 && offset + size <= MACE_PCI_CFGDATA + 4) {
+        size <= 4 && !(offset & (size - 1)) &&
+        offset + size <= MACE_PCI_CFGDATA + 4) {
         addr = mace_pci_config_address(s, offset, size);
         if (!mace_pci_config_claimed(s, addr)) {
             mace_pci_master_abort(s, addr);
@@ -414,7 +440,8 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
                 return MEMTX_ERROR;
             }
         }
-        if (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28 &&
+        if (!mace_pci_unused_aic_region(s, addr) &&
+            (((addr & 0xfc) >= 0x10 && (addr & 0xfc) < 0x28 &&
              !((mace_pci_onboard_aic(s, addr) &&
                 ((addr & 0xfc) == 0x10 || (addr & 0xfc) == 0x14)) ||
                (mace_pci_byte_test_card(s, addr) &&
@@ -423,7 +450,7 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
             ((addr & 0xfc) == PCI_ROM_ADDRESS1 &&
              (pci_data_read(PCI_HOST_BRIDGE(s)->bus,
                             (addr & ~0xffU) | PCI_HEADER_TYPE, 1) &
-              ~PCI_HEADER_TYPE_MULTI_FUNCTION) == PCI_HEADER_TYPE_BRIDGE)) {
+              ~PCI_HEADER_TYPE_MULTI_FUNCTION) == PCI_HEADER_TYPE_BRIDGE))) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-mace: PCI BAR programming is unsupported\n");
             return MEMTX_ERROR;
@@ -463,9 +490,7 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
         return MEMTX_OK;
     case MACE_PCI_REVISION:
         /* The write side invalidates prefetch buffers, which are absent. */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-mace: PCI read-buffer flush is unsupported\n");
-        return MEMTX_ERROR;
+        return MEMTX_OK;
     case MACE_PCI_CFGADDR:
         s->pci_config_addr = value & 0x00fffffcU;
         return MEMTX_OK;
@@ -481,10 +506,13 @@ static const MemoryRegionOps mace_pci_ops = {
     .read_with_attrs = mace_pci_read,
     .write_with_attrs = mace_pci_write,
     .endianness = DEVICE_BIG_ENDIAN,
+    .valid.unaligned = true,
     .valid.min_access_size = 1,
-    .valid.max_access_size = 4,
+    .valid.max_access_size = 8,
     .impl.min_access_size = 1,
-    .impl.max_access_size = 4,
+    .impl.max_access_size = 8,
+    /* Keep invalid accesses intact for the register checks. */
+    .impl.unaligned = true,
 };
 
 static MemTxResult mace_pci_dma_block_read(void *opaque, hwaddr offset,
