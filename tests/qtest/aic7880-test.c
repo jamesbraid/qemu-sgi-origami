@@ -1486,7 +1486,8 @@ static QTestState *start_disk(void)
 static QTestState *start_selected_disk(const char *trace_path)
 {
     g_autofree char *trace = trace_path ?
-        g_strdup_printf("-trace enable=scsi_disk_new_request,file=%s",
+        g_strdup_printf("-trace enable=scsi_disk_new_request "
+                        "-trace enable=aic7880_dma,file=%s",
                         trace_path) : g_strdup("");
     QTestState *qts = qtest_initf(
         "-M pc -m 128M -nodefaults -d guest_errors %s "
@@ -1599,7 +1600,7 @@ static size_t build_command_program_mode(uint8_t *program, const uint8_t *cdb,
     emit_or(program, &n, 0x08, 0x01); /* automatic PIO */
     emit_or(program, &n, 0x07, 0x05); /* initiator 7, target 0 */
     emit_or(program, &n, 0, 0x93); /* disable the old data path */
-    emit_or(program, &n, (write ? 0x34 : 0x30) | (host_dma ? 8 : 0), 0x93);
+    emit_or(program, &n, write ? 4 : 0, 0x93);
     emit(program, &n, alu_word(1, 0xff, 0x6a, 0x00, false));
     emit_or(program, &n, identify >= 0 ? 0xa0 : 0x80, 0x03);
     emit_or(program, &n, identify >= 0 ? 0x48 : 0x40, 0x00);
@@ -2938,7 +2939,7 @@ static size_t build_selected_inquiry_identify(uint8_t *program,
 
     emit_or(program, &n, 0x08, 0x01);
     emit_or(program, &n, 0x07, 0x05);
-    emit_or(program, &n, 0x30, 0x93);
+    emit_or(program, &n, 0, 0x93);
     emit_or(program, &n, 0xa0, 0x03);
     emit_or(program, &n, 0x5a, 0x00);
     emit_or(program, &n, identify, 0x06);
@@ -2951,6 +2952,7 @@ static size_t build_selected_inquiry_identify(uint8_t *program,
             emit(program, &n, alu_word(1, 0xff, 0x6a, 0x06, false));
         }
     }
+    emit_or(program, &n, 0x30, 0x93);
     emit_or(program, &n, 1, 0x91);
     return n;
 }
@@ -6677,7 +6679,7 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
     static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
     uint8_t command[128] = { 0 };
     uint8_t bytes[42];
-    size_t wait_at = 8 + sizeof(cdb);
+    size_t wait_at = 9 + sizeof(cdb);
     QTestState *qts = start_disk();
     uint32_t pause = alu_word(0, 1, 0x6a, 0x91, false);
 
@@ -8926,7 +8928,7 @@ static void test_lun_nexus_migrates_before_cdb(void)
     host_dma_program(to, 0x10008, 36);
     qtest_writeb(to, REG_BASE + 0x08, 36);
     qtest_writeb(to, REG_BASE + 0x92, 1);
-    emit_or(program, &n, 0x38, 0x93);
+    emit_or(program, &n, 0, 0x93);
     emit_cdb_completion(program, &n, cdb, sizeof(cdb), false, true);
     start_program(to, program, n);
     check_lun_inquiry(to, 3);
@@ -10235,7 +10237,7 @@ static void test_checkpoint_expires_at_backend_buffer(void)
     qtest_writeb(qts, REG_BASE + 0x08, 17);
     emit_or(program, &n, 0, 0x00);
     emit_or(program, &n, 7, 0x05);
-    emit_or(program, &n, 0x30, 0x93);
+    emit_or(program, &n, 0, 0x93);
     emit_or(program, &n, 0xa0, 0x03);
     emit_or(program, &n, 0x58, 0x00);
     emit_or(program, &n, 0xc0, 0x06);
@@ -13640,9 +13642,663 @@ static void test_wide_width_atomicity(void)
     }
 }
 
+static void command_dma_count(QTestState *qts, unsigned reg, uint32_t count)
+{
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_writeb(qts, REG_BASE + reg + i, count >> (8 * i));
+    }
+}
+
+static void command_dma_prepare(QTestState *qts, const uint8_t *cdb,
+                                unsigned bytes, unsigned host_count,
+                                unsigned scsi_count, unsigned offset)
+{
+    uint8_t guarded[288];
+
+    memset(guarded, 0xa5, sizeof(guarded));
+    memcpy(guarded + 8 + offset, cdb, bytes);
+    manual_command(qts, cdb, 0);
+    qtest_writeb(qts, REG_BASE + 1, 8);
+    qtest_memwrite(qts, 0x18000, guarded, sizeof(guarded));
+    host_dma_program(qts, 0x18008 + offset, host_count);
+    command_dma_count(qts, 8, scsi_count);
+    qtest_writeb(qts, REG_BASE + 0x93, 5);
+}
+
+static void command_dma_no_completion(QTestState *qts)
+{
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 3, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+}
+
+static void command_dma_finish(QTestState *qts, bool inquiry)
+{
+    uint8_t data[52];
+
+    command_dma_no_completion(qts);
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
+    if (inquiry) {
+        qtest_memset(qts, 0x20000, 0x5a, sizeof(data));
+        host_dma_program(qts, 0x20008, 36);
+        command_dma_count(qts, 8, 36);
+        qtest_writeb(qts, REG_BASE + 0x93, 1);
+        qtest_writeb(qts, REG_BASE + 3, 0x40);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x38);
+        manual_wait_phase(qts, 0xc0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+        qtest_memread(qts, 0x20000, data, sizeof(data));
+        for (unsigned i = 0; i < 8; i++) {
+            g_assert_cmphex(data[i], ==, 0x5a);
+            g_assert_cmphex(data[44 + i], ==, 0x5a);
+        }
+        g_assert_cmphex(data[8], ==, 0);
+        g_assert_cmpmem(data + 16, 7, "LABTEST", 7);
+        g_assert_cmpmem(data + 24, 14, "SEGMENTED-DISK", 14);
+        qtest_writeb(qts, REG_BASE + 0x93, 0);
+    }
+    qtest_writeb(qts, REG_BASE + 1, 8);
+    manual_wait_phase(qts, 0xc0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, inquiry ? 0 : 2);
+    qtest_writeb(qts, REG_BASE + 3, 0xe0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+    command_dma_no_completion(qts);
+}
+
+static void command_dma_trace(const char *path, const uint8_t *cdb,
+                              unsigned len, unsigned offset,
+                              unsigned fetched, unsigned requests)
+{
+    g_autofree char *trace = NULL;
+    g_autoptr(GString) command = g_string_new("data=");
+    g_auto(GStrv) lines = NULL;
+    unsigned seen = 0, credited = 0;
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    for (unsigned i = 0; i < len; i++) {
+        g_string_append_printf(command, "%s%02x", i ? " " : "", cdb[i]);
+    }
+    lines = g_strsplit(trace, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *event = strstr(lines[i], "aic7880_dma ");
+        unsigned devfn, address, count, direction;
+        int result;
+
+        if (strstr(lines[i], "scsi_disk_new_request")) {
+            seen++;
+            g_assert_nonnull(strstr(lines[i], command->str));
+        }
+        if (!event || sscanf(event,
+            "aic7880_dma devfn 0x%x addr 0x%x len %u to_memory %u result %d",
+            &devfn, &address, &count, &direction, &result) != 5 ||
+            address < 0x18000 || address >= 0x18120) {
+            continue;
+        }
+        g_assert_cmphex(devfn, ==, PCI_DEVFN);
+        g_assert_cmpuint(direction, ==, 0);
+        g_assert_cmpint(result, ==, MEMTX_OK);
+        g_assert_cmphex(address, ==, 0x18008 + offset + credited);
+        credited += count;
+        g_assert_cmpuint(credited, <=, fetched);
+    }
+    g_assert_cmpuint(seen, ==, requests);
+    g_assert_cmpuint(credited, ==, fetched);
+}
+
+static void test_command_dma_offsets(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned offset = 0; offset < 8; offset++) {
+        g_autofree char *dir =
+            g_dir_make_tmp("aic-command-offset-XXXXXX", NULL);
+        g_autofree char *trace = g_build_filename(dir, "trace", NULL);
+        QTestState *qts = start_selected_disk(trace);
+        uint8_t guard[288];
+
+        command_dma_prepare(qts, cdb, sizeof(cdb), 6, 6, offset);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x0c);
+        check_host_fifo_status(qts, (8 + offset) & 7, 6, true);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 6);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 4);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 4);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 5);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 2, ==, 0);
+        qtest_memread(qts, 0x18000, guard, sizeof(guard));
+        for (unsigned i = 0; i < sizeof(guard); i++) {
+            g_assert_cmphex(guard[i], ==,
+                i >= 8 + offset && i < 14 + offset ?
+                cdb[i - 8 - offset] : 0xa5);
+        }
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+        command_dma_trace(trace, cdb, sizeof(cdb), offset, 6, 1);
+        unlink(trace);
+        g_rmdir(dir);
+    }
+}
+
+static void test_command_dma_short_counts(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned short_host = 0; short_host < 2; short_host++) {
+        g_autofree char *dir = g_dir_make_tmp("aic-command-short-XXXXXX", NULL);
+        g_autofree char *trace = g_build_filename(dir, "trace", NULL);
+        QTestState *qts = start_selected_disk(trace);
+
+        command_dma_prepare(qts, cdb, 6, short_host ? 2 : 6,
+                            short_host ? 6 : 2, 4);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x80);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, short_host ? 4 : 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x1800e);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==,
+                        short_host ? 0 : 5);
+        command_dma_no_completion(qts);
+        if (short_host) {
+            qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0x34);
+            command_dma_count(qts, 0x8c, 4);
+        } else {
+            check_host_fifo_status(qts, 6, 4, true);
+            qtest_writeb(qts, REG_BASE + 0x93, 0x0c);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+            command_dma_count(qts, 8, 4);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x18012);
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+        command_dma_trace(trace, cdb, 6, 4, 6, 1);
+        unlink(trace);
+        g_rmdir(dir);
+    }
+}
+
+static void test_command_dma_lengths(void)
+{
+    static const uint8_t cdbs[][16] = {
+        { 0, 0, 0, 0, 0, 0 },
+        { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 0xa8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 0x88, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    };
+    static const unsigned lengths[] = { 6, 10, 12, 16 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(lengths); i++) {
+        g_autofree char *dir =
+            g_dir_make_tmp("aic-command-length-XXXXXX", NULL);
+        g_autofree char *trace = g_build_filename(dir, "trace", NULL);
+        QTestState *qts = start_selected_disk(trace);
+
+        /* Consume the disk's initial unit attention before tracing its CDB. */
+        manual_command(qts, cdbs[0], 6);
+        command_dma_finish(qts, false);
+        command_dma_prepare(qts, cdbs[i], lengths[i],
+                            lengths[i], lengths[i], 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, !=, 0x80);
+        command_dma_no_completion(qts);
+        qtest_quit(qts);
+        command_dma_trace(trace, cdbs[i], lengths[i], 0, lengths[i], 1);
+        unlink(trace);
+        g_rmdir(dir);
+    }
+}
+
+static void test_command_dma_excess_counts(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned excess_host = 0; excess_host < 2; excess_host++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, excess_host ? 10 : 6,
+                            excess_host ? 6 : 10, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==,
+                        excess_host ? 0 : 4);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x1800e);
+        check_host_fifo_status(qts, 6, excess_host ? 4 : 0, true);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x40);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xc) & 0x11, ==, 0x11);
+        command_dma_no_completion(qts);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==,
+                        excess_host ? 0 : 4);
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+    }
+    {
+        static const uint8_t ready[6] = { 0 };
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, ready, 6, 6, 10, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 4);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0xc0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+        command_dma_finish(qts, false);
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_full_and_empty(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned full = 0; full < 2; full++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, full ? 270 : 6, 6, 0);
+        if (full) {
+            qtest_writeb(qts, REG_BASE + 3, 0xc0);
+        } else {
+            config_writew(qts, 4, 2);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        check_host_fifo_status(qts, 0, full ? 256 : 0, false);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, full ? 14 : 6);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 6);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 7, ==, 0);
+        command_dma_no_completion(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_pio_ownership(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned refuse = 0; refuse < 2; refuse++) {
+        g_autofree char *dir = g_dir_make_tmp("aic-command-pio-XXXXXX", NULL);
+        g_autofree char *trace = g_build_filename(dir, "trace", NULL);
+        QTestState *qts = start_selected_disk(trace);
+
+        command_dma_prepare(qts, cdb, 6, 2, 6, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 1) & 8, ==, 8);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 6, ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 2, ==, 2);
+        if (refuse) {
+            attention_write_raw(qts, 6, 0xff);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 1, ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+            g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 4);
+            command_dma_no_completion(qts);
+        } else {
+            qtest_writeb(qts, REG_BASE + 0x93, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 2, ==, 2);
+            for (unsigned i = 2; i < sizeof(cdb); i++) {
+                attention_write(qts, 6, cdb[i]);
+                qtest_writeb(qts, REG_BASE + 0x92, 1);
+            }
+            g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 4);
+            command_dma_finish(qts, true);
+        }
+        qtest_quit(qts);
+        command_dma_trace(trace, cdb, 6, 0, 2, refuse ? 0 : 1);
+        unlink(trace);
+        g_rmdir(dir);
+    }
+}
+
+static void test_command_dma_phase_and_rate(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned mismatch = 0; mismatch < 2; mismatch++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, 6, 6, 0);
+        qtest_writeb(qts, REG_BASE + 4, 0x8f);
+        if (mismatch) {
+            qtest_writeb(qts, REG_BASE + 3, 0xc0);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        if (mismatch) {
+            g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 6);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xc) & 0x11, ==, 0x11);
+            qtest_writeb(qts, REG_BASE + 3, 0x80);
+        }
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x40);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 4), ==, 0x8f);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x1800e);
+        qtest_writeb(qts, REG_BASE + 4, 0);
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_zero_and_invalid(void)
+{
+    static const uint8_t inquiry[] = { 0x12, 0, 0, 0, 36, 0 };
+    static const uint8_t variable[] = { 0x7f, 0, 0, 0, 0, 0 };
+
+    for (unsigned mode = 0; mode < 4; mode++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, mode == 3 ? variable : inquiry, 6,
+                            mode == 0 ? 0 : 6, mode == 1 ? 0 : 6, 0);
+        if (mode == 2) {
+            qtest_writeb(qts, REG_BASE + 0x93, 0);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, mode == 2 ? 0x38 : 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, mode == 1 ? 0 : 6);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x80);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==,
+                        mode == 1 ? 5 : 0);
+        if (mode == 0 || mode == 2) {
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x18008);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
+        }
+        command_dma_no_completion(qts);
+        if (mode >= 2) {
+            attention_write_raw(qts, 0x40, 0xa5);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x40), ==, 0);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 1, ==, 0);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_admission(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned mastering = 0; mastering < 2; mastering++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, 2, 6, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+        command_dma_count(qts, 0x8c, 4);
+        config_writew(qts, 4, 2);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        if (!mastering) {
+            config_writew(qts, 4, 4);
+        }
+        config_writew(qts, 4, 2);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 4);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 4);
+        g_assert_cmphex(config_readl(qts, 4) & 0x30000000, ==, 0);
+        config_writew(qts, 4, 6);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+    }
+    {
+        g_autofree char *dir = g_dir_make_tmp("aic-command-fault-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "trace", NULL);
+        g_autofree char *trace = NULL;
+        g_auto(GStrv) lines = NULL;
+        unsigned failures = 0;
+        QTestState *qts = start_selected_disk(path);
+
+        command_dma_prepare(qts, cdb, 6, 2, 6, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        qtest_writeb(qts, REG_BASE + 0x93, 4);
+        host_dma_program(qts, 0x70000000, 4);
+        qtest_writeb(qts, REG_BASE + 0x93, 5);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 4);
+        g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 4);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x70000000);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 4);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 4);
+        command_dma_no_completion(qts);
+        qtest_quit(qts);
+        command_dma_trace(path, cdb, 6, 0, 2, 0);
+        g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+        lines = g_strsplit(trace, "\n", -1);
+        for (unsigned i = 0; lines[i]; i++) {
+            const char *event = strstr(lines[i], "aic7880_dma ");
+            unsigned devfn, address, count, direction;
+            int result;
+
+            if (!event || sscanf(event,
+                "aic7880_dma devfn 0x%x addr 0x%x len %u to_memory %u result %d",
+                &devfn, &address, &count, &direction, &result) != 5 ||
+                address != 0x70000000) {
+                continue;
+            }
+            failures++;
+            g_assert_cmphex(devfn, ==, PCI_DEVFN);
+            g_assert_cmpuint(count, ==, 4);
+            g_assert_cmpuint(direction, ==, 0);
+            g_assert_cmpint(result, ==, MEMTX_DECODE_ERROR);
+        }
+        g_assert_cmpuint(failures, ==, 1);
+        unlink(path);
+        g_rmdir(dir);
+    }
+}
+
+static void test_command_dma_reset(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+
+    for (unsigned reset = 0; reset < 3; reset++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, 6, 2, 0);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        if (reset == 0) {
+            qtest_writeb(qts, REG_BASE, 1);
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0x3c);
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x1800e);
+            g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+            check_host_fifo_status(qts, 2, 4, true);
+            qtest_writeb(qts, REG_BASE + 0x93, 0);
+            qtest_writeb(qts, REG_BASE + 0x93, 1);
+            qtest_writeb(qts, REG_BASE, 0);
+        } else {
+            if (reset == 1) {
+                qtest_writeb(qts, REG_BASE + 0x87, 1);
+            } else {
+                qtest_system_reset(qts);
+                config_writel(qts, 0x14, REG_BASE);
+                config_writew(qts, 4, 6);
+            }
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0);
+            check_host_fifo_status(qts, 0, 0, false);
+        }
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+        command_dma_no_completion(qts);
+        command_dma_prepare(qts, cdb, 6, 6, 6, 4);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        command_dma_finish(qts, true);
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_migration(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+    g_autofree char *dir = g_dir_make_tmp("aic-command-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+    QTestState *from = start_selected_disk(NULL);
+    QTestState *to;
+
+    command_dma_prepare(from, cdb, 6, 2, 6, 0);
+    qtest_writeb(from, REG_BASE + 0x93, 0x3c);
+    sgi_migrate_stopped(from, uri);
+    to = start_disk_mode("-S -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(host_dma_read_bytes(to, 8, 3), ==, 4);
+    g_assert_cmphex(host_dma_read_bytes(to, 0x88, 4), ==, 0x1800a);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 3) & 0xe0, ==, 0x80);
+    qtest_writeb(to, REG_BASE + 0x93, 0x34);
+    command_dma_count(to, 0x8c, 4);
+    qtest_writeb(to, REG_BASE + 0x93, 0x3c);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 3) & 0xe0, ==, 0x40);
+    g_assert_cmphex(host_dma_read_bytes(to, 8, 3), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    for (unsigned field = 0; field < 2; field++) {
+        g_autofree char *invalid = g_build_filename(dir, "invalid", NULL);
+        g_autofree char *invalid_uri = g_strdup_printf("file:%s", invalid);
+        QTestState *bad;
+
+        corrupt_selection_stream(path, invalid,
+                                  field ? "cdb_need" : "cdb_len",
+                                  field ? 10 : 7);
+        bad = start_disk_mode("-S -incoming defer");
+        qtest_set_expected_status(bad, EXIT_FAILURE);
+        qtest_qmp_assert_success(bad,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}",
+            invalid_uri);
+        qtest_wait_qemu(bad);
+        qtest_quit(bad);
+        unlink(invalid);
+    }
+    unlink(path);
+    g_rmdir(dir);
+    for (unsigned fifo = 0; fifo < 2; fifo++) {
+        QTestState *qts = start_selected_disk(NULL);
+
+        command_dma_prepare(qts, cdb, 6, 6, fifo ? 2 : 6, 0);
+        if (!fifo) {
+            config_writew(qts, 4, 2);
+        }
+        qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+        assert_peer_migration_refused(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_dma_done(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+    QTestState *qts = start_selected_disk(NULL);
+
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    command_dma_prepare(qts, cdb, 6, 6, 2, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x0c);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 5);
+    qtest_writeb(qts, REG_BASE + 0x93, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+    command_dma_count(qts, 0x8c, 4);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x34);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 4);
+    command_dma_count(qts, 8, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 0);
+    command_dma_no_completion(qts);
+    g_assert_false(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 3, 0xc0);
+    qtest_writeb(qts, REG_BASE + 0x11, 0x10);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 7, ==, 4);
+    qtest_writeb(qts, REG_BASE + 0x87, 6);
+    g_assert_true(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 0xc, 0x11);
+    qtest_writeb(qts, REG_BASE + 0x92, 4);
+    g_assert_false(qtest_get_irq(qts, 11));
+    qtest_quit(qts);
+}
+
+static void test_command_dma_zero_done_irq(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+    QTestState *qts = start_selected_disk(NULL);
+
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    command_dma_prepare(qts, cdb, 6, 0, 0, 0);
+    qtest_writeb(qts, REG_BASE + 0x10, 4);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x14);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 7, ==, 4);
+    qtest_writeb(qts, REG_BASE + 0x87, 6);
+    g_assert_true(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 0x93, 4);
+    qtest_writeb(qts, REG_BASE + 0x92, 4);
+    g_assert_false(qtest_get_irq(qts, 11));
+    command_dma_no_completion(qts);
+    qtest_quit(qts);
+}
+
+static void test_command_dma_inquiry(void)
+{
+    static const uint8_t cdb[] = { 0x12, 0, 0, 0, 36, 0 };
+    QTestState *qts = start_selected_disk(NULL);
+
+    manual_command(qts, cdb, 0);
+    qtest_memwrite(qts, 0x18004, cdb, sizeof(cdb));
+    host_dma_program(qts, 0x18004, sizeof(cdb));
+    command_dma_count(qts, 8, sizeof(cdb));
+    qtest_writeb(qts, REG_BASE + 0x93, 5);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x3c);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 0);
+    g_assert_cmphex(host_dma_read_bytes(qts, 8, 3), ==, 0);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x1800a);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x14, 4), ==, 0x1800a);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0xb) & 5, ==, 5);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe0, ==, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 3, ==, 0);
+    command_dma_finish(qts, true);
+    {
+        uint8_t program[12];
+        size_t n = 0;
+
+        emit_or(program, &n, 0x0d, 0x9d);
+        emit_or(program, &n, 2, 0x91);
+        emit_or(program, &n, 1, 0x91);
+        start_program(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 0x0d);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 3, ==, 3);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("aic7880/command-dma/inquiry", test_command_dma_inquiry);
+    qtest_add_func("aic7880/command-dma/done", test_command_dma_done);
+    qtest_add_func("aic7880/command-dma/zero-done-irq",
+                   test_command_dma_zero_done_irq);
+    qtest_add_func("aic7880/command-dma/offsets", test_command_dma_offsets);
+    qtest_add_func("aic7880/command-dma/short-counts",
+                   test_command_dma_short_counts);
+    qtest_add_func("aic7880/command-dma/lengths", test_command_dma_lengths);
+    qtest_add_func("aic7880/command-dma/migration",
+                   test_command_dma_migration);
+    qtest_add_func("aic7880/command-dma/reset",
+                   test_command_dma_reset);
+    qtest_add_func("aic7880/command-dma/admission",
+                   test_command_dma_admission);
+    qtest_add_func("aic7880/command-dma/zero-and-invalid",
+                   test_command_dma_zero_and_invalid);
+    qtest_add_func("aic7880/command-dma/phase-and-rate",
+                   test_command_dma_phase_and_rate);
+    qtest_add_func("aic7880/command-dma/pio-ownership",
+                   test_command_dma_pio_ownership);
+    qtest_add_func("aic7880/command-dma/full-and-empty",
+                   test_command_dma_full_and_empty);
+    qtest_add_func("aic7880/command-dma/excess-counts",
+                   test_command_dma_excess_counts);
     qtest_add_func("aic7880/function-registers/constants",
                    test_function_constants);
     qtest_add_func("aic7880/function-registers/selectors",
