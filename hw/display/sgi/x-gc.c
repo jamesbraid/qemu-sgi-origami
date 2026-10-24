@@ -127,7 +127,22 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     if (w[6] == 8) {
         return decode_did(w, gc);
     }
-    if (plane == 0x28 ||
+    /*
+     * cfg 0x28 with buffer selector 3 is kon_loadGeomGC's form for an
+     * 8-bit overlay window drawn into both overlay buffers: it repeats
+     * the index and the mask in the high byte and replaces the plane
+     * set with 0x28 (konal.so 0x53a1c8-0x53a2fc; selector 1 gives 0x2c
+     * and 2 gives 0x30). konClearLayer sends it, through
+     * kon_loadClearGC, to clear the overlay layer, index 0 under all
+     * ones, before its boxes. A 15-bit overlay format (format bit
+     * 0x2000) also gets 0x28, whatever its selector, with the value
+     * p << 1 | 1 and the mask pm << 1 | 1 (0x53a058-0x53a10c); those
+     * forms stay deferred. Limitation: a 15-bit GC sent with selector 3
+     * whose value and mask happen to repeat one byte would be read as
+     * this form. No caller is known to send one; konClearLayer passes
+     * the 8-bit format for the overlay layer.
+     */
+    if ((plane == 0x28 && !(w[6] == 0x28 && op == 3)) ||
         (w[6] == 0x1008 && w[7] == 0x10001 && w[10] == 5)) {
         return SGI_X_GC_DEFERRED;
     }
@@ -167,6 +182,10 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     case 0x1830:
         gc->target = SGI_X_GC_OVERLAY1;
         gc->width_mask = 0xffff;
+        break;
+    case 0x28:
+        gc->target = SGI_X_GC_OVERLAY_BOTH;
+        gc->width_mask = 0xff;
         break;
     case 0x20:
     case 0x1820:
@@ -212,7 +231,8 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
         }
     } else if (w[8] || w[11] != 1 || w[12] != 1 ||
                (!geometry && w[10] != 5) ||
-               op != (gc->target == SGI_X_GC_OVERLAY1 ? 2 : 1)) {
+               op != (gc->target == SGI_X_GC_OVERLAY1 ? 2 :
+                      gc->target == SGI_X_GC_OVERLAY_BOTH ? 3 : 1)) {
         return SGI_X_GC_BAD_FIELDS;
     }
 
@@ -258,6 +278,18 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
             gc->foreground >>= 8;
             gc->background >>= 8;
             gc->mask >>= 8;
+        } else if (gc->target == SGI_X_GC_OVERLAY_BOTH) {
+            /* The two bytes are one index repeated; keep one of them. */
+            if ((gc->foreground >> 8) != (gc->foreground & 0xff) ||
+                (gc->background >> 8) != (gc->background & 0xff)) {
+                return SGI_X_GC_BAD_COLOR;
+            }
+            if ((gc->mask >> 8) != (gc->mask & 0xff)) {
+                return SGI_X_GC_BAD_MASK;
+            }
+            gc->foreground &= 0xff;
+            gc->background &= 0xff;
+            gc->mask &= 0xff;
         } else if (gc->target == SGI_X_GC_POPUP) {
             if (mask_word & ~0x300000U) {
                 return SGI_X_GC_BAD_MASK;
