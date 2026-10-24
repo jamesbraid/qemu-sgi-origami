@@ -87,6 +87,8 @@ struct SGIIOC3KBCBusState {
  * initialisation write to this register; the bit positions are its own
  * header's (arch/mips/include/asm/sn/ioc3.h).
  */
+#define SGI_IOC3_KBC_CTRL_EMULATION (1u << 12)
+#define SGI_IOC3_KBC_CTRL_FAST_CLOCK (1u << 13)
 #define SGI_IOC3_KBC_CTRL_K_TO_EN   (1u << 18)
 #define SGI_IOC3_KBC_CTRL_M_TO_EN   (1u << 19)
 #define SGI_IOC3_KBC_CTRL_TO_EN_MASK (SGI_IOC3_KBC_CTRL_K_TO_EN | \
@@ -133,6 +135,10 @@ struct SGIIOC3KBCState {
     SGIIOC3KBCBusState kbc_bus;
     PS2KbdState kbd;
     PS2MouseState mouse;
+    /* Board wiring, supplied by the IOC3 before realization. */
+    bool ports_present;
+    /* Children survive unrealize and must not be initialized twice. */
+    bool ports_initialized;
 
     MemoryRegion mmio;
     qemu_irq irq;
