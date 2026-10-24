@@ -1351,10 +1351,11 @@ static void r10k_helper_tlbr(CPUMIPSState *env)
  * clears. Most of what that throws away is still right: references through
  * kseg0, kseg1 and xkphys, and through global entries, translate the same
  * way under every ASID, and only a few pages depend on an enable that just
- * cleared. IRIX changes ASID at every context switch, and also briefly
- * around TLB maintenance on another process's behalf, so on a multiprocessor
- * Origin the full flushes come about once a millisecond and each of them
- * also empties the translated-code jump cache.
+ * cleared. A guest that switches address spaces often pays for this: running
+ * two GL programs on an SGI graphics profile, the shared code made 1,900 to
+ * 2,300 effective flushes and 21,000 to 29,000 empty flush requests a
+ * second on the program's vCPU, each also emptying the translated-code jump
+ * cache, against 1 or 2 a second with the bookkeeping below.
  *
  * This family discards only the translations that can have changed. Each
  * fill that the guest TLB answered from a non-global entry is listed with
@@ -1433,6 +1434,13 @@ void r10k_note_fill(CPUMIPSState *env, vaddr address, int mmu_idx)
     uint64_t page = address & TARGET_PAGE_MASK;
     uint32_t enables = r10k_segment_enables(env, address);
     uint32_t i;
+
+    /*
+     * The mmu index travels in the page address's low bits, below the page.
+     * Only MIPS's own four indexes occur; NB_MMU_MODES, the generic bound,
+     * is larger than the page offset has bits.
+     */
+    QEMU_BUILD_BUG_ON(MIPS_MMU_IDXMAP >= (1 << TARGET_PAGE_BITS));
 
     if (enables & (1 << CP0St_UX)) {
         r10k->ux_idxmap |= BIT(mmu_idx);
