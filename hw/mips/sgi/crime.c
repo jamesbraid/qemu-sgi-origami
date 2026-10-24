@@ -1061,6 +1061,12 @@ static MemTxResult crime_renderer_unsupported(SGICrimeState *s, hwaddr offset,
         }
         return MEMTX_ERROR;
     }
+    if (write) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-crime: rejected renderer %u-byte write at "
+                      "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n", size,
+                      (hwaddr)(0x14000000ULL + offset), value);
+    }
     return crime_transfer_fail(offset, write ?
                                "unsupported transfer register write" :
                                "unsupported transfer register read");
@@ -1110,6 +1116,14 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         const CrimeRenderRegister *reg =
             crime_render_register(offset - 0x1002800);
 
+        if (offset == 0x1000400 && size == 4) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: opaque empty interface-buffer control "
+                          "(unimplemented fields) %u-byte write at "
+                          "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n", size,
+                          (hwaddr)(0x14000000ULL + offset), value);
+            return MEMTX_OK;
+        }
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
