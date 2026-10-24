@@ -1,6 +1,9 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
 # aic7880.c
+aic7880_error_state(unsigned int devfn, const char *reason, unsigned int phase, uint8_t expected, bool selected, uint8_t sxfrctl0, uint8_t dfcntrl, uint8_t scsisigi, uint8_t outputs, bool manual_valid) "devfn 0x%x reason %s phase %u expected 0x%02x selected %d sxfrctl0 0x%02x dfcntrl 0x%02x scsisigi 0x%02x outputs 0x%02x manual_valid %d"
+aic7880_error_transfer(unsigned int devfn, uint8_t target, uint8_t lun, uint8_t cdb_len, uint8_t cdb_need, uint16_t fifo_len, bool dma_active, bool dma_pending, bool request, uint8_t peer_flags) "devfn 0x%x target %u lun %u cdb_len %u cdb_need %u fifo_len %u dma_active %d dma_pending %d request %d peer_flags 0x%02x"
+aic7880_error_latch(unsigned int devfn, uint8_t sstat0, uint8_t sstat1, uint8_t scsidatl, uint8_t manual_data, uint32_t data_pos, uint32_t data_len, bool command_wait, bool command_stale, uint8_t peer_message) "devfn 0x%x sstat0 0x%02x sstat1 0x%02x scsidatl 0x%02x manual_data 0x%02x data_pos %u data_len %u command_wait %d command_stale %d peer_message 0x%02x"
 aic7880_seq_wait(unsigned int devfn, const char *event, unsigned int span, uint64_t parks, uint64_t budgets) "devfn 0x%x event %s span %u parks %" PRIu64 " budgets %" PRIu64
 aic7880_seq_clock(unsigned int devfn, const char *event, int64_t edge_ns, int64_t now_ns, int64_t period_ns, uint8_t hcntrl, uint8_t seqctl, uint8_t intstat) "devfn 0x%x event %s edge_ns %" PRId64 " now_ns %" PRId64 " period_ns %" PRId64 " hcntrl 0x%02x seqctl 0x%02x intstat 0x%02x"
 aic7880_bus_free(unsigned int devfn, bool qualified, int64_t event_ns, int64_t now_ns, uint8_t sstat1, uint8_t simode1) "devfn 0x%x qualified %d event_ns %" PRId64 " now_ns %" PRId64 " sstat1 0x%02x simode1 0x%02x"
