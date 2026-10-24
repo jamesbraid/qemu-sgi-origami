@@ -12,6 +12,7 @@
 #include "sgi-mips-emit.h"
 #include "sn0-user-image.h"
 #include "sgi-wait.h"
+#include "sgi-migrate.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -2518,6 +2519,214 @@ static void test_private_window_configuration(void)
         "'property':'prom-private-window'}}");
     g_assert_false(qdict_get_bool(default_get, "return"));
     qtest_quit(qts);
+}
+
+static void test_gbe_external_ttl_default(void)
+{
+    QTestState *qts = o2_start();
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':'gbe-external-ttl-hz'}}");
+
+    g_assert_nonnull(qdict_get(reply, "return"));
+    g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 0);
+    qtest_quit(qts);
+}
+
+
+static uint64_t o2_clock_property(QTestState *qts, const char *path,
+                                   const char *property)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    g_assert_nonnull(qdict_get(reply, "return"));
+    return qdict_get_int(reply, "return");
+}
+
+static QTestState *o2_clock_start(const char *path, uint64_t hz)
+{
+    return qtest_initf(
+        "-M o2-test,bank-profile=8x128m-synthetic,"
+        "reset-low-ram-approx=on,functional-memory-transfer=on,"
+        "prom-private-window=on,prom-sb64-reset=on,gbe11-registers=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "rom-offset=0,rom-pad-byte=238,gbe-external-ttl-hz=%" PRIu64
+        " -cpu R10000 -m 1G -nodefaults", path, hz);
+}
+
+static void test_gbe_external_ttl_board(void)
+{
+    const char image[] = { 0, 0, 0, 0 };
+    g_autofree char *dir = g_dir_make_tmp("o2-clock-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "synthetic.bin", NULL);
+
+    g_assert_true(g_file_set_contents(path, image, sizeof(image), NULL));
+    for (unsigned selected = 0; selected < 2; selected++) {
+        uint64_t hz = selected ? 23000000 : 0;
+        QTestState *qts = o2_clock_start(path, hz);
+
+        g_assert_cmpuint(o2_clock_property(qts, "/machine",
+                         "gbe-external-ttl-hz"), ==, hz);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "external-ttl-hz"), ==, hz);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "reference-hz"), ==, 20000000);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "external-differential-hz"), ==, 0);
+        qtest_irq_intercept_out_named(qts, "/machine/gbe", "sysbus-irq");
+        qtest_writel(qts, GBE + GBE_VT_1, 97 | 67 << 12);
+        qtest_writel(qts, GBE + 4, 3 | 3u << 14 | 1u << 20);
+        qtest_clock_step(qts, 100);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 1u << 31);
+        qtest_writel(qts, GBE + 0x10000, 0);
+        qtest_clock_step(qts, 43);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 0);
+        qtest_clock_step(qts, 1);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, selected ? 1 : 0);
+        /* RUN off cannot stop the external input. */
+        qtest_writel(qts, GBE + 4, 0);
+        qtest_clock_step(qts, 1000);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, selected ? 24 : 0);
+        qtest_writel(qts, GBE + 4, 3 | 3u << 14 | 1u << 20);
+        qtest_writel(qts, GBE, 3u << 28);
+        uint32_t before = qtest_readl(qts, GBE + 0x10000);
+        qtest_clock_step(qts, 99);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, before);
+        qtest_clock_step(qts, 1);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, before + 1);
+        qtest_writel(qts, GBE, 1u << 28);
+        before = qtest_readl(qts, GBE + 0x10000);
+        qtest_clock_step(qts, 1000);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, before);
+        qtest_writel(qts, GBE, 2u << 28);
+        qtest_clock_step(qts, 1000);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, before);
+        qtest_writel(qts, GBE, 0);
+        qtest_writel(qts, GBE + 0x10000, 1u << 31);
+        qtest_clock_step(qts, 1000);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 1u << 31);
+        g_autoptr(QDict) machine_change = qtest_qmp_assert_failure_ref(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine',"
+            "'property':'gbe-external-ttl-hz','value':23000000}}");
+        g_autoptr(QDict) device_change = qtest_qmp_assert_failure_ref(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine/gbe',"
+            "'property':'external-ttl-hz','value':23000000}}");
+        qtest_system_reset(qts);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine",
+                         "gbe-external-ttl-hz"), ==, hz);
+        g_assert_cmpuint(o2_clock_property(qts, "/machine/gbe",
+                         "external-ttl-hz"), ==, hz);
+        g_assert_cmphex(qtest_readl(qts, GBE + 0x10000), ==, 1u << 31);
+        for (unsigned i = 0; i < 4; i++) {
+            g_assert_cmpuint(qtest_get_irq_raise_count(qts, i), ==, 0);
+        }
+        assert_private_window_migration_blocked(qts);
+        qtest_quit(qts);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_gbe_external_ttl_configuration(void)
+{
+    assert_o2_banked_rejected("o2-test,gbe-external-ttl-hz=23000000",
+                              "64M", NULL, NULL, "requires gbe11-registers");
+    const char *invalid[] = {
+        "-1", "1.5", "1000000001", "18446744073709551616",
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "o2-test,gbe-external-ttl-hz=%s", invalid[i]);
+
+        assert_o2_banked_rejected(machine, "64M", NULL, NULL,
+                                  "gbe-external-ttl-hz");
+    }
+    QTestState *qts = qtest_init(
+        "-M o2-test,gbe-external-ttl-hz=0 -m 64M -nodefaults");
+    g_assert_cmpuint(o2_clock_property(qts, "/machine",
+                     "gbe-external-ttl-hz"), ==, 0);
+    qtest_quit(qts);
+}
+
+
+static QTestState *o2_ttl_fixture(const char *extra)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -m 64M -nodefaults "
+        "-device sgi-o2-gbe,id=gbe,functional-display=on,"
+        "external-ttl-hz=23000000,ram=/objects/ram/ram[0] %s", extra);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/gbe", 0, GBE);
+    return qts;
+}
+
+static void test_gbe_external_ttl_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("o2-ttl-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *stream = g_build_filename(dir, "state", NULL);
+    g_autofree char *file_uri = g_strdup_printf("file:%s", stream);
+    QTestState *from = o2_ttl_fixture("");
+    QTestState *control = o2_ttl_fixture("");
+    QTestState *to = o2_ttl_fixture("-incoming defer");
+    QTestState *sources[] = { from, control };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(sources); i++) {
+        QTestState *qts = sources[i];
+
+        qtest_irq_intercept_out_named(qts, "/machine/peripheral/gbe",
+                                      "sysbus-irq");
+        qtest_writel(qts, GBE + GBE_VT_1, 97 | 67 << 12);
+        qtest_writel(qts, GBE + 0x10010, 4 | 5 << 12);
+        qtest_writel(qts, GBE + 0x10020, 1 << 12);
+        qtest_writel(qts, GBE + 0x3000c, 0x40010001);
+        qtest_writel(qts, GBE + 0x10000, 0);
+        qtest_clock_step(qts, 44);
+    }
+    qtest_irq_intercept_out_named(to, "/machine/peripheral/gbe", "sysbus-irq");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(qtest_readl(to, GBE + 0x10000), ==, 1);
+    g_assert_cmphex(qtest_readl(to, GBE + 0x30008), ==, 0);
+    g_assert_cmphex(qtest_readl(to, GBE + 0x3000c), ==, 0x40010001);
+    g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 0);
+    const unsigned steps[] = { 42, 1, 4174, 17000 };
+    for (unsigned i = 0; i < ARRAY_SIZE(steps); i++) {
+        qtest_clock_step(to, steps[i]);
+        qtest_clock_step(control, steps[i]);
+        g_assert_cmphex(qtest_readl(to, GBE + 0x10000), ==,
+                        qtest_readl(control, GBE + 0x10000));
+        g_assert_cmphex(qtest_readl(to, GBE + 0x30008), ==,
+                        qtest_readl(control, GBE + 0x30008));
+        g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==,
+                         qtest_get_irq_raise_count(control, 0));
+    }
+    g_assert_cmphex(qtest_readl(to, GBE + 0x30008), ==, 0x40010001);
+    g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 1);
+    qtest_qmp_assert_success(control,
+        "{'execute':'migrate','arguments':{'uri':%s}}", file_uri);
+    sgi_wait_migration(control, "completed");
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-cpu", "R10000", "-m", "64M",
+        "-nodefaults", "-display", "none", "-accel", "qtest",
+        "-device", "sgi-o2-gbe,id=gbe,functional-display=on,"
+        "external-ttl-hz=20000000,ram=/objects/ram/ram[0]",
+        "-incoming", file_uri, "-qmp", "stdio", NULL,
+    };
+    assert_launch_rejected(args,
+        "device 'sgi-o2-gbe': 1312d00 != 15ef3c0");
+    qtest_quit(from);
+    qtest_quit(control);
+    qtest_quit(to);
+    g_unlink(stream);
+    g_unlink(sock);
+    g_rmdir(dir);
 }
 
 static void test_gbe11_registers(void)
@@ -7263,6 +7472,13 @@ int main(int argc, char **argv)
     qtest_add_func("/o2/module-profile", test_module_profile);
     qtest_add_func("/o2/prom-sb64-reset", test_prom_sb64_reset);
     qtest_add_func("/o2/gbe11-registers", test_gbe11_registers);
+    qtest_add_func("/o2/gbe-external-ttl/default",
+                   test_gbe_external_ttl_default);
+    qtest_add_func("/o2/gbe-external-ttl/board", test_gbe_external_ttl_board);
+    qtest_add_func("/o2/gbe-external-ttl/configuration",
+                   test_gbe_external_ttl_configuration);
+    qtest_add_func("/o2/gbe-external-ttl/migration",
+                   test_gbe_external_ttl_migration);
     qtest_add_func("/o2/aic-pci-diagnostic", test_aic_pci_diagnostic);
     qtest_add_func("/o2/aic-pci-low-dma-policy-off",
                    test_aic_pci_low_dma_policy_off);

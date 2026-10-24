@@ -106,6 +106,7 @@ typedef struct O2MachineState {
     bool prom_private_window;
     bool prom_sb64_reset;
     bool gbe11_registers;
+    uint64_t gbe_external_ttl_hz;
     bool gbe_one_tile_diagnostic;
     bool aic_pci_diagnostic;
     bool diagnostic_lower_pci_byte_identity;
@@ -409,6 +410,38 @@ static void o2_set_gbe11_registers(Object *obj, bool value, Error **errp)
         return;
     }
     s->gbe11_registers = value;
+}
+
+static void o2_get_gbe_external_ttl_hz(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+
+    visit_type_uint64(v, name, &s->gbe_external_ttl_hz, errp);
+}
+
+static void o2_set_gbe_external_ttl_hz(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+{
+    O2MachineState *s = (O2MachineState *)obj;
+    uint64_t hz;
+
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "gbe-external-ttl-hz cannot change once the "
+                         "machine is built");
+        return;
+    }
+    if (!visit_type_uint64(v, name, &hz, errp)) {
+        return;
+    }
+    if (hz > 1000000000) {
+        error_setg(errp, "gbe-external-ttl-hz must be from 0 through "
+                         "1000000000");
+        return;
+    }
+    s->gbe_external_ttl_hz = hz;
 }
 
 static bool o2_get_gbe_one_tile_diagnostic(Object *obj, Error **errp)
@@ -1441,6 +1474,10 @@ static void o2_init(MachineState *machine)
                      "ROM settings");
         exit(1);
     }
+    if (s->gbe_external_ttl_hz && !s->gbe11_registers) {
+        error_report("o2-test gbe-external-ttl-hz requires gbe11-registers=on");
+        exit(1);
+    }
     if (s->gbe11_registers &&
         (!s->banked_ram || !s->reset_low_ram_approx ||
          !renderer_status || !s->prom_private_window ||
@@ -1675,6 +1712,7 @@ static void o2_init(MachineState *machine)
         gbe = qdev_new("sgi-o2-gbe");
         object_property_add_child(OBJECT(machine), "gbe", OBJECT(gbe));
         qdev_prop_set_bit(gbe, "functional-display", true);
+        qdev_prop_set_uint64(gbe, "external-ttl-hz", s->gbe_external_ttl_hz);
         object_property_set_link(
             OBJECT(gbe), "ram",
             OBJECT(&SGI_CRIME(crime)->decoded_ram), &error_fatal);
@@ -1894,6 +1932,11 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "gbe11-registers",
                                    o2_get_gbe11_registers,
                                    o2_set_gbe11_registers);
+    object_class_property_add(oc, "gbe-external-ttl-hz", "uint64",
+                              o2_get_gbe_external_ttl_hz,
+                              o2_set_gbe_external_ttl_hz, NULL, NULL);
+    object_class_property_set_description(oc, "gbe-external-ttl-hz",
+        "Caller-selected diagnostic TTL clock in Hz (0: absent)");
     object_class_property_add_bool(oc, "gbe-one-tile-diagnostic",
                                    o2_get_gbe_one_tile_diagnostic,
                                    o2_set_gbe_one_tile_diagnostic);
