@@ -152,7 +152,8 @@ struct SGIPICState {
     MemoryRegion cpu_face;
     SGIXbowState pxbow;
     MemoryRegion pxbow_widget_zero;
-    MemoryRegion pxbow_routed_widget;
+    MemoryRegion pxbow_routed_widgets[SGI_XBOW_WIDGETS];
+    uint16_t pxbow_routed_widgets_initialized;
     MemoryRegion pci_range[2];
     MemoryRegion cpu_pci_range[2];
     MemoryRegion *target[16];
@@ -1893,6 +1894,28 @@ DeviceState *sgi_pic_head_device(SGIPICState *s, unsigned head)
     return DEVICE(&s->head[head]);
 }
 
+static MemoryRegion *pic_pxbow_routed_widget(SGIPICState *s,
+                                               unsigned int widget,
+                                               Error **errp)
+{
+    if (!s->pxbow_enabled || widget < SGI_XBOW_FIRST_WIDGET ||
+        widget >= SGI_XBOW_WIDGETS) {
+        error_setg(errp, "PIC PXBOW route requires an enabled link widget");
+        return NULL;
+    }
+    if (!(s->pxbow_routed_widgets_initialized & BIT(widget))) {
+        g_autofree char *name =
+            g_strdup_printf("pic.pxbow-routed-widget%u", widget);
+
+        memory_region_init_alias(
+            &s->pxbow_routed_widgets[widget], OBJECT(s), name,
+            sgi_xbow_ingress(&s->pxbow, s->pxbow_host_widget),
+            (uint64_t)widget * s->pxbow.span, PIC_WIDGET_SIZE);
+        s->pxbow_routed_widgets_initialized |= BIT(widget);
+    }
+    return &s->pxbow_routed_widgets[widget];
+}
+
 bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
                                      Error **errp)
 {
@@ -1939,11 +1962,11 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
     memory_region_init_alias(
         &s->pxbow_widget_zero, OBJECT(s), "pic.pxbow-widget-zero",
         sgi_xbow_packet_ingress(&s->pxbow, s->pxbow_host_widget), 0, span);
-    memory_region_init_alias(
-        &s->pxbow_routed_widget, OBJECT(s), "pic.pxbow-routed-widget",
-        sgi_xbow_ingress(&s->pxbow, s->pxbow_host_widget),
-        (uint64_t)s->pxbow_pic_widget * span, PIC_WIDGET_SIZE);
     s->pxbow_enabled = true;
+    if (!pic_pxbow_routed_widget(s, s->pxbow_pic_widget, errp)) {
+        s->pxbow_enabled = false;
+        return false;
+    }
     return true;
 }
 
@@ -1965,9 +1988,15 @@ MemoryRegion *sgi_pic_pxbow_widget_zero(SGIPICState *s)
     return s->pxbow_enabled ? &s->pxbow_widget_zero : NULL;
 }
 
-MemoryRegion *sgi_pic_routed_widget(SGIPICState *s)
+SGIXbowState *sgi_pic_pxbow(SGIPICState *s)
 {
-    return s->pxbow_enabled ? &s->pxbow_routed_widget : NULL;
+    return s->pxbow_enabled ? &s->pxbow : NULL;
+}
+
+MemoryRegion *sgi_pic_routed_widget(SGIPICState *s, unsigned int widget,
+                                    Error **errp)
+{
+    return pic_pxbow_routed_widget(s, widget, errp);
 }
 
 uint8_t sgi_pic_pxbow_revision(SGIPICState *s)
