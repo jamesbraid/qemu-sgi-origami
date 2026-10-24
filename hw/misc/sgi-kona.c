@@ -7438,8 +7438,9 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * library waits on the return page.
  *
  * Inferred: bit 3 of word 15 is the bank, as bit 3 of a load's word 17
- * is; every readback observed named bank 0 and carried 0x43. Words 13
- * and the rest of word 15 are not read: what they carry is unknown.
+ * is; every readback observed named bank 0 and carried 0x43. Word 6
+ * (zero in every readback observed), word 13 and the rest of word 15 are
+ * not checked: what they carry is unknown.
  *
  * Approximated: the model keeps a texture as 32-bit RGBA texels, not in
  * the pipe's memory layout, and the copy it writes is those words,
