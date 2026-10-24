@@ -3185,11 +3185,10 @@ static void test_gl_pixels_dma_rows_in_two_parts(void)
 /*
  * A program the model does not know (a routine between the head and the
  * unpack, as a scale or bias would add, or a known program whose unpack
- * word is another's) and a pixel zoom other than 1 draw nothing, and
- * their images are consumed: the fence after each parses as a header,
- * and a DMA transfer paints neither the window nor
- * the raster engine's rectangle. A DMA transfer that does not fit a draw
- * moves nothing either, and the draw ends.
+ * word is another's) draws nothing, and its image is consumed: the fence
+ * after each parses as a header, and a DMA transfer paints neither the
+ * window nor the raster engine's rectangle. A DMA transfer that does not
+ * fit a draw moves nothing either, and the draw ends.
  */
 static void test_gl_pixels_unmodelled_draw_nothing(void)
 {
@@ -3199,12 +3198,6 @@ static void test_gl_pixels_unmodelled_draw_nothing(void)
 
     gl_pixels_context(qts, 0);
     gl_pixels_program(qts, GL_PIX_SCALED, 8, 50, 60, 51, 60, 1);
-    gl_pixels_draw(qts, 2);
-    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x010203ff, 0x040506ff }, 2);
-    gl_pixels_fence(qts);
-    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
-
-    gl_pixels_program(qts, GL_PIX_4UB, 8, 50, 60, 51, 60, 2);
     gl_pixels_draw(qts, 2);
     gl_pixels_row(qts, 0, (const uint32_t[]){ 0x010203ff, 0x040506ff }, 2);
     gl_pixels_fence(qts);
@@ -3235,6 +3228,100 @@ static void test_gl_pixels_unmodelled_draw_nothing(void)
                     MGRAS_HQ_FLAG_FENCE);
     g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
     gl_pixels_fence(qts);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * glPixelZoom as the client sends it (model runs of a zoom probe on SI+T):
+ * the GE box is the zoomed destination from the raster position, its
+ * corners in the order the image runs; 0xe38 holds the destination rows
+ * and the source width; 0x192 holds 1 / |y zoom|; a y zoom other than 1
+ * ends the program with 0x3663, under which 0x8d20 counts one row. A 4x3
+ * image of distinct pixels drawn at 2,2 by DMA, at 1,3 inline and at
+ * -1,1 inline must fill each source pixel's footprint and nothing else.
+ */
+static void gl_pixels_zoom_program(QTestState *qts, uint32_t write,
+                                   float zinv, const uint32_t box[6])
+{
+    uint32_t program[8] = {
+        0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4, write, 0xdf3,
+    };
+    uint32_t unpack[6] = { 2, 0x4064, 0x464, 0xb, 0xc, 0x3b808081 };
+    uint32_t zoom[2] = { 0 };
+
+    memcpy(&zoom[1], &zinv, sizeof(zinv));
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_PROGRAM, program, 8);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_UNPACK, unpack, 6);
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_ZOOM, zoom, 2);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_BOX, box, 6);
+}
+
+static uint32_t gl_zoom_pixel(uint32_t x, uint32_t y)
+{
+    return (0x10 + 0x40 * x) << 24 | (0x20 + 0x50 * y) << 16 | 0x80 << 8 |
+           0xff;
+}
+
+static void test_gl_pixels_zoom(void)
+{
+    static const uint32_t box22[6] = { 0, 0, 7, 5, 6 << 16 | 4, 1 };
+    static const uint32_t box13[6] = { 0, 0, 3, 8, 9 << 16 | 4, 1 };
+    static const uint32_t boxm1[6] = { -1, 0, -4, 2, 3 << 16 | 4, 1 };
+    uint32_t words[3][4];
+    uint8_t image[48];
+
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            words[y][x] = gl_zoom_pixel(x, y);
+            stl_be_p(&image[16 * y + 4 * x], words[y][x]);
+        }
+    }
+
+    gl_pixels_context(qts, 0);
+    gl_raster_pos2f(qts, 8, 8);
+    gl_pixels_zoom_program(qts, 0x3663, 0.5f, box22);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_dma(qts, image, sizeof(image), 48, 1, 48, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 7; y++) {
+        for (uint32_t x = 0; x < 9; x++) {
+            uint32_t want = x < 8 && y < 6 ?
+                            gl_zoom_pixel(x / 2, y / 2) >> 8 : 0;
+
+            g_assert_cmphex(gl_window_pixel(qts, 8 + x, 8 + y), ==, want);
+        }
+    }
+
+    gl_raster_pos2f(qts, 30, 8);
+    gl_pixels_zoom_program(qts, 0x3663, 1.0f / 3, box13);
+    gl_pixels_draw(qts, 4);
+    for (uint32_t y = 0; y < 3; y++) {
+        gl_pixels_row(qts, 0, words[y], 4);
+    }
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 10; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            uint32_t want = y < 9 ? gl_zoom_pixel(x, y / 3) >> 8 : 0;
+
+            g_assert_cmphex(gl_window_pixel(qts, 30 + x, 8 + y), ==, want);
+        }
+    }
+
+    /* x runs leftward from the column left of the raster position. */
+    gl_raster_pos2f(qts, 60, 30);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, boxm1);
+    gl_pixels_draw(qts, 12);
+    for (uint32_t y = 0; y < 3; y++) {
+        gl_pixels_row(qts, 0, words[y], 4);
+    }
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, 59 - x, 30 + y), ==,
+                            gl_zoom_pixel(x, y) >> 8);
+        }
+        g_assert_cmphex(gl_window_pixel(qts, 60, 30 + y), ==, 0);
+    }
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -6151,6 +6238,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-unmodelled-draw-nothing",
         test_gl_pixels_unmodelled_draw_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-zoom",
+        test_gl_pixels_zoom, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-long-load",
         test_gl_pixels_long_load, true);

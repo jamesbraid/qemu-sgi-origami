@@ -1447,6 +1447,140 @@ static void test_gl_texture_pixel_texture_volume_slice(gconstpointer data)
     qtest_quit(t);
 }
 
+/*
+ * A zoomed pixel-texture draw, glPixelZoom(2, 2) of a 2x2 image: the
+ * client's zoomed branch gives each pass the source rows it carries, a
+ * box whose x runs over the zoomed width and whose height is the pass's
+ * zoomed rows times the RE count, 0x192 = 1/2 and the y-zoom writing
+ * routine 0x3663. Every texel must fill its 2x2 footprint on one RE or
+ * two.
+ */
+static void test_gl_texture_pixel_texture_zoom(gconstpointer data)
+{
+    static const uint8_t slice[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x00, 0xff,
+        0x40, 0xbf, 0x00, 0xff, 0xbf, 0xbf, 0x00, 0xff,
+    };
+    static const uint32_t texels[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    static const uint32_t program[12] = {
+        0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4, 0x3663, 0xdf3,
+        0x3ef5, 0x18e, 0x374a, 0xe1c,
+    };
+    QTestState *t = texture_board_start(data);
+    uint32_t res = tex_re_count(t);
+
+    tex_load_volume_slices_shape(t, slice, 2, 2, 1);
+    tex_bind(t, 0x40859, 0x815804);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 0x100);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, 0x1112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    for (uint32_t pass = 0; pass < res; pass++) {
+        uint32_t src_rows = (2 + res - pass - 1) / res;
+        uint32_t zoomed = src_rows * res * 2;
+        uint32_t dest_rows = (zoomed + res - pass - 1) / res;
+        uint32_t box[9] = {
+            0, 0, 3, dest_rows * res, dest_rows << 16 | 2, 1, 1, 1, pass,
+        };
+        uint8_t sent[16];
+
+        for (uint32_t i = 0; i < src_rows; i++) {
+            memcpy(&sent[8 * i], &pixels[8 * (pass + res * i)], 8);
+        }
+        tex_record(t, 0x18a, 0x3c040045);
+        gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 2);
+        gl_ge_load(t, GL_GE_CRAM, GL_GE_PROGRAM, program,
+                   ARRAY_SIZE(program));
+        gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+        gl_raster_pos2f(t, 0, 0);
+        gl_word(t, GL_PIXELS_HDR);
+        gl_word(t, 2);
+        gl_word(t, 0);
+        gl_word(t, 0);
+        gl_word(t, 2);
+        gl_word(t, 0);
+        gl_word(t, 1);
+        gl_word(t, 0x4fc5);
+        gl_word(t, 0x18);
+        gl_pixels_dma_on(t, 0, sent, 8 * src_rows, 8, src_rows, 8, 0xa7);
+        tex_record(t, 0x18a, 0x3c040044);
+        gl_pixels_fence(t);
+    }
+    for (int y = 0; y < 5; y++) {
+        for (int x = 0; x < 5; x++) {
+            uint32_t want = x < 4 && y < 4 ? texels[(y / 2) * 2 + x / 2] : 0;
+
+            g_assert_cmphex(gl_window_pixel(t, x, y), ==, want);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A zoomed draw waiting for its DMA image crosses a migration and fills
+ * its zoomed footprint on the destination (glPixelZoom(2, 2) of a 2x1
+ * image, the client's words). Without the zoom in the migration stream
+ * it would draw one pixel a source pixel.
+ */
+static void test_gl_pixels_zoom_migration(gconstpointer data)
+{
+    static const uint32_t program[8] = {
+        0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4, 0x3663, 0xdf3,
+    };
+    static const uint32_t box[6] = { 0, 0, 3, 1, 2 << 16 | 2, 1 };
+    static const uint8_t image[8] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-pixel-zoom-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS, (char *)data);
+    from = tex_start(args);
+    gl_clear_color(from, 0, 0, 0, 1);
+    gl_word(from, GL_CLEAR_COLOR_BUFFER);
+    gl_pixels_program(from, GL_PIX_4UB, 2, 0, 0, 1, 0, 2);
+    gl_ge_load(from, GL_GE_CRAM, GL_GE_PROGRAM, program, 8);
+    gl_ge_load(from, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_raster_pos2f(from, 8, 8);
+    gl_pixels_draw_as(from, 2, GL_PIXELS_BY_DMA);
+    to = tex_sb_file_migrate_and_restart(from, args, uri);
+
+    gl_pixels_dma_on(to, 0, image, sizeof(image), 8, 1, 8, 0xa7);
+    gl_pixels_fence(to);
+    for (int y = 0; y < 3; y++) {
+        for (int x = 0; x < 5; x++) {
+            uint32_t want = y < 2 && x < 4 ? (x < 2 ? 0xff0000 : 0x00ff00) : 0;
+
+            g_assert_cmphex(gl_window_pixel(to, 8 + x, 8 + y), ==, want);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
 static void tex_load_captured_rect_volume(QTestState *t, const uint8_t *image,
                                           uint32_t width, uint32_t height,
                                           uint32_t depth, bool bad_area)
@@ -5957,9 +6091,14 @@ int main(int argc, char **argv)
     add_texture_board_cases(
         "sn0/origin2000/mgras/gl-texture-pixel-texture-volume-slice",
         test_gl_texture_pixel_texture_volume_slice);
+    add_texture_board_cases(
+        "sn0/origin2000/mgras/gl-texture-pixel-texture-zoom",
+        test_gl_texture_pixel_texture_zoom);
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-pixel-texture-pass-migration/mxi",
         "mxi", test_gl_texture_pixel_texture_pass_migration);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-pixels-zoom-migration/si-t",
+                        "si-t", test_gl_pixels_zoom_migration);
     add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
                             test_gl_texture_volume_pixel_rgba);
     add_texture_board_cases(
