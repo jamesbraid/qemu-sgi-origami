@@ -1146,6 +1146,43 @@ static void test_gl_native_stipple_hidden_migration(void)
                gl_native_stipple_hidden_check);
 }
 
+/*
+ * An overlay-visual context (draw-buffer word 0x48) that has drawn into
+ * the overlay keeps drawing there after a migration, with no context load
+ * in between: the overlay index it drew survives, the next rectangle goes
+ * to the overlay too, and the main planes stay as they were.
+ */
+static void gl_overlay_setup(QTestState *s)
+{
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_one(s, GL_INIT_CI_HDR, 8);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_word(s, GL_DRAW_BUFFER_HDR);
+    gl_word(s, 0x48);
+    gl_word(s, 0x48);
+    gl_word(s, 1);
+    gl_indexs(s, 1);
+    gl_window_rect(s, 40, 10, 50, 30);
+    g_assert_cmphex(mgras_test_overlay(s, 256 + 45, 383 - 20), ==, 1);
+}
+
+static void gl_overlay_check(QTestState *s)
+{
+    g_assert_cmphex(mgras_test_overlay(s, 256 + 45, 383 - 20), ==, 1);
+    gl_indexs(s, 3);
+    gl_window_rect(s, 60, 10, 70, 30);
+    g_assert_cmphex(mgras_test_overlay(s, 256 + 65, 383 - 20), ==, 3);
+    g_assert_cmphex(gl_window_pixel(s, 65, 20), ==, 0);
+    g_assert_cmphex(gl_window_pixel(s, 45, 20), ==, 0);
+}
+
+static void test_gl_overlay_draw_buffer_migration(void)
+{
+    gl_migrate(gl_overlay_setup, gl_overlay_check);
+}
+
 static void test_gl_native_stipple_loop_migration(void)
 {
     gl_migrate(gl_native_stipple_loop_setup, gl_native_stipple_loop_check);
@@ -1494,6 +1531,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-stipple/loop-migration",
         test_gl_native_stipple_loop_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-overlay-draw-buffer-migration",
+        test_gl_overlay_draw_buffer_migration, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-texcoord/migration",
         test_gl_native_texcoord_migration, false);
