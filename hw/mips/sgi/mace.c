@@ -8,6 +8,7 @@
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/mace.h"
 #include "hw/mips/sgi/mace-id.h"
+#include "hw/mips/sgi/mace-ps2.h"
 #include "hw/net/sgi-mace-eth.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -63,6 +64,7 @@ struct SGIMACEState {
     MemoryRegion regs;
     SGIMACEEthState eth;
     DeviceState *identity;
+    DeviceState *ps2;
     MemoryRegion eth_dma;
     MemoryRegion eth_low_ram;
     MemoryRegion eth_full_ram;
@@ -149,7 +151,7 @@ static void mace_update_irqs(SGIMACEState *s)
     uint32_t active = s->istat & s->imask;
 
     qemu_set_irq(s->crime[4], (active & 0xffff0000U) != 0);
-    qemu_set_irq(s->crime[5], (active & 0x0000ff00U) != 0);
+    qemu_set_irq(s->crime[5], (active & 0x0000eb00U) != 0);
     qemu_set_irq(s->crime[6], (active & 0x000000ffU) != 0);
 }
 
@@ -158,6 +160,15 @@ static void mace_eth_irq(void *opaque, int n, int level)
     SGIMACEState *s = opaque;
 
     qemu_set_irq(s->crime[3], level);
+}
+
+static void mace_ps2_irq(void *opaque, int n, int level)
+{
+    SGIMACEState *s = opaque;
+    uint32_t bit = 1U << (9 + n);
+
+    s->istat = (s->istat & ~bit) | (level ? bit : 0);
+    mace_update_irqs(s);
 }
 
 static void mace_rtc_irq(void *opaque, int n, int level)
@@ -965,6 +976,7 @@ static void mace_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->isa_reset, "isa-reset", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_eth_irq, "eth", 1);
     qdev_init_gpio_in_named(DEVICE(obj), mace_rtc_irq, "rtc", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_ps2_irq, "ps2", 4);
     qdev_init_gpio_in_named(DEVICE(obj), mace_uart_irq, "uart", 2);
     qdev_init_gpio_in_named(DEVICE(obj), mace_pci_wire_irq, "pci", 8);
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
@@ -1226,6 +1238,19 @@ static void mace_realize(DeviceState *dev, Error **errp)
         pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus,
                                        ~((1U << 1) | (1U << 2) | (1U << 3)));
     }
+    s->ps2 = qdev_new(TYPE_SGI_MACE_PS2);
+    object_property_add_child(OBJECT(dev), "ps2", OBJECT(s->ps2));
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(s->ps2), errp)) {
+        object_unparent(OBJECT(s->ps2));
+        s->ps2 = NULL;
+        return;
+    }
+    for (i = 0; i < 4; i++) {
+        qdev_connect_gpio_out(s->ps2, i,
+                              qdev_get_gpio_in_named(dev, "ps2", i));
+    }
+    memory_region_add_subregion_overlap(&s->aperture, 0x320000,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(s->ps2), 0), 1);
     identity = qdev_new(TYPE_SGI_MACE_ID);
     object_property_add_child(OBJECT(dev), "identity", OBJECT(identity));
     qdev_prop_set_bit(identity, "no-responder", !s->identity_diagnostic);
@@ -1264,6 +1289,15 @@ static void mace_unrealize(DeviceState *dev)
         qdev_unrealize(identity);
         object_unparent(OBJECT(identity));
         SGI_MACE(dev)->identity = NULL;
+    }
+    if (SGI_MACE(dev)->ps2) {
+        DeviceState *ps2 = SGI_MACE(dev)->ps2;
+
+        memory_region_del_subregion(&SGI_MACE(dev)->aperture,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(ps2), 0));
+        qdev_unrealize(ps2);
+        object_unparent(OBJECT(ps2));
+        SGI_MACE(dev)->ps2 = NULL;
     }
     mace_serial_dma_cleanup(&SGI_MACE(dev)->serial_dma);
     address_space_destroy(&SGI_MACE(dev)->serial_dma_as);
