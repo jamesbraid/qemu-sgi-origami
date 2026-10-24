@@ -1631,6 +1631,7 @@ static void test_dma_address_mte_banks(void)
     const uint8_t source[] = {
         0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17, 0x17,
         0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7, 0xa7,
+        0x5b, 0x5b, 0x5b, 0x5b, 0x5b, 0x5b, 0x5b, 0x5b,
     };
 
     g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
@@ -1645,6 +1646,7 @@ static void test_dma_address_mte_banks(void)
         wr(q, CMAP(0), 0);
         wr(q, CMAP(0x17), 0x12345600);
         wr(q, CMAP(0xa7), 0xabcdef00);
+        wr(q, CMAP(0x5b), 0x76543200);
         wr(q, CMAP(4359), 0x89abcd00);
         qtest_memwrite(q, 0x40030000, source, sizeof(source));
         qtest_writel(q, 0x40040000, 0x07000000);
@@ -1660,6 +1662,12 @@ static void test_dma_address_mte_banks(void)
         dma_board_copy(q, legacy, 0x40030000, 0x48020000, 8, 16);
         dma_board_copy(q, legacy, 0x40030000, 0x50020000, 8, 0);
         dma_board_copy(q, legacy, 0x40030000, 0x50020000, 0, 16);
+        /* A wrong fallback into bank zero must produce a nonzero pixel. */
+        dma_board_copy(q, legacy, 0x40030000, 0x40020000, 16, 0);
+        dma_board_copy(q, legacy, 0x40030000, 0x40020000, 16, 16);
+        qtest_memread(q, 0x40020000, actual, sizeof(actual));
+        g_assert_cmpmem(actual, 8, source + 16, 8);
+        g_assert_cmpmem(actual + 16, 8, source + 16, 8);
         qtest_memread(q, 0x48020000, actual, sizeof(actual));
         g_assert_cmpmem(actual, 8, source, 8);
         g_assert_cmpmem(actual + 16, 8, source + 8, 8);
