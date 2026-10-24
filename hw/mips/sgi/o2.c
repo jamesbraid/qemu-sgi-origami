@@ -1555,6 +1555,11 @@ static void o2_init(MachineState *machine)
         error_report("o2-test eight-bank profile does not support ROM images");
         exit(1);
     }
+    if ((blk_by_name("o2flash") || blk_by_name("o2flash-state")) &&
+        !s->rom_at29c040a) {
+        error_report("o2-test flash backends require rom-at29c040a=on");
+        exit(1);
+    }
     if (s->rom_at29c040a &&
         (!s->rom_image || s->rom_size != 512 * KiB || s->rom_offset != 0 ||
          !s->rom_at29_protection || !s->rom_at29_lower_lock ||
@@ -1838,7 +1843,13 @@ static void o2_init(MachineState *machine)
             qdev_prop_set_string(rom, "at29c040a-upper-lock",
                                  s->rom_at29_upper_lock);
         }
-        qdev_prop_set_string(rom, "image", s->rom_image);
+        if (blk_by_name("o2flash") || blk_by_name("o2flash-state")) {
+            qdev_prop_set_drive(rom, "drive", blk_by_name("o2flash"));
+            qdev_prop_set_drive(rom, "state-drive",
+                                 blk_by_name("o2flash-state"));
+        } else {
+            qdev_prop_set_string(rom, "image", s->rom_image);
+        }
         qdev_prop_set_uint32(rom, "flash-size", s->rom_size);
         qdev_prop_set_uint32(rom, "image-offset", s->rom_offset);
         qdev_prop_set_uint16(rom, "pad-byte", s->rom_pad_byte);

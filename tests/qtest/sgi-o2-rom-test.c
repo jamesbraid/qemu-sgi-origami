@@ -5,6 +5,7 @@
 #include "memtx.h"
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
+#include "sgi-launch.h"
 #include "qobject/qdict.h"
 
 #define ROM_BASE UINT64_C(0x1fc00000)
@@ -1062,6 +1063,379 @@ static void test_machine_flash_gate_migration(void)
     unlink(socket);
 }
 
+
+static void make_at29_state(const char *path, const uint8_t *array,
+                             uint8_t flags)
+{
+    uint8_t state[512] = { 'O', '2', 'A', 'T', '2', '9', 0, 1 };
+    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
+    gsize length = 32;
+
+    state[8] = flags;
+    g_checksum_update(sum, array, 512 * 1024);
+    g_checksum_get_digest(sum, state + 32, &length);
+    g_checksum_free(sum);
+    g_assert_true(g_file_set_contents(path, (const char *)state,
+                                      sizeof(state), NULL));
+}
+
+static void test_at29_backing_persistence(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+                                           "at29-backed-seed.bin", &seed_path);
+    g_autofree char *backing = g_build_filename(test_dir, "flash.raw", NULL);
+    g_autofree char *state = g_build_filename(test_dir, "flash.state", NULL);
+    g_autofree char *extra = g_strdup_printf(
+        "-drive if=none,id=o2flash,file=%s,format=raw "
+        "-drive if=none,id=o2flash-state,file=%s,format=raw", backing, state);
+    g_autofree char *stored = NULL;
+    g_autofree char *metadata = NULL;
+    gsize length;
+    uint8_t data[256], got[256];
+    const uint32_t sector = 0x10000;
+    QTestState *qts;
+
+    g_assert_true(g_file_set_contents(backing, (const char *)seed,
+                                      512 * 1024, NULL));
+    make_at29_state(state, seed, 4);
+    qts = start_at29_extra(seed_path, "disabled", "unlocked", "locked", extra);
+    for (unsigned i = 0; i < sizeof(data); i++) {
+        data[i] = i * 19 + 0x53;
+    }
+    qtest_writeq(qts, MACE_MISC, 1);
+    at29_prefix(qts);
+    at29_load_sector(qts, sector, data);
+    qtest_clock_step(qts, 10 * 1000 * 1000);
+    g_assert_true(g_file_get_contents(backing, &stored, &length, NULL));
+    g_assert_cmpuint(length, ==, 512 * 1024);
+    g_assert_cmpmem(stored + sector, sizeof(data), data, sizeof(data));
+    g_assert_cmphex((uint8_t)stored[sector - 1], ==, seed[sector - 1]);
+    g_assert_cmphex((uint8_t)stored[sector + 256], ==, seed[sector + 256]);
+    g_assert_true(g_file_get_contents(state, &metadata, &length, NULL));
+    g_assert_cmpuint(length, ==, 512);
+    g_assert_cmphex(metadata[8], ==, 5);
+    qtest_system_reset(qts);
+    qtest_memread(qts, ROM_BASE + sector, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
+    qtest_quit(qts);
+    /* Existing nonvolatile state wins over fresh synthetic startup fields. */
+    qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                             "unlocked", extra);
+    qtest_memread(qts, ROM_BASE + sector, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
+    qtest_writeq(qts, MACE_MISC, 1);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + sector, 0x62), ==, MEMTX_OK);
+    qtest_clock_step(qts, 10 * 1000 * 1000);
+    g_assert_cmphex(qtest_readb(qts, ROM_BASE + sector), ==, data[0]);
+    g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 512 * 1024 - 1, 0x62),
+                    !=, MEMTX_OK);
+    qtest_quit(qts);
+    g_clear_pointer(&stored, g_free);
+    g_assert_true(g_file_get_contents(seed_path, &stored, &length, NULL));
+    g_assert_cmpmem(stored, length, seed, 512 * 1024);
+}
+
+
+static char *at29_drive(const char *id, const char *path, const char *extra)
+{
+    return g_strdup_printf("if=none,id=%s,file=%s,format=raw%s",
+                            id, path, extra);
+}
+
+static void backing_startup_error(const char *seed, const char *array_drive,
+                                   const char *state_drive, bool selected,
+                                   const char *message)
+{
+    g_autofree char *machine = g_strdup_printf(
+        "o2-test,password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "rom-offset=0,rom-pad-byte=255%s", seed,
+        selected ? ",rom-at29c040a=on,rom-at29c040a-protection=disabled,"
+                   "rom-at29c040a-lower-lock=unlocked,"
+                   "rom-at29c040a-upper-lock=unlocked" : "");
+    const char *args[24] = { qtest_qemu_binary(NULL), "-M", machine,
+        "-cpu", "R10000", "-m", "64M", "-accel", "qtest",
+        "-nodefaults", "-display", "none", "-qmp", "stdio" };
+    unsigned n = 14;
+
+    if (array_drive) {
+        args[n++] = "-drive";
+        args[n++] = array_drive;
+    }
+    if (state_drive) {
+        args[n++] = "-drive";
+        args[n++] = state_drive;
+    }
+    args[n] = NULL;
+    assert_launch_rejected(args, message);
+}
+
+static void test_at29_backing_validation(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+        "at29-validation-seed.bin", &seed_path);
+    g_autofree char *array = g_build_filename(test_dir, "validate.raw", NULL);
+    g_autofree char *state = g_build_filename(test_dir, "validate.state", NULL);
+    g_autofree char *array_drive = at29_drive("o2flash", array, "");
+    g_autofree char *state_drive = at29_drive("o2flash-state", state, "");
+    g_autofree char *ro_array = at29_drive("o2flash", array, ",readonly=on");
+    g_autofree char *ro_state = at29_drive("o2flash-state", state,
+                                           ",readonly=on");
+    g_autofree char *unsafe = at29_drive("o2flash", array, ",cache=unsafe");
+    g_autofree char *temporary = at29_drive("o2flash", array, ",snapshot=on");
+    g_autofree char *extra = g_strdup_printf("-drive %s -drive %s",
+                                             array_drive, state_drive);
+    uint8_t zero[1024] = { 0 };
+    g_autofree char *stored = NULL;
+    gsize length;
+
+    g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                      512 * 1024, NULL));
+    make_at29_state(state, seed, 0);
+    backing_startup_error(seed_path, array_drive, NULL, true, "both drive");
+    backing_startup_error(seed_path, NULL, state_drive, true, "both drive");
+    backing_startup_error(seed_path, array_drive, state_drive, false,
+                           "backends require rom-at29c040a");
+    backing_startup_error(seed_path, ro_array, state_drive, true,
+                           "array backend must be writable");
+    backing_startup_error(seed_path, unsafe, state_drive, true,
+                           "durable persistent writes");
+    backing_startup_error(seed_path, temporary, state_drive, true,
+                           "durable persistent writes");
+    backing_startup_error(seed_path, array_drive, ro_state, true,
+                           "state backend must be writable");
+    g_assert_true(g_file_set_contents(array, "", 0, NULL));
+    backing_startup_error(seed_path, array_drive, state_drive, true,
+                           "array backend requires exactly");
+    g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                      512 * 1024, NULL));
+    g_assert_true(g_file_set_contents(state, (const char *)zero,
+                                      sizeof(zero), NULL));
+    backing_startup_error(seed_path, array_drive, state_drive, true,
+                           "state backend requires exactly");
+    const unsigned invalid_offsets[] = { 0, 7, 8, 9, 32, 64 };
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid_offsets); i++) {
+        make_at29_state(state, seed, 0);
+        g_clear_pointer(&stored, g_free);
+        g_assert_true(g_file_get_contents(state, &stored, &length, NULL));
+        stored[invalid_offsets[i]] ^= 0x80;
+        g_assert_true(g_file_set_contents(state, stored, length, NULL));
+        backing_startup_error(seed_path, array_drive, state_drive, true,
+                               "invalid backing state or array digest");
+    }
+    make_at29_state(state, seed, 0);
+    QTestState *qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                                       "unlocked", extra);
+    backing_startup_error(seed_path, array_drive, state_drive, true,
+                           "Failed to get");
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'migrate','arguments':{'uri':'file:/dev/null'}}");
+    const char *description = qdict_get_str(qdict_get_qdict(reply, "error"),
+                                             "desc");
+    g_assert_nonnull(strstr(description, "persistent AT29C040A backing"));
+    qtest_quit(qts);
+    g_clear_pointer(&stored, g_free);
+    g_assert_true(g_file_get_contents(array, &stored, &length, NULL));
+    g_assert_cmpmem(stored, length, seed, 512 * 1024);
+}
+
+static void test_at29_backing_incomplete(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+        "at29-incomplete-seed.bin", &seed_path);
+    g_autofree char *array = g_build_filename(test_dir, "incomplete.raw", NULL);
+    g_autofree char *state = g_build_filename(test_dir, "incomplete.state",
+                                              NULL);
+    g_autofree char *extra = g_strdup_printf(
+        "-drive if=none,id=o2flash,file=%s,format=raw "
+        "-drive if=none,id=o2flash-state,file=%s,format=raw", array, state);
+    g_autofree char *stored = NULL;
+    gsize length;
+    uint8_t data[256], got[256];
+    QTestState *qts;
+
+    memset(data, 0x6d, sizeof(data));
+    g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                      512 * 1024, NULL));
+    make_at29_state(state, seed, 0);
+    qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                             "unlocked", extra);
+    qtest_writeq(qts, MACE_MISC, 1);
+    for (unsigned i = 0; i < 255; i++) {
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 0x10000 + i, data[i]),
+                        ==, MEMTX_OK);
+    }
+    qtest_clock_step(qts, 150000);
+    g_assert_true(g_file_get_contents(array, &stored, &length, NULL));
+    g_assert_cmpmem(stored, length, seed, 512 * 1024);
+    at29_load_sector(qts, 0x10000, data);
+    qtest_system_reset(qts);
+    g_assert_false(o2_write_enabled(qts));
+    qtest_clock_step(qts, 10000000);
+    qtest_memread(qts, ROM_BASE + 0x10000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
+    qtest_writeq(qts, MACE_MISC, 1);
+    at29_load_sector(qts, 0x20000, data);
+    qtest_quit(qts);
+    qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                             "unlocked", extra);
+    qtest_memread(qts, ROM_BASE + 0x10000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), data, sizeof(data));
+    qtest_memread(qts, ROM_BASE + 0x20000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), seed + 0x20000, sizeof(got));
+    qtest_quit(qts);
+}
+
+static void test_at29_backing_io_errors(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+        "at29-io-seed.bin", &seed_path);
+    uint8_t data[256], got[256];
+
+    memset(data, 0x6e, sizeof(data));
+    for (unsigned fault = 0; fault < 4; fault++) {
+        g_autofree char *name = g_strdup_printf("io-%u", fault);
+        g_autofree char *array = g_strdup_printf("%s/%s.raw", test_dir, name);
+        g_autofree char *state = g_strdup_printf("%s/%s.state", test_dir, name);
+        g_autofree char *config = g_strdup_printf("%s/%s.cfg", test_dir, name);
+        g_autofree char *rule = g_strdup_printf(
+            "[inject-error]\nevent = \"none\"\niotype = \"%s\"\n"
+            "errno = \"5\"\nimmediately = \"on\"\nonce = \"on\"\n",
+            fault & 1 ? "flush" : "write");
+        g_autofree char *debug = g_strdup_printf("blkdebug:%s:%s", config,
+                                                  fault < 2 ? array : state);
+        g_autofree char *array_drive = at29_drive("o2flash",
+            fault < 2 ? debug : array, "");
+        g_autofree char *state_drive = at29_drive("o2flash-state",
+            fault >= 2 ? debug : state, "");
+        g_autofree char *log_path = g_strdup_printf("%s/%s.trace",
+                                                     test_dir, name);
+        g_autofree char *log = NULL;
+        g_autofree char *extra = g_strdup_printf(
+            "-drive %s -drive %s -trace enable=o2_at29_timeout -D %s",
+            array_drive, state_drive, log_path);
+        QTestState *qts;
+
+        g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                          512 * 1024, NULL));
+        make_at29_state(state, seed, 0);
+        g_assert_true(g_file_set_contents(config, rule, -1, NULL));
+        qts = start_at29_extra(seed_path, "disabled", "unlocked",
+                             "unlocked", extra);
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        qtest_writeq(qts, MACE_MISC, 1);
+        at29_load_sector(qts, 0x10000, data);
+        qtest_clock_step(qts, 10000000);
+        qtest_qmp_eventwait(qts, "STOP");
+        g_autoptr(QDict) reply = qtest_qmp(qts, "{'execute':'query-status'}");
+        const char *status = qdict_get_str(qdict_get_qdict(reply, "return"),
+                                            "status");
+        g_assert_cmpstr(status, ==, "io-error");
+        qtest_memread(qts, ROM_BASE + 0x10000, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), seed + 0x10000, sizeof(got));
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 0x20000, 0x7a),
+                        !=, MEMTX_OK);
+        qtest_writeq(qts, MACE_MISC, 0);
+        g_assert_cmpint(memtx_writeb(qts, ROM_BASE + 0x20000, 0x7a),
+                        ==, MEMTX_OK);
+        qtest_quit(qts);
+        g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+        g_assert_nonnull(strstr(log, "backing-error"));
+        g_assert_null(strstr(log, "program-complete"));
+        if (fault == 1 || fault == 2) {
+            g_autofree char *plain_array = at29_drive("o2flash", array, "");
+            g_autofree char *plain_state = at29_drive("o2flash-state",
+                                                        state, "");
+
+            backing_startup_error(seed_path, plain_array, plain_state, true,
+                                   "invalid backing state or array digest");
+        }
+    }
+    for (unsigned target = 0; target < 2; target++) {
+        g_autofree char *array = g_strdup_printf("%s/read-%u.raw",
+                                                 test_dir, target);
+        g_autofree char *state = g_strdup_printf("%s/read-%u.state",
+                                                 test_dir, target);
+        g_autofree char *config = g_strdup_printf("%s/read-%u.cfg",
+                                                 test_dir, target);
+        g_autofree char *debug = g_strdup_printf("blkdebug:%s:%s", config,
+                                                  target ? state : array);
+        g_autofree char *array_drive = at29_drive("o2flash",
+                                                   target ? array : debug, "");
+        g_autofree char *state_drive = at29_drive("o2flash-state",
+                                                   target ? debug : state, "");
+
+        g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                      512 * 1024, NULL));
+        make_at29_state(state, seed, 0);
+        g_assert_true(g_file_set_contents(config,
+            "[inject-error]\nevent = \"none\"\niotype = \"read\"\n"
+            "errno = \"5\"\nimmediately = \"on\"\n", -1, NULL));
+        backing_startup_error(seed_path, array_drive, state_drive, true,
+                               target ? "reading state backend" :
+                                        "reading array backend");
+    }
+}
+
+
+static void test_at29_backing_incoming(void)
+{
+    g_autofree char *seed_path = NULL;
+    g_autofree uint8_t *seed = make_image(512 * 1024,
+        "at29-incoming-seed.bin", &seed_path);
+    g_autofree char *array = g_build_filename(test_dir, "incoming.raw", NULL);
+    g_autofree char *state = g_build_filename(test_dir, "incoming.state", NULL);
+    g_autofree char *socket = g_build_filename(test_dir, "incoming.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *extra = g_strdup_printf(
+        "-drive if=none,id=o2flash,file=%s,format=raw "
+        "-drive if=none,id=o2flash-state,file=%s,format=raw", array, state);
+    g_autofree char *incoming = g_strdup_printf("%s -incoming defer", extra);
+    g_autofree char *stored = NULL;
+    gsize length;
+    QTestState *from, *to;
+    SgiWait wait;
+
+    seed[0x10020] ^= 0x80;
+    g_assert_true(g_file_set_contents(array, (const char *)seed,
+                                      512 * 1024, NULL));
+    make_at29_state(state, seed, 0);
+    from = start_at29(seed_path, "disabled", "unlocked", "unlocked");
+    to = start_at29_extra(seed_path, "disabled", "unlocked", "unlocked",
+                           incoming);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_start(&wait, "persistent AT29 refuses incoming migration");
+    for (;;) {
+        g_autoptr(QDict) reply = qtest_qmp_assert_success_ref(to,
+            "{'execute':'query-migrate'}");
+        const char *status = qdict_get_str(reply, "status");
+
+        if (!strcmp(status, "failed")) {
+            g_assert_nonnull(strstr(qdict_get_str(reply, "error-desc"),
+                                    "sgi-o2-rom"));
+            break;
+        }
+        g_assert_cmpstr(status, !=, "completed");
+        sgi_wait_pause(&wait, 1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_true(g_file_get_contents(array, &stored, &length, NULL));
+    g_assert_cmpmem(stored, length, seed, 512 * 1024);
+    to = start_at29_extra(seed_path, "disabled", "unlocked", "unlocked",
+                           extra);
+    g_assert_cmphex(qtest_readb(to, ROM_BASE + 0x10020), ==, seed[0x10020]);
+    qtest_quit(to);
+    unlink(socket);
+}
+
 int main(int argc, char **argv)
 {
     int result;
@@ -1106,6 +1480,15 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/o2-rom/migration", test_migration);
     g_test_add_func("/sgi/o2-rom/machine-flash-gate-migration",
                     test_machine_flash_gate_migration);
+    qtest_add_func("/sgi/o2-rom/backing/persistence",
+                    test_at29_backing_persistence);
+    qtest_add_func("/sgi/o2-rom/backing/validation",
+                    test_at29_backing_validation);
+    qtest_add_func("/sgi/o2-rom/backing/incomplete",
+                    test_at29_backing_incomplete);
+    qtest_add_func("/sgi/o2-rom/backing/io-errors",
+                    test_at29_backing_io_errors);
+    qtest_add_func("/sgi/o2-rom/backing/incoming", test_at29_backing_incoming);
     result = g_test_run();
     g_free(test_dir);
     return result;
