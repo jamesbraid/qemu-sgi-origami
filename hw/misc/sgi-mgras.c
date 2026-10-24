@@ -2343,6 +2343,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
         &vmstate_sgi_mgras_gl_pixel_pass,
+        &vmstate_sgi_mgras_gl_pixel_zoom,
         &vmstate_sgi_mgras_texture,
         &vmstate_sgi_mgras_tram,
         &vmstate_sgi_mgras_clip_id,

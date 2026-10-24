@@ -94,6 +94,7 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_pixels;
 /* Each context's DMA mark on a waiting pixel draw, while one has it. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags;
 extern const VMStateDescription vmstate_sgi_mgras_gl_pixel_pass;
+extern const VMStateDescription vmstate_sgi_mgras_gl_pixel_zoom;
 
 /*
  * The kernel's context eviction (sgi-mgras-gl.c, "Context eviction"). A

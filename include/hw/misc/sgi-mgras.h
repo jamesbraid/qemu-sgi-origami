@@ -359,6 +359,15 @@ typedef struct SGIMgrasGLPixels {
     /* A pixel-texture pass: its first row, and rows apart (0 means 1). */
     uint32_t pass;
     uint32_t row_step;
+    /*
+     * A zoomed draw (glPixelZoom): the zoom factors' magnitudes as float
+     * bits, 0 when the draw is unzoomed; the destination box's size in
+     * window pixels; bit 0 and bit 1 of flip set when x and y run toward
+     * lower window coordinates.
+     */
+    uint32_t zoom_x, zoom_y;
+    uint32_t dest_w, dest_h;
+    uint32_t flip;
 } SGIMgrasGLPixels;
 
 /*

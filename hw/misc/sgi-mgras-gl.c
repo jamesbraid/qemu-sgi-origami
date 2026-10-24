@@ -662,6 +662,15 @@ enum {
 #define MGRAS_GE_PIXEL_ZOOM      0x191
 #define MGRAS_GE_PIXEL_BOX       0xe34
 #define MGRAS_GE_ROUTINE_END     0x352d
+/*
+ * The writing routine that ends a pixel program: 0x352d unzoomed and for
+ * a whole x zoom with y zoom 1, 0x3663 with a y zoom other than 1, 0x3715
+ * with a fractional x zoom (model runs of a glPixelZoom probe: zooms 2,2
+ * 1,3 and 0.5,0.5 load 0x3663; 3,1, -1,1 and 1,-1 load 0x352d; 1.5,1.5
+ * loads 0x3715). The model reads the zoom from the box and from 0x192.
+ */
+#define MGRAS_GE_ROUTINE_ZOOM_Y  0x3663
+#define MGRAS_GE_ROUTINE_ZOOM_XF 0x3715
 #define MGRAS_GE_UNPACK_4UB      0x4064
 #define MGRAS_GE_UNPACK_3UB      0x40f2
 #define MGRAS_HQ_PIXEL_ABGR      0x80
@@ -3033,6 +3042,63 @@ const VMStateDescription vmstate_sgi_mgras_gl_pixel_pass = {
     }
 };
 
+/* Each context's pixel zoom, sent only while some waiting draw is zoomed. */
+static bool mgras_gl_pixel_zoom_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        const SGIMgrasGLPixels *px = &s->gl_context[i].pixels;
+
+        if (px->active && px->zoom_x) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_pixel_zoom = {
+    .name = TYPE_SGI_MGRAS "/gl-context-pixel-zoom",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pixels.zoom_x, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.zoom_y, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.dest_w, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.dest_h, SGIMgrasGLContext),
+        VMSTATE_UINT32(pixels.flip, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription vmstate_sgi_mgras_gl_pixel_zoom = {
+    .name = TYPE_SGI_MGRAS "/gl-pixel-zoom",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_pixel_zoom_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                             1, vmstate_sgi_mgras_gl_context_pixel_zoom,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_gl_pixels_zoom_valid(const SGIMgrasGLPixels *px)
+{
+    float zx, zy;
+
+    if (!px->zoom_x) {
+        return !px->zoom_y && !px->dest_w && !px->dest_h && !px->flip;
+    }
+    memcpy(&zx, &px->zoom_x, sizeof(zx));
+    memcpy(&zy, &px->zoom_y, sizeof(zy));
+    return isfinite(zx) && zx > 0 && isfinite(zy) && zy > 0 &&
+           px->dest_w >= 1 && px->dest_w <= 2 * MGRAS_GL_PIXELS_MAX &&
+           px->dest_h >= 1 && px->dest_h <= 2 * MGRAS_GL_PIXELS_MAX &&
+           px->flip <= 3;
+}
+
 /* Whether a migrated pixel draw is one mgras_gl_pixels_start() makes. */
 static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
 {
@@ -3049,6 +3115,7 @@ static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
         px->col > px->w || px->skip > 3 || px->dma_only > 1 ||
         px->apart > 1 || px->row_step > 2 ||
         px->pass >= MAX(px->row_step, 1u) ||
+        !mgras_gl_pixels_zoom_valid(px) ||
         px->x < -MGRAS_GL_PIXELS_FAR ||
         px->x > MGRAS_GL_PIXELS_FAR || px->y < -MGRAS_GL_PIXELS_FAR ||
         px->y > MGRAS_GL_PIXELS_FAR) {
@@ -4708,13 +4775,31 @@ static bool mgras_gl_pixels_captured_inline_rgba_count(uint32_t width,
            (width == 32 && height == 32 && words == 64);
 }
 
+static bool mgras_gl_pixels_has_routine(const uint32_t *ge, uint32_t routine)
+{
+    for (uint32_t i = 0; i < MGRAS_GE_PIXEL_PROGRAM_PAIRS; i++) {
+        if (ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] == routine) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool mgras_gl_pixels_write_routine(uint32_t routine)
+{
+    return routine == MGRAS_GE_ROUTINE_END ||
+           routine == MGRAS_GE_ROUTINE_ZOOM_Y ||
+           routine == MGRAS_GE_ROUTINE_ZOOM_XF;
+}
+
 static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
 {
     uint32_t format;
 
     *pairs = 0;
     while (*pairs < MGRAS_GE_PIXEL_PROGRAM_PAIRS &&
-           ge[MGRAS_GE_PIXEL_PROGRAM + 2 * *pairs] != MGRAS_GE_ROUTINE_END) {
+           !mgras_gl_pixels_write_routine(
+               ge[MGRAS_GE_PIXEL_PROGRAM + 2 * *pairs])) {
         (*pairs)++;
     }
     (*pairs)++;
@@ -4722,8 +4807,11 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
         bool same = mgras_gl_pixel_programs[format].pairs == *pairs;
 
         for (uint32_t i = 0; same && i < *pairs; i++) {
-            same = ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] ==
-                   mgras_gl_pixel_programs[format].routine[i];
+            uint32_t routine = ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i];
+
+            same = routine == mgras_gl_pixel_programs[format].routine[i] ||
+                   (i == *pairs - 1 &&
+                    mgras_gl_pixels_write_routine(routine));
         }
         if (same && mgras_gl_pixel_programs[format].unpack) {
             uint32_t params = ge[MGRAS_GE_PIXEL_PROGRAM + 3];
@@ -4749,19 +4837,108 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
  * with MDDMA_CNTRL bit 0, and with a 3-D or 4-D texture bound
  * (__glMgrim_DrawPixels 0xd969fa8). docs/datasheets/mgras-mxi.md.
  */
-static bool mgras_gl_pixels_texture_box(SGIMgrasState *s, bool dma_only,
-                                        uint32_t *rows, uint32_t *pass)
+static bool mgras_gl_pixels_texture_box(SGIMgrasState *s, uint32_t *rows,
+                                        uint32_t *pass)
 {
     const uint32_t *box = &s->ge_param[MGRAS_GE_PIXEL_BOX];
     uint32_t passes = s->board->re_count;
 
     *rows = box[4] >> 16;
     *pass = box[8];
-    return dma_only && (s->gl_context[s->gl_current].tex.mddma_cntrl & 1) &&
+    /*
+     * Not only DMA draws: a zoomed pass ends 0x8d20 with 0x18 though its
+     * image comes by DMA (the zoom probe's runs).
+     */
+    return (s->gl_context[s->gl_current].tex.mddma_cntrl & 1) &&
            box[5] == 1 && box[6] == 1 && box[7] == 1 && *pass < passes &&
            *rows && *rows <= MGRAS_GL_PIXELS_MAX &&
            (int64_t)(int32_t)box[3] - (int32_t)box[1] ==
            (int64_t)*rows * passes;
+}
+
+typedef struct MgrasGLZoom {
+    uint32_t src_w, src_h;      /* source pixels a row, rows expected */
+    uint32_t dest_w, dest_h;    /* destination box in window pixels */
+    float zx, zy;               /* the zoom factors' magnitudes */
+    uint32_t flip;              /* bit 0: x decreasing; bit 1: y */
+    bool zoomed;
+} MgrasGLZoom;
+
+static uint32_t float_bits(float f)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+
+static float bits_float(uint32_t bits)
+{
+    float f;
+
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+/*
+ * The draw's zoom, from the words the client loads for glPixelZoom (model
+ * runs of a zoom probe on SI+T and MXI): the box 0xe34 to 0xe37 is the
+ * destination in window pixels from the raster position, its corners in
+ * the order the image runs, so a negative zoom gives x1 < x0 or y1 < y0;
+ * 0xe38's low half is the source width and its high half the destination
+ * rows; 0x192 holds 1 / |y zoom| (0x191 is 0). The x zoom is the box's
+ * width over the source's. A pixel-texture pass's box rises its rows times
+ * the RE count, with the y direction in 0xe3b. Source rows are the
+ * destination's times 1 / |y zoom|, rounded up; a DMA image gives its own.
+ * How the GE rounds a fractional zoom is not published: the model fills
+ * the window pixels whose centres the source pixel covers (OpenGL 1.2.1,
+ * 3.6.4), counted from the box's first corner.
+ */
+static bool mgras_gl_pixels_zoom(SGIMgrasState *s, bool pixel_texture,
+                                 uint32_t pass_rows, MgrasGLZoom *z)
+{
+    const uint32_t *ge = s->ge_param;
+    const uint32_t *box = &ge[MGRAS_GE_PIXEL_BOX];
+    int64_t dx = (int64_t)(int32_t)box[2] - (int32_t)box[0];
+    int64_t dy = (int64_t)(int32_t)box[3] - (int32_t)box[1];
+    float zinv = bits_float(ge[MGRAS_GE_PIXEL_ZOOM + 1]);
+    double rows;
+
+    *z = (MgrasGLZoom) { .src_w = box[4] & 0xffff };
+    if (ge[MGRAS_GE_PIXEL_ZOOM] || !isfinite(zinv) || zinv <= 0 ||
+        !z->src_w || z->src_w > MGRAS_GL_PIXELS_MAX) {
+        return false;
+    }
+    z->dest_w = (dx < 0 ? -dx : dx) + 1;
+    if (pixel_texture) {
+        z->dest_h = pass_rows * MAX(s->board->re_count, 1);
+        z->flip = (ge[MGRAS_GE_PIXEL_BOX + 6] != 1) |
+                  (ge[MGRAS_GE_PIXEL_BOX + 7] != 1) << 1;
+    } else {
+        z->dest_h = (dy < 0 ? -dy : dy) + 1;
+        if (z->dest_h != box[4] >> 16) {
+            return false;
+        }
+        z->flip = (dx < 0) | (dy < 0) << 1;
+    }
+    if (z->dest_w > 2 * MGRAS_GL_PIXELS_MAX ||
+        z->dest_h > 2 * MGRAS_GL_PIXELS_MAX) {
+        return false;
+    }
+    z->zoomed = zinv != 1.0f || z->dest_w != z->src_w || z->flip;
+    if (!z->zoomed) {
+        z->src_h = pixel_texture ? pass_rows : z->dest_h;
+        return true;
+    }
+    z->zx = (float)z->dest_w / z->src_w;
+    z->zy = 1.0f / zinv;
+    rows = ceil((pixel_texture ? pass_rows : z->dest_h) * (double)zinv -
+                0.0001);
+    if (rows < 1 || rows > MGRAS_GL_PIXELS_MAX) {
+        return false;
+    }
+    z->src_h = rows;
+    return true;
 }
 
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
@@ -4775,8 +4952,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     int64_t w = (int64_t)(int32_t)box[2] - (int32_t)box[0] + 1;
     int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
     uint32_t pass_rows, pass;
-    bool pixel_texture = mgras_gl_pixels_texture_box(s, dma_only, &pass_rows,
-                                                     &pass);
+    bool pixel_texture = mgras_gl_pixels_texture_box(s, &pass_rows, &pass);
     uint32_t pairs, format;
 
     /*
@@ -4790,21 +4966,29 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         .w = MGRAS_GL_PIXELS_MAX,
         .h = 1,
     };
-    if (pixel_texture) {
-        h = pass_rows;
-    }
-    if (w <= 0 || h <= 0 || w > MGRAS_GL_PIXELS_MAX ||
-        h > MGRAS_GL_PIXELS_MAX || (uint32_t)w != (box[4] & 0xffff) ||
-        (uint32_t)h != box[4] >> 16) {
+    MgrasGLZoom zoom;
+
+    if (!mgras_gl_pixels_zoom(s, pixel_texture, pass_rows, &zoom)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel rectangle %d,%d to %d,%d "
-                      "(size word 0x%x) is not modelled\n", box[0], box[1],
-                      box[2], box[3], box[4]);
+                      "(size word 0x%x, zoom words 0x%x 0x%x, pass %u) is "
+                      "not modelled\n", box[0], box[1], box[2], box[3],
+                      box[4], ge[MGRAS_GE_PIXEL_ZOOM],
+                      ge[MGRAS_GE_PIXEL_ZOOM + 1], box[8]);
         return false;
     }
+    w = zoom.src_w;
+    h = zoom.src_h;
     px->h = h;
     if (pixel_texture) {
         px->pass = pass;
         px->row_step = s->board->re_count;
+    }
+    if (zoom.zoomed) {
+        px->zoom_x = float_bits(zoom.zx);
+        px->zoom_y = float_bits(zoom.zy);
+        px->dest_w = zoom.dest_w;
+        px->dest_h = zoom.dest_h;
+        px->flip = zoom.flip;
     }
     format = mgras_gl_pixels_float_signature(ge, w, h, row_words,
                                              dma_only);
@@ -4823,13 +5007,6 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                       "routines from 0x%x, 0x%x is not modelled; its image "
                       "is not drawn\n", pairs, ge[MGRAS_GE_PIXEL_PROGRAM],
                       ge[MGRAS_GE_PIXEL_PROGRAM + 2]);
-        return false;
-    }
-    if (ge[MGRAS_GE_PIXEL_ZOOM] || ge[MGRAS_GE_PIXEL_ZOOM + 1] !=
-        MGRAS_GL_FLOAT_ONE) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel zoom (GE words 0x%x "
-                      "0x%x) is not modelled; the image is not drawn\n",
-                      ge[MGRAS_GE_PIXEL_ZOOM], ge[MGRAS_GE_PIXEL_ZOOM + 1]);
         return false;
     }
     px->format = format;
@@ -4877,10 +5054,28 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         px->bpp = px->bpp ? px->bpp : 8;
         break;
     }
+    if (px->zoom_x && dma_only && px->bpp && (row_words * 4) % px->bpp == 0 &&
+        (row_words * 4) / px->bpp != px->w &&
+        mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_XF)) {
+        /*
+         * With a fractional x zoom 0xe38's low half is not the source
+         * width (8 for a 4-pixel image at 1.5 in the one run); the row's
+         * words are.
+         */
+        px->w = (row_words * 4) / px->bpp;
+        px->zoom_x = float_bits((float)px->dest_w / px->w);
+    }
     uint64_t expected_words = DIV_ROUND_UP(px->w * px->bpp, 4);
 
-    if (!dma_only && (px->format == MGRAS_GL_PIXELS_RGBA8 ||
-                      px->format == MGRAS_GL_PIXELS_FLOAT_RGBA)) {
+    /*
+     * Under the y-zoom and fractional-x writing routines 0x8d20 counts one
+     * row's words, not the image's (the zoom probe's runs).
+     */
+    if (!dma_only &&
+        !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_Y) &&
+        !mgras_gl_pixels_has_routine(ge, MGRAS_GE_ROUTINE_ZOOM_XF) &&
+        (px->format == MGRAS_GL_PIXELS_RGBA8 ||
+         px->format == MGRAS_GL_PIXELS_FLOAT_RGBA)) {
         expected_words *= px->h;
     }
     if ((px->bpp > 4 && px->format != MGRAS_GL_PIXELS_FLOAT_RGB &&
@@ -5042,6 +5237,46 @@ static int32_t mgras_gl_pixels_y(const SGIMgrasGLPixels *px)
     return px->y + (int32_t)(px->pass + px->row * MAX(px->row_step, 1u));
 }
 
+/* The window pixels source index n covers at zoom z, clipped to [0, limit). */
+static void mgras_gl_pixels_span(uint32_t n, float z, uint32_t limit,
+                                 uint32_t *lo, uint32_t *hi)
+{
+    double a = ceil(n * (double)z - 0.5), b = ceil((n + 1) * (double)z - 0.5);
+
+    *lo = MIN(MAX(a, 0), limit);
+    *hi = MIN(MAX(b, 0), limit);
+}
+
+/*
+ * Draw the current source pixel: one window pixel unzoomed, or every
+ * pixel of its zoomed footprint inside the box.
+ */
+static void mgras_gl_pixels_emit(SGIMgrasState *s, const SGIMgrasGLPixels *px,
+                                 const float rgba[4], float index)
+{
+    uint32_t m = px->pass + px->row * MAX(px->row_step, 1u);
+    uint32_t x0, x1, y0, y1;
+
+    if (!px->zoom_x) {
+        mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
+                            rgba, index);
+        return;
+    }
+    mgras_gl_pixels_span(px->col, bits_float(px->zoom_x), px->dest_w,
+                         &x0, &x1);
+    mgras_gl_pixels_span(m, bits_float(px->zoom_y), px->dest_h, &y0, &y1);
+    for (uint32_t j = y0; j < y1; j++) {
+        int32_t y = px->flip & 2 ? px->y - (int32_t)j : px->y + (int32_t)j;
+
+        for (uint32_t i = x0; i < x1; i++) {
+            int32_t x = px->flip & 1 ? px->x - (int32_t)i :
+                                       px->x + (int32_t)i;
+
+            mgras_gl_pixels_put(s, px, x, y, rgba, index);
+        }
+    }
+}
+
 static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
                                   uint32_t v)
 {
@@ -5073,8 +5308,7 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
-                        rgba, v);
+    mgras_gl_pixels_emit(s, px, rgba, v);
 }
 
 /* Take n image bytes of the current row; bytes past its last pixel drop. */
@@ -5109,8 +5343,7 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
-                        rgba, 0);
+    mgras_gl_pixels_emit(s, px, rgba, 0);
     px->ncomponent = 0;
     px->col++;
     return true;
@@ -5252,6 +5485,12 @@ bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
     if (px->format == MGRAS_GL_PIXELS_FORMATS) {
         memset(px, 0, sizeof(*px));
         return true;
+    }
+    if (px->zoom_x && !px->row && row_bytes && !(bpr % row_bytes) &&
+        (uint64_t)rows * (bpr / row_bytes) >= 1 &&
+        (uint64_t)rows * (bpr / row_bytes) <= MGRAS_GL_PIXELS_MAX) {
+        /* The client sends every source row; the zoom picks the rows. */
+        px->h = rows * (bpr / row_bytes);
     }
     if (px->row || !row_bytes || bpr % row_bytes ||
         (uint64_t)rows * (bpr / row_bytes) != px->h) {
