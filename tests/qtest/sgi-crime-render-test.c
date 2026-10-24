@@ -769,6 +769,17 @@ static void test_mte_start_forms(void)
     const unsigned offsets[] = {
         0, 8, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40, 0x48,
     };
+    const struct {
+        unsigned offset;
+        uint32_t old_value;
+        uint32_t value;
+    } copy_parameters[] = {
+        { 0x20, 0x00010000, 0x00000000 },
+        { 0x28, 0x00020001, 0x00030001 },
+        { 0x40, UINT32_MAX, 1 },
+        { 0x48, UINT32_MAX, 1 },
+    };
+    const uint8_t source[] = { 0x13, 0x27, 0x49, 0x6b, 0x8d, 0xaf, 0xc1, 0xe3 };
     QTestState *s = start();
 
     for (unsigned bank = 0; bank < 3; bank++) {
@@ -783,9 +794,13 @@ static void test_mte_start_forms(void)
             switch (offset) {
             case 0:
                 value = bank << 2;
+                qtest_writel(s, MTE, 0x80000000);
+                g_assert_cmphex(qtest_readl(s, MTE), ==, 0x80000000);
                 break;
             case 8:
                 value = UINT32_MAX;
+                qtest_writel(s, MTE + 8, 0);
+                g_assert_cmphex(qtest_readl(s, MTE + 8), ==, 0);
                 break;
             case 0x18:
                 value = 0xb7;
@@ -825,6 +840,46 @@ static void test_mte_start_forms(void)
             }
             assert_idle(s);
         }
+    }
+    map_region(s, 0, 1, 0, 0, 3, 1);
+    map_region(s, 1, 1, 0, 0, 3, 1);
+    for (unsigned i = 0; i < ARRAY_SIZE(copy_parameters); i++) {
+        unsigned offset = copy_parameters[i].offset;
+
+        mte_setup(s, true, 0, 1);
+        qtest_writel(s, MTE + 0x20, xy(0, 0));
+        qtest_writel(s, MTE + 0x28, xy(3, 1));
+        qtest_writel(s, MTE + 0x30, xy(0, 0));
+        qtest_writel(s, MTE + 0x38, xy(3, 1));
+        qtest_writel(s, MTE + offset, copy_parameters[i].old_value);
+        g_assert_cmphex(qtest_readl(s, MTE + offset), ==,
+                       copy_parameters[i].old_value);
+        for (unsigned row = 0; row < 2; row++) {
+            qtest_memwrite(s, pixel_address(0, 0, row, 1), source + row * 4, 4);
+            qtest_memset(s, pixel_address(1, 0, row, 1), 0x5a, 5);
+        }
+        g_assert_cmpint(memtx_writel(s, MTE + 0x800 + offset,
+                                    copy_parameters[i].value), ==, MEMTX_OK);
+        for (unsigned row = 0; row < 2; row++) {
+            uint8_t actual[5];
+            uint8_t retained_source[4];
+
+            qtest_memread(s, pixel_address(1, 0, row, 1), actual,
+                          sizeof(actual));
+            g_assert_cmpmem(actual, 4, source + row * 4, 4);
+            g_assert_cmphex(actual[4], ==, 0x5a);
+            qtest_memread(s, pixel_address(0, 0, row, 1), retained_source,
+                          sizeof(retained_source));
+            g_assert_cmpmem(retained_source, sizeof(retained_source),
+                            source + row * 4, 4);
+        }
+        g_assert_cmphex(qtest_readl(s, MTE + offset), ==,
+                       copy_parameters[i].value);
+        g_assert_cmphex(qtest_readl(s, MTE + 0x20), ==, xy(0, 0));
+        g_assert_cmphex(qtest_readl(s, MTE + 0x28), ==, xy(3, 1));
+        g_assert_cmphex(qtest_readl(s, MTE + 0x40), ==, 1);
+        g_assert_cmphex(qtest_readl(s, MTE + 0x48), ==, 1);
+        assert_idle(s);
     }
     qtest_quit(s);
 }
@@ -998,6 +1053,46 @@ static void test_mte_rejected(void)
         }
     }
     qtest_quit(s);
+}
+
+static void test_malformed_access_stops(void)
+{
+    const struct {
+        unsigned offset;
+        unsigned width;
+    } accesses[] = {
+        { 0x2008, 8 }, { 0x1000, 4 }, { 0x2874, 8 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
+        QTestState *s = start();
+        uint8_t bytes[12];
+
+        tile(s, 0, 0, 3);
+        setup(s, 0x228, false);
+        qtest_writel(s, DE + 0xd0, 0x1234abcd);
+        qtest_writel(s, DE + 0x70, 0);
+        qtest_writel(s, DE + 0x74, 0);
+        qtest_memset(s, 0x30000, 0x5a, sizeof(bytes));
+        /* A fresh running fixture proves this access caused the stop. */
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_autoptr(QDict) state =
+            qtest_qmp_assert_success_ref(s, "{'execute':'query-status'}");
+
+        g_assert_cmpstr(qdict_get_str(state, "status"), ==, "running");
+        assert_failure(s, RE + accesses[i].offset, xy(1, 0), accesses[i].width);
+        g_assert_cmphex(qtest_readl(s, DE + 8), ==, 0x228);
+        g_assert_cmphex(qtest_readq(s, RE + 0x1000), ==, 0x8003000000000000ULL);
+        qtest_memread(s, 0x30000, bytes, sizeof(bytes));
+        for (unsigned b = 0; b < sizeof(bytes); b++) {
+            g_assert_cmphex(bytes[b], ==, 0x5a);
+        }
+        /* The rejected START write must not replace the staged endpoint. */
+        qtest_writel(s, DE + 0x9f0, 0);
+        g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0x1234abcd);
+        g_assert_cmphex(qtest_readl(s, 0x30004), ==, 0x5a5a5a5a);
+        qtest_quit(s);
+    }
 }
 
 static void test_unsupported(void)
@@ -1247,6 +1342,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/crime/render/mte-start-forms", test_mte_start_forms);
     qtest_add_func("/sgi/crime/render/mte-scroll", test_mte_scroll);
     qtest_add_func("/sgi/crime/render/mte-rejected", test_mte_rejected);
+    qtest_add_func("/sgi/crime/render/malformed-access-stops",
+                   test_malformed_access_stops);
     qtest_add_func("/sgi/crime/render/unsupported", test_unsupported);
     qtest_add_func("/sgi/crime/render/migration", test_migration);
     qtest_add_func("/sgi/crime/render/banked-decoder", test_banked_decoder);
