@@ -846,6 +846,33 @@ static MemTxResult crime_render_state_write(SGICrimeState *s, hwaddr offset,
         s->render.parameter[reg->offset / 4] = value;
         return MEMTX_OK;
     }
+    if (reg && reg->size == 4 && size == 8 && !(offset & 7)) {
+        unsigned index = reg->offset / 4;
+
+        /* Selected big-endian transport policy, not silicon lane behavior. */
+        switch (reg->offset) {
+        case 0x000: case 0x008: case 0x010: case 0x018:
+        case 0x050: case 0x058: case 0x060: case 0x078:
+        case 0x0d0: case 0x0d8: case 0x1b0: case 0x1b8:
+            s->render.parameter[index] = value >> 32;
+            return MEMTX_OK;
+        case 0x070:
+        case 0x0a8: {
+            const CrimeRenderRegister *second =
+                crime_render_register(reg->offset + 4);
+
+            if (!second || second->size != 4) {
+                break;
+            }
+            /* Validate both members before publishing either logical word. */
+            s->render.parameter[index] = value >> 32;
+            s->render.parameter[second->offset / 4] = (uint32_t)value;
+            return MEMTX_OK;
+        }
+        default:
+            break;
+        }
+    }
     return crime_transfer_fail(offset, "invalid renderer state write");
 }
 
