@@ -413,8 +413,16 @@ sizes -- ``origin200-dual`` accepts the same per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 3328 MiB (3584
 MiB with a 225 or 270 MHz module), while
 ``origin2000-rack``'s nodes ship a fixed 64 MiB each and accept no other
-size. A refused size is reported with the per-node sizes that are
-accepted. ``nodes`` is part of the machine configuration: a snapshot
+size. The fixed, fingerprinted IP53 Bedrock assembly also accepts
+descriptor-sized unequal node spans when each absolute bank total is
+accepted by the selected processor option, the descriptor processor
+population is selected, and their sum matches ``-m``; its bank positions
+stay unchanged. Other heterogeneous layouts are refused.
+QOM bank values and address-map checks do not establish the stock PROM's
+KLCONFIG memory entries; that remains full-composition boot acceptance for
+any later unequal-memory IP53 profile.
+A refused size is reported with the per-node sizes that are accepted.
+``nodes`` is part of the machine configuration: a snapshot
 restores only into a machine with the same value. ``origin300`` accepts
 only R14000 for ``-cpu``; ``origin2000`` and ``onyx2`` accept only
 R10000, the default and the only member of their own

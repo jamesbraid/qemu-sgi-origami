@@ -4931,6 +4931,8 @@ static const VMStateDescription vmstate_sgi_machine_ip53_fingerprint = {
     .name = "sgi-machine/ip53-assembly",
     .version_id = 1,
     .minimum_version_id = 1,
+    /* Reject a changed memory layout before the incoming RAM section. */
+    .early_setup = true,
     .priority = MIG_PRI_BACKEND,
     .pre_save = sgi_machine_ip53_fingerprint_pre_save,
     .post_load_errp = sgi_machine_ip53_fingerprint_post_load,
@@ -6437,6 +6439,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     g_autofree BlockBackend **flash_drives = NULL;
     g_autofree const char **flash_nodes = NULL;
     g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree uint64_t *node_ram_size = NULL;
+    g_autofree uint64_t *node_ram_offset = NULL;
     const SGIModelNode *refused;
     unsigned int flash_count = 0;
     unsigned int node_count, node_index, board_index;
@@ -6606,23 +6610,133 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
 
-    if (node_count > 1 && machine->ram_size % ((uint64_t)node_count * MiB)) {
-        error_setg(errp, "%s: topology '%s' splits -m evenly across %u "
-                  "nodes", mc->name, t->name, node_count);
-        return false;
-    }
+    nodes = sgi_model_node_array(t->nodes, &node_count_check);
+    g_assert(node_count_check == node_count);
+    node_ram_size = g_new0(uint64_t, node_count);
+    node_ram_offset = g_new0(uint64_t, node_count);
+    {
+        bool heterogeneous = false;
+        uint64_t aggregate_mib = 0;
 
-    refused = sgi_machine_refuse_memory_population(
-        t, s->processor_option, machine->ram_size / node_count / MiB);
-    if (refused) {
-        g_autofree char *accepted =
-            sgi_machine_accepted_memory(refused, s->processor_option);
+        for (node_index = 0; node_index < node_count; node_index++) {
+            const uint64List *bank;
+            uint64_t total_mib = 0;
 
-        error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
-                  " MiB per node, only %s MiB%s", mc->name, t->name,
-                  machine->ram_size / node_count / MiB, accepted,
-                  sgi_machine_nodes_hint(machine));
-        return false;
+            for (bank = nodes[node_index]->bank_mib; bank;
+                 bank = bank->next) {
+                if (uadd64_overflow(total_mib, bank->value, &total_mib)) {
+                    error_setg(errp, "%s: topology '%s' node %u bank total "
+                               "overflows", mc->name, t->name, node_index);
+                    return false;
+                }
+            }
+            if (node_index && total_mib != node_ram_size[0] / MiB) {
+                heterogeneous = true;
+            }
+            if (total_mib > UINT64_MAX / MiB ||
+                uadd64_overflow(aggregate_mib, total_mib, &aggregate_mib)) {
+                error_setg(errp, "%s: topology '%s' memory total overflows",
+                           mc->name, t->name);
+                return false;
+            }
+            node_ram_size[node_index] = total_mib * MiB;
+        }
+
+        if (heterogeneous) {
+            if (!s->ip53_fingerprint_enabled ||
+                sgi_machine_topology_node0(t)->asic_kind !=
+                    SGI_MODEL_ASIC_KIND_BEDROCK) {
+                error_setg(errp, "%s: topology '%s' has unsupported "
+                           "heterogeneous node memory", mc->name, t->name);
+                return false;
+            }
+            for (node_index = 0; node_index < node_count; node_index++) {
+                size_t accepted_count, i;
+                g_autofree uint64_t *accepted =
+                    sgi_machine_node_accepted_mib(nodes[node_index],
+                                                  s->processor_option,
+                                                  &accepted_count);
+                bool found = false;
+
+                if (nodes[node_index]->asic_kind !=
+                        SGI_MODEL_ASIC_KIND_BEDROCK ||
+                    !nodes[node_index]->has_board_kind ||
+                    nodes[node_index]->board_kind !=
+                        SGI_MODEL_BOARD_KIND_IP53 ||
+                    !node_ram_size[node_index]) {
+                    error_setg(errp, "%s: topology '%s' has unsupported "
+                               "heterogeneous node memory", mc->name,
+                               t->name);
+                    return false;
+                }
+                if (requested[node_index] !=
+                    QAPI_LIST_LENGTH(nodes[node_index]->cpu_slots)) {
+                    error_setg(errp, "%s: topology '%s' heterogeneous "
+                               "memory requires the descriptor processor "
+                               "population", mc->name, t->name);
+                    return false;
+                }
+                for (i = 0; i < accepted_count; i++) {
+                    if (accepted[i] == node_ram_size[node_index] / MiB) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    g_autofree char *accepted_text =
+                        sgi_machine_accepted_memory(nodes[node_index],
+                                                    s->processor_option);
+
+                    error_setg(errp, "%s: topology '%s' node %u has "
+                               "unsupported descriptor memory size of %" PRIu64
+                               " MiB; it accepts %s MiB", mc->name, t->name,
+                               node_index, node_ram_size[node_index] / MiB,
+                               accepted_text);
+                    return false;
+                }
+                if (node_index && uadd64_overflow(
+                        node_ram_offset[node_index - 1],
+                        node_ram_size[node_index - 1],
+                        &node_ram_offset[node_index])) {
+                    error_setg(errp, "%s: topology '%s' memory offsets "
+                               "overflow", mc->name, t->name);
+                    return false;
+                }
+            }
+            if (aggregate_mib > UINT64_MAX / MiB ||
+                aggregate_mib * MiB != machine->ram_size) {
+                error_setg(errp, "%s: topology '%s' descriptor bank total "
+                           "does not match -m", mc->name, t->name);
+                return false;
+            }
+        } else {
+            if (node_count > 1 && machine->ram_size %
+                ((uint64_t)node_count * MiB)) {
+                error_setg(errp, "%s: topology '%s' splits -m evenly across "
+                           "%u nodes", mc->name, t->name, node_count);
+                return false;
+            }
+
+            refused = sgi_machine_refuse_memory_population(
+                t, s->processor_option,
+                machine->ram_size / node_count / MiB);
+            if (refused) {
+                g_autofree char *accepted =
+                    sgi_machine_accepted_memory(refused, s->processor_option);
+
+                error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
+                           " MiB per node, only %s MiB%s", mc->name, t->name,
+                           machine->ram_size / node_count / MiB, accepted,
+                           sgi_machine_nodes_hint(machine));
+                return false;
+            }
+            for (node_index = 0; node_index < node_count; node_index++) {
+                node_ram_size[node_index] = machine->ram_size / node_count;
+                node_ram_offset[node_index] = node_index ?
+                    node_ram_offset[node_index - 1] +
+                    node_ram_size[node_index - 1] : 0;
+            }
+        }
     }
 
     s->ip53_experiment_authorized = allow_ip53_experiment;
@@ -6656,9 +6770,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     sgi_machine_build_module_containers(machine, t);
 
     kind = sgi_machine_topology_node0(t)->asic_kind;
-    nodes = sgi_model_node_array(t->nodes, &node_count_check);
-    g_assert(node_count_check == node_count);
-
     /*
      * One loop creates every node, the ASIC kind selecting the device
      * type from this two-entry table. The two kinds share no fields, so
@@ -6724,7 +6835,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
 
-        uint64_t node_ram = machine->ram_size / node_count;
         size_t bedrock_board_capacity = sgi_machine_topology_io_board_count(t);
 
         s->io_boards = g_new0(SGIXioBoardState *, bedrock_board_capacity);
@@ -6867,8 +6977,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 memory_region_init_alias(&s->bedrock_ram[node_index],
                                          OBJECT(node), "sn1.node.ram",
                                          machine->ram,
-                                         (uint64_t)node_index * node_ram,
-                                         node_ram);
+                                         node_ram_offset[node_index],
+                                         node_ram_size[node_index]);
                 object_property_set_link(OBJECT(node), "ram",
                                          OBJECT(&s->bedrock_ram[node_index]),
                                          &error_abort);

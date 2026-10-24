@@ -354,6 +354,11 @@ static SGIModelFlash console_test_flash = {
 };
 
 static uint64_t console_test_bank0_mib[] = { 64, 0, 0, 0, 0, 0, 0, 0 };
+static uint64_t console_test_heterogeneous_bank_mib[2][8] = {
+    { 64, 0, 0, 0, 0, 0, 0, 0 },
+    { 32, 0, 0, 0, 0, 0, 0, 0 },
+};
+static uint64List *console_test_heterogeneous_bank_lists[2];
 
 static SGIModelNode console_test_nodes[] = {
     {
@@ -575,6 +580,16 @@ static void console_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "board-selector-on-non-bedrock")) {
         console_test_nodes[0].has_board_kind = true;
         console_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP34;
+    } else if (!strcmp(value, "heterogeneous-memory")) {
+        for (unsigned int i = 0; i < ARRAY_SIZE(console_test_nodes); i++) {
+            if (!console_test_heterogeneous_bank_lists[i]) {
+                console_test_heterogeneous_bank_lists[i] = uint64_list(
+                    console_test_heterogeneous_bank_mib[i],
+                    ARRAY_SIZE(console_test_heterogeneous_bank_mib[i]));
+            }
+            console_test_nodes[i].bank_mib =
+                console_test_heterogeneous_bank_lists[i];
+        }
     } else if (!strcmp(value, "pic-io9")) {
         console_test_install_pic_descriptor(true, 1);
     } else if (!strcmp(value, "pic-host-only")) {
@@ -844,6 +859,11 @@ static SGIModelFlash bedrock_test_flash = {
 };
 
 static uint64_t bedrock_test_bank_mib[] = { 64, 0, 0, 0, 0, 0, 0, 0 };
+static uint64_t bedrock_unfingerprinted_bank_mib[2][8] = {
+    { 64, 0, 0, 0, 0, 0, 0, 0 },
+    { 32, 0, 0, 0, 0, 0, 0, 0 },
+};
+static uint64List *bedrock_unfingerprinted_bank_lists[2];
 
 static SGIModelNode bedrock_test_nodes[] = {
     {
@@ -996,6 +1016,17 @@ static uint64_t ip53_test_bank_mib[] = { 0, 0, 64, 0, 0, 0, 0, 0 };
 static SGIModelNode ip53_test_node;
 static SGIModelBedrockConfig ip53_test_bedrock_config;
 static uint64List *ip53_test_bank_mib_list;
+static SGIModelNode ip53_memory_test_nodes[2];
+static SGIModelBedrockConfig ip53_memory_test_configs[2];
+static uint64_t ip53_memory_test_bank_mib[2][8] = {
+    { 0, 0, 16, 16, 0, 0, 0, 0 },
+    { 0, 0, 16, 0, 0, 0, 0, 0 },
+};
+static uint64_t ip53_memory_test_accepted_mib[] = { 32 };
+static uint64List *ip53_memory_test_bank_lists[2];
+static unsigned int ip53_memory_test_population[] = { 1, 1 };
+static unsigned int ip53_memory_test_module_nodes[2][1] = { { 0 }, { 1 } };
+static SGIModelControllerList ip53_memory_test_controllers[2];
 
 static SGIModelXioAttachment ip53_test_xio = {
     .crossbar_index = -1,
@@ -1105,6 +1136,71 @@ static void bedrock_test_install_ip53_descriptor(bool include_profile)
         cpu_population_list(&ip53_test_population, 1));
 }
 
+static void bedrock_test_install_ip53_memory_descriptor(bool swapped)
+{
+    bedrock_test_install_ip53_descriptor(true);
+    ip53_test_identity.has_ni_revision = true;
+    ip53_test_identity.ni_revision = 2;
+    ip53_memory_test_nodes[0] = ip53_test_node;
+    ip53_memory_test_nodes[1] = bedrock_test_nodes[1];
+    ip53_memory_test_nodes[1].has_board_kind = true;
+    ip53_memory_test_nodes[1].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    ip53_memory_test_nodes[1].identity = &ip53_test_identity;
+    ip53_memory_test_configs[0] = ip53_test_bedrock_config;
+    ip53_memory_test_configs[1] = ip53_test_bedrock_config;
+    ip53_memory_test_configs[0].installed_bank_mask = 0x0c;
+    ip53_memory_test_configs[1].installed_bank_mask = 0x04;
+    ip53_memory_test_nodes[0].bedrock = &ip53_memory_test_configs[0];
+    ip53_memory_test_nodes[1].bedrock = &ip53_memory_test_configs[1];
+    if (swapped) {
+        ip53_memory_test_bank_mib[0][3] = 0;
+        ip53_memory_test_bank_mib[1][3] = 16;
+        ip53_memory_test_configs[0].installed_bank_mask = 0x04;
+        ip53_memory_test_configs[1].installed_bank_mask = 0x0c;
+    } else {
+        ip53_memory_test_bank_mib[0][3] = 16;
+        ip53_memory_test_bank_mib[1][3] = 0;
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(ip53_memory_test_nodes); i++) {
+        uint64List *bank;
+
+        if (!ip53_memory_test_bank_lists[i]) {
+            ip53_memory_test_bank_lists[i] = uint64_list(
+                ip53_memory_test_bank_mib[i],
+                ARRAY_SIZE(ip53_memory_test_bank_mib[i]));
+        }
+        bank = ip53_memory_test_bank_lists[i];
+        for (unsigned int j = 0; j < ARRAY_SIZE(ip53_memory_test_bank_mib[i]);
+             j++, bank = bank->next) {
+            bank->value = ip53_memory_test_bank_mib[i][j];
+        }
+        ip53_memory_test_nodes[i].bank_mib = ip53_memory_test_bank_lists[i];
+        ip53_memory_test_nodes[i].has_board_kind = true;
+        ip53_memory_test_nodes[i].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+        ip53_memory_test_nodes[i].identity = &ip53_test_identity;
+    }
+    bedrock_test_topology.nodes = node_list(
+        ip53_memory_test_nodes, ARRAY_SIZE(ip53_memory_test_nodes));
+    bedrock_test_modules[0].nodes = uint32_list(
+        ip53_memory_test_module_nodes[0], 1);
+    bedrock_test_modules[1].nodes = uint32_list(
+        ip53_memory_test_module_nodes[1], 1);
+    bedrock_test_topology.modules = module_list(
+        bedrock_test_modules, ARRAY_SIZE(bedrock_test_modules));
+    ip53_memory_test_controllers[0].value = &bedrock_test_controllers[0];
+    ip53_memory_test_controllers[0].next = &ip53_memory_test_controllers[1];
+    ip53_memory_test_controllers[1].value = &bedrock_test_controllers[1];
+    ip53_memory_test_controllers[1].next = NULL;
+    bedrock_test_topology.controllers = ip53_memory_test_controllers;
+    /* The sole PIC/IO9 owner is node 0; node 1 contributes memory only. */
+    ip53_test_pic.xio_attachment_index = 0;
+    ip53_test_population.cpus_per_node = uint32_list(
+        ip53_memory_test_population, ARRAY_SIZE(ip53_memory_test_population));
+    bedrock_test_topology.node_populations = whole_population(
+        &bedrock_test_topology,
+        cpu_population_list(&ip53_test_population, 1));
+}
+
 #define TYPE_SN_BUILDER_BEDROCK_TEST \
     MACHINE_TYPE_NAME("sn-builder-bedrock-test")
 
@@ -1150,6 +1246,35 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_ip53_descriptor(true);
         ip53_test_ioc4.pci_device = 1;
         ip53_test_io9.pci_head = 0;
+    } else if (!strcmp(value, "ip53-asymmetric") ||
+               !strcmp(value, "ip53-asymmetric-swapped") ||
+               !strcmp(value, "ip53-asymmetric-overflow") ||
+               !strcmp(value, "ip53-asymmetric-mixed") ||
+               !strcmp(value, "ip53-asymmetric-accepted-mismatch")) {
+        bedrock_test_install_ip53_memory_descriptor(
+            !strcmp(value, "ip53-asymmetric-swapped"));
+        if (!strcmp(value, "ip53-asymmetric-overflow")) {
+            ip53_memory_test_bank_mib[0][2] = UINT64_MAX;
+            ip53_memory_test_bank_mib[0][3] = 1;
+            ip53_memory_test_bank_lists[0]->next->next->value = UINT64_MAX;
+            ip53_memory_test_bank_lists[0]->next->next->next->value = 1;
+        } else if (!strcmp(value, "ip53-asymmetric-mixed")) {
+            ip53_memory_test_nodes[1].asic_kind = SGI_MODEL_ASIC_KIND_HUB;
+        } else if (!strcmp(value, "ip53-asymmetric-accepted-mismatch")) {
+            ip53_memory_test_nodes[1].accepted_memory_mib = uint64_list(
+                ip53_memory_test_accepted_mib,
+                ARRAY_SIZE(ip53_memory_test_accepted_mib));
+        }
+    } else if (!strcmp(value, "asymmetric-no-ip53")) {
+        for (unsigned int i = 0; i < ARRAY_SIZE(bedrock_test_nodes); i++) {
+            if (!bedrock_unfingerprinted_bank_lists[i]) {
+                bedrock_unfingerprinted_bank_lists[i] = uint64_list(
+                    bedrock_unfingerprinted_bank_mib[i],
+                    ARRAY_SIZE(bedrock_unfingerprinted_bank_mib[i]));
+            }
+            bedrock_test_nodes[i].bank_mib =
+                bedrock_unfingerprinted_bank_lists[i];
+        }
     } else if (!strcmp(value, "ip53-pic-io9-ioc4-input0")) {
         bedrock_test_install_ip53_descriptor(true);
         ip53_test_ioc4.pci_device = 1;

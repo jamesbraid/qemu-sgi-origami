@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include "qemu/bswap.h"
+#include "qemu/units.h"
 #include "hw/core/clock.h"
 #include "hw/pci/pci_regs.h"
 #include "libqtest.h"
@@ -1884,6 +1885,24 @@ static bool nasid_test_cpu_readq(QTestState *qts, unsigned int cpu,
 static bool nasid_test_cpu_readl(QTestState *qts, unsigned int cpu,
                                  uint64_t address, uint32_t *value);
 
+static void ip53_memory_writeq_cpu(QTestState *qts, unsigned int cpu,
+                                   uint64_t address, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, address, bytes, sizeof(bytes)));
+}
+
+static uint64_t ip53_memory_readq_cpu(QTestState *qts, unsigned int cpu,
+                                      uint64_t address)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, address, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
 #define IP53_IO_SPACE UINT64_C(0x20000000000)
 #define IP53_BOARD_ID_LOCAL UINT64_C(0x10014000000)
 #define IP53_BOARD_ID_REMOTE UINT64_C(0x10034000000)
@@ -2399,7 +2418,13 @@ static void test_ip53_builds_linked_pic_and_io9(const void *data)
 static void test_ip53_fingerprint_migration(const void *opaque)
 {
     const char *destination_fault = opaque;
+    bool asymmetric = g_str_equal(destination_fault,
+                                  "ip53-asymmetric-swapped");
     bool mismatch = strcmp(destination_fault, "ip53-pic-io9") != 0;
+    const char *source_fault = asymmetric ? "ip53-asymmetric" :
+        "ip53-pic-io9";
+    const char *memory = asymmetric ? "48M" : "64M";
+    const char *cpus = asymmetric ? "2" : "1";
     g_autoptr(GError) error = NULL;
     g_autofree char *dir = g_dir_make_tmp("sn-builder-ip53-migrate-XXXXXX",
                                            &error);
@@ -2408,6 +2433,8 @@ static void test_ip53_fingerprint_migration(const void *opaque)
     g_autofree char *from_clock = g_build_filename(dir, "from-clock.bin", NULL);
     g_autofree char *to_data = g_build_filename(dir, "to-data.bin", NULL);
     g_autofree char *to_clock = g_build_filename(dir, "to-clock.bin", NULL);
+    g_autofree char *from_ram = NULL;
+    g_autofree char *to_ram = NULL;
     g_autofree char *stream = g_build_filename(dir, "migration", NULL);
     g_autofree char *uri = g_strdup_printf("file:%s", stream);
     g_autofree char *blank_prom = g_malloc0(0x100000);
@@ -2419,9 +2446,11 @@ static void test_ip53_fingerprint_migration(const void *opaque)
     uint64_t ioc4_memory = IP53_IO_SPACE + UINT64_C(0x21000000);
     uint64_t itte = (UINT64_C(9) << 8) | 2;
     uint64_t value;
+    uint8_t ram_byte;
     g_autofree char *from_data_image = NULL;
     g_autofree char *to_data_image = NULL;
     gsize from_data_size, to_data_size;
+    uint8_t ram_sentinels[] = { 0xa1, 0xa2 };
 
     if (mismatch && !g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 30 * G_USEC_PER_SEC, 0);
@@ -2441,13 +2470,26 @@ static void test_ip53_fingerprint_migration(const void *opaque)
     g_assert_no_error(error);
     g_assert_true(g_file_set_contents(to_clock, blank_clock, 16, &error));
     g_assert_no_error(error);
-    from = qtest_initf(
-        "-M sn-builder-bedrock-test,construction-fault=ip53-pic-io9 "
-        "-m 64M -smp 1 -cpu R14000 -bios %s "
-        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
-        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
-        "-nodefaults -display none -S",
-        prom, from_data, from_clock);
+    if (asymmetric) {
+        from_ram = create_sized_temp_file("sn-builder-ip53-source-ram-XXXXXX",
+                                          48 * MiB);
+        from = qtest_initf(
+            "-object memory-backend-file,id=memory,mem-path=%s,size=48M,share=on "
+            "-M sn-builder-bedrock-test,construction-fault=%s,memory-backend=memory "
+            "-m %s -smp %s -cpu R14000 -bios %s "
+            "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+            "-nodefaults -display none -S", from_ram, source_fault, memory,
+            cpus, prom, from_data, from_clock);
+    } else {
+        from = qtest_initf(
+            "-M sn-builder-bedrock-test,construction-fault=%s "
+            "-m %s -smp %s -cpu R14000 -bios %s "
+            "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+            "-nodefaults -display none -S",
+            source_fault, memory, cpus, prom, from_data, from_clock);
+    }
     if (g_str_equal(destination_fault, "ip53-alt-clock")) {
         g_printerr("IP53 fingerprint descriptor clocks: source="
                    "200000000 Hz destination=150000000 Hz\n");
@@ -2484,16 +2526,69 @@ static void test_ip53_fingerprint_migration(const void *opaque)
                         bswap32(0x80000000));
         g_assert_cmphex(qtest_readb(from, ioc4_memory + 0x380 + 3), ==, 3);
     }
+    if (asymmetric) {
+        uint8_t source_sentinels[] = { 0x31, 0x32 };
+        uint64_t md_config = IP53_IO_SPACE + UINT64_C(0x1000000) +
+                             UINT64_C(0x780008);
+        uint64_t bank2 = UINT64_C(2) << 30;
+
+        to_ram = create_sized_temp_file("sn-builder-ip53-ram-XXXXXX",
+                                        48 * MiB);
+        {
+            int ram_fd = open(to_ram, O_WRONLY);
+
+            g_assert_cmpint(ram_fd, >=, 0);
+            g_assert_cmpint(pwrite(ram_fd, ram_sentinels, 1, 0), ==, 1);
+            g_assert_cmpint(pwrite(ram_fd, &ram_sentinels[1], 1,
+                                   32 * MiB), ==, 1);
+            g_assert_cmpint(close(ram_fd), ==, 0);
+        }
+        ip53_memory_writeq_cpu(from, 0, md_config, 0x1300);
+        ip53_memory_writeq_cpu(from, 1, md_config, 0x1100);
+        g_assert_true(qtest_memwrite_cpu(from, 0, bank2,
+                                         &source_sentinels[0], 1));
+        g_assert_true(qtest_memwrite_cpu(from, 1, bank2,
+                                         &source_sentinels[1], 1));
+        g_assert_true(qtest_memread_cpu(from, 0, bank2, &ram_byte, 1));
+        g_assert_cmphex(ram_byte, ==, source_sentinels[0]);
+        g_assert_true(qtest_memread_cpu(from, 1, bank2, &ram_byte, 1));
+        g_assert_cmphex(ram_byte, ==, source_sentinels[1]);
+    }
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     sgi_wait_migration_status(from, "completed", 30);
-    to = qtest_initf(
-        "-M sn-builder-bedrock-test,construction-fault=%s "
-        "-m 64M -smp 1 -cpu R14000 -bios %s "
-        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
-        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
-        "-nodefaults -display none -S "
-        "-incoming defer", destination_fault, prom, to_data, to_clock);
+    if (asymmetric) {
+        to = qtest_initf(
+            "-object memory-backend-file,id=memory,mem-path=%s,size=48M,share=on "
+            "-M sn-builder-bedrock-test,construction-fault=%s,memory-backend=memory "
+            "-m %s -smp %s -cpu R14000 -bios %s "
+            "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+            "-nodefaults -display none -S -incoming defer", to_ram,
+            destination_fault, memory, cpus, prom, to_data, to_clock);
+        {
+            uint64_t md_config = IP53_IO_SPACE + UINT64_C(0x1000000) +
+                                 UINT64_C(0x780008);
+            uint64_t bank2 = UINT64_C(2) << 30;
+            uint64_t bank3 = UINT64_C(3) << 30;
+
+            ip53_memory_writeq_cpu(to, 0, md_config, 0x1100);
+            ip53_memory_writeq_cpu(to, 1, md_config, 0x1300);
+            g_assert_true(qtest_memread_cpu(to, 0, bank2, &ram_byte, 1));
+            g_assert_cmphex(ram_byte, ==, ram_sentinels[0]);
+            g_assert_true(qtest_memread_cpu(to, 1, bank3, &ram_byte, 1));
+        }
+        g_assert_cmphex(ram_byte, ==, ram_sentinels[1]);
+    } else {
+        to = qtest_initf(
+            "-M sn-builder-bedrock-test,construction-fault=%s "
+            "-m %s -smp %s -cpu R14000 -bios %s "
+            "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+            "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+            "-nodefaults -display none -S "
+            "-incoming defer", destination_fault, memory, cpus, prom,
+            to_data, to_clock);
+    }
     if (mismatch) {
         qtest_set_expected_status(to, EXIT_FAILURE);
     }
@@ -2501,6 +2596,17 @@ static void test_ip53_fingerprint_migration(const void *opaque)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     if (mismatch) {
         qtest_wait_qemu(to);
+        if (asymmetric) {
+            uint8_t observed[2];
+            int ram_fd = open(to_ram, O_RDONLY);
+
+            g_assert_cmpint(ram_fd, >=, 0);
+            g_assert_cmpint(pread(ram_fd, &observed[0], 1, 0), ==, 1);
+            g_assert_cmpint(pread(ram_fd, &observed[1], 1, 32 * MiB), ==, 1);
+            g_assert_cmpint(close(ram_fd), ==, 0);
+            g_assert_cmphex(observed[0], ==, ram_sentinels[0]);
+            g_assert_cmphex(observed[1], ==, ram_sentinels[1]);
+        }
         qtest_qmp_assert_success(from, "{'execute':'quit'}");
         qtest_wait_qemu(from);
     } else {
@@ -2561,10 +2667,168 @@ static void test_ip53_fingerprint_migration(const void *opaque)
     g_unlink(stream);
     g_unlink(to_clock);
     g_unlink(to_data);
+    if (to_ram) {
+        g_unlink(to_ram);
+    }
+    if (from_ram) {
+        g_unlink(from_ram);
+    }
     g_unlink(from_clock);
     g_unlink(from_data);
     g_unlink(prom);
     g_rmdir(dir);
+}
+
+static void test_ip53_descriptor_memory_layout(void)
+{
+    g_autofree char *ram = create_sized_temp_file(
+        "sn-builder-ip53-memory-ram-XXXXXX", 48 * MiB);
+    g_autofree char *prom = create_sized_temp_file(
+        "sn-builder-ip53-memory-prom-XXXXXX", 0x100000);
+    g_autofree char *data = create_sized_temp_file(
+        "sn-builder-ip53-memory-data-XXXXXX", 0x800);
+    g_autofree char *clock = create_sized_temp_file(
+        "sn-builder-ip53-memory-clock-XXXXXX", 16);
+    QTestState *qts = qtest_initf(
+        "-object memory-backend-file,id=memory,mem-path=%s,size=48M,share=on "
+        "-M sn-builder-bedrock-test,construction-fault=ip53-asymmetric,"
+        "memory-backend=memory "
+        "-m 48M -smp 2 -cpu R14000 -bios %s "
+        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+        "-nodefaults -display none -S", ram, prom, data, clock);
+    const uint64_t node0_size = UINT64_C(32) * MiB;
+    const uint64_t node1_size = UINT64_C(16) * MiB;
+    const uint64_t node0_md = IP53_IO_SPACE + UINT64_C(0x1000000) +
+                              UINT64_C(0x780008);
+    const uint64_t node0_bank2 = UINT64_C(2) << 30;
+    const uint64_t node0_bank3 = UINT64_C(3) << 30;
+    const uint64_t node1_bank2 = node0_bank2;
+    const uint64_t bank_windows[] = {
+        node0_bank2, node0_bank2 + node0_size / 2 - 1,
+        node0_bank3, node0_bank3 + node0_size / 2 - 1,
+        node1_bank2, node1_bank2 + node1_size - 1,
+    };
+    const uint64_t backing_offsets[] = {
+        0, node0_size / 2 - 1, node0_size / 2, node0_size - 1,
+        node0_size, node0_size + node1_size - 1,
+    };
+    const unsigned int bank_cpus[] = { 0, 0, 0, 0, 1, 1 };
+    const uint8_t sentinels[] = { 0xa0, 0xa1, 0xa2, 0xa3, 0xb0, 0xb1 };
+    uint8_t readback[ARRAY_SIZE(sentinels)];
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/sn1.node.ram[0]",
+                                  "size"), ==, node0_size);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/sn1.node.ram[0]",
+                                  "size"), ==, node1_size);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/bedrock",
+                                  "installed-bank2-mib"), ==, 16);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/bedrock",
+                                  "installed-bank3-mib"), ==, 16);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/bedrock",
+                                  "installed-bank2-mib"), ==, 16);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/bedrock",
+                                  "installed-bank3-mib"), ==, 0);
+
+    /*
+     * Bank bits retain descriptor locations, capacities bound each window,
+     * and each CPU accesses its own node through the same local addresses.
+     */
+    ip53_memory_writeq_cpu(qts, 0, node0_md, 0x1300);
+    g_assert_cmphex(ip53_memory_readq_cpu(qts, 0, node0_md), ==, 0x1300);
+    ip53_memory_writeq_cpu(qts, 1, node0_md, 0x1100);
+    g_assert_cmphex(ip53_memory_readq_cpu(qts, 1, node0_md), ==, 0x1100);
+    for (unsigned int i = 0; i < ARRAY_SIZE(sentinels); i++) {
+        g_assert_true(qtest_memwrite_cpu(qts, bank_cpus[i], bank_windows[i],
+                                         &sentinels[i], 1));
+        g_assert_true(qtest_memread_cpu(qts, bank_cpus[i], bank_windows[i],
+                                        &readback[i], 1));
+        g_assert_cmphex(readback[i], ==, sentinels[i]);
+    }
+    qtest_quit(qts);
+    {
+        uint8_t backing[ARRAY_SIZE(sentinels)];
+        int ram_fd = open(ram, O_RDONLY);
+
+        g_assert_cmpint(ram_fd, >=, 0);
+        for (unsigned int i = 0; i < ARRAY_SIZE(backing_offsets); i++) {
+            g_assert_cmpint(pread(ram_fd, &backing[i], 1,
+                                  backing_offsets[i]), ==, 1);
+            g_assert_cmphex(backing[i], ==, sentinels[i]);
+        }
+        g_assert_cmpint(close(ram_fd), ==, 0);
+    }
+    g_unlink(ram);
+    g_unlink(prom);
+    g_unlink(data);
+    g_unlink(clock);
+}
+
+static void test_ip53_descriptor_memory_refusals(void)
+{
+    g_autofree char *data = create_sized_temp_file(
+        "sn-builder-ip53-memory-refusal-data-XXXXXX", 0x800);
+    g_autofree char *clock = create_sized_temp_file(
+        "sn-builder-ip53-memory-refusal-clock-XXXXXX", 16);
+    g_autofree char *data_drive = g_strdup_printf(
+        "if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw", data);
+    g_autofree char *clock_drive = g_strdup_printf(
+        "if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw", clock);
+    static const struct {
+        const char *fault;
+        const char *memory;
+        const char *cpus;
+        const char *message;
+    } cases[] = {
+        { "ip53-asymmetric", "47M", "2",
+          "descriptor bank total does not match -m" },
+        { "ip53-asymmetric-overflow", "48M", "2", "bank total overflows" },
+        { "ip53-asymmetric-mixed", "48M", "2",
+          "board-kind on a non-Bedrock node" },
+        { "ip53-asymmetric-accepted-mismatch", "48M", "2",
+          "node 1 has unsupported descriptor memory size of 16 MiB" },
+        { "ip53-asymmetric", "48M", "1", "accepts 2 CPUs, not 1" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "sn-builder-bedrock-test,construction-fault=%s", cases[i].fault);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-m", cases[i].memory,
+            "-smp", cases[i].cpus, "-cpu", "R14000", "-bios", "/dev/null",
+            "-drive", data_drive, "-drive", clock_drive,
+            "-nodefaults", "-qtest", "stdio", "-accel", "qtest",
+            "-display", "none", "-S", NULL
+        };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+    g_unlink(data);
+    g_unlink(clock);
+}
+
+static void test_heterogeneous_memory_without_ip53_refused(void)
+{
+    static const struct {
+        const char *machine;
+        const char *memory;
+        const char *cpus;
+        const char *cpu;
+    } cases[] = {
+        { "sn-builder-bedrock-test,construction-fault=asymmetric-no-ip53",
+          "96M", "2", "R14000" },
+        { "sn-builder-console-test,construction-fault=heterogeneous-memory",
+          "96M", "4", "R10000" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", cases[i].machine, "-m",
+            cases[i].memory, "-smp", cases[i].cpus, "-cpu", cases[i].cpu,
+            "-bios", "/dev/null", "-nodefaults", "-display", "none", NULL
+        };
+
+        assert_qemu_rejects(args, "unsupported heterogeneous node memory");
+    }
 }
 
 static void test_ip53_runtime_permission_refusals(void)
@@ -8888,6 +9152,15 @@ int main(int argc, char **argv)
                    test_ip53_two_pic_hosts_keep_widget_state_and_reset);
     qtest_add_func("sn/builder/ip53-two-pic-hosts-migrate-independent-state",
                    test_ip53_two_pic_hosts_migrate_independent_state);
+    qtest_add_func("sn/builder/ip53-descriptor-memory-layout",
+                   test_ip53_descriptor_memory_layout);
+    qtest_add_func("sn/builder/ip53-descriptor-memory-refusals",
+                   test_ip53_descriptor_memory_refusals);
+    qtest_add_func("sn/builder/heterogeneous-memory-without-ip53-refused",
+                   test_heterogeneous_memory_without_ip53_refused);
+    qtest_add_data_func("sn/builder/ip53-memory-layout-migration-mismatch",
+                        "ip53-asymmetric-swapped",
+                        test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-identical-fingerprint-migration",
                         "ip53-pic-io9", test_ip53_fingerprint_migration);
     qtest_add_data_func("sn/builder/ip53-fingerprint-ioc4-route-mismatch",
