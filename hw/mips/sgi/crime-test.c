@@ -90,10 +90,8 @@ static void crime_test_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "CRIME test fixture requires a qtest server");
         return;
     }
-    if (!s->crime || !qdev_is_realized(DEVICE(s->crime)) ||
-        !s->crime->legacy_software) {
-        error_setg(errp, "CRIME test fixture requires a realized legacy "
-                   "software interface");
+    if (!s->crime || !qdev_is_realized(DEVICE(s->crime))) {
+        error_setg(errp, "CRIME test fixture requires a realized interface");
     }
 }
 
