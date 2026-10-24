@@ -47,7 +47,6 @@
 #define CRIME_MACE_MASK 0xffffU
 #define CRIME_SOFTWARE_MASK 0x30000000U
 #define CRIME_LEGACY_SOFTWARE_MASK 0x70000000U
-#define CRIME_RENDER_IRQ_MASK 0x0fc00000U
 #define CRIME_LATCH_MASK 0x41cf0000U
 #define CRIME_LEGACY_LATCH_MASK 0x81cf0000U
 #define CRIME_IP2_MASK 0x8fc00038U
@@ -1189,12 +1188,6 @@ static uint32_t crime_latch_mask(const SGICrimeState *s)
     return s->legacy_software ? CRIME_LEGACY_LATCH_MASK : CRIME_LATCH_MASK;
 }
 
-static bool crime_enable_valid(const SGICrimeState *s, uint64_t value)
-{
-    return !(value >> 32) &&
-           (!s->functional_memory_transfer || !(value & CRIME_RENDER_IRQ_MASK));
-}
-
 static void crime_update_irq(SGICrimeState *s)
 {
     uint32_t pending = (s->hardware | s->software) & s->enable;
@@ -1597,7 +1590,7 @@ static MemTxResult crime_write(void *opaque, hwaddr offset, uint64_t value,
                           "bits 0x%" PRIx32 "\n", (uint32_t)(value >> 32));
             value = (uint32_t)value;
         }
-        if (crime_enable_valid(s, value)) {
+        if (!(value >> 32)) {
             s->enable = value;
             crime_update_irq(s);
             return MEMTX_OK;
@@ -1715,7 +1708,6 @@ static int crime_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     if ((incoming->hardware & software_mask) ||
-        !crime_enable_valid(s, incoming->enable) ||
         (incoming->software & ~software_mask)) {
         return -EINVAL;
     }

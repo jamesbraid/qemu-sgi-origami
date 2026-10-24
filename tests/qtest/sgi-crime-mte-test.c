@@ -164,6 +164,7 @@ static void test_migration(void)
         qtest_writel(from, MTE + readable[i], 0x12345600 + i);
     }
     qtest_writeq(from, BASE + 0x200, 1);
+    qtest_writeq(from, BASE + 0x18, UINT32_MAX);
     qtest_writel(from, MTE + 0x30, 7);
     qtest_writel(from, MTE + 0x38, 39);
     qtest_memset(from, 0x3000, 0xa5, 4096);
@@ -178,6 +179,7 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, TLB), ==, 0x8000000380000009ULL);
     g_assert_cmphex(qtest_readq(to, TLB + 128), ==, 0x8000000b8000000fULL);
     g_assert_cmphex(qtest_readq(to, BASE + 0x200), ==, 1);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, UINT32_MAX);
     assert_bytes(to, 0x3000, 4096, 0xa5);
     assert_bytes(to, 0xb000, 4096, 0xb6);
     qtest_writel(to, MTE + 8, UINT32_MAX);
@@ -377,10 +379,11 @@ static void test_rejected_commands(void)
     }
     qtest_writeq(s, BASE + 0x18, 1U << 4);
     qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
-    for (unsigned i = 22; i <= 27; i++) {
-        g_assert_cmpint(memtx_writeq(s, BASE + 0x18, (1U << i) | 8),
-                        !=, MEMTX_OK);
-        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+    for (unsigned i = 0; i < 32; i++) {
+        uint32_t mask = (1U << i) | (1U << 4);
+
+        g_assert_cmpint(memtx_writeq(s, BASE + 0x18, mask), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, mask);
         g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
     }
     qtest_quit(s);
@@ -639,9 +642,9 @@ static void test_migration_invalid_state(gconstpointer data)
         state = memmem(stream, size, section, sizeof(section) - 1);
         g_assert_nonnull(state);
         state += sizeof(section) - 1;
-        /* Main section: instance, version, hardware, then interrupt enable. */
+        /* Software-only positions cannot appear in saved hardware state. */
         g_assert_cmphex(ldl_be_p(state + 4), ==, 2);
-        stl_be_p(state + 12, 1U << 22);
+        stl_be_p(state + 8, 1U << 28);
     } else {
         state = memmem(stream, size, subsection, sizeof(subsection) - 1);
         g_assert_nonnull(state);
@@ -806,7 +809,7 @@ int main(int argc, char **argv)
           test_migration_policy, GINT_TO_POINTER(0), NULL },
         { "migration-unselected-state", NULL,
           test_migration_policy, GINT_TO_POINTER(1), NULL },
-        { "migration-rendering-enable", NULL,
+        { "migration-hardware-software-overlap", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(0), NULL },
         { "migration-policy", NULL,
           test_migration_invalid_state, GUINT_TO_POINTER(1), NULL },

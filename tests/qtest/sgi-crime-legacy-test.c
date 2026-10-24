@@ -289,7 +289,9 @@ static void exercise_sources(QTestState *s, bool legacy)
         bool latched = (legacy ? LEVEL_LATCHED : 0x41cf0000U) & bit;
 
         cause(s, held, 1);
-        qtest_writeq(s, BASE + 0x18, bit | held_bit);
+        g_assert_cmpint(memtx_writeq(s, BASE + 0x18, bit | held_bit),
+                        ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, bit | held_bit);
         cause(s, source, 1);
         if (software) {
             assert_outputs(s, held_output);
@@ -322,21 +324,31 @@ static void exercise_sources(QTestState *s, bool legacy)
     }
 }
 
-static void test_source_routing(void)
+static void test_source_routing(gconstpointer data)
 {
+    bool functional = GPOINTER_TO_UINT(data);
+
     for (unsigned legacy = 0; legacy < 2; legacy++) {
-        QTestState *s = start_profile(legacy, "");
+        QTestState *s = start_profile(legacy, functional ?
+            "-global sgi-crime.functional-memory-transfer=on" : "");
 
         qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
+        g_assert_cmpint(memtx_writeq(s, BASE + 0x18, UINT32_MAX), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, UINT32_MAX);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+        assert_outputs(s, 0);
         exercise_sources(s, legacy);
         qtest_quit(s);
     }
 }
 
-static void test_source_reset(void)
+static void test_source_reset(gconstpointer data)
 {
+    bool functional = GPOINTER_TO_UINT(data);
+
     for (unsigned legacy = 0; legacy < 2; legacy++) {
-        QTestState *s = start_profile(legacy, "");
+        QTestState *s = start_profile(legacy, functional ?
+            "-global sgi-crime.functional-memory-transfer=on" : "");
 
         qtest_irq_intercept_out_named(s, CRIME_PATH, "cpu-ip");
         for (unsigned source = 0; source < 32; source++) {
@@ -392,15 +404,22 @@ static void test_counter(void)
 
 static void test_migration(gconstpointer data)
 {
-    bool legacy = GPOINTER_TO_INT(data);
+    unsigned selection = GPOINTER_TO_UINT(data);
+    bool legacy = selection & 1;
+    bool functional = selection & 2;
     GError *error = NULL;
     g_autofree char *directory = g_dir_make_tmp("crime-profile-XXXXXX", &error);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
-    QTestState *from = start_profile(legacy, "");
-    QTestState *to = start_profile(legacy, "-incoming defer");
+    const char *source_options = functional ?
+        "-global sgi-crime.functional-memory-transfer=on" : "";
+    g_autofree char *target_options = g_strdup_printf("%s -incoming defer",
+        source_options);
+    QTestState *from = start_profile(legacy, source_options);
+    QTestState *to = start_profile(legacy, target_options);
     unsigned software_bit = legacy ? 30 : 29;
-    uint32_t hardware = (1U << 4) | (1U << 16) | (1U << 22);
+    uint32_t hardware = (1U << 4) | (1U << 16) | (1U << 22) |
+                        (functional ? 1U << 25 : 0);
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -410,6 +429,10 @@ static void test_migration(gconstpointer data)
     cause(from, 16, 1);
     cause(from, 22, 1);
     cause(from, 22, 0);
+    if (functional) {
+        cause(from, 25, 1);
+        qtest_writeq(from, BASE + 0x18, UINT32_MAX);
+    }
     qtest_writeq(from, BASE + 0x20, 1U << software_bit);
     qtest_writeq(from, BASE + 0x38, 0xfffffffe);
     qtest_clock_step(from, 15);
@@ -422,7 +445,9 @@ static void test_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, BASE + 0x20), ==, 1U << software_bit);
     g_assert_cmphex(qtest_readq(to, BASE + 0x38), ==, 0xfffffffe);
     g_assert_cmphex(qtest_readq(to, 0x40000500), ==, 0x88776655aabbccddULL);
-    assert_outputs(to, 0);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==,
+                    functional ? UINT32_MAX : 0);
+    assert_outputs(to, functional ? (legacy ? 1 : 0xb) : 0);
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readq(to, BASE + 0x38), ==, 0xffffffff);
     qtest_writeq(to, BASE + 0x18, hardware | (1U << software_bit));
@@ -431,7 +456,11 @@ static void test_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, BASE + 0x28), ==, hardware & ~(1U << 22));
     cause(to, 16, 0);
     qtest_writeq(to, BASE + 0x28, 0);
-    g_assert_cmphex(qtest_readq(to, BASE + 0x28), ==, 1U << 4);
+    g_assert_cmphex(qtest_readq(to, BASE + 0x28), ==,
+                    (1U << 4) | (functional ? 1U << 25 : 0));
+    if (functional) {
+        cause(to, 25, 0);
+    }
     cause(to, 4, 0);
     qtest_writeq(to, BASE + 0x20, 0);
     qtest_writeq(to, BASE + 0x18, 0);
@@ -921,17 +950,17 @@ static void test_interrupt_mask_upper(void)
                 assert_run_status(s, "running");
             }
         }
-        if (functional) {
-            qtest_writeq(s, BASE + 0x18, (1U << 4) | (1U << 30));
-            for (unsigned u = 0; u < ARRAY_SIZE(upper); u++) {
-                for (unsigned bit = 22; bit <= 27; bit++) {
-                    g_assert_cmpint(memtx_writeq(s, BASE + 0x18,
-                        upper[u] | (1U << bit) | (1U << 8)), !=, MEMTX_OK);
-                    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==,
-                                    (1U << 4) | (1U << 30));
-                    assert_outputs(s, 1);
-                    assert_stopped(s);
-                }
+        for (unsigned u = 0; u < ARRAY_SIZE(upper); u++) {
+            for (unsigned bit = 0; bit < 32; bit++) {
+                uint32_t mask = (1U << 4) | (1U << 30) | (1U << bit);
+
+                g_assert_cmpint(memtx_writeq(s, BASE + 0x18, upper[u] | mask),
+                                ==, MEMTX_OK);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, mask);
+                g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==,
+                                (1U << 4) | (1U << 30));
+                assert_outputs(s, 1);
+                assert_run_status(s, "running");
             }
         }
         qtest_quit(s);
@@ -1062,6 +1091,58 @@ static void assert_ifb_state(QTestState *s, bool executed)
     g_assert_cmphex(qtest_readq(s, 0x30400), ==,
                    executed ? 0x1122335655667788ULL : 0x1122335a55667788ULL);
     g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+}
+
+static void test_renderer_no_generated_irq(void)
+{
+    QTestState *s = start_profile(true,
+        "-global sgi-crime.functional-memory-transfer=on "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+
+    seed_ifb_state(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    g_assert_cmpint(memtx_writeq(s, BASE + 0x18, UINT32_MAX), ==, MEMTX_OK);
+    for (unsigned operation = 0; operation < 6; operation++) {
+        switch (operation) {
+        case 0:
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            break;
+        case 1:
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x400, 0xa6c319e7),
+                            ==, MEMTX_OK);
+            break;
+        case 2:
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x4008, UINT32_MAX),
+                            ==, MEMTX_OK);
+            break;
+        case 3:
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x29f0, 0x12345678),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(qtest_readq(s, 0x30400), ==, 0x1122335655667788ULL);
+            break;
+        case 4:
+            qtest_writel(s, TRANSFER, 4U << 2);
+            qtest_writel(s, TRANSFER + 8, UINT32_MAX);
+            qtest_writel(s, TRANSFER + 0x18, 0x6d);
+            qtest_writel(s, TRANSFER + 0x30, 16);
+            g_assert_cmpint(memtx_writel(s, TRANSFER + 0x838, 31),
+                            ==, MEMTX_OK);
+            for (unsigned i = 16; i < 32; i++) {
+                g_assert_cmphex(qtest_readb(s, 0x3000 + i), ==, 0x6d);
+            }
+            break;
+        case 5:
+            g_assert_cmpint(memtx_writel(s, TRANSFER + 0x78, 1),
+                            ==, MEMTX_ERROR);
+            break;
+        }
+        g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, UINT32_MAX);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 1U << 4);
+        assert_outputs(s, 1);
+        assert_run_status(s, operation == 5 ? "internal-error" : "running");
+    }
+    qtest_quit(s);
 }
 
 static void test_ifb_read(void)
@@ -2246,13 +2327,25 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/crime/legacy/banks", test_banks);
     qtest_add_func("/sgi/crime/legacy/immutable", test_immutable);
     qtest_add_func("/sgi/crime/legacy/level-latches", test_level_latches);
-    qtest_add_func("/sgi/crime/legacy/source-routing", test_source_routing);
-    qtest_add_func("/sgi/crime/legacy/source-reset", test_source_reset);
+    qtest_add_data_func("/sgi/crime/legacy/source-routing",
+                        GUINT_TO_POINTER(0), test_source_routing);
+    qtest_add_data_func("/sgi/crime/legacy/functional-source-routing",
+                        GUINT_TO_POINTER(1), test_source_routing);
+    qtest_add_data_func("/sgi/crime/legacy/source-reset",
+                        GUINT_TO_POINTER(0), test_source_reset);
+    qtest_add_data_func("/sgi/crime/legacy/functional-source-reset",
+                        GUINT_TO_POINTER(1), test_source_reset);
+    qtest_add_func("/sgi/crime/renderer/no-generated-irq",
+                   test_renderer_no_generated_irq);
     qtest_add_func("/sgi/crime/legacy/counter", test_counter);
     qtest_add_data_func("/sgi/crime/legacy/migration",
                         GINT_TO_POINTER(1), test_migration);
     qtest_add_data_func("/sgi/crime/default/migration-sources",
                         GINT_TO_POINTER(0), test_migration);
+    qtest_add_data_func("/sgi/crime/legacy/functional-migration-sources",
+                        GUINT_TO_POINTER(3), test_migration);
+    qtest_add_data_func("/sgi/crime/default/functional-migration-sources",
+                        GUINT_TO_POINTER(2), test_migration);
     qtest_add_func("/sgi/crime/legacy/cpu-clock-interrupt",
                    test_clock_interrupt_independence);
     qtest_add_func("/sgi/crime/legacy/machine-admission",
