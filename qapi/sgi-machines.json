@@ -1068,18 +1068,21 @@
 # @ds1685: the IP30 board's DS1685-family real-time clock and NVRAM,
 #     reached through its IOC3
 #
+# @ds1744: the IO9 profile's DS1744-compatible 32 KiB timekeeper
+#     model, reached through its IOC4
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelSystemTimekeeperKind',
-  'data': ['m48t35-compatible', 'ds1685'] }
+  'data': ['m48t35-compatible', 'ds1685', 'ds1744'] }
 
 ##
 # @SGIModelSystemTimekeeper:
 #
 # @kind: explicit compatibility selection, not a physical part
 #     identity
-# @year-base: machine software year convention; absent for a part
-#     that keeps its own century
+# @year-base: machine software year convention; absent when no fresh
+#     seed offset is selected
 # @initial-ip27-fixture: whether a fresh unbacked part receives the
 #     IP27 fixture
 #
@@ -1137,8 +1140,8 @@
 #
 # @mac-source: selected source for an optional supplied IOC3 address
 #
-# @system-timekeeper: explicit experimental fitted system-clock
-#     policy
+# @system-timekeeper: selected board timekeeper policy, independent of
+#     physical part identity
 #
 # @ioc3-serial: the IOC3 function's own one-wire serial, a distinct
 #     fitted-part identity from the board's own @serial, if known

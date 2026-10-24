@@ -454,6 +454,7 @@ _PFLASH_ARGUMENT = "-drive if=pflash,unit=N"
 _TIMEKEEPER_BYTES = {
     "m48t35-compatible": (0x8000, 16),
     "ds1685": (512, 24),
+    "ds1744": (0x8000, 16),
 }
 # The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
 # that fit one.

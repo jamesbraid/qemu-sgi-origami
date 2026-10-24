@@ -1965,6 +1965,16 @@
             }
           },
           "else": { "not": { "required": ["ds1742_fresh_year_base"] } }
+        },
+        {
+          "if": {
+            "properties": { "hardware_kind": { "const": "ds1744" } },
+            "required": ["hardware_kind"]
+          },
+          "then": {
+            "properties": { "fresh_year_base": { "enum": [0, 1968] } }
+          },
+          "else": { "not": { "required": ["fresh_year_base"] } }
         }
       ],
       "properties": {
@@ -1977,6 +1987,11 @@
           "type": "integer",
           "enum": [0, 1968],
           "description": "Year base for a fresh seed on this linked DS1742-compatible clock."
+        },
+        "fresh_year_base": {
+          "type": "integer",
+          "enum": [0, 1968],
+          "description": "Year base for a fresh seed on this linked DS1744-compatible clock."
         },
         "ioc4": {
           "type": "object",

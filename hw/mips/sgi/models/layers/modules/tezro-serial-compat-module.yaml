@@ -130,19 +130,19 @@ layer:
       sources:
       - tezro-deskside-trial
       - tezro-deskside-trial-review
-    - id: ds1742
-      name: DS1742-compatible clock resource
+    - id: ds1744
+      name: DS1744-compatible timekeeper
       kind: rtc
-      hardware_kind: ds1742
+      hardware_kind: ds1744
       datasheet_contracts:
-      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1742
+      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1744
       parent: io9
-      ds1742_fresh_year_base: 1968
+      fresh_year_base: 1968
       provenance: derived
       sources:
       - tezro-deskside-trial
       - tezro-deskside-trial-review
-      notes: Software-selected persistent clock resource for this trial. IO9 fitted-part identity, byte address decode, and physical IOC4 clock wiring are not established for Tezro.
+      notes: Synthetic 32 KiB timekeeper geometry selected for this software profile. The fitted IO9 part and physical address wiring remain unknown. The guest driver's 1968 year convention applies to a fresh seed, not to the physical part identity.
     - id: isp12160
       name: QLogic ISP12160
       kind: subfunction
@@ -270,5 +270,5 @@ layer:
       - tezro-deskside-trial-review
     links:
     - kind: ioc4-clock
-      source: ds1742
+      source: ds1744
       target: ioc4

@@ -102,7 +102,8 @@ def validate_component_ids(model: dict[str, Any]) -> None:
 
 
 def validate_io9_clock_links(model: dict[str, Any]) -> set[str]:
-    """Validate typed DS1742-to-IOC4 links and return their IO9 board IDs."""
+    """Validate typed timekeeper-to-IOC4 links and return their \
+IO9 board IDs."""
     links = model.get("links")
     if links is None:
         return set()
@@ -153,9 +154,10 @@ def validate_io9_clock_links(model: dict[str, Any]) -> set[str]:
             raise ResolutionError(
                 f"{label} has dangling endpoint '{source_id if source is None else target_id}'"
             )
-        if source.get("hardware_kind") != "ds1742":
+        if source.get("hardware_kind") not in {"ds1742", "ds1744"}:
             raise ResolutionError(
-                f"IOC4 clock link '{source_id}' must source a DS1742"
+                f"IOC4 clock link '{source_id}' must source a " \
+                "supported timekeeper"
             )
         if target.get("hardware_kind") != "ioc4":
             raise ResolutionError(

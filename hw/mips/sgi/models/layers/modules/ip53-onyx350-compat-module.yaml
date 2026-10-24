@@ -162,20 +162,21 @@ layer:
           PCI revision 0 is the selected existing BCM570x model value when
           configured as BCM5701. It is not an observed Onyx 350 card revision.
           No launcher network-adapter mapping is asserted for this port.
-      - id: ds1742
-        name: DS1742 RTC
+      - id: ds1744
+        name: DS1744-compatible timekeeper
         kind: rtc
-        hardware_kind: ds1742
+        hardware_kind: ds1744
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1742
+          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1744
         parent: io9
         provenance: derived
-        ds1742_fresh_year_base: 1968
-        sources: [onyx350-compatibility-proposal, ip53-clock-year-review]
+        fresh_year_base: 1968
+        sources: [onyx350-compatibility-proposal, "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles"]
         notes: >-
-          Synthetic linked IOC4 clock resource selected by the selected software
-          construction contract. The link does not assert physical address lines
-          or a board-specific guest-visible mapping.
+          Synthetic 32 KiB timekeeper geometry selected for this software
+          profile. The fitted IO9 part and physical address wiring remain
+          unknown. The guest driver's 1968 year convention applies to a fresh
+          seed, not to the physical part identity.
       - id: l1
         name: L1 system controller
         kind: system-controller
@@ -192,7 +193,7 @@ layer:
         connector: {interface: NUMAlink 3, location: rear panel, occupancy: empty, notes: One port; cabled to nothing on a single compute module. A NUMAlink module scales 4 to 32 processors.}
         sources: [onyx350-compatibility-proposal]
     links:
-      - {kind: ioc4-clock, source: ds1742, target: ioc4}
+      - {kind: ioc4-clock, source: ds1744, target: ioc4}
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [onyx350-compatibility-proposal]}
       - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}

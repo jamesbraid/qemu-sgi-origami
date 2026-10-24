@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "a60b8ff82c1bd6e4c009d0b1316f0849504bef8f5cbe2fffede6cdaae9d9c639"
+    "9f9b8607bcee3cba0919213c2351a38f550094cf4316c1160b233be579f3293d"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -522,17 +522,24 @@ class StorageTests(unittest.TestCase):
     def test_ioc3_timekeeper_starts_from_the_fresh_ip27_image(self):
         """An IOC3 Timekeeper with no backing installs the fresh IP27
         image, so a new machine's NVRAM file starts from it too. A
-        selected system Timekeeper turns that fixture off and starts
-        from zeroes, as does Octane's different part."""
+        selected system Timekeeper turns that fixture off. The IP53
+        DS1744-compatible profiles start their backed image from zeroes."""
+        ds1744_topologies = {
+            "origin350", "onyx350-compat", "onyx4-host-serial-compat",
+            "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
+        }
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
                      if item["name"].startswith("nvram")
                      and not item["name"].endswith("-clock")}
-            expected = ({"ip27-nvram"}
-                        if offering["product"] in {"origin200", "origin2000",
-                                                   "onyx2"}
-                        else set() if offering.get("launch-recipe") == "ip53-discovery"
-                        else {"zero"})
+            expected = (
+                {"ip27-nvram"}
+                if offering["product"] in {"origin200", "origin2000", "onyx2"}
+                else {"zero"}
+                if offering["topology"] in ds1744_topologies
+                else set()
+                if offering.get("launch-recipe") == "ip53-discovery"
+                else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)
 
@@ -895,15 +902,38 @@ class FuelTests(unittest.TestCase):
 
 
 class Origin350ClockPolicyTests(unittest.TestCase):
-    def test_ip53_catalogue_sets_fresh_seed_year_base(self):
+    def test_ip53_catalogue_selects_backed_ds1744_timekeepers(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
-        topology = next(row for row in catalogue["topologies"]
-                        if row["product"] == "origin350")
-        board = next(row for row in topology["io-boards"]
-                     if row["id"] == "io9")
-        self.assertTrue(board["ds1742"])
-        self.assertEqual(board["ds1742-fresh-year-base"], 1968)
+        names = {"origin350", "onyx350-compat", "onyx4-host-serial-compat",
+                 "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base"}
+        topologies = {row["name"]: row for row in catalogue["topologies"]
+                      if row["name"] in names}
+        self.assertEqual(set(topologies), names)
+
+        for name, topology in topologies.items():
+            with self.subTest(topology=name):
+                board = next(row for row in topology["io-boards"]
+                             if row["id"] == "io9")
+                self.assertEqual(board["system-timekeeper"], {
+                    "kind": "ds1744", "year-base": 1968,
+                    "initial-ip27-fixture": False})
+                self.assertNotIn("ds1742", board)
+                self.assertNotIn("ds1742-fresh-year-base", board)
+                offerings = [row for row in catalogue["offerings"]
+                             if row["topology"] == name]
+                self.assertTrue(offerings)
+                for offering in offerings:
+                    storage = {item["name"]: item
+                               for item in offering["storage"]}
+                    self.assertEqual(storage["nvram0"]["size"], 32768)
+                    self.assertEqual(storage["nvram0-clock"]["size"], 16)
+                    self.assertEqual(storage["nvram0"]["initial"], "zero")
+                    self.assertEqual(storage["nvram0-clock"]["initial"],
+                                     "zero")
+                    self.assertFalse(any(
+                        resource["kind"] == "ds1742"
+                        for resource in offering["resources"]))
 
 
 if __name__ == "__main__":

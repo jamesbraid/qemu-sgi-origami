@@ -2362,7 +2362,7 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
 def _compile_pic_io_records(model: dict, graph: dict,
                             modules_by_id: dict[str, int],
                             first_attachment: int,
-                            ds1742_boards: set[str],
+                            linked_clock_boards: set[str],
                             ) -> tuple[list[dict], list[dict], list[dict]]:
     """Compile authored PIC hosts and IO9 boards without choosing
     hardware facts."""
@@ -2386,13 +2386,24 @@ def _compile_pic_io_records(model: dict, graph: dict,
             downstream.setdefault(bus["id"], []).append(connection)
 
     fresh_year_bases = {}
+    ds1744_timekeepers = {}
     for link in model.get("links", []):
         if link.get("kind") != "ioc4-clock":
             continue
         rtc = components[link["source"]]
+        board = _board_ancestor(components, rtc)
+        if rtc.get("hardware_kind") == "ds1744":
+            if board is None or board.get("hardware_kind") != "io9":
+                raise CompileError(
+                    f"DS1744 clock '{rtc['id']}' has no owning IO9 board")
+            ds1744_timekeepers[board["id"]] = {
+                "kind": "ds1744",
+                "year_base": rtc.get("fresh_year_base", 0),
+                "initial_ip27_fixture": False,
+            }
+            continue
         if "ds1742_fresh_year_base" not in rtc:
             continue
-        board = _board_ancestor(components, rtc)
         if board is None or board.get("hardware_kind") != "io9":
             raise CompileError(
                 f"DS1742 clock '{rtc['id']}' has no owning IO9 board")
@@ -2668,8 +2679,11 @@ def _compile_pic_io_records(model: dict, graph: dict,
             "pci": pci_functions,
             "pci_host_index": host_index[host_id], "pci_head": head,
         }
-        if board["id"] in ds1742_boards:
-            record["ds1742"] = True
+        if board["id"] in linked_clock_boards:
+            if board["id"] in ds1744_timekeepers:
+                record["system_timekeeper"] = ds1744_timekeepers[board["id"]]
+            else:
+                record["ds1742"] = True
         if board["id"] in fresh_year_bases:
             record["ds1742_fresh_year_base"] = (
                 fresh_year_bases[board["id"]])
@@ -3071,7 +3085,7 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
 
 
     try:
-        ds1742_boards = validate_io9_clock_links(model)
+        linked_clock_boards = validate_io9_clock_links(model)
         validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
@@ -3164,8 +3178,9 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
                 raise CompileError(
                     "PIC host descriptors are supported only for SN1")
             pci_host_bridges, io9_boards, pic_attachments = (
-                _compile_pic_io_records(model, graph, modules_by_id,
-                                        len(xio_attachments), ds1742_boards))
+                _compile_pic_io_records(
+                    model, graph, modules_by_id, len(xio_attachments),
+                    linked_clock_boards))
             io_boards.extend(io9_boards)
             xio_attachments.extend(pic_attachments)
         if ip53_node_indices:
