@@ -275,6 +275,19 @@ static bool aic7880_manual_busy(AIC7880State *s)
     return s->manual_valid || (s->signal_outputs & 1);
 }
 
+static bool aic7880_host_fifo_accessible(AIC7880State *s)
+{
+    if ((s->regs[REG_DFCNTRL] & 0x30) || s->peer_nexus_disconnected ||
+        aic7880_manual_busy(s)) {
+        return false;
+    }
+    if (!s->selected && !s->req) {
+        return true;
+    }
+    return s->selected && s->req &&
+           (s->phase == AIC_PHASE_COMMAND || s->phase == AIC_PHASE_DATA);
+}
+
 static void aic7880_manual_clear(AIC7880State *s)
 {
     s->manual_valid = false;
@@ -452,6 +465,7 @@ static void aic7880_fifo_status(AIC7880State *s)
     }
     if (!fifo_len) {
         status |= DFS_FIFOEMP;
+        s->command_fifo_stale = false;
     }
     s->regs[REG_DFSTATUS] = status;
     aic7880_dma_done(s);
@@ -539,7 +553,8 @@ static void aic7880_host_dma(AIC7880State *s)
     }
     if ((s->phase == AIC_PHASE_DATA && s->command_dma_wait &&
          (control & 0x30)) ||
-        (s->req && s->phase != AIC_PHASE_DATA) ||
+        (s->req && s->phase != AIC_PHASE_DATA &&
+         !aic7880_host_fifo_accessible(s)) ||
         s->peer_nexus_disconnected || !s->host_request_pending ||
         (pci_get_word(pci->config + PCI_STATUS) &
          (PCI_STATUS_REC_MASTER_ABORT | PCI_STATUS_REC_TARGET_ABORT)) ||
@@ -698,7 +713,8 @@ static void aic7880_process_scsi_data(AIC7880State *s)
     if (s->command_dma_wait) {
         if (s->expected_phase != (s->regs[REG_SCSISIGI] & 0xe0) ||
             !!(s->regs[REG_DFCNTRL] & 4) ==
-            (req->cmd.mode == SCSI_XFER_FROM_DEV) || s->command_fifo_stale) {
+            (req->cmd.mode == SCSI_XFER_FROM_DEV) || s->command_fifo_stale ||
+            (req->cmd.mode == SCSI_XFER_FROM_DEV && s->host_fifo_len)) {
             return;
         }
         s->command_dma_wait = false;
@@ -1578,8 +1594,7 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_HCNT_RSVD:
         return 0;
     case REG_DFDAT:
-        if ((s->regs[REG_DFCNTRL] & 0x30) || s->req ||
-            s->selected) {
+        if (!aic7880_host_fifo_accessible(s)) {
             aic7880_error(s, "DFDAT mixed with SCSI data path");
             return 0xff;
         }
@@ -1833,7 +1848,8 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_pio_present(s);
         }
         if (val & DFC_FIFORESET) {
-            if (s->host_fifo_len && s->req && !s->command_fifo_stale) {
+            if (s->host_fifo_len && s->req && !s->command_fifo_stale &&
+                !s->command_dma_wait) {
                 scsi_req_cancel(s->req);
             }
             s->host_fifo_read = s->regs[0x88] & 7;
@@ -1859,8 +1875,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_DFDAT:
-        if ((s->regs[REG_DFCNTRL] & 0x30) || s->req ||
-            s->selected) {
+        if (!aic7880_host_fifo_accessible(s)) {
             aic7880_error(s, "DFDAT mixed with SCSI data path");
             break;
         }
