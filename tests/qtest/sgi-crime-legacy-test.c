@@ -1451,7 +1451,7 @@ static void test_renderer_refusal(void)
         { 0x2080, 4, false }, { 0x2084, 1, true },
         { 0x2400, 4, true }, { 0x408, 4, false },
         { 0x21f0, 4, false }, { 0x21f8, 4, false },
-        { 0x16fc, 4, true }, { 0x27fc, 4, true },
+        { 0x27fc, 4, true },
         { 0x3080, 4, true }, { 0x37fc, 4, true },
     };
     g_autofree char *directory = g_dir_make_tmp("crime-renderer-XXXXXX", NULL);
@@ -1540,7 +1540,7 @@ static void test_renderer_hard_stop(void)
         { 0x3808, 4, true }, { 0x3800, 4, true },
         { 0x3838, 4, true },
         { 0x3000, 8, true }, { 0x3001, 4, true },
-        { 0x1700, 4, true }, { 0x16ff, 4, true },
+        { 0x1700, 4, true }, { 0x16ff, 4, true }, { 0x16fc, 4, true },
         { 0x3030, 4, false }, { 0x4000, 4, true },
         { 0x2fff, 8, true }, { 0x3fff, 8, true },
         { 0x287f, 4, true }, { 0x3ff, 2, true },

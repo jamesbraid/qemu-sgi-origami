@@ -31,6 +31,7 @@ typedef struct CrimeTransferState {
     uint64_t tlb[32];
     uint32_t parameter[10];
     uint64_t ecc_enable;
+    uint64_t clip[4];
 } CrimeTransferState;
 
 typedef struct CrimeRenderState {

@@ -57,6 +57,7 @@
 #define CRIME_ID_REVISION 0xb1U
 #define CRIME_TIMER_HZ 66666666U
 
+#define CRIME_CLIP_TLB 0x10016e0
 #define CRIME_LINEAR_TLB 0x1001700
 #define CRIME_TRANSFER 0x1003000
 #define CRIME_TLB_ENTRY_MASK 0x800fffffU
@@ -185,6 +186,56 @@ static bool crime_transfer_overlap(const CrimeTransferSpan *a,
 static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
                                        const uint32_t *parameter);
 
+static MemTxResult crime_clip_commit(SGICrimeState *s, hwaddr offset,
+                                       const uint32_t *p)
+{
+    unsigned x0 = p[6] >> 16, y0 = p[6] & 0xffff;
+    unsigned x1 = p[7] >> 16, y1 = p[7] & 0xffff;
+    unsigned width, height;
+    g_autofree CrimeTransferSpan *spans = NULL;
+    uint8_t fill[512];
+
+    if ((p[0] & ~0xffU) || p[1] != UINT32_MAX || p[9] != 1 ||
+        x0 > x1 || y0 > y1 || x1 >= 512 || y1 >= 2048) {
+        return crime_transfer_fail(offset, "unsupported CLIP clear");
+    }
+    width = x1 - x0 + 1;
+    height = y1 - y0 + 1;
+    spans = g_new(CrimeTransferSpan, height);
+    for (unsigned row = 0; row < height; row++) {
+        unsigned y = y0 + row, index = y / 128;
+        uint64_t word = s->transfer.clip[index / 4];
+        uint16_t entry = word >> (48 - 16 * (index % 4));
+        uint64_t physical = ((uint64_t)(entry & 0x7fff) << 16) +
+                            (y % 128) * 512 + x0;
+
+        if (!(entry & 0x8000) ||
+            !crime_transfer_resolve(s, physical, width, &spans[row])) {
+            return crime_transfer_fail(offset, "invalid CLIP destination");
+        }
+        for (unsigned earlier = 0; earlier < row; earlier++) {
+            if (crime_transfer_overlap(&spans[row], &spans[earlier])) {
+                return crime_transfer_fail(offset,
+                                           "CLIP destination aliases itself");
+            }
+        }
+    }
+    if (p[0] & 1) {
+        crime_healthy_memory_notice(s);
+    }
+    /* MMIO holds the BQL across preflight and these ordinary RAM writes. */
+    memset(fill, p[3] & 0xff, width);
+    for (unsigned row = 0; row < height; row++) {
+        if (address_space_write(&address_space_memory, spans[row].physical,
+                                MEMTXATTRS_UNSPECIFIED, fill, width) !=
+            MEMTX_OK) {
+            return crime_transfer_fail(offset,
+                                       "validated CLIP RAM write failed");
+        }
+    }
+    return MEMTX_OK;
+}
+
 static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
                                           unsigned index, uint32_t value)
 {
@@ -206,8 +257,10 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     copy = mode & (1U << 11);
     src = (mode >> 5) & 7;
     dst = (mode >> 2) & 7;
-    if (s->legacy_software && dst < 3) {
-        MemTxResult result = crime_tiled_commit(s, offset, parameter);
+    if (s->legacy_software && (dst < 3 || dst == 6)) {
+        MemTxResult result = dst == 6 ?
+            crime_clip_commit(s, offset, parameter) :
+            crime_tiled_commit(s, offset, parameter);
 
         if (result == MEMTX_OK && index < CRIME_TRANSFER_PARAMETERS) {
             s->transfer.parameter[index] = value;
@@ -1032,7 +1085,9 @@ static bool crime_renderer_must_stop(hwaddr offset, unsigned size, bool write)
 {
     offset -= 0x1000000;
     /* Bad setup must stop before a later command can use stale state. */
-    return crime_renderer_touches(offset, size, 0x1700, 0x100) ||
+    return crime_renderer_touches(offset, size, 0x16e0, 0x20) ||
+           crime_renderer_touches(offset, size, 0x1ee0, 0x20) ||
+           crime_renderer_touches(offset, size, 0x1700, 0x100) ||
            crime_renderer_touches(offset, size, 0x2800, 0x800) ||
            crime_renderer_touches(offset, size, 0x3000, 0x80) ||
            crime_renderer_touches(offset, size, 0x3800, 0x800) ||
@@ -1119,6 +1174,11 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         const CrimeRenderRegister *reg =
             crime_render_register(offset - 0x1002800);
 
+        if (offset >= CRIME_CLIP_TLB && offset < CRIME_CLIP_TLB + 32 &&
+            size == 8 && !(offset & 7)) {
+            s->transfer.clip[(offset - CRIME_CLIP_TLB) / 8] = value;
+            return MEMTX_OK;
+        }
         if (offset == 0x1000400 && size == 4) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-crime: opaque empty interface-buffer control "
@@ -1792,6 +1852,13 @@ static int crime_transfer_post_load(void *opaque, int version_id)
             }
         }
     }
+    if (!s->legacy_software || !s->functional_memory_transfer) {
+        for (unsigned i = 0; i < ARRAY_SIZE(incoming->clip); i++) {
+            if (incoming->clip[i]) {
+                return -EINVAL;
+            }
+        }
+    }
     s->transfer_state_received = true;
     return 0;
 }
@@ -1810,6 +1877,7 @@ static const VMStateDescription vmstate_crime_transfer = {
         VMSTATE_UINT64(incoming_transfer.ecc_enable, SGICrimeState),
         VMSTATE_UINT32(incoming_memory_error_status, SGICrimeState),
         VMSTATE_UINT32(incoming_memory_error_address, SGICrimeState),
+        VMSTATE_UINT64_ARRAY(incoming_transfer.clip, SGICrimeState, 4),
         VMSTATE_END_OF_LIST()
     },
 };
