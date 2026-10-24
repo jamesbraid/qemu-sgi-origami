@@ -639,6 +639,26 @@ static void aic7880_stop_diagnostic(AIC7880State *s)
 
 static void aic7880_error(AIC7880State *s, const char *reason)
 {
+    uint8_t peer_flags = s->peer_reselection |
+                         (s->peer_nexus_disconnected << 1) |
+                         (s->peer_data_in_pending << 2) |
+                         (s->peer_faulted_command << 3) |
+                         (s->peer_nexus_saved << 4) |
+                         (s->peer_hold_data_in << 5) |
+                         (s->peer_scsi_irq_latched << 6);
+
+    /* Trace events accept at most ten arguments. */
+    trace_aic7880_error_state(PCI_DEVICE(s)->devfn, reason, s->phase,
+        s->expected_phase, s->selected, s->regs[REG_SXFRCTL0],
+        s->regs[REG_DFCNTRL], s->regs[REG_SCSISIGI], s->signal_outputs,
+        s->manual_valid);
+    trace_aic7880_error_transfer(PCI_DEVICE(s)->devfn, s->target, s->lun,
+        s->cdb_len, s->cdb_need, s->host_fifo_len, s->host_dma_active,
+        s->host_request_pending, s->req != NULL, peer_flags);
+    trace_aic7880_error_latch(PCI_DEVICE(s)->devfn, s->regs[REG_SSTAT0],
+        s->regs[REG_SSTAT1], s->regs[REG_SCSIDATL], s->manual_data,
+        s->scsi_data_pos, s->scsi_data_len, s->command_dma_wait,
+        s->command_fifo_stale, s->peer_nexus_message);
     if (s->running) {
         qemu_log_mask(LOG_GUEST_ERROR, "aic7880: %s at pc 0x%03x\n",
                       reason, s->seqaddr - 1);
@@ -1578,7 +1598,9 @@ static void aic7880_pio_advance(AIC7880State *s)
 
 static bool aic7880_manual_admitted(AIC7880State *s)
 {
-    if (!s->selected || (s->regs[REG_SXFRCTL0] & 8) ||
+    if (!s->selected ||
+        ((s->regs[REG_SXFRCTL0] & 8) &&
+         s->phase != AIC_PHASE_STATUS && s->phase != AIC_PHASE_MSG_IN) ||
         (s->regs[REG_DFCNTRL] & 0x38) || s->peer_reselection ||
         s->peer_nexus_disconnected || s->peer_data_in_pending ||
         s->peer_faulted_command ||
@@ -1628,7 +1650,8 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
         return;
     }
     if (rising && (!aic7880_manual_admitted(s) ||
-                   !(s->regs[REG_SCSISIGI] & 2) || !s->manual_valid)) {
+                   !(s->regs[REG_SCSISIGI] & 2) ||
+                   (!aic7880_incoming(s) && !s->manual_valid))) {
         aic7880_error(s, "manual ACK without a sampled or staged request");
         return;
     }
@@ -1651,6 +1674,10 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
         aic7880_update_scsi_irq(s);
         return;
     }
+    if (rising && aic7880_incoming(s)) {
+        s->manual_data = aic7880_bus_data(s);
+        s->manual_valid = true;
+    }
     s->signal_outputs = val & 0x0d; /* Initiator REQO has no effect. */
     if (rising) {
         if (s->phase == AIC_PHASE_DATA) {
@@ -1659,7 +1686,12 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
             }
             s->scsi_data_pos++;
         }
-        aic7880_pio_retire(s);
+        s->regs[REG_SCSISIGI] &= ~2;
+        s->regs[REG_SSTAT1] &= ~0x11;
+        /* Explicit ACK is not a data-latch access. */
+        if (!(s->regs[REG_SXFRCTL0] & 8)) {
+            s->regs[REG_SSTAT0] &= ~2;
+        }
     } else if (falling) {
         aic7880_manual_clear(s);
         aic7880_pio_advance(s);
@@ -1694,6 +1726,16 @@ static uint64_t aic7880_read_impl(void *opaque, hwaddr addr, unsigned size)
         if (!aic7880_incoming(s) || s->peer_reselection ||
             s->peer_data_in_pending || s->peer_faulted_command) {
             aic7880_error(s, "SCSIDATL read outside incoming PIO phase");
+            return 0xff;
+        }
+        if ((s->signal_outputs & 1) && s->manual_valid) {
+            if (s->regs[REG_SXFRCTL0] & 8) {
+                s->regs[REG_SSTAT0] &= ~2;
+            }
+            return s->manual_data;
+        }
+        if (!s->selected || !(s->regs[REG_SCSISIGI] & 2)) {
+            aic7880_error(s, "input data latch without target REQ");
             return 0xff;
         }
         if (!(s->regs[REG_SXFRCTL0] & 8)) {
@@ -1800,8 +1842,14 @@ static uint64_t aic7880_read_impl(void *opaque, hwaddr addr, unsigned size)
             ((s->signal_outputs & 1) || (s->regs[REG_SCSISIGI] & 2))) {
             return aic7880_bus_data(s);
         }
-        if (s->phase == AIC_PHASE_MSG_IN || s->phase == AIC_PHASE_STATUS) {
-            return s->regs[REG_SCSIDATL];
+        if (s->selected &&
+            (s->phase == AIC_PHASE_MSG_IN || s->phase == AIC_PHASE_STATUS)) {
+            if ((s->signal_outputs & 1) && s->manual_valid) {
+                return s->manual_data;
+            }
+            if (s->regs[REG_SCSISIGI] & 2) {
+                return s->regs[REG_SCSIDATL];
+            }
         }
         aic7880_error(s, "unqualified SCSIBUSL data");
         return 0xff;

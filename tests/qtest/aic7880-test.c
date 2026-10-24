@@ -11645,6 +11645,180 @@ static void test_manual_modes(void)
     }
 }
 
+static void test_explicit_incoming_ack(void)
+{
+    for (unsigned sequencer = 0; sequencer < 2; sequencer++) {
+        for (unsigned automatic = 0; automatic < 2; automatic++) {
+            for (unsigned message = 0; message < 2; message++) {
+                for (unsigned sample = 0; sample < (automatic ? 2 : 3);
+                     sample++) {
+                    QTestState *qts = manual_status();
+                    uint8_t phase = message ? 0xe0 : 0xc0;
+                    uint8_t byte = message ? 0 : 2;
+
+                    if (message) {
+                        manual_incoming(qts, 0xc0, false);
+                    }
+                    manual_wait_phase(qts, phase);
+                    manual_counters(qts);
+                    qtest_writeb(qts, REG_BASE + 1, automatic ? 8 : 0);
+                    if (sample) {
+                        g_assert_cmphex(qtest_readb(qts, REG_BASE +
+                                        (sample == 1 ? 0x12 : 6)), ==, byte);
+                    }
+                    manual_signal_write(qts, phase | 7, sequencer);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3,
+                                    ==, phase | 1);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11,
+                                    ==, 0);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                                    ==, automatic ? 2 : 0);
+                    for (unsigned i = 0; i < 2; i++) {
+                        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12),
+                                        ==, byte);
+                    }
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                                    ==, automatic ? 2 : 0);
+                    manual_signal_write(qts, phase | 7, sequencer);
+                    for (unsigned i = 0; i < 2; i++) {
+                        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6),
+                                        ==, byte);
+                    }
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                                    ==, 0);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3,
+                                    ==, phase | 1);
+                    manual_signal_write(qts, phase | 6, sequencer);
+                    if (!message) {
+                        manual_wait_phase(qts, 0xe0);
+                        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                                        ==, automatic ? 2 : 0);
+                        qtest_writeb(qts, REG_BASE + 1, 0);
+                        manual_incoming(qts, 0xe0, false);
+                    }
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+                    manual_check_counters(qts);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2,
+                                    ==, 0);
+                    qtest_quit(qts);
+                }
+            }
+        }
+    }
+}
+
+static void test_explicit_ack_after_automatic_read(void)
+{
+    for (unsigned peek = 0; peek < 2; peek++) {
+        QTestState *qts = manual_status();
+        ManualGuard before;
+
+        manual_counters(qts);
+        qtest_writeb(qts, REG_BASE + 1, 8);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+        manual_wait_phase(qts, 0xe0);
+        if (peek) {
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 0);
+        }
+        qtest_writeb(qts, REG_BASE + 3, 0xe7);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xe1);
+        qtest_writeb(qts, REG_BASE + 3, 0xe6);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+        manual_capture(qts, &before);
+        qtest_writeb(qts, REG_BASE + 3, 0xe7);
+        manual_unchanged(qts, &before);
+        manual_check_counters(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_explicit_ack_readiness_clears(void)
+{
+    for (unsigned clear = 0; clear < 4; clear++) {
+        QTestState *qts = manual_status();
+
+        manual_counters(qts);
+        qtest_writeb(qts, REG_BASE + 1, 8);
+        if (clear & 1) {
+            qtest_writeb(qts, REG_BASE + 0x0b, 2);
+        }
+        if (clear & 2) {
+            qtest_writeb(qts, REG_BASE + 0x0c, 1);
+        }
+        qtest_writeb(qts, REG_BASE + 3, 0xc1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, 0xc1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2,
+                        ==, (clear & 1) ? 0 : 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
+        qtest_writeb(qts, REG_BASE + 3, 0xc0);
+        manual_wait_phase(qts, 0xe0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 2, ==, 2);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 1, ==, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+        manual_check_counters(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_explicit_ack_ownership(void)
+{
+    QTestState *qts = manual_status();
+    ManualGuard before;
+
+    manual_counters(qts);
+    qtest_writeb(qts, REG_BASE + 1, 8);
+    qtest_writeb(qts, REG_BASE + 3, 0xc1);
+    manual_capture(qts, &before);
+    qtest_writeb(qts, REG_BASE + 1, 0);
+    manual_unchanged(qts, &before);
+    qtest_writeb(qts, REG_BASE + 1, 10);
+    manual_unchanged(qts, &before);
+    qtest_writeb(qts, REG_BASE + 0x93, 8);
+    manual_unchanged(qts, &before);
+    qtest_writeb(qts, REG_BASE + 6, 0x93);
+    manual_unchanged(qts, &before);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+    qtest_writeb(qts, REG_BASE + 3, 0xc0);
+    qtest_writeb(qts, REG_BASE + 1, 0);
+    manual_incoming(qts, 0xe0, false);
+    manual_check_counters(qts);
+    qtest_quit(qts);
+}
+
+static void test_explicit_ack_interrupts(void)
+{
+    QTestState *qts = manual_status();
+
+    manual_counters(qts);
+    qtest_irq_intercept_in(qts, "ioapic");
+    qtest_outl(qts, PCI_CONFIG_ADDR, 0x80000860u);
+    qtest_outb(qts, PCI_CONFIG_DATA + 3, 11);
+    qtest_writeb(qts, REG_BASE + 0x87, 6);
+    qtest_writeb(qts, REG_BASE + 0x10, 2);
+    qtest_writeb(qts, REG_BASE + 1, 8);
+    g_assert_true(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 3, 0xc1);
+    qtest_writeb(qts, REG_BASE + 0x92, 4);
+    g_assert_true(qtest_get_irq(qts, 11));
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 2);
+    qtest_writeb(qts, REG_BASE + 0x87, 0x16);
+    qtest_writeb(qts, REG_BASE + 0x92, 4);
+    g_assert_true(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 0x87, 6);
+    g_assert_false(qtest_get_irq(qts, 11));
+    qtest_writeb(qts, REG_BASE + 0x10, 0);
+    qtest_writeb(qts, REG_BASE + 3, 0xc0);
+    manual_wait_phase(qts, 0xe0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+    manual_check_counters(qts);
+    qtest_quit(qts);
+}
+
 static void test_manual_mode_exclusion(void)
 {
     static const uint8_t inquiry[] = { 0x12, 0, 0, 0, 36, 0 };
@@ -12115,9 +12289,9 @@ static void test_manual_refusals(void)
     manual_wait_phase(qts, 0x40);
     manual_counters(qts);
     byte = qtest_readb(qts, REG_BASE + 0x12);
+    manual_ack(qts, 0x40, byte, true, false);
+    byte = qtest_readb(qts, REG_BASE + 0x12);
     manual_capture(qts, &before);
-    qtest_writeb(qts, REG_BASE + 3, 0x41);
-    manual_unchanged(qts, &before);
     qtest_writeb(qts, REG_BASE + 6, 0x93);
     manual_unchanged(qts, &before);
     qtest_writew(qts, REG_BASE + 6, 0x37c9);
@@ -12125,7 +12299,7 @@ static void test_manual_refusals(void)
     qtest_readw(qts, REG_BASE + 6);
     manual_unchanged(qts, &before);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, byte);
-    for (unsigned i = 0; i < 36; i++) {
+    for (unsigned i = 1; i < 36; i++) {
         manual_incoming(qts, 0x40, false);
     }
     manual_wait_phase(qts, 0xc0);
@@ -15080,6 +15254,16 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/manual/signals", test_manual_signals);
     qtest_add_func("aic7880/manual/inquiry", test_manual_inquiry);
     qtest_add_func("aic7880/manual/modes", test_manual_modes);
+    qtest_add_func("aic7880/manual/explicit-incoming-ack",
+                   test_explicit_incoming_ack);
+    qtest_add_func("aic7880/manual/explicit-after-automatic-read",
+                   test_explicit_ack_after_automatic_read);
+    qtest_add_func("aic7880/manual/explicit-readiness-clears",
+                   test_explicit_ack_readiness_clears);
+    qtest_add_func("aic7880/manual/explicit-ownership",
+                   test_explicit_ack_ownership);
+    qtest_add_func("aic7880/manual/explicit-interrupts",
+                   test_explicit_ack_interrupts);
     qtest_add_func("aic7880/manual/mode-exclusion", test_manual_mode_exclusion);
     qtest_add_func("aic7880/manual/sample-channel-clear",
                    test_manual_sample_channel_clear);
