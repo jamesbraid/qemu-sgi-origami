@@ -818,8 +818,7 @@ static void test_every_topology_is_well_formed(void)
 static void test_origin300_graphics_attachment(gconstpointer data)
 {
     const char *name = data;
-    SGIModelIoBoardPreset preset = g_str_equal(name, "origin300-v12-direct") ?
-        SGI_MODEL_IO_BOARD_PRESET_ODYSSEY : SGI_MODEL_IO_BOARD_PRESET_VBRICK;
+    SGIModelIoBoardPreset preset = SGI_MODEL_IO_BOARD_PRESET_VBRICK;
     g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
 
@@ -1590,9 +1589,6 @@ int main(int argc, char **argv)
                     test_io9_hosts_and_boards_follow_projected_attachments);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
-    g_test_add_data_func("/sn-model/origin300-direct-v12-attachment",
-                         "origin300-v12-direct",
-                         test_origin300_graphics_attachment);
     g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
                          "origin300-vbrick",
                          test_origin300_graphics_attachment);

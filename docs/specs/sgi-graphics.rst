@@ -256,9 +256,8 @@ An Odyssey board is a widget on a crossbar port. The V-brick, the graphics
 enclosure of the Origin 3000 family, adds a midplane, an L1 controller and
 its own routing (007-4264-002 printed pages 10, 52 and 54). The Origin 300's
 rear XIO connector joins it to a graphics pipeline (007-4365-002 printed page
-8). A direct V12 on the Origin 300's XBridge, with no V-brick, is an emulator
-approximation: no published inventory shows that connection, and no V-brick
-board revision, widget route, NIC, memory or display option was measured. The Fuel's board is
+8) through a V-brick; no V-brick board revision, widget route, NIC, memory
+or display option was measured. The Fuel's board is
 the widget the system board's XBridge crossbar reaches at port 13: established
 by the owner captures (``web:tingo-fuel-irix-console``;
 ``web:miod-openbsd-sgi-story``).

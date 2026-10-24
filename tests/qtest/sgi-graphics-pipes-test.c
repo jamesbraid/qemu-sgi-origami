@@ -69,8 +69,6 @@ static const Launch launches[] = {
       "/machine/module0/widget-11" },
     { "fuel", "fuel", "-cpu R14000 -smp 1 -m 512M",
       SN1_PROM, "/machine/module0/graphics-slot" },
-    { "origin300-v12-direct", "origin300,topology=origin300-v12-direct",
-      "-cpu R14000 -smp 2", SN1_PROM, "/machine/module0/rear-panel" },
     { "origin300-vbrick", "origin300,topology=origin300-vbrick",
       "-cpu R14000 -smp 2", SN1_PROM, "/machine/module1/vbrick-v12" },
     { "onyx350-compat", "onyx350,topology=onyx350-compat",
@@ -357,9 +355,6 @@ static void test_catalogue_records(void)
         { "tezro-tower-multi", true, NULL },
         { "fuel", false,
           "every Fuel has its VPro graphics slot at widget 13" },
-        { "origin300-v12-direct", false,
-          "this topology exists to fit its V12, so use origin300 for no "
-          "graphics" },
         { "origin300-vbrick", false,
           "this topology exists to fit its V12, so use origin300 for no "
           "graphics" },
@@ -590,8 +585,7 @@ static void test_vga_none(void)
 {
     static const char *const topologies[] = {
         "octane", "octane2", "origin2000-rack", "origin200",
-        "onyx2-deskside", "onyx2-rack", "fuel", "origin300-v12-direct",
-        "origin300-vbrick",
+        "onyx2-deskside", "onyx2-rack", "fuel", "origin300-vbrick",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {

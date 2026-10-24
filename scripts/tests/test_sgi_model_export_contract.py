@@ -83,7 +83,7 @@ class ExportTests(unittest.TestCase):
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
                           "origin300-two-chassis",
-                          "origin300-v12-direct", "origin300-vbrick"])
+                          "origin300-vbrick"])
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
                           "origin300-numalink-pci-expansion-experiment",
@@ -92,7 +92,7 @@ class ExportTests(unittest.TestCase):
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
                           "origin300-two-chassis",
-                          "origin300-v12-direct", "origin300-vbrick"})
+                          "origin300-vbrick"})
 
     def test_planned_target_stays_out_of_the_export(self):
         # A planned target compiles but the emulator cannot build it yet,
@@ -114,7 +114,7 @@ class ExportTests(unittest.TestCase):
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
-                          "origin300-v12-direct", "origin300-vbrick"})
+                          "origin300-vbrick"})
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
                           "origin300-numalink-pci-expansion-experiment",
@@ -122,7 +122,7 @@ class ExportTests(unittest.TestCase):
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
-                          "origin300-v12-direct", "origin300-vbrick"})
+                          "origin300-vbrick"})
 
     def test_bad_selection_does_not_create_destination(self):
         with tempfile.TemporaryDirectory() as directory:
