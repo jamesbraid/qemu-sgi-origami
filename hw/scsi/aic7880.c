@@ -38,6 +38,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define AIC_REG_SPACE 0x100
 #define AIC_SEQ_INSNS 512
 #define AIC_SEQ_BYTES (AIC_SEQ_INSNS * 4)
+#define AIC_SEQ_WORK_BUDGET 256
+#define AIC_SEQ_HISTORY 128
 #define AIC_SCB_PAGES 16
 #define AIC_SCB_EXTERNAL_PAGES 256
 #define AIC_SCB_PAGE_BYTES 32
@@ -144,6 +146,19 @@ struct AIC7880State {
     SCSIBus bus;
     QEMUTimer *seq_timer;
     int64_t seq_deadline_ns;
+    bool seq_clocked;
+    uint8_t seq_clocked_id;
+    bool seq_waiting;
+    bool seq_pure;
+    unsigned seq_history_count;
+    unsigned seq_history_head;
+    uint64_t seq_generation;
+    uint64_t seq_park_count;
+    uint64_t seq_budget_yields;
+    struct {
+        uint16_t pc;
+        uint8_t regs[AIC_REG_SPACE];
+    } seq_history[AIC_SEQ_HISTORY];
     QEMUTimer *selection_timer;
     QEMUTimer *bus_free_timer;
     uint8_t regs[AIC_REG_SPACE];
@@ -237,6 +252,9 @@ void aic7880_set_storage_diagnostic_reporter(PCIDevice *pci,
 }
 
 static void aic7880_run(AIC7880State *s);
+static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size);
+static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
+                          unsigned size);
 static void aic7880_host_dma(AIC7880State *s);
 static void aic7880_process_scsi_data(AIC7880State *s);
 static void aic7880_process_command(AIC7880State *s);
@@ -249,7 +267,7 @@ static int64_t aic7880_seq_period_ns(AIC7880State *s)
 
 static int64_t aic7880_event_time_ns(AIC7880State *s)
 {
-    return s->running ? s->seq_deadline_ns :
+    return s->running && s->seq_clocked ? s->seq_deadline_ns :
                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
@@ -260,8 +278,105 @@ static bool aic7880_seq_runnable(AIC7880State *s)
            !s->error_pending && !s->parity_break_pending;
 }
 
+static bool aic7880_seq_trace_count(uint64_t count)
+{
+    return count && !(count & (count - 1));
+}
+
+static void aic7880_seq_invalidate(AIC7880State *s)
+{
+    if (s->seq_waiting && aic7880_seq_trace_count(s->seq_park_count)) {
+        trace_aic7880_seq_wait(PCI_DEVICE(s)->devfn, "wake", 0,
+                              s->seq_park_count, s->seq_budget_yields);
+    }
+    s->seq_generation++;
+    s->seq_waiting = false;
+    s->seq_pure = false;
+    s->seq_history_count = 0;
+    s->seq_history_head = 0;
+}
+
+static bool aic7880_seq_local_read(uint8_t reg)
+{
+    if ((reg >= 0x20 && reg <= 0x5f) ||
+        (reg >= REG_STCNT && reg < REG_STCNT + 3) ||
+        (reg >= REG_SHADDR && reg < REG_SHADDR + 4) ||
+        (reg >= 0x88 && reg <= 0x8e)) {
+        return true;
+    }
+    switch (reg) {
+    case REG_SCSISEQ:
+    case REG_SXFRCTL0:
+    case REG_SXFRCTL1:
+    case REG_SCSISIGI:
+    case REG_SCSIRATE:
+    case REG_SCSIID:
+    case REG_SSTAT0:
+    case REG_SSTAT1:
+    case REG_SIMODE0:
+    case REG_SIMODE1:
+    case REG_SBLKCTL:
+    case REG_SEQCTL:
+    case REG_ACCUM:
+    case REG_SINDEX:
+    case REG_DINDEX:
+    case REG_FLAGS:
+    case REG_BRKADDR0:
+    case REG_BRKADDR1:
+    case REG_SCBPTR:
+    case REG_SCBCNT:
+    case REG_ALLONES:
+    case REG_ALLZEROS:
+    case REG_FUNCTION1:
+    case REG_QINCNT:
+    case REG_DFCNTRL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool aic7880_seq_local_write(uint8_t reg)
+{
+    return (reg >= 0x20 && reg <= 0x5f) || reg == REG_ACCUM ||
+           reg == REG_SINDEX || reg == REG_DINDEX || reg == REG_SCBPTR ||
+           reg == REG_SCBCNT || reg == REG_FUNCTION1 || reg == REG_ALLZEROS;
+}
+
+static bool aic7880_seq_recurrent(AIC7880State *s, unsigned *span)
+{
+    unsigned head = s->seq_history_head;
+
+    for (unsigned i = 0; i < s->seq_history_count; i++) {
+        if (s->seq_history[i].pc == s->seqaddr &&
+            !memcmp(s->seq_history[i].regs, s->regs, sizeof(s->regs))) {
+            *span = (head + AIC_SEQ_HISTORY - i) % AIC_SEQ_HISTORY;
+            if (!*span) {
+                *span = AIC_SEQ_HISTORY;
+            }
+            return true;
+        }
+    }
+    s->seq_history[head].pc = s->seqaddr;
+    memcpy(s->seq_history[head].regs, s->regs, sizeof(s->regs));
+    s->seq_history_head = (head + 1) % AIC_SEQ_HISTORY;
+    s->seq_history_count = MIN(s->seq_history_count + 1, AIC_SEQ_HISTORY);
+    return false;
+}
+
+static bool aic7880_seq_bus_due(AIC7880State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    return (timer_pending(s->selection_timer) &&
+            timer_expire_time_ns(s->selection_timer) <= (uint64_t)now) ||
+           (timer_pending(s->bus_free_timer) &&
+            timer_expire_time_ns(s->bus_free_timer) <= (uint64_t)now);
+}
+
 static void aic7880_seq_stop(AIC7880State *s, const char *reason)
 {
+    aic7880_seq_invalidate(s);
     if (timer_pending(s->seq_timer) || s->running) {
         trace_aic7880_seq_clock(PCI_DEVICE(s)->devfn, reason,
             s->seq_deadline_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
@@ -404,7 +519,7 @@ static void aic7880_update_scsi_irq(AIC7880State *s)
 
 static void aic7880_error(AIC7880State *s, const char *reason);
 
-static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
+static void aic7880_write_config_impl(PCIDevice *pci, uint32_t addr,
                                   uint32_t val, int len)
 {
     AIC7880State *s = AIC7880(pci);
@@ -438,6 +553,16 @@ static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
             aic7880_process_scsi_data(s);
         }
     }
+}
+
+static void aic7880_write_config(PCIDevice *pci, uint32_t addr,
+                                  uint32_t val, int len)
+{
+    AIC7880State *s = AIC7880(pci);
+
+    aic7880_seq_invalidate(s);
+    aic7880_write_config_impl(pci, addr, val, len);
+    aic7880_run(s);
 }
 
 static uint32_t aic7880_count(AIC7880State *s, unsigned offset)
@@ -675,7 +800,7 @@ static void aic7880_advance_scsi(AIC7880State *s, uint32_t count)
     aic7880_update_scsi_irq(s);
 }
 
-static void aic7880_complete(SCSIRequest *req, size_t residual)
+static void aic7880_complete_impl(SCSIRequest *req, size_t residual)
 {
     AIC7880State *s = req->hba_private;
     bool from_data = s->phase == AIC_PHASE_DATA;
@@ -710,7 +835,16 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
     }
 }
 
-static void aic7880_cancel(SCSIRequest *req)
+static void aic7880_complete(SCSIRequest *req, size_t residual)
+{
+    AIC7880State *s = req->hba_private;
+
+    aic7880_seq_invalidate(s);
+    aic7880_complete_impl(req, residual);
+    aic7880_run(s);
+}
+
+static void aic7880_cancel_impl(SCSIRequest *req)
 {
     AIC7880State *s = req->hba_private;
 
@@ -728,6 +862,15 @@ static void aic7880_cancel(SCSIRequest *req)
         aic7880_pio_retire(s);
         aic7880_update_scsi_irq(s);
     }
+}
+
+static void aic7880_cancel(SCSIRequest *req)
+{
+    AIC7880State *s = req->hba_private;
+
+    aic7880_seq_invalidate(s);
+    aic7880_cancel_impl(req);
+    aic7880_run(s);
 }
 
 static void aic7880_process_scsi_data(AIC7880State *s)
@@ -817,7 +960,7 @@ static void aic7880_process_scsi_data(AIC7880State *s)
     }
 }
 
-static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
+static void aic7880_transfer_data_impl(SCSIRequest *req, uint32_t len)
 {
     AIC7880State *s = req->hba_private;
     bool from_target = req->cmd.mode == SCSI_XFER_FROM_DEV;
@@ -850,6 +993,15 @@ static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
     aic7880_pio_present(s);
     aic7880_update_scsi_irq(s);
     aic7880_process_scsi_data(s);
+}
+
+static void aic7880_transfer_data(SCSIRequest *req, uint32_t len)
+{
+    AIC7880State *s = req->hba_private;
+
+    aic7880_seq_invalidate(s);
+    aic7880_transfer_data_impl(req, len);
+    aic7880_run(s);
 }
 
 static void aic7880_start_request(AIC7880State *s)
@@ -956,7 +1108,7 @@ static void aic7880_bus_free_qualify(AIC7880State *s)
                           s->regs[REG_SSTAT1], s->regs[REG_SIMODE1]);
 }
 
-static void aic7880_bus_free_timer_cb(void *opaque)
+static void aic7880_bus_free_timer_cb_impl(void *opaque)
 {
     AIC7880State *s = opaque;
 
@@ -978,7 +1130,16 @@ static void aic7880_bus_free_timer_cb(void *opaque)
     }
 }
 
-static void aic7880_selection_timer_cb(void *opaque)
+static void aic7880_bus_free_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+
+    aic7880_seq_invalidate(s);
+    aic7880_bus_free_timer_cb_impl(opaque);
+    aic7880_run(s);
+}
+
+static void aic7880_selection_timer_cb_impl(void *opaque)
 {
     AIC7880State *s = opaque;
 
@@ -990,6 +1151,15 @@ static void aic7880_selection_timer_cb(void *opaque)
     s->regs[REG_SSTAT1] |= 0x80;
     aic7880_bus_free_qualify(s);
     aic7880_update_scsi_irq(s);
+}
+
+static void aic7880_selection_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+
+    aic7880_seq_invalidate(s);
+    aic7880_selection_timer_cb_impl(opaque);
+    aic7880_run(s);
 }
 
 static void aic7880_selection_timer_update(AIC7880State *s, uint8_t old)
@@ -1229,7 +1399,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
-static void aic7880_reset_hold(Object *obj, ResetType type)
+static void aic7880_reset_hold_impl(Object *obj, ResetType type)
 {
     AIC7880State *s = AIC7880(obj);
 
@@ -1239,6 +1409,15 @@ static void aic7880_reset_hold(Object *obj, ResetType type)
         pci_set_long(PCI_DEVICE(s)->config + 0x40, 0x600);
     }
     aic7880_chip_reset(s);
+}
+
+static void aic7880_reset_hold(Object *obj, ResetType type)
+{
+    AIC7880State *s = AIC7880(obj);
+
+    aic7880_seq_invalidate(s);
+    aic7880_reset_hold_impl(obj, type);
+    aic7880_run(s);
 }
 
 static uint8_t aic7880_pci_status(AIC7880State *s)
@@ -1488,7 +1667,7 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
     aic7880_update_scsi_irq(s);
 }
 
-static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t aic7880_read_impl(void *opaque, hwaddr addr, unsigned size)
 {
     AIC7880State *s = opaque;
 
@@ -1697,7 +1876,18 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
-static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
+static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
+{
+    AIC7880State *s = opaque;
+    uint64_t value;
+
+    aic7880_seq_invalidate(s);
+    value = aic7880_read_impl(opaque, addr, size);
+    aic7880_run(s);
+    return value;
+}
+
+static void aic7880_write_impl(void *opaque, hwaddr addr, uint64_t value,
                           unsigned size)
 {
     AIC7880State *s = opaque;
@@ -2202,6 +2392,24 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
     }
 }
 
+static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
+                          unsigned size)
+{
+    AIC7880State *s = opaque;
+
+    aic7880_seq_invalidate(s);
+    aic7880_write_impl(opaque, addr, value, size);
+    aic7880_run(s);
+}
+
+static void aic7880_seq_write(AIC7880State *s, uint8_t reg, uint8_t value)
+{
+    if (!aic7880_seq_local_write(reg)) {
+        s->seq_pure = false;
+    }
+    aic7880_write_impl(s, reg, value, 1);
+}
+
 static uint8_t aic7880_seq_read(AIC7880State *s, uint8_t reg)
 {
     uint16_t at = s->seqaddr - 1;
@@ -2209,6 +2417,9 @@ static uint8_t aic7880_seq_read(AIC7880State *s, uint8_t reg)
     uint8_t value, scbptr, scbcnt, fifo_read;
     uint16_t fifo_len;
 
+    if (reg != REG_SINDIR && !aic7880_seq_local_read(reg)) {
+        s->seq_pure = false;
+    }
     if (reg == REG_DINDIR) {
         aic7880_error(s, "sequencer read of write-only DINDIR");
         return 0xff;
@@ -2281,7 +2492,7 @@ static uint8_t aic7880_seq_read(AIC7880State *s, uint8_t reg)
     scbcnt = s->regs[REG_SCBCNT];
     fifo_read = s->host_fifo_read;
     fifo_len = s->host_fifo_len;
-    value = aic7880_read(s, reg, 1);
+    value = aic7880_read_impl(s, reg, 1);
 
     if ((reg >= 0x20 && reg <= 0x5f) || reg == REG_DFDAT ||
         (reg >= REG_SCB_BASE && reg < REG_SCB_BASE + AIC_SCB_PAGE_BYTES)) {
@@ -2419,11 +2630,12 @@ static void aic7880_run(AIC7880State *s)
         aic7880_stop_diagnostic(s);
         return;
     }
-    if (!aic7880_seq_runnable(s) || s->running || timer_pending(s->seq_timer)) {
+    if (!aic7880_seq_runnable(s) || s->running || s->seq_waiting ||
+        timer_pending(s->seq_timer)) {
         return;
     }
     s->seq_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                         aic7880_seq_period_ns(s);
+                         (s->seq_clocked ? aic7880_seq_period_ns(s) : 0);
     timer_mod(s->seq_timer, s->seq_deadline_ns);
     trace_aic7880_seq_clock(PCI_DEVICE(s)->devfn, "start",
         s->seq_deadline_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
@@ -2431,9 +2643,8 @@ static void aic7880_run(AIC7880State *s)
         s->regs[REG_SEQCTL], s->regs[REG_INTSTAT]);
 }
 
-static void aic7880_seq_timer_cb(void *opaque)
+static void aic7880_execute_one(AIC7880State *s)
 {
-    AIC7880State *s = opaque;
     uint32_t insn;
     uint16_t at = s->seqaddr;
     uint8_t op, imm, result;
@@ -2450,8 +2661,6 @@ static void aic7880_seq_timer_cb(void *opaque)
     if (!aic7880_seq_runnable(s)) {
         return;
     }
-    s->running = true;
-
     if (at >= AIC_SEQ_INSNS) {
         aic7880_error(s, "sequencer ran past instruction RAM");
         goto done;
@@ -2471,6 +2680,9 @@ static void aic7880_seq_timer_cb(void *opaque)
     imm = insn;
     src = (insn >> 8) & 0xff;
     dst = (insn >> 16) & 0xff;
+    if (op == 0x0b || (op < 8 && (insn & (1u << 24)))) {
+        s->seq_pure = false;
+    }
     if (op >= 0x08) {
         uint16_t target = (insn >> 16) & 0x1ff;
         uint8_t mask = imm ? imm : s->regs[REG_ACCUM];
@@ -2487,7 +2699,7 @@ static void aic7880_seq_timer_cb(void *opaque)
         case 0x0a: /* JNC */
         case 0x0b: /* CALL */
             value |= imm;
-            aic7880_write(s, REG_SINDEX, value, 1);
+            aic7880_seq_write(s, REG_SINDEX, value);
             /* Selected transfer flag policy; fitted effects are unknown. */
             s->regs[REG_FLAGS] = (updated_flags & FLAGS_CARRY) |
                                  (value == 0 ? FLAGS_ZERO : 0);
@@ -2567,6 +2779,9 @@ static void aic7880_seq_timer_cb(void *opaque)
         dst = target;
         indirect_dest = true;
     }
+    if (!aic7880_seq_local_write(dst)) {
+        s->seq_pure = false;
+    }
     source = src == REG_SINDIR ? s->regs[REG_SINDEX] : src;
     scb_counter = s->regs[REG_SCBCNT];
     scb_rmw = s->external_scb_ram && (scb_counter & 0x80) &&
@@ -2639,7 +2854,7 @@ static void aic7880_seq_timer_cb(void *opaque)
             /* One logical access reads and writes the selected byte. */
             s->regs[REG_SCBCNT] = scb_counter;
         }
-        aic7880_write(s, dst, result, 1);
+        aic7880_seq_write(s, dst, result);
     }
     if (indirect_dest && s->error_serial == error_before) {
         s->regs[REG_DINDEX]++;
@@ -2657,12 +2872,70 @@ static void aic7880_seq_timer_cb(void *opaque)
     }
 
 done:
-    if (aic7880_seq_runnable(s)) {
-        /* Keep device time independent of timer dispatch latency. */
-        s->seq_deadline_ns += aic7880_seq_period_ns(s);
-        timer_mod(s->seq_timer, s->seq_deadline_ns);
-    } else {
+    return;
+}
+
+static void aic7880_seq_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+    unsigned budget = s->seq_clocked ? 1 : AIC_SEQ_WORK_BUDGET;
+    unsigned executed = 0;
+
+    if (!aic7880_seq_runnable(s)) {
+        return;
+    }
+    s->running = true;
+    while (executed < budget) {
+        unsigned span;
+        uint64_t generation = s->seq_generation;
+
+        if (!s->seq_clocked && aic7880_seq_bus_due(s)) {
+            break;
+        }
+        s->seq_pure = true;
+        aic7880_execute_one(s);
+        executed++;
+        if (!aic7880_seq_runnable(s)) {
+            break;
+        }
+        if (!s->seq_clocked) {
+            if (!s->seq_pure || generation != s->seq_generation) {
+                s->seq_history_count = s->seq_history_head = 0;
+            } else if (aic7880_seq_recurrent(s, &span)) {
+                s->seq_waiting = true;
+                if (s->seq_park_count != UINT64_MAX) {
+                    s->seq_park_count++;
+                }
+                if (aic7880_seq_trace_count(s->seq_park_count)) {
+                    trace_aic7880_seq_wait(PCI_DEVICE(s)->devfn, "park", span,
+                                          s->seq_park_count,
+                                          s->seq_budget_yields);
+                }
+                break;
+            }
+        }
+    }
+    if (!aic7880_seq_runnable(s)) {
         aic7880_seq_stop(s, "instruction-pause");
+    } else if (!s->seq_waiting) {
+        if (s->seq_clocked) {
+            /* Keep reference time independent of dispatch latency. */
+            s->seq_deadline_ns += aic7880_seq_period_ns(s);
+        } else {
+            /* Scheduler backoff, not an instruction or bus latency. */
+            s->seq_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1;
+            if (executed == budget) {
+                if (s->seq_budget_yields != UINT64_MAX) {
+                    s->seq_budget_yields++;
+                }
+                if (aic7880_seq_trace_count(s->seq_budget_yields)) {
+                    trace_aic7880_seq_wait(PCI_DEVICE(s)->devfn, "budget", 0,
+                                          s->seq_park_count,
+                                          s->seq_budget_yields);
+                }
+            }
+        }
+        timer_mod(s->seq_timer, s->seq_deadline_ns);
     }
     s->running = false;
 }
@@ -2714,7 +2987,7 @@ static MemTxResult aic7880_external_read(void *opaque, hwaddr addr,
     return MEMTX_OK;
 }
 
-static MemTxResult aic7880_external_write(void *opaque, hwaddr addr,
+static MemTxResult aic7880_external_write_impl(void *opaque, hwaddr addr,
                                          uint64_t value, unsigned size,
                                          MemTxAttrs attrs)
 {
@@ -2722,7 +2995,7 @@ static MemTxResult aic7880_external_write(void *opaque, hwaddr addr,
     unsigned reg = addr & (AIC_REG_SPACE - 1);
 
     if (size == 1) {
-        aic7880_write(s, addr, value, 1);
+        aic7880_write_impl(s, addr, value, 1);
         return MEMTX_OK;
     }
     if (size != 4 || (addr & 3) || reg < REG_SCB_BASE ||
@@ -2732,9 +3005,22 @@ static MemTxResult aic7880_external_write(void *opaque, hwaddr addr,
         return MEMTX_ERROR;
     }
     for (unsigned lane = 0; lane < 4; lane++) {
-        aic7880_write(s, addr, value >> (lane * 8), 1);
+        aic7880_write_impl(s, addr, value >> (lane * 8), 1);
     }
     return MEMTX_OK;
+}
+
+static MemTxResult aic7880_external_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    AIC7880State *s = opaque;
+    MemTxResult result;
+
+    aic7880_seq_invalidate(s);
+    result = aic7880_external_write_impl(opaque, addr, value, size, attrs);
+    aic7880_run(s);
+    return result;
 }
 
 static const MemoryRegionOps aic7880_external_ops = {
@@ -2762,8 +3048,7 @@ static const MemoryRegionOps aic7880_regs_ops = {
 static int aic7880_pre_save(void *opaque)
 {
     AIC7880State *s = opaque;
-
-    return ((s->signal_outputs & 1) || s->req || s->running ||
+    int ret = ((s->signal_outputs & 1) || s->req || s->running ||
             s->scsi_data_len || s->command_fifo_stale ||
             s->phase == AIC_PHASE_DATA ||
             (s->selected && s->host_fifo_len) || s->host_dma_active ||
@@ -2773,9 +3058,15 @@ static int aic7880_pre_save(void *opaque)
             s->peer_scsi_irq_latched || s->initiator_atn ||
             (s->regs[REG_SSTAT1] & 0x04) ||
             s->phase == AIC_PHASE_MSG_OUT) ? -EBUSY : 0;
+
+    if (!ret && s->seq_waiting) {
+        aic7880_seq_invalidate(s);
+        aic7880_run(s);
+    }
+    return ret;
 }
 
-static void aic7880_peer_event_set(Object *obj, const char *value,
+static void aic7880_peer_event_set_impl(Object *obj, const char *value,
                                    Error **errp)
 {
     AIC7880State *s = AIC7880(obj);
@@ -2939,6 +3230,16 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
     error_setg(errp, "unsupported synthetic SCSI peer event");
 }
 
+static void aic7880_peer_event_set(Object *obj, const char *value,
+                                   Error **errp)
+{
+    AIC7880State *s = AIC7880(obj);
+
+    aic7880_seq_invalidate(s);
+    aic7880_peer_event_set_impl(obj, value, errp);
+    aic7880_run(s);
+}
+
 static int aic7880_post_load(void *opaque, int version_id)
 {
     AIC7880State *s = opaque;
@@ -3018,6 +3319,7 @@ static int aic7880_post_load(void *opaque, int version_id)
     s->req = NULL;
     s->scsi_data_len = s->scsi_data_pos = 0;
     s->running = false;
+    aic7880_seq_invalidate(s);
     s->error_serial = 0;
     aic7880_fifo_status(s);
     aic7880_update_scsi_irq(s);
@@ -3044,6 +3346,7 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT16(seqaddr, AIC7880State),
         VMSTATE_TIMER_PTR(seq_timer, AIC7880State),
         VMSTATE_INT64(seq_deadline_ns, AIC7880State),
+        VMSTATE_UINT8_EQUAL(seq_clocked_id, AIC7880State),
         VMSTATE_TIMER_PTR(selection_timer, AIC7880State),
         VMSTATE_TIMER_PTR(bus_free_timer, AIC7880State),
         VMSTATE_BOOL(selection_pending, AIC7880State),
@@ -3101,7 +3404,7 @@ static const SCSIBusInfo aic7880_scsi_info = {
     .cancel = aic7880_cancel,
 };
 
-static void aic7880_test_pci_error_set(Object *obj, const char *value,
+static void aic7880_test_pci_error_set_impl(Object *obj, const char *value,
                                        Error **errp)
 {
     PCIDevice *pci = PCI_DEVICE(obj);
@@ -3122,7 +3425,17 @@ static void aic7880_test_pci_error_set(Object *obj, const char *value,
     aic7880_update_irq(s);
 }
 
-static void aic7880_test_scb_parity_set(Object *obj, const char *value,
+static void aic7880_test_pci_error_set(Object *obj, const char *value,
+                                       Error **errp)
+{
+    AIC7880State *s = AIC7880(obj);
+
+    aic7880_seq_invalidate(s);
+    aic7880_test_pci_error_set_impl(obj, value, errp);
+    aic7880_run(s);
+}
+
+static void aic7880_test_scb_parity_set_impl(Object *obj, const char *value,
                                         Error **errp)
 {
     AIC7880State *s = AIC7880(obj);
@@ -3136,6 +3449,16 @@ static void aic7880_test_scb_parity_set(Object *obj, const char *value,
         return;
     }
     s->scb_parity[(page % pages) * AIC_SCB_PAGE_BYTES + offset] ^= 1;
+}
+
+static void aic7880_test_scb_parity_set(Object *obj, const char *value,
+                                        Error **errp)
+{
+    AIC7880State *s = AIC7880(obj);
+
+    aic7880_seq_invalidate(s);
+    aic7880_test_scb_parity_set_impl(obj, value, errp);
+    aic7880_run(s);
 }
 
 static char *aic7880_test_selection_get(Object *obj, Error **errp)
@@ -3154,6 +3477,7 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
     AIC7880State *s = AIC7880(pci);
     unsigned dspc_windows;
 
+    s->seq_clocked_id = s->seq_clocked;
     if (s->external_scb_ram) {
         if (s->external_scb_size != KiB && s->external_scb_size != 2 * KiB &&
             s->external_scb_size != 4 * KiB &&
@@ -3258,6 +3582,7 @@ static void aic7880_exit(PCIDevice *pci)
 }
 
 static const Property aic7880_properties[] = {
+    DEFINE_PROP_BOOL("x-sequencer-clocked", AIC7880State, seq_clocked, false),
     DEFINE_PROP_BOOL("external-scb-ram", AIC7880State, external_scb_ram, false),
     DEFINE_PROP_UINT32("external-scb-size", AIC7880State, external_scb_size, 0),
     DEFINE_PROP_UINT8("external-scb-width", AIC7880State,
