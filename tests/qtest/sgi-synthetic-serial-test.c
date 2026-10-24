@@ -59,7 +59,6 @@ typedef struct TopologyExtra {
 
 static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
-    { "fuel-vpro", FUEL_IDENTITY },
     { "origin350", ",ip53-experimental=on", .io9 = true },
     { "onyx350-compat", ",ip53-experimental=on", .io9 = true },
     { "onyx4-host-serial-compat", ",ip53-experimental=on", .io9 = true },

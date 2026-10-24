@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Revision G Fuel board with one processor and minimum supported memory.
+# Revision G Fuel board with one processor, minimum supported memory and
+# its VPro graphics slot.
 layer_version: 1
 layer:
   kind: product
   id: fuel
-  requires: {assembly: ip34, module: fuel-base-module}
+  requires: {assembly: ip34}
   topology:
     min_nodes: 1
     max_nodes: 1
@@ -20,6 +21,24 @@ layer:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0]
   memory_kits_per_node: [fuel-512-test-map]
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes).
+  graphics:
+    max_pipes: 1
+    headless: true
+    slots:
+      - name: widget-13
+        description: "the graphics connector at XBridge widget 13"
+        placement: {slot: widget-13}
+        default:
+          family: odyssey
+          product: v12
+        families:
+          - family: odyssey
+            products:
+              - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1726"}
   data:
     machine:
       name: Fuel
@@ -36,8 +55,11 @@ layer:
         a stock Fuel PROM run must report 512 MiB and boot without a memory
         error. A revision-matched wiring record or register capture would
         settle the physical mapping. Widget 14's Intel 82550 in the public
-        OpenBSD capture is an add-in card and is absent here. Widget 13's
-        VPro is also absent from this initial serial configuration. The
+        OpenBSD capture is an add-in card and is absent here. Widget 13 is
+        the VPro graphics slot, the position a Fuel IRIX inventory and an
+        OpenBSD capture both report; the default pipe there is the Odyssey
+        device's V12, where the observed Fuel carried a V10, and -vga none
+        leaves it empty. The
         selected revision G has a documented Lucent OHCI identity at PCI
         device 5. Its widget 15 placement is inferred from another Fuel
         capture with an unidentified board revision. Other Fuel revisions
@@ -164,10 +186,11 @@ layer:
           - {component: bedrock, serial: "0x51454d554e00", reason: 'Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.'}
           - {component: xbridge, serial: "0x51454d555800", reason: 'Synthetic XBridge identity X0, carrying the "QEMU" marker; not hardware evidence.'}
           - {component: ioc3, serial: "0x5e7454d55000", reason: 'Synthetic IOC3 identity 0. Its Ethernet-address part keeps the 0x5e7 UniqueWare code drivers match on, then carries the "EMU" marker; not hardware evidence.'}
+          - {component: vpro-v12, serial: "0x51454d554700", reason: 'Synthetic graphics board identity G0, carrying the "QEMU" marker; catalogue metadata only, since the Odyssey device supplies its own NIC serial.'}
         initially_operational_crossbow_links:
           - component: xbridge-crossbar
-            widgets: [14, 15]
-            reason: Both PCI bridge heads are present on the selected XBridge; startup health is emulator policy pending a Fuel reset test.
+            widgets: [13, 14, 15]
+            reason: Both PCI bridge heads and the graphics board are present on the selected XBridge; startup health is emulator policy pending a Fuel reset test. Widget 13's port stays empty until a pipe attaches, so with -vga none it reports no widget.
       harness:
         # Preserve the existing diagnostic launch recipe.
         smdk:
