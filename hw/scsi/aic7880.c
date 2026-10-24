@@ -161,6 +161,8 @@ struct AIC7880State {
     uint8_t cdb[16];
     uint8_t cdb_len;
     uint8_t cdb_need;
+    bool command_dma_wait;
+    bool command_fifo_stale;
     uint8_t target;
     uint8_t initiator;
     bool selection_wide;
@@ -235,6 +237,21 @@ void aic7880_set_storage_diagnostic_reporter(PCIDevice *pci,
 static void aic7880_run(AIC7880State *s);
 static void aic7880_host_dma(AIC7880State *s);
 static void aic7880_process_scsi_data(AIC7880State *s);
+static void aic7880_process_command(AIC7880State *s);
+
+static bool aic7880_command_dma_owned(AIC7880State *s)
+{
+    return s->selected && s->phase == AIC_PHASE_COMMAND &&
+           (s->regs[REG_DFCNTRL] & 0x30);
+}
+
+static void aic7880_dma_done(AIC7880State *s)
+{
+    s->regs[REG_SSTAT0] &= ~1;
+    if ((s->regs[REG_SSTAT0] & 4) && (s->regs[REG_DFSTATUS] & DFS_HDONE)) {
+        s->regs[REG_SSTAT0] |= 1;
+    }
+}
 
 static bool aic7880_pio_pending(AIC7880State *s)
 {
@@ -281,7 +298,8 @@ static void aic7880_pio_present(AIC7880State *s)
     if (aic7880_pio_pending(s)) {
         s->regs[REG_SSTAT1] |= 1;
         s->regs[REG_SCSISIGI] |= 2;
-        if (s->regs[REG_SXFRCTL0] & 8) {
+        if ((s->regs[REG_SXFRCTL0] & 8) &&
+            !aic7880_command_dma_owned(s)) {
             s->regs[REG_SSTAT0] |= 2;
         }
         aic7880_pio_phase(s);
@@ -290,6 +308,10 @@ static void aic7880_pio_present(AIC7880State *s)
                s->req && s->scsi_data_pos < s->scsi_data_len) {
         /* DATA requests are observable even when DMA owns their handshake. */
         s->regs[REG_SCSISIGI] |= 2;
+        if (s->command_dma_wait) {
+            s->regs[REG_SSTAT1] |= 1;
+            aic7880_pio_phase(s);
+        }
     }
 }
 
@@ -432,6 +454,7 @@ static void aic7880_fifo_status(AIC7880State *s)
         status |= DFS_FIFOEMP;
     }
     s->regs[REG_DFSTATUS] = status;
+    aic7880_dma_done(s);
 }
 
 static void aic7880_stop_diagnostic(AIC7880State *s)
@@ -509,7 +532,13 @@ static void aic7880_host_dma(AIC7880State *s)
     bool success;
 
     aic7880_fifo_status(s);
-    if ((s->req && s->phase != AIC_PHASE_DATA) ||
+    if (s->phase == AIC_PHASE_COMMAND && s->selected && !s->req &&
+        !from_memory && count && (control & 0x38)) {
+        aic7880_error(s, "COMMAND DMA direction is unsupported");
+        return;
+    }
+    if ((s->phase == AIC_PHASE_DATA && s->command_dma_wait) ||
+        (s->req && s->phase != AIC_PHASE_DATA) ||
         s->peer_nexus_disconnected || !s->host_request_pending ||
         (pci_get_word(pci->config + PCI_STATUS) &
          (PCI_STATUS_REC_MASTER_ABORT | PCI_STATUS_REC_TARGET_ABORT)) ||
@@ -520,10 +549,11 @@ static void aic7880_host_dma(AIC7880State *s)
     }
     /* A short response can leave receive bytes for a STATUS flush. */
     if ((control & 0x30) && !s->req &&
+        !(s->selected && s->phase == AIC_PHASE_COMMAND && from_memory) &&
         (from_memory || s->phase != AIC_PHASE_STATUS)) {
         return;
     }
-    if ((s->selected && !s->req &&
+    if ((s->selected && !s->req && s->phase != AIC_PHASE_COMMAND &&
          (from_memory || s->phase != AIC_PHASE_STATUS)) ||
         count > UINT32_MAX - addr) {
         aic7880_error(s, "unsupported host-only DMA transfer");
@@ -588,7 +618,8 @@ static void aic7880_advance_scsi(AIC7880State *s, uint32_t count)
     aic7880_set_count(s, REG_STCNT, stcnt - count);
     if (stcnt == count) {
         s->regs[REG_SSTAT0] |= 0x04;
-        if (s->host_fifo_len && !(s->regs[REG_SBLKCTL] & SBLK_AUTOFLUSHDIS)) {
+        if (s->phase == AIC_PHASE_DATA && s->host_fifo_len &&
+            !(s->regs[REG_SBLKCTL] & SBLK_AUTOFLUSHDIS)) {
             s->regs[REG_DFCNTRL] |= DFC_FIFOFLUSH;
         }
     }
@@ -605,7 +636,7 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
     s->phase = AIC_PHASE_STATUS;
     aic7880_pio_present(s);
     if (s->regs[REG_SSTAT1] & 0x10) {
-        if (s->host_fifo_len &&
+        if (from_data && s->host_fifo_len &&
             !(s->regs[REG_SBLKCTL] & SBLK_AUTOFLUSHDIS)) {
             s->regs[REG_DFCNTRL] |= DFC_FIFOFLUSH;
         }
@@ -614,11 +645,7 @@ static void aic7880_complete(SCSIRequest *req, size_t residual)
                !(s->regs[REG_SBLKCTL] & SBLK_AUTOFLUSHDIS)) {
         aic7880_error(s, "phase change without mismatch is unsupported");
     }
-    if (s->regs[REG_SXFRCTL0] & 0x08) {
-        s->regs[REG_SSTAT0] |= 0x02;
-    } else {
-        s->regs[REG_SSTAT0] &= ~0x02;
-    }
+    s->command_dma_wait = false;
     s->phase = AIC_PHASE_STATUS;
     if (!s->host_fifo_len) {
         s->regs[REG_DFCNTRL] &= ~DFC_FIFOFLUSH;
@@ -654,8 +681,11 @@ static void aic7880_cancel(SCSIRequest *req)
 
 static void aic7880_process_scsi_data(AIC7880State *s)
 {
-    SCSIRequest *req = s->req;
+    SCSIRequest *req;
     bool from_target;
+
+    aic7880_process_command(s);
+    req = s->req;
 
     if (!req || !s->scsi_data_len || s->phase != AIC_PHASE_DATA ||
         s->peer_nexus_disconnected) {
@@ -663,6 +693,14 @@ static void aic7880_process_scsi_data(AIC7880State *s)
     }
     if ((s->regs[REG_DFCNTRL] & 0x30) != 0x30) {
         return;
+    }
+    if (s->command_dma_wait) {
+        if (s->expected_phase != (s->regs[REG_SCSISIGI] & 0xe0) ||
+            !!(s->regs[REG_DFCNTRL] & 4) ==
+            (req->cmd.mode == SCSI_XFER_FROM_DEV) || s->command_fifo_stale) {
+            return;
+        }
+        s->command_dma_wait = false;
     }
     if (s->regs[REG_SCSIRATE] & 0x8f) {
         aic7880_error(s, "synchronous or wide DATA is unsupported");
@@ -774,6 +812,76 @@ static void aic7880_start_request(AIC7880State *s)
     }
 }
 
+static bool aic7880_collect_cdb(AIC7880State *s, uint8_t value)
+{
+    if (!s->selected || s->req || s->cdb_len >= sizeof(s->cdb) ||
+        (s->cdb_need && s->cdb_len == s->cdb_need)) {
+        aic7880_error(s, "CDB byte without an available selected command");
+        return false;
+    }
+    if (!s->cdb_len) {
+        int length = scsi_cdb_length(&value);
+
+        if (length != 6 && length != 10 && length != 12 && length != 16) {
+            aic7880_error(s, "unsupported CDB length");
+            return false;
+        }
+        s->cdb_need = length;
+    }
+    s->cdb[s->cdb_len++] = value;
+    return true;
+}
+
+static void aic7880_process_command(AIC7880State *s)
+{
+    uint32_t count;
+
+    if (!s->selected || s->phase != AIC_PHASE_COMMAND || s->req ||
+        s->error_pending || !(s->regs[REG_DFCNTRL] & 0x10)) {
+        return;
+    }
+    aic7880_pio_present(s);
+    count = aic7880_count(s, REG_STCNT);
+    if (!count) {
+        s->regs[REG_SSTAT0] |= 4;
+        aic7880_dma_done(s);
+        return;
+    }
+    if (!(s->regs[REG_DFCNTRL] & 0x20)) {
+        return;
+    }
+    if (!(s->regs[REG_DFCNTRL] & 4)) {
+        aic7880_error(s, "COMMAND DMA direction is unsupported");
+        return;
+    }
+    if (s->expected_phase != 0x80) {
+        aic7880_update_scsi_irq(s);
+        return;
+    }
+    while (count && !s->error_pending) {
+        aic7880_host_dma(s);
+        if (s->error_pending || !s->host_fifo_len) {
+            break;
+        }
+        if (!aic7880_collect_cdb(s, s->host_fifo[s->host_fifo_read])) {
+            break;
+        }
+        s->host_fifo_read++;
+        s->host_fifo_len--;
+        s->command_dma_wait = true;
+        aic7880_advance_scsi(s, 1);
+        aic7880_fifo_status(s);
+        count--;
+        if (s->cdb_len == s->cdb_need) {
+            /* Publish COMMAND progress before the target can call back. */
+            s->command_fifo_stale = s->host_fifo_len != 0;
+            aic7880_start_request(s);
+            return;
+        }
+    }
+    aic7880_update_scsi_irq(s);
+}
+
 static void aic7880_release_identity(AIC7880State *s)
 {
     s->identity_valid = false;
@@ -873,6 +981,8 @@ static void aic7880_select(AIC7880State *s)
     s->lun = 0;
     s->disconnect_allowed = false;
     s->cdb_len = s->cdb_need = 0;
+    s->command_dma_wait = false;
+    s->command_fifo_stale = false;
     s->initiator_atn = false;
     s->identify_seen = false;
     s->message_out_len = 0;
@@ -978,6 +1088,8 @@ static void aic7880_scsi_reset(AIC7880State *s)
     aic7880_manual_clear(s);
     s->expected_phase = 0;
     s->cdb_len = s->cdb_need = 0;
+    s->command_dma_wait = false;
+    s->command_fifo_stale = false;
     s->regs[REG_SCSISEQ] = 1;
     s->regs[REG_SCSISIGI] = 0;
     s->regs[REG_SSTAT0] = 0;
@@ -1001,6 +1113,8 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->parity_break_pending = false;
     s->error_serial = 0;
     s->cdb_len = s->cdb_need = s->target = 0;
+    s->command_dma_wait = false;
+    s->command_fifo_stale = false;
     s->phase = AIC_PHASE_BUS_FREE;
     s->signal_outputs = 0;
     aic7880_manual_clear(s);
@@ -1407,7 +1521,6 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_STCNT + 1:
     case REG_STCNT + 2:
     case REG_SCSIRATE:
-    case REG_SSTAT0:
     case REG_SSTAT1:
     case REG_SIMODE0:
     case REG_SIMODE1:
@@ -1423,6 +1536,9 @@ static uint64_t aic7880_read(void *opaque, hwaddr addr, unsigned size)
     case REG_SCBPTR:
     case REG_SCBCNT:
     case REG_INTSTAT:
+        return s->regs[addr];
+    case REG_SSTAT0:
+        aic7880_dma_done(s);
         return s->regs[addr];
     case REG_SCSIBUSL:
         if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
@@ -1550,11 +1666,18 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->regs[REG_SHADDR + addr - 0x88] = val;
         }
         if (addr >= REG_STCNT && addr < REG_STCNT + 3) {
-            s->regs[REG_SSTAT0] &= ~0x04;
+            if (aic7880_count(s, REG_STCNT)) {
+                s->regs[REG_SSTAT0] &= ~0x04;
+            } else if (aic7880_command_dma_owned(s) &&
+                       (s->regs[REG_DFCNTRL] & 0x10)) {
+                s->regs[REG_SSTAT0] |= 0x04;
+            }
+            aic7880_dma_done(s);
             aic7880_update_scsi_irq(s);
         }
-        if (addr >= 0x8c && addr <= 0x8e) {
-            s->regs[REG_DFSTATUS] &= ~0x08;
+        if (addr >= 0x8c && addr <= 0x8e && aic7880_count(s, 0x8c)) {
+            s->regs[REG_DFSTATUS] &= ~DFS_HDONE;
+            aic7880_dma_done(s);
         }
         return;
     }
@@ -1666,6 +1789,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         aic7880_signal_write(s, val);
+        aic7880_process_scsi_data(s);
         break;
     case REG_SBLKCTL:
         if (val & ~0xea) {
@@ -1698,14 +1822,19 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             !(val & (DFC_FIFORESET | 0x04))) {
             val |= DFC_FIFOFLUSH;
         }
+        if (!(val & 0x10)) {
+            s->regs[REG_SSTAT0] &= ~4;
+        }
         s->regs[addr] = val & ~DFC_FIFORESET;
+        aic7880_pio_present(s);
         if (val & DFC_FIFORESET) {
-            if (s->host_fifo_len && s->req) {
+            if (s->host_fifo_len && s->req && !s->command_fifo_stale) {
                 scsi_req_cancel(s->req);
             }
             s->host_fifo_read = s->regs[0x88] & 7;
             s->host_fifo_write = s->host_fifo_read;
             s->host_fifo_len = 0;
+            s->command_fifo_stale = false;
             s->host_request_pending = false;
             s->regs[REG_DFSTATUS] =
                 (s->regs[REG_DFSTATUS] & ~DFS_HDONE) |
@@ -1721,6 +1850,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         aic7880_host_dma(s);
         aic7880_process_scsi_data(s);
+        aic7880_update_scsi_irq(s);
         break;
     case REG_DFDAT:
         if ((s->regs[REG_DFCNTRL] & 0x30) || s->req ||
@@ -1831,6 +1961,10 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     }
     case REG_SCSIDATL:
+        if (aic7880_command_dma_owned(s)) {
+            aic7880_error(s, "command PIO while DMA owns the byte path");
+            break;
+        }
         if (!s->running && !(s->regs[REG_HCNTRL] & HOST_PAUSE)) {
             aic7880_error(s, "unpaused host SCSIDATL write");
             break;
@@ -1869,25 +2003,11 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_error(s, "command PIO outside COMMAND phase");
             break;
         }
-        if (s->req ||
-            (s->cdb_need && s->cdb_len == s->cdb_need)) {
-            aic7880_error(s, "CDB byte while command is active");
-            break;
-        }
-        if (!s->selected || s->cdb_len >= sizeof(s->cdb)) {
-            aic7880_error(s, "CDB byte without selected target");
-            break;
-        }
         s->regs[REG_SSTAT0] &= ~0x02;
         s->regs[REG_SSTAT1] &= ~0x11;
         s->regs[REG_SCSISIGI] &= ~0x02;
-        s->cdb[s->cdb_len++] = val;
-        if (s->cdb_len == 1) {
-            s->cdb_need = scsi_cdb_length(s->cdb);
-            if (!s->cdb_need || s->cdb_need > sizeof(s->cdb)) {
-                aic7880_error(s, "unsupported CDB length");
-                break;
-            }
+        if (!aic7880_collect_cdb(s, val)) {
+            break;
         }
         if (s->cdb_len == s->cdb_need) {
             aic7880_start_request(s);
@@ -2561,7 +2681,7 @@ static int aic7880_pre_save(void *opaque)
     AIC7880State *s = opaque;
 
     return ((s->signal_outputs & 1) || s->req || s->running ||
-            s->scsi_data_len ||
+            s->scsi_data_len || s->command_fifo_stale ||
             s->phase == AIC_PHASE_DATA ||
             (s->selected && s->host_fifo_len) || s->host_dma_active ||
             ((s->regs[REG_DFCNTRL] & 8) && aic7880_count(s, 0x8c)) ||
@@ -2744,6 +2864,15 @@ static int aic7880_post_load(void *opaque, int version_id)
          (s->phase != AIC_PHASE_MSG_IN || !aic7880_message_complete(s)))) {
         return -EINVAL;
     }
+    if ((s->cdb_len && (!s->cdb_need || s->cdb_len > s->cdb_need ||
+                        scsi_cdb_length(s->cdb) != s->cdb_need)) ||
+        (!s->cdb_len && s->cdb_need) ||
+        (s->command_dma_wait &&
+         (!s->selected || s->phase != AIC_PHASE_COMMAND || !s->cdb_len ||
+          s->cdb_len == s->cdb_need)) ||
+        s->command_fifo_stale) {
+        return -EINVAL;
+    }
     if (s->seqaddr > AIC_SEQ_INSNS ||
         s->seqbyte >= 4 ||
         s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 15 ||
@@ -2836,6 +2965,8 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8_ARRAY(cdb, AIC7880State, 16),
         VMSTATE_UINT8(cdb_len, AIC7880State),
         VMSTATE_UINT8(cdb_need, AIC7880State),
+        VMSTATE_BOOL(command_dma_wait, AIC7880State),
+        VMSTATE_BOOL(command_fifo_stale, AIC7880State),
         VMSTATE_UINT8(target, AIC7880State),
         VMSTATE_UINT8(initiator, AIC7880State),
         VMSTATE_BOOL(selection_wide, AIC7880State),
