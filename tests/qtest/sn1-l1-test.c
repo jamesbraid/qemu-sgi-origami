@@ -6870,6 +6870,18 @@ static void vbrick_query_check(QTestState *s)
     g_assert_cmphex(reply[15], ==, 0x34);
 }
 
+static void vbrick_expect_bool(QTestState *s, const char *path,
+                                const char *property, bool value)
+{
+    QDict *reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    g_assert_cmpint(qdict_get_bool(reply, "return"), ==, value);
+    qobject_unref(reply);
+}
+
 static void test_vbrick_discovery_reference(void)
 {
     g_autofree char *prom = NULL;
@@ -6881,6 +6893,16 @@ static void test_vbrick_discovery_reference(void)
     g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
     close(fd);
     s = vbrick_start(prom, "");
+    vbrick_expect_bool(s, "/machine", "origin300-l1cmd-compat", false);
+    vbrick_expect_bool(s, "/machine/node0/l1", "o300-l1cmd-compat", false);
+    {
+        uint8_t request[59];
+        size_t length = o300_irouter_request(request, "brick ");
+
+        /* Without the opt-in, the generic router reply has chunk type zero. */
+        send_frame(s, request, length, false);
+        expect_router_error(s, 16);
+    }
     reply = qtest_qmp(s,
         "{'execute':'qom-get','arguments':{'path':"
         "'" VBRICK_L1 "','property':'brick-type'}}");
@@ -6911,6 +6933,36 @@ static void test_vbrick_discovery_reference(void)
     vbrick_expect(s, 22, -104);
     qtest_system_reset(s);
     qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+    vbrick_query_check(s);
+    qtest_quit(s);
+    g_unlink(prom);
+}
+
+static void test_vbrick_compute_irouter_opt_in(void)
+{
+    g_autofree char *prom = NULL;
+    int fd = g_file_open_tmp("vbrick-l1-prom-XXXXXX", &prom, NULL);
+    QTestState *s;
+    uint8_t request[59], inner[IROUTER_FRAGMENT_MAX], channel;
+    size_t length;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
+    close(fd);
+    s = vbrick_start(prom, "-machine origin300-l1cmd-compat=on");
+    vbrick_expect_bool(s, "/machine", "origin300-l1cmd-compat", true);
+    vbrick_expect_bool(s, "/machine/node0/l1", "o300-l1cmd-compat", true);
+    vbrick_expect_bool(s, VBRICK_L1, "o300-l1cmd-compat", false);
+    vbrick_expect_bool(s, VBRICK_L1, "irouter-compat", false);
+
+    send_frame(s, request, o300_irouter_request(request, "brick "), false);
+    /* The existing consumer checks every 0x3001/0x3003 chunk header. */
+    length = irouter_receive(s, BASE, &channel, inner, sizeof(inner));
+    g_assert_cmphex(channel, ==, 0x30);
+    g_assert_cmphex(ldl_be_p(inner + 8), ==, 0x00041215);
+    g_assert_cmphex(ldl_be_p(inner + 12), ==, 0x00041003);
+    g_assert_nonnull(g_strstr_len((char *)inner + 36, length - 36,
+                                  "type: C (IP45) [EMU-UNKNOWN flash]"));
     vbrick_query_check(s);
     qtest_quit(s);
     g_unlink(prom);
@@ -7016,6 +7068,8 @@ int main(int argc, char **argv)
                    test_vbrick_discovery_migration);
     qtest_add_func("sn1/l1/vbrick/profile-mismatch",
                    test_vbrick_profile_mismatch);
+    qtest_add_func("sn1/l1/vbrick/compute-irouter-opt-in",
+                   test_vbrick_compute_irouter_opt_in);
     qtest_add_func("sn1/l1/vbrick/compat-refusal",
                    test_vbrick_compat_refusal);
     qtest_add_func("sn1/l1/vbrick/duplicate-location",
