@@ -1834,7 +1834,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             aic7880_error(s, "DMA enable during a manual byte");
             break;
         }
-        if ((val & ~0x3f) || (val & 3) == 3) {
+        if (val & ~0x7f) {
             aic7880_error(s, "unsupported DFCNTRL control");
             break;
         }
