@@ -496,7 +496,10 @@ class BedrockConfigurationTests(unittest.TestCase):
         boards = {board["preset"]: board for board in fuel["io-boards"]}
         attachment = fuel["xio-attachments"][boards["odyssey"]["attachment"]]
         self.assertEqual(attachment["widget"], 13)
-        self.assertTrue(fuel["graphics"]["headless"])
+        # A launcher does not offer a Fuel without it.
+        self.assertFalse(fuel["graphics"]["headless"])
+        self.assertEqual(fuel["graphics"]["headless-refused"],
+                         "every Fuel has its VPro graphics slot at widget 13")
 
     def test_fitted_assembly_presence_does_not_depend_on_serial(self):
         model = _resolved("origin300")

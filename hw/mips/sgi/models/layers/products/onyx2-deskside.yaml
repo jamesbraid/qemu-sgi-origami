@@ -54,8 +54,8 @@ layer:
   # Graphics pipes).
   graphics:
     max_pipes: 1
-    headless: true
-    headless_note: "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped"
+    headless: false
+    headless_refused: "SGI sold no Onyx2 without an InfiniteReality pipe, and an Onyx2 with no pipe is an Origin 2000, so use origin2000-deskside or origin2000-rack"
     slots:
       - name: io4
         description: "XIO slot 4, Crossbow widget 8: the deskside's InfiniteReality pipe"

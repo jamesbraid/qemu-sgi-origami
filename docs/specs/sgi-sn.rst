@@ -675,17 +675,18 @@ slot's default for it: a bare ``-device sgi-kona,slot=io4`` on the
 deskside is its InfiniteReality2.
 
 ``-vga none``, and ``-nodefaults``, skip the default pipe. With no pipe
-``-device`` the machine then starts with no graphics, even an Onyx2,
-which SGI never sold that way (the catalogue says so in
-``headless-note``), and a Fuel. A machine is one topology whether or not
-a pipe is fitted. The two Origin 300 graphics topologies, which exist
-only to fit their V12, refuse to run with no pipe at all, with the
-catalogue's ``headless-refused`` reason. No
-SGI machine takes a PC display adapter, so any other ``-vga`` value is
-refused. A machine sees only the adapter type ``-vga`` leaves behind, and
-with no ``-vga`` QEMU picks Cirrus where the binary has it, so
-``-vga cirrus`` cannot be told from no ``-vga`` and is taken as the
-default.
+``-device`` every topology then starts with no graphics: the machine
+cannot tell the two options apart, so it refuses neither. A machine is
+one topology whether or not a pipe is fitted. The catalogue's
+``headless`` flag only tells a launcher which topologies to offer
+without graphics. It is false, with the reason in ``headless-refused``,
+for an Onyx2, which SGI never sold without a pipe, a Fuel, and the two
+Origin 300 graphics topologies, which exist only to fit their V12. No SGI
+machine takes a PC display adapter, so a ``-vga`` value the machine can
+tell from the default, such as ``std``, is refused. A machine sees only
+the adapter type ``-vga`` leaves behind, and with no ``-vga`` QEMU picks
+Cirrus where the binary has it, so ``-vga cirrus`` cannot be told from
+no ``-vga`` and is taken as the default.
 
 The machine checks each pipe before it realizes, as its pre-plug handler,
 so the check sees the device's final property values, ``-global``

@@ -27,7 +27,8 @@ layer:
   # Graphics pipes).
   graphics:
     max_pipes: 1
-    headless: true
+    headless: false
+    headless_refused: "every Fuel has its VPro graphics slot at widget 13"
     slots:
       - name: widget-13
         description: "the graphics connector at XBridge widget 13"

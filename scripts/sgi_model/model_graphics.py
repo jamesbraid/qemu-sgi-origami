@@ -36,8 +36,7 @@ _FAMILY_FIELDS = {"family", "device", "name", "products", "settings"}
 _PRODUCT_FIELDS = {"product", "name", "description"}
 _SETTING_FIELDS = {"name", "description", "values"}
 _VALUE_FIELDS = {"value", "description", "evidence"}
-_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused",
-                   "headless_note", "slots"}
+_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused", "slots"}
 _SLOT_FIELDS = {"name", "names", "description", "placement", "default",
                 "families", "refusals"}
 _OFFER_FIELDS = {"family", "products"}
@@ -414,12 +413,6 @@ def resolve_graphics(product_id: str, section: Any,
     if not headless:
         record["headless_refused"] = _reason(section["headless_refused"],
                                              f"{label} headless_refused")
-    if "headless_note" in section:
-        if not headless:
-            raise ResolutionError(f"{label} headless_note is for a topology "
-                                  "that runs headless")
-        record["headless_note"] = _reason(section["headless_note"],
-                                          f"{label} headless_note")
     record["slots"] = slots
     return record
 

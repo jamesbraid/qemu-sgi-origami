@@ -7815,7 +7815,6 @@ static void sgi_machine_done(Notifier *notifier, void *data)
     SGIMachineState *s = container_of(notifier, SGIMachineState,
                                       machine_done);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
     g_autofree const SGIModelXioSlot **slots = NULL;
     g_autofree const SGIModelIoBoard **records = NULL;
     size_t slot_count, record_count, i;
@@ -7829,11 +7828,6 @@ static void sgi_machine_done(Notifier *notifier, void *data)
         } else {
             sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
         }
-    }
-    if (!s->uncatalogued_graphics) {
-        sgi_graphics_check_headless(MACHINE_GET_CLASS(s)->name, chassis->name,
-                                    chassis->graphics, s->pipes,
-                                    &error_fatal);
     }
     if (s->module_start) {
         vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
