@@ -4422,6 +4422,46 @@ static void test_gl_native_polygon_deferred(void)
     }
 }
 
+/*
+ * glVertex2d, header 0x52000010 and two doubles high word first, as the
+ * Octane SI Icon Catalog sends its filled icon polygons: the polygon
+ * fills as the same one drawn with glVertex2f does. Without the header
+ * the vertices are dropped and only the window's clear colour remains.
+ */
+static void gl_vertex2d(QTestState *s, double x, double y)
+{
+    uint64_t bx, by;
+
+    memcpy(&bx, &x, sizeof(bx));
+    memcpy(&by, &y, sizeof(by));
+    gl_word(s, 0x52000010);
+    gl_word(s, bx >> 32);
+    gl_word(s, bx);
+    gl_word(s, by >> 32);
+    gl_word(s, by);
+}
+
+static void test_gl_vertex2d_polygon(void)
+{
+    static const double xy[4][2] = {
+        { 8.5, 8.5 }, { 24.5, 8.5 }, { 24.5, 24.5 }, { 8.5, 24.5 },
+    };
+
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_FILL_MODE);
+    gl_word(qts, GL_BEGIN_POLYGON);
+    for (unsigned i = 0; i < ARRAY_SIZE(xy); i++) {
+        gl_vertex2d(qts, xy[i][0], xy[i][1]);
+    }
+    gl_word(qts, GL_END_OF(GL_BEGIN_POLYGON));
+    g_assert_cmphex(gl_window_pixel(qts, 16, 16), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 9, 9), ==, 0xffffff);
+    g_assert_cmphex(gl_window_pixel(qts, 4, 4), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 28, 16), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_gl_native_polygon_contexts(void)
 {
     mgras_reset();
@@ -5133,6 +5173,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-polygon/deferred",
         test_gl_native_polygon_deferred, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-vertex2d-polygon",
+        test_gl_vertex2d_polygon, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-polygon/contexts",
         test_gl_native_polygon_contexts, true);

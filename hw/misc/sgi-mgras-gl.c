@@ -436,6 +436,17 @@ enum {
 #define MGRAS_GL_COLOR3F         0x2000020c
 #define MGRAS_GL_COLOR4F         0x00000210
 #define MGRAS_GL_VERTEX2I        0x58000008
+/*
+ * glVertex2d, 3d and 4d: the doubles' class 0x12 with the component-count
+ * bits, as the GL commands contract lists them from the client
+ * (docs/datasheets/mgras-gl-commands.md). The Octane SI Icon Catalog's
+ * pane sends glVertex2d for every filled icon polygon: a model run logged
+ * 122 of them as unimplemented headers, where the Origin 2000's X server
+ * draws the same icons' fills as stippled spans.
+ */
+#define MGRAS_GL_VERTEX2D        0x52000010
+#define MGRAS_GL_VERTEX3D        0x32000018
+#define MGRAS_GL_VERTEX4D        0x12000020
 #define MGRAS_GL_COLOR4UB        0x14800204
 /*
  * glColor3ub is sent as 0x34800203 and one word. The model matches every
@@ -1109,6 +1120,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_COLOR4F:
     case MGRAS_GL_VERTEX2I:
     case MGRAS_GL_VERTEX3I:
+    case MGRAS_GL_VERTEX2D:
+    case MGRAS_GL_VERTEX3D:
+    case MGRAS_GL_VERTEX4D:
     case MGRAS_GL_RASTER_POS3I:
     case MGRAS_GL_TEX_COORD3F:
     case MGRAS_GL_TEX_COORD3I:
@@ -6385,6 +6399,29 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_VERTEX2I:
         mgras_gl_vertex(s, SGI_GL_OP_VERTEX2I, payload, 2);
         return;
+    case MGRAS_GL_VERTEX2D:
+    case MGRAS_GL_VERTEX3D:
+    case MGRAS_GL_VERTEX4D: {
+        static const uint32_t ops[] = {
+            SGI_GL_OP_VERTEX2F, SGI_GL_OP_VERTEX3F, SGI_GL_OP_VERTEX4F,
+        };
+        uint32_t n = header == MGRAS_GL_VERTEX2D ? 2 :
+                     header == MGRAS_GL_VERTEX3D ? 3 : 4;
+        float f[4];
+
+        /* Each double comes high word first, as glNormal3d's do. */
+        for (uint32_t i = 0; i < n; i++) {
+            uint64_t bits = deposit64(payload[2 * i + 1], 32, 32,
+                                      payload[2 * i]);
+            double d;
+
+            memcpy(&d, &bits, sizeof(d));
+            f[i] = d;
+        }
+        memcpy(word, f, n * sizeof(f[0]));
+        mgras_gl_vertex(s, ops[n - 2], word, n);
+        return;
+    }
     case MGRAS_GL_VERTEX3I:
     case MGRAS_GL_RASTER_POS3I: {
         float f[3] = { (int32_t)payload[0], (int32_t)payload[1],
