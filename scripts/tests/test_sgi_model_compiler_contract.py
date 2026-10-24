@@ -687,6 +687,73 @@ class BedrockConfigurationTests(unittest.TestCase):
                 self.assertEqual(offering["hardware-inputs"], [])
 
 
+class Ip53CpuContextTests(unittest.TestCase):
+    def test_full_firmware_word_and_node_clocks_reach_the_l1(self):
+        for name, word, cpu_hz, reset in (
+                ("origin350", 0x569cad85, 700_000_000, 0x009cad85),
+                ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85)):
+            with self.subTest(profile=name):
+                model = _resolved(name)
+                model["machine"]["firmware_config"][
+                    "processor_firmware_word"] = word
+
+                topology = compile_model(model)
+
+                self.assertEqual(topology["ip35_firmware"]["cpu_mode_word"],
+                                 word)
+                self.assertEqual(
+                    topology["controllers"][0]["l1"]["cpu_context"], {
+                        "cpu_mode_word": word,
+                        "cpu_clock_hz": cpu_hz,
+                        "hub_clock_hz": 200_000_000,
+                    })
+                emitted = json.loads(render_catalogue_json([model]))[
+                    "topologies"][0]
+                self.assertEqual(emitted["ip35-firmware"]["cpu-mode-word"],
+                                 word)
+                self.assertEqual(
+                    emitted["controllers"][0]["l1"]["cpu-context"], {
+                        "cpu-mode-word": word,
+                        "cpu-clock-hz": cpu_hz,
+                        "hub-clock-hz": 200_000_000,
+                    })
+                self.assertEqual(
+                    model["machine"]["firmware_config"][
+                        "processor_reset_mode"], reset)
+
+    def test_profiles_without_full_word_keep_legacy_firmware_value(self):
+        profiles = {
+            "tezro-tower-one": 0x009bad85,
+            "tezro-tower-multi": 0x009bad85,
+            "tezro-rack-base": 0x009bad85,
+            "onyx4-host-serial-compat": 0x009dad85,
+        }
+        for name, reset_mode in profiles.items():
+            with self.subTest(profile=name):
+                topology = compile_model(_resolved(name))
+
+                self.assertEqual(topology["ip35_firmware"]["cpu_mode_word"],
+                                 reset_mode)
+                self.assertNotIn(
+                    "cpu_context", topology["controllers"][0]["l1"])
+
+    def test_full_word_must_match_the_fitted_reset_mode(self):
+        model = _resolved("origin350")
+        model["machine"]["firmware_config"][
+            "processor_firmware_word"] = 0x569cad84
+
+        with self.assertRaisesRegex(ValueError, "low 25 bits"):
+            compile_model(model)
+
+    def test_full_word_cannot_opt_in_a_non_ip53_machine(self):
+        model = _resolved("origin200")
+        model["machine"]["firmware_config"][
+            "processor_firmware_word"] = 0x569cad85
+
+        with self.assertRaisesRegex(ValueError, "requires an IP53"):
+            compile_model(model)
+
+
 class BoardSelectionTests(unittest.TestCase):
     def model_with_bedrock_board(self, hardware_kind=None):
         model = _resolved("origin300")

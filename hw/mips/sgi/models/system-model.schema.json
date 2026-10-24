@@ -472,6 +472,10 @@
                 { "type": "integer", "minimum": 0, "maximum": 4294967295 }
               ]
             },
+            "processor_firmware_word": {
+              "type": "integer", "minimum": 0, "maximum": 4294967295,
+              "description": "Optional full 32-bit processor configuration word copied into the selected PROM record. Its low 25 bits must match the fitted processor reset mode."
+            },
             "machine_type": { "type": "integer", "minimum": 0 },
             "flash_read_cycles": { "type": "integer", "minimum": 0 },
             "flash_write_cycles": { "type": "integer", "minimum": 0 },

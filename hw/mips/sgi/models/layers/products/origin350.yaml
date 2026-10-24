@@ -48,6 +48,7 @@ layer:
         fitted flash part or stock PROM boot.
       firmware_config:
         processor_reset_mode: 0x009cad85
+        processor_firmware_word: 0x569cad85
         machine_type: 0x00000001
         flash_read_cycles: 16
         flash_write_cycles: 16
