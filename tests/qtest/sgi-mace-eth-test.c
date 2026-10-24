@@ -1120,6 +1120,238 @@ static void rx_sequence_frame(uint8_t frame[60], unsigned sequence)
     }
 }
 
+static const struct {
+    uint16_t checksum;
+    uint8_t fcs[4];
+} rx_progress_vectors[] = {
+    { 0x679a, { 0x13, 0x02, 0x45, 0x90 } },
+    { 0xd557, { 0x10, 0x26, 0x01, 0x74 } },
+    { 0x04e6, { 0x8b, 0xb3, 0x00, 0xbf } },
+    { 0x0a20, { 0xa0, 0x2d, 0x3c, 0xc9 } },
+    { 0xacc8, { 0x7d, 0x26, 0x4d, 0xc3 } },
+    { 0x5a6f, { 0x64, 0x61, 0x5f, 0x78 } },
+    { 0x7d35, { 0x17, 0x4e, 0x1a, 0x9c } },
+    { 0xe6bf, { 0x1f, 0xb2, 0xc7, 0x0c } },
+    { 0x7c89, { 0x8e, 0x9b, 0x39, 0x37 } },
+    { 0x3a52, { 0xfc, 0x15, 0xd4, 0xcf } },
+    { 0xd760, { 0x12, 0xaf, 0xa5, 0x8f } },
+    { 0xd9e6, { 0x62, 0xbd, 0xa1, 0x4f } },
+    { 0x8579, { 0x0c, 0xb1, 0xee, 0x37 } },
+    { 0x82b3, { 0x00, 0xed, 0x42, 0x80 } },
+    { 0xcf5c, { 0xd6, 0xa9, 0x03, 0xb7 } },
+    { 0x3277, { 0x73, 0x4c, 0x15, 0x79 } },
+    { 0x23b0, { 0xa0, 0xaa, 0x24, 0x9e } },
+    { 0xa702, { 0x07, 0x6a, 0x8c, 0x7b } },
+    { 0x3610, { 0xd1, 0x40, 0x9c, 0xfc } },
+    { 0x716d, { 0x24, 0x3f, 0xd0, 0xa4 } },
+    { 0xb3a0, { 0x20, 0xf9, 0x61, 0x68 } },
+    { 0x8c3c, { 0x4b, 0xa9, 0x5a, 0x9e } },
+    { 0xeba5, { 0x71, 0x0c, 0xdf, 0xee } },
+    { 0x4c11, { 0xa2, 0xd5, 0x59, 0xdb } },
+    { 0x7225, { 0x79, 0xef, 0xf2, 0x1e } },
+    { 0x1cad, { 0x93, 0x9c, 0xcd, 0x41 } },
+    { 0xfa79, { 0xad, 0xdb, 0xdc, 0x19 } },
+    { 0x8a16, { 0x41, 0x0d, 0x23, 0xcf } },
+    { 0xc163, { 0x7a, 0x88, 0x6b, 0xeb } },
+    { 0xf4e0, { 0xba, 0xde, 0xaa, 0x5c } },
+    { 0x4254, { 0x6b, 0x3c, 0x92, 0xbc } },
+    { 0xd6cb, { 0x9c, 0xfd, 0x40, 0xbd } },
+    { 0xbc42, { 0x07, 0x8e, 0x06, 0xee } },
+    { 0xc384, { 0xd6, 0x64, 0x8a, 0xa2 } },
+};
+
+#define RX_PROGRESS_BASE (RAM_FULL + 0x80000)
+
+static void rx_progress_assert(QTestState *qts, unsigned read, unsigned write,
+                               unsigned count, unsigned sequence)
+{
+    uint64_t expected = ((uint64_t)(write & 31) << 16) |
+                        ((read & 31) << 8) | count;
+    uint64_t status = qtest_readq(qts, ETH_BASE + INT_STATUS);
+
+    for (unsigned alias = 0; alias < 3; alias++) {
+        uint64_t info = qtest_readq(qts, ETH_BASE + RX_FIFO_INFO + alias * 8);
+
+        g_assert_cmphex(info, ==, expected);
+        g_assert_cmphex(status & 0x1f00, ==, info & 0x1f00);
+        g_assert_cmpuint((info >> 8) & 15, ==, read % 16);
+        g_assert_cmpuint((info >> 12) & 1, ==, (read / 16) % 2);
+    }
+    g_assert_cmpuint((status >> 25) & 31, ==, sequence % 32);
+}
+
+static void rx_progress_post(QTestState *qts, unsigned slot)
+{
+    uint8_t cleared[128] = { 0 };
+    uint64_t address = RX_PROGRESS_BASE + slot * 4096;
+
+    qtest_memwrite(qts, address, cleared, sizeof(cleared));
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, address);
+}
+
+static void rx_progress_enable(QTestState *qts)
+{
+    mdio_write(qts, 8, 0, 0x2100);
+    qtest_writeq(qts, ETH_BASE + STATION, UINT64_C(0x02a14c7395e6));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 (1U << 15) | (4U << 12) | (1U << 9) | (16U << 4));
+}
+
+static QTestState *rx_progress_start(int sv[2])
+{
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
+                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
+    rx_progress_assert(qts, 0, 0, 0, 0);
+    for (unsigned slot = 0; slot < 16; slot++) {
+        rx_progress_post(qts, slot);
+    }
+    rx_progress_assert(qts, 0, 16, 16, 0);
+    rx_progress_enable(qts);
+    return qts;
+}
+
+static void rx_progress_complete(QTestState *qts, int fd, unsigned done,
+                                 unsigned sequence, unsigned marker)
+{
+    uint8_t frame[60], landed[128];
+    uint64_t address = RX_PROGRESS_BASE + (done - 1) * 4096;
+    uint64_t expected = (UINT64_C(1) << 63) |
+                        ((uint64_t)rx_progress_vectors[marker].checksum << 32) |
+                        ((uint64_t)(sequence % 32) << 27) | (1U << 26) | 64;
+
+    rx_sequence_frame(frame, marker);
+    socket_send_frame(fd, frame, sizeof(frame));
+    wait_fifo_count(qts, 15);
+    g_assert_cmphex(eth_status(qts, address), ==, expected);
+    qtest_memread(qts, address, landed, sizeof(landed));
+    g_assert_cmphex(landed[32] | landed[33], ==, 0);
+    g_assert_cmpmem(landed + 34, sizeof(frame), frame, sizeof(frame));
+    g_assert_cmpmem(landed + 94, 4, rx_progress_vectors[marker].fcs, 4);
+    rx_progress_assert(qts, done, done + 15, 15, sequence + 1);
+    rx_progress_post(qts, done + 15);
+    rx_progress_assert(qts, done, done + 16, 16, sequence + 1);
+}
+
+static void test_rx_progress(void)
+{
+    int sv[2];
+    QTestState *qts = rx_progress_start(sv);
+
+    for (unsigned done = 1; done <= 33; done++) {
+        rx_progress_complete(qts, sv[0], done, done - 1, done - 1);
+        if (done == 17) {
+            uint64_t status = qtest_readq(qts, ETH_BASE + INT_STATUS);
+
+            for (unsigned i = 0; i < 3; i++) {
+                g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS), ==,
+                                status);
+            }
+            qtest_writeq(qts, ETH_BASE + INT_STATUS, 0);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS), ==,
+                            status);
+            qtest_writeq(qts, ETH_BASE + INT_STATUS, 0x1f00);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS), ==,
+                            status);
+            g_assert_cmphex(status & 0xff, !=, 0);
+            qtest_writeq(qts, ETH_BASE + INT_STATUS, status & 0xff);
+            g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xff,
+                            ==, 0);
+            rx_progress_assert(qts, done, done + 16, 16, done);
+        }
+    }
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_progress_reset(void)
+{
+    for (unsigned mode = 0; mode < 4; mode++) {
+        int sv[2];
+        QTestState *qts = rx_progress_start(sv);
+        unsigned sequence = mode == 0 ? 0 : 17;
+
+        for (unsigned done = 1; done <= 17; done++) {
+            rx_progress_complete(qts, sv[0], done, done - 1, done - 1);
+        }
+        if (mode == 0) {
+            qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+        } else {
+            if (mode == 3) {
+                qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+            }
+            if (mode != 2) {
+                qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+                rx_progress_assert(qts, 17, 33, 16, 17);
+            }
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+            qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+            if (mode == 2) {
+                rx_progress_assert(qts, 17, 33, 16, 17);
+                qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
+            }
+        }
+        rx_progress_assert(qts, 0, 0, 0, sequence);
+        for (unsigned slot = 0; slot < 16; slot++) {
+            rx_progress_post(qts, slot);
+        }
+        rx_progress_assert(qts, 0, 16, 16, sequence);
+        rx_progress_enable(qts);
+        rx_progress_complete(qts, sv[0], 1, sequence, 33);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_progress_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("mace-rx-progress-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    uint8_t before[33][128], after[128];
+    int sv[2], dest_sv[2];
+    QTestState *from = rx_progress_start(sv);
+    QTestState *to;
+
+    for (unsigned done = 1; done <= 17; done++) {
+        rx_progress_complete(from, sv[0], done, done - 1, done - 1);
+    }
+    for (unsigned slot = 0; slot < 33; slot++) {
+        qtest_memread(from, RX_PROGRESS_BASE + slot * 4096, before[slot], 128);
+    }
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+                     "-nic socket,id=n0,fd=%d,model=sgi-mace-eth "
+                     "-incoming defer", dest_sv[1]);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    rx_progress_assert(to, 17, 33, 16, 17);
+    for (unsigned slot = 0; slot < 33; slot++) {
+        qtest_memread(to, RX_PROGRESS_BASE + slot * 4096, after, sizeof(after));
+        g_assert_cmpmem(before[slot], sizeof(after), after, sizeof(after));
+    }
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    for (unsigned done = 18; done <= 33; done++) {
+        rx_progress_complete(to, dest_sv[0], done, done - 1, done - 1);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    close(sv[0]);
+    close(sv[1]);
+    close(dest_sv[0]);
+    close(dest_sv[1]);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_rx_sustained_fifo_replenish(void)
 {
     static const uint64_t refill_info[2] = {
@@ -3499,6 +3731,11 @@ int main(int argc, char **argv)
                    test_tx_two_concat_and_hole);
     qtest_add_func("/sgi/mace/ethernet/rx-filter-raw-dma",
                    test_rx_filter_and_raw_dma);
+    qtest_add_func("/sgi/mace/ethernet/rx-progress", test_rx_progress);
+    qtest_add_func("/sgi/mace/ethernet/rx-progress-reset",
+                   test_rx_progress_reset);
+    qtest_add_func("/sgi/mace/ethernet/rx-progress-migration",
+                   test_rx_progress_migration);
     qtest_add_func("/sgi/mace/ethernet/rx-fifo-dma-wrap",
                    test_rx_fifo_dma_wrap);
     qtest_add_func("/sgi/mace/ethernet/rx-sustained-replenish",
