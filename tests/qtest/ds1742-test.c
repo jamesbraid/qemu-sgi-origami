@@ -188,6 +188,164 @@ static void test_fresh_seed_reset(void)
     qtest_quit(qts);
 }
 
+static void test_ds1744_geometry(void)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+                                  "-rtc base=2024-01-01T00:00:00 "
+                                  "-device ds1744,id=clock");
+
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    wr(qts, 0x0000, 0x12);
+    wr(qts, 0x0800, 0x34);
+    wr(qts, 0x7ff7, 0x56);
+    g_assert_cmphex(rd(qts, 0x0000), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x0800), ==, 0x34);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x56);
+    qtest_writew(qts, REG(0x7ff7), 0xffff);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x56);
+
+    wr(qts, 0x7ff8, 0x80);
+    wr(qts, 0x7ff9, 0x12);
+    wr(qts, 0x7ffa, 0x23);
+    wr(qts, 0x7ffb, 0x10);
+    wr(qts, 0x7ffc, 0x02);
+    wr(qts, 0x7ffd, 0x25);
+    wr(qts, 0x7ffe, 0x09);
+    wr(qts, 0x7fff, 0x26);
+    wr(qts, 0x7ff8, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7ffa), ==, 0x23);
+    g_assert_cmphex(rd(qts, 0x7ffb), ==, 0x10);
+    g_assert_cmphex(rd(qts, 0x7ffc) & 7, ==, 2);
+    g_assert_cmphex(rd(qts, 0x7ffd), ==, 0x25);
+    g_assert_cmphex(rd(qts, 0x7ffe), ==, 0x09);
+    g_assert_cmphex(rd(qts, 0x7fff), ==, 0x26);
+
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(rd(qts, 0x0000), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x0800), ==, 0x34);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x56);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x12);
+    qtest_quit(qts);
+}
+
+static void test_ds1744_backed_reopen(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1744-reopen-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(directory, "nvram.img", NULL);
+    g_autofree char *reference =
+        g_build_filename(directory, "clock.img", NULL);
+    char contents[0x8000] = { 0 }, clock_record[512] = { 0 };
+    QTestState *qts;
+
+    g_assert_nonnull(directory);
+    g_assert_true(g_file_set_contents(image, contents, sizeof(contents), NULL));
+    g_assert_true(g_file_set_contents(reference, clock_record,
+                                      sizeof(clock_record), NULL));
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2024-01-01T00:00:00 "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-drive if=none,id=reference,file=%s,format=raw "
+                      "-device ds1744,id=clock,drive=nvram,"
+                      "clock-drive=reference", image, reference);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    wr(qts, 0x0800, 0xa5);
+    wr(qts, 0x7ff7, 0x5a);
+    wr(qts, 0x7ff8, 0x80);
+    wr(qts, 0x7ff9, 0x12);
+    wr(qts, 0x7ffa, 0x23);
+    wr(qts, 0x7ffb, 0x10);
+    wr(qts, 0x7ffc, 0x02);
+    wr(qts, 0x7ffd, 0x25);
+    wr(qts, 0x7ffe, 0x09);
+    wr(qts, 0x7fff, 0x26);
+    wr(qts, 0x7ff8, 0x20);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=2040-01-01T00:00:00 "
+                      "-drive if=none,id=nvram,file=%s,format=raw "
+                      "-drive if=none,id=reference,file=%s,format=raw "
+                      "-device ds1744,id=clock,drive=nvram,"
+                      "clock-drive=reference", image, reference);
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    g_assert_cmphex(rd(qts, 0x0800), ==, 0xa5);
+    g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x5a);
+    g_assert_cmphex(rd(qts, 0x7ff8), ==, 0x20);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7ffa), ==, 0x23);
+    g_assert_cmphex(rd(qts, 0x7ffb), ==, 0x10);
+    g_assert_cmphex(rd(qts, 0x7ffd), ==, 0x25);
+    g_assert_cmphex(rd(qts, 0x7ffe), ==, 0x09);
+    g_assert_cmphex(rd(qts, 0x7fff), ==, 0x26);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(reference), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_ds1744_migration(void)
+{
+    g_autofree char *directory = g_dir_make_tmp("ds1744-migrate-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_initf("-M none -cpu R10000 -S "
+                                   "-rtc base=2024-01-01T00:00:00 "
+                                   "-device ds1744,id=clock");
+    QTestState *to = qtest_initf("-M none -cpu R10000 -S "
+                                 "-rtc base=2024-01-01T00:00:00 "
+                                 "-device ds1744,id=clock -incoming defer");
+
+    qtest_sysbus_mmio_map(from, PATH, 0, BASE);
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    wr(from, 0x0800, 0xa5);
+    wr(from, 0x7ff7, 0x5a);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    g_assert_cmphex(rd(to, 0x0800), ==, 0xa5);
+    g_assert_cmphex(rd(to, 0x7ff7), ==, 0x5a);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_ds1744_rejects_ds1742_migration(const void *data)
+{
+    bool reversed = GPOINTER_TO_INT(data);
+    g_autofree char *directory = g_dir_make_tmp("ds1744-mismatch-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_initf("-M none -cpu R10000 -S "
+                                   "-rtc base=2024-01-01T00:00:00 "
+                                   "-device %s,id=clock",
+                                   reversed ? "ds1742" : "ds1744");
+    QTestState *to = qtest_initf("-M none -cpu R10000 -S "
+                                 "-rtc base=2024-01-01T00:00:00 "
+                                 "-device %s,id=clock -incoming defer",
+                                 reversed ? "ds1744" : "ds1742");
+    g_autoptr(QDict) status = NULL;
+
+    qtest_sysbus_mmio_map(from, PATH, 0, BASE);
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "failed");
+    status = qtest_qmp_assert_success_ref(to, "{'execute':'query-migrate'}");
+    g_assert_nonnull(qdict_get_try_str(status, "error-desc"));
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_fresh_seed_rejects(const void *data)
 {
     g_auto(GStrv) arguments = g_strsplit(data, "|", 3);
@@ -917,6 +1075,14 @@ int main(int argc, char **argv)
     qtest_add_func("/ds1742/fresh-seed-year-boundary",
                    test_fresh_seed_year_boundary);
     qtest_add_func("/ds1742/fresh-seed-reset", test_fresh_seed_reset);
+    qtest_add_func("/ds1744/geometry", test_ds1744_geometry);
+    qtest_add_func("/ds1744/backed-reopen", test_ds1744_backed_reopen);
+    qtest_add_func("/ds1744/migration", test_ds1744_migration);
+    qtest_add_data_func("/ds1744/rejects-ds1742-migration", NULL,
+                        test_ds1744_rejects_ds1742_migration);
+    qtest_add_data_func("/ds1742/rejects-ds1744-migration",
+                        GINT_TO_POINTER(1),
+                        test_ds1744_rejects_ds1742_migration);
     qtest_add_data_func("/ds1742/fresh-seed-invalid-property",
                         "2024-01-01T00:00:00|,fresh-year-base=1980|"
                         "*fresh-year-base must be 0 or 1968*",

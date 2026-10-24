@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * DS1742 native 2 KiB timekeeping SRAM.
- * An optional 2 KiB drive holds the SRAM and calendar; a separate clock
+ * DS1742/DS1744 byte-wide timekeeping SRAM.
+ * An optional drive holds the SRAM and calendar; a separate clock
  * reference drive holds an eight-byte magic and wall seconds in little
  * endian, letting the calendar advance across emulator restarts.
  * Host restart restores completed calendar state, not an unfinished W/R
@@ -25,9 +25,13 @@
 #include "system/runstate.h"
 
 #define TYPE_DS1742 "ds1742"
-OBJECT_DECLARE_SIMPLE_TYPE(DS1742State, DS1742)
-#define SIZE 0x800
-#define CTRL 0x7f8
+#define TYPE_DS1744 "ds1744"
+#define TYPE_DS1742_BASE "ds1742-base"
+OBJECT_DECLARE_TYPE(DS1742State, DS1742Class, DS1742_BASE)
+#define DS1742_SIZE 0x800
+#define DS1742_CTRL 0x7f8
+#define DS1744_SIZE 0x8000
+#define DS1744_CTRL 0x7ff8
 #define W 0x80
 #define R 0x40
 #define OSC 0x80
@@ -43,13 +47,22 @@ struct DS1742State {
     BlockBackend *blk, *clock_blk;
     VMChangeStateEntry *vmstate_change;
     Notifier shutdown;
-    uint8_t ram[CTRL];
+    uint8_t ram[DS1744_CTRL];
     uint8_t control, weekday, migration_weekday, staged[8], frozen[8];
     int64_t epoch, reference_ns, migration_epoch;
     uint32_t fresh_year_base;
     bool stopped, frozen_valid;
     /* Equal writes retry until both backing records are saved. Host-only. */
     bool storage_failed;
+    uint32_t size, ctrl;
+    const char *name;
+};
+
+struct DS1742Class {
+    SysBusDeviceClass parent_class;
+    uint32_t size, ctrl;
+    const char *name;
+    const VMStateDescription *vmsd;
 };
 
 static int64_t ds1742_ns(void)
@@ -106,7 +119,7 @@ static bool ds1742_drive_writable(BlockBackend *blk)
 
 static void ds1742_save_clock(DS1742State *s)
 {
-    uint8_t image[SIZE], record[CLOCK_REF_BYTES];
+    uint8_t image[DS1744_SIZE], record[CLOCK_REF_BYTES];
 
     if (!ds1742_drive_writable(s->blk)) {
         return;
@@ -117,10 +130,10 @@ static void ds1742_save_clock(DS1742State *s)
                       "from backing store\n");
     }
     /* Migrated RAM must reach the destination's backing store too. */
-    memcpy(image, s->ram, CTRL);
-    ds1742_image(s, image + CTRL);
+    memcpy(image, s->ram, s->ctrl);
+    ds1742_image(s, image + s->ctrl);
     s->storage_failed = true;
-    if (blk_pwrite(s->blk, 0, sizeof(image), image, 0) < 0) {
+    if (blk_pwrite(s->blk, 0, s->size, image, 0) < 0) {
         error_report("ds1742: could not save image to backing store");
         return;
     }
@@ -224,10 +237,10 @@ static uint64_t ds1742_read(void *opaque, hwaddr addr, unsigned size)
     DS1742State *s = opaque;
     uint8_t image[8], value;
 
-    if (addr < CTRL) {
+    if (addr < s->ctrl) {
         return s->ram[addr];
     }
-    if (addr == CTRL) {
+    if (addr == s->ctrl) {
         if (s->control & W) {
             return s->control;
         }
@@ -238,17 +251,17 @@ static uint64_t ds1742_read(void *opaque, hwaddr addr, unsigned size)
         return image[0];
     }
     if (s->control & W) {
-        value = s->staged[addr - CTRL];
+        value = s->staged[addr - s->ctrl];
     } else if (s->frozen_valid) {
-        value = s->frozen[addr - CTRL];
+        value = s->frozen[addr - s->ctrl];
     } else {
         ds1742_image(s, image);
-        value = image[addr - CTRL];
+        value = image[addr - s->ctrl];
     }
-    if (addr == 0x7fc) {
+    if (addr == s->ctrl + 4) {
         value |= BF;
     }
-    if (addr == 0x7f9 && (s->weekday & FT) && !s->stopped) {
+    if (addr == s->ctrl + 1 && (s->weekday & FT) && !s->stopped) {
         value = (value & ~1) | ((ds1742_ns() / 976562) & 1);
     }
     return value;
@@ -260,7 +273,7 @@ static void ds1742_write(void *opaque, hwaddr addr, uint64_t val,
     DS1742State *s = opaque;
     uint8_t value = val, old, image[8];
 
-    if (addr < CTRL) {
+    if (addr < s->ctrl) {
         if (s->ram[addr] == value && !s->storage_failed) {
             return;
         }
@@ -272,9 +285,9 @@ static void ds1742_write(void *opaque, hwaddr addr, uint64_t val,
         }
         return;
     }
-    if (addr != CTRL) {
+    if (addr != s->ctrl) {
         if (s->control & W) {
-            s->staged[addr - CTRL] = value;
+            s->staged[addr - s->ctrl] = value;
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "ds1742: calendar write with W clear at 0x%03x\n",
@@ -370,7 +383,7 @@ static bool ds1742_shift_fresh_seed(DS1742State *s, struct tm *tm,
 
 static void ds1742_realize(DeviceState *dev, Error **errp)
 {
-    DS1742State *s = DS1742(dev);
+    DS1742State *s = DS1742_BASE(dev);
     uint8_t image[8];
     struct tm tm;
     int64_t length;
@@ -393,9 +406,9 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
     }
     if (s->blk) {
         length = blk_getlength(s->blk);
-        if (length != SIZE) {
-            error_setg(errp, "ds1742: backing drive must be exactly %u bytes",
-                       SIZE);
+        if (length != s->size) {
+            error_setg(errp, "%s: backing drive must be exactly %u bytes",
+                       s->name, s->size);
             return;
         }
         if (blk_set_perm(s->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
@@ -416,8 +429,8 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
                 return;
             }
         }
-        if (blk_pread(s->blk, 0, CTRL, s->ram, 0) < 0 ||
-            blk_pread(s->blk, CTRL, sizeof(image), image, 0) < 0) {
+        if (blk_pread(s->blk, 0, s->ctrl, s->ram, 0) < 0 ||
+            blk_pread(s->blk, s->ctrl, sizeof(image), image, 0) < 0) {
             error_setg(errp, "ds1742: could not read backing drive");
             return;
         }
@@ -435,7 +448,7 @@ static void ds1742_realize(DeviceState *dev, Error **errp)
 
 static void ds1742_unrealize(DeviceState *dev)
 {
-    DS1742State *s = DS1742(dev);
+    DS1742State *s = DS1742_BASE(dev);
 
     if (s->vmstate_change) {
         ds1742_save_clock(s);
@@ -473,7 +486,27 @@ static const VMStateDescription vmstate_ds1742 = {
     .pre_save = ds1742_pre_save,
     .post_load = ds1742_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT8_ARRAY(ram, DS1742State, CTRL),
+        VMSTATE_UINT8_SUB_ARRAY(ram, DS1742State, 0, DS1742_CTRL),
+        VMSTATE_UINT8(control, DS1742State),
+        VMSTATE_UINT8(weekday, DS1742State),
+        VMSTATE_UINT8(migration_weekday, DS1742State),
+        VMSTATE_UINT8_ARRAY(staged, DS1742State, 8),
+        VMSTATE_UINT8_ARRAY(frozen, DS1742State, 8),
+        VMSTATE_INT64(migration_epoch, DS1742State),
+        VMSTATE_BOOL(stopped, DS1742State),
+        VMSTATE_BOOL(frozen_valid, DS1742State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_ds1744 = {
+    .name = "ds1744",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = ds1742_pre_save,
+    .post_load = ds1742_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(ram, DS1742State, DS1744_CTRL),
         VMSTATE_UINT8(control, DS1742State),
         VMSTATE_UINT8(weekday, DS1742State),
         VMSTATE_UINT8(migration_weekday, DS1742State),
@@ -494,38 +527,75 @@ static const Property ds1742_properties[] = {
 
 static void ds1742_instance_init(Object *obj)
 {
-    DS1742State *s = DS1742(obj);
+    DS1742State *s = DS1742_BASE(obj);
+    DS1742Class *dc = DS1742_BASE_CLASS(object_get_class(obj));
 
-    memory_region_init_io(&s->iomem, obj, &ds1742_ops, s, "ds1742", SIZE);
+    s->size = dc->size;
+    s->ctrl = dc->ctrl;
+    s->name = dc->name;
+    memory_region_init_io(&s->iomem, obj, &ds1742_ops, s, s->name, s->size);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->iomem);
     s->iomem_link = OBJECT(&s->iomem);
     object_property_add_link(obj, "memory-region", TYPE_MEMORY_REGION,
                              &s->iomem_link, NULL, 0);
 }
 
-static void ds1742_class_init(ObjectClass *oc, const void *data)
+static const uint32_t ds1742_geometry = DS1742_SIZE;
+static const uint32_t ds1744_geometry = DS1744_SIZE;
+
+static void ds1742_base_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
-    dc->desc = "DS1742 timekeeping SRAM";
-    dc->user_creatable = true;
     dc->realize = ds1742_realize;
     dc->unrealize = ds1742_unrealize;
-    dc->vmsd = &vmstate_ds1742;
     device_class_set_props(dc, ds1742_properties);
 }
 
-static const TypeInfo ds1742_info = {
-    .name = TYPE_DS1742,
+static void ds1742_variant_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    DS1742Class *dsc = DS1742_BASE_CLASS(oc);
+
+    dsc->size = *(const uint32_t *)data;
+    dsc->ctrl = dsc->size == DS1742_SIZE ? DS1742_CTRL : DS1744_CTRL;
+    dsc->name = dsc->size == DS1742_SIZE ? "ds1742" : "ds1744";
+    dsc->vmsd = dsc->size == DS1742_SIZE ? &vmstate_ds1742 : &vmstate_ds1744;
+    dc->desc = dsc->size == DS1742_SIZE ? "DS1742 timekeeping SRAM" :
+                                          "DS1744 timekeeping SRAM";
+    dc->user_creatable = true;
+    dc->vmsd = dsc->vmsd;
+}
+
+static const TypeInfo ds1742_base_info = {
+    .name = TYPE_DS1742_BASE,
     .parent = TYPE_SYS_BUS_DEVICE,
+    .class_size = sizeof(DS1742Class),
     .instance_size = sizeof(DS1742State),
     .instance_init = ds1742_instance_init,
-    .class_init = ds1742_class_init,
+    .class_init = ds1742_base_class_init,
+    .abstract = true,
+};
+
+static const TypeInfo ds1742_info = {
+    .name = TYPE_DS1742,
+    .parent = TYPE_DS1742_BASE,
+    .class_init = ds1742_variant_class_init,
+    .class_data = &ds1742_geometry,
+};
+
+static const TypeInfo ds1744_info = {
+    .name = TYPE_DS1744,
+    .parent = TYPE_DS1742_BASE,
+    .class_init = ds1742_variant_class_init,
+    .class_data = &ds1744_geometry,
 };
 
 static void ds1742_register_types(void)
 {
+    type_register_static(&ds1742_base_info);
     type_register_static(&ds1742_info);
+    type_register_static(&ds1744_info);
 }
 
 type_init(ds1742_register_types)
