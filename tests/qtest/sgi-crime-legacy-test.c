@@ -1594,6 +1594,215 @@ static void test_renderer_hard_stop(void)
     }
 }
 
+/* Observe write-only programming through the existing migration encoding. */
+static uint32_t saved_transfer_mask(QTestState *s, const char *path)
+{
+    const char name[] = "sgi-crime/linear-transfer";
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat > %s", quoted);
+    g_autofree char *stream = NULL;
+    gsize size;
+    char *state;
+
+    sgi_migrate_stopped(s, uri);
+    g_assert_true(g_file_get_contents(path, &stream, &size, NULL));
+    state = memmem(stream, size, name, sizeof(name) - 1);
+    g_assert_nonnull(state);
+    state += sizeof(name) - 1;
+    g_assert_cmphex(ldl_be_p(state), ==, 1);
+    /* Leave postmigration so the same qtest fixture can be observed again. */
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    /* Version, two policy bytes, translation bank, then parameter slot 2. */
+    return ldl_be_p(state + 4 + 2 + 256 + 8);
+}
+
+static void test_transfer_mask_stage(void)
+{
+    const uint32_t masks[] = { 0, UINT32_MAX, 0x80402001, 0x13579bdf, 0 };
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_profile(true,
+        "-global sgi-crime.functional-memory-transfer=on "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+
+    seed_renderer_state(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+        g_assert_cmpint(memtx_writel(s, TRANSFER + 0x10, masks[i]), ==,
+                        MEMTX_OK);
+        assert_renderer_state(s);
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+    }
+    qtest_writel(s, TRANSFER + 0x10, 0x80402001);
+    qtest_system_reset(s);
+    g_assert_cmphex(saved_transfer_mask(s, path), ==, 0);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_mask_refusal(void)
+{
+    const RendererAccess accesses[] = {
+        { 0x3010, 4, false }, { 0x3010, 1, true },
+        { 0x3010, 2, true }, { 0x3010, 8, true },
+        { 0x3011, 4, true }, { 0x300f, 2, true },
+        { 0x300c, 8, true }, { 0x3014, 4, true },
+        { 0x3810, 4, true }, { 0x3810, 4, false },
+    };
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-refuse-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
+        const RendererAccess *a = &accesses[i];
+        QTestState *s = start_profile(true,
+            "-global sgi-crime.functional-memory-transfer=on "
+            "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
+        uint64_t value;
+
+        seed_renderer_state(s);
+        qtest_writel(s, TRANSFER + 0x10, 0x80402001);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_assert_cmpint(a->write ?
+            memtx_write(s, RENDERER + a->offset, 0x13579bdf, a->size) :
+            memtx_read(s, RENDERER + a->offset, &value, a->size), ==,
+            MEMTX_ERROR);
+        assert_stopped(s);
+        assert_renderer_state(s);
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, 0x80402001);
+        qtest_quit(s);
+    }
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            QTestState *s;
+
+            if (legacy && functional) {
+                continue;
+            }
+            s = start_profile(legacy, functional ?
+                "-global sgi-crime.functional-memory-transfer=on" : "");
+            g_assert_cmpint(memtx_writel(s, TRANSFER + 0x10, 0x80402001),
+                            ==, MEMTX_ERROR);
+            g_assert_cmphex(saved_transfer_mask(s, path), ==, 0);
+            qtest_quit(s);
+        }
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_mask_commands(void)
+{
+    const uint32_t masks[] = { 0, UINT32_MAX, 0x80402001, 0x13579bdf };
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-command-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+        QTestState *s = start_profile(true,
+            "-global sgi-crime.functional-memory-transfer=on");
+        QTestState *to = start_profile(true,
+            "-global sgi-crime.functional-memory-transfer=on -incoming defer");
+        g_autofree char *quoted = g_shell_quote(path);
+        g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+        qtest_writel(s, TRANSFER + 0x10, masks[i]);
+        qtest_writeq(s, LINEAR_TLB, 0x8000000380000004ULL);
+        qtest_writel(s, TRANSFER + 8, UINT32_MAX);
+        qtest_writel(s, TRANSFER + 0x18, 0x5a);
+        qtest_writel(s, TRANSFER + 0x30, 7);
+        qtest_writel(s, TRANSFER + 0x38, 22);
+        qtest_memset(s, 0x3000, 0x6c, 64);
+        qtest_writel(s, TRANSFER + 0x800, 4U << 2);
+        for (unsigned b = 0; b < 64; b++) {
+            g_assert_cmphex(qtest_readb(s, 0x3000 + b), ==,
+                            b >= 7 && b <= 22 ? 0x5a : 0x6c);
+        }
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+        sgi_wait_migration(to, "completed");
+        g_assert_cmphex(saved_transfer_mask(to, path), ==, masks[i]);
+        qtest_quit(s);
+        s = to;
+        qtest_writel(s, TRANSFER + 0x20, 7);
+        qtest_writel(s, TRANSFER + 0x28, 22);
+        qtest_writel(s, TRANSFER + 0x30, 0x1007);
+        qtest_writel(s, TRANSFER + 0x38, 0x1016);
+        qtest_memset(s, 0x4000, 0xa3, 64);
+        qtest_writel(s, TRANSFER + 0x800,
+                     (1U << 11) | (4U << 5) | (4U << 2));
+        for (unsigned b = 0; b < 64; b++) {
+            g_assert_cmphex(qtest_readb(s, 0x4000 + b), ==,
+                            b >= 7 && b <= 22 ? 0x5a : 0xa3);
+        }
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_assert_cmpint(memtx_writel(s, TRANSFER + 0x800,
+            (1U << 10) | (4U << 2)), ==, MEMTX_ERROR);
+        assert_stopped(s);
+        g_assert_cmphex(qtest_readl(s, TRANSFER), ==,
+                        (1U << 11) | (4U << 5) | (4U << 2));
+        for (unsigned b = 0; b < 64; b++) {
+            g_assert_cmphex(qtest_readb(s, 0x4000 + b), ==,
+                            b >= 7 && b <= 22 ? 0x5a : 0xa3);
+        }
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_system_reset(s);
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, 0);
+        qtest_quit(s);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_mask_tiled(void)
+{
+    const uint32_t masks[] = { 0, UINT32_MAX, 0x80402001, 0x13579bdf };
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-tiled-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+        QTestState *s = start_profile(true,
+            "-global sgi-crime.functional-memory-transfer=on");
+
+        qtest_writel(s, TRANSFER + 0x10, masks[i]);
+        qtest_writeq(s, RENDERER + 0x1000, 0x8003000000000000ULL);
+        qtest_writel(s, TRANSFER, 0);
+        qtest_writel(s, TRANSFER + 8, UINT32_MAX);
+        qtest_writel(s, TRANSFER + 0x18, 0xb7);
+        qtest_writel(s, TRANSFER + 0x40, 1);
+        qtest_writel(s, TRANSFER + 0x48, 1);
+        qtest_writel(s, TRANSFER + 0x30, 7U << 16);
+        qtest_memset(s, 0x30000, 0x6c, 64);
+        qtest_writel(s, TRANSFER + 0x838, 22U << 16);
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_writel(s, TRANSFER + 0x20, 7U << 16);
+        qtest_writel(s, TRANSFER + 0x28, 22U << 16);
+        qtest_writel(s, TRANSFER + 0x30, 32U << 16);
+        qtest_writel(s, TRANSFER + 0x38, 47U << 16);
+        qtest_writel(s, TRANSFER + 0x800, 1U << 11);
+        for (unsigned b = 0; b < 64; b++) {
+            g_assert_cmphex(qtest_readb(s, 0x30000 + b), ==,
+                (b >= 7 && b <= 22) || (b >= 32 && b <= 47) ? 0xb7 : 0x6c);
+        }
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_writel(s, TRANSFER, (1U << 11) | (1U << 10));
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_assert_cmpint(memtx_writel(s, TRANSFER + 0x818, 0x55), ==,
+                        MEMTX_ERROR);
+        assert_stopped(s);
+        g_assert_cmphex(qtest_readl(s, TRANSFER + 0x18), ==, 0xb7);
+        for (unsigned b = 0; b < 64; b++) {
+            g_assert_cmphex(qtest_readb(s, 0x30000 + b), ==,
+                (b >= 7 && b <= 22) || (b >= 32 && b <= 47) ? 0xb7 : 0x6c);
+        }
+        g_assert_cmphex(saved_transfer_mask(s, path), ==, masks[i]);
+        qtest_quit(s);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void test_renderer_profile_policy(void)
 {
     for (unsigned legacy = 0; legacy < 2; legacy++) {
@@ -2325,6 +2534,12 @@ int main(int argc, char **argv)
         "malformed-stop", "status-bank-store",
     };
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/crime/transfer-mask/tiled", test_transfer_mask_tiled);
+    qtest_add_func("/sgi/crime/transfer-mask/stage", test_transfer_mask_stage);
+    qtest_add_func("/sgi/crime/transfer-mask/refusal",
+                   test_transfer_mask_refusal);
+    qtest_add_func("/sgi/crime/transfer-mask/commands",
+                   test_transfer_mask_commands);
     qtest_add_func("/sgi/crime/renderer/ifb/read", test_ifb_read);
     qtest_add_data_func("/sgi/crime/renderer/ifb/write",
                         GUINT_TO_POINTER(0), test_opaque_renderer_write);

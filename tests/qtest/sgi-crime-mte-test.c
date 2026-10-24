@@ -256,7 +256,8 @@ static void test_registers(void)
     for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
         g_assert_cmpint(memtx_readl(s, MTE + unsupported[i], &w), !=, MEMTX_OK);
         if (!strcmp(selected_profile, "legacy-software") &&
-            (unsupported[i] == 0x70 || unsupported[i] == 0x78)) {
+            (unsupported[i] == 0x10 || unsupported[i] == 0x70 ||
+             unsupported[i] == 0x78)) {
             g_assert_cmpint(memtx_writel(s, MTE + unsupported[i], 0),
                             ==, MEMTX_OK);
         } else {
@@ -621,7 +622,9 @@ static void test_migration_invalid_state(gconstpointer data)
     g_autofree char *stream = NULL;
     gsize size;
     char *state;
-    bool functional = fault != 5;
+    /* The legacy mask slot is valid only with functional transfer enabled. */
+    bool functional = fault != 5 &&
+        !(fault == 2 && !strcmp(selected_profile, "legacy-software"));
     QTestState *from = start_profile(functional, "");
     QTestState *to = start_profile(functional, "-incoming defer");
 
