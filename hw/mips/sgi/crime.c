@@ -1123,6 +1123,10 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
                           (hwaddr)(0x14000000ULL + offset), value);
             return MEMTX_OK;
         }
+        if (offset == CRIME_TRANSFER + 0x10 && size == 4) {
+            s->transfer.parameter[2] = value;
+            return MEMTX_OK;
+        }
         if (offset == CRIME_RENDER_STATUS + 8 && size == 4) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-crime: opaque engine-status-bank "
@@ -1757,7 +1761,8 @@ static int crime_transfer_post_load(void *opaque, int version_id)
     SGICrimeState *s = opaque;
     CrimeTransferState *incoming = &s->incoming_transfer;
 
-    if (incoming->ecc_enable > 1 || incoming->parameter[2] ||
+    if (incoming->ecc_enable > 1 ||
+        (!s->legacy_software && incoming->parameter[2]) ||
         (!s->functional_memory_transfer && incoming->ecc_enable) ||
         (s->incoming_memory_error_status &
          ~(CRIME_ERROR_READ | CRIME_ERROR_WRITE | CRIME_ERROR_RMW)) ||
