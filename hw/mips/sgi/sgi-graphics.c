@@ -183,8 +183,8 @@ static char *sgi_graphics_slot_placements(const SGIModelGraphics *g)
 
 /*
  * A setting's value as -device spells it and the catalogue lists it, or
- * NULL when the device leaves it unset: an empty string, or zero for a
- * number.
+ * NULL when the device leaves it unset (an empty string, or zero for a
+ * number) or has no such setting.
  */
 static char *sgi_graphics_get(DeviceState *dev, const char *name)
 {
@@ -192,7 +192,9 @@ static char *sgi_graphics_get(DeviceState *dev, const char *name)
     uint64_t number;
     char *text;
 
-    g_assert(prop);
+    if (!prop) {
+        return NULL;
+    }
     if (g_str_equal(prop->type, "str")) {
         text = object_property_get_str(OBJECT(dev), name, &error_abort);
         if (!text || !*text) {
@@ -299,8 +301,14 @@ static GHashTable *sgi_graphics_requested(DeviceState *dev,
     GHashTable *values = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                g_free, g_free);
 
-    /* Every setting any refusal or offer at this slot names. */
+    /*
+     * Every setting a refusal or offer of @family at this slot names; other
+     * families' settings need not exist on @dev.
+     */
     for (SGIModelGraphicsRefusalList *r = slot->refusals; r; r = r->next) {
+        if (r->value->family != family) {
+            continue;
+        }
         for (SGIModelGraphicsPropertyList *p = r->value->settings; p;
              p = p->next) {
             char *value = sgi_graphics_get(dev, p->value->name);

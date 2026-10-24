@@ -682,6 +682,18 @@ static void test_refusals(void)
                    "graphics slot io3 of topology 'origin2000-rack' takes "
                    "sgi-mgras, not sgi-kona: an Origin 2000 with an "
                    "InfiniteReality pipe is an Onyx2, so use onyx2-rack");
+    /*
+     * ... including at a slot whose refusals name a setting the requested
+     * family does not have.
+     */
+    assert_refused(launch_for("onyx2-deskside"),
+                   "-device sgi-mgras,slot=io4",
+                   "graphics slot io4 of topology 'onyx2-deskside' takes "
+                   "sgi-kona, not sgi-mgras");
+    assert_refused(launch_for("onyx2-deskside"),
+                   "-device sgi-odyssey,slot=io4",
+                   "graphics slot io4 of topology 'onyx2-deskside' takes "
+                   "sgi-kona, not sgi-odyssey");
     assert_refused(launch_for("origin200-gigachannel"),
                    "-device sgi-kona,slot=io6",
                    "takes sgi-mgras, not sgi-kona: SGI did not offer "
