@@ -14,6 +14,7 @@
 #include "hw/i2c/bitbang_i2c.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
+#include "qapi/visitor.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/bitops.h"
@@ -24,7 +25,12 @@
 
 #define TYPE_SGI_O2_GBE "sgi-o2-gbe"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIO2GBEState, SGI_O2_GBE)
-#define DMA_BASE 0x40000000u
+enum { GBE_DMA_CRIME_15, GBE_DMA_LEGACY };
+
+static const QEnumLookup dma_view_lookup = {
+    .array = (const char *const[]) { "crime-1.5", "legacy-software" },
+    .size = 2,
+};
 #define FREEZE BIT(31)
 #define FIELDS 0xffffffu
 #define RGB 0xffffff00u
@@ -39,10 +45,10 @@ struct SGIO2GBEState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     MemoryRegion *ram;
-    MemoryRegion dma_window, dma_ram;
     AddressSpace dma_as;
     SGIScanout scanout;
     bool functional;
+    int dma_view;
     uint8_t model_config;
     uint64_t reference_hz, ttl_hz, differential_hz;
     uint32_t ctrl, dot, sysclk;
@@ -116,19 +122,28 @@ static bool in_signal(unsigned p, uint32_t reg, unsigned period)
 
 static bool dma_read(SGIO2GBEState *s, uint64_t addr, void *buf, size_t len)
 {
+    uint64_t base = s->dma_view == GBE_DMA_LEGACY ? 0 : 0x40000000;
+    uint64_t limit = s->dma_view == GBE_DMA_LEGACY ? 0x10000000 : 0x80000000;
     uint64_t size = s->ram ? memory_region_size(s->ram) : 0;
-    uint64_t offset = addr - DMA_BASE;
+    uint64_t offset;
 
-    if (addr < DMA_BASE || addr > UINT32_MAX || offset > size ||
-        len > size - offset ||
-        dma_memory_read(&s->dma_as, addr, buf, len,
+    if (!len || addr > UINT32_MAX || len > (1ULL << 32) - addr ||
+        addr < base || addr + len > limit) {
+        goto invalid;
+    }
+    offset = addr - base;
+    if (offset > size || len > size - offset ||
+        dma_memory_read(&s->dma_as, offset, buf, len,
                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-o2-gbe: DMA outside linked RAM at 0x%" PRIx64
-                      " (%zu bytes)\n", addr, len);
-        return false;
+        goto invalid;
     }
     return true;
+
+invalid:
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-o2-gbe: DMA outside linked RAM at 0x%" PRIx64
+                  " (%zu bytes)\n", addr, len);
+    return false;
 }
 
 static bool plane_held(SGIO2GBEState *s, unsigned plane)
@@ -1122,7 +1137,7 @@ static const VMStateDescription vmstate_gbe = {
 static void realize(DeviceState *dev, Error **errp)
 {
     SGIO2GBEState *s = SGI_O2_GBE(dev);
-    s->model_config = s->functional;
+    s->model_config = s->functional | s->dma_view << 1;
     if (s->reference_hz > 1000000000 || !s->reference_hz ||
         s->ttl_hz > 1000000000 || s->differential_hz > 1000000000) {
         error_setg(errp, "GBE clock inputs must be at most 1 GHz, with a "
@@ -1137,12 +1152,7 @@ static void realize(DeviceState *dev, Error **errp)
         error_setg(errp, "GBE functional-display requires populated DMA RAM");
         return;
     }
-    memory_region_init(&s->dma_window, OBJECT(dev), "sgi-o2-gbe.dma-window",
-                       UINT64_MAX);
-    memory_region_init_alias(&s->dma_ram, OBJECT(dev), "sgi-o2-gbe.dma-ram",
-                             s->ram, 0, memory_region_size(s->ram));
-    memory_region_add_subregion(&s->dma_window, DMA_BASE, &s->dma_ram);
-    address_space_init(&s->dma_as, &s->dma_window, "sgi-o2-gbe.dma");
+    address_space_init(&s->dma_as, s->ram, "sgi-o2-gbe.dma");
     sgi_scanout_init(&s->scanout, dev, &scanout_ops, s);
 }
 
@@ -1154,13 +1164,27 @@ static void unrealize(DeviceState *dev)
     if (s->functional) {
         sgi_scanout_cleanup(&s->scanout);
         address_space_destroy(&s->dma_as);
-        memory_region_del_subregion(&s->dma_window, &s->dma_ram);
-        object_unparent(OBJECT(&s->dma_ram));
-        object_unparent(OBJECT(&s->dma_window));
     }
 }
 
+static void dma_view_property(Object *obj, Visitor *v, const char *name,
+                               void *opaque, Error **errp)
+{
+    SGIO2GBEState *s = SGI_O2_GBE(obj);
+
+    visit_type_enum(v, name, &s->dma_view, &dma_view_lookup, errp);
+}
+
+static const PropertyInfo prop_dma_view = {
+    .type = "GBEDMAView",
+    .description = "GBE read-DMA address domain",
+    .enum_table = &dma_view_lookup,
+    .get = dma_view_property,
+    .set = dma_view_property,
+};
+
 static const Property properties[] = {
+    DEFINE_PROP("dma-view", SGIO2GBEState, dma_view, prop_dma_view, int),
     DEFINE_PROP_BOOL("functional-display", SGIO2GBEState, functional, false),
     DEFINE_PROP_UINT64("reference-hz", SGIO2GBEState, reference_hz, 20000000),
     DEFINE_PROP_UINT64("external-ttl-hz", SGIO2GBEState, ttl_hz, 0),
