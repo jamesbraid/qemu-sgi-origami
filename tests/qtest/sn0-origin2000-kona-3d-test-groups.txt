@@ -9,7 +9,8 @@
 #
 # The groups are areas: shared-renderer cases drawn with the host renderer
 # (renderer, and its fragment tests in renderer-fragment) and with it
-# unavailable (renderer-cpu and renderer-cpu-fragment), texturing, pixel
+# unavailable (renderer-cpu and renderer-cpu-fragment), texturing (texture,
+# and texture-formats for the per-format and per-source suites), pixel
 # reads, pixel drawing and copies, colour index, and the rest of the GL
 # state.
 
@@ -136,15 +137,15 @@ texture /mips64/sn0/origin2000/kona-3d/texture-pio-layout
 texture /mips64/sn0/origin2000/kona-3d/texture-prefix
 texture /mips64/sn0/origin2000/kona-3d/texture-rgb5-storage
 texture /mips64/sn0/origin2000/kona-3d/texture-transfer
-texture /mips64/sn0/origin2000/kona-3d/texture/1d
-texture /mips64/sn0/origin2000/kona-3d/texture/byte
-texture /mips64/sn0/origin2000/kona-3d/texture/depth
-texture /mips64/sn0/origin2000/kona-3d/texture/detail
-texture /mips64/sn0/origin2000/kona-3d/texture/dma
-texture /mips64/sn0/origin2000/kona-3d/texture/float
-texture /mips64/sn0/origin2000/kona-3d/texture/float/migration
-texture /mips64/sn0/origin2000/kona-3d/texture/integer
-texture /mips64/sn0/origin2000/kona-3d/texture/interior
-texture /mips64/sn0/origin2000/kona-3d/texture/rgb
-texture /mips64/sn0/origin2000/kona-3d/texture/source-colour
-texture /mips64/sn0/origin2000/kona-3d/texture/volume
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/1d
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/byte
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/depth
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/detail
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/dma
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/float
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/float/migration
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/integer
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/interior
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/rgb
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/source-colour
+texture-formats /mips64/sn0/origin2000/kona-3d/texture/volume
