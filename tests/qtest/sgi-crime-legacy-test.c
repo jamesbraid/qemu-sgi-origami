@@ -1055,8 +1055,8 @@ static void test_renderer_hard_stop(void)
 {
     const RendererAccess accesses[] = {
         { 0x400, 4, true }, { 0x2880, 4, true },
-        { 0x21f0, 4, true }, { 0x21f8, 4, true },
-        { 0x3070, 4, true }, { 0x3078, 4, true },
+        { 0x21f0, 8, true }, { 0x21f8, 4, true },
+        { 0x3070, 8, true }, { 0x3078, 4, true },
         { 0x3808, 4, true }, { 0x3800, 4, true },
         { 0x3838, 4, true },
         { 0x3000, 8, true }, { 0x3001, 4, true },

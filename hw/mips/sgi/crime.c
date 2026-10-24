@@ -5,7 +5,8 @@
  * The default 1.5 interface has an explicit legacy software alternative.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
  * An opt-in synchronous linear transfer approximation uses healthy RAM.
- * Physical ECC, watchdog, rasterization, GBE and VICE are not modeled.
+ * The legacy functional profile includes synchronous tiled 2D rendering.
+ * Physical ECC, watchdog, 3D rendering and VICE are not modeled.
  * Unsupported register operations fail visibly.
  */
 #include "qemu/osdep.h"
@@ -16,6 +17,7 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -181,6 +183,9 @@ static bool crime_transfer_overlap(const CrimeTransferSpan *a,
            b->offset < a->offset + a->length;
 }
 
+static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
+                                       const uint32_t *parameter);
+
 static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
                                           unsigned index, uint32_t value)
 {
@@ -195,11 +200,21 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     unsigned position;
 
     memcpy(parameter, s->transfer.parameter, sizeof(parameter));
-    parameter[index] = value;
+    if (index < CRIME_TRANSFER_PARAMETERS) {
+        parameter[index] = value;
+    }
     mode = parameter[0];
     copy = mode & (1U << 11);
     src = (mode >> 5) & 7;
     dst = (mode >> 2) & 7;
+    if (s->legacy_software && dst < 3) {
+        MemTxResult result = crime_tiled_commit(s, offset, parameter);
+
+        if (result == MEMTX_OK && index < CRIME_TRANSFER_PARAMETERS) {
+            s->transfer.parameter[index] = value;
+        }
+        return result;
+    }
     if ((mode & ~0x8ffU) || (dst != 4 && dst != 5) ||
         (copy && src != 4 && src != 5) || parameter[1] != UINT32_MAX) {
         return crime_transfer_fail(offset, "unsupported transfer mode or mask");
@@ -250,7 +265,9 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         }
     } else {
         memset(buffer, parameter[3] & 0xff, destination_length);
-        s->transfer.parameter[index] = value;
+        if (index < CRIME_TRANSFER_PARAMETERS) {
+            s->transfer.parameter[index] = value;
+        }
     }
     position = 0;
     for (unsigned i = 0; i < destination_count; i++) {
@@ -264,7 +281,9 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         position += span->length;
     }
     if (copy) {
-        s->transfer.parameter[index] = value;
+        if (index < CRIME_TRANSFER_PARAMETERS) {
+            s->transfer.parameter[index] = value;
+        }
     } else if (suppressed.validity_clear || suppressed.outside_mask) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-crime: LINEAR CLEAR suppressed %u destination pages "
@@ -279,6 +298,555 @@ static bool crime_renderer_touches(hwaddr offset, unsigned size,
                                     hwaddr start, unsigned length)
 {
     return offset < start + length && start < offset + size;
+}
+
+/* The admitted state is sparse; padding is not another writable register. */
+typedef struct CrimeRenderRegister {
+    unsigned offset;
+    unsigned size;
+    bool readable;
+} CrimeRenderRegister;
+
+static const CrimeRenderRegister crime_render_registers[] = {
+    { 0x000, 4, true }, { 0x008, 4, true },
+    { 0x010, 4, true }, { 0x018, 4, true },
+    { 0x020, 8, true }, { 0x028, 8, true }, { 0x030, 8, true },
+    { 0x038, 8, true }, { 0x040, 8, true }, { 0x048, 8, true },
+    { 0x050, 4, true }, { 0x058, 4, true },
+    { 0x060, 4, false }, { 0x070, 4, false }, { 0x074, 4, false },
+    { 0x078, 4, false }, { 0x0a0, 4, false },
+    { 0x0a8, 4, false }, { 0x0ac, 4, false },
+    { 0x0d0, 4, false }, { 0x0d8, 4, true },
+    { 0x1b0, 4, true }, { 0x1b8, 4, true },
+};
+
+static const CrimeRenderRegister *crime_render_register(unsigned offset)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(crime_render_registers); i++) {
+        if (crime_render_registers[i].offset == offset) {
+            return &crime_render_registers[i];
+        }
+    }
+    return NULL;
+}
+
+static bool crime_render_state_access(hwaddr offset, unsigned size)
+{
+    if (crime_renderer_touches(offset, size, 0x1001000, 0x600)) {
+        return true;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(crime_render_registers); i++) {
+        const CrimeRenderRegister *reg = &crime_render_registers[i];
+
+        if (crime_renderer_touches(offset, size, 0x1002000 + reg->offset,
+                                    reg->size)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+typedef struct CrimeRenderPixel {
+    uint64_t source;
+    uint64_t destination;
+    uint64_t source_id;
+    uint64_t destination_id;
+    uint32_t mask;
+} CrimeRenderPixel;
+
+/* Resolve through the populated-bank decoder before coherent DMA. */
+static bool crime_render_translate(SGICrimeState *s, unsigned bank,
+                                    unsigned x, unsigned y, unsigned bytes,
+                                    uint64_t *physical, uint64_t *identity)
+{
+    unsigned byte_x = x * bytes;
+    unsigned index = (y / 128) * 16 + byte_x / 512;
+    uint64_t word, address;
+    uint16_t entry;
+    CrimeTransferSpan span;
+
+    if (bank >= 3 || x >= 2048 || y >= 2048 || index >= 256) {
+        return false;
+    }
+    word = s->render.tlb[bank * 64 + index / 4];
+    entry = word >> (48 - 16 * (index % 4));
+    if (!(entry & 0x8000)) {
+        return false;
+    }
+    address = ((uint64_t)(entry & 0x7fff) << 16) +
+              (y % 128) * 512 + byte_x % 512;
+    if (!crime_transfer_resolve(s, address, bytes, &span)) {
+        return false;
+    }
+    *physical = address;
+    *identity = span.offset;
+    return true;
+}
+
+static int crime_render_compare_destination(const void *a, const void *b,
+                                             void *opaque)
+{
+    const CrimeRenderPixel *pixels = opaque;
+    uint64_t x = pixels[*(const uint32_t *)a].destination_id;
+    uint64_t y = pixels[*(const uint32_t *)b].destination_id;
+
+    return (x > y) - (x < y);
+}
+
+static uint32_t crime_render_byte_mask(const CrimeRenderPixel *p,
+                                        unsigned byte, unsigned bytes)
+{
+    return (p->mask >> (8 * (bytes - 1 - byte))) & 0xff;
+}
+
+/* Sorting identities must not change the programmed retirement order. */
+static bool crime_render_validate(CrimeRenderPixel *pixels, unsigned count,
+                                   unsigned bytes, bool check_overlap,
+                                   bool *overlap)
+{
+    g_autofree uint32_t *order = g_new(uint32_t, count);
+
+    *overlap = false;
+    if (!count) {
+        return true;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        order[i] = i;
+    }
+    g_qsort_with_data(order, count, sizeof(*order),
+                      crime_render_compare_destination, pixels);
+    for (unsigned i = 0; i < count; i++) {
+        CrimeRenderPixel *p = &pixels[order[i]];
+
+        for (unsigned j = i; j > 0; j--) {
+            CrimeRenderPixel *q = &pixels[order[j - 1]];
+
+            if (q->destination_id + bytes <= p->destination_id) {
+                break;
+            }
+            for (unsigned b = 0; b < bytes; b++) {
+                uint64_t address = p->destination_id + b;
+
+                if (crime_render_byte_mask(p, b, bytes) &&
+                    address >= q->destination_id &&
+                    address < q->destination_id + bytes &&
+                    crime_render_byte_mask(q, address - q->destination_id,
+                                            bytes)) {
+                    return false;
+                }
+            }
+        }
+        if (check_overlap) {
+            unsigned lo = 0, hi = count;
+
+            while (lo < hi) {
+                unsigned mid = lo + (hi - lo) / 2;
+                uint64_t destination = pixels[order[mid]].destination_id;
+
+                if (destination < pixels[i].source_id) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (lo < count && pixels[order[lo]].destination_id ==
+                              pixels[i].source_id) {
+                *overlap = true;
+            }
+        }
+    }
+    return true;
+}
+
+static uint32_t crime_render_load_pixel(const uint8_t *data, unsigned bytes)
+{
+    switch (bytes) {
+    case 1:
+        return data[0];
+    case 2:
+        return lduw_be_p(data);
+    default:
+        return ldl_be_p(data);
+    }
+}
+
+static void crime_render_store_pixel(uint8_t *data, unsigned bytes,
+                                      uint32_t value)
+{
+    switch (bytes) {
+    case 1:
+        data[0] = value;
+        break;
+    case 2:
+        stw_be_p(data, value);
+        break;
+    default:
+        stl_be_p(data, value);
+        break;
+    }
+}
+
+static uint32_t crime_render_rop(unsigned operation, uint32_t source,
+                                  uint32_t destination)
+{
+    switch (operation) {
+    case 0: return 0;
+    case 1: return source & destination;
+    case 2: return source & ~destination;
+    case 3: return source;
+    case 4: return ~source & destination;
+    case 5: return destination;
+    case 6: return source ^ destination;
+    case 7: return source | destination;
+    case 8: return ~(source | destination);
+    case 9: return ~(source ^ destination);
+    case 10: return ~destination;
+    case 11: return source | ~destination;
+    case 12: return ~source;
+    case 13: return ~source | destination;
+    case 14: return ~(source & destination);
+    default: return UINT32_MAX;
+    }
+}
+
+static MemTxResult crime_render_execute(hwaddr offset,
+                                         CrimeRenderPixel *pixels,
+                                         unsigned count, unsigned bytes,
+                                         bool copy, uint32_t foreground,
+                                         unsigned rop, bool read_destination)
+{
+    for (unsigned i = 0; i < count; i++) {
+        CrimeRenderPixel *p = &pixels[i];
+        uint8_t source_data[4], destination_data[4];
+        uint32_t source = foreground, destination = 0, result;
+
+        if (copy) {
+            if (address_space_read(&address_space_memory, p->source,
+                                   MEMTXATTRS_UNSPECIFIED, source_data,
+                                   bytes) != MEMTX_OK) {
+                return crime_transfer_fail(offset, "validated source failed");
+            }
+            source = crime_render_load_pixel(source_data, bytes);
+        }
+        if (read_destination) {
+            if (address_space_read(&address_space_memory, p->destination,
+                                   MEMTXATTRS_UNSPECIFIED, destination_data,
+                                   bytes) != MEMTX_OK) {
+                return crime_transfer_fail(offset,
+                                           "validated destination failed");
+            }
+            destination = crime_render_load_pixel(destination_data, bytes);
+        }
+        result = crime_render_rop(rop, source, destination);
+        result = (destination & ~p->mask) | (result & p->mask);
+        crime_render_store_pixel(destination_data, bytes, result);
+        if (address_space_write(&address_space_memory, p->destination,
+                                MEMTXATTRS_UNSPECIFIED, destination_data,
+                                bytes) != MEMTX_OK) {
+            return crime_transfer_fail(offset, "validated RAM write failed");
+        }
+    }
+    return MEMTX_OK;
+}
+
+static bool crime_render_mode(uint32_t mode, unsigned *bank, unsigned *bytes)
+{
+    *bank = mode >> 10;
+    if (*bank >= 3) {
+        return false;
+    }
+    switch (mode & 0x3ff) {
+    case 0:
+        *bytes = 1;
+        return true;
+    case 0x124:
+        *bytes = 2;
+        return true;
+    case 0x228:
+        *bytes = 4;
+        return true;
+    default:
+        return false;
+    }
+}
+
+typedef struct CrimeRenderClip {
+    unsigned xmin, ymin, xmax, ymax;
+} CrimeRenderClip;
+
+static CrimeRenderClip crime_render_clip(uint64_t value)
+{
+    return (CrimeRenderClip) {
+        .xmin = value >> 48, .ymin = (value >> 32) & 0xffff,
+        .xmax = (value >> 16) & 0xffff, .ymax = value & 0xffff,
+    };
+}
+
+static bool crime_render_inside(const CrimeRenderClip *clip, int x, int y)
+{
+    return x >= clip->xmin && x < clip->xmax &&
+           y >= clip->ymin && y < clip->ymax;
+}
+
+static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
+                                           int index, uint64_t value)
+{
+    uint64_t p[128];
+    uint32_t draw, primitive, clip, plane;
+    unsigned destination_bank, source_bank = 0, bytes, source_bytes;
+    int x0, y0, x1, y1, sx, sy, dx, dy;
+    unsigned width, height, count = 0, operation;
+    bool copy, overlap, screen_enabled = false, inside = false;
+    CrimeRenderClip scissor, screen = { 0 };
+    g_autofree CrimeRenderPixel *pixels = NULL;
+    MemTxResult result;
+
+    memcpy(p, s->render.parameter, sizeof(p));
+    if (index >= 0) {
+        p[index] = value;
+    }
+    draw = p[0x18 / 4];
+    primitive = p[0x60 / 4];
+    clip = p[0x10 / 4];
+    copy = draw & 0x200000;
+    if ((draw & ~0x3002f8U) ||
+        (primitive & ~0x30000U) != 0x3000000 ||
+        p[0x50 / 4] || p[0x58 / 4]) {
+        return crime_transfer_fail(offset, "unsupported rectangle state");
+    }
+    if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes)) {
+        return crime_transfer_fail(offset, "unsupported destination mode");
+    }
+    if (copy &&
+        (!crime_render_mode(p[0], &source_bank, &source_bytes) ||
+         source_bytes != bytes || p[0xa8 / 4] != 1 || p[0xac / 4] != 1)) {
+        return crime_transfer_fail(offset, "unsupported rectangle source");
+    }
+    operation = draw & 0x200 ? p[0x1b0 / 4] : 3;
+    if ((draw & 0x200) && p[0x1b0 / 4] > 15) {
+        return crime_transfer_fail(offset, "unsupported raster operation");
+    }
+    if (clip & ~0x3ffU) {
+        return crime_transfer_fail(offset, "unsupported clip mode");
+    }
+    for (unsigned n = 0; n < 5; n++) {
+        unsigned enable = 1U << (9 - n), select = 1U << (4 - n);
+
+        if (clip & enable) {
+            if (screen_enabled || (clip & ~(enable | select))) {
+                return crime_transfer_fail(offset, "multiple screen masks");
+            }
+            screen_enabled = true;
+            inside = clip & select;
+            screen = crime_render_clip(p[(0x20 + 8 * n) / 4]);
+        }
+    }
+    if ((clip && !screen_enabled) ||
+        (screen_enabled && (screen.xmin > screen.xmax ||
+                            screen.ymin > screen.ymax))) {
+        return crime_transfer_fail(offset, "invalid screen mask");
+    }
+    scissor = crime_render_clip(p[0x48 / 4]);
+    if ((draw & 0x100000) &&
+        (scissor.xmin > scissor.xmax || scissor.ymin > scissor.ymax)) {
+        return crime_transfer_fail(offset, "invalid scissor");
+    }
+    x0 = (p[0x70 / 4] >> 16) & 0xffff;
+    y0 = p[0x70 / 4] & 0xffff;
+    x1 = (p[0x74 / 4] >> 16) & 0xffff;
+    y1 = p[0x74 / 4] & 0xffff;
+    sx = (p[0xa0 / 4] >> 16) & 0xffff;
+    sy = p[0xa0 / 4] & 0xffff;
+    dx = primitive & 0x10000 ? -1 : 1;
+    dy = primitive & 0x20000 ? 1 : -1;
+    if (x0 >= 2048 || x1 >= 2048 || y0 >= 2048 || y1 >= 2048 ||
+        (x1 - x0) * dx < 0 || (y1 - y0) * dy < 0) {
+        return crime_transfer_fail(offset, "invalid rectangle bounds");
+    }
+    width = abs(x1 - x0) + 1;
+    height = abs(y1 - y0) + 1;
+    if (copy && (sx >= 2048 || sy >= 2048 ||
+                 sx + dx * (int)(width - 1) < 0 ||
+                 sx + dx * (int)(width - 1) >= 2048 ||
+                 sy + dy * (int)(height - 1) < 0 ||
+                 sy + dy * (int)(height - 1) >= 2048)) {
+        return crime_transfer_fail(offset, "invalid source rectangle");
+    }
+    plane = draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX;
+    plane &= UINT32_MAX >> (32 - 8 * bytes);
+    pixels = g_new(CrimeRenderPixel, width * height);
+    for (unsigned row = 0; row < height; row++) {
+        int y = y0 + dy * (int)row;
+
+        for (unsigned col = 0; col < width; col++) {
+            int x = x0 + dx * (int)col;
+            uint32_t mask = plane;
+            CrimeRenderPixel *pixel;
+
+            if (((draw & 0x100000) &&
+                 !crime_render_inside(&scissor, x, y)) ||
+                (screen_enabled &&
+                 crime_render_inside(&screen, x, y) != inside)) {
+                continue;
+            }
+            for (unsigned b = 0; b < bytes; b++) {
+                if (!(draw & (1U << (6 - ((x * bytes + b) & 3))))) {
+                    mask &= ~(0xffU << (8 * (bytes - 1 - b)));
+                }
+            }
+            if (!mask) {
+                continue;
+            }
+            pixel = &pixels[count++];
+            pixel->mask = mask;
+            if (!crime_render_translate(s, destination_bank, x, y, bytes,
+                                         &pixel->destination,
+                                         &pixel->destination_id) ||
+                (copy && !crime_render_translate(
+                    s, source_bank, sx + dx * (int)col, sy + dy * (int)row,
+                    bytes, &pixel->source, &pixel->source_id))) {
+                return crime_transfer_fail(offset, "invalid rectangle mapping");
+            }
+        }
+    }
+    if (!crime_render_validate(pixels, count, bytes, false, &overlap)) {
+        return crime_transfer_fail(offset, "destination aliases itself");
+    }
+    /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
+    result = crime_render_execute(offset, pixels, count, bytes, copy,
+                                   p[0xd0 / 4], operation, true);
+    if (result == MEMTX_OK && index >= 0) {
+        s->render.parameter[index] = value;
+    }
+    return result;
+}
+
+static void crime_render_record_tile(uint64_t *bases, bool *seen,
+                                      unsigned index, uint64_t identity,
+                                      unsigned x, unsigned y, bool *unique)
+{
+    uint64_t base = identity - (y % 128) * 512 - x % 512;
+
+    if (!seen[index]) {
+        for (unsigned i = 0; i < 256; i++) {
+            if (seen[i] && bases[i] == base) {
+                *unique = false;
+            }
+        }
+        seen[index] = true;
+        bases[index] = base;
+    } else if (bases[index] != base) {
+        *unique = false;
+    }
+}
+
+static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
+                                       const uint32_t *p)
+{
+    unsigned mode = p[0], source_bank = (mode >> 5) & 7;
+    unsigned destination_bank = (mode >> 2) & 7;
+    bool copy = mode & 0x800, overlap, unique = true;
+    int dy = p[9] == 1 ? 1 : -1;
+    int dx0 = p[6] >> 16, dx1 = p[7] >> 16;
+    int dy0 = p[6] & 0xffff, dy1 = p[7] & 0xffff;
+    int sx0 = p[4] >> 16, sx1 = p[5] >> 16;
+    int sy0 = p[4] & 0xffff, sy1 = p[5] & 0xffff;
+    unsigned width, height, count = 0;
+    uint64_t bases[256] = { 0 };
+    bool seen[256] = { false };
+    g_autofree CrimeRenderPixel *pixels = NULL;
+
+    if ((mode & ~0x8ffU) || destination_bank >= 3 ||
+        (copy && source_bank >= 3) || p[1] != UINT32_MAX ||
+        (p[9] != 1 && (!copy || p[9] != UINT32_MAX)) ||
+        (copy && p[8] != p[9]) ||
+        dx0 >= 2048 || dx1 >= 2048 || dy0 >= 2048 || dy1 >= 2048 ||
+        dx1 < dx0 || (dy1 - dy0) * dy < 0) {
+        return crime_transfer_fail(offset, "unsupported tiled transfer");
+    }
+    width = dx1 - dx0 + 1;
+    height = abs(dy1 - dy0) + 1;
+    if (copy &&
+        (sx0 >= 2048 || sx1 >= 2048 || sy0 >= 2048 || sy1 >= 2048 ||
+         sx1 < sx0 || (sy1 - sy0) * dy < 0 ||
+         sx1 - sx0 + 1 != width || abs(sy1 - sy0) + 1 != height)) {
+        return crime_transfer_fail(offset, "invalid tiled source bounds");
+    }
+    pixels = g_new(CrimeRenderPixel, width * height);
+    for (unsigned row = 0; row < height; row++) {
+        unsigned y = dy0 + dy * (int)row;
+        unsigned sy = sy0 + dy * (int)row;
+
+        for (unsigned col = 0; col < width; col++) {
+            unsigned x = dx0 + col, sx = sx0 + col;
+            CrimeRenderPixel *pixel = &pixels[count++];
+
+            pixel->mask = 0xff;
+            if (!crime_render_translate(s, destination_bank, x, y, 1,
+                                         &pixel->destination,
+                                         &pixel->destination_id) ||
+                (copy && !crime_render_translate(s, source_bank, sx, sy, 1,
+                                                 &pixel->source,
+                                                 &pixel->source_id))) {
+                return crime_transfer_fail(offset, "invalid tiled mapping");
+            }
+            if (copy && source_bank == destination_bank) {
+                crime_render_record_tile(bases, seen, (y / 128) * 16 + x / 512,
+                                           pixel->destination_id,
+                                           x, y, &unique);
+                crime_render_record_tile(bases, seen,
+                                           (sy / 128) * 16 + sx / 512,
+                                           pixel->source_id, sx, sy, &unique);
+            }
+        }
+    }
+    if (!crime_render_validate(pixels, count, 1, copy, &overlap) ||
+        (overlap && (source_bank != destination_bank ||
+                     sx0 != dx0 || sx1 != dx1 || !unique))) {
+        return crime_transfer_fail(offset,
+                                   "unsupported tiled alias or overlap");
+    }
+    if ((mode & 1) || (copy && (mode & 2))) {
+        crime_healthy_memory_notice(s);
+    }
+    return crime_render_execute(offset, pixels, count, 1, copy,
+                                 p[3] & 0xff, 3, false);
+}
+
+static MemTxResult crime_render_state_read(SGICrimeState *s, hwaddr offset,
+                                            uint64_t *value, unsigned size)
+{
+    const CrimeRenderRegister *reg;
+
+    if (offset >= 0x1001000 && offset < 0x1001600 &&
+        size == 8 && !(offset & 7)) {
+        *value = s->render.tlb[(offset - 0x1001000) / 8];
+        return MEMTX_OK;
+    }
+    reg = crime_render_register(offset - 0x1002000);
+    if (reg && reg->readable && size == reg->size) {
+        *value = s->render.parameter[reg->offset / 4];
+        return MEMTX_OK;
+    }
+    return crime_transfer_fail(offset, "invalid renderer state read");
+}
+
+static MemTxResult crime_render_state_write(SGICrimeState *s, hwaddr offset,
+                                             uint64_t value, unsigned size)
+{
+    const CrimeRenderRegister *reg;
+
+    if (offset >= 0x1001000 && offset < 0x1001600 &&
+        size == 8 && !(offset & 7)) {
+        s->render.tlb[(offset - 0x1001000) / 8] = value;
+        return MEMTX_OK;
+    }
+    reg = crime_render_register(offset - 0x1002000);
+    if (reg && size == reg->size) {
+        s->render.parameter[reg->offset / 4] = value;
+        return MEMTX_OK;
+    }
+    return crime_transfer_fail(offset, "invalid renderer state write");
 }
 
 static bool crime_renderer_must_stop(hwaddr offset, unsigned size, bool write)
@@ -302,7 +870,8 @@ static MemTxResult crime_renderer_unsupported(SGICrimeState *s, hwaddr offset,
 {
     if (s->legacy_software && s->functional_memory_transfer &&
         offset >= 0x1000000 && offset + size <= 0x1005000 &&
-        !crime_renderer_must_stop(offset, size, write)) {
+        (!crime_renderer_must_stop(offset, size, write) ||
+         (!write && offset == CRIME_TRANSFER + 0x70 && size == 4))) {
         if (write) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-crime: unsupported renderer %u-byte write "
@@ -326,6 +895,9 @@ static MemTxResult crime_transfer_read(SGICrimeState *s, hwaddr offset,
 {
     unsigned index;
 
+    if (s->legacy_software && crime_render_state_access(offset, size)) {
+        return crime_render_state_read(s, offset, value, size);
+    }
     if (offset >= CRIME_LINEAR_TLB && offset < CRIME_LINEAR_TLB + 256 &&
         size == 8 && !(offset & 7)) {
         *value = s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8];
@@ -350,6 +922,37 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
 {
     unsigned index;
 
+    if (s->legacy_software) {
+        const CrimeRenderRegister *reg =
+            crime_render_register(offset - 0x1002800);
+
+        if (crime_render_state_access(offset, size)) {
+            return crime_render_state_write(s, offset, value, size);
+        }
+        if (reg && size == reg->size) {
+            return crime_render_de_commit(s, offset, reg->offset / 4, value);
+        }
+        if (size == 4) {
+            if (offset == 0x10021f0 || offset == CRIME_TRANSFER + 0x70 ||
+                ((!value) && (offset == 0x10021f8 ||
+                              offset == CRIME_TRANSFER + 0x78))) {
+                return MEMTX_OK;
+            }
+            if (offset == 0x10029f0) {
+                return crime_render_de_commit(s, offset, -1, 0);
+            }
+            if (offset == CRIME_TRANSFER + 0x870) {
+                return crime_transfer_commit(s, offset,
+                                               CRIME_TRANSFER_PARAMETERS, 0);
+            }
+            if (offset >= CRIME_TRANSFER + 0x800 &&
+                offset < CRIME_TRANSFER + 0x850 &&
+                crime_transfer_parameter(offset - CRIME_TRANSFER - 0x800,
+                                           &index)) {
+                return crime_transfer_commit(s, offset, index, value);
+            }
+        }
+    }
     if (offset >= CRIME_LINEAR_TLB && offset < CRIME_LINEAR_TLB + 256 &&
         size == 8 && !(offset & 7)) {
         s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8] = value;
@@ -826,6 +1429,7 @@ static void crime_reset_enter(Object *obj, ResetType type)
     SGICrimeState *s = SGI_CRIME(obj);
 
     memset(&s->transfer, 0, sizeof(s->transfer));
+    memset(&s->render, 0, sizeof(s->render));
     s->healthy_memory_reported = false;
     s->latched = 0;
     s->cpu_error_status = 0;
@@ -884,7 +1488,8 @@ static int crime_post_load(void *opaque, int version_id)
     uint32_t software_mask = crime_software_mask(s);
     uint32_t hardware;
 
-    if (!s->transfer_state_received || !s->profile_state_received) {
+    if (!s->transfer_state_received || !s->profile_state_received ||
+        !s->render_state_received) {
         return -EINVAL;
     }
     if ((incoming->hardware & software_mask) ||
@@ -915,6 +1520,7 @@ static int crime_post_load(void *opaque, int version_id)
     s->timer_base = incoming->timer_base;
     s->timer_fraction = incoming->timer_fraction;
     s->transfer = s->incoming_transfer;
+    s->render = s->incoming_render;
     s->healthy_memory_reported = false;
     s->timer_epoch_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     crime_update_irq(s);
@@ -1029,12 +1635,58 @@ static const VMStateDescription vmstate_crime_profile = {
     },
 };
 
+static bool crime_render_pre_save(void *opaque, Error **errp)
+{
+    SGICrimeState *s = opaque;
+
+    s->incoming_render = s->render;
+    return true;
+}
+
+static int crime_render_post_load(void *opaque, int version_id)
+{
+    SGICrimeState *s = opaque;
+    CrimeRenderState *incoming = &s->incoming_render;
+    bool active = s->legacy_software && s->functional_memory_transfer;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(incoming->tlb); i++) {
+        if (!active && incoming->tlb[i]) {
+            return -EINVAL;
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(incoming->parameter); i++) {
+        const CrimeRenderRegister *reg = crime_render_register(i * 4);
+        uint64_t value = incoming->parameter[i];
+
+        if ((!active && value) || (!reg && value) ||
+            (reg && reg->size == 4 && value >> 32)) {
+            return -EINVAL;
+        }
+    }
+    s->render_state_received = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_crime_render = {
+    .name = TYPE_SGI_CRIME "/renderer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save_errp = crime_render_pre_save,
+    .post_load = crime_render_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(incoming_render.tlb, SGICrimeState, 192),
+        VMSTATE_UINT64_ARRAY(incoming_render.parameter, SGICrimeState, 128),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static int crime_pre_load(void *opaque)
 {
     SGICrimeState *s = opaque;
 
     s->transfer_state_received = false;
     s->profile_state_received = false;
+    s->render_state_received = false;
     return 0;
 }
 
@@ -1056,6 +1708,7 @@ static const VMStateDescription vmstate_crime = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_crime_transfer,
         &vmstate_crime_profile,
+        &vmstate_crime_render,
         NULL
     },
 };
