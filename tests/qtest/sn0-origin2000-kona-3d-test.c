@@ -4777,12 +4777,18 @@ static void test_texture_native_publication(void)
  * finish's tag; without the readback the pipe never completed the
  * bracket and IRIX declared it dead ("selectfeed operation timed out").
  * A readback that names no texture still closes nothing: the bracket is
- * refused and no completion posts.
+ * refused and no completion posts. Neither does one asking for a copy in
+ * a storage code other than the 0x28 the library was seen to use (here
+ * 0x30, the texture's own): the model writes no bytes and logs the
+ * storage it refused.
  */
 static void test_texture_readback(gconstpointer opaque)
 {
-    bool unknown = GPOINTER_TO_UINT(opaque);
-    QTestState *s = qtest_init(MACHINE_ARGS);
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool unknown = mode != 0;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
     const uint64_t destination = 0x380000, reason_page = 0x300000;
     uint32_t readback[18] = {
         0xde1, 2, 2, 7, 3, 0x28, 0, 0, 0, 0, 1, 1, 0, 0x38c0000, 0x23,
@@ -4809,8 +4815,10 @@ static void test_texture_readback(gconstpointer opaque)
     qtest_writel(s, KONA_REG(0x100000), 0x20000380);
     qtest_memset(s, destination, 0xa5, sizeof(actual));
     qtest_memset(s, reason_page, 0, 16);
-    if (unknown) {
+    if (mode == 1) {
         readback[16] = 0x20000;
+    } else if (mode == 2) {
+        readback[5] = 0x30;
     }
     kona_command_kicked(s, 0x1f5,
                         (uint32_t[]){ 0, 0x9000, 16, 16, 0, 0 }, 6);
@@ -4850,6 +4858,12 @@ static void test_texture_readback(gconstpointer opaque)
         }
     }
     qtest_quit(s);
+    found = kona_log_read(log);
+    if (mode == 2) {
+        g_assert_nonnull(strstr(found, "texel readback of 0 textures "
+                                       "matching banks 0x0 0x0 storage "
+                                       "0x30; refused"));
+    }
 }
 
 static const uint32_t texture_8x8_headers[2][20];
@@ -17650,6 +17664,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(0), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-unknown",
                   GUINT_TO_POINTER(1), test_texture_readback);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-other-storage",
+                  GUINT_TO_POINTER(2), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
                   GUINT_TO_POINTER(0), test_texture_rebind_control);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",
