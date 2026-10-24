@@ -46,7 +46,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83843_ANNPTR          0x07
 #define DP83843_ANNPTR_RW_MASK  0xb7ff
 #define DP83843_ANNPTR_TOGGLE   0x0800
-#define DP83843_ANNPTR_RESET    0x2801
+/* BVJE toggle initialization erratum overrides the nominal table. */
+#define DP83843_ANNPTR_RESET    0x2001
 #define DP83843_LBR_100_DP_CTL  0x0380
 #define DP83843_LBR_10_ENDEC_LB 0x0010
 #define DP83843_LBR_TW_LBEN     0x0020

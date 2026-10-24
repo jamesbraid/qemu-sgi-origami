@@ -251,7 +251,7 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
     case DP83843_ANNPTR:
         if (s->dp83843) {
             s->next_page = (val & DP83843_ANNPTR_RW_MASK) |
-                           DP83843_ANNPTR_TOGGLE;
+                           (s->next_page & DP83843_ANNPTR_TOGGLE);
             return;
         }
         /* fall through */
