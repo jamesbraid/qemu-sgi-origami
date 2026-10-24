@@ -3479,6 +3479,59 @@ class CatalogueJsonTests(unittest.TestCase):
     captured golden -- the packet's own worked examples.
     """
 
+    def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
+        profile_names = (
+            "origin350", "onyx350-compat", "onyx4-host-serial-compat",
+            "tezro-deskside-700mhz-4mib-serial-trial", "tezro-tower-one",
+            "tezro-tower-multi", "tezro-rack-base",
+        )
+        catalogue = json.loads(render_catalogue_json(
+            [_resolved(name) for name in profile_names]))
+        offerings = [item for item in catalogue["offerings"]
+                     if item.get("launch-recipe") == "ip53-discovery"]
+        required_properties = [
+            "r16000-experimental", "r16000-reset-mode",
+            "r16000-scache-bytes",
+        ]
+        normal = {
+            ("origin350", "origin350", (4,)),
+            ("onyx350", "onyx350-compat", (4,)),
+            ("onyx4-host", "onyx4-host-serial-compat", (4,)),
+            ("tezro", "tezro-tower-one", (1,)),
+            ("tezro", "tezro-tower-multi", (4,)),
+            ("tezro", "tezro-rack-base", (1,)),
+        }
+        topologies = {item["name"]: item for item in catalogue["topologies"]}
+        actual_normal = set()
+        for offering in offerings:
+            key = (offering["product"], offering["topology"],
+                   tuple(offering["cpus-per-node"]))
+            if "required-properties" not in offering["processor"]:
+                actual_normal.add(key)
+                assembly = topologies[key[1]]["nodes"][0]["cpu-slots"][0][
+                    "assembly"]
+                self.assertEqual(
+                    assembly["required-properties"], required_properties, key,
+                )
+            else:
+                self.assertEqual(
+                    offering["processor"]["required-properties"],
+                    required_properties, key,
+                )
+        self.assertEqual(actual_normal, normal)
+        self.assertEqual(len(offerings), 10)
+
+        tower = topologies["tezro-tower-multi"]
+        self.assertEqual(
+            [item["cpus-per-node"] for item in
+             tower["node-populations"][0]["supported-cpu-populations"]],
+            [[4], [2]],
+        )
+        self.assertEqual(
+            _resolved("tezro-tower-multi")["composition"]["population"][
+                "cpus_per_node"], [4],
+        )
+
     def test_empty_pci_function_lists_keep_authored_presence(self):
         legacy = _emit_io_board({
             "id": "fixture-baseio", "module_index": 0,

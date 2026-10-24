@@ -113,9 +113,14 @@ Tezro rack, first enclosure  one 700 MHz R16000        4 GiB     4 MiB        0x
 Onyx 4 host candidate        four 1 GHz R16000         8 GiB     16 MiB       0x009dad85
 ============================  =======================  ========  ===========  ============
 
-The R16000 reset words are supplied through the explicit experimental CPU
-properties. They are software inputs, not measured silicon values. The Onyx
-350 and Onyx 4 rows project a captured module into a single-module host. The
+The six listed compositions select the same internal R16000 experiment
+properties with or without the legacy ``ip53-experimental`` machine option.
+The machine checks the resolved processor population, fitted socket count,
+memory, clock, cache and reset word before enabling the profile. Other
+already-admitted experimental populations still require the legacy option and
+explicit CPU properties. These are software inputs, not measured silicon
+values. The Onyx 350 and Onyx 4 rows project a captured module into a
+single-module host. The
 Onyx 4 capture reports an IP59 board in a system called Onyx 350; assigning
 that module to the Onyx 4 host is an inference. Its profile uses the IP53
 guest-board path as a compatibility mapping, not a physical IP59 schematic.

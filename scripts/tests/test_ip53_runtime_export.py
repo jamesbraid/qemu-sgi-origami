@@ -21,7 +21,7 @@ from sgi_model.model_compile import CompileError, compile_model
 from sgi_model.model_emit import (
     _is_ip53_runtime_profile,
     _validate_export_profiles,
-    _validate_origin350_ip53_consoles,
+    _validate_ip53_runtime_consoles as _validate_origin350_ip53_consoles,
     render_catalogue_json,
 )
 from sgi_model.model_validation import check_schema, load_checked_system_model, schema
@@ -182,7 +182,7 @@ class IP53RuntimeExportTests(unittest.TestCase):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
         expected = {
             "tezro-tower-one": {"populations": [[1]], "pics": 1},
-            "tezro-tower-multi": {"populations": [[2], [4]], "pics": 2},
+            "tezro-tower-multi": {"populations": [[4], [2]], "pics": 2},
             "tezro-rack-base": {"populations": [[1], [2], [4]], "pics": 1},
         }
         models = []
@@ -212,6 +212,11 @@ class IP53RuntimeExportTests(unittest.TestCase):
                     self.assertEqual(
                         [component["id"] for component in model["components"]
                          if component["kind"] == "cpu"], ["cpu0"])
+                if name == "tezro-tower-multi":
+                    self.assertEqual(
+                        model["composition"]["population"]["cpus_per_node"],
+                        [4],
+                    )
                 if name == "tezro-tower-one":
                     self.assertEqual(sum(
                         slot["assembly"] is not None
