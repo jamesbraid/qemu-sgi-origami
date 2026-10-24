@@ -424,8 +424,9 @@ static void test_irq_matrix(void)
     }
 }
 
-static void migration_case(bool inhibited)
+static void migration_case(unsigned mode)
 {
+    bool inhibited = mode == 1;
     g_autofree char *dir = g_dir_make_tmp("mace-ps2-XXXXXX", NULL);
     g_autofree char *socket = g_build_filename(dir, "migrate", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
@@ -433,8 +434,12 @@ static void migration_case(bool inhibited)
     QTestState *to = start_extra("-incoming defer");
 
     control(from, 0, ENABLE | RXIE);
-    send_byte(from, 0, 0xf0);
-    send_byte(from, 0, 0);
+    if (mode == 2) {
+        send_byte(from, 0, 0xf2);
+    } else {
+        send_byte(from, 0, 0xf0);
+        send_byte(from, 0, 0);
+    }
     control(from, 1, inhibited ? ENABLE | 1 : 0);
     send_byte(from, 1, 0xf2);
     qtest_writeq(from, IMASK, KIRQ | MIRQ);
@@ -443,11 +448,17 @@ static void migration_case(bool inhibited)
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration(to, "completed");
     g_assert_true(qtest_get_irq(to, 5));
-    g_assert_cmphex(qtest_readq(to, reg(0, STATUS)), ==, FULL);
+    g_assert_cmphex(qtest_readq(to, reg(0, STATUS)), ==,
+                     FULL | (mode == 2 ? EMPTY : 0));
     g_assert_cmphex(qtest_readq(to, reg(1, STATUS)), ==, inhibited ? EMPTY : 0);
     g_assert_cmphex(receive(to, 0), ==, 0xfa);
-    g_assert_cmphex(receive(to, 0), ==, 0xfa);
-    g_assert_cmphex(receive(to, 0), ==, 2);
+    if (mode == 2) {
+        g_assert_cmphex(receive(to, 0), ==, 0xab);
+        g_assert_cmphex(receive(to, 0), ==, 0x83);
+    } else {
+        g_assert_cmphex(receive(to, 0), ==, 0xfa);
+        g_assert_cmphex(receive(to, 0), ==, 2);
+    }
     expect_empty(to, 0);
     control(to, 1, ENABLE | RXIE | 1);
     expect_empty(to, 1);
@@ -462,8 +473,9 @@ static void migration_case(bool inhibited)
 
 static void test_migration(void)
 {
-    migration_case(false);
-    migration_case(true);
+    migration_case(0);
+    migration_case(1);
+    migration_case(2);
 }
 
 static void test_board_route(void)
