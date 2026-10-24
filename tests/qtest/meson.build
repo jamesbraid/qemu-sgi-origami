@@ -161,6 +161,10 @@ slow_qtests = {
   'sn1-odyssey-test-context': 320,
   'sn1-odyssey-test-fifo': 510,
   'sn1-odyssey-test-gl': 500,
+  # The profile and identity cases, split from board: three times the
+  # longest of two four-process thorough runs of every group, 22 s at load
+  # average 90 to 105, 2026-10-24.
+  'sn1-odyssey-test-profile': 70,
   'sn1-odyssey-test-texture': 430,
   'sn1-odyssey-test-texture-1d-clamp': 640,
   'sn1-odyssey-test-texture-1d-stored': 570,
