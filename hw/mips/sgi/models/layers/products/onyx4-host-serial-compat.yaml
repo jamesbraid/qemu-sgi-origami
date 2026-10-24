@@ -53,7 +53,8 @@ layer:
         or stock PROM boot.
       firmware_config:
         processor_reset_mode: 0x009dad85
-        machine_type: 0x00000001
+        processor_firmware_word: 0x569dad85
+        machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
         provenance: derived

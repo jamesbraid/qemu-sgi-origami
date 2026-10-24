@@ -52,7 +52,8 @@ layer:
         are omitted.
       firmware_config:
         processor_reset_mode: 0x009bad85
-        machine_type: 1
+        processor_firmware_word: 0x549bad85
+        machine_type: 0x00000000
         flash_read_cycles: 16
         flash_write_cycles: 16
         provenance: derived
