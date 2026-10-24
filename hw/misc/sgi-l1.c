@@ -47,6 +47,7 @@ static const SGIL1ProductProfile l1_profiles[] = {
     { "ip37", 0x33, 2, 0, true },
     { "pci-expansion", 0x25, 4, 0x0200, false },
     { "router", 0x52, 0, 0, false },
+    { "vbrick-discovery-reference", 0, 0, 0, false },
 };
 
 /*
@@ -772,6 +773,20 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
     }
 }
 
+static bool l1_discovery_reference(const SGIL1State *s)
+{
+    return !g_strcmp0(s->brick_type, "vbrick-discovery-reference");
+}
+
+/* This experimental owner supplies no physical identity or product data. */
+static void l1_reference_refuse(SGIL1State *s, SGIL1State *recipient,
+                                uint8_t channel, unsigned task)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: task %u unavailable on %s\n",
+                  task, s->brick_type);
+    l1_reply_direct(recipient, channel, task == 6 ? -104 : -101, 0, NULL, 0);
+}
+
 static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
                           uint8_t channel, uint16_t command,
                           const uint8_t *args, unsigned args_len,
@@ -779,6 +794,10 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
 {
     uint8_t fields[40] = { 0 };
 
+    if (l1_discovery_reference(s)) {
+        l1_reference_refuse(s, recipient, channel, 6);
+        return true;
+    }
     switch (command) {
     case 3:
         if (!l1_brick_type_character(s) ||
@@ -955,6 +974,14 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     bool broadcast = false;
     SGIL1State *peer = l1_linked_peer(s);
 
+    if (l1_discovery_reference(s)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: operator commands unavailable on %s\n",
+                      s->brick_type);
+        l1_printf(s, "ERROR: commands unsupported "
+                  "on this reference owner.\r\n");
+        return -1;
+    }
     pstrcpy(line, sizeof(line), text);
     pstrcpy(original, sizeof(original), text);
     for (p = line; argc < ARRAY_SIZE(argv); ) {
@@ -1475,6 +1502,9 @@ static void l1_serve_query(SGIL1State *serving,
     assert(l1_local(serving, ldl_be_p(p + 1)));
     if (!l1_arguments(args, args_len, count)) {
         l1_reply_direct(request->recipient, request->channel, -100, 0, NULL, 0);
+    } else if (l1_discovery_reference(serving)) {
+        l1_reference_refuse(serving, request->recipient, request->channel,
+                            request->destination & 0x1f);
     } else {
         l1_read_query(serving, request->recipient, request->channel,
                       lduw_be_p(p + 5), args, args_len, count);
@@ -1500,8 +1530,7 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
 
     if (router->active || length < 7 || length > sizeof(copy) ||
         (p[0] & 0xe0) || ldl_be_p(p + 1) != request->destination ||
-        (p[0] & 0x1f) != request->channel ||
-        (request->destination & 0x1f) != 6) {
+        (p[0] & 0x1f) != request->channel) {
         goto refused;
     }
     if (!attached && (request->destination >> 28 ||
@@ -1509,10 +1538,6 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
         goto refused;
     }
     command = lduw_be_p(p + 5);
-    if (command != 3 && command != 6 && command != 7 &&
-        !(!attached && command == 4) && !(attached && command == 0xc)) {
-        goto refused;
-    }
     for (unsigned i = 0; i < router->owner_count; i++) {
         if (router->owners[i].controller == request->issuer) {
             issuer = i;
@@ -1559,6 +1584,12 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
         }
     }
     if (!reachable) {
+        goto refused;
+    }
+    if (!l1_discovery_reference(serving) &&
+        ((request->destination & 0x1f) != 6 ||
+         (command != 3 && command != 6 && command != 7 &&
+          !(!attached && command == 4) && !(attached && command == 0xc)))) {
         goto refused;
     }
     router->active = true;
@@ -1682,7 +1713,8 @@ static void l1_irouter_chunk(SGIL1State *s, const uint8_t *p,
 
 static bool l1_irouter_enabled(const SGIL1State *s)
 {
-    return s->irouter_compat || s->o300_l1cmd_compat;
+    return !l1_discovery_reference(s) &&
+           (s->irouter_compat || s->o300_l1cmd_compat);
 }
 
 static void l1_request(SGIL1State *s, unsigned transport)
@@ -2135,6 +2167,16 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     count = length == 7 ? 0 : p[7];
     args = p + MIN(length, 8);
     args_len = length > 8 ? length - 8 : 0;
+    if (l1_discovery_reference(s)) {
+        SGIL1State *recipient = s->reply_to ? s->reply_to : s;
+
+        if (!l1_arguments(args, args_len, count)) {
+            l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
+        } else {
+            l1_reference_refuse(s, recipient, channel, address & 0x1f);
+        }
+        return;
+    }
     switch (address & 0x1f) {
     case 6:
         break;
@@ -3511,7 +3553,7 @@ fuel_mac_done:
     }
     if (!s->profile) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, "
-                   "unknown, pci-expansion or router");
+                   "unknown, pci-expansion, router or vbrick-discovery-reference");
         return;
     }
     if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {

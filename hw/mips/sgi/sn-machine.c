@@ -2991,7 +2991,6 @@ static bool sgi_machine_instantiate_vbrick(
     SN1NodeState *node;
     Object *module;
     DeviceState *bridge, *v12;
-    Object *l1;
     SGIXioLink *board_link = &s->board_links[board_index];
     g_autofree char *module_name = NULL;
     g_autofree char *board_link_name = NULL;
@@ -3028,10 +3027,8 @@ static bool sgi_machine_instantiate_vbrick(
     }
     g_assert(sgi_xio_link_complete(&s->vbrick_link));
 
-    /* Preserve the physical L1 position without an invented IP45 identity. */
-    l1 = object_new(TYPE_CONTAINER);
-    object_property_add_child(module, "vbrick-l1", l1);
-    object_unref(l1);
+    /* The logical registry constructs the enclosure's reference controller. */
+    g_assert(object_resolve_path_component(module, "vbrick-l1"));
 
     v12 = qdev_try_new("sgi-odyssey");
     if (!v12) {
@@ -5478,7 +5475,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
     };
 
-    if (!t->io_assemblies && !t->routers) {
+    if (!t->l1_management) {
         return true;
     }
     modules = sgi_model_module_array(t->modules, &module_count);
@@ -5511,6 +5508,43 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     }
     if (!sgi_machine_build_sn1_routers(s, t, errp)) {
         return false;
+    }
+    for (const SGIModelIoBoardList *board = t->io_boards; board;
+         board = board->next) {
+        const SGIModelIoBoard *record = board->value;
+        const SGIModelModule *model_module;
+        DeviceState *l1;
+        Object *module;
+        unsigned owner;
+        g_autofree char *name = NULL;
+
+        if (record->preset != SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
+            continue;
+        }
+        if (record->module_index >= module_count) {
+            error_setg(errp, "V-brick L1 module is absent");
+            return false;
+        }
+        model_module = modules[record->module_index];
+        owner = model_module->controller_index;
+        if (owner >= s->controller_count || s->controllers[owner] ||
+            !model_module->initial_module_number) {
+            error_setg(errp, "V-brick needs a distinct "
+                       "module-owned L1 location");
+            return false;
+        }
+        name = g_strdup_printf("module%u", record->module_index);
+        module = object_resolve_path_component(OBJECT(s), name);
+        l1 = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(module, "vbrick-l1", OBJECT(l1));
+        s->controllers[owner] = l1;
+        qdev_prop_set_string(l1, "brick-type", "vbrick-discovery-reference");
+        qdev_prop_set_uint32(l1, "bay", model_module->initial_module_number);
+        if (!qdev_realize(l1, NULL, errp)) {
+            return false;
+        }
+        qemu_register_resettable(OBJECT(l1));
+        s->controller_reset_registered[owner] = true;
     }
     for (entry = t->io_assemblies; entry; entry = entry->next) {
         const SGIModelIoAssembly *a = entry->value;
@@ -5713,6 +5747,23 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
                                other, index, serial);
                     return false;
                 }
+            }
+        }
+    }
+    for (index = 0; index < s->controller_count; index++) {
+        SGIL1State *l1 = SGI_L1(s->controllers[index]);
+
+        if (strcmp(l1->brick_type, "vbrick-discovery-reference")) {
+            continue;
+        }
+        for (unsigned other = 0; other < s->controller_count; other++) {
+            SGIL1State *peer = SGI_L1(s->controllers[other]);
+
+            if (other != index && l1->rack == peer->rack &&
+                l1->bay == peer->bay) {
+                error_setg(errp, "V-brick L1 location duplicates "
+                           "another owner");
+                return false;
             }
         }
     }
