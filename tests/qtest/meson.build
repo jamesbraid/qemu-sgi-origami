@@ -30,6 +30,9 @@ slow_qtests = {
   # sgi-heads-test starts a fresh QEMU for nearly every case; 20 subtests took
   # 65-70s at load 100-150 on 32 threads, 2026-10-23, and overran the default.
   'sgi-heads-test': 180,
+  # CI run 13888 exhausted the 60s default at 41/54 cases; a two-suite retry
+  # passed all 54 in 25.76s. Keep three times the exhausted CI deadline.
+  'sgi-ioc4-test': 180,
   'sgi-ioc3-eth-test': 500,
   'sgi-kona-read-defense-test': 80,
   'sgi-mgras-board-test': 670,
@@ -125,7 +128,9 @@ slow_qtests = {
   'sn1-directory-state-test': 160,
   'sn1-fuel-test': 250,
   'sn1-io8-scsi-test': 160,
-  'sn1-l1-test': 225,
+  # CI run 13888 exhausted 225s at 122/129 cases; a two-suite retry passed
+  # all 129 in 188.13s. Keep three times the exhausted CI deadline.
+  'sn1-l1-test': 675,
   # About three times its slowest full eight-process VPro run: 42-130 s,
   # and one that passed 100 s and was stopped.
   'sn1-odyssey-query-test': 400,
