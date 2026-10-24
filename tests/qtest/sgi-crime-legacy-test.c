@@ -1113,12 +1113,21 @@ static void test_ifb_read(void)
     g_rmdir(directory);
 }
 
-static void test_ifb_write(void)
+static void test_opaque_renderer_write(gconstpointer data)
 {
     static const uint32_t payloads[] = {
         0, UINT32_MAX, 0x13579bdf, 0xa6c319e7,
     };
-    g_autofree char *directory = g_dir_make_tmp("crime-ifb-write-XXXXXX", NULL);
+    bool status_bank = GPOINTER_TO_UINT(data);
+    unsigned offset = status_bank ? 0x4008 : 0x400;
+    const char *diagnostic = status_bank ?
+        "opaque engine-status-bank" : "opaque empty interface-buffer control";
+    const char *limitation = status_bank ? "undefined semantics" :
+                                         "unimplemented fields";
+    g_autofree char *address = g_strdup_printf("0x%" PRIx64,
+                                              (uint64_t)(RENDERER + offset));
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-opaque-write-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
     g_autofree char *options = g_strdup_printf(
         "-global sgi-crime.functional-memory-transfer=on -D %s "
@@ -1138,17 +1147,18 @@ static void test_ifb_write(void)
             uint32_t value = UINT32_MAX;
 
             qtest_clock_step(s, 997 + i * 101);
-            g_assert_cmpint(memtx_writel(s, RENDERER + 0x400, payloads[i]),
+            g_assert_cmpint(memtx_writel(s, RENDERER + offset, payloads[i]),
                             ==, MEMTX_OK);
-            g_assert_cmpint(memtx_readl(s, RENDERER + 0x400, &value),
+            g_assert_cmpint(memtx_readl(s, RENDERER +
+                (status_bank ? 0x4000 : 0x400), &value),
                             ==, MEMTX_OK);
-            g_assert_cmphex(value, ==, 0);
+            g_assert_cmphex(value, ==, status_bank ? 0x1e000000 : 0);
             assert_run_status(s, "running");
             assert_ifb_state(s, phase);
         }
     }
     qtest_system_reset(s);
-    g_assert_cmpint(memtx_writel(s, RENDERER + 0x400, 0x13579bdf),
+    g_assert_cmpint(memtx_writel(s, RENDERER + offset, 0x13579bdf),
                     ==, MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, RENDERER + 0x2018), ==, 0);
     g_assert_cmphex(qtest_readq(s, RENDERER + 0x1000), ==, 0);
@@ -1161,21 +1171,93 @@ static void test_ifb_write(void)
         g_autofree char *payload = NULL;
         uint32_t expected;
 
-        if (!strstr(lines[i], "opaque empty interface-buffer control")) {
+        if (!strstr(lines[i], diagnostic)) {
             continue;
         }
         expected = count < 2 * ARRAY_SIZE(payloads) ?
             payloads[count % ARRAY_SIZE(payloads)] : 0x13579bdf;
         payload = g_strdup_printf("value 0x%" PRIx32, expected);
-        g_assert_nonnull(strstr(lines[i], "unimplemented fields"));
+        g_assert_nonnull(strstr(lines[i], limitation));
         g_assert_nonnull(strstr(lines[i], "4-byte write"));
-        g_assert_nonnull(strstr(lines[i], "0x15000400"));
+        g_assert_nonnull(strstr(lines[i], address));
         g_assert_true(g_str_has_suffix(lines[i], payload));
         count++;
     }
     g_assert_cmpuint(count, ==, 2 * ARRAY_SIZE(payloads) + 1);
     g_unlink(path);
     g_rmdir(directory);
+}
+
+static void test_status_bank_refusal(void)
+{
+    static const RendererAccess probes[] = {
+        { 0x4000, 1, false }, { 0x4000, 2, false }, { 0x4000, 8, false },
+        { 0x4001, 4, false }, { 0x4000, 4, true },
+        { 0x4008, 1, true }, { 0x4008, 2, true }, { 0x4008, 8, true },
+        { 0x4009, 4, true }, { 0x4007, 2, true },
+        { 0x4008, 1, false }, { 0x4008, 2, false }, { 0x4008, 4, false },
+        { 0x4008, 8, false },
+        { 0x3ffc, 8, true }, { 0x4000, 8, true }, { 0x4004, 8, true },
+        { 0x4ffc, 8, true },
+        { 0x4004, 4, true }, { 0x4004, 4, false },
+        { 0x4010, 4, true }, { 0x4010, 4, false },
+        { 0x4080, 4, true }, { 0x4080, 4, false },
+        { 0x4808, 4, true }, { 0x4808, 4, false },
+        { 0x4ffc, 4, true }, { 0x4ffc, 4, false },
+    };
+    g_autofree char *directory =
+        g_dir_make_tmp("crime-status-bank-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-crime.functional-memory-transfer=on -D %s "
+        "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH, path);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        const RendererAccess *probe = &probes[i];
+
+        for (unsigned n = 0; n < (probe->write ? 2 : 1); n++) {
+            QTestState *s = start_profile(true, options);
+            uint64_t value = n ? 0xa6c319e7d51b0842ULL : 0;
+            uint64_t readback;
+            g_autofree char *contents = NULL;
+            MemTxResult result;
+
+            seed_ifb_state(s);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            result = probe->write ?
+                memtx_write(s, RENDERER + probe->offset, value, probe->size) :
+                memtx_read(s, RENDERER + probe->offset, &readback, probe->size);
+            g_assert_cmpint(result, ==, MEMTX_ERROR);
+            assert_stopped(s);
+            assert_ifb_state(s, false);
+            qtest_quit(s);
+            g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+            g_assert_null(strstr(contents, "opaque engine-status-bank"));
+        }
+    }
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
+static void test_status_bank_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            QTestState *s = start_profile(legacy, functional ?
+                "-global sgi-crime.functional-memory-transfer=on" :
+                "-global sgi-crime.empty-renderer-status=on");
+            bool admitted = legacy && functional;
+
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            g_assert_cmpint(memtx_writel(s, RENDERER + 0x4008, 0xa6c319e7),
+                            ==, admitted ? MEMTX_OK : MEMTX_ERROR);
+            assert_run_status(s, !admitted && (legacy || functional) ?
+                              "internal-error" : "running");
+            g_assert_cmphex(qtest_readl(s, RENDERER + 0x4000), ==, 0x1e000000);
+            qtest_quit(s);
+        }
+    }
 }
 
 static void test_ifb_refusal(void)
@@ -1421,9 +1503,10 @@ static void test_renderer_cpu(gconstpointer data)
 {
     unsigned kind = GPOINTER_TO_UINT(data);
     bool read = kind == 1;
-    bool hard = kind >= 2;
-    unsigned offset = kind == 2 ? 0x400 : kind == 3 ? 0x2880 :
-                      kind == 4 ? 0x3000 : 0x408;
+    bool status_bank = kind == 5;
+    bool hard = kind >= 2 && !status_bank;
+    unsigned offset = status_bank ? 0x4008 : kind == 2 ? 0x400 :
+                      kind == 3 ? 0x2880 : kind == 4 ? 0x3000 : 0x408;
     g_autofree char *directory =
         g_dir_make_tmp("crime-render-cpu-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
@@ -1485,7 +1568,11 @@ static void test_renderer_cpu(gconstpointer data)
     }
     qtest_quit(s);
     g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
-    if (!hard) {
+    if (status_bank) {
+        g_assert_nonnull(strstr(contents, "opaque engine-status-bank"));
+        g_assert_nonnull(strstr(contents,
+            "4-byte write at 0x15004008 value 0x55"));
+    } else if (!hard) {
         g_assert_nonnull(strstr(contents, "sgi-crime: unsupported renderer"));
         g_assert_nonnull(strstr(contents, "0x15000408"));
     }
@@ -2123,11 +2210,18 @@ int main(int argc, char **argv)
     };
     const char *renderer_cpu[] = {
         "posted-store", "read-bus-error", "control-stop", "go-stop",
-        "malformed-stop",
+        "malformed-stop", "status-bank-store",
     };
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/crime/renderer/ifb/read", test_ifb_read);
-    qtest_add_func("/sgi/crime/renderer/ifb/write", test_ifb_write);
+    qtest_add_data_func("/sgi/crime/renderer/ifb/write",
+                        GUINT_TO_POINTER(0), test_opaque_renderer_write);
+    qtest_add_data_func("/sgi/crime/renderer/status-bank/write",
+                        GUINT_TO_POINTER(1), test_opaque_renderer_write);
+    qtest_add_func("/sgi/crime/renderer/status-bank/refusal",
+                   test_status_bank_refusal);
+    qtest_add_func("/sgi/crime/renderer/status-bank/profiles",
+                   test_status_bank_profiles);
     qtest_add_func("/sgi/crime/renderer/ifb/refusal", test_ifb_refusal);
     qtest_add_func("/sgi/crime/renderer/ifb/profiles", test_ifb_profiles);
     qtest_add_func("/sgi/crime/renderer/refusal", test_renderer_refusal);

@@ -1124,6 +1124,14 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
                           (hwaddr)(0x14000000ULL + offset), value);
             return MEMTX_OK;
         }
+        if (offset == CRIME_RENDER_STATUS + 8 && size == 4) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-crime: opaque engine-status-bank "
+                          "(undefined semantics) %u-byte write at "
+                          "0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n", size,
+                          (hwaddr)(0x14000000ULL + offset), value);
+            return MEMTX_OK;
+        }
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
