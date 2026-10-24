@@ -38,8 +38,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define AIC_REG_SPACE 0x100
 #define AIC_SEQ_INSNS 512
 #define AIC_SEQ_BYTES (AIC_SEQ_INSNS * 4)
-/* Model scheduling delay; no AIC-7880 instruction timing is established. */
-#define AIC_SEQ_QUANTUM_US 500
 #define AIC_SCB_PAGES 16
 #define AIC_SCB_EXTERNAL_PAGES 256
 #define AIC_SCB_PAGE_BYTES 32
@@ -97,6 +95,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define SEQ_RESET    0x02
 #define SEQ_STEP     0x04
 #define SEQ_BRKINTEN 0x08
+#define SEQ_FASTMODE 0x10
 #define SEQ_FAILDIS  0x20
 #define SEQ_PAUSEDIS 0x40
 #define HOST_CHIPRST 0x01
@@ -144,6 +143,7 @@ struct AIC7880State {
     MemoryRegion dspc_mem[16];
     SCSIBus bus;
     QEMUTimer *seq_timer;
+    int64_t seq_deadline_ns;
     QEMUTimer *selection_timer;
     QEMUTimer *bus_free_timer;
     uint8_t regs[AIC_REG_SPACE];
@@ -240,6 +240,36 @@ static void aic7880_run(AIC7880State *s);
 static void aic7880_host_dma(AIC7880State *s);
 static void aic7880_process_scsi_data(AIC7880State *s);
 static void aic7880_process_command(AIC7880State *s);
+
+static int64_t aic7880_seq_period_ns(AIC7880State *s)
+{
+    /* Selected 40 MHz AIC-7870 sibling clock, not measured AIC-7880 timing. */
+    return (s->regs[REG_SEQCTL] & SEQ_FASTMODE) ? 100 : 125;
+}
+
+static int64_t aic7880_event_time_ns(AIC7880State *s)
+{
+    return s->running ? s->seq_deadline_ns :
+                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static bool aic7880_seq_runnable(AIC7880State *s)
+{
+    return !(s->regs[REG_HCNTRL] & HOST_PAUSE) &&
+           !(s->regs[REG_SEQCTL] & SEQ_LOADRAM) &&
+           !s->error_pending && !s->parity_break_pending;
+}
+
+static void aic7880_seq_stop(AIC7880State *s, const char *reason)
+{
+    if (timer_pending(s->seq_timer) || s->running) {
+        trace_aic7880_seq_clock(PCI_DEVICE(s)->devfn, reason,
+            s->seq_deadline_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+            aic7880_seq_period_ns(s), s->regs[REG_HCNTRL],
+            s->regs[REG_SEQCTL], s->regs[REG_INTSTAT]);
+    }
+    timer_del(s->seq_timer);
+}
 
 static bool aic7880_command_dma_owned(AIC7880State *s)
 {
@@ -360,7 +390,7 @@ static void aic7880_update_scsi_irq(AIC7880State *s)
         (s->regs[REG_SSTAT1] & s->regs[REG_SIMODE1])) {
         s->regs[REG_INTSTAT] |= 0x04;
         s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        timer_del(s->seq_timer);
+        aic7880_seq_stop(s, "scsi-irq");
     }
     aic7880_update_irq(s);
 }
@@ -471,7 +501,7 @@ static void aic7880_stop_diagnostic(AIC7880State *s)
     s->error_serial++;
     s->error_pending = true;
     s->regs[REG_HCNTRL] |= HOST_PAUSE;
-    timer_del(s->seq_timer);
+    aic7880_seq_stop(s, "diagnostic");
     aic7880_update_irq(s);
 }
 
@@ -495,7 +525,7 @@ static void aic7880_bad_opcode(AIC7880State *s, uint8_t opcode)
     s->error_pending = true;
     s->regs[REG_INTSTAT] |= 0x08;
     s->regs[REG_HCNTRL] |= HOST_PAUSE;
-    timer_del(s->seq_timer);
+    aic7880_seq_stop(s, "illegal-opcode");
     aic7880_update_irq(s);
 }
 
@@ -907,8 +937,12 @@ static void aic7880_release_identity(AIC7880State *s)
 
 static void aic7880_bus_free_qualify(AIC7880State *s)
 {
-    timer_mod(s->bus_free_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+    int64_t origin = aic7880_event_time_ns(s);
+
+    timer_mod(s->bus_free_timer, origin + 400);
+    trace_aic7880_bus_free(PCI_DEVICE(s)->devfn, false, origin,
+                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                          s->regs[REG_SSTAT1], s->regs[REG_SIMODE1]);
 }
 
 static void aic7880_bus_free_timer_cb(void *opaque)
@@ -925,6 +959,10 @@ static void aic7880_bus_free_timer_cb(void *opaque)
         s->initiator_atn = false;
         aic7880_manual_clear(s);
         s->regs[REG_SSTAT1] |= 0x08;
+        trace_aic7880_bus_free(PCI_DEVICE(s)->devfn, true,
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                              s->regs[REG_SSTAT1], s->regs[REG_SIMODE1]);
         aic7880_update_scsi_irq(s);
     }
 }
@@ -958,7 +996,7 @@ static void aic7880_selection_timer_update(AIC7880State *s, uint8_t old)
     /* Selected timing policy; the sibling's first table entry conflicts. */
     interval = 256000000LL >> ((control >> 3) & 3);
     timer_mod(s->selection_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + interval);
+              aic7880_event_time_ns(s) + interval);
 }
 
 static void aic7880_cancel_selection(AIC7880State *s)
@@ -1119,7 +1157,8 @@ static void aic7880_scsi_reset(AIC7880State *s)
 
 static void aic7880_chip_reset(AIC7880State *s)
 {
-    timer_del(s->seq_timer);
+    aic7880_seq_stop(s, "reset");
+    s->seq_deadline_ns = 0;
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
     s->selection_pending = false;
@@ -1290,7 +1329,7 @@ static void aic7880_check_scb_parity(AIC7880State *s, unsigned index)
         s->parity_break_pending = true;
         s->regs[REG_INTSTAT] |= 8;
         s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        timer_del(s->seq_timer);
+        aic7880_seq_stop(s, "pause");
     }
     aic7880_update_irq(s);
 }
@@ -2052,7 +2091,9 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         }
         aic7880_update_scsi_irq(s);
         break;
-    case REG_SEQCTL:
+    case REG_SEQCTL: {
+        uint8_t old = s->regs[REG_SEQCTL];
+
         if (!s->running && (val & SEQ_PAUSEDIS)) {
             qemu_log_mask(LOG_UNIMP,
                           "aic7880: unsupported host SEQCTL control 0x%02x\n",
@@ -2061,7 +2102,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             break;
         }
         if (val & SEQ_LOADRAM) {
-            timer_del(s->seq_timer);
+            aic7880_seq_stop(s, "load");
         }
         if (val & SEQ_RESET) {
             s->seqaddr = 0;
@@ -2071,8 +2112,16 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->seqbyte = 0;
         }
         s->regs[REG_SEQCTL] = val & ~SEQ_RESET;
+        if ((old ^ val) & SEQ_FASTMODE) {
+            trace_aic7880_seq_clock(PCI_DEVICE(s)->devfn, "rate",
+                s->seq_deadline_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                aic7880_seq_period_ns(s), s->regs[REG_HCNTRL],
+                s->regs[REG_SEQCTL], s->regs[REG_INTSTAT]);
+        }
         aic7880_update_irq(s);
+        aic7880_run(s);
         break;
+    }
     case REG_SEQRAM:
         if (!(s->regs[REG_SEQCTL] & SEQ_LOADRAM) ||
             s->seqaddr >= AIC_SEQ_INSNS) {
@@ -2103,7 +2152,7 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
             s->regs[REG_HCNTRL] = val & (HOST_INTEN | HOST_PAUSE |
                                          HOST_SWINT | HOST_POWRDN);
             if (val & HOST_PAUSE) {
-                timer_del(s->seq_timer);
+                aic7880_seq_stop(s, "pause");
             }
             aic7880_update_irq(s);
             if (was_paused && !(val & HOST_PAUSE)) {
@@ -2356,255 +2405,259 @@ static void aic7880_run(AIC7880State *s)
 {
     if (s->parity_break_pending) {
         s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        timer_del(s->seq_timer);
+        aic7880_seq_stop(s, "parity");
         return;
     }
     if (s->error_pending) {
         aic7880_stop_diagnostic(s);
         return;
     }
-    if (s->running) {
+    if (!aic7880_seq_runnable(s) || s->running || timer_pending(s->seq_timer)) {
         return;
     }
-    timer_del(s->seq_timer);
+    s->seq_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                         aic7880_seq_period_ns(s);
+    timer_mod(s->seq_timer, s->seq_deadline_ns);
+    trace_aic7880_seq_clock(PCI_DEVICE(s)->devfn, "start",
+        s->seq_deadline_ns, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        aic7880_seq_period_ns(s), s->regs[REG_HCNTRL],
+        s->regs[REG_SEQCTL], s->regs[REG_INTSTAT]);
+}
+
+static void aic7880_seq_timer_cb(void *opaque)
+{
+    AIC7880State *s = opaque;
+    uint32_t insn;
+    uint16_t at = s->seqaddr;
+    uint8_t op, imm, result;
+    uint8_t updated_flags = s->regs[REG_FLAGS];
+    uint8_t src, dst;
+    uint32_t error_before;
+    AICShiftKind shift_kind = AIC_SHIFT_INVALID;
+    unsigned shift_count = 0;
+    bool indirect_dest = false;
+    bool scb_rmw;
+    uint8_t scb_counter;
+    uint8_t source;
+
+    if (!aic7880_seq_runnable(s)) {
+        return;
+    }
     s->running = true;
-    for (unsigned i = 0; i < AIC_SEQ_INSNS; i++) {
-        uint32_t insn;
-        uint16_t at = s->seqaddr;
-        uint8_t op, imm, result;
-        uint8_t updated_flags = s->regs[REG_FLAGS];
-        uint8_t src, dst;
-        uint32_t error_before;
-        AICShiftKind shift_kind = AIC_SHIFT_INVALID;
-        unsigned shift_count = 0;
-        bool indirect_dest = false;
-        bool scb_rmw;
-        uint8_t scb_counter;
-        uint8_t source;
 
-        if ((s->regs[REG_HCNTRL] & HOST_PAUSE) ||
-            (s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
-            goto done;
-        }
-        if (at >= AIC_SEQ_INSNS) {
-            aic7880_error(s, "sequencer ran past instruction RAM");
-            goto done;
-        }
-        if (!(s->regs[REG_BRKADDR1] & 0x80) &&
-            at == (s->regs[REG_BRKADDR0] |
-                   ((s->regs[REG_BRKADDR1] & 1) << 8))) {
-            s->maskable_break_pending = true;
-            s->regs[REG_INTSTAT] |= 0x08;
-            s->regs[REG_HCNTRL] |= HOST_PAUSE;
-            aic7880_update_irq(s);
-            goto done;
-        }
-        insn = ldl_le_p(&s->seqram[at * 4]);
-        s->seqaddr = at + 1;
-        op = (insn >> 25) & 0x0f;
-        imm = insn;
-        src = (insn >> 8) & 0xff;
-        dst = (insn >> 16) & 0xff;
-        if (op >= 0x08) {
-            uint16_t target = (insn >> 16) & 0x1ff;
-            uint8_t mask = imm ? imm : s->regs[REG_ACCUM];
-            uint8_t value = 0;
-            bool taken;
+    if (at >= AIC_SEQ_INSNS) {
+        aic7880_error(s, "sequencer ran past instruction RAM");
+        goto done;
+    }
+    if (!(s->regs[REG_BRKADDR1] & 0x80) &&
+        at == (s->regs[REG_BRKADDR0] |
+               ((s->regs[REG_BRKADDR1] & 1) << 8))) {
+        s->maskable_break_pending = true;
+        s->regs[REG_INTSTAT] |= 0x08;
+        s->regs[REG_HCNTRL] |= HOST_PAUSE;
+        aic7880_update_irq(s);
+        goto done;
+    }
+    insn = ldl_le_p(&s->seqram[at * 4]);
+    s->seqaddr = at + 1;
+    op = (insn >> 25) & 0x0f;
+    imm = insn;
+    src = (insn >> 8) & 0xff;
+    dst = (insn >> 16) & 0xff;
+    if (op >= 0x08) {
+        uint16_t target = (insn >> 16) & 0x1ff;
+        uint8_t mask = imm ? imm : s->regs[REG_ACCUM];
+        uint8_t value = 0;
+        bool taken;
 
-            value = aic7880_seq_read(s, src);
-            if (s->regs[REG_HCNTRL] & HOST_PAUSE) {
-                goto done;
-            }
-            switch (op) {
-            case 0x08: /* JMP */
-            case 0x09: /* JC */
-            case 0x0a: /* JNC */
-            case 0x0b: /* CALL */
-                value |= imm;
-                aic7880_write(s, REG_SINDEX, value, 1);
-                /* Selected transfer flag policy; fitted effects are unknown. */
-                s->regs[REG_FLAGS] = (updated_flags & FLAGS_CARRY) |
-                                     (value == 0 ? FLAGS_ZERO : 0);
-                if (op == 0x09) {
-                    taken = updated_flags & FLAGS_CARRY;
-                } else {
-                    taken = op != 0x0a || !(updated_flags & FLAGS_CARRY);
-                }
-                break;
-            case 0x0c: /* JNE */
-                taken = value != mask;
-                break;
-            case 0x0d: /* JNZ */
-                taken = (value & mask) != 0;
-                break;
-            case 0x0e: /* JE */
-                taken = value == mask;
-                break;
-            case 0x0f: /* JZ */
-                taken = (value & mask) == 0;
-                break;
-            default:
-                aic7880_bad_opcode(s, op);
-                goto done;
-            }
-            if (taken) {
-                if (op == 0x0b) {
-                    s->return_ptr = (s->return_ptr +
-                                     ARRAY_SIZE(s->return_pc) - 1) %
-                                    ARRAY_SIZE(s->return_pc);
-                    s->return_pc[s->return_ptr] = s->seqaddr &
-                                                  (AIC_SEQ_INSNS - 1);
-                }
-                s->seqaddr = target;
-            }
-            if (s->regs[REG_SEQCTL] & SEQ_STEP) {
-                s->regs[REG_HCNTRL] |= HOST_PAUSE;
-                goto done;
-            }
-            if (taken && target == at) {
-                goto done;
-            }
-            continue;
-        }
-        if (op > 5) {
-            aic7880_bad_opcode(s, op);
-            goto done;
-        }
-        if (dst == REG_HCNTRL) {
-            aic7880_error(s, "sequencer write to host-only HCNTRL");
-            goto done;
-        }
-        if (dst == REG_CLRINT) {
-            aic7880_error(s, "sequencer write to host-only CLRINT");
-            goto done;
-        }
-        if (dst == REG_FLAGS) {
-            aic7880_error(s, "sequencer write to read-only FLAGS");
-            goto done;
-        }
-        if (op == 5) {
-            shift_kind = aic7880_decode_shift(imm, &shift_count);
-            if (shift_kind == AIC_SHIFT_INVALID) {
-                aic7880_error(s, "unsupported sequencer shift control");
-                goto done;
-            }
-        }
-        if (dst == REG_DINDIR) {
-            uint8_t target = s->regs[REG_DINDEX];
-
-            /* Other source and destination aliases have no reviewed order. */
-            if (!aic7880_dindir_target_supported(target) ||
-                target == src ||
-                (src == REG_SINDIR &&
-                 target == s->regs[REG_SINDEX] &&
-                 !aic7880_dindir_equal_target_supported(target))) {
-                aic7880_error(s, "unsupported DINDIR destination");
-                goto done;
-            }
-            dst = target;
-            indirect_dest = true;
-        }
-        source = src == REG_SINDIR ? s->regs[REG_SINDEX] : src;
-        scb_counter = s->regs[REG_SCBCNT];
-        scb_rmw = s->external_scb_ram && (scb_counter & 0x80) &&
-                  source >= REG_SCB_BASE &&
-                  source < REG_SCB_BASE + AIC_SCB_PAGE_BYTES &&
-                  dst >= REG_SCB_BASE &&
-                  dst < REG_SCB_BASE + AIC_SCB_PAGE_BYTES;
-        if (scb_rmw && aic7880_scb_parity_bad(s,
-                          aic7880_scb_index(s, scb_counter & 0x1f))) {
-            /* Fault-time RMW ordering is unqualified; start neither half. */
-            aic7880_error(s, "parity-faulting automatic SCB read-modify-write "
-                            "is unsupported");
-            goto done;
-        }
-        result = aic7880_seq_read(s, src);
+        value = aic7880_seq_read(s, src);
         if (s->regs[REG_HCNTRL] & HOST_PAUSE) {
             goto done;
         }
-        if (op == 0) {
-            result |= imm ? imm : s->regs[REG_ACCUM];
-        } else if (op == 1) {
-            result &= imm ? imm : s->regs[REG_ACCUM];
-        } else if (op >= 2 && op <= 4) {
-            uint8_t operand = imm ? imm : s->regs[REG_ACCUM];
-
-            /* Synthetic flag policy; fitted AIC-7880 effects are unknown. */
-            if (op == 2) {
-                result ^= operand;
-                updated_flags = (updated_flags & FLAGS_CARRY) |
-                                (result == 0 ? FLAGS_ZERO : 0);
+        switch (op) {
+        case 0x08: /* JMP */
+        case 0x09: /* JC */
+        case 0x0a: /* JNC */
+        case 0x0b: /* CALL */
+            value |= imm;
+            aic7880_write(s, REG_SINDEX, value, 1);
+            /* Selected transfer flag policy; fitted effects are unknown. */
+            s->regs[REG_FLAGS] = (updated_flags & FLAGS_CARRY) |
+                                 (value == 0 ? FLAGS_ZERO : 0);
+            if (op == 0x09) {
+                taken = updated_flags & FLAGS_CARRY;
             } else {
-                unsigned sum = (unsigned)result + operand +
-                               (op == 4 && (updated_flags & FLAGS_CARRY));
-
-                result = sum;
-                updated_flags = (sum > 0xff ? FLAGS_CARRY : 0) |
-                                (result == 0 ? FLAGS_ZERO : 0);
+                taken = op != 0x0a || !(updated_flags & FLAGS_CARRY);
             }
-        } else {
-            result = aic7880_shift_byte(shift_kind, shift_count, result);
+            break;
+        case 0x0c: /* JNE */
+            taken = value != mask;
+            break;
+        case 0x0d: /* JNZ */
+            taken = (value & mask) != 0;
+            break;
+        case 0x0e: /* JE */
+            taken = value == mask;
+            break;
+        case 0x0f: /* JZ */
+            taken = (value & mask) == 0;
+            break;
+        default:
+            aic7880_bad_opcode(s, op);
+            goto done;
         }
-        error_before = s->error_serial;
-        if (dst == REG_INTSTAT) {
-            if (result & 1) {
-                s->regs[REG_INTSTAT] = (s->regs[REG_INTSTAT] & 0x0f) |
-                                       (result & 0xf0);
+        if (taken) {
+            if (op == 0x0b) {
+                s->return_ptr = (s->return_ptr +
+                                 ARRAY_SIZE(s->return_pc) - 1) %
+                                ARRAY_SIZE(s->return_pc);
+                s->return_pc[s->return_ptr] = s->seqaddr &
+                                              (AIC_SEQ_INSNS - 1);
             }
-            s->regs[REG_INTSTAT] |= result & 0x0f;
-            if (result & 0x0d) {
-                s->regs[REG_HCNTRL] |= HOST_PAUSE;
-            }
-            aic7880_update_irq(s);
-        } else if (dst == REG_QOUTFIFO) {
-            if (!s->external_scb_ram && result >= AIC_SCB_PAGES) {
-                aic7880_error(s, "unsupported completion identifier");
-                goto done;
-            }
-            if (s->qout_count == aic7880_queue_limit(s)) {
-                if (!s->external_scb_ram) {
-                    aic7880_error(s, "completion queue full");
-                    goto done;
-                }
-            } else {
-                s->qout[s->qout_tail] = result;
-                s->qout_tail = (s->qout_tail + 1) % aic7880_queue_slots(s);
-                s->qout_count++;
-            }
-        } else {
-            if (scb_rmw) {
-                /* One logical access reads and writes the selected byte. */
-                s->regs[REG_SCBCNT] = scb_counter;
-            }
-            aic7880_write(s, dst, result, 1);
-        }
-        if (indirect_dest && s->error_serial == error_before) {
-            s->regs[REG_DINDEX]++;
-        }
-        if (op >= 2 && op <= 4 && s->error_serial == error_before) {
-            s->regs[REG_FLAGS] = updated_flags;
-        }
-        if ((insn & (1u << 24)) && s->error_serial == error_before) {
-            s->seqaddr = s->return_pc[s->return_ptr];
-            s->return_ptr = (s->return_ptr + 1) % ARRAY_SIZE(s->return_pc);
+            s->seqaddr = target;
         }
         if (s->regs[REG_SEQCTL] & SEQ_STEP) {
             s->regs[REG_HCNTRL] |= HOST_PAUSE;
             goto done;
         }
+        goto done;
     }
+    if (op > 5) {
+        aic7880_bad_opcode(s, op);
+        goto done;
+    }
+    if (dst == REG_HCNTRL) {
+        aic7880_error(s, "sequencer write to host-only HCNTRL");
+        goto done;
+    }
+    if (dst == REG_CLRINT) {
+        aic7880_error(s, "sequencer write to host-only CLRINT");
+        goto done;
+    }
+    if (dst == REG_FLAGS) {
+        aic7880_error(s, "sequencer write to read-only FLAGS");
+        goto done;
+    }
+    if (op == 5) {
+        shift_kind = aic7880_decode_shift(imm, &shift_count);
+        if (shift_kind == AIC_SHIFT_INVALID) {
+            aic7880_error(s, "unsupported sequencer shift control");
+            goto done;
+        }
+    }
+    if (dst == REG_DINDIR) {
+        uint8_t target = s->regs[REG_DINDEX];
+
+        /* Other source and destination aliases have no reviewed order. */
+        if (!aic7880_dindir_target_supported(target) ||
+            target == src ||
+            (src == REG_SINDIR &&
+             target == s->regs[REG_SINDEX] &&
+             !aic7880_dindir_equal_target_supported(target))) {
+            aic7880_error(s, "unsupported DINDIR destination");
+            goto done;
+        }
+        dst = target;
+        indirect_dest = true;
+    }
+    source = src == REG_SINDIR ? s->regs[REG_SINDEX] : src;
+    scb_counter = s->regs[REG_SCBCNT];
+    scb_rmw = s->external_scb_ram && (scb_counter & 0x80) &&
+              source >= REG_SCB_BASE &&
+              source < REG_SCB_BASE + AIC_SCB_PAGE_BYTES &&
+              dst >= REG_SCB_BASE &&
+              dst < REG_SCB_BASE + AIC_SCB_PAGE_BYTES;
+    if (scb_rmw && aic7880_scb_parity_bad(s,
+                      aic7880_scb_index(s, scb_counter & 0x1f))) {
+        /* Fault-time RMW ordering is unqualified; start neither half. */
+        aic7880_error(s, "parity-faulting automatic SCB read-modify-write "
+                        "is unsupported");
+        goto done;
+    }
+    result = aic7880_seq_read(s, src);
+    if (s->regs[REG_HCNTRL] & HOST_PAUSE) {
+        goto done;
+    }
+    if (op == 0) {
+        result |= imm ? imm : s->regs[REG_ACCUM];
+    } else if (op == 1) {
+        result &= imm ? imm : s->regs[REG_ACCUM];
+    } else if (op >= 2 && op <= 4) {
+        uint8_t operand = imm ? imm : s->regs[REG_ACCUM];
+
+        /* Synthetic flag policy; fitted AIC-7880 effects are unknown. */
+        if (op == 2) {
+            result ^= operand;
+            updated_flags = (updated_flags & FLAGS_CARRY) |
+                            (result == 0 ? FLAGS_ZERO : 0);
+        } else {
+            unsigned sum = (unsigned)result + operand +
+                           (op == 4 && (updated_flags & FLAGS_CARRY));
+
+            result = sum;
+            updated_flags = (sum > 0xff ? FLAGS_CARRY : 0) |
+                            (result == 0 ? FLAGS_ZERO : 0);
+        }
+    } else {
+        result = aic7880_shift_byte(shift_kind, shift_count, result);
+    }
+    error_before = s->error_serial;
+    if (dst == REG_INTSTAT) {
+        if (result & 1) {
+            s->regs[REG_INTSTAT] = (s->regs[REG_INTSTAT] & 0x0f) |
+                                   (result & 0xf0);
+        }
+        s->regs[REG_INTSTAT] |= result & 0x0f;
+        if (result & 0x0d) {
+            s->regs[REG_HCNTRL] |= HOST_PAUSE;
+        }
+        aic7880_update_irq(s);
+    } else if (dst == REG_QOUTFIFO) {
+        if (!s->external_scb_ram && result >= AIC_SCB_PAGES) {
+            aic7880_error(s, "unsupported completion identifier");
+            goto done;
+        }
+        if (s->qout_count == aic7880_queue_limit(s)) {
+            if (!s->external_scb_ram) {
+                aic7880_error(s, "completion queue full");
+                goto done;
+            }
+        } else {
+            s->qout[s->qout_tail] = result;
+            s->qout_tail = (s->qout_tail + 1) % aic7880_queue_slots(s);
+            s->qout_count++;
+        }
+    } else {
+        if (scb_rmw) {
+            /* One logical access reads and writes the selected byte. */
+            s->regs[REG_SCBCNT] = scb_counter;
+        }
+        aic7880_write(s, dst, result, 1);
+    }
+    if (indirect_dest && s->error_serial == error_before) {
+        s->regs[REG_DINDEX]++;
+    }
+    if (op >= 2 && op <= 4 && s->error_serial == error_before) {
+        s->regs[REG_FLAGS] = updated_flags;
+    }
+    if ((insn & (1u << 24)) && s->error_serial == error_before) {
+        s->seqaddr = s->return_pc[s->return_ptr];
+        s->return_ptr = (s->return_ptr + 1) % ARRAY_SIZE(s->return_pc);
+    }
+    if (s->regs[REG_SEQCTL] & SEQ_STEP) {
+        s->regs[REG_HCNTRL] |= HOST_PAUSE;
+        goto done;
+    }
+
 done:
-    if (!(s->regs[REG_HCNTRL] & HOST_PAUSE) &&
-        !(s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
-        timer_mod(s->seq_timer, qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) +
-                               AIC_SEQ_QUANTUM_US);
+    if (aic7880_seq_runnable(s)) {
+        /* Keep device time independent of timer dispatch latency. */
+        s->seq_deadline_ns += aic7880_seq_period_ns(s);
+        timer_mod(s->seq_timer, s->seq_deadline_ns);
+    } else {
+        aic7880_seq_stop(s, "instruction-pause");
     }
     s->running = false;
-}
-
-static void aic7880_seq_timer_cb(void *opaque)
-{
-    aic7880_run(opaque);
 }
 
 static MemTxResult aic7880_dspc_read(void *opaque, hwaddr addr,
@@ -2883,6 +2936,12 @@ static int aic7880_post_load(void *opaque, int version_id)
 {
     AIC7880State *s = opaque;
 
+    if (s->seq_deadline_ns < 0 ||
+        timer_pending(s->seq_timer) != aic7880_seq_runnable(s) ||
+        (timer_pending(s->seq_timer) &&
+         timer_expire_time_ns(s->seq_timer) != (uint64_t)s->seq_deadline_ns)) {
+        return -EINVAL;
+    }
     if (s->message_out_len > sizeof(s->message_out) ||
         (s->message_resume_command &&
          (s->phase != AIC_PHASE_MSG_IN || !aic7880_message_complete(s)))) {
@@ -2955,10 +3014,6 @@ static int aic7880_post_load(void *opaque, int version_id)
     s->error_serial = 0;
     aic7880_fifo_status(s);
     aic7880_update_scsi_irq(s);
-    if ((s->regs[REG_HCNTRL] & HOST_PAUSE) ||
-        (s->regs[REG_SEQCTL] & SEQ_LOADRAM)) {
-        timer_del(s->seq_timer);
-    }
     return 0;
 }
 
@@ -2981,6 +3036,7 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_BOOL(parity_break_pending, AIC7880State),
         VMSTATE_UINT16(seqaddr, AIC7880State),
         VMSTATE_TIMER_PTR(seq_timer, AIC7880State),
+        VMSTATE_INT64(seq_deadline_ns, AIC7880State),
         VMSTATE_TIMER_PTR(selection_timer, AIC7880State),
         VMSTATE_TIMER_PTR(bus_free_timer, AIC7880State),
         VMSTATE_BOOL(selection_pending, AIC7880State),
@@ -3054,7 +3110,7 @@ static void aic7880_test_pci_error_set(Object *obj, const char *value,
         s->regs[REG_INTSTAT] |= 0x08;
         s->maskable_break_pending = true;
         s->regs[REG_HCNTRL] |= HOST_PAUSE;
-        timer_del(s->seq_timer);
+        aic7880_seq_stop(s, "pause");
     }
     aic7880_update_irq(s);
 }
@@ -3143,7 +3199,7 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
         object_property_add_str(OBJECT(s), "x-test-pci-error", NULL,
                                 aic7880_test_pci_error_set);
     }
-    s->seq_timer = timer_new_us(QEMU_CLOCK_VIRTUAL,
+    s->seq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                 aic7880_seq_timer_cb, s);
     s->selection_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      aic7880_selection_timer_cb, s);
