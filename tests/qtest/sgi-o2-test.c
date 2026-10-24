@@ -7826,8 +7826,10 @@ static void test_storage_second_segment_dma_failure(void)
                   sizeof(reference));
 
     qtest_memset(t.qts, RAM_FULL + 0xf8, 0xa5, sizeof(first));
-    o2_storage_command(t.qts, read_cdb, sizeof(read_cdb),
-                       0x100, 256, false);
+    /* The first host segment cannot complete the entire SCSI command. */
+    o2_storage_start_command(t.qts, 1, read_cdb, sizeof(read_cdb),
+                             0x100, 256, false, false);
+    qtest_clock_timers(t.qts, true);
     for (unsigned i = 0; i < 1000; i++) {
         if (!qtest_readb(t.qts, o2_storage_aic(0x8c)) &&
             !qtest_readb(t.qts, o2_storage_aic(0x8d))) {
