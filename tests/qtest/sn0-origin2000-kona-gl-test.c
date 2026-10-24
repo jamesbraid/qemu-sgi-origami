@@ -38,8 +38,9 @@
 #define REG_COMMAND_DATA    KONA_REG(0xc1000c)
 #define REG_COMMAND_SLOT(t) KONA_REG(0xc1000c + 0x20 * (uint64_t)(t))
 
-/* x-test-plane's id for the first overlay plane, after the seven banks. */
-#define OVERLAY_PLANE 8
+/* x-test-plane's ids for the two overlay planes, after the seven banks. */
+#define OVERLAY_PLANE  8
+#define OVERLAY1_PLANE 9
 
 /*
  * Virtual time from one retrace to just past the next: the model's 60 Hz
@@ -1251,6 +1252,52 @@ static void test_held_level1_migrates(gconstpointer opaque)
     g_rmdir(tmpfs);
 }
 
+/*
+ * When an overlay window goes away, the X server clears the overlay
+ * layer under it with konClearLayer: whole-screen clip and position, the
+ * GC SceneViewer's close sent (cfg 0x28, buffer selector 3, index 0
+ * under all ones), then the boxes. The logo an overlay context drew must
+ * go with it, so the main planes show again, and the second overlay
+ * buffer, here first given index 0x12 by the X server's buffer-2 GC
+ * (cfg 0x1830, op 2), must clear too. A model that defers the GC leaves
+ * the logo on the desktop; one that clears one buffer leaves 0x12.
+ */
+static void test_x_clear_layer_clears_overlay(void)
+{
+    const uint32_t y = 640;
+    const uint32_t gc[13] = {
+        0, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0, 0x28, 3, 0, 6, 0, 1, 1,
+    };
+    const uint32_t buffer2[13] = {
+        (0x12 & 0xfff0) << 4 | (0x12 & 0xf) << 3, 0x1ffe, 0, 0x1ffe,
+        0xf00fff, 0, 0x1830, 2, 0, 6, 5, 1, 1,
+    };
+    const uint32_t box[2] = {
+        XY(PROBE_X, FB_HEIGHT - y - PROBE_SIZE),
+        XY(PROBE_X + PROBE_SIZE, FB_HEIGHT - y),
+    };
+
+    test_overlay_context_draws_the_overlay();
+    kona_command(qts, 0x1c, (uint32_t[]){ F1 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0xc0c0c0);
+
+    kona_command(qts, 0x12b, (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
+    kona_command(qts, 0x12a, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(qts, 0x129, buffer2, ARRAY_SIZE(buffer2));
+    kona_command(qts, 0x154, box, 2);
+    g_assert_cmphex(bank_word(qts, OVERLAY1_PLANE, PROBE_X, y), ==, 0x12);
+
+    kona_command(qts, 0x129, gc, ARRAY_SIZE(gc));
+    kona_command(qts, 0x154, box, 2);
+    for (unsigned plane = OVERLAY_PLANE; plane <= OVERLAY1_PLANE; plane++) {
+        g_assert_cmphex(bank_word(qts, plane, PROBE_X, y), ==, 0);
+        g_assert_cmphex(bank_word(qts, plane, PROBE_X + PROBE_SIZE - 1,
+                                  y + PROBE_SIZE - 1), ==, 0);
+    }
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1319,6 +1366,8 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(2), test_held_level1_migrates);
     qtest_add_data_func("sn0/origin2000/kona-gl/held-1-1-arg-migrates",
                         GUINT_TO_POINTER(3), test_held_level1_migrates);
+    qtest_add_func("sn0/origin2000/kona-gl/x-clear-layer-clears-overlay",
+                   test_x_clear_layer_clears_overlay);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();

@@ -340,6 +340,44 @@ static void test_reserved(void)
     g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
 }
 
+/*
+ * konClearLayer's overlay clear, as the X server sent it when
+ * SceneViewer's overlay window closed: cfg 0x28 with buffer selector 3,
+ * index 0 under all ones, repeated in both bytes. The two bytes must
+ * repeat one index. The same plane set with selector 1, and kon_parseGC's
+ * 15-bit overlay form 0x1828 (the 15-bit row of the command grammar's GC
+ * table), stay deferred.
+ */
+static void test_overlay_both(void)
+{
+    uint32_t words[13] = {
+        0, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0, 0x28, 3, 0, 6, 0, 1, 1,
+    };
+    SGIXGC gc;
+
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmpint(gc.target, ==, SGI_X_GC_OVERLAY_BOTH);
+    g_assert_cmphex(gc.foreground, ==, 0);
+    g_assert_cmphex(gc.mask, ==, 0xff);
+    g_assert_cmphex(gc.width_mask, ==, 0xff);
+    /* Index 0x5a in both bytes: v 0x5a5a. */
+    words[0] = (0x5a5 << 8) | (0xa << 3);
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_OK);
+    g_assert_cmphex(gc.foreground, ==, 0x5a);
+    words[0] = 0x5a000;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_COLOR);
+    words[0] = 0;
+    words[4] = 0xfff;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_MASK);
+    words[4] = 0xf00fff;
+    words[7] = 1;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
+    words[6] = 0x1828;
+    words[10] = 5;
+    words[7] = 3;
+    g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_DEFERRED);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -348,6 +386,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/x-gc/rgb", test_rgb);
     g_test_add_func("/sgi/x-gc/did", test_did);
     g_test_add_func("/sgi/x-gc/classes", test_classes);
+    g_test_add_func("/sgi/x-gc/overlay-both", test_overlay_both);
     g_test_add_func("/sgi/x-gc/rgb30", test_rgb30);
     g_test_add_func("/sgi/x-gc/mirrored-selector", test_mirrored_selector);
     g_test_add_func("/sgi/x-gc/masks", test_masks);

@@ -13,6 +13,8 @@ typedef enum SGIXGCTarget {
     SGI_X_GC_OVERLAY1,
     SGI_X_GC_POPUP,
     SGI_X_GC_DID,
+    /* Both overlay buffers at once, the same 8-bit index in each. */
+    SGI_X_GC_OVERLAY_BOTH,
 } SGIXGCTarget;
 
 typedef enum SGIXGCStatus {

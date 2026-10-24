@@ -11092,6 +11092,17 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
         memory = &s->desktop_mem;
         front[0] = sgi_board_memory_plane(memory, plane);
         tag[0] = NULL;
+    } else if (gc.target == SGI_X_GC_OVERLAY_BOTH) {
+        /*
+         * The model's two overlay planes, each the index's low byte.
+         * Which byte of the pipe's word each buffer holds is unknown;
+         * the form repeats the index, so either reading stores the same.
+         */
+        memory = &s->desktop_mem;
+        front[0] = sgi_board_memory_plane(memory, 1);
+        front[1] = sgi_board_memory_plane(memory, 2);
+        tag[0] = tag[1] = NULL;
+        banks = 2;
     } else if (gc.target == SGI_X_GC_MAIN_RGB8) {
         target_tag = SGI_KONA_TAG_DIRECT;
         if (gc.raw[6] == 4 && gc.first_selector == 3) {
