@@ -8331,7 +8331,7 @@ static uint32_t odyssey_raw_nibble(uint32_t byte)
     return (byte * 15 + 127) / 255;
 }
 
-/* A stored texel as bpp raw bytes (ODSY_DMA_FMT_CLASS_RAW). */
+/* A stored texel as a backing-store page's bpp raw bytes. */
 static void odyssey_raw_pack(uint32_t rgba, uint32_t bpp, uint8_t *dst)
 {
     if (bpp == 4) {
@@ -8344,7 +8344,7 @@ static void odyssey_raw_pack(uint32_t rgba, uint32_t bpp, uint8_t *dst)
                   odyssey_raw_nibble(rgba & 0xff));
 }
 
-/* bpp raw bytes back as a stored texel (ODSY_DMA_FMT_CLASS_RAW). */
+/* A backing-store page's bpp raw bytes back as a stored texel. */
 static uint32_t odyssey_raw_unpack(const uint8_t *src, uint32_t bpp)
 {
     uint32_t v;
