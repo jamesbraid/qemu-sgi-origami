@@ -2877,6 +2877,8 @@ static void test_dp83843_bmcr_loopback_selects_lbr(const void *data)
 #define PHY_NEGOTIATE_NS  INT64_C(2000000000)
 #define BMCR_AUTOEN      0x1000
 #define BMCR_RESTART     0x0200
+#define BMCR_ISOLATE     0x0400
+#define BMCR_PDOWN       0x0800
 
 static void phy_assert_negotiation(QTestState *qts, bool complete)
 {
@@ -2900,10 +2902,14 @@ static void test_dp83843_restart_timing(const void *data)
     mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
     phy_assert_negotiation(qts, true);
     mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, BMCR_RESTART);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, BMCR_RESTART);
     phy_assert_negotiation(qts, false);
     qtest_clock_step(qts, PHY_BREAK_LINK_NS - 1);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, BMCR_RESTART);
     phy_assert_negotiation(qts, false);
     qtest_clock_step(qts, 1);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
     phy_assert_negotiation(qts, false);
     qtest_clock_step(qts, PHY_NEGOTIATE_NS - 1);
     phy_assert_negotiation(qts, false);
@@ -2919,6 +2925,7 @@ static void test_dp83843_restart_timing(const void *data)
     mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
     qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
     mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
     qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
     mii_write(qts, PHY_BMCR, BMCR_AUTOEN);
     qtest_clock_step(qts, PHY_NEGOTIATE_NS);
@@ -2939,12 +2946,32 @@ static void test_dp83843_restart_cancel(const void *data)
         mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
         qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
         mii_write(qts, PHY_BMCR, 0x8000);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
         qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
         phy_assert_negotiation(qts, false);
 
         mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
         qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
-        mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+        qtest_system_reset(qts);
+        /* Reset clears PCI configuration too; restore the fixture mapping. */
+        qpci_config_writel(ioc3_dev, PCI_BASE_ADDRESS_0, ioc3_window.addr);
+        qpci_device_enable(ioc3_dev);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_negotiation(qts, false);
+
+        /* Existing isolate cancellation is a model limitation. */
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_ISOLATE | BMCR_RESTART);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
+        phy_assert_negotiation(qts, false);
+
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, phase ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX | BMCR_RESTART);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
         phy_assert_forced_link(qts, true);
         qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS);
         phy_assert_forced_link(qts, true);
@@ -2964,6 +2991,70 @@ static void test_dp83843_restart_cancel(const void *data)
         qtest_qmp_assert_success(qts, "{'execute':'set_link', 'arguments':"
                                  "{'name':'n0', 'up':true}}");
         phy_assert_forced_link(qts, true);
+    }
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+static void test_dp83843_restart_again(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
+    mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, BMCR_RESTART);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, PHY_BREAK_LINK_NS / 2 - 1);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, BMCR_RESTART);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+    qtest_clock_step(qts, PHY_NEGOTIATE_NS - 1);
+    phy_assert_negotiation(qts, false);
+    qtest_clock_step(qts, 1);
+    phy_assert_negotiation(qts, true);
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+/* Power-down completion is an existing model limitation, not PHY fidelity. */
+static void test_dp83843_restart_modes(const void *data)
+{
+    const uint16_t modes[] = { BMCR_PDOWN, BMCR_LOOPBACK };
+    unsigned int i;
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2, "");
+    for (i = 0; i < G_N_ELEMENTS(modes); i++) {
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART | modes[i]);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==,
+                        BMCR_RESTART);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS - 1);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==,
+                        BMCR_RESTART);
+        qtest_clock_step(qts, 1);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+        phy_assert_negotiation(qts, false);
+        qtest_clock_step(qts, PHY_NEGOTIATE_NS);
+        phy_assert_negotiation(qts, true);
+    }
+    /* Management clearing, including power down, preserves the deadline. */
+    for (i = 0; i < 2; i++) {
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_RESTART);
+        qtest_clock_step(qts, i ? PHY_BREAK_LINK_NS : 1);
+        mii_write(qts, PHY_BMCR, BMCR_AUTOEN | BMCR_PDOWN);
+        g_assert_cmphex(mii_read(qts, PHY_BMCR) & BMCR_RESTART, ==, 0);
+        qtest_clock_step(qts, PHY_BREAK_LINK_NS + PHY_NEGOTIATE_NS -
+                         (i ? PHY_BREAK_LINK_NS : 1) - 1);
+        phy_assert_negotiation(qts, false);
+        qtest_clock_step(qts, 1);
+        phy_assert_negotiation(qts, true);
     }
     ioc3_quit(qts);
     close(sv[0]);
@@ -2989,6 +3080,7 @@ typedef struct PHYMigrationCase {
     unsigned int elapsed_ms;
     bool force_before;
     bool force_after;
+    bool clear_request;
 } PHYMigrationCase;
 
 static const PHYMigrationCase phy_migration_cases[] = {
@@ -2998,6 +3090,7 @@ static const PHYMigrationCase phy_migration_cases[] = {
     { 2000, true, false },
     { 750, false, true },
     { 2000, false, true },
+    { .elapsed_ms = 750, .clear_request = true },
 };
 
 static void test_dp83843_register_migration(const void *data)
@@ -3031,6 +3124,14 @@ static void test_dp83843_register_migration(const void *data)
         source_time = qtest_clock_step(from, elapsed);
     }
     phy_assert_negotiation(from, false);
+    g_assert_cmphex(mii_read(from, PHY_BMCR) & BMCR_RESTART, ==,
+                    elapsed < PHY_BREAK_LINK_NS ? BMCR_RESTART : 0);
+    if (test->clear_request) {
+        /* Management clear changes readback without cancelling the timer. */
+        mii_write(from, PHY_BMCR, BMCR_AUTOEN | BMCR_LOOPBACK |
+                  BMCR_SPEED100 | BMCR_DUPLEX);
+        g_assert_cmphex(mii_read(from, PHY_BMCR) & BMCR_RESTART, ==, 0);
+    }
     if (test->force_before) {
         mii_write(from, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
         phy_assert_forced_link(from, true);
@@ -3051,6 +3152,10 @@ static void test_dp83843_register_migration(const void *data)
     g_assert_cmphex(mii_read(to, MII_LBR) & 0x0030, ==, 0x0030);
 
     qtest_clock_set(to, source_time);
+    g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==,
+                    elapsed < PHY_BREAK_LINK_NS && !test->force_before &&
+                    !test->clear_request ?
+                    BMCR_RESTART : 0);
     phy_assert_negotiation(to, false);
     if (test->force_after) {
         mii_write(to, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
@@ -3061,7 +3166,11 @@ static void test_dp83843_register_migration(const void *data)
         phy_assert_forced_link(to, true);
     } else {
         if (elapsed < PHY_BREAK_LINK_NS) {
-            qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed);
+            qtest_clock_step(to, PHY_BREAK_LINK_NS - elapsed - 1);
+            g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==,
+                            test->clear_request ? 0 : BMCR_RESTART);
+            qtest_clock_step(to, 1);
+            g_assert_cmphex(mii_read(to, PHY_BMCR) & BMCR_RESTART, ==, 0);
             phy_assert_negotiation(to, false);
             elapsed = PHY_BREAK_LINK_NS;
         }
@@ -3095,6 +3204,10 @@ int main(int argc, char **argv)
                         test_dp83843_restart_timing);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-cancel", NULL,
                         test_dp83843_restart_cancel);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-again", NULL,
+                        test_dp83843_restart_again);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-modes", NULL,
+                        test_dp83843_restart_modes);
     qtest_add_data_func("sgi-ioc3-eth/dp83840a-restart-unchanged", NULL,
                         test_dp83840a_restart_unchanged);
 
@@ -3216,6 +3329,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sgi-ioc3-eth/"
                         "dp83843-force-after-migration-negotiating",
                         &phy_migration_cases[5],
+                        test_dp83843_register_migration);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-cleared-request-migration",
+                        &phy_migration_cases[6],
                         test_dp83843_register_migration);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-bmcr-loopback-selects-lbr",
                         NULL, test_dp83843_bmcr_loopback_selects_lbr);
