@@ -1228,7 +1228,15 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
 {
     bool rising = (val & 1) && !(s->signal_outputs & 1);
     bool falling = !(val & 1) && (s->signal_outputs & 1);
+    bool new_atn = (val & SCSI_SIG_ATN) && !s->initiator_atn;
 
+    if (new_atn && (!s->selected || s->peer_nexus_disconnected ||
+                    s->req || s->cdb_len ||
+                    (s->phase != AIC_PHASE_MSG_OUT &&
+                     s->phase != AIC_PHASE_COMMAND))) {
+        aic7880_error(s, "unsupported SCSISIGO attention request");
+        return;
+    }
     if (rising && (!aic7880_manual_admitted(s) ||
                    !(s->regs[REG_SCSISIGI] & 2) || !s->manual_valid)) {
         aic7880_error(s, "manual ACK without a sampled or staged request");
@@ -1236,7 +1244,7 @@ static void aic7880_signal_write(AIC7880State *s, uint8_t val)
     }
     s->expected_phase = val & 0xe0;
     aic7880_pio_phase(s);
-    if (val & SCSI_SIG_ATN) {
+    if (new_atn) {
         s->initiator_atn = true;
         if (s->phase == AIC_PHASE_COMMAND && !s->req && !s->cdb_len) {
             s->phase = AIC_PHASE_MSG_OUT;
