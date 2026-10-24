@@ -22,6 +22,7 @@ struct SGIMACEEthState {
     uint64_t secondary_station;
     uint64_t multicast_mask;
     uint8_t rx_delay;
+    uint8_t rx_threshold_retirement;
     uint64_t tx_base;
     uint32_t int_status;
     uint16_t tx_read;

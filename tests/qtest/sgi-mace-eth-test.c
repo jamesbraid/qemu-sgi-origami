@@ -2799,7 +2799,7 @@ static void fault_set(QTestState *qts, const char *property, uint64_t value)
         "'property':%s,'value':%" PRIu64 "}}", property, value);
 }
 
-static QTestState *fault_eth_start_full(int sv[2], bool incoming)
+static QTestState *fault_eth_start_mode(int sv[2], bool incoming, bool legacy)
 {
     QTestState *qts;
 
@@ -2808,9 +2808,10 @@ static QTestState *fault_eth_start_full(int sv[2], bool incoming)
     qts = qtest_initf(
         "-M none -cpu R10000 -nic none "
         "-device memory-transaction-test,id=memtx,fault-memory=on "
-        "-device sgi-mace,id=mace,phy-ics1890=on,phy-address=8,"
+        "-device %s,id=mace,phy-ics1890=on,phy-address=8,"
         "ram=/machine/peripheral/memtx/test-memory[0] "
-        "-nic socket,id=n0,fd=%d,model=sgi-mace-eth %s", sv[1],
+        "-nic socket,id=n0,fd=%d,model=sgi-mace-eth %s",
+        legacy ? "sgi-mace-rx-threshold-test" : "sgi-mace", sv[1],
         incoming ? "-incoming defer" : "");
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/mace", 0, 0x1f000000);
     if (!incoming) {
@@ -2818,6 +2819,11 @@ static QTestState *fault_eth_start_full(int sv[2], bool incoming)
         qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
     }
     return qts;
+}
+
+static QTestState *fault_eth_start_full(int sv[2], bool incoming)
+{
+    return fault_eth_start_mode(sv, incoming, false);
 }
 
 static QTestState *fault_eth_start(int sv[2])
@@ -3670,9 +3676,545 @@ static void test_tx_empty_reassert(void)
     close(sv[1]);
 }
 
+static uint64_t rx_retirement_control(unsigned threshold, bool gather)
+{
+    return (1U << 15) | (1U << 9) | (4U << 12) | (threshold << 4) |
+           (gather ? 1U << 11 : 0);
+}
+
+static void rx_retirement_config(QTestState *qts, unsigned count,
+                                 unsigned delay, bool gather)
+{
+    uint8_t guard[4096];
+
+    memset(guard, 0x59, sizeof(guard));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
+    for (unsigned i = 0; i < count; i++) {
+        unsigned offset = (0x8000 + 4096 * i) & 0xffff;
+
+        qtest_memwrite(qts, FAULT_MEMORY + offset, guard, sizeof(guard));
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + offset);
+    }
+    qtest_writeq(qts, ETH_BASE + RX_DELAY, delay);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 rx_retirement_control(count, gather));
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 0xff);
+}
+
+static QTestState *rx_retirement_start(int sv[2], unsigned count,
+                                      unsigned delay, bool gather)
+{
+    QTestState *qts = fault_eth_start_mode(sv, false, true);
+
+    qtest_irq_intercept_out_named(qts, "/machine/peripheral/mace", "crime");
+    rx_retirement_config(qts, count, delay, gather);
+    return qts;
+}
+
+static void rx_retirement_packet(QTestState *qts, int fd, unsigned offset,
+                                 unsigned marker)
+{
+    uint8_t frame[60], landed[128];
+    uint64_t vector;
+
+    rx_sequence_frame(frame, marker);
+    socket_send_frame(fd, frame, sizeof(frame));
+    wait_rx_status(qts, FAULT_MEMORY + offset);
+    qtest_memread(qts, FAULT_MEMORY + offset, landed, sizeof(landed));
+    vector = eth_status(qts, FAULT_MEMORY + offset);
+    g_assert_cmphex(vector >> 63, ==, 1);
+    g_assert_cmpuint(vector & 0xffff, ==, 64);
+    g_assert_cmphex(landed[32], ==, 0);
+    g_assert_cmphex(landed[33], ==, 0);
+    g_assert_cmpmem(landed + 34, sizeof(frame), frame, sizeof(frame));
+    g_assert_cmpuint(marker, <, G_N_ELEMENTS(rx_progress_vectors));
+    g_assert_cmphex((vector >> 32) & 0xffff, ==,
+                    rx_progress_vectors[marker].checksum);
+    g_assert_cmpmem(landed + 94, 4, rx_progress_vectors[marker].fcs, 4);
+    for (unsigned i = 98; i < sizeof(landed); i++) {
+        g_assert_cmphex(landed[i], ==, 0x59);
+    }
+}
+
+static bool rx_threshold_event(QTestState *qts)
+{
+    return qtest_readq(qts, ETH_BASE + INT_STATUS) & 32;
+}
+
+static void test_rx_threshold_retirement(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        int sv[2];
+        QTestState *qts = fault_eth_start_mode(sv, false, legacy);
+        uint8_t before[3 * 4096], after[sizeof(before)];
+
+        qtest_irq_intercept_out_named(qts, "/machine/peripheral/mace", "crime");
+        rx_retirement_config(qts, 8, 0, false);
+        g_assert_false(rx_threshold_event(qts));
+        for (unsigned i = 0; i < 3; i++) {
+            rx_retirement_packet(qts, sv[0], 0x8000 + 4096 * i, i);
+        }
+        g_assert_true(rx_threshold_event(qts));
+        g_assert_true(qtest_get_irq(qts, 3));
+        qtest_memread(qts, FAULT_MEMORY + 0x8000, before, sizeof(before));
+        for (unsigned i = 0; i < 3; i++) {
+            qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT,
+                         RAM_FULL + 0x8000 + 4096 * i);
+            g_assert_cmpint(rx_threshold_event(qts), ==, i < 2 || !legacy);
+        }
+        g_assert_cmpint(qtest_get_irq(qts, 3), ==, !legacy);
+        qtest_memread(qts, FAULT_MEMORY + 0x8000, after, sizeof(after));
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        rx_retirement_packet(qts, sv[0], 0xb000, 3);
+        g_assert_true(rx_threshold_event(qts));
+        qtest_writeq(qts, ETH_BASE + INT_STATUS, 0);
+        g_assert_true(rx_threshold_event(qts));
+        qtest_writeq(qts, ETH_BASE + INT_STATUS, 8);
+        g_assert_true(rx_threshold_event(qts));
+        qtest_writeq(qts, ETH_BASE + INT_STATUS, 32);
+        g_assert_cmpint(rx_threshold_event(qts), ==, !legacy);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_threshold_legacy_machine(void)
+{
+    uint8_t frame[60], landed[60];
+    int sv[2];
+    QTestState *qts;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M o2-test,bank-profile=8x128m-synthetic,"
+                      "crime-profile=legacy-software,phy-ics1890=on,"
+                      "phy-address=8 -m 1G "
+                      "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
+    qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(qts, 0x14000208 + 8 * bank, 0x100 | (bank << 2));
+    }
+    mdio_write(qts, 8, 0, 0x2100);
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 3U << 5);
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(1, false));
+    g_assert_false(rx_threshold_event(qts));
+    rx_sequence_frame(frame, 0);
+    socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_rx_status(qts, RAM_FULL + 0x8000);
+    qtest_memread(qts, RAM_FULL + 0x8022, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_true(rx_threshold_event(qts));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
+    qtest_writeq(qts, CRIME_ENABLE, 8);
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_writeq(qts, CRIME_ENABLE, 0);
+    g_assert_true(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+    g_assert_false(rx_threshold_event(qts));
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & 8);
+    qtest_writeq(qts, CRIME_ENABLE, 8);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_threshold_aliases_and_masks(void)
+{
+    int sv[2];
+    QTestState *qts = rx_retirement_start(sv, 8, 0, false);
+
+    rx_retirement_packet(qts, sv[0], 0x8000, 0);
+    qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, 8U << 4);
+    g_assert_true(rx_threshold_event(qts));
+    g_assert_false(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, 7U << 4);
+    g_assert_false(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, (8U << 4) | (1U << 9));
+    g_assert_false(rx_threshold_event(qts));
+    g_assert_false(qtest_get_irq(qts, 3));
+    rx_retirement_packet(qts, sv[0], 0x9000, 1);
+    g_assert_true(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 rx_retirement_control(8, false) & ~(1U << 15));
+    g_assert_true(rx_threshold_event(qts));
+    g_assert_false(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 rx_retirement_control(6, false) & ~(1U << 15));
+    g_assert_false(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(8, false));
+    g_assert_false(rx_threshold_event(qts));
+    rx_retirement_packet(qts, sv[0], 0xa000, 2);
+    g_assert_true(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 32);
+    g_assert_false(rx_threshold_event(qts));
+    for (unsigned enabled = 0; enabled < 2; enabled++) {
+        qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                     (8U << 4) | (enabled ? 1U << 9 : 0));
+        g_assert_false(rx_threshold_event(qts));
+    }
+    rx_retirement_packet(qts, sv[0], 0xb000, 3);
+    g_assert_true(rx_threshold_event(qts));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(4, false));
+    g_assert_false(rx_threshold_event(qts));
+    qtest_system_reset(qts);
+    g_assert_false(rx_threshold_event(qts));
+    mdio_write(qts, 8, 0, 0x2100);
+    rx_retirement_config(qts, 1, 0, false);
+    g_assert_false(rx_threshold_event(qts));
+    rx_retirement_packet(qts, sv[0], 0x8000, 0);
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+    g_assert_false(rx_threshold_event(qts));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_threshold_field_values(void)
+{
+    static const unsigned counts[] = { 0, 3, 4, 16 };
+    int sv[2];
+    QTestState *qts = rx_retirement_start(sv, 0, 0, false);
+
+    for (unsigned c = 0; c < G_N_ELEMENTS(counts); c++) {
+        for (unsigned threshold = 0; threshold < 32; threshold++) {
+            unsigned count = counts[c];
+            unsigned posted = count == 16 ? 16 : count + 1;
+
+            qtest_system_reset(qts);
+            mdio_write(qts, 8, 0, 0x2100);
+            rx_retirement_config(qts, posted, 0, false);
+            qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                         (31U << 4) | (1U << 9));
+            g_assert_false(rx_threshold_event(qts));
+            rx_retirement_packet(qts, sv[0], 0x8000, 0);
+            if (count == 16) {
+                qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+            }
+            g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                             ==, count);
+            g_assert_true(rx_threshold_event(qts));
+            if (threshold & 1) {
+                qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                             (threshold << 4) | (1U << 9));
+            } else {
+                qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                             rx_retirement_control(threshold, false));
+            }
+            g_assert_cmpint(rx_threshold_event(qts), ==, threshold != count);
+            qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                         (count << 4) | (1U << 9));
+            g_assert_false(rx_threshold_event(qts));
+            qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                         (((count + 1) & 31) << 4) | (1U << 9));
+            g_assert_false(rx_threshold_event(qts));
+        }
+    }
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_threshold_pending_refill(void)
+{
+    static const unsigned early_counts[] = { 1, 4, 5 };
+
+    for (unsigned unequal = 0; unequal < 2; unequal++) {
+        int sv[2];
+        QTestState *qts = rx_retirement_start(sv, 8, 2, false);
+
+        rx_retirement_packet(qts, sv[0], 0x8000, 0);
+        g_assert_false(rx_threshold_event(qts));
+        qtest_clock_step(qts, 30690);
+        qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+        if (unequal) {
+            qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                         (7U << 4) | (1U << 9));
+        }
+        qtest_writeq(qts, ETH_BASE + INT_STATUS, 32);
+        qtest_writeq(qts, ETH_BASE + RX_DELAY, 63);
+        qtest_clock_step(qts, 30689);
+        g_assert_false(rx_threshold_event(qts));
+        qtest_clock_step(qts, 1);
+        g_assert_cmpint(rx_threshold_event(qts), ==, unequal);
+        g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31, ==, 8);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+    for (unsigned c = 0; c < G_N_ELEMENTS(early_counts); c++) {
+        unsigned count = early_counts[c];
+        int sv[2];
+        QTestState *qts = rx_retirement_start(sv, count, 1, false);
+
+        rx_retirement_packet(qts, sv[0], 0x8000, 0);
+        g_assert_cmpint(rx_threshold_event(qts), ==, count < 5);
+        g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                         ==, count - 1);
+        if (count == 5) {
+            qtest_clock_step(qts, 30689);
+            g_assert_false(rx_threshold_event(qts));
+            qtest_clock_step(qts, 1);
+            g_assert_true(rx_threshold_event(qts));
+        }
+        qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                     ((count - 1) << 4) | (1U << 9));
+        qtest_clock_step(qts, 30690);
+        g_assert_false(rx_threshold_event(qts));
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_threshold_gather_retirement(void)
+{
+    for (unsigned unequal = 0; unequal < 2; unequal++) {
+        int sv[2];
+        QTestState *qts = rx_retirement_start(sv, 8, 0, false);
+        uint8_t before[4096], after[sizeof(before)];
+
+        rx_retirement_packet(qts, sv[0], 0x8000, 0);
+        g_assert_true(rx_threshold_event(qts));
+        qtest_writeq(qts, ETH_BASE + RX_DELAY, 2);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                     rx_retirement_control(8, true));
+        rx_retirement_packet(qts, sv[0], 0x9000, 1);
+        g_assert_true(rx_threshold_event(qts));
+        qtest_memread(qts, FAULT_MEMORY + 0x9000, before, sizeof(before));
+        qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, (7U << 4) | (1U << 9));
+        g_assert_false(rx_threshold_event(qts));
+        if (unequal) {
+            qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS,
+                         (8U << 4) | (1U << 9));
+        } else {
+            qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+        }
+        g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                         ==, unequal ? 7 : 8);
+        qtest_clock_step(qts, 61379);
+        g_assert_false(rx_threshold_event(qts));
+        qtest_clock_step(qts, 1);
+        g_assert_cmpint(rx_threshold_event(qts), ==, unequal);
+        g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                         ==, unequal ? 6 : 7);
+        qtest_clock_step(qts, 61380);
+        g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31,
+                         ==, unequal ? 6 : 7);
+        qtest_memread(qts, FAULT_MEMORY + 0x9000, after, sizeof(after));
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmphex(eth_status(qts, FAULT_MEMORY + 0xa000) >> 63, ==, 0);
+        qtest_quit(qts);
+        close(sv[0]);
+        close(sv[1]);
+    }
+}
+
+static void test_rx_threshold_other_causes(void)
+{
+    int sv[2];
+    QTestState *qts = rx_retirement_start(sv, 1, 0, false);
+    uint8_t frame[60] = { 0 };
+
+    rx_retirement_packet(qts, sv[0], 0x8000, 0);
+    socket_send_frame(sv[0], frame, sizeof(frame));
+    sgi_wait_socket_read(sv[0]);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x60, ==, 0x60);
+    qtest_writeq(qts, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x60, ==, 0x40);
+    g_assert_true(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 32);
+    g_assert_true(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 64);
+    g_assert_false(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(2, false));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 rx_retirement_control(1, false) | 3);
+    g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & 1);
+    g_assert_false(rx_threshold_event(qts));
+    g_assert_true(qtest_get_irq(qts, 3));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_threshold_fault_retirement(void)
+{
+    int sv[2];
+    QTestState *qts = rx_retirement_start(sv, 8, 0, false);
+    uint8_t before[4096], after[sizeof(before)], frame[60] = { 0 };
+    SgiWait wait;
+
+    rx_retirement_packet(qts, sv[0], 0x8000, 0);
+    qtest_writeq(qts, ETH_BASE + RX_DELAY, 2);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(8, true));
+    rx_retirement_packet(qts, sv[0], 0x9000, 1);
+    qtest_memread(qts, FAULT_MEMORY + 0x9000, before, sizeof(before));
+    qtest_writeq(qts, ETH_BASE + TX_BASE, 0xf0000000);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
+                 rx_retirement_control(8, true) | 3);
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+    g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & 8);
+    fault_set(qts, "fault-start", 0x9100);
+    fault_set(qts, "fault-end", 0x9107);
+    fault_set(qts, "fault-mode", 2);
+    socket_send_frame(sv[0], frame, sizeof(frame));
+    sgi_wait_start(&wait, "legacy RX threshold status fault");
+    while (qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
+        sgi_wait_pause(&wait, 1000);
+        qtest_clock_step(qts, 0);
+    }
+    fault_set(qts, "fault-mode", 0);
+    g_assert_cmphex(eth_status(qts, FAULT_MEMORY + 0x9100) >> 63, ==, 0);
+    qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, (7U << 4) | (1U << 9));
+    g_assert_false(rx_threshold_event(qts));
+    g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & 8);
+    g_assert_true(qtest_get_irq(qts, 3));
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(8, true));
+    g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
+    qtest_clock_step(qts, 613800);
+    g_assert_false(rx_threshold_event(qts));
+    qtest_memread(qts, FAULT_MEMORY + 0x9000, after, sizeof(after));
+    /* The failed packet may have payload writes in the next bucket. */
+    g_assert_cmpmem(before, 256, after, 256);
+    g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31, ==, 7);
+    qtest_writeq(qts, ETH_BASE + INT_STATUS, 8);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(8, true));
+    g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_rx_threshold_migration(void)
+{
+    for (unsigned mode = 0; mode < 4; mode++) {
+        g_autofree char *dir = g_dir_make_tmp("mace-rx-retire-XXXXXX", NULL);
+        g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        int sv[2], dest_sv[2];
+        QTestState *from = rx_retirement_start(sv, 8, 2, mode == 3);
+        QTestState *to = fault_eth_start_mode(dest_sv, true, true);
+        uint8_t before[4096], after[sizeof(before)];
+        uint64_t fifo, events;
+        int64_t clock;
+
+        qtest_irq_intercept_out_named(to, "/machine/peripheral/mace", "crime");
+        rx_retirement_packet(from, sv[0], 0x8000, 0);
+        if (mode < 2) {
+            qtest_clock_step(from, 61380);
+            g_assert_true(rx_threshold_event(from));
+            if (mode == 1) {
+                qtest_writeq(from, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
+                g_assert_false(rx_threshold_event(from));
+            }
+            clock = qtest_clock_step(from, 0);
+        } else {
+            if (mode == 3) {
+                qtest_writeq(from, ETH_BASE + RX_INT_ALIAS, 8U << 4);
+            }
+            clock = qtest_clock_step(from, 30690);
+        }
+        fifo = qtest_readq(from, ETH_BASE + RX_FIFO_INFO);
+        events = qtest_readq(from, ETH_BASE + INT_STATUS);
+        qtest_memread(from, FAULT_MEMORY + 0x8000, before, sizeof(before));
+        qtest_qmp_assert_success(from, "{'execute':'stop'}");
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        qtest_clock_set(to, clock);
+        qtest_qmp_assert_success(to, "{'execute':'cont'}");
+        g_assert_cmphex(qtest_readq(to, ETH_BASE + RX_FIFO_INFO), ==, fifo);
+        g_assert_cmphex(qtest_readq(to, ETH_BASE + INT_STATUS), ==, events);
+        g_assert_cmpint(qtest_get_irq(to, 3), ==, mode == 0);
+        if (mode >= 2) {
+            qtest_clock_step(to, 30689);
+            g_assert_false(rx_threshold_event(to));
+            qtest_clock_step(to, 1);
+            g_assert_true(rx_threshold_event(to));
+            g_assert_cmpuint(qtest_readq(to, ETH_BASE + RX_FIFO_INFO) & 31,
+                             ==, 7);
+            g_assert_cmpint(qtest_get_irq(to, 3), ==, mode == 2);
+        }
+        qtest_clock_step(to, 61380);
+        qtest_memread(to, FAULT_MEMORY + 0x8000, after, sizeof(after));
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmpuint(qtest_readq(to, ETH_BASE + RX_FIFO_INFO) & 31,
+                         ==, mode == 1 ? 8 : 7);
+        qtest_quit(to);
+        qtest_quit(from);
+        close(sv[0]);
+        close(sv[1]);
+        close(dest_sv[0]);
+        close(dest_sv[1]);
+        g_unlink(socket);
+        g_rmdir(dir);
+    }
+}
+
+static void test_rx_threshold_migration_mismatch(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("mace-rx-policy-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    int sv[2], dest_sv[2];
+    QTestState *from = rx_retirement_start(sv, 8, 2, true);
+    QTestState *to = fault_eth_start_mode(dest_sv, true, false);
+    SgiWait wait;
+
+    rx_retirement_packet(from, sv[0], 0x8000, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
+        "'exit-on-error':false}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_start(&wait, "MACE RX threshold destination policy rejection");
+    for (;;) {
+        g_autoptr(QDict) reply = qtest_qmp_assert_success_ref(to,
+            "{'execute':'query-migrate'}");
+
+        if (!strcmp(qdict_get_str(reply, "status"), "failed")) {
+            break;
+        }
+        sgi_wait_pause(&wait, 1000);
+    }
+    g_assert_false(rx_threshold_event(to));
+    g_assert_cmphex(qtest_readq(to, ETH_BASE + RX_FIFO_INFO), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    close(sv[0]);
+    close(sv[1]);
+    close(dest_sv[0]);
+    close(dest_sv[1]);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-retirement",
+                   test_rx_threshold_retirement);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-legacy-machine",
+                   test_rx_threshold_legacy_machine);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-aliases-masks",
+                   test_rx_threshold_aliases_and_masks);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-field-values",
+                   test_rx_threshold_field_values);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-pending-refill",
+                   test_rx_threshold_pending_refill);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-gather-retirement",
+                   test_rx_threshold_gather_retirement);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-other-causes",
+                   test_rx_threshold_other_causes);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-fault-retirement",
+                   test_rx_threshold_fault_retirement);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-migration",
+                   test_rx_threshold_migration);
+    qtest_add_func("/sgi/mace/ethernet/rx-threshold-migration-mismatch",
+                   test_rx_threshold_migration_mismatch);
     qtest_add_func("/sgi/mace/ethernet/rx-fault-migration",
                    test_rx_fault_migration);
     qtest_add_func("/sgi/mace/ethernet/rx-gather-offset-change",

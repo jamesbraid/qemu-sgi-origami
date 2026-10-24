@@ -131,38 +131,49 @@ static const TypeInfo peer_type = {
     .class_init = peer_class_init,
 };
 
-static DeviceRealize mace_offset_parent_realize;
+static DeviceRealize mace_test_parent_realize;
 
-static void mace_offset_realize(DeviceState *dev, Error **errp)
+static void mace_test_realize(DeviceState *dev, Error **errp)
 {
     ERRP_GUARD();
 
     if (!qtest_enabled()) {
-        error_setg(errp, "serial ring offset fixture requires qtest");
+        error_setg(errp, "MACE policy fixture requires qtest");
         return;
     }
-    sgi_mace_enable_serial_ring_offsets(dev, errp);
+    if (object_dynamic_cast(OBJECT(dev), "sgi-mace-serial-offset-test")) {
+        sgi_mace_enable_serial_ring_offsets(dev, errp);
+    } else {
+        sgi_mace_enable_rx_threshold_retirement(dev, errp);
+    }
     if (*errp) {
         return;
     }
-    mace_offset_parent_realize(dev, errp);
+    mace_test_parent_realize(dev, errp);
 }
 
-static void mace_offset_class_init(ObjectClass *oc, const void *data)
+static void mace_test_class_init(ObjectClass *oc, const void *data)
 {
-    device_class_set_parent_realize(DEVICE_CLASS(oc), mace_offset_realize,
-                                    &mace_offset_parent_realize);
+    device_class_set_parent_realize(DEVICE_CLASS(oc), mace_test_realize,
+                                    &mace_test_parent_realize);
 }
 
 static const TypeInfo mace_offset_type = {
     .name = "sgi-mace-serial-offset-test",
     .parent = TYPE_SGI_MACE,
-    .class_init = mace_offset_class_init,
+    .class_init = mace_test_class_init,
+};
+
+static const TypeInfo mace_rx_threshold_type = {
+    .name = "sgi-mace-rx-threshold-test",
+    .parent = TYPE_SGI_MACE,
+    .class_init = mace_test_class_init,
 };
 
 static void peer_register_types(void)
 {
     type_register_static(&peer_type);
     type_register_static(&mace_offset_type);
+    type_register_static(&mace_rx_threshold_type);
 }
 type_init(peer_register_types)
