@@ -71,7 +71,6 @@ hw/mips/sgi/initial-flash.c
 hw/mips/sgi/machine-storage.c
 hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
-hw/mips/sgi/models/fuel-vpro.yaml
 hw/mips/sgi/models/fuel.yaml
 hw/mips/sgi/models/graphics-products.yaml
 hw/mips/sgi/models/layers/architectures/ip30.yaml
@@ -117,7 +116,6 @@ hw/mips/sgi/models/layers/modules/pci-carrier.yaml
 hw/mips/sgi/models/layers/modules/pci-shoehorn.yaml
 hw/mips/sgi/models/layers/modules/r-brick.yaml
 hw/mips/sgi/models/layers/modules/tezro-serial-compat-module.yaml
-hw/mips/sgi/models/layers/products/fuel-vpro.yaml
 hw/mips/sgi/models/layers/products/fuel.yaml
 hw/mips/sgi/models/layers/products/octane.yaml
 hw/mips/sgi/models/layers/products/octane2.yaml

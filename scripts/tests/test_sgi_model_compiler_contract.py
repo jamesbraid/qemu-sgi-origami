@@ -491,17 +491,12 @@ class BedrockConfigurationTests(unittest.TestCase):
             {"kind": "lucent-ohci", "revision": 16},
         ])
 
-    def test_fuel_vpro_board_values_match_fuel(self):
+    def test_fuel_fits_its_vpro_at_widget_13(self):
         fuel = self.catalogue(_resolved("fuel"))
-        vpro = self.catalogue(_resolved("fuel-vpro"))
-        self.assertEqual(vpro["nodes"][0]["identity"],
-                         fuel["nodes"][0]["identity"])
-        self.assertEqual(vpro["nodes"][0]["bedrock"],
-                         fuel["nodes"][0]["bedrock"])
-        self.assertEqual(vpro["controllers"][0]["l1"],
-                         fuel["controllers"][0]["l1"])
-        self.assertEqual(vpro["io-boards"][0]["ioc3-subsystem-id"],
-                         fuel["io-boards"][0]["ioc3-subsystem-id"])
+        boards = {board["preset"]: board for board in fuel["io-boards"]}
+        attachment = fuel["xio-attachments"][boards["odyssey"]["attachment"]]
+        self.assertEqual(attachment["widget"], 13)
+        self.assertTrue(fuel["graphics"]["headless"])
 
     def test_fitted_assembly_presence_does_not_depend_on_serial(self):
         model = _resolved("origin300")

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "3a8468d42f3cc42086b5f81a5a78e5255fa103e14ea2ecb236766fcff0df81e7"
+    "63c1996886ec060359103980bdb98b70aadd6ff1c609cc21f0113434dac7cf25"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -225,9 +225,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 127)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 41)
-        self.assertEqual(len(layers), 84)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 125)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 40)
+        self.assertEqual(len(layers), 83)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -644,8 +644,7 @@ class FuelTests(unittest.TestCase):
             "hw/mips/sgi/sgi-machines.json"])
         offerings = [row for row in catalogue["offerings"]
                      if row["product"] == "fuel"]
-        self.assertEqual({row["topology"] for row in offerings},
-                         {"fuel", "fuel-vpro"})
+        self.assertEqual({row["topology"] for row in offerings}, {"fuel"})
         expected = [
             {"kind": "console", "node": 0, "line": 0,
              "argument": "-serial chardev:l1"},
@@ -764,8 +763,8 @@ class FuelTests(unittest.TestCase):
         self.assertIn("fuel", topologies)
         self.assertNotIn("fuel-m48t35-compatible", topologies)
         fitted = topologies["fuel"]["io-boards"]
-        self.assertEqual(len(fitted), 1)
-        self.assertEqual(fitted[0]["preset"], "fuel")
+        self.assertEqual([board["preset"] for board in fitted],
+                         ["fuel", "odyssey"])
         self.assertEqual(fitted[0]["system-timekeeper"], {
             "kind": "m48t35-compatible", "year-base": 1968,
             "initial-ip27-fixture": False})

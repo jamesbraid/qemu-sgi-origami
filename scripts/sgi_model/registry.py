@@ -17,7 +17,7 @@ PRODUCT_MODELS = {
 }
 PRODUCT_NAMES = tuple(PRODUCT_MODELS)
 IMPLEMENTED_TOPOLOGIES = (
-    "fuel", "fuel-vpro",
+    "fuel",
     "octane", "octane2", "origin200", "origin200-dual", "origin2000-rack", "origin300",
     "origin2000-deskside", "origin200-gigachannel-loopback",
     "origin300-two-chassis", "origin200-gigachannel", "onyx2-rack",

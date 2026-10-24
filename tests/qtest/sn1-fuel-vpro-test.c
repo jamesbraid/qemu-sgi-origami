@@ -76,12 +76,12 @@ static char *create_prom(void)
 }
 
 /*
- * Start @topology with its default pipe, or with a VPro of @profile in
- * widget 13. The catalogue offers the V12 alone; the other profiles are
- * the board's register contract, so they skip it.
+ * Start a Fuel with @extra on its command line and its default pipe, or
+ * with a VPro of @profile in widget 13. The catalogue offers the V12
+ * alone; the other profiles are the board's register contract, so they
+ * skip it.
  */
-static QTestState *fuel_start_profile(const char *topology,
-                                      const char *profile)
+static QTestState *fuel_start_profile(const char *extra, const char *profile)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
     g_autofree char *device = profile ?
@@ -89,15 +89,15 @@ static QTestState *fuel_start_profile(const char *topology,
                         profile) : g_strdup("");
     bool offered = !profile || g_str_equal(profile, "v12");
 
-    return qtest_initf("-M fuel,topology=%s%s "
-                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
-                       topology, offered ? "" : ",x-uncatalogued-graphics=on",
-                       quoted, device);
+    return qtest_initf("-M fuel%s "
+                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s %s",
+                       offered ? "" : ",x-uncatalogued-graphics=on",
+                       quoted, device, extra);
 }
 
-static QTestState *fuel_start(const char *topology)
+static QTestState *fuel_start(const char *extra)
 {
-    return fuel_start_profile(topology, NULL);
+    return fuel_start_profile(extra, NULL);
 }
 
 static bool qom_exists(QTestState *qts, const char *path)
@@ -112,7 +112,7 @@ static bool qom_exists(QTestState *qts, const char *path)
 /* The board answers as Odyssey at widget 13, linked to that widget. */
 static void test_widget_identity(void)
 {
-    QTestState *qts = fuel_start("fuel-vpro");
+    QTestState *qts = fuel_start("");
     g_autoptr(QDict) response = NULL;
 
     g_assert_true(qom_exists(qts, VPRO_PATH));
@@ -145,7 +145,7 @@ static const FuelVProProfileCase profile_cases[] = {
 static void test_profile_identity_and_routing(gconstpointer data)
 {
     const FuelVProProfileCase *profile = data;
-    QTestState *qts = fuel_start_profile("fuel-vpro", profile->name);
+    QTestState *qts = fuel_start_profile("", profile->name);
     uint32_t identity = qtest_readl(qts, VPRO + ODSY_IDENTITY);
     uint32_t memory = qtest_readl(qts, VPRO + ODSY_MEMORY_CONFIG);
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
@@ -177,10 +177,10 @@ static void test_profile_identity_and_routing(gconstpointer data)
     qtest_quit(qts);
 }
 
-/* The base Fuel fits no graphics board, and nothing answers at 13. */
-static void test_base_fuel_has_no_board(void)
+/* With -vga none the Fuel fits no graphics board, and nothing answers at 13. */
+static void test_headless_fuel_has_no_board(void)
 {
-    QTestState *qts = fuel_start("fuel");
+    QTestState *qts = fuel_start("-vga none");
 
     g_assert_false(qom_exists(qts, VPRO_PATH));
     g_assert_cmphex(qtest_readl(qts, XBRIDGE_CROSSBAR +
@@ -196,7 +196,7 @@ static void test_base_fuel_has_no_board(void)
  */
 static void test_interrupt_reaches_bedrock(void)
 {
-    QTestState *qts = fuel_start("fuel-vpro");
+    QTestState *qts = fuel_start("");
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
 
     qtest_writel(qts, VPRO + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
@@ -230,8 +230,8 @@ int main(int argc, char **argv)
                             test_profile_identity_and_routing);
     }
     qtest_add_func("sn1/fuel-vpro/widget-identity", test_widget_identity);
-    qtest_add_func("sn1/fuel-vpro/base-fuel-has-no-board",
-                   test_base_fuel_has_no_board);
+    qtest_add_func("sn1/fuel-vpro/headless-fuel-has-no-board",
+                   test_headless_fuel_has_no_board);
     qtest_add_func("sn1/fuel-vpro/interrupt-reaches-bedrock",
                    test_interrupt_reaches_bedrock);
     ret = g_test_run();

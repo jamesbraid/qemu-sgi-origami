@@ -666,7 +666,7 @@ ships with graphics fits its catalogue default unless a graphics
 ``-device`` or ``-vga none`` is given: ``octane`` an SI at ``widget-11``,
 ``octane2`` a V12 at ``widget-11``, the Onyx2 desksides whole-tetra's
 InfiniteReality2 and the racks true-wombat's InfiniteReality3 with a
-plain DG5-2, and ``fuel-vpro``, ``origin300-v12-direct`` and
+plain DG5-2, and ``fuel``, ``origin300-v12-direct`` and
 ``origin300-vbrick`` their V12. The Origin 200 and Origin 2000 fit none.
 Any graphics ``-device`` replaces the default, whichever slot it names,
 so an Octane with ``-device sgi-mgras,slot=widget-9`` leaves
@@ -676,10 +676,11 @@ deskside is its InfiniteReality2.
 
 ``-vga none``, and ``-nodefaults``, skip the default pipe. With no pipe
 ``-device`` the machine then starts with no graphics, even an Onyx2,
-which SGI never sold that way; the catalogue says so in
-``headless-note``. ``fuel-vpro`` and the two Origin 300 graphics
-topologies refuse to run with no pipe at all, with the catalogue's
-``headless-refused`` reason. No
+which SGI never sold that way (the catalogue says so in
+``headless-note``), and a Fuel. A machine is one topology whether or not
+a pipe is fitted. The two Origin 300 graphics topologies, which exist
+only to fit their V12, refuse to run with no pipe at all, with the
+catalogue's ``headless-refused`` reason. No
 SGI machine takes a PC display adapter, so any other ``-vga`` value is
 refused. A machine sees only the adapter type ``-vga`` leaves behind, and
 with no ``-vga`` QEMU picks Cirrus where the binary has it, so
@@ -790,7 +791,7 @@ What each topology offers today:
      - ``widget-9`` to ``widget-12``
      - ``v12`` at ``widget-11``
      - every IMPACT product; ``v12`` at ``widget-11``
-   * - ``fuel-vpro``
+   * - ``fuel``
      - ``widget-13``
      - ``v12``
      - ``v12``
@@ -804,9 +805,7 @@ What each topology offers today:
      - ``v12``
 
 The IMPACT products are ``si``, ``si-t``, ``ssi``, ``mxi``, ``esi``,
-``esi-t``, ``essi`` and ``emxi``. ``fuel`` has no graphics record: its
-topology has no widget 13 port to fit a pipe to, so the V12 is
-``fuel-vpro``'s.
+``esi-t``, ``essi`` and ``emxi``.
 A display board reports its real channel count, two on ``dg5-2`` and
 eight on ``dg5-8``, and every channel scans out.
 At most one pipe is built at once on every topology today.

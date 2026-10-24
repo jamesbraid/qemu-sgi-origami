@@ -1,16 +1,21 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Fuel composition. Resolve before validating the board description.
+# Fuel composition: the board with its VPro graphics slot at XBridge
+# widget 13. Resolve before validating the board description.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip34.yaml
   - layers/modules/fuel-base.yaml
   - layers/products/fuel.yaml
+module_instances:
+  - model: layers/modules/fuel-vpro.yaml
+    prefix: vpro-
+    parent: graphics-connector
+    bus_bindings: {graphics-xio: crosstalk}
 connector_population:
   - component: graphics-connector
-    occupancy: empty
-    reason: >-
-      The base profile is the serial-console Fuel. The fuel-vpro profile fits
-      the graphics board.
-    provenance: derived
-    sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146: a fitted board answers at xtalk/13"]
+    occupancy: occupied
+    occupant: vpro-v12
+    reason: One VPro board answers on the XBridge crossbar's widget 13.
+    provenance: observed-hardware
+    sources: ["web:tingo-fuel-irix-console raw HTML lines 138 to 146", "web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]

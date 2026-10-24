@@ -67,7 +67,7 @@ static const Launch launches[] = {
       "/machine/module0/widget-11" },
     { "octane2", "octane2", "-m 256M -cpu " OCTANE2_CPU, OCTANE_FLASH,
       "/machine/module0/widget-11" },
-    { "fuel-vpro", "fuel,topology=fuel-vpro", "-cpu R14000 -smp 1 -m 512M",
+    { "fuel", "fuel", "-cpu R14000 -smp 1 -m 512M",
       SN1_PROM, "/machine/module0/graphics-slot" },
     { "origin300-v12-direct", "origin300,topology=origin300-v12-direct",
       "-cpu R14000 -smp 2", SN1_PROM, "/machine/module0/rear-panel" },
@@ -81,9 +81,8 @@ static const Launch launches[] = {
       "r16000-scache-bytes=0x400000 -smp 4 -m 4G", SN1_PROM, NULL, true },
 };
 
-static const Launch fuel = {
-    "fuel", "fuel,topology=fuel", "-cpu R14000 -smp 1 -m 512M", SN1_PROM,
-    NULL,
+static const Launch origin300 = {
+    "origin300", "origin300", "-cpu R14000 -smp 2", SN1_PROM, NULL,
 };
 
 static const Launch origin2000_one_node = {
@@ -350,9 +349,7 @@ static void test_catalogue_records(void)
         { "onyx2-rack", true, NULL },
         { "onyx350-compat", true, NULL },
         { "tezro-tower-multi", true, NULL },
-        { "fuel-vpro", false,
-          "this topology is the Fuel with its VPro board, so use fuel for "
-          "the serial configuration" },
+        { "fuel", true, NULL },
         { "origin300-v12-direct", false,
           "this topology exists to fit its V12, so use origin300 for no "
           "graphics" },
@@ -387,8 +384,8 @@ static void test_catalogue_records(void)
                     "an Onyx2 started with -vga none or -nodefaults and no "
                     "pipe -device is not a configuration SGI shipped");
     g_assert_false(qdict_haskey(graphics_record("octane"), "headless-note"));
-    /* The serial Fuel has no widget-13 port to fit a pipe to. */
-    g_assert_null(qdict_get(topology_record("fuel"), "graphics"));
+    /* The Origin 300's XIO connector is a cable port, not a slot. */
+    g_assert_null(qdict_get(topology_record("origin300"), "graphics"));
 
     /* Nothing QEMU does not build appears, offered or refused. */
     QLIST_FOREACH_ENTRY(qdict_get_qlist(catalogue, "topologies"), e) {
@@ -590,7 +587,7 @@ static void test_vga_none_allowed(void)
 {
     static const char *const topologies[] = {
         "octane", "octane2", "origin2000-rack", "origin200",
-        "onyx2-deskside", "onyx2-rack",
+        "onyx2-deskside", "onyx2-rack", "fuel",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
@@ -617,7 +614,7 @@ static void test_vga_none_allowed(void)
 static void test_vga_none_refused(void)
 {
     static const char *const topologies[] = {
-        "fuel-vpro", "origin300-v12-direct", "origin300-vbrick",
+        "origin300-v12-direct", "origin300-vbrick",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
@@ -644,7 +641,7 @@ static void test_vga_none_refused(void)
 static void test_vga_other_refused(void)
 {
     static const char *const topologies[] = {
-        "octane", "onyx2-deskside", "origin200", "fuel-vpro",
+        "octane", "onyx2-deskside", "origin200", "fuel",
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(topologies); i++) {
@@ -736,9 +733,9 @@ static void test_refusals(void)
                    "graphics slot io7 of topology 'origin2000-rack' exists "
                    "from nodes=2, and this machine fits 1");
     /* A topology with no graphics record. */
-    assert_refused(&fuel, "-device sgi-odyssey,slot=widget-13",
-                   "topology 'fuel' has no graphics slots, so it takes no "
-                   "sgi-odyssey");
+    assert_refused(&origin300, "-device sgi-odyssey,slot=widget-11",
+                   "topology 'origin300' has no graphics slots, so it takes "
+                   "no sgi-odyssey");
 }
 
 /*
