@@ -2453,7 +2453,7 @@ static void aic7880_run(AIC7880State *s)
                 s->regs[REG_HCNTRL] |= HOST_PAUSE;
                 goto done;
             }
-            if (taken && (target == at || s->req)) {
+            if (taken && target == at) {
                 goto done;
             }
             continue;
