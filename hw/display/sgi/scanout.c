@@ -400,6 +400,12 @@ static const GraphicHwOps sgi_scanout_gfx_ops = {
 void sgi_scanout_init(SGIScanout *s, DeviceState *dev,
                       const SGIHeadOps *ops, void *opaque)
 {
+    sgi_scanout_init_head(s, dev, 0, ops, opaque);
+}
+
+void sgi_scanout_init_head(SGIScanout *s, DeviceState *dev, uint32_t head,
+                           const SGIHeadOps *ops, void *opaque)
+{
     assert(ops->resolve_row);
     s->ops = ops;
     s->opaque = opaque;
@@ -407,7 +413,7 @@ void sgi_scanout_init(SGIScanout *s, DeviceState *dev,
     s->cursor_drawn_last = -1;
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_scanout_retrace,
                                     s);
-    s->con = qemu_graphic_console_create(dev, 0, &sgi_scanout_gfx_ops, s);
+    s->con = qemu_graphic_console_create(dev, head, &sgi_scanout_gfx_ops, s);
 }
 
 void sgi_scanout_cleanup(SGIScanout *s)
