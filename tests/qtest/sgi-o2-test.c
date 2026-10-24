@@ -4956,12 +4956,26 @@ static void o2_storage_load_stepped_program(QTestState *qts, unsigned slot,
     g_assert_cmphex(o2_storage_seq_pc(qts, slot), ==, 0);
 }
 
+static void o2_storage_step_once(QTestState *qts, unsigned slot)
+{
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+    qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+    qtest_clock_timers(qts, true);
+    do {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        qtest_clock_step(qts, 1);
+    } while (!(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4));
+}
+
 static void o2_storage_step_to(QTestState *qts, unsigned slot,
                                unsigned target)
 {
-    for (unsigned i = 0; i < 512 && o2_storage_seq_pc(qts, slot) != target;
-         i++) {
-        qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+    while (o2_storage_seq_pc(qts, slot) != target) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        o2_storage_step_once(qts, slot);
         g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4,
                         ==, 4);
         g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x92)),
@@ -5008,6 +5022,7 @@ static void test_storage_high_id_selection_timeout(void)
             int64_t interval = 256000000LL >> setting;
             unsigned first = permutation + 1, second = 3 - first;
             unsigned remaining = 1u << (second - 1);
+            int64_t selection_epoch;
 
             /* -S leaves virtual callbacks disabled until qtest enables them. */
             qtest_clock_timers(qts, true);
@@ -5026,14 +5041,22 @@ static void test_storage_high_id_selection_timeout(void)
                              setting << 3 | 4);
                 qtest_writeb(qts, o2_storage_aic_slot(slot, 0x11),
                              slot == 1 ? 0x80 : 0);
+            }
+            selection_epoch = qtest_clock_step(qts, 1);
+            for (unsigned slot = 1; slot <= 2; slot++) {
                 qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+            }
+            qtest_clock_step(qts, 1);
+            for (unsigned slot = 1; slot <= 2; slot++) {
+                unsigned target = ids[(slot - 1) ^ permutation];
+
                 g_assert_cmphex(qtest_readb(qts,
                                             o2_storage_aic_slot(slot, 0x05)),
                                 ==, target << 4 | 7);
                 o2_aic_assert_selection(qts, slot, 0x10, 0, 0, 0x08);
             }
             o2_aic_assert_irqs(qts, 0, 0, false);
-            qtest_clock_step(qts, interval - 1);
+            qtest_clock_set(qts, selection_epoch + interval - 1);
             for (unsigned slot = 1; slot <= 2; slot++) {
                 o2_aic_assert_selection(qts, slot, 0x10, 0, 0, 0x08);
             }
@@ -5114,7 +5137,7 @@ static void o2_storage_assert_diagnostic_stop(QTestState *qts, unsigned slot)
 {
     unsigned failed_pc = o2_storage_seq_pc(qts, slot);
 
-    qtest_writeb(qts, o2_storage_aic_slot(slot, 0x87), 2);
+    o2_storage_step_once(qts, slot);
     g_assert_cmphex(o2_storage_seq_pc(qts, slot), ==, failed_pc);
     g_assert_cmphex(qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4,
                     ==, 4);
@@ -5413,6 +5436,25 @@ static void test_storage_host_offset_four_disabled(void)
     g_assert_null(strstr(events, "\"type\":\"dma\""));
 }
 
+static void o2_storage_wait_command(QTestState *qts, unsigned slot,
+                                     unsigned dma_wait_pc)
+{
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    bool master = o2_aic_config_read(qts, slot, 4) & 4;
+
+    qtest_clock_timers(qts, true);
+    for (;;) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        qtest_clock_step(qts, 1000);
+        if ((qtest_readb(qts, o2_storage_aic_slot(slot, 0x87)) & 4) ||
+            (qtest_readb(qts, o2_storage_aic_slot(slot, 0x91)) & 2) ||
+            /* Disabled PCI mastering leaves the program polling HDONE. */
+            (!master && o2_storage_seq_pc(qts, slot) == dma_wait_pc)) {
+            return;
+        }
+    }
+}
+
 static void o2_storage_command_impl(QTestState *qts, unsigned slot,
                                     const uint8_t *cdb,
                                     size_t cdb_len, uint32_t address,
@@ -5482,6 +5524,7 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x62), 0);
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x63), 0);
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x87), 0x02);
+    o2_storage_wait_command(qts, slot, wait_at + 3);
 }
 
 static void o2_storage_command(QTestState *qts, const uint8_t *cdb,
@@ -6166,6 +6209,7 @@ static void test_storage_diagnostic_dma_events(void)
     g_assert_cmphex(qtest_readb(t.qts, RAM_NO_ECC + 0x100 + 8), ==, 'Q');
     qtest_writeb(t.qts, o2_storage_pio(AIC_PCI_VIEW + 0x92), 1);
     qtest_writeb(t.qts, o2_storage_pio(AIC_PCI_VIEW + 0x87), 2);
+    o2_storage_wait_completion(t.qts, 1);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x91)) & 2, ==, 2);
     o2_storage_ack_completion(t.qts);
     o2_storage_inquiry(t.qts, 0x40000180);
@@ -6223,7 +6267,7 @@ static void test_storage_queue_before_completion_interrupt(void)
 
     qtest_writeb(t.qts, o2_storage_aic(0x60), 0x94);
     qtest_writeb(t.qts, o2_storage_aic(0x92), 1);
-    qtest_writeb(t.qts, o2_storage_aic(0x87), 2);
+    o2_storage_step_once(t.qts, 1);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x87)) & 4, ==, 4);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x62)) |
                     qtest_readb(t.qts, o2_storage_aic(0x63)) << 8,
@@ -6231,7 +6275,7 @@ static void test_storage_queue_before_completion_interrupt(void)
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x9e)), ==, 1);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x91)) & 2, ==, 0);
 
-    qtest_writeb(t.qts, o2_storage_aic(0x87), 2);
+    o2_storage_step_once(t.qts, 1);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x87)) & 4, ==, 4);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x91)) & 2, ==, 2);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x9e)), ==, 1);
