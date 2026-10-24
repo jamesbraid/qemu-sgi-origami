@@ -715,7 +715,7 @@ static const OctaneVariant variants[] = {
     { "mxi", 12, false, 0x66, "GM20" },
     { "esi", 10, true, 0x51, "MOT10" },
     { "esi-t", 11, false, 0x51, "MOT10" },
-    { "essi", 12, true, 0x52, "MOT20" },
+    { "essi", 12, true, 0x72, "MOT20" },
     { "emxi", 12, false, 0x72, "MOT20" },
 };
 

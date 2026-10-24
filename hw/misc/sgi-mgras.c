@@ -92,10 +92,12 @@
  *   print product ID 3, MGRAS revision 1 and the SI+T's ASIC revisions;
  *   a two-GE GE12 board with 4 TRAMs, which IRIX names EMXI, prints
  *   product ID 3, MGRAS revision 4, PP1 rev H and CMAP rev F.
- * - SSI and ESSI have no capture used here. Their counts and names are
- *   established by the OCTANE Technical Report and IRIX's own decode;
- *   product ID 2 (over 3), the MGRAS revision and every ASIC revision are
- *   approximated with the matching one-GE board's values.
+ * - ESSI comes from an owner's 2003 gfxinfo post: product ID 3, MGRAS
+ *   revision 4, GE12 rev A, PP1 rev H and CMAP rev F, as the EMXI's.
+ * - SSI has no capture. Its counts and name are established by the OCTANE
+ *   Technical Report and IRIX's own decode; product ID 2 (over the 3 every
+ *   captured two-GE board prints), the MGRAS revision and every ASIC
+ *   revision are approximated with SI's values.
  *
  * MXI and EMXI add one TE1 and its TRAM to each of SSI's two REs. The model
  * keeps one texture store, drawn by the shared rasterizer for every row, so
@@ -198,9 +200,9 @@ static const SGIMgrasBoard mgras_boards[] = {
         .name = "essi", .hinv_name = "ESSI",
         .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 0,
-        .version1 = 0x52, .version0 = 0x0f,
+        .version1 = 0x72, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
-        .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
+        .pp1_revision = 7, .vc3_revision = 0, .cmap_revision = 4,
         .ra_revision = 0, .video_option = false,
         .record_name = "MOT20", .record_part = "030-1240-003",
         .record_revision = "G",
