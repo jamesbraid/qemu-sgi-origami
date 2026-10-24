@@ -19162,6 +19162,86 @@ static bool readback_dma_done(QTestState *qts)
 }
 
 /*
+ * Backing-store pages. The IRIX 6.5.30 kernel's board-memory manager pages
+ * an object out to host memory and back in with raw copies, word 4 0x1001
+ * at 2 bytes a texel and 0x13002 at 4, word 7 0x3x000000 and 0x3x010000
+ * (its header builder, from disassembly). The host bytes are only stored
+ * and returned, so the model packs a texel at 2 bytes as R, G, B, A
+ * nibbles, an APPROXIMATION, and carries the stored word at 4. Each round
+ * trip into a second object restores the texels to that precision. The
+ * 8-byte form, word 4 0x25004, is reported and writes nothing.
+ */
+static void test_readback_raw_texture_paging(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 4) };
+    const uint64_t pte8[] = { ODSY_DMA_PTE(RB_PAGE_A, 8) };
+    const uint64_t pte16[] = { ODSY_DMA_PTE(RB_PAGE_A, 16) };
+    const uint32_t out16[8] = {
+        0x100800, 0, 1, (1u << 16) | 2, 0x1001, 0, 4, 0x33000000,
+    };
+    const uint32_t in16[8] = {
+        0x101000, 0, 1, (1u << 16) | 2, 0x1001, 0, 4, 0x32000000,
+    };
+    const uint32_t out32[8] = {
+        0x100800, 0, 1, (1u << 16) | 2, 0x13002, 0, 8, 0x33010000,
+    };
+    const uint32_t in32[8] = {
+        0x101800, 0, 1, (1u << 16) | 2, 0x13002, 0, 8, 0x32010000,
+    };
+    const uint32_t out64[8] = {
+        0x100800, 0, 1, (1u << 16) | 2, 0x25004, 0, 16, 0x33020000,
+    };
+    const uint8_t packed[4] = { 0xf0, 0x0f, 0x0f, 0x88 };
+    const uint8_t words[8] = { 0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x80, 0x80 };
+    uint8_t guard[16];
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-paging-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = readback_start(extra);
+
+    dma_object_texel(qts, 0x100800, 1, 0, 0, 0xff0000ff);
+    dma_object_texel(qts, 0x100800, 1, 1, 0, 0x00ff8080);
+
+    qtest_memset(qts, RB_PAGE_A, RB_GUARD, 16);
+    readback_run(qts, out16, pte, 1);
+    readback_expect(qts, RB_PAGE_A, packed, sizeof(packed));
+    readback_run(qts, in16, pte, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x101000, 0, 0), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x101000, 1, 0), ==,
+                    0x00ff8888);
+
+    readback_run(qts, out32, pte8, 1);
+    readback_expect(qts, RB_PAGE_A, words, sizeof(words));
+    readback_run(qts, in32, pte8, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x101800, 0, 0), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x101800, 1, 0), ==,
+                    0x00ff8080);
+
+    readback_guard(qts, RB_PAGE_A, guard, sizeof(guard));
+    readback_run(qts, out64, pte16, 1);
+    readback_expect(qts, RB_PAGE_A, guard, sizeof(guard));
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "8-byte backing-store page of object "
+                                 "0x100800 is not modeled"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * Direction is word 7 bit 24 alone. The X server's 24-bit visual header
  * with the 0x4c format byte reads a screen pixel back as the bytes A, B, G,
  * R, alpha zero -- the layout the upload path decodes for that byte --
@@ -20740,6 +20820,8 @@ int main(int argc, char **argv)
     add_fresh_case("sn1/odyssey/command-fifo-dma-image",
                    test_command_fifo_dma_image);
     add_fresh_case("sn1/odyssey/readback/direction", test_readback_direction);
+    add_fresh_case("sn1/odyssey/readback/raw-texture-paging",
+                   test_readback_raw_texture_paging);
     add_fresh_case("sn1/odyssey/readback/put-abgr-x-image",
                    test_readback_put_abgr_x_image);
     add_fresh_case("sn1/odyssey/dma/draw-sentinel-short",

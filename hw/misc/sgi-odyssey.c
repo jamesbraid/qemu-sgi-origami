@@ -933,6 +933,30 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 /* The GL library's source classes for 8- and 12-bit RGBA visuals. */
 #define ODSY_DMA_GL_CLASS_RGBA8 2
 #define ODSY_DMA_GL_CLASS_RGBA12 3
+/*
+ * The kernel's board-memory manager pages an object out to its backing
+ * store in host memory and back in with raw copies of the object's texels.
+ * Its header builder derives word 4 and word 7's size field from the
+ * object's bytes a texel (ESTABLISHED from disassembly of the IRIX 6.5.30
+ * IP30 kernel's backing-store transfer):
+ *
+ *   2 bytes: word 4 0x1001,  word 7 0x32000000 in, 0x33000000 out
+ *   4 bytes: word 4 0x13002, word 7 0x32010000 in, 0x33010000 out
+ *   8 bytes: word 4 0x25004, word 7 0x32020000 in, 0x33020000 out
+ *
+ * A V6 profile running pfCity, and a probe that pages 48 512x512 GL_RGB5
+ * textures, send the 2-byte form (OBSERVED on the model). The words are
+ * matched whole: GL reads set word 4 bit 12 too. The guest only stores and
+ * returns the bytes, so the model chooses their layout: 4 bytes are the
+ * stored 0xRRGGBBAA word, 2 bytes its R, G, B and A rounded to four bits
+ * each. APPROXIMATION: the board's own texel layouts are unknown, and an
+ * object paged at 2 bytes comes back at four bits a component where the
+ * board keeps the format's own precision. The 8-byte form is reported and
+ * not performed.
+ */
+#define ODSY_DMA_FMT_RAW16 0x1001
+#define ODSY_DMA_FMT_RAW32 0x13002
+#define ODSY_DMA_FMT_RAW64 0x25004
 
 /* Board-to-host and sentinel reports, each made once (dma_read_reported). */
 enum {
@@ -947,6 +971,7 @@ enum {
     ODSY_DMA_REPORT_UPLOAD_SENTINEL = 1u << 8,
     ODSY_DMA_REPORT_INDEX_OBJECT = 1u << 9,
     ODSY_DMA_REPORT_COLOUR_OVER_INDEX = 1u << 10,
+    ODSY_DMA_REPORT_RAW64 = 1u << 11,
 };
 
 /*
@@ -8270,6 +8295,65 @@ static uint32_t odyssey_dma_code(SGIOdysseyState *s, const uint32_t *hdr,
     return bpp == 4 ? ODSY_IMAGE_CODE_FALLBACK_XRGB : ODSY_IMAGE_CODE_CI;
 }
 
+/* True when hdr is a backing-store page the model copies, bpp a texel. */
+static bool odyssey_dma_raw(const uint32_t *hdr, uint32_t bpp)
+{
+    uint32_t fmt = hdr[ODSY_DMA_HDR_FORMAT];
+
+    return !(hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK) &&
+           ((fmt == ODSY_DMA_FMT_RAW16 && bpp == 2) ||
+            (fmt == ODSY_DMA_FMT_RAW32 && bpp == 4));
+}
+
+static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
+
+/* True, reported once, when hdr is an 8-byte backing-store page. */
+static bool odyssey_dma_raw64(SGIOdysseyState *s, const uint32_t *hdr,
+                              uint32_t bpp)
+{
+    if (hdr[ODSY_DMA_HDR_FORMAT] != ODSY_DMA_FMT_RAW64 || bpp != 8 ||
+        (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK)) {
+        return false;
+    }
+    if (odyssey_dma_report(s, ODSY_DMA_REPORT_RAW64)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: an 8-byte backing-store page "
+                      "of object 0x%x is not modeled\n",
+                      hdr[ODSY_DMA_HDR_DEST]);
+    }
+    return true;
+}
+
+static uint32_t odyssey_raw_nibble(uint32_t byte)
+{
+    return (byte * 15 + 127) / 255;
+}
+
+/* A stored texel as bpp raw bytes (ODSY_DMA_FMT_CLASS_RAW). */
+static void odyssey_raw_pack(uint32_t rgba, uint32_t bpp, uint8_t *dst)
+{
+    if (bpp == 4) {
+        stl_be_p(dst, rgba);
+        return;
+    }
+    stw_be_p(dst, odyssey_raw_nibble(rgba >> 24) << 12 |
+                  odyssey_raw_nibble((rgba >> 16) & 0xff) << 8 |
+                  odyssey_raw_nibble((rgba >> 8) & 0xff) << 4 |
+                  odyssey_raw_nibble(rgba & 0xff));
+}
+
+/* bpp raw bytes back as a stored texel (ODSY_DMA_FMT_CLASS_RAW). */
+static uint32_t odyssey_raw_unpack(const uint8_t *src, uint32_t bpp)
+{
+    uint32_t v;
+
+    if (bpp == 4) {
+        return ldl_be_p(src);
+    }
+    v = lduw_be_p(src);
+    return ((v >> 12) & 0xf) * 0x11u << 24 | ((v >> 8) & 0xf) * 0x11u << 16 |
+           ((v >> 4) & 0xf) * 0x11u << 8 | (v & 0xf) * 0x11u;
+}
+
 /*
  * A transfer into the colour buffer the screen shows (obj -1) or into
  * board-memory object obj: paint the header's rectangle from the source. The
@@ -8307,12 +8391,16 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
     bool lum_alpha = obj >= 0 && bpp == 2 &&
                      (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK) ==
                      ODSY_IMAGE_CODE_LUM_ALPHA;
+    bool raw = obj >= 0 && odyssey_dma_raw(hdr, bpp);
     g_autofree uint8_t *row = NULL;
     uint64_t payload = 0, pos = 0;
     uint32_t left, r, c;
     int n, i = 0;
 
-    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12 && !lum_alpha) {
+    if (obj >= 0 && odyssey_dma_raw64(s, hdr, bpp)) {
+        return;
+    }
+    if (bpp != 4 && bpp != 3 && bpp != 1 && !texel12 && !lum_alpha && !raw) {
         if (!s->dma_bpp_reported) {
             s->dma_bpp_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA to buffer 0x%x at %u "
@@ -8321,8 +8409,8 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
         }
         return;
     }
-    code = texel12 ? hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK :
-                     odyssey_dma_code(s, hdr, bpp);
+    code = texel12 || raw ? hdr[ODSY_DMA_HDR_CONTROL] & ODSY_IMAGE_CODE_MASK :
+                            odyssey_dma_code(s, hdr, bpp);
     n = odyssey_dma_entries(bus, table, seq, e);
     if (n < 0) {
         return;
@@ -8365,6 +8453,11 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
             pos += skip;
         }
         for (c = 0; c < w; c++) {
+            if (raw) {
+                odyssey_object_store(s, obj, x + c, y + r,
+                                     odyssey_raw_unpack(row + c * bpp, bpp));
+                continue;
+            }
             if (texel12) {
                 odyssey_object_store(s, obj, x + c, y + r,
                                      odyssey_decode_texel12(
@@ -8378,8 +8471,6 @@ static void odyssey_dma_to_buffer(SGIOdysseyState *s, const SGIDMABus *bus,
 done:
     sgi_scanout_invalidate_all(&s->scanout);
 }
-
-static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
 
 /*
  * Source format code 0x6c: a GL DMA image write of A, B, G, R bytes, one
@@ -8972,8 +9063,21 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
     bool inside;
     int n, i;
 
-    l = odyssey_dma_read_layout(s, hdr, bpp);
-    if (!l || !odyssey_dma_read_source(s, hdr, &src)) {
+    bool raw = odyssey_dma_raw(hdr, bpp);
+
+    if (odyssey_dma_raw64(s, hdr, bpp)) {
+        return;
+    }
+    l = raw ? NULL : odyssey_dma_read_layout(s, hdr, bpp);
+    if ((!raw && !l) || !odyssey_dma_read_source(s, hdr, &src)) {
+        return;
+    }
+    if (raw && src.obj < 0) {
+        if (odyssey_dma_report(s, ODSY_DMA_REPORT_SOURCE)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: raw DMA read of 0x%x, "
+                          "which is not a board-memory object, is not "
+                          "modeled\n", hdr[ODSY_DMA_HDR_DEST]);
+        }
         return;
     }
     n = odyssey_dma_entries(bus, table, seq, e);
@@ -9016,6 +9120,22 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
         return;
     }
     payload = g_malloc(total);
+    if (raw) {
+        for (uint32_t r = 0; r < h; r++) {
+            for (uint32_t c = 0; c < w; c++) {
+                odyssey_raw_pack(odyssey_object_load(s, src.obj, src.x + c,
+                                                     src.y + r),
+                                 bpp, payload + (uint64_t)r * rowbytes +
+                                      c * bpp);
+            }
+        }
+        if (odyssey_dma_read_write(s, bus, e, n, rowbytes, h, skip,
+                                   payload)) {
+            trace_sgi_odyssey_dma_read(seq, hdr[ODSY_DMA_HDR_DEST], src.x,
+                                       src.y, w, h, total);
+        }
+        return;
+    }
     if (!odyssey_dma_read_pack(s, &src, l, w, h,
                                hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_BOTTOM_UP,
                                payload) ||
