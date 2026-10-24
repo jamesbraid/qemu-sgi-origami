@@ -4528,7 +4528,9 @@ static O2StorageTest o2_storage_start_accel_full(bool disk,
                                                  bool trace_scsi,
                                                  const char *disk_path)
 {
-    static const uint8_t rom[] = { 0, 0, 0, 0 };
+    static const uint8_t rom[] = {
+        0x10, 0x00, 0xff, 0xff, 0, 0, 0, 0, /* beq zero, zero, -1; nop */
+    };
     O2StorageTest t = { 0 };
     g_autofree char *target = disk ? g_strdup_printf(
         "-drive if=none,id=disk0,file=%s,format=raw "
@@ -5673,7 +5675,7 @@ static void o2_storage_wait_command(QTestState *qts, unsigned slot,
     }
 }
 
-static void o2_storage_command_impl(QTestState *qts, unsigned slot,
+static unsigned o2_storage_start_command(QTestState *qts, unsigned slot,
                                     const uint8_t *cdb,
                                     size_t cdb_len, uint32_t address,
                                     uint32_t count, bool write,
@@ -5742,7 +5744,20 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x62), 0);
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x63), 0);
     qtest_writeb(qts, o2_storage_pio(aic_base + 0x87), 0x02);
-    o2_storage_wait_command(qts, slot, wait_at + 3);
+    return wait_at + 3;
+}
+
+static void o2_storage_command_impl(QTestState *qts, unsigned slot,
+                                    const uint8_t *cdb,
+                                    size_t cdb_len, uint32_t address,
+                                    uint32_t count, bool write,
+                                    bool pause_before_completion)
+{
+    unsigned dma_wait_pc = o2_storage_start_command(qts, slot, cdb, cdb_len,
+                                                   address, count, write,
+                                                   pause_before_completion);
+
+    o2_storage_wait_command(qts, slot, dma_wait_pc);
 }
 
 static void o2_storage_command(QTestState *qts, const uint8_t *cdb,
@@ -6521,8 +6536,22 @@ static void check_storage_second_controller_dma_irq(const char *accel)
     qtest_writeq(t.qts, CRIME + 0x18, 3ULL << 8);
     memset(guarded, 0xa5, sizeof(guarded));
     qtest_memwrite(t.qts, RAM_FULL + 0x100, guarded, sizeof(guarded));
-    o2_storage_command_impl(t.qts, 2, inquiry_cdb, sizeof(inquiry_cdb),
-                            0x100, 36, false, false);
+    if (!strcmp(accel, "qtest")) {
+        o2_storage_command_impl(t.qts, 2, inquiry_cdb, sizeof(inquiry_cdb),
+                                0x100, 36, false, false);
+    } else {
+        SgiWait wait;
+
+        o2_storage_start_command(t.qts, 2, inquiry_cdb, sizeof(inquiry_cdb),
+                                 0x100, 36, false, false);
+        qtest_qmp_assert_success(t.qts, "{'execute':'cont'}");
+        sgi_wait_start(&wait, "O2 second-controller TCG DMA completion");
+        while (!(qtest_readb(t.qts, o2_storage_aic_slot(2, 0x87)) & 4) &&
+               !(qtest_readb(t.qts, o2_storage_aic_slot(2, 0x91)) & 2)) {
+            sgi_wait_pause(&wait, 1000);
+        }
+        qtest_qmp_assert_success(t.qts, "{'execute':'stop'}");
+    }
 
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic_slot(2, 0x22)), ==, 0);
     g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic_slot(2, 0x9e)), ==, 1);
