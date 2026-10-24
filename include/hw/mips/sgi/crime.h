@@ -33,6 +33,11 @@ typedef struct CrimeTransferState {
     uint64_t ecc_enable;
 } CrimeTransferState;
 
+typedef struct CrimeRenderState {
+    uint64_t tlb[192];
+    uint64_t parameter[128];
+} CrimeRenderState;
+
 struct SGICrimeState {
     SysBusDevice parent_obj;
     MemoryRegion registers;
@@ -84,6 +89,9 @@ struct SGICrimeState {
     bool functional_memory_transfer;
     bool transfer_state_received;
     bool healthy_memory_reported;
+    bool render_state_received;
+    CrimeRenderState render;
+    CrimeRenderState incoming_render;
     CrimeMigrationState incoming;
     CrimeTransferState transfer;
     CrimeTransferState incoming_transfer;

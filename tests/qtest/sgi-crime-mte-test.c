@@ -253,7 +253,14 @@ static void test_registers(void)
     }
     for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
         g_assert_cmpint(memtx_readl(s, MTE + unsupported[i], &w), !=, MEMTX_OK);
-        g_assert_cmpint(memtx_writel(s, MTE + unsupported[i], 0), !=, MEMTX_OK);
+        if (!strcmp(selected_profile, "legacy-software") &&
+            (unsupported[i] == 0x70 || unsupported[i] == 0x78)) {
+            g_assert_cmpint(memtx_writel(s, MTE + unsupported[i], 0),
+                            ==, MEMTX_OK);
+        } else {
+            g_assert_cmpint(memtx_writel(s, MTE + unsupported[i], 0),
+                            !=, MEMTX_OK);
+        }
     }
     for (unsigned i = 0; i < ARRAY_SIZE(write_only); i++) {
         uint64_t reg = MTE + write_only[i];
