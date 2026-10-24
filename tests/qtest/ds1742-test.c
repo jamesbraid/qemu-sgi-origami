@@ -336,7 +336,8 @@ static void test_ds1744_rejects_ds1742_migration(const void *data)
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s,"
         "'exit-on-error':false}}", uri);
-    sgi_migrate_stopped(from, uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     sgi_wait_migration(to, "failed");
     status = qtest_qmp_assert_success_ref(to, "{'execute':'query-migrate'}");
     g_assert_nonnull(qdict_get_try_str(status, "error-desc"));
