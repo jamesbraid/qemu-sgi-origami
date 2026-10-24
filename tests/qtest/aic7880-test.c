@@ -4489,7 +4489,9 @@ static void test_sequencer_clocked_cancel(void)
             config_writel(qts, 0x14, REG_BASE);
             config_writew(qts, 0x04, 6);
         }
-        qtest_clock_step(qts, 1000);
+        qtest_clock_step(qts, 1);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 0);
+        qtest_clock_step(qts, 999);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
         g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 0);
