@@ -367,6 +367,208 @@ static void test_dma_reset_migration(void)
     }
 }
 
+
+static unsigned dma_faults(const char *path)
+{
+    g_autofree char *data = NULL;
+    const char *p;
+    unsigned count = 0;
+
+    g_assert_true(g_file_get_contents(path, &data, NULL, NULL));
+    p = data;
+    while ((p = strstr(p, "sgi-o2-gbe: DMA outside linked RAM"))) {
+        count++;
+        p++;
+    }
+    return count;
+}
+
+static void test_dma_reset_active_controls(void)
+{
+    for (unsigned plane = 0; plane < 2; plane++) {
+        QTestState *q = start("");
+        unsigned reg = plane ? 0x20000 : 0x30000;
+        unsigned active = plane ? 0x20004 : 0x30008;
+        uint32_t shape = 1 << 5 | (plane ? 0 : 2 << 13);
+        uint32_t bit = 1u << (plane ? 13 : 15);
+        uint32_t original = (LIST + (plane ? 32 : 0)) | 1;
+
+        reset_planes(q);
+        uint32_t counter = rd(q, VT(0));
+        qtest_writeb(q, BASE + reg, 0xff);
+        qtest_writew(q, BASE + reg, UINT16_MAX);
+        qtest_writeq(q, BASE + reg, UINT64_MAX);
+        qtest_writel(q, BASE + reg + 1, UINT32_MAX);
+        g_assert_cmphex(rd(q, reg), ==, shape);
+        g_assert_cmphex(rd(q, VT(0)), ==, counter);
+        wr(q, WID(0), 3 | 5 << 2);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+        wr(q, reg, shape | bit);
+        wr(q, active, LIST + 64);
+        g_assert_cmphex(rd(q, active), ==, LIST + 64);
+        g_assert_cmphex(rd(q, active + 4), ==, original);
+        wr(q, active, (LIST + 64) | 1);
+        g_assert_cmphex(rd(q, active), ==, (LIST + 64) | 1);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        descriptor(q, 48, plane ? 0x4007 : 0x4003);
+        wr(q, active + 4, (LIST + 96) | 1);
+        g_assert_cmphex(rd(q, active), ==, (LIST + 64) | 1);
+        frame(q);
+        g_assert_cmphex(rd(q, active), ==, (LIST + 96) | 1);
+        g_assert_cmphex(rd(q, active + 4), ==, (LIST + 96) | 1);
+        wr(q, reg, shape);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x89abcd : 0x334455);
+        qtest_quit(q);
+    }
+}
+
+static void test_dma_reset_dma_sentinels(void)
+{
+    for (unsigned plane = 0; plane < 2; plane++) {
+        for (unsigned released = 0; released < 2; released++) {
+            g_autofree char *dir = g_dir_make_tmp("gbe-dma-sentinel-XXXXXX",
+                                                 NULL);
+            g_autofree char *log = g_build_filename(dir, "source.txt", NULL);
+            g_autofree char *target = g_build_filename(dir, "target.txt", NULL);
+            g_autofree char *args = g_strdup_printf("-d guest_errors -D %s",
+                                                   log);
+            g_autofree char *incoming = g_strdup_printf(
+                "-incoming defer -d guest_errors -D %s", target);
+            g_autofree char *sock = g_build_filename(dir, "migration.sock",
+                                                    NULL);
+            g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+            QTestState *from = start(args);
+            QTestState *to = start(incoming);
+            QTestState *both[] = { from, to };
+            unsigned reg = plane ? 0x20000 : 0x30000;
+            unsigned active = plane ? 0x20004 : 0x30008;
+            unsigned slot = plane ? 16 : 0;
+            uint32_t shape = 1 << 5 | (plane ? 0 : 2 << 13);
+            uint32_t bit = 1u << (plane ? 13 : 15);
+            uint32_t original = (LIST + slot * 2) | 1;
+
+            reset_planes(from);
+            wr(from, reg, shape | bit);
+            /* A descriptor read here would emit an observable DMA failure. */
+            wr(from, active, 0x44000001);
+            wr(from, active + 4, 0x44000001);
+            frame(from);
+            g_assert_cmpuint(dma_faults(log), ==, 0);
+            if (released) {
+                wr(from, reg, shape);
+            }
+            qtest_qmp_assert_success(to,
+                "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+            sgi_migrate_stopped(from, uri);
+            sgi_wait_migration(to, "completed");
+            g_assert_cmpuint(dma_faults(log), ==, 0);
+            g_assert_cmpuint(dma_faults(target), ==, 0);
+            for (unsigned i = 0; i < 2; i++) {
+                QTestState *q = both[i];
+                const char *path = i ? target : log;
+
+                g_assert_cmphex(rd(q, reg), ==,
+                                shape | (released ? 0 : bit));
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x123456 : 0);
+                g_assert_cmpuint(dma_faults(path), ==, 0);
+                if (!released) {
+                    frame(q);
+                    rd(q, VT(0));
+                    g_assert_cmpuint(dma_faults(path), ==, 0);
+                    wr(q, reg, shape);
+                }
+                g_assert_cmpuint(dma_faults(path), ==, 0);
+                frame(q);
+                rd(q, VT(0));
+                g_assert_cmpuint(dma_faults(path), ==, 1);
+                /* A valid list with a bad tile distinguishes pixel DMA. */
+                wr(q, reg, shape | bit);
+                wr(q, active, original);
+                wr(q, active + 4, original);
+                descriptor(q, slot, 0x4400);
+                frame(q);
+                rd(q, VT(0));
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x123456 : 0);
+                g_assert_cmpuint(dma_faults(path), ==, 1);
+                wr(q, reg, shape);
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x123456 : 0);
+                g_assert_cmpuint(dma_faults(path), ==, 1);
+                frame(q);
+                rd(q, VT(0));
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x123456 : 0);
+                g_assert_cmpuint(dma_faults(path), ==, 2);
+                wr(q, reg, shape | bit);
+                descriptor(q, slot, plane ? 0x4007 : 0x4002);
+                wr(q, reg, shape);
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x123456 : 0);
+                frame(q);
+                rd(q, VT(0));
+                g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                                plane ? 0x89abcd : 0xabcdef);
+                g_assert_cmpuint(dma_faults(path), ==, 2);
+            }
+            qtest_quit(from);
+            qtest_quit(to);
+            g_unlink(log);
+            g_unlink(target);
+            g_unlink(sock);
+            g_rmdir(dir);
+        }
+    }
+}
+
+static void test_dma_reset_did_cursor(void)
+{
+    QTestState *q = start("");
+    uint8_t table[514] = { 0 };
+
+    reset_planes(q);
+    stl_be_p(table, 2047 | 1 << 19);
+    stw_be_p(table + 512, 2047 | 1 << 11);
+    qtest_memwrite(q, 0x60000, table, sizeof(table));
+    wr(q, WID(0), 3);
+    wr(q, WID(1), 3 | 1 << 5);
+    wr(q, WID(2), 3 | 2 << 5);
+    wr(q, CMAP(0), 0x10203000);
+    wr(q, CMAP(256), 0x24681300);
+    wr(q, CMAP(512), 0x13579b00);
+    wr(q, 0x40004, 0x14006);
+    frame(q);
+    wr(q, 0x70000, 31 | 31 << 16);
+    wr(q, 0x70008, 0x10293800);
+    wr(q, 0x78000, 1u << 30);
+    wr(q, 0x70004, 1);
+    wr(q, 0x30000, 1u << 15 | 2 << 13 | 1 << 5);
+    wr(q, 0x20000, 1u << 13 | 1 << 5);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x102938);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x246813);
+    stw_be_p(table + 512, 2047 | 2 << 11);
+    qtest_memwrite(q, 0x90000, table, sizeof(table));
+    wr(q, 0x40004, 0x14009);
+    frame(q);
+    g_assert_cmphex(rd(q, 0x40000), ==, 0x14009);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x13579b);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x102938);
+    wr(q, 0x70008, 0xa1b2c300);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0xa1b2c3);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x13579b);
+    wr(q, 0x78000, 1u << 28);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x13579b);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xa1b2c3);
+    qtest_quit(q);
+}
+
 static void test_clock(void)
 {
     QTestState *q = start("");
@@ -1325,6 +1527,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/dma-reset/planes", test_dma_reset_planes);
     qtest_add_func("/sgi-gbe/dma-reset/recovery", test_dma_reset_recovery);
     qtest_add_func("/sgi-gbe/dma-reset/migration", test_dma_reset_migration);
+    qtest_add_func("/sgi-gbe/dma-reset/active-controls",
+                   test_dma_reset_active_controls);
+    qtest_add_func("/sgi-gbe/dma-reset/dma-sentinels",
+                   test_dma_reset_dma_sentinels);
+    qtest_add_func("/sgi-gbe/dma-reset/did-cursor", test_dma_reset_did_cursor);
     qtest_add_func("/sgi-gbe/clock", test_clock);
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
     qtest_add_func("/sgi-gbe/formats", test_formats);
