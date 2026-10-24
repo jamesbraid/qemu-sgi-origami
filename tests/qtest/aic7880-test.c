@@ -6683,7 +6683,7 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
 
     memset(bytes, 0xa5, sizeof(bytes));
     qtest_memwrite(qts, 0x10000, bytes, sizeof(bytes));
-    qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x1f, 0x22);
     /* Hold this short response below the ordinary DMA start level. */
     qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
     for (unsigned byte = 0; byte < 4; byte++) {
@@ -6825,7 +6825,7 @@ static void prepare_short_inquiry(QTestState *qts, uint32_t addr,
     }
     qtest_writeb(qts, REG_BASE + 0x8c, 36);
     qtest_writeb(qts, REG_BASE + 0x08, stcnt);
-    qtest_writeb(qts, REG_BASE + 0x1f, disabled ? 0x20 : 0);
+    qtest_writeb(qts, REG_BASE + 0x1f, disabled ? 0x22 : 2);
     /* Distinguish automatic/manual flush from a threshold-started burst. */
     qtest_writeb(qts, REG_BASE + 0x86, 0xc0);
 }
@@ -7051,11 +7051,11 @@ static void test_auto_flush_disable_reset(void)
     QTestState *qts = start_aic();
 
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f) & 0x20, ==, 0);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x1f, 0x22);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f) & 0x20, ==, 0x20);
     qtest_writeb(qts, REG_BASE + 0x87, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f) & 0x20, ==, 0);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x1f, 0x22);
     qobject_unref(qtest_qmp(qts, "{'execute': 'system_reset'}"));
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f) & 0x20, ==, 0);
     qtest_quit(qts);
@@ -7684,7 +7684,7 @@ static void test_dindir_equal_sblkctl_unsupported(void)
     QTestState *qts = start_aic();
     size_t n = 0;
 
-    qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x1f, 0x22);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f) & 0x20, ==, 0x20);
     qtest_writeb(qts, REG_BASE + 0x65, 0x1f);
     qtest_writeb(qts, REG_BASE + 0x66, 0x1f);
@@ -8871,12 +8871,13 @@ static void test_identify_lun_routing(void)
     }
 }
 
-static void test_narrow_selection_rejects_id_eight(void)
+static void test_narrow_connection_id_eight_times_out(void)
 {
     QTestState *qts = start_disk();
     uint8_t program[16];
     size_t n = 0;
 
+    qtest_writeb(qts, REG_BASE + 0x1f, 0);
     qtest_writeb(qts, REG_BASE + 0x02, 4);
     qtest_writeb(qts, REG_BASE + 0x41, 0xa5);
     emit_or(program, &n, 0x87, 0x05);
@@ -8886,10 +8887,10 @@ static void test_narrow_selection_rejects_id_eight(void)
     start_program(qts, program, n);
     qtest_clock_step(qts, 256000000);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50, ==, 0);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x41), ==, 0xa5);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50, ==, 0x10);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0x80);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x41), ==, 0x33);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
     qtest_quit(qts);
@@ -8984,7 +8985,7 @@ static void test_selected_inquiry_first_segment(void)
     qtest_memwrite(qts, 0x10000, guarded, sizeof(guarded));
     host_dma_program(qts, 0x10008, 17);
     qtest_writeb(qts, REG_BASE + 0x08, 17);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0);
+    qtest_writeb(qts, REG_BASE + 0x1f, 2);
     qtest_writeb(qts, REG_BASE + 0x93, 1);
     start_program(qts, program, build_selected_inquiry_program(program));
 
@@ -9109,7 +9110,7 @@ static void test_selected_inquiry_two_segments(void)
     qtest_memwrite(qts, 0x10200, second, sizeof(second));
     host_dma_program(qts, 0x10008, 17);
     qtest_writeb(qts, REG_BASE + 0x08, 17);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0);
+    qtest_writeb(qts, REG_BASE + 0x1f, 2);
     qtest_writeb(qts, REG_BASE + 0x93, 1);
     start_program(qts, program, build_selected_inquiry_program(program));
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
@@ -9196,7 +9197,7 @@ static void test_short_inquiry_phase_mismatch_flush(void)
     qtest_memwrite(qts, 0x10200, second, sizeof(second));
     host_dma_program(qts, 0x10008, 17);
     qtest_writeb(qts, REG_BASE + 0x08, 17);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0);
+    qtest_writeb(qts, REG_BASE + 0x1f, 2);
     qtest_writeb(qts, REG_BASE + 0x93, 1);
     start_program(qts, program, build_selected_inquiry_program(program));
     g_assert_cmphex(host_dma_read_bytes(qts, 0x08, 3), ==, 0);
@@ -9616,6 +9617,7 @@ static void check_coupled_read_host_stall(bool cd, bool reset_fifo)
     memset(guarded, 0xa5, sizeof(guarded));
     qtest_memwrite(qts, 0x20000, guarded, count + 16);
     qtest_writeb(qts, REG_BASE + 0x87, 4);
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
     host_dma_program(qts, 0x20008, count);
     qtest_writeb(qts, REG_BASE + 0x08, 0);
     qtest_writeb(qts, REG_BASE + 0x09, count >> 8);
@@ -11322,7 +11324,7 @@ static QTestState *manual_status_fifo(void)
 
     host_dma_program(qts, 0x10000, 40);
     qtest_writeb(qts, REG_BASE + 8, 40);
-    qtest_writeb(qts, REG_BASE + 0x1f, 0x20);
+    qtest_writeb(qts, REG_BASE + 0x1f, 0x22);
     start_program(qts, program, build_selected_inquiry_program(program));
     manual_wait_phase(qts, 0xc0);
     qtest_writeb(qts, REG_BASE + 0x93, 0);
@@ -12633,6 +12635,162 @@ static void test_manual_attention_resets(void)
     }
 }
 
+static QTestState *start_wide_targets(uint16_t mask, const char *extra)
+{
+    g_autoptr(GString) options = g_string_new(extra);
+
+    for (unsigned id = 0; id < 16; id++) {
+        if (mask & (1u << id)) {
+            g_string_append_printf(options,
+                " -drive if=none,id=d%u,file=null-co://,format=raw "
+                "-device scsi-hd,drive=d%u,bus=hba.0,scsi-id=%u,lun=0,"
+                "product=SYNTHETIC-ID%02u", id, id, id, id);
+        }
+    }
+    QTestState *qts = qtest_initf(
+        "-M pc -m 128M -nodefaults "
+        "-device aic7880,id=hba,bus=pci.0,addr=04.0 %s", options->str);
+
+    config_writel(qts, 0x14, REG_BASE);
+    config_writew(qts, 4, 6);
+    return qts;
+}
+
+static void check_selection_identity(QTestState *qts, const char *expected)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/peripheral/hba','property':'x-test-selection'}}");
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, expected);
+}
+
+static void wide_select(QTestState *qts, unsigned target, unsigned own,
+                        bool attention)
+{
+    uint8_t program[20];
+    size_t n = 0;
+
+    qtest_writeb(qts, REG_BASE, 0);
+    qtest_writeb(qts, REG_BASE + 5, target << 4 | own);
+    emit_or(program, &n, 8, 1);
+    emit_or(program, &n, attention ? 0xa0 : 0x80, 3);
+    emit_or(program, &n, attention ? 0x48 : 0x40, 0);
+    emit_or(program, &n, 1, 0x91);
+    start_program(qts, program, n);
+    qtest_writeb(qts, REG_BASE + 0x92, 1);
+}
+
+static uint8_t wide_command(QTestState *qts, unsigned target, unsigned own,
+                            unsigned lun, bool identify, const uint8_t *cdb,
+                            size_t cdb_len, uint32_t count, bool write,
+                            int reprogram)
+{
+    uint8_t program[256];
+    g_autofree char *identity = g_strdup_printf("%u:%u:%u:1", target, own, lun);
+    size_t n = 0;
+    uint8_t status;
+
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
+    host_dma_program(qts, 0x20008, count);
+    for (unsigned byte = 0; byte < 3; byte++) {
+        qtest_writeb(qts, REG_BASE + 8 + byte, count >> (byte * 8));
+    }
+    wide_select(qts, target, own, identify);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 0x50, ==, 0x40);
+    if (identify) {
+        attention_write(qts, 6, 0xc0 | lun);
+        attention_write(qts, 0x0c, 0x40);
+    }
+    check_selection_identity(qts, identity);
+    if (reprogram >= 0) {
+        qtest_writeb(qts, REG_BASE + 5, reprogram);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 5), ==, reprogram);
+        check_selection_identity(qts, identity);
+    }
+    emit_cdb_completion(program, &n, cdb, cdb_len, write, true);
+    start_program(qts, program, n);
+    coupled_wait(qts, 0x91, 2);
+    status = qtest_readb(qts, REG_BASE + 0x22);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9d), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    check_selection_identity(qts, "none");
+    qtest_writeb(qts, REG_BASE + 0x87, 4);
+    qtest_writeb(qts, REG_BASE + 0x92, 2);
+    return status;
+}
+
+static void test_wide_target_routing(void)
+{
+    static const uint8_t inquiry[] = { 0x12, 0, 0, 0, 36, 0 };
+    QTestState *qts = start_wide_targets(0xffff, "");
+    uint8_t guard[52], got[52];
+
+    memset(guard, 0xa5, sizeof(guard));
+    for (unsigned id = 0; id < 16; id++) {
+        g_autofree char *product = g_strdup_printf("SYNTHETIC-ID%02u", id);
+        unsigned own = id == 7 ? 6 : 7;
+
+        qtest_memwrite(qts, 0x20000, guard, sizeof(guard));
+        g_assert_cmphex(wide_command(qts, id, own, 0, id & 1, inquiry,
+                                     sizeof(inquiry), 36, false, -1), ==, 0);
+        qtest_memread(qts, 0x20000, got, sizeof(got));
+        g_assert_cmpmem(got, 8, guard, 8);
+        g_assert_cmpmem(got + 44, 8, guard, 8);
+        g_assert_cmpmem(got + 24, strlen(product), product, strlen(product));
+        qtest_clock_step(qts, 1000000000);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x80, ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+static void test_wide_own_id(void)
+{
+    QTestState *qts = start_wide_targets(0xffff, "");
+
+    for (unsigned own = 0; own < 16; own++) {
+        qtest_writeb(qts, REG_BASE + 0x87, 1);
+        qtest_writeb(qts, REG_BASE + 2, 4);
+        wide_select(qts, own, own, false);
+        qtest_clock_step(qts, 1000000000);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 3), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 3);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+        check_selection_identity(qts, "none");
+    }
+    qtest_quit(qts);
+}
+
+static void test_wide_registers(void)
+{
+    QTestState *qts = start_aic();
+
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f), ==, 0xc2);
+    for (unsigned value = 0; value < 256; value++) {
+        qtest_writeb(qts, REG_BASE + 5, value);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 5), ==, value);
+        attention_write(qts, 5, value);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 5), ==, value);
+    }
+    for (unsigned value = 0; value < 256; value++) {
+        if (value & 0x15) {
+            continue;
+        }
+        qtest_writeb(qts, REG_BASE + 0x1f, value);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f), ==, value & 0xe2);
+        attention_write(qts, 0x1f, value);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x1f), ==, value & 0xe2);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -12682,6 +12840,9 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/external-scb-migration-mismatch",
                    test_external_scb_migration_mismatch);
     qtest_add_func("aic7880/pci-identity", test_identity);
+    qtest_add_func("aic7880/wide/registers", test_wide_registers);
+    qtest_add_func("aic7880/wide/target-routing", test_wide_target_routing);
+    qtest_add_func("aic7880/wide/own-id", test_wide_own_id);
     qtest_add_func("aic7880/dspcistatus-selector",
                    test_dspcistatus_selector);
     qtest_add_func("aic7880/dspcistatus-resets", test_dspcistatus_resets);
@@ -13077,8 +13238,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/dma-requires-bus-master",
                    test_dma_requires_bus_master);
     qtest_add_func("aic7880/identify-lun-routing", test_identify_lun_routing);
-    qtest_add_func("aic7880/narrow-selection-id-eight",
-                   test_narrow_selection_rejects_id_eight);
+    qtest_add_func("aic7880/narrow-connection-id-eight-times-out",
+                   test_narrow_connection_id_eight_times_out);
     qtest_add_func("aic7880/lun-nexus-migrates-before-cdb",
                    test_lun_nexus_migrates_before_cdb);
     qtest_add_func("aic7880/inquiry-via-sequencer", test_inquiry_via_sequencer);

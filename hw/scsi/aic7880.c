@@ -116,6 +116,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC7880State, AIC7880)
 #define DFS_FIFOFULL 0x02
 #define DFS_FIFOEMP 0x01
 #define SBLK_AUTOFLUSHDIS 0x20
+#define SBLK_SELWIDE 0x02
 
 #define SCSI_SIG_COMMAND 0x86
 #define SCSI_SIG_DATA_IN 0x46
@@ -161,6 +162,9 @@ struct AIC7880State {
     uint8_t cdb_len;
     uint8_t cdb_need;
     uint8_t target;
+    uint8_t initiator;
+    bool selection_wide;
+    bool identity_valid;
     uint8_t lun;
     uint8_t phase;
     uint8_t expected_phase;
@@ -770,12 +774,22 @@ static void aic7880_start_request(AIC7880State *s)
     }
 }
 
+static void aic7880_release_identity(AIC7880State *s)
+{
+    s->identity_valid = false;
+    s->target = s->initiator = 0;
+    s->selection_wide = false;
+}
+
 static void aic7880_bus_free_timer_cb(void *opaque)
 {
     AIC7880State *s = opaque;
 
     if (!s->selected && !s->selection_pending &&
         (!s->req || s->peer_nexus_disconnected)) {
+        if (!s->peer_nexus_disconnected) {
+            aic7880_release_identity(s);
+        }
         s->expected_phase = 0;
         s->signal_outputs = 0;
         s->initiator_atn = false;
@@ -832,9 +846,11 @@ static void aic7880_cancel_selection(AIC7880State *s)
 static void aic7880_select(AIC7880State *s)
 {
     uint8_t target = (s->regs[REG_SCSIID] >> 4) & 0x0f;
+    uint8_t initiator = s->regs[REG_SCSIID] & 0x0f;
+    bool wide = s->regs[REG_SBLKCTL] & SBLK_SELWIDE;
 
-    if (target > 7) {
-        aic7880_error(s, "unsupported narrow target ID");
+    if (target == initiator || (!wide && initiator > 7)) {
+        aic7880_error(s, "unsupported initiator selection address");
         return;
     }
     if (s->host_fifo_len) {
@@ -848,6 +864,9 @@ static void aic7880_select(AIC7880State *s)
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
     s->target = target;
+    s->initiator = initiator;
+    s->selection_wide = wide;
+    s->identity_valid = true;
     s->peer_nexus_disconnected = false;
     s->peer_nexus_saved = false;
     s->peer_nexus_message = 0;
@@ -858,7 +877,8 @@ static void aic7880_select(AIC7880State *s)
     s->identify_seen = false;
     s->message_out_len = 0;
     s->message_resume_command = false;
-    s->selected = scsi_device_find(&s->bus, 0, s->target, 0) != NULL;
+    s->selected = (wide || target < 8) &&
+                  scsi_device_find(&s->bus, 0, target, 0) != NULL;
     if (s->selected) {
         s->initiator_atn = s->regs[REG_SCSISEQ] & 0x08;
         s->phase = s->initiator_atn ? AIC_PHASE_MSG_OUT : AIC_PHASE_COMMAND;
@@ -933,6 +953,7 @@ static void aic7880_scsi_reset(AIC7880State *s)
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
     s->selection_pending = false;
+    aic7880_release_identity(s);
     if (s->req) {
         scsi_req_cancel(s->req);
     }
@@ -970,6 +991,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     timer_del(s->selection_timer);
     timer_del(s->bus_free_timer);
     s->selection_pending = false;
+    aic7880_release_identity(s);
     if (s->req) {
         scsi_req_cancel(s->req);
     }
@@ -1012,6 +1034,7 @@ static void aic7880_chip_reset(AIC7880State *s)
     s->maskable_break_pending = false;
     s->error_pending = false;
     s->regs[REG_DFSTATUS] = DFS_FIFOQWDEMP | DFS_FIFOEMP;
+    s->regs[REG_SBLKCTL] = 0xc2; /* Selected native wide connection. */
     s->regs[REG_SEQCTL] = 0x90;
     s->regs[REG_BRKADDR1] = 0x80;
     s->regs[REG_HCNTRL] = HOST_PAUSE | HOST_CHIPRST;
@@ -1179,6 +1202,7 @@ static void aic7880_pio_advance(AIC7880State *s)
         s->regs[REG_SSTAT0] &= ~0x62;
         s->regs[REG_SSTAT1] |= 0x08;
         s->selected = false;
+        aic7880_release_identity(s);
         s->lun = 0;
         s->disconnect_allowed = false;
         aic7880_pio_present(s);
@@ -1644,11 +1668,17 @@ static void aic7880_write(void *opaque, hwaddr addr, uint64_t value,
         aic7880_signal_write(s, val);
         break;
     case REG_SBLKCTL:
-        if (val & ~SBLK_AUTOFLUSHDIS) {
+        if (val & ~0xea) {
             aic7880_error(s, "unsupported SBLKCTL control");
             break;
         }
-        s->regs[addr] = val;
+        if (((val ^ s->regs[addr]) & SBLK_SELWIDE) &&
+            (s->identity_valid || s->req || s->peer_reselection ||
+             s->phase == AIC_PHASE_DATA)) {
+            aic7880_error(s, "connection width change on an occupied bus");
+            break;
+        }
+        s->regs[addr] = val & ~0x08; /* SELBUSB is inert on one channel. */
         break;
     case REG_DFCNTRL:
         if ((val & 0x38) && aic7880_manual_busy(s)) {
@@ -2577,8 +2607,8 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
             qemu_strtoul(parts[2], NULL, 10, &initiator_id) ||
             qemu_strtoul(parts[3], NULL, 10, &position) ||
             target_id != s->target || position != s->lun ||
-            initiator_id > 7 || initiator_id == target_id ||
-            initiator_id != (s->regs[REG_SCSIID] & 15) ||
+            target_id > 7 || initiator_id > 7 ||
+            initiator_id == target_id || initiator_id != s->initiator ||
             !s->req || !s->peer_nexus_disconnected || s->selected ||
             s->phase != AIC_PHASE_BUS_FREE || s->peer_nexus_message ||
             !(s->regs[REG_SCSISEQ] & 0x10)) {
@@ -2688,6 +2718,7 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
         s->peer_data_len = s->peer_data_pos = 0;
         s->peer_faulted_command = false;
         s->selected = false;
+        aic7880_release_identity(s);
         s->lun = 0;
         s->disconnect_allowed = false;
         s->initiator_atn = false;
@@ -2715,12 +2746,25 @@ static int aic7880_post_load(void *opaque, int version_id)
     }
     if (s->seqaddr > AIC_SEQ_INSNS ||
         s->seqbyte >= 4 ||
-        s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 7 ||
+        s->phase >= AIC_PHASE_MSG_OUT || s->lun > 7 || s->target > 15 ||
+        s->initiator > 15 || (s->regs[REG_SBLKCTL] & ~0xe2) ||
         s->cdb_len > sizeof(s->cdb) ||
         s->cdb_need > sizeof(s->cdb) ||
         s->qout_count > aic7880_queue_limit(s) ||
         s->qout_head >= aic7880_queue_slots(s) ||
         s->qout_tail >= aic7880_queue_slots(s)) {
+        return -EINVAL;
+    }
+    if ((!s->identity_valid &&
+         (s->selected || s->selection_pending || s->target || s->initiator ||
+          s->selection_wide)) ||
+        (s->identity_valid &&
+         (s->target == s->initiator ||
+          (!s->selection_wide && (s->initiator > 7 ||
+                                 (s->selected && s->target > 7))) ||
+          s->selection_wide != !!(s->regs[REG_SBLKCTL] & SBLK_SELWIDE) ||
+          (!s->selected && !s->selection_pending &&
+           !timer_pending(s->bus_free_timer))))) {
         return -EINVAL;
     }
     if (s->selection_pending &&
@@ -2793,6 +2837,9 @@ static const VMStateDescription vmstate_aic7880 = {
         VMSTATE_UINT8(cdb_len, AIC7880State),
         VMSTATE_UINT8(cdb_need, AIC7880State),
         VMSTATE_UINT8(target, AIC7880State),
+        VMSTATE_UINT8(initiator, AIC7880State),
+        VMSTATE_BOOL(selection_wide, AIC7880State),
+        VMSTATE_BOOL(identity_valid, AIC7880State),
         VMSTATE_UINT8(lun, AIC7880State),
         VMSTATE_BOOL(disconnect_allowed, AIC7880State),
         VMSTATE_BOOL(identify_seen, AIC7880State),
@@ -2828,7 +2875,7 @@ static const VMStateDescription vmstate_aic7880 = {
 
 static const SCSIBusInfo aic7880_scsi_info = {
     .tcq = false,
-    .max_target = 8,
+    .max_target = 15,
     .max_lun = 7,
     .transfer_data = aic7880_transfer_data,
     .complete = aic7880_complete,
@@ -2870,6 +2917,17 @@ static void aic7880_test_scb_parity_set(Object *obj, const char *value,
         return;
     }
     s->scb_parity[(page % pages) * AIC_SCB_PAGE_BYTES + offset] ^= 1;
+}
+
+static char *aic7880_test_selection_get(Object *obj, Error **errp)
+{
+    AIC7880State *s = AIC7880(obj);
+
+    if (!s->identity_valid) {
+        return g_strdup("none");
+    }
+    return g_strdup_printf("%u:%u:%u:%u", s->target, s->initiator, s->lun,
+                            s->selection_wide);
 }
 
 static void aic7880_realize(PCIDevice *pci, Error **errp)
@@ -2924,6 +2982,8 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
                                 aic7880_test_scb_parity_set);
     }
     if (qtest_enabled()) {
+        object_property_add_str(OBJECT(s), "x-test-selection",
+                                aic7880_test_selection_get, NULL);
         object_property_add_str(OBJECT(s), "x-test-pci-error", NULL,
                                 aic7880_test_pci_error_set);
     }
