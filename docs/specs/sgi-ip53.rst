@@ -71,13 +71,44 @@ must continue through the selected PCI device's bus-master address space.
 DS1742-compatible clock resource
 ================================
 
-The profiles link an existing DS1742 model to IOC4 as a synthetic software
-construction. They expose the eight clock-byte addresses used by the selected
-compatibility contract and retain the model's 2 KiB backing image. They do not
+The legacy clock-only selection links the existing DS1742 model to IOC4.
+It exposes the eight clock-byte addresses used by the selected
+compatibility contract and retains the model's 2 KiB backing image. It does not
 establish the fitted IO9 package, full IOC4 byte-bus decode, SRAM aliases, or
 physical address wiring. The reported IOC4 clock label does not identify the
 fitted part. The broader storage span and PROM environment/checksum area
-remain outside this model.
+remain outside this legacy selection.
+
+.. _sgi-ip53-ds1744:
+
+DS1744-compatible timekeeper resource
+====================================
+
+The serial IO9 profiles select a 32 KiB DS1744-compatible geometry through
+the board's standard system-timekeeper record. IOC4 maps the child's complete
+byte-wide region at BAR0 offset ``0x80000``. Device offsets
+``0x0000`` through ``0x7ff7`` are ordinary SRAM. The eight clock bytes occupy
+``0x7ff8`` through ``0x7fff``. Firmware owns all SRAM contents, including
+PROM variables and checksums. The emulator does not construct or repair
+those records.
+
+This geometry follows Analog Devices/Maxim's published DS1744/DS1744P
+specification, document 19-5502, revision 6/13. OpenBSD's public SGI driver
+uses the same 32 KiB span at IOC4 BAR0 plus ``0x80000`` and the same final
+eight clock offsets. These sources support a compatibility mapping. They do
+not identify the physical IO9 package or establish its address wiring.
+
+The device shares the DS1742 calendar and backing-store implementation.
+Its data image is exactly 32768 bytes and its paired clock-reference image
+uses the existing 16-byte format. The board retains the IP53
+``fresh-year-base=1968`` policy for fresh or blank clock initialization.
+Valid saved calendars retain their values. Guest reset retains SRAM and
+calendar state. DS1744 has a separate migration identity, while the legacy
+DS1742 migration format remains unchanged. An existing 2 KiB backing image
+is rejected rather than resized.
+
+The public specification is available at:
+https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf
 
 .. _sgi-ip53-io-profile:
 
@@ -96,7 +127,7 @@ that lacks matching evidence remains unknown.
 Headless serial profile choices
 ===============================
 
-The machine catalogue selects the following inputs for serial IRIX experiments.
+The machine catalogue selects the following inputs for serial IRIX configurations.
 These values define the emulator profiles; a successful guest boot does not
 measure a processor reset pin, PROM image fitted to a board, or PCI wiring on
 the named product. The physical inventory facts cited by the catalogue have

@@ -3636,7 +3636,52 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             board->preset != SGI_MODEL_IO_BOARD_PRESET_IO9) {
             continue;
         }
+        if (board->system_timekeeper) {
+            SGIModelSystemTimekeeper *policy = board->system_timekeeper;
+            const char *data_name, *clock_name;
+            g_autofree char *child_name = g_strdup_printf(
+                "ds1744-%s", board->id);
+
+            if ((board->has_ds1742 && board->ds1742) ||
+                policy->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_DS1744 ||
+                policy->initial_ip27_fixture ||
+                (policy->has_year_base && policy->year_base != 0 &&
+                 policy->year_base != 1968)) {
+                error_setg(errp, "IO9 board '%s' has an unsupported "
+                           "system timekeeper policy", board->id);
+                return false;
+            }
+            if (!sgi_machine_nvram_backing(s, t, board, NULL,
+                                           &data_name, &clock_name, errp)) {
+                return false;
+            }
+            if (!data_name || !clock_name) {
+                error_setg(errp, "IO9 board '%s' requires its standard "
+                           "Timekeeper NVRAM and clock stores", board->id);
+                return false;
+            }
+            rtc = qdev_new("ds1744");
+            object_property_add_child(OBJECT(s), child_name, OBJECT(rtc));
+            object_unref(OBJECT(rtc));
+            if ((policy->has_year_base &&
+                 !object_property_set_uint(OBJECT(rtc), "fresh-year-base",
+                                           policy->year_base, errp)) ||
+                !object_property_set_str(OBJECT(rtc), "drive", data_name,
+                                         errp) ||
+                !object_property_set_str(OBJECT(rtc), "clock-drive",
+                                         clock_name, errp) ||
+                !sysbus_realize(SYS_BUS_DEVICE(rtc), errp)) {
+                return false;
+            }
+            rtc_clock = sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc), 0);
+        }
         if (board->has_ds1742 && board->ds1742) {
+            if (rtc) {
+                error_setg(errp, "IO9 board '%s' has both legacy and "
+                           "generic timekeeper selections", board->id);
+                return false;
+            }
+
             g_autofree char *child_name = g_strdup_printf(
                 "ds1742-%s", board->id);
             const char *data, *clock;
@@ -5082,11 +5127,8 @@ static bool sgi_machine_ip53_fingerprint(
           sgi_machine_compare_board_ids);
 
     sgi_machine_fingerprint_update(checksum, domain, sizeof(domain));
-    /*
-     * Version 13 distinguishes the PIC requester-width DMA policy and the
-     * optional L1 CPU-context identity.
-     */
-    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 13 : 6);
+    /* Version 14 adds the selected IO9 timekeeper geometry and seed policy. */
+    sgi_machine_fingerprint_u32(checksum, runtime_permission ? 14 : 7);
     sgi_machine_fingerprint_u8(checksum, runtime_permission);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 1 : 0);
     sgi_machine_fingerprint_u32(checksum, runtime_permission ? 10 : 0);
@@ -5265,6 +5307,20 @@ static bool sgi_machine_ip53_fingerprint(
                                    board->has_ds1742 && board->ds1742);
         if (board->has_ds1742 && board->ds1742) {
             sgi_machine_fingerprint_string(checksum, board->id);
+        }
+        sgi_machine_fingerprint_u8(checksum,
+                                   board->system_timekeeper != NULL);
+        if (board->system_timekeeper) {
+            const SGIModelSystemTimekeeper *clock =
+                board->system_timekeeper;
+
+            sgi_machine_fingerprint_u32(checksum, clock->kind);
+            sgi_machine_fingerprint_u8(checksum, clock->has_year_base);
+            if (clock->has_year_base) {
+                sgi_machine_fingerprint_u32(checksum, clock->year_base);
+            }
+            sgi_machine_fingerprint_u8(checksum,
+                                       clock->initial_ip27_fixture);
         }
         functions = sgi_model_pci_function_array(
             board->populated ? board->pci_functions : NULL, &function_count);
@@ -6418,6 +6474,14 @@ static bool sgi_machine_preflight_io_descriptors(
         const SGIModelIoBoard *board = boards[i];
         bool io9 = board->preset == SGI_MODEL_IO_BOARD_PRESET_IO9;
 
+        if (board->system_timekeeper &&
+            board->system_timekeeper->kind ==
+            SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_DS1744 && !io9) {
+            error_setg(errp, "DS1744 timekeeper is only supported on IO9 "
+                       "boards (found '%s')", board->id);
+            return false;
+        }
+
         if (io9) {
             size_t host_index;
             size_t key;
@@ -6452,6 +6516,20 @@ static bool sgi_machine_preflight_io_descriptors(
                 return false;
             }
             owned_heads[key] = true;
+            if (board->system_timekeeper) {
+                SGIModelSystemTimekeeper *policy = board->system_timekeeper;
+
+                if ((board->has_ds1742 && board->ds1742) ||
+                    policy->kind !=
+                    SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_DS1744 ||
+                    policy->initial_ip27_fixture ||
+                    (policy->has_year_base && policy->year_base != 0 &&
+                     policy->year_base != 1968)) {
+                    error_setg(errp, "IO9 board '%s' has an unsupported "
+                               "system timekeeper policy", board->id);
+                    return false;
+                }
+            }
             if (board->has_ds1742 && board->ds1742) {
                 const char *id;
                 const char *cursor;

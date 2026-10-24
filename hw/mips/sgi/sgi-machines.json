@@ -4779,18 +4779,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -4839,13 +4827,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -4972,18 +4960,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -5032,13 +5008,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -19059,18 +19035,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -19119,13 +19083,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -19452,18 +19416,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -19512,13 +19464,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -19651,18 +19603,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -19711,13 +19651,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -19850,18 +19790,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -19910,13 +19838,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -20044,18 +19972,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -20104,13 +20020,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -20243,18 +20159,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -20303,13 +20207,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -20437,18 +20341,6 @@
       "prom-dialogue": "none",
       "resources": [
         {
-          "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
-          "board-ids": [
-            "io9"
-          ],
-          "clock-reference": true,
-          "count": 1,
-          "kind": "ds1742",
-          "part": "ds1742",
-          "scope": "board",
-          "size": 2048
-        },
-        {
           "argument": "-drive if=pflash,unit=N",
           "count": 1,
           "kind": "boot-flash",
@@ -20497,13 +20389,13 @@
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-data",
+          "name": "nvram0",
           "read-only": false,
-          "size": 2048
+          "size": 32768
         },
         {
           "initial": "zero",
-          "name": "ds1742-io9-clock",
+          "name": "nvram0-clock",
           "read-only": false,
           "size": 16
         }
@@ -24192,8 +24084,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -24229,7 +24119,12 @@
           "pci-head": 0,
           "pci-host-index": 0,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
@@ -24422,8 +24317,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -24459,7 +24352,12 @@
           "pci-head": 0,
           "pci-host-index": 0,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
@@ -34278,8 +34176,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -34315,7 +34211,12 @@
           "pci-head": 0,
           "pci-host-index": 0,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
@@ -34744,8 +34645,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -34781,7 +34680,12 @@
           "pci-head": 0,
           "pci-host-index": 0,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
@@ -35019,8 +34923,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -35056,7 +34958,12 @@
           "pci-head": 0,
           "pci-host-index": 1,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
@@ -35265,8 +35172,6 @@
       "io-boards": [
         {
           "carrier": "machine-placed",
-          "ds1742": true,
-          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],
@@ -35302,7 +35207,12 @@
           "pci-head": 0,
           "pci-host-index": 0,
           "populated": true,
-          "preset": "io9"
+          "preset": "io9",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "ds1744",
+            "year-base": 1968
+          }
         }
       ],
       "ip35-firmware": {
