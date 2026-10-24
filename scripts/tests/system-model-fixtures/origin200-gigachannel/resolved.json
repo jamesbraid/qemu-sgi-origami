@@ -2703,7 +2703,10 @@
                 },
                 {
                   "description": "2 GE11, 2 RE4, 2 TE1, 8 MB texture",
-                  "fidelity": "implemented",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "no capture gives a two-RE board's register values, so the model's are inferred"
+                  ],
                   "name": "MXI",
                   "pairing": "inferred",
                   "product": "mxi",
@@ -2711,7 +2714,10 @@
                 },
                 {
                   "description": "1 GE12, 1 RE4, no texture",
-                  "fidelity": "implemented",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                  ],
                   "name": "ESI",
                   "pairing": "established",
                   "product": "esi",
@@ -2719,7 +2725,10 @@
                 },
                 {
                   "description": "1 GE12, 1 RE4, 1 TE1, 4 MB texture",
-                  "fidelity": "implemented",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                  ],
                   "name": "ESI with texture",
                   "pairing": "established",
                   "product": "esi-t",
@@ -2727,7 +2736,10 @@
                 },
                 {
                   "description": "2 GE12, 2 RE4, no texture",
-                  "fidelity": "implemented",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                  ],
                   "name": "ESSI",
                   "pairing": "established",
                   "product": "essi",
@@ -2735,7 +2747,11 @@
                 },
                 {
                   "description": "2 GE12, 2 RE4, 2 TE1, 8 MB texture",
-                  "fidelity": "implemented",
+                  "fidelity": "approximated",
+                  "limitations": [
+                    "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                    "no capture gives a two-RE board's register values, so the model's are inferred"
+                  ],
                   "name": "EMXI",
                   "pairing": "inferred",
                   "product": "emxi",

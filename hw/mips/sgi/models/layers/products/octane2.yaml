@@ -49,11 +49,11 @@ layer:
               - {product: si, fidelity: implemented, pairing: inferred}
               - {product: si-t, fidelity: implemented, pairing: inferred}
               - {product: ssi, fidelity: implemented, pairing: inferred}
-              - {product: mxi, fidelity: implemented, pairing: inferred}
-              - {product: esi, fidelity: implemented, pairing: inferred}
-              - {product: esi-t, fidelity: implemented, pairing: inferred}
-              - {product: essi, fidelity: implemented, pairing: inferred}
-              - {product: emxi, fidelity: implemented, pairing: inferred}
+              - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
+              - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
           - family: odyssey
             products:
               - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1611-001"}
@@ -66,11 +66,11 @@ layer:
               - {product: si, fidelity: implemented, pairing: inferred}
               - {product: si-t, fidelity: implemented, pairing: inferred}
               - {product: ssi, fidelity: implemented, pairing: inferred}
-              - {product: mxi, fidelity: implemented, pairing: inferred}
-              - {product: esi, fidelity: implemented, pairing: inferred}
-              - {product: esi-t, fidelity: implemented, pairing: inferred}
-              - {product: essi, fidelity: implemented, pairing: inferred}
-              - {product: emxi, fidelity: implemented, pairing: inferred}
+              - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
+              - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
   data:
     machine:
       name: Octane2 serial profile

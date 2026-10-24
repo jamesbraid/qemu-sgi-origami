@@ -49,11 +49,11 @@ layer:
               - {product: si, fidelity: implemented, pairing: established}
               - {product: si-t, fidelity: implemented, pairing: established}
               - {product: ssi, fidelity: implemented, pairing: established}
-              - {product: mxi, fidelity: implemented, pairing: established}
-              - {product: esi, fidelity: implemented, pairing: established}
-              - {product: esi-t, fidelity: implemented, pairing: established}
-              - {product: essi, fidelity: implemented, pairing: established}
-              - {product: emxi, fidelity: implemented, pairing: established}
+              - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: established}
+              - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: established}
         refusals:
           - family: odyssey
             reason: "VPro V12 needs Crossbow 1.4, the ER power supply 060-0035-00x and PROM 4.5 (007-4210-003), and this Octane presents Crossbow revision code 4 and the SR supply"
@@ -66,11 +66,11 @@ layer:
               - {product: si, fidelity: implemented, pairing: established}
               - {product: si-t, fidelity: implemented, pairing: established}
               - {product: ssi, fidelity: implemented, pairing: established}
-              - {product: mxi, fidelity: implemented, pairing: established}
-              - {product: esi, fidelity: implemented, pairing: established}
-              - {product: esi-t, fidelity: implemented, pairing: established}
-              - {product: essi, fidelity: implemented, pairing: established}
-              - {product: emxi, fidelity: implemented, pairing: established}
+              - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: established}
+              - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: established}
+              - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: established}
   data:
     machine:
       name: Octane serial profile
