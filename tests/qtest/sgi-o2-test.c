@@ -4690,7 +4690,6 @@ static void o2_storage_append_queued_command(uint8_t *program, size_t *n,
         o2_storage_emit(program, n,
             o2_storage_alu_word(1, 0xff, 0xa4 + byte, 0x08 + byte));
     }
-    o2_storage_emit_value(program, n, write ? 0x3c : 0x38, 0x93);
     o2_storage_emit_value(program, n, 0x08, 0x01);
     o2_storage_emit_value(program, n, 0, 0x00);
     o2_storage_emit_value(program, n, 0xa0, 0x03);
@@ -4717,6 +4716,8 @@ static void o2_storage_append_queued_command(uint8_t *program, size_t *n,
     pc->command = *n / 4;
     early_status_branch = *n;
     o2_storage_emit(program, n, o2_storage_branch_word(0xd, 2, 0x0b, 0));
+    o2_storage_emit_value(program, n, write ? 0 : 0x40, 0x03);
+    o2_storage_emit_value(program, n, write ? 0x3c : 0x38, 0x93);
 
     wait_at = *n / 4;
     o2_storage_emit(program, n,
@@ -5438,13 +5439,14 @@ static void o2_storage_command_impl(QTestState *qts, unsigned slot,
     o2_storage_emit_value(program, &n, 0x08, 0x01);
     o2_storage_emit_value(program, &n, 0x07, 0x05);
     o2_storage_emit_value(program, &n, 0, 0x93);
-    o2_storage_emit_value(program, &n, write ? 0x3c : 0x38, 0x93);
     o2_storage_emit_value(program, &n, 0, 0x00);
     o2_storage_emit_value(program, &n, 0x80, 0x03);
     o2_storage_emit_value(program, &n, 0x40, 0x00);
     for (unsigned i = 0; i < cdb_len; i++) {
         o2_storage_emit_value(program, &n, cdb[i], 0x06);
     }
+    o2_storage_emit_value(program, &n, write ? 0 : 0x40, 0x03);
+    o2_storage_emit_value(program, &n, write ? 0x3c : 0x38, 0x93);
     wait_at = n / 4;
     /* STATUS may precede data or arrive after host DMA completes. */
     o2_storage_emit(program, &n,
