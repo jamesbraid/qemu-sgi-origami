@@ -1119,7 +1119,7 @@ static void test_unsupported(void)
 {
     QTestState *s = start();
     const unsigned hard_offsets[] = {
-        0x400, 0x2804, 0x280c, 0x2880, 0x29f8,
+        0x2804, 0x280c, 0x2880, 0x29f8,
         0x3810, 0x3850, 0x3878,
     };
     uint64_t value;
@@ -1129,6 +1129,7 @@ static void test_unsupported(void)
     setup(s, 0, false);
     qtest_writel(s, DE + 0x70, 0);
     qtest_writel(s, DE + 0x74, 0);
+    assert_failure(s, RE + 0x400, 0, 4);
     for (unsigned i = 0; i < ARRAY_SIZE(hard_offsets); i++) {
         assert_failure(s, RE + hard_offsets[i], 0, 4);
         start_before_failure(s);
