@@ -27,6 +27,10 @@
 
 /* Where the Fuel's built-in V12 sits, named by its catalogue label. */
 #define VPRO_FUEL_PATH "/machine/module0/graphics-slot"
+#define IP53_XBOW_LINK_STATUS(w)     (0x100 + ((w) - 8) * 0x40 + 0x10 + 4)
+#define IP53_XBOW_LINK_AUX(w) (0x100 + ((w) - 8) * 0x40 + 0x38 + 4)
+#define IP53_XBOW_LINK_ALIVE (1u << 31)
+#define IP53_XBOW_AUX_PRESENT (1u << 5)
 
 static char *octane_flash;
 static char *sn1_prom;
@@ -555,6 +559,12 @@ static void test_absent(void)
                                      "profile"));
             g_assert_cmphex(qtest_readl(qts, vpro + 0x0004), !=,
                             UINT32_C(0xac013047));
+            g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                        IP53_XBOW_LINK_AUX(12)) &
+                            IP53_XBOW_AUX_PRESENT, ==, 0);
+            g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                        IP53_XBOW_LINK_STATUS(12)) &
+                            IP53_XBOW_LINK_ALIVE, ==, 0);
             qtest_quit(qts);
         }
     }
@@ -580,6 +590,19 @@ static void test_ip53_v12_identity_and_interrupt(void)
                         UINT32_C(0xac013047));
         g_assert_cmphex(qtest_readl(qts, vpro + 0x0024) & 0xf, ==, 12);
         g_assert_cmpstr(profile, ==, "v12");
+        g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                    IP53_XBOW_LINK_AUX(12)) &
+                        IP53_XBOW_AUX_PRESENT, ==, IP53_XBOW_AUX_PRESENT);
+        g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                    IP53_XBOW_LINK_STATUS(12)) &
+                        IP53_XBOW_LINK_ALIVE, ==, IP53_XBOW_LINK_ALIVE);
+        qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+        g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                    IP53_XBOW_LINK_AUX(12)) &
+                        IP53_XBOW_AUX_PRESENT, ==, IP53_XBOW_AUX_PRESENT);
+        g_assert_cmphex(qtest_readl(qts, SPACE_IO +
+                                    IP53_XBOW_LINK_STATUS(12)) &
+                        IP53_XBOW_LINK_ALIVE, ==, IP53_XBOW_LINK_ALIVE);
         qtest_writel(qts, vpro + 0x0034,
                      (5u << 24) | (10u << 16) |
                      (uint32_t)(((UINT64_C(1) << 47) |

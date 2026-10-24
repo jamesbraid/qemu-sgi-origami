@@ -5,6 +5,7 @@
 #include "hw/pci/pci_host.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/misc/sgi-xbow.h"
 #include "qapi/error.h"
 #include "qom/object.h"
 
@@ -30,7 +31,9 @@ bool sgi_pic_attach_pxbow_packet_endpoint(SGIPICState *s,
                                           MemoryRegion *packet_face,
                                           Error **errp);
 MemoryRegion *sgi_pic_pxbow_widget_zero(SGIPICState *s);
-MemoryRegion *sgi_pic_routed_widget(SGIPICState *s);
+SGIXbowState *sgi_pic_pxbow(SGIPICState *s);
+MemoryRegion *sgi_pic_routed_widget(SGIPICState *s, unsigned int widget,
+                                    Error **errp);
 uint8_t sgi_pic_pxbow_revision(SGIPICState *s);
 
 #endif

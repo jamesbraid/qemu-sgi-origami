@@ -341,6 +341,8 @@ struct SGIMachineState {
     bool ip53_experimental;
     bool origin300_l1cmd_compat;
     bool ip53_experiment_authorized;
+    size_t ip53_widget_zero_host;
+    bool ip53_widget_zero_host_valid;
     uint8_t elsc_dip_switches;
     uint32_t module_start_delay_ms;
 
@@ -2925,12 +2927,28 @@ static bool sgi_machine_instantiate_ip53_odyssey(
 {
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     SGIBedrockIOState *bedrock_io = sn1_node_bedrock_io(node);
+    SGIPICState *pic;
+    SGIXbowState *pxbow;
     SGIXioLink *link = &s->board_links[board_index];
     g_autofree char *name = g_strdup_printf("graphics-link-%u", board_index);
     DeviceState *dev;
+    MemoryRegion *route;
 
     if (!bedrock_io) {
         error_setg(errp, "IP53 VPro at widget %u has no Bedrock I/O",
+                   attachment->widget);
+        return false;
+    }
+    if (!s->ip53_widget_zero_host_valid ||
+        s->ip53_widget_zero_host >= s->pic_host_count) {
+        error_setg(errp, "IP53 VPro at widget %u has no IO9 owner",
+                   attachment->widget);
+        return false;
+    }
+    pic = SGI_PIC(s->pic_hosts[s->ip53_widget_zero_host]);
+    pxbow = sgi_pic_pxbow(pic);
+    if (!pxbow) {
+        error_setg(errp, "IP53 VPro at widget %u has no PIC PXBOW",
                    attachment->widget);
         return false;
     }
@@ -2942,14 +2960,17 @@ static bool sgi_machine_instantiate_ip53_odyssey(
     qdev_prop_set_string(dev, "profile", profile);
     sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
-    sgi_xio_link_init(link, OBJECT(s), name, OBJECT(bedrock_io), 0,
-                      OBJECT(dev), 0);
+    sgi_xio_link_init(link, OBJECT(s), name, OBJECT(pxbow),
+                      attachment->widget, OBJECT(dev), 0);
     if (!sgi_xio_link_connect(link, errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
         !sgi_xio_link_connect(link, errp) ||
-        !sn1_node_set_ip53_pic_widget(
-            node, attachment->widget,
-            sgi_xio_port_cpu_face(OBJECT(dev), 0), errp)) {
+        !sgi_xbow_mark_widget_alive(pxbow, attachment->widget, true, errp)) {
+        return false;
+    }
+    route = sgi_pic_routed_widget(pic, attachment->widget, errp);
+    if (!route ||
+        !sn1_node_set_ip53_pic_widget(node, attachment->widget, route, errp)) {
         return false;
     }
     s->io_boards[board_index] = SGI_XIO_BOARD(dev);
@@ -3360,6 +3381,8 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
             error_setg(errp, "IP53 widget-zero view has no IO9 host");
             return false;
         }
+        s->ip53_widget_zero_host = widget_zero_host;
+        s->ip53_widget_zero_host_valid = true;
     }
     for (i = 0; i < host_count; i++) {
         const SGIModelPciHostBridge *host = hosts[i];
@@ -3371,11 +3394,14 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
             continue;
         }
         if (s->ip53_experiment_authorized) {
-            MemoryRegion *widget_zero =
-                sgi_pic_pxbow_widget_zero(SGI_PIC(s->pic_hosts[i]));
-            MemoryRegion *routed =
-                sgi_pic_routed_widget(SGI_PIC(s->pic_hosts[i]));
+            SGIPICState *pic = SGI_PIC(s->pic_hosts[i]);
+            MemoryRegion *widget_zero = sgi_pic_pxbow_widget_zero(pic);
+            MemoryRegion *routed = sgi_pic_routed_widget(
+                pic, attachment->widget, errp);
 
+            if (!routed) {
+                return false;
+            }
             if ((i == widget_zero_host &&
                  !sn1_node_set_ip53_pic_widget(node, 0, widget_zero, errp)) ||
                 !sn1_node_set_ip53_pic_widget(node, attachment->widget,
