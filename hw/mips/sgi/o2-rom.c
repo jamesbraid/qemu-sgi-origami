@@ -9,6 +9,9 @@
 #include "hw/mips/sgi/o2-rom.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
+#include "system/block-backend.h"
+#include "qemu/error-report.h"
 #include "hw/core/resettable.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
@@ -25,6 +28,7 @@
 #define O2_ROM_MAX_SIZE (2 * MiB)
 #define O2_ROM_MAX_ALIASES (O2_ROM_WINDOW / O2_ROM_MIN_SIZE)
 #define AT29_SIZE (512 * KiB)
+#define AT29_STATE_SIZE 512
 #define AT29_SECTOR_SIZE 256
 #define AT29_BOOT_BLOCK_SIZE (16 * KiB)
 #define AT29_LOAD_NS (150 * SCALE_US)
@@ -49,6 +53,10 @@ struct SGIO2ROMState {
     uint32_t image_offset;
     uint16_t pad_byte;
     char *image;
+    BlockBackend *blk;
+    BlockBackend *state_blk;
+    Error *backing_migration_blocker;
+    bool backing_failed;
     bool write_enabled;
     bool mace_controlled;
     bool at29_diagnostic;
@@ -163,11 +171,136 @@ static void at29_trace_timeout(SGIO2ROMState *s, int64_t now,
     }
 }
 
-static void at29_complete(SGIO2ROMState *s)
+static void at29_state_bytes(const uint8_t *array, uint8_t flags,
+                              uint8_t state[AT29_STATE_SIZE])
+{
+    static const uint8_t magic[] = { 'O', '2', 'A', 'T', '2', '9', 0, 1 };
+    GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
+    gsize length = 32;
+
+    memset(state, 0, AT29_STATE_SIZE);
+    memcpy(state, magic, sizeof(magic));
+    state[8] = flags;
+    g_checksum_update(sum, array, AT29_SIZE);
+    g_checksum_get_digest(sum, state + 32, &length);
+    g_checksum_free(sum);
+}
+
+static bool at29_backend_check(BlockBackend *blk, int64_t size,
+                                const char *what, Error **errp)
+{
+    int64_t length = blk_getlength(blk);
+
+    if (length < 0) {
+        error_setg_errno(errp, -length, "sgi-o2-rom: reading %s size", what);
+        return false;
+    }
+    if (length != size) {
+        error_setg(errp, "sgi-o2-rom: %s requires exactly %" PRId64
+                   " bytes, got %" PRId64, what, size, length);
+        return false;
+    }
+    if (!blk_supports_write_perm(blk)) {
+        error_setg(errp, "sgi-o2-rom: %s must be writable", what);
+        return false;
+    }
+    if (blk_get_flags(blk) & (BDRV_O_NO_FLUSH | BDRV_O_SNAPSHOT |
+                              BDRV_O_TEMPORARY)) {
+        error_setg(errp, "sgi-o2-rom: %s requires durable persistent writes",
+                   what);
+        return false;
+    }
+    if (blk_set_perm(blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                      0, errp) < 0) {
+        return false;
+    }
+    blk_set_on_error(blk, BLOCKDEV_ON_ERROR_STOP, BLOCKDEV_ON_ERROR_STOP);
+    blk_iostatus_enable(blk);
+    return true;
+}
+
+static bool at29_restore_backing(SGIO2ROMState *s, uint8_t *array, Error **errp)
+{
+    uint8_t state[AT29_STATE_SIZE], expected[AT29_STATE_SIZE];
+    int ret;
+
+    if (!at29_backend_check(s->blk, AT29_SIZE, "array backend", errp) ||
+        !at29_backend_check(s->state_blk, AT29_STATE_SIZE,
+                            "state backend", errp)) {
+        return false;
+    }
+    ret = blk_pread(s->blk, 0, AT29_SIZE, array, 0);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "sgi-o2-rom: reading array backend");
+        return false;
+    }
+    ret = blk_pread(s->state_blk, 0, sizeof(state), state, 0);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "sgi-o2-rom: reading state backend");
+        return false;
+    }
+    at29_state_bytes(array, state[8] & 7, expected);
+    if (memcmp(state, expected, sizeof(state))) {
+        error_setg(errp, "sgi-o2-rom: invalid backing state or array digest");
+        return false;
+    }
+    s->at29_protected = state[8] & 1;
+    s->at29_lower_lock = state[8] & 2;
+    s->at29_upper_lock = state[8] & 4;
+    error_setg(&s->backing_migration_blocker,
+               "O2 persistent AT29C040A backing cannot migrate or snapshot");
+    if (migrate_add_blocker(&s->backing_migration_blocker, errp) < 0) {
+        return false;
+    }
+    return true;
+}
+
+static bool at29_write_backend(SGIO2ROMState *s, BlockBackend *blk,
+                                uint64_t offset, const void *data, size_t size,
+                                const char *what)
+{
+    const char *operation = "writing";
+    int ret = blk_pwrite(blk, offset, size, data, 0);
+
+    if (ret >= 0) {
+        operation = "flushing";
+        ret = blk_flush(blk);
+    }
+    if (ret < 0) {
+        error_report("sgi-o2-rom: %s %s failed: %s",
+                     operation, what, strerror(-ret));
+        s->backing_failed = true;
+        blk_error_action(blk, BLOCK_ERROR_ACTION_STOP, false, -ret);
+        return false;
+    }
+    return true;
+}
+
+static bool at29_store_backing(SGIO2ROMState *s, const uint8_t *bytes)
+{
+    g_autofree uint8_t *next = g_memdup2(bytes, AT29_SIZE);
+    uint8_t state[AT29_STATE_SIZE];
+    uint8_t flags = (s->at29_protected || s->at29_enable_protection) |
+                    (s->at29_lower_lock << 1) | (s->at29_upper_lock << 2);
+
+    memcpy(next + s->at29_sector, s->at29_load, AT29_SECTOR_SIZE);
+    at29_state_bytes(next, flags, state);
+    return at29_write_backend(s, s->blk, s->at29_sector, s->at29_load,
+                               AT29_SECTOR_SIZE, "array backend") &&
+           at29_write_backend(s, s->state_blk, 0, state, sizeof(state),
+                               "state backend");
+}
+
+static void at29_complete(SGIO2ROMState *s, int64_t now, bool timer_callback)
 {
     if (s->at29_program_allowed) {
         uint8_t *bytes = memory_region_get_ram_ptr(&s->storage);
 
+        if (s->blk && !at29_store_backing(s, bytes)) {
+            at29_trace_timeout(s, now, timer_callback, "backing-error");
+            at29_idle(s);
+            return;
+        }
         memcpy(bytes + s->at29_sector, s->at29_load, AT29_SECTOR_SIZE);
         memory_region_flush_rom_device(&s->storage, s->at29_sector,
                                        AT29_SECTOR_SIZE);
@@ -175,6 +308,8 @@ static void at29_complete(SGIO2ROMState *s)
             s->at29_protected = true;
         }
     }
+    at29_trace_timeout(s, now, timer_callback, s->at29_program_allowed ?
+                       "program-complete" : "protected-poll-complete");
     at29_idle(s);
 }
 
@@ -199,10 +334,7 @@ static void at29_advance(SGIO2ROMState *s, int64_t now,
             at29_idle(s);
             break;
         case AT29_BUSY:
-            at29_trace_timeout(s, now, timer_callback,
-                               s->at29_program_allowed ?
-                               "program-complete" : "protected-poll-complete");
-            at29_complete(s);
+            at29_complete(s, now, timer_callback);
             break;
         case AT29_IDLE:
             g_assert_not_reached();
@@ -449,6 +581,11 @@ static MemTxResult o2_rom_write(void *opaque, hwaddr offset, uint64_t value,
     if (!s->write_enabled) {
         return MEMTX_OK;
     }
+    if (s->backing_failed) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-o2-rom: programming refused after backing failure\n");
+        return MEMTX_ERROR;
+    }
     if (s->at29_diagnostic) {
         return at29_write_byte(s, offset, value);
     }
@@ -526,44 +663,58 @@ static void o2_rom_realize(DeviceState *dev, Error **errp)
                          "diagnostic profile");
         return;
     }
-    if (!s->image || s->image_offset == UINT32_MAX ||
-        s->pad_byte > UINT8_MAX) {
-        error_setg(errp, "sgi-o2-rom requires image, image-offset and "
-                   "pad-byte properties");
-        return;
-    }
-    if (s->image_offset > s->flash_size) {
-        error_setg(errp, "sgi-o2-rom image-offset exceeds flash-size");
-        return;
-    }
-    if (g_stat(s->image, &image_stat) < 0) {
-        error_setg_errno(errp, errno, "sgi-o2-rom cannot stat image '%s'",
-                         s->image);
-        return;
-    }
-    if (image_stat.st_size < 0 ||
-        (uint64_t)image_stat.st_size > s->flash_size - s->image_offset) {
-        error_setg(errp, "sgi-o2-rom image '%s' does not fit at offset "
-                   "0x%x in a %u-byte device", s->image, s->image_offset,
-                   s->flash_size);
-        return;
-    }
-    if (!g_file_get_contents(s->image, &contents, &length, &io_error)) {
-        error_setg(errp, "sgi-o2-rom cannot read image '%s': %s", s->image,
-                   io_error->message);
-        g_clear_error(&io_error);
-        return;
-    }
-    if (length > s->flash_size - s->image_offset) {
-        error_setg(errp, "sgi-o2-rom image '%s' does not fit at offset "
-                   "0x%x in a %u-byte device", s->image, s->image_offset,
-                   s->flash_size);
-        return;
-    }
-    if (s->at29_diagnostic && length != AT29_SIZE) {
-        error_setg(errp, "sgi-o2-rom AT29C040A requires a full 512 KiB "
-                         "image");
-        return;
+    if (s->blk || s->state_blk) {
+        if (!s->blk || !s->state_blk || !s->at29_diagnostic || s->image ||
+            s->image_offset != 0 || s->pad_byte > UINT8_MAX) {
+            error_setg(errp, "sgi-o2-rom: backing requires both drive and "
+                             "state-drive on AT29C040A without image");
+            return;
+        }
+        contents = g_malloc(AT29_SIZE);
+        if (!at29_restore_backing(s, (uint8_t *)contents, errp)) {
+            return;
+        }
+        length = AT29_SIZE;
+    } else {
+        if (!s->image || s->image_offset == UINT32_MAX ||
+            s->pad_byte > UINT8_MAX) {
+            error_setg(errp, "sgi-o2-rom requires image, image-offset and "
+                       "pad-byte properties");
+            return;
+        }
+        if (s->image_offset > s->flash_size) {
+            error_setg(errp, "sgi-o2-rom image-offset exceeds flash-size");
+            return;
+        }
+        if (g_stat(s->image, &image_stat) < 0) {
+            error_setg_errno(errp, errno, "sgi-o2-rom cannot stat image '%s'",
+                             s->image);
+            return;
+        }
+        if (image_stat.st_size < 0 ||
+            (uint64_t)image_stat.st_size > s->flash_size - s->image_offset) {
+            error_setg(errp, "sgi-o2-rom image '%s' does not fit at offset "
+                       "0x%x in a %u-byte device", s->image, s->image_offset,
+                       s->flash_size);
+            return;
+        }
+        if (!g_file_get_contents(s->image, &contents, &length, &io_error)) {
+            error_setg(errp, "sgi-o2-rom cannot read image '%s': %s", s->image,
+                       io_error->message);
+            g_clear_error(&io_error);
+            return;
+        }
+        if (length > s->flash_size - s->image_offset) {
+            error_setg(errp, "sgi-o2-rom image '%s' does not fit at offset "
+                       "0x%x in a %u-byte device", s->image, s->image_offset,
+                       s->flash_size);
+            return;
+        }
+        if (s->at29_diagnostic && length != AT29_SIZE) {
+            error_setg(errp, "sgi-o2-rom AT29C040A requires a full 512 KiB "
+                             "image");
+            return;
+        }
     }
     if (!memory_region_init_rom_device(&s->storage, OBJECT(s), &o2_rom_ops,
                                        s, "sgi-o2-rom.storage",
@@ -610,10 +761,13 @@ static void o2_rom_finalize(Object *obj)
     SGIO2ROMState *s = SGI_O2_ROM(obj);
 
     migrate_del_blocker(&s->at29_migration_blocker);
+    migrate_del_blocker(&s->backing_migration_blocker);
     timer_free(s->at29_timer);
 }
 
 static const Property o2_rom_properties[] = {
+    DEFINE_PROP_DRIVE("drive", SGIO2ROMState, blk),
+    DEFINE_PROP_DRIVE("state-drive", SGIO2ROMState, state_blk),
     DEFINE_PROP_UINT32("flash-size", SGIO2ROMState, flash_size, 0),
     DEFINE_PROP_STRING("image", SGIO2ROMState, image),
     DEFINE_PROP_UINT32("image-offset", SGIO2ROMState, image_offset,
@@ -635,7 +789,15 @@ static int o2_rom_pre_save(void *opaque)
 {
     SGIO2ROMState *s = opaque;
 
+    if (s->blk) {
+        return -ENOTSUP;
+    }
     return s->at29_phase == AT29_IDLE ? 0 : -EBUSY;
+}
+
+static int o2_rom_pre_load(void *opaque)
+{
+    return SGI_O2_ROM(opaque)->blk ? -ENOTSUP : 0;
 }
 
 static int o2_rom_post_load(void *opaque, int version_id)
@@ -667,6 +829,7 @@ static const VMStateDescription vmstate_o2_rom = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_save = o2_rom_pre_save,
+    .pre_load = o2_rom_pre_load,
     .post_load = o2_rom_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(flash_size, SGIO2ROMState),
