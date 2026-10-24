@@ -768,6 +768,14 @@ void mmu_init(CPUMIPSState *env, const mips_def_t *def)
     default:
         cpu_abort(env_cpu(env), "MMU type not supported\n");
     }
+    /*
+     * The R10000 family's ASID bookkeeping (r10k_note_fill()) is fed only by
+     * the lookup r10k_mmu_init() installs. A family member on another MMU
+     * type would never record a page and its ASID changes would leave stale
+     * translations, so the two must go together.
+     */
+    assert(!!(def->insn_flags & INSN_R10K) ==
+           (def->mmu_type == MMU_TYPE_R10000));
 }
 
 void cpu_mips_tlb_flush(CPUMIPSState *env)

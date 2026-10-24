@@ -2755,6 +2755,7 @@ static const ScacheLineCase scache_line_cases[] = {
 #define R_T9                 25
 #define R_K1                 27
 #define STATUS_UX            (1u << 5)
+#define STATUS_SX            (1u << 6)
 #define STATUS_KX            (1u << 7)
 
 /*
@@ -2795,6 +2796,9 @@ static const ScacheLineCase scache_line_cases[] = {
 #define ASID_VA_BIG          0x01000000u
 #define ASID_VA_X            0x0000000100000000ULL  /* xuseg, needs UX */
 #define ASID_VA_K            0xc000000000010000ULL  /* xkseg, needs KX */
+#define ASID_VA_S            0x4000000000010000ULL  /* xsseg, needs SX */
+/* xkphys, cacheable noncoherent: kernel mode needs KX, no TLB entry */
+#define ASID_VA_PHYS         (0x9800000000000000ULL | ASID_P1)
 #define ASID_BIG_PAGES       300  /* more than the model lists per ASID */
 #define ASID_SMALL_PAGES     100
 #define ASID_CODE_ROUNDS     8
@@ -2808,6 +2812,8 @@ enum {
     ASID_R_TLBP_HIT, ASID_R_TLBP_MISS, ASID_R_TLBR, ASID_R_NO_ENTRY,
     ASID_R_BIG_A1, ASID_R_BIG_A2, ASID_R_BIG_A1_AGAIN,
     ASID_R_SMALL_A2, ASID_R_SMALL_A1, ASID_R_SMALL_A2_AGAIN,
+    ASID_R_SX_SET, ASID_R_SX_CLEAR,
+    ASID_R_XKPHYS_SET, ASID_R_XKPHYS_CLEAR,
     ASID_R_UX_SET, ASID_R_UX_CLEAR, ASID_R_UX_RESET,
     ASID_R_KX_SET, ASID_R_KX_CLEAR, ASID_R_KX_RESET,
     ASID_R_CODE_A1, ASID_R_CODE_A2, ASID_R_CODE_LOOP,
@@ -3188,8 +3194,29 @@ static void asid_write_guest_image(int fd)
                         ASID_R_SMALL_A2_AGAIN);
 
     /*
+     * Status SX reaches xsseg, and KX reaches xkphys in kernel mode. Each
+     * load with its enable clear is an address error: faults 3 and 4. This
+     * runs before the xkseg cases below, which leave a KX-dependent page
+     * cached in the kernel index and would hide a missing xkphys record.
+     */
+    emit_asid_tlb_entry(&img, 12, ASID_VA_S | 1, ASID_LO(ASID_P3 >> 12), 0, 0);
+    emit_asid_set(&img, 1);
+    emit_asid_status(&img, true, STATUS_SX);
+    emit_asid_load(&img, R_S0, ASID_VA_S);
+    emit_asid_status(&img, false, STATUS_SX);
+    emit_asid_load(&img, R_S1, ASID_VA_S);
+    emit_asid_result(&img, R_S0, ASID_R_SX_SET);
+    emit_asid_result(&img, R_S1, ASID_R_SX_CLEAR);
+    emit_asid_status(&img, true, STATUS_KX);
+    emit_asid_load(&img, R_S0, ASID_VA_PHYS);
+    emit_asid_status(&img, false, STATUS_KX);
+    emit_asid_load(&img, R_S1, ASID_VA_PHYS);
+    emit_asid_result(&img, R_S0, ASID_R_XKPHYS_SET);
+    emit_asid_result(&img, R_S1, ASID_R_XKPHYS_CLEAR);
+
+    /*
      * Status UX reaches xuseg above 2 Gbytes and KX reaches xkseg. Each
-     * load with its enable clear is an address error: faults 3 and 4.
+     * load with its enable clear is an address error: faults 5 and 6.
      */
     emit_asid_tlb_entry(&img, 6, ASID_VA_X | 1, ASID_LO(ASID_P3 >> 12), 0, 0);
     emit_asid_tlb_entry(&img, 7, ASID_VA_K | 1, ASID_LO_G(ASID_P1 >> 12),
@@ -3380,6 +3407,10 @@ static void test_r10k_tlb_asid(gconstpointer opaque)
                      asid_page_sum(ASID_SMALL_PAGES, ASID_TAG_BIG1));
     g_assert_cmpuint(asid_result(qts, ASID_R_SMALL_A2_AGAIN), ==,
                      asid_page_sum(ASID_SMALL_PAGES, ASID_TAG_BIG2));
+    g_assert_cmphex(asid_result(qts, ASID_R_SX_SET), ==, ASID_TAG_P3);
+    g_assert_cmphex(asid_result(qts, ASID_R_SX_CLEAR), ==, ASID_SENTINEL);
+    g_assert_cmphex(asid_result(qts, ASID_R_XKPHYS_SET), ==, ASID_TAG_P1);
+    g_assert_cmphex(asid_result(qts, ASID_R_XKPHYS_CLEAR), ==, ASID_SENTINEL);
     g_assert_cmphex(asid_result(qts, ASID_R_UX_SET), ==, ASID_TAG_P3);
     g_assert_cmphex(asid_result(qts, ASID_R_UX_CLEAR), ==, ASID_SENTINEL);
     g_assert_cmphex(asid_result(qts, ASID_R_UX_RESET), ==, ASID_TAG_P3);
@@ -3394,11 +3425,13 @@ static void test_r10k_tlb_asid(gconstpointer opaque)
     g_assert_cmphex(asid_result(qts, ASID_R_USER_A2), ==, ASID_TAG_STORE);
 
     /* Refill vector, TLBL; general vector, AdEL. */
-    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + ASID_FCOUNT_OFF), ==, 4);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + ASID_FCOUNT_OFF), ==, 6);
     asid_check_fault(qts, 1, 1, 2, ASID_VA_B);
     asid_check_fault(qts, 2, 1, 2, ASID_VA_A);
-    asid_check_fault(qts, 3, 4, 4, ASID_VA_X);
-    asid_check_fault(qts, 4, 4, 4, ASID_VA_K);
+    asid_check_fault(qts, 3, 4, 4, ASID_VA_S);
+    asid_check_fault(qts, 4, 4, 4, ASID_VA_PHYS);
+    asid_check_fault(qts, 5, 4, 4, ASID_VA_X);
+    asid_check_fault(qts, 6, 4, 4, ASID_VA_K);
 
     qtest_quit(qts);
 }
