@@ -268,6 +268,7 @@ context /mips64/sn1/odyssey/context-save-strip-parity
 context /mips64/sn1/odyssey/context-restart-one-vertex-strip
 context /mips64/sn1/odyssey/context-restart-quad-strip-after-wrap
 context /mips64/sn1/odyssey/context-switch-integer-quad
+context /mips64/sn1/odyssey/context-switch-polygon-raster-restore
 context /mips64/sn1/odyssey/context-switch-polygon-assembly
 context /mips64/sn1/odyssey/context-restart-unsupported-words
 context /mips64/sn1/odyssey/context-switch-completion
