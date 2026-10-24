@@ -4732,22 +4732,38 @@ static void test_gl_readpixels_dma_deep_one_re_unsupported(void)
     g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 0, 2"));
 }
 
-static void test_gl_readpixels_dma_deep_essi_unsupported(void)
+/*
+ * Every two-RE board takes the deep pair as SSI does: ESSI, MXI and EMXI
+ * run the client's same branch on the same RE count, and their second RE
+ * holds the deep visual's other bank in slot 2.
+ */
+static const char *const deep_two_re_boards[] = { "essi", "mxi", "emxi" };
+
+static void test_gl_readpixels_dma_deep_two_re(gconstpointer data)
 {
-    static const uint32_t red = 0xff0000ff;
+    static const uint32_t front[] = { 0x10203040 };
+    static const uint32_t slot2[] = { 0x20406080 };
+    static const uint8_t want_front[] = { 0x10, 0x20, 0x30, 0x40 };
+    static const uint8_t want_slot2[] = { 0x20, 0x40, 0x60, 0x80 };
     QTestState *s;
     g_autofree char *log = NULL;
-    char *log_path = gl_eviction_log_start(
-        &s, MACHINE_ARGS " -global sgi-mgras.board=essi");
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s", (const char *)data);
+    char *log_path = gl_eviction_log_start(&s, args);
 
     gl_pixels_context(s, 0);
+    qtest_writel(s, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_tag_wid(s, 256, 256, 383, 383, 14);
     gl_ssi_draw_buffer(s, 1);
-    gl_draw_rgba_row(s, 1, 1, &red, 1);
+    gl_draw_rgba_row(s, 1, 1, front, 1);
+    gl_ssi_draw_buffer(s, 4);
+    gl_draw_rgba_row(s, 1, 1, slot2, 1);
     gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
-    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, NULL);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, want_front);
+    gl_ssi_expect_read(s, 2, 0, 0x405, 1, 1, 4, want_slot2);
     g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     log = gl_eviction_log_end(s, log_path);
-    g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 0, 2"));
+    g_assert_null(strstr(log, "unsupported client read buffer tuple"));
 }
 
 static void test_gl_readpixels_dma_ssi_deep_reset(void)
@@ -6296,9 +6312,15 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-deep-one-re-unsupported",
         test_gl_readpixels_dma_deep_one_re_unsupported, false);
-    mgras_qtest_add_func(
-        "sn0/origin2000/mgras/gl-readpixels-dma-deep-essi-unsupported",
-        test_gl_readpixels_dma_deep_essi_unsupported, false);
+    for (size_t i = 0; i < ARRAY_SIZE(deep_two_re_boards); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/mgras/gl-readpixels-dma-deep-two-re/%s",
+            deep_two_re_boards[i]);
+
+        mgras_qtest_add_data_func(path, deep_two_re_boards[i],
+                                  test_gl_readpixels_dma_deep_two_re,
+                                  false);
+    }
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-reset",
         test_gl_readpixels_dma_ssi_deep_reset, false);
