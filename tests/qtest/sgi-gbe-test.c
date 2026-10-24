@@ -793,14 +793,21 @@ static void test_i2c_slaves(void)
     qtest_quit(q);
 }
 
-static void test_migration(void)
+static void test_migration_clock(bool ttl)
 {
     g_autofree char *dir = g_dir_make_tmp("sgi-gbe-migration-XXXXXX", NULL);
     g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", sock);
-    QTestState *from = start("");
-    QTestState *to = start("-incoming defer");
+    QTestState *from = start(ttl ?
+        "-global sgi-o2-gbe.external-ttl-hz=23000000" : "");
+    QTestState *to = start(ttl ?
+        "-global sgi-o2-gbe.external-ttl-hz=23000000 -incoming defer" :
+        "-incoming defer");
     setup(from);
+    if (ttl) {
+        wr(from, 0, 0);
+        qtest_clock_step(from, 44);
+    }
     pixel(from, 0, 0x123456ab);
     descriptor(from, 16, (TILE >> 16) + 1);
     pixel(from, 65536, 0xabcdef00);
@@ -818,8 +825,22 @@ static void test_migration(void)
     g_assert_cmphex(rd(to, 0x3000c), ==, (LIST + 32) | 1);
     g_assert_cmphex(screen(to, 31, 4, 0, 0), ==, 0x123456);
     g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 0);
-    frame(from);
-    frame(to);
+    if (ttl) {
+        /* The retained 0.012 dot makes the next dot arrive after 43 ns. */
+        qtest_clock_step(from, 42);
+        qtest_clock_step(to, 42);
+        g_assert_cmphex(rd(to, VT(0)), ==, counter);
+        g_assert_cmphex(rd(from, VT(0)), ==, counter);
+        qtest_clock_step(from, 1);
+        qtest_clock_step(to, 1);
+        g_assert_cmphex(rd(to, VT(0)), ==, counter + 1);
+        g_assert_cmphex(rd(from, VT(0)), ==, counter + 1);
+        qtest_clock_step(from, 282566);
+        qtest_clock_step(to, 282566);
+    } else {
+        frame(from);
+        frame(to);
+    }
     g_assert_cmphex(rd(to, VT(0)), ==, rd(from, VT(0)));
     g_assert_cmphex(rd(to, 0x30008), ==, (LIST + 32) | 1);
     g_assert_cmphex(screen(to, 31, 4, 0, 0), ==,
@@ -834,6 +855,16 @@ static void test_migration(void)
     g_rmdir(dir);
 }
 
+
+static void test_migration(void)
+{
+    test_migration_clock(false);
+}
+
+static void test_ttl_migration(void)
+{
+    test_migration_clock(true);
+}
 
 static void test_did_overlay(void)
 {
@@ -1540,6 +1571,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/multitile", test_multitile);
     qtest_add_func("/sgi-gbe/i2c-slaves", test_i2c_slaves);
     qtest_add_func("/sgi-gbe/migration", test_migration);
+    qtest_add_func("/sgi-gbe/ttl-migration", test_ttl_migration);
     qtest_add_func("/sgi-gbe/did-overlay", test_did_overlay);
     qtest_add_func("/sgi-gbe/i2c-reset-blocker", test_i2c_reset_blocker);
     qtest_add_func("/sgi-gbe/events", test_events);
