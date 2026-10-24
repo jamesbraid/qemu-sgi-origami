@@ -52,7 +52,7 @@
 #define KONA_QOM_PATH "/machine/module0/kona0"
 
 #define MACHINE_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
     "-device sgi-kona,id=kona0,slot=io4,fabric-hub-widget=9"
 
 /* Repeated as literals: a test that borrowed the model's could not fail. */

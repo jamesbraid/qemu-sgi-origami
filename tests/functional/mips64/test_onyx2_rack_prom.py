@@ -35,6 +35,9 @@ class Onyx2RackProm(QemuSystemTest):
         self.set_machine('onyx2')
         self.vm.set_console()
         self.vm.set_machine('onyx2,debug-leds=off')
+        # The test harness passes -vga none, which skips the machine's
+        # default pipe, and hinv must list the pipe, so fit it here.
+        self.vm.add_args('-device', 'sgi-kona,slot=io3')
         self.vm.add_args('-accel', 'tcg,thread=multi', '-smp', '8',
                          '-m', '256M', '-bios', str(prom),
                          # Start paused: the PROM can reset the machine

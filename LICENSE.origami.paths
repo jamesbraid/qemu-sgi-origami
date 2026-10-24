@@ -73,7 +73,7 @@ hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
 hw/mips/sgi/models/fuel-vpro.yaml
 hw/mips/sgi/models/fuel.yaml
-hw/mips/sgi/models/graphics-heads.yaml
+hw/mips/sgi/models/graphics-products.yaml
 hw/mips/sgi/models/layers/architectures/ip30.yaml
 hw/mips/sgi/models/layers/architectures/sn0.yaml
 hw/mips/sgi/models/layers/architectures/sn1.yaml
@@ -209,6 +209,7 @@ hw/mips/sgi/pi-gfx-state.c
 hw/mips/sgi/pi-gfx.c
 hw/mips/sgi/prom-image.c
 hw/mips/sgi/sgi-cpu.c
+hw/mips/sgi/sgi-graphics.c
 hw/mips/sgi/sgi-machines-qmp-stub.c
 hw/mips/sgi/sgi-machines.c
 hw/mips/sgi/sgi-machines.json
@@ -314,6 +315,7 @@ include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
 include/hw/mips/sgi/sgi-board-mac.h
 include/hw/mips/sgi/sgi-cpu.h
+include/hw/mips/sgi/sgi-graphics.h
 include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sgi-storage.h
 include/hw/mips/sgi/sgi-synthetic-serial.h
@@ -769,6 +771,7 @@ tests/qtest/sgi-command-port-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
 tests/qtest/sgi-gbe-test.c
+tests/qtest/sgi-graphics-pipes-test.c
 tests/qtest/sgi-heart-cpu-test.c
 tests/qtest/sgi-heart-test.c
 tests/qtest/sgi-ioc3-eth-test.c

@@ -35,7 +35,6 @@
 #include "qapi/qapi-builtin-types.h"
 #include "qapi/qapi-visit-common.h"
 #include "qapi/visitor.h"
-#include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
@@ -61,6 +60,7 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
+#include "hw/misc/sgi-odyssey.h"
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-sn1-router.h"
 #include "hw/misc/sgi-sn0-module-management.h"
@@ -69,7 +69,6 @@
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci/pci.h"
-#include "hw/pci/pci_host.h"
 #include "block/block.h"
 #include "block/graph-lock.h"
 #include "net/util.h"
@@ -84,6 +83,8 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sgi-graphics.h"
+#include "hw/core/hotplug.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-storage.h"
 #include "hw/mips/sgi/initial-flash.h"
@@ -272,17 +273,6 @@ struct SGIMachineState {
     /* The topology this machine builds: one row of its chassis. */
     const SGIModelTopology *view;
     char *baseio_preset;
-    /*
-     * heads.<position>=<id>: the selections as given, checked against the
-     * topology at realize, since machine properties are applied in hash
-     * order and topology= may come later. NULL when none were given.
-     */
-    QDict *heads;
-    /* Every modelled graphics position and what it holds, from realize. */
-    SGIHeadChoice *head_choices;
-    size_t head_count;
-    /* The first module's onboard PCI bus, for an Origin 200's PCI head. */
-    PCIBus *head_pci_bus;
     /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
     char *io_prom;
     bool io_prom_used;
@@ -336,6 +326,34 @@ struct SGIMachineState {
     bool *slot_claimed;
     Notifier machine_done;
 
+    /*
+     * Graphics pipes (docs/specs/sgi-sn.rst, Graphics pipes). Every pipe
+     * is a -device the catalogue checks before it realizes, or the
+     * topology's default pipe, created at init and realized by
+     * sgi_machine_done() once no -device turned out to be a pipe.
+     * x-uncatalogued-graphics skips the checks and the default, for
+     * register-contract tests that use the machine to carry a board.
+     */
+    bool uncatalogued_graphics;
+    DeviceState *default_pipe;
+    unsigned int pipes;
+    char *first_pipe;
+    /*
+     * The topology's own graphics boards (its KONA, direct Odyssey and
+     * V-brick V12 records) are slots, not boards the builder fits: a pipe
+     * claims one by its catalogue name and takes the record's link, port
+     * and identity. pipe_record[i] marks io_boards[] entry i as one, with
+     * the attachment it names; pipe_claimed[i] that a pipe holds it.
+     * pipe_attachment marks those attachments, whose Crossbow ports start
+     * empty.
+     */
+    bool *pipe_record;
+    bool *pipe_claimed;
+    const SGIModelXioAttachment **pipe_record_attachment;
+    bool *pipe_attachment;
+    /* The V-brick's own XBridge, which its V12 links to. */
+    DeviceState *vbrick_bridge;
+
     bool debug_leds;
     bool junk_uart_present;
     bool ip53_experimental;
@@ -343,6 +361,15 @@ struct SGIMachineState {
     bool ip53_experiment_authorized;
     size_t ip53_widget_zero_host;
     bool ip53_widget_zero_host_valid;
+    /*
+     * A pipe in a graphics slot on the IP53 PIC fabric (widget-12 on the
+     * quad Tezro and Onyx 350): its link to the PIC's PXBOW port, and the
+     * widget, which sgi_machine_done() marks alive and routes once the
+     * pipe has realized.
+     */
+    SGIXioLink pic_pipe_link;
+    Object *pic_pipe;
+    unsigned int pic_pipe_widget;
     uint8_t elsc_dip_switches;
     uint32_t module_start_delay_ms;
 
@@ -2114,7 +2141,8 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
             const SGIModelXioAttachment *attachment =
                 attachments[attachment_index];
 
-            if ((unsigned int)attachment->crossbar_index == i) {
+            if ((unsigned int)attachment->crossbar_index == i &&
+                !(s->pipe_attachment && s->pipe_attachment[attachment_index])) {
                 startup_alive |= 1u << attachment->widget;
             }
         }
@@ -2476,9 +2504,6 @@ static bool sgi_machine_instantiate_ip29_io(
             errp)) {
         return false;
     }
-    if (record->module_index == 0 && !s->head_pci_bus) {
-        s->head_pci_bus = PCI_HOST_BRIDGE(bridge)->bus;
-    }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN &&
         !sgi_machine_add_crosstown_record(bridge, record->serial, errp)) {
         return false;
@@ -2785,78 +2810,149 @@ static unsigned int sgi_machine_kona_hub_widget(
 }
 
 /*
- * The rack topology's pipe records are true-wombat's (GE16-4 030-1398-001
- * under a Ktown), so that pipe presents true-wombat's InfiniteReality3
- * configuration: one RM with 256 MB of texture memory. A product given
- * with -global sgi-kona.product wins. The catalogue has no configuration
- * field yet, and the deskside keeps the pipe's unconfigured answer.
+ * The topology's own graphics pipe records: the Onyx2 InfiniteReality
+ * pipe's KONA widget, Crossbow-attached at IO3 on the rack and IO4 on the
+ * deskside, and a VPro wired straight to a node's XBridge, the Fuel's
+ * graphics board at widget 13 or the Origin 300's direct V12 on its cable
+ * port, whose node already selected that widget as the chip's external
+ * port. None is built with the machine. Each is a slot the catalogue
+ * names (io3, io4, widget-13, widget-11): a pipe -device, or the default
+ * pipe the machine fits when there is none, claims it, and takes the
+ * record's port and identity (sgi_machine_claim_pipe_record()).
  */
-static void sgi_machine_kona_rack_product(DeviceState *dev,
-                                          const SGIModelIoBoard *record)
+static bool sgi_machine_pipe_preset(SGIModelIoBoardPreset preset)
 {
-    g_autofree char *product = NULL;
-    bool ktown = false;
-    const strList *part;
+    return preset == SGI_MODEL_IO_BOARD_PRESET_KONA ||
+           preset == SGI_MODEL_IO_BOARD_PRESET_ODYSSEY ||
+           preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK;
+}
 
-    if (!record->has_other_identity_parts ||
-        !g_str_equal(record->part, "030-1398-001")) {
-        return;
-    }
-    for (part = record->other_identity_parts; part; part = part->next) {
-        ktown |= g_str_equal(part->value, "030-1067-001");
-    }
-    product = object_property_get_str(OBJECT(dev), "product", &error_abort);
-    if (ktown && (!product || !*product)) {
-        qdev_prop_set_string(dev, "product", "ir3");
+/*
+ * Mark the topology's pipe records, with the XIO attachment each names:
+ * @board_attachment's entry for a Hub topology's boards, the record's own
+ * otherwise. A Crossbow-attached pipe's port starts empty, as an empty
+ * XIO slot's does, until the pipe that claims it attaches live.
+ */
+static void sgi_machine_mark_pipe_records(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          const unsigned int *board_attachment)
+{
+    g_autofree const SGIModelIoBoard **records = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t count, attachment_count, i;
+
+    records = sgi_model_io_board_array(t->io_boards, &count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    s->pipe_record = g_new0(bool, count + 1);
+    s->pipe_claimed = g_new0(bool, count + 1);
+    s->pipe_record_attachment = g_new0(const SGIModelXioAttachment *,
+                                       count + 1);
+    s->pipe_attachment = g_new0(bool, attachment_count + 1);
+    for (i = 0; i < count; i++) {
+        unsigned int index = board_attachment ? board_attachment[i] :
+                             records[i]->attachment;
+
+        if (!records[i]->populated ||
+            !sgi_machine_pipe_preset(records[i]->preset) ||
+            index >= attachment_count) {
+            continue;
+        }
+        s->pipe_record[i] = true;
+        s->pipe_record_attachment[i] = attachments[index];
+        if (records[i]->preset != SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
+            s->pipe_attachment[index] = true;
+        }
     }
 }
 
 /*
- * The Origin 2000/Onyx2 InfiniteReality graphics pipe's KONA widget:
- * Crossbow-attached like the BaseIO card above, but an sgi-kona instance
- * carries no PCI function, IOC3 or onewire-serial property of its own,
- * so this function sets only what sgi-xio-board's base class requires,
- * the pipe's identity parts and the Hub its packets go to. The onyx2
- * topologies fit one, the rack at IO3 and the deskside at IO4; a
- * `-device sgi-kona` reaches the same board without a catalogue record
- * and names its Hub with fabric-hub-widget.
+ * The catalogue's name for pipe record @index: its XIO slot label when it
+ * is Crossbow-attached, else widget-<N> for the XBridge port it is wired
+ * to.
  */
-static bool sgi_machine_instantiate_kona(
-    SGIMachineState *s, const SGIModelTopology *t,
-    const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXioAttachment *attachment, Error **errp)
+static char *sgi_machine_pipe_record_slot(SGIMachineState *s,
+                                          const SGIModelIoBoard *record,
+                                          size_t index)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_KONA);
+    const SGIModelXioAttachment *attachment =
+        s->pipe_record_attachment[index];
 
-    /*
-     * The board's slot name is its qdev id, so QMP's screendump names
-     * this head device=io3 on the rack and device=io4 on the deskside,
-     * the slot IRIX names it by (issue #895).
-     */
-    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
-    /*
-     * The pipe's one-wire records: the geometry board's own part, the
-     * rack's GE16-4 or the deskside's GE14-4, then the records after it,
-     * the rack's Ktown or none on the deskside, whose pipe has no Ktown.
-     */
-    qdev_prop_set_string(dev, "board-part", record->part);
-    if (record->has_other_identity_parts) {
-        QList *parts = qlist_new();
-        const strList *part;
-
-        for (part = record->other_identity_parts; part; part = part->next) {
-            qlist_append_str(parts, part->value);
-        }
-        qdev_prop_set_array(dev, "other-identity-parts", parts);
+    if (attachment->crossbar_index >= 0) {
+        return g_strdup(record->label);
     }
-    sgi_machine_kona_rack_product(dev, record);
-    /*
-     * The pipe's DMA transfers and reason-page writes name no destination
-     * widget of their own, so the board sends them to its node's Hub.
-     */
+    return g_strdup_printf("widget-%u", attachment->widget);
+}
+
+/* The pipe record XIO slot @name names, or -1. */
+static ssize_t sgi_machine_find_pipe_record(SGIMachineState *s,
+                                            const SGIModelTopology *t,
+                                            const char *name)
+{
+    g_autofree const SGIModelIoBoard **records = NULL;
+    size_t count, i;
+
+    if (!s->pipe_record || !name) {
+        return -1;
+    }
+    records = sgi_model_io_board_array(t->io_boards, &count);
+    for (i = 0; i < count; i++) {
+        g_autofree char *slot = NULL;
+
+        if (!s->pipe_record[i]) {
+            continue;
+        }
+        slot = sgi_machine_pipe_record_slot(s, records[i], i);
+        if (g_str_equal(slot, name)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * What a KONA pipe in the Onyx2's own pipe slot takes from the record,
+ * before it realizes: the pipe's one-wire records, the geometry board's
+ * own part (the rack's GE16-4 or the deskside's GE14-4) and the records
+ * after it (the rack's Ktown, or none on the deskside, whose pipe has no
+ * Ktown), and the Hub its DMA transfers and reason-page writes go to,
+ * since they name no destination widget of their own. A `-device
+ * sgi-kona` in any other slot names its Hub with fabric-hub-widget.
+ */
+static void sgi_machine_fill_pipe_record(SGIMachineState *s,
+                                         const SGIModelTopology *t,
+                                         DeviceState *dev)
+{
+    g_autofree const SGIModelIoBoard **records = NULL;
+    g_autofree char *name = NULL;
+    const SGIModelIoBoard *record;
+    const strList *part;
+    QList *parts = qlist_new();
+    size_t count;
+    ssize_t index;
+
+    if (!object_dynamic_cast(OBJECT(dev), TYPE_SGI_KONA)) {
+        qobject_unref(parts);
+        return;
+    }
+    name = object_property_get_str(OBJECT(dev), "slot", &error_abort);
+    index = sgi_machine_find_pipe_record(s, t, name);
+    records = sgi_model_io_board_array(t->io_boards, &count);
+    if (index < 0 || records[index]->preset != SGI_MODEL_IO_BOARD_PRESET_KONA) {
+        qobject_unref(parts);
+        return;
+    }
+    record = records[index];
+    qdev_prop_set_string(dev, "board-part", record->part);
+    part = record->has_other_identity_parts ?
+           record->other_identity_parts : NULL;
+    for (; part; part = part->next) {
+        qlist_append_str(parts, part->value);
+    }
+    qdev_prop_set_array(dev, "other-identity-parts", parts);
     qdev_prop_set_uint32(dev, "fabric-hub-widget",
-                         sgi_machine_kona_hub_widget(t, attachment));
-    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
+                         sgi_machine_kona_hub_widget(
+                             t, s->pipe_record_attachment[index]));
 }
 
 /*
@@ -2878,110 +2974,13 @@ static bool sgi_machine_instantiate_mgras(
 }
 
 /*
- * A VPro wired straight to a node's XBridge: the Origin 300's direct V12
- * profile on the cable port, or a Fuel's graphics board at widget 13. The
- * node already selected that widget as the chip's external port.
- */
-static bool sgi_machine_instantiate_odyssey(
-    SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXioAttachment *attachment,
-    Error **errp)
-{
-    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
-    SGIXioLink *link = &s->board_links[board_index];
-    g_autofree char *name = g_strdup_printf("io-board%u-link", board_index);
-    DeviceState *dev;
-
-    if (attachment->crossbar_index >= 0 ||
-        attachment->widget !=
-        sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge))) {
-        error_setg(errp, "the direct V12 board must use the node "
-                   "XBridge external port");
-        return false;
-    }
-    dev = qdev_try_new("sgi-odyssey");
-    if (!dev) {
-        error_setg(errp, "the direct V12 profile requires the "
-                   "sgi-odyssey device");
-        return false;
-    }
-    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
-    sgi_xio_link_init(link, OBJECT(s), name,
-                      OBJECT(node->xbridge), attachment->widget,
-                      OBJECT(dev), 0);
-    sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
-    if (!sgi_xio_link_connect(link, errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
-        !sgi_xio_link_connect(link, errp)) {
-        return false;
-    }
-    s->io_boards[board_index] = SGI_XIO_BOARD(dev);
-    return true;
-}
-
-/* Attach a selected IP53 VPro to the node's Bedrock I/O widget map. */
-static bool sgi_machine_instantiate_ip53_odyssey(
-    SGIMachineState *s, const SGIModelIoBoard *record,
-    unsigned int board_index, const SGIModelXioAttachment *attachment,
-    const char *profile, Error **errp)
-{
-    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
-    SGIBedrockIOState *bedrock_io = sn1_node_bedrock_io(node);
-    SGIPICState *pic;
-    SGIXbowState *pxbow;
-    SGIXioLink *link = &s->board_links[board_index];
-    g_autofree char *name = g_strdup_printf("graphics-link-%u", board_index);
-    DeviceState *dev;
-    MemoryRegion *route;
-
-    if (!bedrock_io) {
-        error_setg(errp, "IP53 VPro at widget %u has no Bedrock I/O",
-                   attachment->widget);
-        return false;
-    }
-    if (!s->ip53_widget_zero_host_valid ||
-        s->ip53_widget_zero_host >= s->pic_host_count) {
-        error_setg(errp, "IP53 VPro at widget %u has no IO9 owner",
-                   attachment->widget);
-        return false;
-    }
-    pic = SGI_PIC(s->pic_hosts[s->ip53_widget_zero_host]);
-    pxbow = sgi_pic_pxbow(pic);
-    if (!pxbow) {
-        error_setg(errp, "IP53 VPro at widget %u has no PIC PXBOW",
-                   attachment->widget);
-        return false;
-    }
-    dev = qdev_try_new("sgi-odyssey");
-    if (!dev) {
-        error_setg(errp, "IP53 VPro requires the sgi-odyssey device");
-        return false;
-    }
-    qdev_prop_set_string(dev, "profile", profile);
-    sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
-    sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
-    sgi_xio_link_init(link, OBJECT(s), name, OBJECT(pxbow),
-                      attachment->widget, OBJECT(dev), 0);
-    if (!sgi_xio_link_connect(link, errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
-        !sgi_xio_link_connect(link, errp) ||
-        !sgi_xbow_mark_widget_alive(pxbow, attachment->widget, true, errp)) {
-        return false;
-    }
-    route = sgi_pic_routed_widget(pic, attachment->widget, errp);
-    if (!route ||
-        !sn1_node_set_ip53_pic_widget(node, attachment->widget, route, errp)) {
-        return false;
-    }
-    s->io_boards[board_index] = SGI_XIO_BOARD(dev);
-    return true;
-}
-
-/*
  * Experimental Origin 300-to-V-brick route. The published enclosure has
  * its own XBridge, L1 and V12; the cable ports and nested processor address
  * are not established. The 8 MiB split is a machine-local QEMU projection:
  * V12 at the cable widget base, then the enclosure XBridge's crossbar.
+ * The enclosure's V12 at XBridge port 8 is the topology's pipe slot
+ * widget-11, which a pipe -device or the default pipe claims
+ * (sgi_machine_claim_pipe_record()).
  */
 static bool sgi_machine_instantiate_vbrick(
     SGIMachineState *s, const SGIModelIoBoard *record,
@@ -2990,10 +2989,8 @@ static bool sgi_machine_instantiate_vbrick(
 {
     SN1NodeState *node;
     Object *module;
-    DeviceState *bridge, *v12;
-    SGIXioLink *board_link = &s->board_links[board_index];
+    DeviceState *bridge;
     g_autofree char *module_name = NULL;
-    g_autofree char *board_link_name = NULL;
 
     if (attachment->node_index != 0 || attachment->crossbar_index >= 0 ||
         record->module_index != 1 || attachment->widget != 0xb) {
@@ -3030,31 +3027,11 @@ static bool sgi_machine_instantiate_vbrick(
     /* The logical registry constructs the enclosure's reference controller. */
     g_assert(object_resolve_path_component(module, "vbrick-l1"));
 
-    v12 = qdev_try_new("sgi-odyssey");
-    if (!v12) {
-        error_setg(errp, "the experimental V-brick requires the "
-                   "sgi-odyssey device");
-        return false;
-    }
-    object_property_add_child(module, "vbrick-v12", OBJECT(v12));
-    object_unref(OBJECT(v12));
-    v12->id = g_strdup("vbrick-v12");
-    qdev_prop_set_uint32(v12, "module", record->module_index);
-    sgi_machine_set_board_widget(v12, 8);
-    board_link_name = g_strdup_printf("io-board%u-link", board_index);
-    sgi_xio_link_init(board_link, OBJECT(s), board_link_name,
-                      OBJECT(bridge), 8, OBJECT(v12), 0);
-    if (!sgi_xio_link_connect(board_link, errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(v12), errp) ||
-        !sgi_xio_link_connect(board_link, errp)) {
-        return false;
-    }
-    g_assert(sgi_xio_link_complete(board_link));
     sgi_xbridge_project_vbrick_pio(
         SGI_XBRIDGE(node->xbridge),
         sgi_xbridge_widget_view(SGI_XBRIDGE(bridge), 8),
         sgi_xbridge_widget_view(SGI_XBRIDGE(bridge), 0), 8 * MiB);
-    s->io_boards[board_index] = SGI_XIO_BOARD(v12);
+    s->vbrick_bridge = bridge;
     return true;
 }
 
@@ -3246,14 +3223,17 @@ static bool sgi_machine_instantiate_io_board(
         return sgi_machine_instantiate_xio_card(s, record, board_index,
                                                 attachment, "mscsi", errp);
     case SGI_MODEL_IO_BOARD_PRESET_KONA:
-        return sgi_machine_instantiate_kona(s, t, record, board_index,
-                                            attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
+        /*
+         * The topology's own pipe: a slot that a pipe -device or the
+         * default pipe claims once machine init has returned
+         * (sgi_machine_claim_pipe_record()).
+         */
+        g_assert(s->pipe_record[board_index]);
+        return true;
     case SGI_MODEL_IO_BOARD_PRESET_MGRAS:
         return sgi_machine_instantiate_mgras(s, record, board_index,
                                              attachment, errp);
-    case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
-        return sgi_machine_instantiate_odyssey(s, record, board_index,
-                                                attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_VBRICK:
         return sgi_machine_instantiate_vbrick(s, record, board_index,
                                               attachment, errp);
@@ -6869,12 +6849,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
     }
-    g_free(s->head_choices);
-    s->head_choices = sgi_model_resolve_heads(mc->name, t, s->heads,
-                                              &s->head_count, errp);
-    if (!s->head_choices) {
-        return false;
-    }
     if (s->processor) {
         node_memory = sn0_model_board_memory(node_memory,
                                              s->processor->clock_hz);
@@ -7219,11 +7193,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_autofree const SGIModelXioAttachment **attachments = NULL;
         size_t attachment_count;
 
-        size_t bedrock_board_capacity =
-            sgi_machine_topology_io_board_count(t) + s->head_count;
+        size_t bedrock_board_capacity = sgi_machine_topology_io_board_count(t);
 
         s->io_boards = g_new0(SGIXioBoardState *, bedrock_board_capacity);
         s->board_links = g_new0(SGIXioLink, bedrock_board_capacity);
+        sgi_machine_mark_pipe_records(s, t, NULL);
 
         attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                      &attachment_count);
@@ -7699,6 +7673,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
+    sgi_machine_mark_pipe_records(s, t, board_attachment);
     if (crossbar_count) {
         sgi_machine_build_crossbars(s, t);
     }
@@ -7827,15 +7802,39 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * stock PROM resets each link it finds attached and expects it back
  * alive. It runs before the machine's cold reset, which reapplies that
  * health from the Crossbow's startup mask.
+ *
+ * It first fits the topology's default graphics pipe, when no -device was
+ * a pipe and -vga none did not ask for none: every -device exists by now,
+ * and this is the first point that is known. The pipe claims its slot the
+ * way a -device does, so a Crossbow-attached one comes up here too. A pipe
+ * on the IP53 PIC fabric is marked alive on the PXBOW, and the node's
+ * processor window for its widget routed to it, the same way.
  */
 static void sgi_machine_done(Notifier *notifier, void *data)
 {
     SGIMachineState *s = container_of(notifier, SGIMachineState,
                                       machine_done);
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
     g_autofree const SGIModelXioSlot **slots = NULL;
-    size_t slot_count, i;
+    g_autofree const SGIModelIoBoard **records = NULL;
+    size_t slot_count, record_count, i;
 
+    if (s->default_pipe) {
+        DeviceState *dev = s->default_pipe;
+
+        s->default_pipe = NULL;
+        if (s->pipes) {
+            object_unref(OBJECT(dev));
+        } else {
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        }
+    }
+    if (!s->uncatalogued_graphics) {
+        sgi_graphics_check_headless(MACHINE_GET_CLASS(s)->name, chassis->name,
+                                    chassis->graphics, s->pipes,
+                                    &error_fatal);
+    }
     if (s->module_start) {
         vmstate_register_any(NULL, &vmstate_sgi_machine_module_starts, s);
         s->module_starts_registered = true;
@@ -7847,6 +7846,30 @@ static void sgi_machine_done(Notifier *notifier, void *data)
         }
         sgi_xbow_mark_widget_alive(s->crossbars[slots[i]->crossbar_index],
                                    slots[i]->widget, true, &error_fatal);
+    }
+    records = sgi_model_io_board_array(t->io_boards, &record_count);
+    for (i = 0; i < record_count; i++) {
+        const SGIModelXioAttachment *attachment;
+
+        if (!s->pipe_claimed || !s->pipe_claimed[i]) {
+            continue;
+        }
+        attachment = s->pipe_record_attachment[i];
+        if (attachment->crossbar_index >= 0) {
+            sgi_xbow_mark_widget_alive(
+                s->crossbars[attachment->crossbar_index], attachment->widget,
+                true, &error_fatal);
+        }
+    }
+    if (s->pic_pipe && sgi_xio_link_complete(&s->pic_pipe_link)) {
+        SGIPICState *pic = SGI_PIC(s->pic_hosts[s->ip53_widget_zero_host]);
+        MemoryRegion *route;
+
+        sgi_xbow_mark_widget_alive(sgi_pic_pxbow(pic), s->pic_pipe_widget,
+                                   true, &error_fatal);
+        route = sgi_pic_routed_widget(pic, s->pic_pipe_widget, &error_fatal);
+        sn1_node_set_ip53_pic_widget(SN1_NODE(s->bedrock_nodes[0]),
+                                     s->pic_pipe_widget, route, &error_fatal);
     }
 }
 
@@ -7920,6 +7943,122 @@ static void sgi_machine_link_slot(SGIMachineState *s,
     sgi_machine_link_board_pi(s, board, slot->controlling_node);
 }
 
+/*
+ * A pipe claiming the topology's own pipe record @index (see
+ * sgi_machine_pipe_preset()): link it to the record's port, a Crossbow
+ * port, a node's XBridge external port or the V-brick XBridge's port 8,
+ * and give it the record's module, its name for the board's QOM child and
+ * qdev id (io4, graphics-slot, vbrick-v12, as the builder used to) and
+ * the identity serials the board's own defaults already carry.
+ */
+static SGIXioLink *sgi_machine_claim_pipe_record(SGIMachineState *s,
+                                                 const SGIModelTopology *t,
+                                                 size_t index, Object *board,
+                                                 SGIXioSlotPlace *place,
+                                                 Error **errp)
+{
+    g_autofree const SGIModelIoBoard **records = NULL;
+    const SGIModelXioAttachment *attachment =
+        s->pipe_record_attachment[index];
+    SGIXioLink *link = &s->board_links[index];
+    g_autofree char *link_name = g_strdup_printf("io-board%zu-link", index);
+    g_autofree char *slot = NULL;
+    const SGIModelIoBoard *record;
+    size_t count;
+
+    records = sgi_model_io_board_array(t->io_boards, &count);
+    record = records[index];
+    slot = sgi_machine_pipe_record_slot(s, record, index);
+    if (s->pipe_claimed[index]) {
+        error_setg(errp, "graphics slot %s already holds a pipe", slot);
+        return NULL;
+    }
+    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
+        sgi_xio_link_init(link, OBJECT(s), link_name,
+                          OBJECT(s->vbrick_bridge), 8, board, 0);
+        place->widget = 8;
+        place->name = g_strdup("vbrick-v12");
+    } else if (attachment->crossbar_index >= 0) {
+        sgi_xio_link_init(link, OBJECT(s), link_name,
+                          OBJECT(s->crossbars[attachment->crossbar_index]),
+                          attachment->widget, board, 0);
+        sgi_machine_link_board_pi(s, board, attachment->node_index);
+        place->widget = attachment->widget;
+        place->name = sgi_machine_xio_board_name(t, record, index);
+    } else {
+        SN1NodeState *node =
+            SN1_NODE(s->bedrock_nodes[attachment->node_index]);
+
+        if (attachment->widget !=
+            sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge))) {
+            error_setg(errp, "graphics slot %s must be the node XBridge's "
+                       "external port", slot);
+            return NULL;
+        }
+        sgi_xio_link_init(link, OBJECT(s), link_name, OBJECT(node->xbridge),
+                          attachment->widget, board, 0);
+        sgi_machine_link_board_pi(s, board, attachment->node_index);
+        place->widget = attachment->widget;
+        place->name = sgi_machine_xio_board_name(t, record, index);
+    }
+    s->pipe_claimed[index] = true;
+    s->io_boards[index] = SGI_XIO_BOARD(board);
+    place->module = record->module_index;
+    place->position = 0;
+    place->label = g_strdup(record->label ? record->label : slot);
+    place->own_identity = true;
+    return link;
+}
+
+/*
+ * A pipe claiming graphics slot @name, widget-<n>, on the IP53 PIC fabric:
+ * linked to that port of the PXBOW of the PIC that owns widget 0, as the
+ * quad Tezro and Onyx 350 captures place a VPro at widget 12. It takes
+ * the node's graphics credits like any XIO board; sgi_machine_done()
+ * marks the widget alive and routes the node's processor window to it.
+ */
+static SGIXioLink *sgi_machine_claim_pic_pipe(SGIMachineState *s,
+                                              Object *board, const char *name,
+                                              SGIXioSlotPlace *place,
+                                              Error **errp)
+{
+    g_autofree char *link_name = g_strdup_printf("%s-link", name);
+    SGIXbowState *pxbow;
+    unsigned int widget;
+
+    if (qemu_strtoui(name + strlen("widget-"), NULL, 10, &widget) ||
+        widget >= 16) {
+        error_setg(errp, "graphics slot %s is not a PIC widget", name);
+        return NULL;
+    }
+    if (s->ip53_widget_zero_host >= s->pic_host_count) {
+        error_setg(errp, "graphics slot %s has no PIC that owns widget 0",
+                   name);
+        return NULL;
+    }
+    pxbow = sgi_pic_pxbow(SGI_PIC(s->pic_hosts[s->ip53_widget_zero_host]));
+    if (!pxbow) {
+        error_setg(errp, "graphics slot %s has no PIC PXBOW", name);
+        return NULL;
+    }
+    if (s->pic_pipe) {
+        error_setg(errp, "graphics slot %s already holds a pipe", name);
+        return NULL;
+    }
+    sgi_xio_link_init(&s->pic_pipe_link, OBJECT(s), link_name,
+                      OBJECT(pxbow), widget, board, 0);
+    sgi_machine_link_board_pi(s, board, 0);
+    s->pic_pipe = board;
+    s->pic_pipe_widget = widget;
+    place->module = 0;
+    place->widget = widget;
+    place->position = 0;
+    place->name = g_strdup(name);
+    place->label = g_strdup(name);
+    place->own_identity = true;
+    return &s->pic_pipe_link;
+}
+
 static SGIXioLink *sgi_machine_claim_xio_slot(Object *obj, Object *board,
                                               const char *name,
                                               SGIXioSlotPlace *place,
@@ -7931,6 +8070,15 @@ static SGIXioLink *sgi_machine_claim_xio_slot(Object *obj, Object *board,
     const SGIModelIoBoardList *io_board;
     size_t slot_count, i;
     ssize_t found = -1;
+
+    found = sgi_machine_find_pipe_record(s, t, name);
+    if (found >= 0) {
+        return sgi_machine_claim_pipe_record(s, t, found, board, place,
+                                             errp);
+    }
+    if (s->ip53_widget_zero_host_valid && g_str_has_prefix(name, "widget-")) {
+        return sgi_machine_claim_pic_pipe(s, board, name, place, errp);
+    }
 
     slots = sgi_model_xio_slot_array(t->xio_slots, &slot_count);
     for (i = 0; i < slot_count; i++) {
@@ -8060,106 +8208,84 @@ bool sgi_machine_ip53_experiment_authorized(MachineState *machine)
 }
 
 /*
- * The PCI device a pci-N position names, on the first module's onboard
- * Bridge: m0-pci-N on a topology whose modules share the label.
+ * Check -vga and create the topology's default pipe, which
+ * sgi_machine_done() realizes once it knows no -device was a pipe. It is
+ * created now, while the machine initializes, so it is not taken for a
+ * hot-plugged device when it realizes.
  */
-static bool sgi_machine_head_pci_slot(const char *name, unsigned int *device)
+static bool sgi_machine_init_graphics(SGIMachineState *s, Error **errp)
 {
-    const char *rest = name;
+    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
+    const SGIModelGraphicsSlot *slot;
+    bool none;
 
-    if (g_str_has_prefix(rest, "m0-")) {
-        rest += strlen("m0-");
+    if (s->uncatalogued_graphics) {
+        return true;
     }
-    return g_str_has_prefix(rest, "pci-") &&
-           !qemu_strtoui(rest + strlen("pci-"), NULL, 10, device) &&
-           *device < PCI_SLOT_MAX;
+    if (!sgi_graphics_vga_none(MACHINE_GET_CLASS(s)->name, &none, errp)) {
+        return false;
+    }
+    slot = none ? NULL : sgi_graphics_default_slot(chassis->graphics);
+    if (slot) {
+        s->default_pipe = sgi_graphics_new_default(slot);
+    }
+    return true;
+}
+
+/* The machine judges the graphics pipes; every other device is its bus's. */
+static const HotplugHandler *sgi_machine_get_hotplug_handler(
+    MachineState *machine, DeviceState *dev)
+{
+    SGIModelGraphicsFamilyKind family;
+
+    return sgi_graphics_pipe_family(dev, &family) ?
+           HOTPLUG_HANDLER(machine) : NULL;
 }
 
 /*
- * Fit each head heads.<position>= or a position's default selects, the way
- * a -device naming the same slot would: an MGRAS board by XIO slot name,
- * a PsiTech board at its PCI device. A built-in position's head is the
- * topology's own I/O board record, which the builder already fitted.
- * Runs once machine init has realized every Crossbow, as a slot claim
- * needs.
+ * Every pipe, a -device or the default, before it realizes: checked
+ * against the catalogue with every unset setting filled from the slot's
+ * defaults, then given what the topology's own pipe record in that slot
+ * fixes (sgi_machine_fill_pipe_record()).
  */
-static bool sgi_machine_build_heads(SGIMachineState *s, Error **errp)
+static void sgi_machine_pre_plug(const HotplugHandler *hotplug_dev,
+                                 DeviceState *dev, Error **errp)
 {
-    const char *machine = MACHINE_GET_CLASS(s)->name;
+    SGIMachineState *s = SGI_MACHINE(hotplug_dev);
+    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    SGIModelGraphicsFamilyKind family;
 
-    for (size_t i = 0; i < s->head_count; i++) {
-        const SGIHeadChoice *choice = &s->head_choices[i];
-        const SGIModelGraphicsConfiguration *c = choice->option->configuration;
-        const char *name = choice->position->name;
-        unsigned int device;
-        DeviceState *dev;
-
-        if (!sgi_model_head_fitted(choice) || choice->position->built_in) {
-            continue;
-        }
-        switch (c->family) {
-        case SGI_MODEL_GRAPHICS_FAMILY_MGRAS:
-            dev = qdev_new(TYPE_SGI_MGRAS);
-            qdev_prop_set_string(dev, "slot", name);
-            qdev_prop_set_string(dev, "board", c->id);
-            if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), errp)) {
-                return false;
-            }
-            break;
-        case SGI_MODEL_GRAPHICS_FAMILY_PSITECH: {
-            g_autofree char *child = g_strdup_printf("head-%s", name);
-            PCIDevice *pci;
-
-            if (!s->head_pci_bus || !sgi_machine_head_pci_slot(name, &device)) {
-                error_setg(errp, "%s: topology '%s' has no PCI bus for "
-                           "graphics at %s", machine,
-                           sgi_machine_topology(MACHINE(s))->name, name);
-                return false;
-            }
-            pci = pci_new(PCI_DEVFN(device, 0), "psitech-rad4");
-            qdev_prop_set_uint16(DEVICE(pci), "device-id",
-                                 g_str_equal(c->id, "rad4-km") ? 0x0105 :
-                                 0x0104);
-            object_property_add_child(OBJECT(s), child, OBJECT(pci));
-            if (!pci_realize_and_unref(pci, s->head_pci_bus, errp)) {
-                return false;
-            }
-            break;
-        }
-        case SGI_MODEL_GRAPHICS_FAMILY_ODYSSEY: {
-            const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-            SGIModelIoBoard record = { 0 };
-            SGIModelXioAttachment attachment = { 0 };
-            g_autofree char *child = g_strdup_printf("graphics-%s", name);
-            unsigned int widget;
-            unsigned int board_index =
-                sgi_machine_topology_io_board_count(t) + i;
-
-            if (!g_str_has_prefix(name, "widget-") ||
-                qemu_strtoui(name + 7, NULL, 10, &widget) ||
-                widget >= 16 || !s->bedrock_nodes || s->num_nodes != 1) {
-                error_setg(errp, "%s: Odyssey graphics at %s needs a "
-                           "single-node widget position", machine, name);
-                return false;
-            }
-            record.module_index = 0;
-            record.label = child;
-            attachment.node_index = 0;
-            attachment.crossbar_index = -1;
-            attachment.widget = widget;
-            if (!sgi_machine_instantiate_ip53_odyssey(
-                    s, &record, board_index, &attachment, c->id, errp)) {
-                return false;
-            }
-            break;
-        }
-        default:
-            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
-                       "machine", machine, c->id, name);
-            return false;
-        }
+    if (!sgi_graphics_pipe_family(dev, &family)) {
+        return;
     }
-    return true;
+    if (!s->uncatalogued_graphics &&
+        !sgi_graphics_check_pipe(MACHINE_GET_CLASS(s)->name, chassis,
+                                 chassis->graphics,
+                                 QAPI_LIST_LENGTH(t->nodes), dev, family,
+                                 s->pipes, s->first_pipe, errp)) {
+        return;
+    }
+    sgi_machine_fill_pipe_record(s, t, dev);
+}
+
+static void sgi_machine_plug(const HotplugHandler *hotplug_dev,
+                             DeviceState *dev, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(hotplug_dev);
+    const SGIModelTopology *chassis = sgi_machine_chassis(MACHINE(s));
+    const SGIModelGraphicsSlot *slot;
+    SGIModelGraphicsFamilyKind family;
+
+    if (!sgi_graphics_pipe_family(dev, &family)) {
+        return;
+    }
+    s->pipes++;
+    if (!s->first_pipe) {
+        slot = sgi_graphics_pipe_slot(chassis->graphics, dev, family);
+        s->first_pipe = g_strdup(slot ? slot->name : dev->id ? dev->id :
+                                 object_get_typename(OBJECT(dev)));
+    }
 }
 
 void sgi_machine_init(MachineState *machine)
@@ -8179,7 +8305,7 @@ void sgi_machine_init(MachineState *machine)
     memory_region_transaction_begin();
     sgi_machine_realize(machine, &error_fatal);
     memory_region_transaction_commit();
-    sgi_machine_build_heads(s, &error_fatal);
+    sgi_machine_init_graphics(s, &error_fatal);
     s->machine_done.notify = sgi_machine_done;
     qemu_add_machine_init_done_notifier(&s->machine_done);
 }
@@ -8306,41 +8432,18 @@ static void sgi_machine_set_processor(Object *obj, const char *value,
     s->processor_name = *value ? g_strdup(value) : NULL;
 }
 
-static void sgi_machine_get_heads(Object *obj, Visitor *v, const char *name,
-                                  void *opaque, Error **errp)
+static bool sgi_machine_get_uncatalogued_graphics(Object *obj, Error **errp)
 {
-    SGIMachineState *s = SGI_MACHINE(obj);
-    QObject *value = s->heads ? QOBJECT(qobject_ref(s->heads)) :
-                     QOBJECT(qdict_new());
-
-    visit_type_any(v, name, &value, errp);
-    qobject_unref(value);
+    return SGI_MACHINE(obj)->uncatalogued_graphics;
 }
 
-/*
- * heads.<position>=<id> arrives as one dictionary. Positions vary per
- * topology, so no fixed structure fits, and topology= may not be set yet:
- * keep the dictionary and check it at realize.
- */
-static void sgi_machine_set_heads(Object *obj, Visitor *v, const char *name,
-                                  void *opaque, Error **errp)
+static void sgi_machine_set_uncatalogued_graphics(Object *obj, bool value,
+                                                  Error **errp)
 {
-    SGIMachineState *s = SGI_MACHINE(obj);
-    QObject *value = NULL;
-    QDict *heads;
-
-    if (sgi_machine_built("heads", errp) ||
-        !visit_type_any(v, name, &value, errp)) {
+    if (sgi_machine_built("x-uncatalogued-graphics", errp)) {
         return;
     }
-    heads = qobject_to(QDict, value);
-    if (!heads) {
-        error_setg(errp, "heads takes heads.<position>=<id>");
-        qobject_unref(value);
-        return;
-    }
-    qobject_unref(s->heads);
-    s->heads = heads;
+    SGI_MACHINE(obj)->uncatalogued_graphics = value;
 }
 
 static char *sgi_machine_get_topology(Object *obj, Error **errp)
@@ -8846,9 +8949,15 @@ static void sgi_machine_instance_finalize(Object *obj)
         qemu_del_vm_change_state_handler(s->module_start_vm_state);
     }
     g_free(s->node_module);
+    if (s->default_pipe) {
+        object_unref(OBJECT(s->default_pipe));
+    }
+    g_free(s->first_pipe);
+    g_free(s->pipe_record);
+    g_free(s->pipe_claimed);
+    g_free(s->pipe_record_attachment);
+    g_free(s->pipe_attachment);
     g_free(s->controller_module);
-    qobject_unref(s->heads);
-    g_free(s->head_choices);
     g_free(s->module_start);
     sgi_l1_query_router_destroy(&s->query_router);
     for (i = 0; i < s->controller_count; i++) {
@@ -8922,9 +9031,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIXioSlotsClass *xc = SGI_XIO_SLOTS_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
 
     xc->claim = sgi_machine_claim_xio_slot;
     xc->claim_fabric = sgi_machine_claim_xio_fabric;
+    mc->get_hotplug_handler = sgi_machine_get_hotplug_handler;
+    hc->pre_plug = sgi_machine_pre_plug;
+    hc->plug = sgi_machine_plug;
 
     mc->init = sgi_machine_init;
     mc->reset = sgi_machine_reset;
@@ -8955,6 +9068,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_KONA);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_MGRAS);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_ODYSSEY);
 #if defined(CONFIG_TEST_DEVICES) && defined(CONFIG_SGI_BOARD_TEST)
     machine_class_allow_dynamic_sysbus_dev(mc,
                                          "sgi-compute-option-intx-fixture");
@@ -8992,12 +9106,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "-cpu must name its part. Defaults to the product's shipped "
         "module.");
 
-    object_class_property_add(oc, "heads", "SGIHeads", sgi_machine_get_heads,
-                              sgi_machine_set_heads, NULL, NULL);
-    object_class_property_set_description(oc, "heads",
-        "Graphics heads by position, heads.<position>=<id> (heads.io3=si-t); "
-        "query-sgi-machines lists each topology's positions and ids. A "
-        "position not named holds its default.");
+    object_class_property_add_bool(oc, "x-uncatalogued-graphics",
+                                   sgi_machine_get_uncatalogued_graphics,
+                                   sgi_machine_set_uncatalogued_graphics);
+    object_class_property_set_description(oc, "x-uncatalogued-graphics",
+        "Skip the graphics catalogue: fit no default pipe, accept any -vga "
+        "and check no graphics -device against the topology. For "
+        "register-contract tests that use the machine to carry a board.");
 
     object_class_property_add_str(oc, "io-prom", sgi_machine_get_io_prom,
                                   sgi_machine_set_io_prom);
@@ -9254,6 +9369,7 @@ static const TypeInfo sgi_machine_types[] = {
         .class_init        = sgi_machine_class_init,
         .interfaces        = (const InterfaceInfo[]) {
             { TYPE_SGI_XIO_SLOTS },
+            { TYPE_HOTPLUG_HANDLER },
             { }
         },
     },

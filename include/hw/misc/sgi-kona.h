@@ -1604,8 +1604,7 @@ struct SGIKonaState {
     uint32_t rm_count;
     uint32_t texture_mb;
     uint32_t channels;
-    char *display_generator;
-    char *video_option;
+    char *display;
     SGIKonaConfig config;
     uint32_t plane_front;
     uint32_t plane_back;

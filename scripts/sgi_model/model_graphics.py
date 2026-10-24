@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Resolve a product's graphics positions against the shared catalogue.
+"""Resolve a product's graphics slots against the shared product file.
 
-A product layer's `graphics` section names the places a head can go and,
-for each, the configuration ids it lists. `graphics-heads.yaml` beside
-the topologies holds every configuration once, so one id names one
-product, parameter set and option set wherever it is listed. The result
-is the topology's `machine.graphics`, which the compiler copies into the
-catalogue unchanged.
+A product layer's `graphics` section names the slots a topology has for a
+graphics pipe, the families, products and setting values each slot
+offers, the pipe the machine fits by default and the reason for every
+combination that does not fit. `graphics-products.yaml` beside the
+topologies holds each family's device, products and full value sets once,
+so a product's name and description and a value's description are the
+same wherever they appear. The result is the topology's
+`machine.graphics`, which the compiler copies into the catalogue; QEMU
+checks every graphics -device against it and the launcher reads it.
 """
 
 from __future__ import annotations
@@ -21,251 +24,503 @@ import yaml
 
 from .exceptions import ResolutionError
 
-GRAPHICS_HEADS_FILE = "graphics-heads.yaml"
+GRAPHICS_PRODUCTS_FILE = "graphics-products.yaml"
 
-# A heads.<position> key fragment must be a QAPI name, and a purely
-# numeric fragment would be read as a list index.
-_POSITION_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_CONFIGURATION_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-
-_FAMILIES = {"none", "mgras", "odyssey", "kona", "psitech"}
-_PARAMETERS = {
-    "geometry_engines", "raster_engines", "texture_mib", "board_memory_mib",
-    "geometry_board", "raster_manager", "raster_manager_count",
-    "display_generator", "display_channels",
-}
-_CONFIGURATION_FIELDS = {"id", "family", "family_name", "product",
-                         "configuration", "parameters", "options"}
-_POSITION_FIELDS = {"name", "names", "description", "built_in", "modelled",
-                    "reason", "change", "options"}
-_OPTION_FIELDS = {"id", "default", "refused", "fidelity", "limitations",
-                  "pairing", "assembly", "change", "accepted_memory_mib",
-                  "processors", "requires"}
+_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+_SLOT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_FAMILIES = ("mgras", "odyssey", "kona", "psitech")
 _FIDELITY = {"validated", "implemented", "approximated"}
 _PAIRING = {"established", "inferred"}
-_CHANGE = {"at-creation", "between-boots"}
-_REQUIREMENT_KINDS = {"crossbow-revision", "power-supply", "prom-revision",
-                      "guest-release"}
+
+_FAMILY_FIELDS = {"family", "device", "name", "products", "settings"}
+_PRODUCT_FIELDS = {"product", "name", "description"}
+_SETTING_FIELDS = {"name", "description", "values"}
+_VALUE_FIELDS = {"value", "description", "evidence"}
+_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused",
+                   "headless_note", "slots"}
+_SLOT_FIELDS = {"name", "names", "description", "placement", "default",
+                "families", "refusals"}
+_OFFER_FIELDS = {"family", "products"}
+_OFFERED_PRODUCT_FIELDS = {"product", "fidelity", "limitations", "pairing",
+                           "assembly", "settings"}
+_OFFERED_SETTING_FIELDS = {"values", "default"}
+_REFUSAL_FIELDS = {"family", "product", "settings", "reason"}
+_DEFAULT_FIELDS = {"family", "product", "settings"}
 
 
-def load_graphics_configurations(model_root: pathlib.Path) -> dict[str, dict]:
-    """Every configuration in @model_root's graphics-heads.yaml, by id."""
-    path = model_root / GRAPHICS_HEADS_FILE
+def _string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ResolutionError(f"{label} must be a non-empty string")
+    return value
+
+
+def _reason(value: Any, label: str) -> str:
+    reason = _string(value, label)
+    if reason.endswith("."):
+        raise ResolutionError(
+            f"{label} must be a phrase without a final full stop, so QEMU "
+            "and the launcher can embed it in a sentence")
+    return reason
+
+
+def load_graphics_products(model_root: pathlib.Path) -> dict[str, dict]:
+    """Every family in @model_root's graphics-products.yaml, by family."""
+    path = model_root / GRAPHICS_PRODUCTS_FILE
     try:
         document = yaml.safe_load(path.read_text())
     except (OSError, yaml.YAMLError) as error:
         raise ResolutionError(f"cannot read {path}: {error}") from error
     if (not isinstance(document, dict) or
-            document.get("graphics_heads_version") != 1 or
-            not isinstance(document.get("configurations"), list)):
-        raise ResolutionError(f"{path} is not a version 1 graphics catalogue")
-    configurations: dict[str, dict] = {}
-    for entry in document["configurations"]:
-        if not isinstance(entry, dict) or set(entry) - _CONFIGURATION_FIELDS:
-            raise ResolutionError(f"{path} has an invalid configuration {entry!r}")
-        ident = entry.get("id")
-        if not isinstance(ident, str) or not _CONFIGURATION_ID.match(ident):
-            raise ResolutionError(f"{path} has an invalid configuration id {ident!r}")
-        if ident in configurations:
-            raise ResolutionError(f"{path} lists configuration '{ident}' twice")
-        if entry.get("family") not in _FAMILIES:
-            raise ResolutionError(f"configuration '{ident}' has an unknown family")
-        for field in ("family_name", "product", "configuration"):
-            if not isinstance(entry.get(field), str):
-                raise ResolutionError(f"configuration '{ident}' needs a {field} string")
-        if not entry["product"]:
-            raise ResolutionError(f"configuration '{ident}' needs a product")
-        parameters = entry.get("parameters")
-        if not isinstance(parameters, dict) or set(parameters) - _PARAMETERS:
-            raise ResolutionError(f"configuration '{ident}' has invalid parameters")
-        options = entry.get("options")
-        if options is not None and (
-                not isinstance(options, list) or not options or
-                not all(isinstance(item, str) and item for item in options)):
-            raise ResolutionError(f"configuration '{ident}' has invalid options")
-        if (ident == "none") != (entry["family"] == "none"):
-            raise ResolutionError("only configuration 'none' has family none")
-        configurations[ident] = copy.deepcopy(entry)
-    if "none" not in configurations:
-        raise ResolutionError(f"{path} has no 'none' configuration")
-    return configurations
+            document.get("graphics_products_version") != 1 or
+            not isinstance(document.get("families"), list)):
+        raise ResolutionError(f"{path} is not a version 1 graphics product file")
+    families: dict[str, dict] = {}
+    for raw in document["families"]:
+        if not isinstance(raw, dict) or set(raw) != _FAMILY_FIELDS:
+            raise ResolutionError(f"{path} has an invalid family {raw!r}")
+        family = raw["family"]
+        if family not in _FAMILIES:
+            raise ResolutionError(f"{path} names unknown family {family!r}")
+        if family in families:
+            raise ResolutionError(f"{path} lists family '{family}' twice")
+        label = f"graphics family '{family}'"
+        products: dict[str, dict] = {}
+        for item in raw["products"]:
+            if not isinstance(item, dict) or set(item) != _PRODUCT_FIELDS:
+                raise ResolutionError(f"{label} has an invalid product {item!r}")
+            product = _string(item["product"], f"{label} product")
+            if not _NAME.match(product) or product in products:
+                raise ResolutionError(f"{label} product {product!r} is invalid "
+                                      "or repeated")
+            products[product] = {
+                "product": product,
+                "name": _string(item["name"], f"{label} product name"),
+                "description": _string(item["description"],
+                                       f"{label} product description"),
+            }
+        if not products:
+            raise ResolutionError(f"{label} has no products")
+        settings: dict[str, dict] = {}
+        for item in raw["settings"]:
+            if (not isinstance(item, dict) or set(item) != _SETTING_FIELDS or
+                    not isinstance(item["values"], list) or
+                    not item["values"]):
+                raise ResolutionError(f"{label} has an invalid setting {item!r}")
+            name = _string(item["name"], f"{label} setting")
+            if not _NAME.match(name) or name in settings or name == "product":
+                raise ResolutionError(f"{label} setting {name!r} is invalid "
+                                      "or repeated")
+            values: dict[str, dict] = {}
+            for value in item["values"]:
+                if (not isinstance(value, dict) or
+                        not {"value", "description"} <= set(value) or
+                        set(value) - _VALUE_FIELDS):
+                    raise ResolutionError(
+                        f"{label} setting '{name}' has an invalid value "
+                        f"{value!r}")
+                text = _string(value["value"], f"{label} setting '{name}' value")
+                if text in values:
+                    raise ResolutionError(
+                        f"{label} setting '{name}' lists '{text}' twice")
+                values[text] = {key: _string(value[key], f"{label} {key}")
+                                for key in value}
+            settings[name] = {
+                "name": name,
+                "description": _string(item["description"],
+                                       f"{label} setting description"),
+                "values": values,
+            }
+        families[family] = {
+            "family": family,
+            "device": _string(raw["device"], f"{label} device"),
+            "name": _string(raw["name"], f"{label} name"),
+            "products": products,
+            "settings": settings,
+        }
+    return families
 
 
-def _requirements(value: Any, label: str) -> list[dict]:
-    if not isinstance(value, list) or not value:
-        raise ResolutionError(f"{label} requires must be a non-empty list")
+def _placement(raw: Any, name: str, label: str) -> list[dict]:
+    """The -device properties that put a pipe in slot @name: the layer's
+    placement mapping, with {name} standing for the slot's name and
+    {number} for the number it ends with."""
+    if not isinstance(raw, dict) or not raw:
+        raise ResolutionError(f"{label} needs a placement mapping")
+    number = re.search(r"([0-9]+)$", name)
     result = []
-    for item in value:
-        if (not isinstance(item, dict) or
-                set(item) - {"kind", "value", "evidence", "met"} or
-                item.get("kind") not in _REQUIREMENT_KINDS or
-                not isinstance(item.get("value"), str) or
-                not isinstance(item.get("evidence"), str) or
-                ("met" in item and type(item["met"]) is not bool)):
-            raise ResolutionError(f"{label} has an invalid requirement")
-        result.append(copy.deepcopy(item))
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, (str, int)):
+            raise ResolutionError(f"{label} has an invalid placement")
+        text = str(value)
+        if "{number}" in text and not number:
+            raise ResolutionError(f"{label} placement needs a slot name "
+                                  "that ends with a number")
+        text = text.replace("{name}", name).replace(
+            "{number}", number.group(1) if number else "")
+        result.append({"name": key, "value": text})
     return result
 
 
-def _option(raw: Any, configurations: dict[str, dict], change: str,
-            label: str) -> dict:
-    if not isinstance(raw, dict) or set(raw) - _OPTION_FIELDS:
-        raise ResolutionError(f"{label} has an invalid option {raw!r}")
-    ident = raw.get("id")
-    if ident not in configurations:
-        raise ResolutionError(f"{label} lists unknown configuration {ident!r}")
-    label = f"{label} option '{ident}'"
-    refused = raw.get("refused")
-    selectable = refused is None
-    if not selectable and (not isinstance(refused, str) or not refused):
-        raise ResolutionError(f"{label} refused must be a reason")
-    fidelity = raw.get("fidelity")
-    if selectable != (fidelity is not None):
+def _offered_settings(raw: Any, family: dict, label: str) -> list[dict]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ResolutionError(f"{label} settings must be a mapping")
+    unknown = set(raw) - set(family["settings"])
+    if unknown:
+        raise ResolutionError(f"{label} names unknown settings "
+                              f"{sorted(unknown)}")
+    result = []
+    # The family's order, so every record lists settings alike.
+    for name, setting in family["settings"].items():
+        if name not in raw:
+            continue
+        item = raw[name]
+        if (not isinstance(item, dict) or set(item) - _OFFERED_SETTING_FIELDS or
+                not isinstance(item.get("values"), list) or
+                not item["values"]):
+            raise ResolutionError(f"{label} setting '{name}' needs values")
+        values = [str(value) for value in item["values"]]
+        if len(values) != len(set(values)):
+            raise ResolutionError(f"{label} setting '{name}' repeats a value")
+        for value in values:
+            if value not in setting["values"]:
+                raise ResolutionError(
+                    f"{label} setting '{name}' offers '{value}', which "
+                    f"{GRAPHICS_PRODUCTS_FILE} does not list")
+        if len(values) > 1 and "default" not in item:
+            raise ResolutionError(f"{label} setting '{name}' needs a default")
+        default = str(item.get("default", values[0]))
+        if default not in values:
+            raise ResolutionError(
+                f"{label} setting '{name}' default '{default}' is not offered")
+        result.append({
+            "name": name,
+            "description": setting["description"],
+            "values": [copy.deepcopy(setting["values"][value])
+                       for value in values],
+            "default": default,
+            "changeable": False,
+        })
+    return result
+
+
+def _offered_product(raw: Any, family: dict, label: str) -> dict:
+    if not isinstance(raw, dict) or set(raw) - _OFFERED_PRODUCT_FIELDS:
+        raise ResolutionError(f"{label} has an invalid product {raw!r}")
+    product = raw.get("product")
+    if product not in family["products"]:
         raise ResolutionError(
-            f"{label} must carry fidelity exactly when it is selectable")
-    if fidelity is not None and fidelity not in _FIDELITY:
-        raise ResolutionError(f"{label} has an unknown fidelity")
-    option: dict[str, Any] = {
-        "configuration": copy.deepcopy(configurations[ident]),
-        "default": raw.get("default", False),
-        "selectable": selectable,
-        "change": raw.get("change", change),
-    }
-    if type(option["default"]) is not bool:
-        raise ResolutionError(f"{label} default must be a boolean")
-    if option["default"] and not selectable:
-        raise ResolutionError(f"{label} is the default but refused")
-    if option["change"] not in _CHANGE:
-        raise ResolutionError(f"{label} has an unknown change")
-    if not selectable:
-        option["refused"] = refused
-    if fidelity is not None:
-        option["fidelity"] = fidelity
-    if "limitations" in raw:
-        limitations = raw["limitations"]
+            f"{label} offers {family['family']} product {product!r}, which "
+            f"{GRAPHICS_PRODUCTS_FILE} does not list")
+    label = f"{label} product '{product}'"
+    fidelity = raw.get("fidelity")
+    if fidelity not in _FIDELITY:
+        raise ResolutionError(f"{label} needs a fidelity")
+    result: dict[str, Any] = copy.deepcopy(family["products"][product])
+    result["fidelity"] = fidelity
+    limitations = raw.get("limitations")
+    if limitations is not None:
         if (not isinstance(limitations, list) or not limitations or
-                not all(isinstance(item, str) and item for item in limitations)):
+                not all(isinstance(item, str) and item
+                        for item in limitations)):
             raise ResolutionError(f"{label} limitations must be strings")
-        option["limitations"] = list(limitations)
-    if fidelity == "approximated" and "limitations" not in option:
+        result["limitations"] = [
+            _reason(item, f"{label} limitation") for item in limitations]
+    if fidelity == "approximated" and limitations is None:
         raise ResolutionError(f"{label} is approximated without limitations")
     if "pairing" in raw:
         if raw["pairing"] not in _PAIRING:
             raise ResolutionError(f"{label} has an unknown pairing")
-        option["pairing"] = raw["pairing"]
+        result["pairing"] = raw["pairing"]
     if "assembly" in raw:
-        if not isinstance(raw["assembly"], str) or not raw["assembly"]:
-            raise ResolutionError(f"{label} assembly must be a part")
-        option["assembly"] = raw["assembly"]
-    if "accepted_memory_mib" in raw:
-        sizes = raw["accepted_memory_mib"]
-        if (not isinstance(sizes, list) or not sizes or
-                not all(type(size) is int and size > 0 for size in sizes)):
-            raise ResolutionError(f"{label} accepted_memory_mib must be sizes")
-        option["accepted_memory_mib"] = list(sizes)
-    if "processors" in raw:
-        processors = raw["processors"]
-        if (not isinstance(processors, list) or not processors or
-                not all(isinstance(item, str) and item for item in processors)):
-            raise ResolutionError(f"{label} processors must be option ids")
-        option["processors"] = list(processors)
-    if "requires" in raw:
-        option["requires"] = _requirements(raw["requires"], label)
-    return option
+        result["assembly"] = _string(raw["assembly"], f"{label} assembly")
+    result["settings"] = _offered_settings(raw.get("settings"), family, label)
+    return result
+
+
+def _properties(raw: Any, label: str) -> list[dict]:
+    if not isinstance(raw, dict):
+        raise ResolutionError(f"{label} settings must be a mapping")
+    return [{"name": str(name), "value": str(value)}
+            for name, value in raw.items()]
+
+
+def _refusal(raw: Any, families: dict[str, dict], label: str) -> dict:
+    if (not isinstance(raw, dict) or set(raw) - _REFUSAL_FIELDS or
+            "family" not in raw or "reason" not in raw):
+        raise ResolutionError(f"{label} has an invalid refusal {raw!r}")
+    family = families.get(raw["family"])
+    if family is None:
+        raise ResolutionError(f"{label} refusal names unknown family "
+                              f"{raw['family']!r}")
+    result: dict[str, Any] = {"family": family["family"]}
+    if "product" in raw:
+        if raw["product"] not in family["products"]:
+            raise ResolutionError(
+                f"{label} refusal names product {raw['product']!r}, which "
+                f"{GRAPHICS_PRODUCTS_FILE} does not list")
+        result["product"] = raw["product"]
+    if "settings" in raw:
+        settings = _properties(raw["settings"], f"{label} refusal")
+        for item in settings:
+            setting = family["settings"].get(item["name"])
+            if setting is None or item["value"] not in setting["values"]:
+                raise ResolutionError(
+                    f"{label} refusal names {item['name']}={item['value']}, "
+                    f"which {GRAPHICS_PRODUCTS_FILE} does not list")
+        if not settings:
+            raise ResolutionError(f"{label} refusal settings are empty")
+        result["settings"] = settings
+    result["reason"] = _reason(raw["reason"], f"{label} refusal reason")
+    return result
+
+
+def refusal_matches(refusal: dict, family: str, product: str,
+                    settings: dict[str, str]) -> bool:
+    """Whether @refusal matches a pipe of @family and @product with
+    @settings: its family matches, its product matches if it names one,
+    and every setting it lists has the requested value. QEMU and the
+    launcher apply the same rule."""
+    if refusal["family"] != family:
+        return False
+    if "product" in refusal and refusal["product"] != product:
+        return False
+    return all(settings.get(item["name"]) == item["value"]
+               for item in refusal.get("settings", []))
+
+
+def _default(raw: Any, slot: dict, label: str) -> dict:
+    if not isinstance(raw, dict) or set(raw) - _DEFAULT_FIELDS:
+        raise ResolutionError(f"{label} has an invalid default {raw!r}")
+    offer = next((item for item in slot["families"]
+                  if item["family"] == raw.get("family")), None)
+    if offer is None:
+        raise ResolutionError(f"{label} default family {raw.get('family')!r} "
+                              "is not one the slot takes")
+    product = next((item for item in offer["products"]
+                    if item["product"] == raw.get("product")), None)
+    if product is None:
+        raise ResolutionError(f"{label} default product "
+                              f"{raw.get('product')!r} is not offered")
+    given = {item["name"]: item["value"]
+             for item in _properties(raw.get("settings", {}), label)}
+    unknown = set(given) - {item["name"] for item in product["settings"]}
+    if unknown:
+        raise ResolutionError(f"{label} default sets {sorted(unknown)}, "
+                              "which the product does not offer here")
+    resolved = {}
+    for setting in product["settings"]:
+        value = given.get(setting["name"], setting["default"])
+        if value not in [item["value"] for item in setting["values"]]:
+            raise ResolutionError(f"{label} default {setting['name']}={value} "
+                                  "is not offered")
+        resolved[setting["name"]] = value
+    for refusal in slot.get("refusals", []):
+        if refusal_matches(refusal, offer["family"], product["product"],
+                           resolved):
+            raise ResolutionError(f"{label} default is refused: "
+                                  f"{refusal['reason']}")
+    return {"family": offer["family"], "product": product["product"],
+            "settings": [{"name": name, "value": value}
+                         for name, value in resolved.items()]}
 
 
 def resolve_graphics(product_id: str, section: Any,
-                     configurations: dict[str, dict]) -> dict:
+                     families: dict[str, dict]) -> dict:
     """The topology's graphics record from a product's `graphics` section."""
     label = f"product '{product_id}' graphics"
-    if (not isinstance(section, dict) or
-            set(section) - {"max_heads", "positions"}):
-        raise ResolutionError(f"{label} must contain only max_heads and positions")
-    max_heads = section.get("max_heads")
-    if type(max_heads) is not int or max_heads < 0:
-        raise ResolutionError(f"{label} max_heads must be a count")
-    raw_positions = section.get("positions")
-    if not isinstance(raw_positions, list) or not raw_positions:
-        raise ResolutionError(f"{label} positions must be a non-empty list")
-    positions: list[dict] = []
-    for raw in raw_positions:
-        if not isinstance(raw, dict) or set(raw) - _POSITION_FIELDS:
-            raise ResolutionError(f"{label} has an invalid position {raw!r}")
+    if not isinstance(section, dict) or set(section) - _SECTION_FIELDS:
+        raise ResolutionError(f"{label} has unknown fields")
+    max_pipes = section.get("max_pipes")
+    if max_pipes != 1:
+        raise ResolutionError(f"{label} max_pipes must be 1 until more than "
+                              "one pipe is modelled")
+    raw_slots = section.get("slots")
+    if not isinstance(raw_slots, list) or not raw_slots:
+        raise ResolutionError(f"{label} slots must be a non-empty list")
+    slots: list[dict] = []
+    for raw in raw_slots:
+        if not isinstance(raw, dict) or set(raw) - _SLOT_FIELDS:
+            raise ResolutionError(f"{label} has an invalid slot {raw!r}")
         if ("name" in raw) == ("names" in raw):
-            raise ResolutionError(f"{label} position needs one of name or names")
+            raise ResolutionError(f"{label} slot needs one of name or names")
         names = [raw["name"]] if "name" in raw else raw["names"]
         if not isinstance(names, list) or not names:
             raise ResolutionError(f"{label} names must be a non-empty list")
-        built_in = raw.get("built_in", False)
-        modelled = raw.get("modelled", True)
-        if type(built_in) is not bool or type(modelled) is not bool:
-            raise ResolutionError(f"{label} built_in and modelled are booleans")
-        reason = raw.get("reason")
-        if modelled == (reason is not None):
-            raise ResolutionError(
-                f"{label} position needs a reason exactly when not modelled")
-        description = raw.get("description")
-        if not isinstance(description, str) or not description:
-            raise ResolutionError(f"{label} position needs a description")
-        change = raw.get("change",
-                         "at-creation" if built_in else "between-boots")
         for name in names:
-            if not isinstance(name, str) or not _POSITION_NAME.match(name):
-                raise ResolutionError(
-                    f"{label} position name {name!r} is not a QAPI name "
-                    "starting with a letter")
-            where = f"{label} position '{name}'"
-            options = [_option(item, configurations, change, where)
-                       for item in raw.get("options", [])]
-            ids = [option["configuration"]["id"] for option in options]
-            duplicate = next((ident for ident in ids if ids.count(ident) > 1),
-                             None)
-            if duplicate:
-                raise ResolutionError(f"{where} lists '{duplicate}' twice")
-            defaults = [option for option in options if option["default"]]
-            if modelled and len(defaults) != 1:
-                raise ResolutionError(f"{where} needs exactly one default")
-            if not modelled and any(option["selectable"] for option in options):
-                raise ResolutionError(f"{where} is not modelled but offers a head")
-            if built_in and modelled and defaults[0]["configuration"]["id"] == "none":
-                raise ResolutionError(f"{where} is built in but empty by default")
-            position: dict[str, Any] = {
-                "name": name, "description": description,
-                "built_in": built_in, "modelled": modelled,
-                "options": options,
+            if not isinstance(name, str) or not _SLOT_NAME.match(name):
+                raise ResolutionError(f"{label} slot name {name!r} is invalid")
+            where = f"{label} slot '{name}'"
+            slot: dict[str, Any] = {
+                "name": name,
+                "description": _string(raw.get("description"),
+                                       f"{where} description"),
+                "placement": _placement(raw.get("placement"), name, where),
+                "changeable": False,
+                "families": [],
             }
-            if reason is not None:
-                position["reason"] = reason
-            positions.append(position)
-    names = [position["name"] for position in positions]
+            raw_families = raw.get("families", [])
+            if not isinstance(raw_families, list):
+                raise ResolutionError(f"{where} families must be a list")
+            for item in raw_families:
+                if not isinstance(item, dict) or set(item) - _OFFER_FIELDS:
+                    raise ResolutionError(f"{where} has an invalid family")
+                family = families.get(item.get("family"))
+                if family is None:
+                    raise ResolutionError(f"{where} names unknown family "
+                                          f"{item.get('family')!r}")
+                if any(offer["family"] == family["family"]
+                       for offer in slot["families"]):
+                    raise ResolutionError(
+                        f"{where} lists family '{family['family']}' twice")
+                products = [_offered_product(product, family, where)
+                            for product in item.get("products", [])]
+                ids = [product["product"] for product in products]
+                if not ids or len(ids) != len(set(ids)):
+                    raise ResolutionError(f"{where} family "
+                                          f"'{family['family']}' needs "
+                                          "distinct products")
+                slot["families"].append({
+                    "family": family["family"], "device": family["device"],
+                    "name": family["name"], "products": products,
+                })
+            if not slot["families"]:
+                raise ResolutionError(f"{where} takes no family")
+            refusals = [_refusal(item, families, where)
+                        for item in raw.get("refusals", [])]
+            if refusals:
+                slot["refusals"] = refusals
+            if "default" in raw:
+                slot["default"] = _default(raw["default"], slot, where)
+            slots.append(slot)
+    names = [slot["name"] for slot in slots]
     duplicate = next((name for name in names if names.count(name) > 1), None)
     if duplicate:
-        raise ResolutionError(f"{label} lists position '{duplicate}' twice")
-    modelled = [position for position in positions if position["modelled"]]
-    heads = sum(1 for position in modelled
-                if next(option for option in position["options"]
-                        if option["default"])["configuration"]["id"] != "none")
-    if heads > max_heads:
-        raise ResolutionError(
-            f"{label} defaults to {heads} heads, more than max_heads")
-    headless = all(
-        any(option["configuration"]["id"] == "none" and option["default"]
-            for option in position["options"])
-        for position in modelled)
-    return {"headless": headless, "max_heads": max_heads,
-            "positions": positions}
+        raise ResolutionError(f"{label} lists slot '{duplicate}' twice")
+    defaults = [slot for slot in slots if "default" in slot]
+    if len(defaults) > 1:
+        raise ResolutionError(f"{label} has more than one default pipe")
+    headless = section.get("headless")
+    if type(headless) is not bool:
+        raise ResolutionError(f"{label} headless must be a boolean")
+    if not defaults and not headless:
+        raise ResolutionError(f"{label} has no default pipe, so it is "
+                              "headless")
+    if headless != ("headless_refused" not in section):
+        raise ResolutionError(f"{label} needs headless_refused exactly when "
+                              "headless is false")
+    record: dict[str, Any] = {"max_pipes": max_pipes, "headless": headless}
+    if not headless:
+        record["headless_refused"] = _reason(section["headless_refused"],
+                                             f"{label} headless_refused")
+    if "headless_note" in section:
+        if not headless:
+            raise ResolutionError(f"{label} headless_note is for a topology "
+                                  "that runs headless")
+        record["headless_note"] = _reason(section["headless_note"],
+                                          f"{label} headless_note")
+    record["slots"] = slots
+    return record
 
 
-def check_one_configuration_per_id(topologies: list[dict]) -> None:
-    """Refuse one id that names different configurations in two places."""
-    seen: dict[str, tuple[str, dict]] = {}
+def _offers(topologies: list[dict]):
+    """Every (family, product) offered anywhere, and the values each
+    product's settings take anywhere."""
+    products: set[tuple[str, str]] = set()
+    values: dict[tuple[str, str, str], set[str]] = {}
     for topology in topologies:
-        for position in (topology.get("graphics") or {}).get("positions", []):
-            for option in position["options"]:
-                configuration = option["configuration"]
-                ident = configuration["id"]
-                previous = seen.setdefault(ident, (topology["name"], configuration))
-                if previous[1] != configuration:
+        for slot in (topology.get("graphics") or {}).get("slots", []):
+            for offer in slot["families"]:
+                for product in offer["products"]:
+                    key = (offer["family"], product["product"])
+                    products.add(key)
+                    for setting in product["settings"]:
+                        values.setdefault((*key, setting["name"]), set()).update(
+                            item["value"] for item in setting["values"])
+    return products, values
+
+
+def check_catalogue(topologies: list[dict]) -> None:
+    """The rules that span topologies: a product or value one slot offers
+    and another slot of the same family does not is explained by a refusal
+    there, and no refusal names a product or value no slot offers, so
+    unmodelled hardware stays out of the catalogue."""
+    products, values = _offers(topologies)
+    for topology in topologies:
+        for slot in (topology.get("graphics") or {}).get("slots", []):
+            where = f"topology '{topology['name']}' slot '{slot['name']}'"
+            refusals = slot.get("refusals", [])
+            for refusal in refusals:
+                family = refusal["family"]
+                if ("product" in refusal and
+                        (family, refusal["product"]) not in products):
                     raise ValueError(
-                        f"graphics id '{ident}' names different configurations "
-                        f"in topologies '{previous[0]}' and '{topology['name']}'")
+                        f"{where} refuses {family} product "
+                        f"'{refusal['product']}', which no slot offers")
+                for item in refusal.get("settings", []):
+                    offered = any(
+                        item["value"] in found
+                        for (fam, prod, name), found in values.items()
+                        if fam == family and name == item["name"] and
+                        refusal.get("product", prod) == prod)
+                    if not offered:
+                        raise ValueError(
+                            f"{where} refuses {item['name']}={item['value']}, "
+                            "which no slot offers")
+            for offer in slot["families"]:
+                family = offer["family"]
+                here = {product["product"]: product
+                        for product in offer["products"]}
+                for fam, product in sorted(products):
+                    if fam != family or product in here:
+                        continue
+                    if not any("settings" not in refusal and
+                               refusal_matches(refusal, family, product, {})
+                               for refusal in refusals):
+                        raise ValueError(
+                            f"{where} takes {family} but neither offers nor "
+                            f"refuses product '{product}', which another "
+                            "slot offers")
+                for name, product in here.items():
+                    offered = {setting["name"]: {item["value"] for item in
+                                                 setting["values"]}
+                               for setting in product["settings"]}
+                    for (fam, prod, setting), found in sorted(values.items()):
+                        if fam != family or prod != name:
+                            continue
+                        for value in sorted(found - offered.get(setting,
+                                                                set())):
+                            if not any(
+                                    refusal["family"] == family and
+                                    refusal.get("product", name) == name and
+                                    refusal.get("settings") ==
+                                    [{"name": setting, "value": value}]
+                                    for refusal in refusals):
+                                raise ValueError(
+                                    f"{where} neither offers nor refuses "
+                                    f"{name} {setting}={value}, which another "
+                                    "slot offers")
+
+
+def attach_slot_requirements(topology: dict) -> None:
+    """Give each XIO slot the node count it exists from: a slot whose
+    Crossbow port belongs to a node board that the smaller node
+    populations do not fit is there only from that many nodes."""
+    graphics = topology.get("graphics")
+    if not graphics:
+        return
+    labels = [slot.get("label") for slot in topology.get("xio_slots", [])]
+    populations = topology.get("node_populations", [])
+    smallest = min((len(row["nodes"]) for row in populations), default=0)
+    for slot in graphics["slots"]:
+        placement = {item["name"]: item["value"] for item in slot["placement"]}
+        name = placement.get("slot")
+        if name is None or name not in labels:
+            continue
+        index = labels.index(name)
+        counts = [len(row["nodes"]) for row in populations
+                  if any(item["slot"] == index
+                         for item in row.get("xio_slots", []))]
+        if counts and min(counts) > smallest:
+            slot["requires"] = {"min_nodes": min(counts)}

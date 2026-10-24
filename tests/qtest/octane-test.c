@@ -101,7 +101,7 @@ static QTestState *octane_start_image_args(const char *image,
     g_autofree char *quoted = g_shell_quote(image);
 
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M octane -m 128M -cpu R10000 -bios %s -S %s",
+                       "-vga none -M octane -m 128M -cpu R10000 -bios %s -S %s",
                        quoted, extra);
 }
 
@@ -119,7 +119,8 @@ static QTestState *octane_start_serial(int *sock)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
     g_autofree char *args = g_strdup_printf(
-        MEMTX_TEST_DEVICE "-M octane -m 128M -cpu R10000 -bios %s -S", quoted);
+        MEMTX_TEST_DEVICE "-vga none -M octane -m 128M -cpu R10000 "
+        "-bios %s -S", quoted);
 
     return qtest_init_with_serial(args, sock);
 }
@@ -133,8 +134,8 @@ static QTestState *octane2_start_args(const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
 
-    return qtest_initf(MEMTX_TEST_DEVICE "-M octane2 -m 256M -cpu " OCTANE2_CPU
-                       " -bios %s -S %s", quoted, extra);
+    return qtest_initf(MEMTX_TEST_DEVICE "-vga none -M octane2 -m 256M "
+                       "-cpu " OCTANE2_CPU " -bios %s -S %s", quoted, extra);
 }
 
 static void octane_heart_identity_check(QTestState *qts, bool octane2)
@@ -1255,7 +1256,8 @@ static void test_octane2_serial(void)
     g_autofree char *quoted = g_shell_quote(flash_path);
     g_autofree char *args = g_strdup_printf(
         MEMTX_TEST_DEVICE
-        "-M octane2 -m 256M -cpu " OCTANE2_CPU " -bios %s -S", quoted);
+        "-vga none -M octane2 -m 256M -cpu " OCTANE2_CPU " -bios %s -S",
+        quoted);
     int sock;
     QTestState *qts = qtest_init_with_serial(args, &sock);
     const uint8_t sent = '2';
@@ -1789,7 +1791,7 @@ static QTestState *octane_start_flash(const char *path,
     g_autofree char *image = g_shell_quote(path);
 
     return qtest_initf(
-        MEMTX_TEST_DEVICE "-M octane,flash-select=%s,flash-strap=%s,"
+        MEMTX_TEST_DEVICE "-vga none -M octane,flash-select=%s,flash-strap=%s,"
         "node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw",
         select ? "on" : "off", strap ? "on" : "off", image);
@@ -1921,7 +1923,7 @@ static void test_flash_execute(void)
     }
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
+        "-vga none -M octane,node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S", path);
     qtest_writel(qts, RAM + 0x4008, 0x1000ffff);
@@ -2020,7 +2022,7 @@ static void test_flash_cpu_program_benchmark(void)
     }
     g_assert_true(g_file_set_contents(path, image, MiB, NULL));
     qts = qtest_initf(MEMTX_TEST_DEVICE
-        "-M octane,node0-flash=flash0 -m 128M -cpu R10000 "
+        "-vga none -M octane,node0-flash=flash0 -m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S -icount shift=3,align=off,sleep=off "
         "-rtc clock=host", quoted);
@@ -2071,7 +2073,8 @@ static QTestState *octane_start_bound_flash(const char *path, const char *extra)
 {
     g_autofree char *node = octane_blockdev("flash", path);
 
-    return qtest_initf(MEMTX_TEST_DEVICE "-M octane,node0-flash=flash "
+    return qtest_initf(MEMTX_TEST_DEVICE
+                       "-vga none -M octane,node0-flash=flash "
                        "-m 128M -cpu R10000 -blockdev %s %s", node, extra);
 }
 
@@ -2165,7 +2168,7 @@ static void test_flash_backend_error(void)
             g_getenv("OCTANE_WORKING_IMAGE"));
         g_autofree char *quoted = g_shell_quote(drive);
         QTestState *qts = qtest_initf(
-            MEMTX_TEST_DEVICE "-M octane,node0-flash=flash0 "
+            MEMTX_TEST_DEVICE "-vga none -M octane,node0-flash=flash0 "
             "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,format=raw",
             quoted);
         g_autoptr(QDict) status = NULL;
@@ -3847,7 +3850,8 @@ static QTestState *octane_start_node_flash(const char *path)
 {
     g_autofree char *node = octane_blockdev("flash", path);
 
-    return qtest_initf(MEMTX_TEST_DEVICE "-M octane,node0-flash=flash "
+    return qtest_initf(MEMTX_TEST_DEVICE
+                       "-vga none -M octane,node0-flash=flash "
                        "-m 128M -cpu R10000 -blockdev %s", node);
 }
 
@@ -4319,7 +4323,7 @@ static void test_uncached_attribute_zero(void)
                                       sizeof(image), &error));
     g_assert_no_error(error);
     qts = qtest_initf(MEMTX_TEST_DEVICE
-                       "-M octane -m 128M -cpu R10000 -bios %s "
+                       "-vga none -M octane -m 128M -cpu R10000 -bios %s "
                       "-accel tcg,thread=single -S", path);
     g_assert_cmpint(unlink(path), ==, 0);
 

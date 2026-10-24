@@ -47,7 +47,8 @@
 #define RAD4                "-device psitech-rad4,addr=3 "
 /* An executing processor, as tests/qtest/sn0-pi-gfx-test.c runs one. */
 #define RUNNING \
-    "-M origin200 -m 64M -smp 2 -cpu R10000 -accel tcg,thread=multi " \
+    "-M origin200,x-uncatalogued-graphics=on -m 64M -smp 2 -cpu R10000 " \
+    "-accel tcg,thread=multi " \
     "-no-reboot -no-shutdown -S " RAD4
 
 /* Big windows and their table, as tests/qtest/sn0-widget-decode-test.c. */
@@ -96,7 +97,8 @@ static void configure_rad4(QTestState *qts, uint32_t bar2)
  */
 static void test_bridge_follows_a_moved_bar(void)
 {
-    QTestState *qts = qtest_init("-M origin200 " RAD4);
+    QTestState *qts = qtest_init("-M origin200,x-uncatalogued-graphics=on "
+                                 RAD4);
 
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), INT_MASTER_TIMEOUT);
     configure_rad4(qts, RAD4_BAR2_PCI);

@@ -31,16 +31,24 @@ static char *flash_path;
 static uint64_t short_base(unsigned widget);
 static uint64_t long_base(unsigned widget);
 
+/*
+ * Start an Octane or Octane2 with @graphics, the arguments that choose
+ * its pipe: -vga none or -nodefaults for none, or a -device in one of its
+ * graphics ports.
+ */
 static QTestState *start(bool octane2, const char *graphics, const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
 
     return qtest_initf(MEMTX_TEST_DEVICE
-                       "-M %s%s -m %uM -cpu %s -bios %s -S %s",
-                      octane2 ? "octane2" : "octane", graphics,
+                       "-M %s -m %uM -cpu %s -bios %s -S %s %s",
+                      octane2 ? "octane2" : "octane",
                       octane2 ? 256 : 128,
-                      octane2 ? OCTANE2_CPU : "R10000", quoted, extra);
+                      octane2 ? OCTANE2_CPU : "R10000", quoted, graphics,
+                      extra);
 }
+
+#define SI_AT_11 "-device sgi-mgras,slot=widget-11,product=si"
 
 static uint64_t property(QTestState *qts, const char *path, const char *name)
 {
@@ -104,7 +112,7 @@ static void assert_core(QTestState *qts, bool octane2)
 static void test_absent(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    const char *selections[] = { "", ",graphics-board=none" };
+    const char *selections[] = { "-vga none", "-nodefaults" };
     uint32_t value;
 
     for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
@@ -124,10 +132,11 @@ static void test_absent(gconstpointer data)
 static void test_population(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    QTestState *qts = start(octane2, ",graphics-board=si", "");
+    QTestState *qts = start(octane2, SI_AT_11, "");
 
+    /* The board attaches to the realized Crossbow, live. */
     g_assert_cmphex(property(qts, "/machine/crossbow", "links-present"),
-                    ==, SI_LINKS);
+                    ==, CORE_LINKS);
     g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                     ==, SI_LINKS);
     assert_identity(qts);
@@ -138,7 +147,7 @@ static void test_population(gconstpointer data)
 static void test_shared_controls(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    QTestState *qts = start(octane2, ",graphics-board=si", "");
+    QTestState *qts = start(octane2, SI_AT_11, "");
     uint8_t bytes[4];
     const uint8_t expected[] = { 0x39, 0xa5, 0x62, 0xd7 };
     uint32_t heart = qtest_readl(qts, HEART_WIDGET + CONTROL);
@@ -162,7 +171,7 @@ static void test_shared_controls(gconstpointer data)
 static void test_widths_and_holes(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    QTestState *qts = start(octane2, ",graphics-board=si", "");
+    QTestState *qts = start(octane2, SI_AT_11, "");
     const uint64_t holes[] = {
         SI_SHORT + 0x200000, SI_LONG + 0x200000,
         SI_LONG + 0x1000000 + CONTROL, SI_LONG + (1ULL << 47) + CONTROL,
@@ -191,7 +200,7 @@ static void test_widths_and_holes(gconstpointer data)
 static void test_liveness(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    QTestState *qts = start(octane2, ",graphics-board=si", "");
+    QTestState *qts = start(octane2, SI_AT_11, "");
     uint32_t value;
 
     qtest_writel(qts, SI_SHORT + CONTROL, 0x5d3a81c6);
@@ -242,6 +251,10 @@ static void assert_mgras_unreachable_at(QTestState *qts, unsigned widget)
     g_assert_cmpuint(memtx_readl(qts, long_base(widget) + 4, &value), !=, 0);
 }
 
+/*
+ * The Crossbow's configured masks name HEART and Bridge alone, since a
+ * graphics board attaches to it live; @links are the links alive.
+ */
 static void assert_link_masks(QTestState *qts, unsigned links)
 {
     const char *names[] = {
@@ -250,8 +263,10 @@ static void assert_link_masks(QTestState *qts, unsigned links)
 
     for (unsigned i = 0; i < G_N_ELEMENTS(names); i++) {
         g_assert_cmphex(property(qts, "/machine/crossbow", names[i]),
-                        ==, links);
+                        ==, CORE_LINKS);
     }
+    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                    ==, links);
 }
 
 static void test_link_reset_recovery(gconstpointer data)
@@ -260,7 +275,7 @@ static void test_link_reset_recovery(gconstpointer data)
 
     for (unsigned widget = 9; widget <= 12; widget++) {
         g_autofree char *selection = g_strdup_printf(
-            ",graphics-board=si,graphics-widget=%u", widget);
+            "-device sgi-mgras,slot=widget-%u,product=si", widget);
         unsigned links = CORE_LINKS | (1u << widget);
         QTestState *qts = start(octane2, selection, "");
 
@@ -307,7 +322,7 @@ static void test_link_reset_recovery(gconstpointer data)
 
 static void test_link_reset_absent(gconstpointer data)
 {
-    const char *selections[] = { "", ",graphics-board=none" };
+    const char *selections[] = { "-vga none", "-nodefaults" };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
         QTestState *qts = start(GPOINTER_TO_INT(data), selections[i], "");
@@ -343,7 +358,7 @@ static void assert_bridge(QTestState *qts, uint32_t expected)
 static void test_core_link_reset_recovery(gconstpointer data)
 {
     const char *selections[] = {
-        "", ",graphics-board=none", ",graphics-board=si",
+        "-vga none", "-nodefaults", SI_AT_11,
     };
     const unsigned widgets[] = { 8, 15 };
 
@@ -442,7 +457,7 @@ static void assert_reset(QTestState *qts)
 
 static void test_reset(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+    QTestState *qts = start(GPOINTER_TO_INT(data), SI_AT_11, "");
 
     qtest_writel(qts, SI_SHORT + CONTROL, 0xc1d28354);
     qtest_writel(qts, SI_LONG + 0x040000, 0x75e68192);
@@ -452,7 +467,8 @@ static void test_reset(gconstpointer data)
     assert_reset(qts);
     {
         g_autoptr(QDict) reply = qtest_qmp(qts,
-            "{'execute':'qom-get','arguments':{'path':'/machine/module0/mgras',"
+            "{'execute':'qom-get','arguments':{"
+            "'path':'/machine/module0/widget-11',"
             "'property':'x-test-first-ack'}}");
 
         g_assert_false(qdict_get_bool(reply, "return"));
@@ -478,17 +494,27 @@ static void descriptor(QTestState *qts, uint64_t lo, uint8_t reg,
                  ((uint64_t)(0x00080004 | (reg << 8)) << 32) | value);
 }
 
-static uint32_t pixel(QTestState *qts, unsigned x, unsigned y)
+/* The board's QOM path: it is named by the port its short window @sh is. */
+static char *board_path(uint64_t sh)
 {
-    set_property(qts, "/machine/module0/mgras", "x-test-pixel-x", x);
-    set_property(qts, "/machine/module0/mgras", "x-test-pixel-y", y);
-    return property(qts, "/machine/module0/mgras", "x-test-pixel");
+    return g_strdup_printf("/machine/module0/widget-%u",
+                           (unsigned)((sh - XBOW) >> 24));
+}
+
+static uint32_t pixel(QTestState *qts, uint64_t sh, unsigned x, unsigned y)
+{
+    g_autofree char *path = board_path(sh);
+
+    set_property(qts, path, "x-test-pixel-x", x);
+    set_property(qts, path, "x-test-pixel-y", y);
+    return property(qts, path, "x-test-pixel");
 }
 
 static void local_dma(QTestState *qts, uint64_t sh, uint64_t lo)
 {
     const uint8_t source[] = { 0, 0x11, 0x22, 0x33, 0, 0x44, 0x55, 0x66 };
     uint8_t returned[sizeof(source)];
+    g_autofree char *path = NULL;
 
     /*
      * Split the two pixels across two ordinary HEART SDRAM pages. The list
@@ -517,23 +543,24 @@ static void local_dma(QTestState *qts, uint64_t sh, uint64_t lo)
     descriptor(qts, lo, 7, 1);
     descriptor(qts, lo, 8, 8);
     descriptor(qts, lo, 11, 0xb1);
-    g_assert_cmphex(pixel(qts, 50, 50), ==, 0x00332211);
-    g_assert_cmphex(pixel(qts, 51, 50), ==, 0x00665544);
-    g_assert_cmphex(pixel(qts, 49, 50), ==, 0);
-    g_assert_cmphex(pixel(qts, 52, 50), ==, 0);
+    g_assert_cmphex(pixel(qts, sh, 50, 50), ==, 0x00332211);
+    g_assert_cmphex(pixel(qts, sh, 51, 50), ==, 0x00665544);
+    g_assert_cmphex(pixel(qts, sh, 49, 50), ==, 0);
+    g_assert_cmphex(pixel(qts, sh, 52, 50), ==, 0);
     qtest_memset(qts, 0x20010ffc, 0xa5, sizeof(source));
     qtest_writeq(qts, lo + COMMAND, RSS(0x46, (50u << 16) | 973));
     qtest_writeq(qts, sh + COMMAND, RSS_EXEC(0x47, (51u << 16) | 973));
     descriptor(qts, lo, 11, 0xb9);
     qtest_memread(qts, 0x20010ffc, returned, sizeof(returned));
     g_assert_cmpmem(returned, sizeof(returned), source, sizeof(source));
-    g_assert_cmphex(property(qts, "/machine/module0/mgras", "x-test-error"),
+    path = board_path(sh);
+    g_assert_cmphex(property(qts, path, "x-test-error"),
                     ==, 0);
 }
 
 static void test_local_dma(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+    QTestState *qts = start(GPOINTER_TO_INT(data), SI_AT_11, "");
 
     local_dma(qts, SI_SHORT, SI_LONG);
     qtest_quit(qts);
@@ -581,61 +608,73 @@ static void interrupt_transport(QTestState *qts, uint64_t sh, uint64_t lo)
 
 static void test_interrupt_transport(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+    QTestState *qts = start(GPOINTER_TO_INT(data), SI_AT_11, "");
 
     interrupt_transport(qts, SI_SHORT, SI_LONG);
     qtest_quit(qts);
 }
 
-static void test_rejected_selection(gconstpointer data)
+/*
+ * A pipe this machine's catalogue record does not offer is refused with
+ * the record's reason: VPro on an Octane, whose Crossbow and supply the
+ * upgrade guide rules out, and VPro anywhere but the Octane2's port 11.
+ */
+static void test_rejected_family(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", octane2 ? "octane2,graphics-board=v12" :
-        "octane,graphics-board=v12", "-display", "none", "-qmp", "stdio", NULL,
+        qtest_qemu_binary(NULL), "-M", octane2 ? "octane2" : "octane",
+        "-device", octane2 ? "sgi-odyssey,slot=widget-9" :
+        "sgi-odyssey,slot=widget-11", "-bios", flash_path, "-display", "none",
+        "-qmp", "stdio", NULL,
     };
 
-    assert_launch_rejected(args, "graphics must be none, vpro or an MGRAS board");
+    assert_launch_rejected(args, octane2 ?
+        "graphics slot widget-9 of topology 'octane2' takes sgi-mgras, not "
+        "sgi-odyssey" :
+        "graphics slot widget-11 of topology 'octane' takes sgi-mgras, not "
+        "sgi-odyssey: VPro V12 needs Crossbow 1.4, the ER power supply "
+        "060-0035-00x and PROM 4.5 (007-4210-003), and this Octane presents "
+        "Crossbow revision code 4 and the SR supply");
 }
 
+/* Only the four graphics ports are slots; HEART's and Bridge's are not. */
 static void test_rejected_widget(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
     const unsigned widgets[] = { 8, 13, 15 };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(widgets); i++) {
-        g_autofree char *machine = g_strdup_printf(
-            "%s,graphics-board=si,graphics-widget=%u",
-            octane2 ? "octane2" : "octane", widgets[i]);
+        g_autofree char *device = g_strdup_printf(
+            "sgi-mgras,slot=widget-%u,product=si", widgets[i]);
+        g_autofree char *message = g_strdup_printf(
+            "has no graphics slot widget-%u; its graphics slots are "
+            "widget-11 (slot=widget-11), widget-9 (slot=widget-9), "
+            "widget-10 (slot=widget-10), widget-12 (slot=widget-12)",
+            widgets[i]);
         const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", machine, "-display", "none",
+            qtest_qemu_binary(NULL), "-M", octane2 ? "octane2" : "octane",
+            "-device", device, "-bios", flash_path, "-display", "none",
             "-qmp", "stdio", NULL,
         };
 
-        assert_launch_rejected(args, "graphics widget must be 9 to 12");
+        assert_launch_rejected(args, message);
     }
 }
 
-static void test_rejected_widget_without_board(gconstpointer data)
+/* -vga takes none and nothing else on an SGI machine. */
+static void test_rejected_vga(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
-    const char *selections[] = {
-        ",graphics-widget=11",
-        ",graphics-board=none,graphics-widget=9",
-        ",graphics-board=vpro,graphics-widget=11",
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", octane2 ? "octane2" : "octane",
+        "-vga", "std", "-bios", flash_path, "-display", "none", "-qmp",
+        "stdio", NULL,
     };
 
-    for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
-        g_autofree char *machine = g_strdup_printf("%s%s",
-            octane2 ? "octane2" : "octane", selections[i]);
-        const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", machine, "-display", "none",
-            "-qmp", "stdio", NULL,
-        };
-
-        assert_launch_rejected(args,
-                               "graphics-widget requires an MGRAS graphics-board");
-    }
+    assert_launch_rejected(args, "-vga std is not a display an SGI machine "
+                           "takes; use -vga none for no graphics, or a "
+                           "graphics -device such as sgi-mgras");
 }
 
 static uint64_t short_base(unsigned widget)
@@ -702,21 +741,20 @@ static void assert_record_name(QTestState *qts, uint64_t base,
 typedef struct OctaneVariant {
     const char *board;
     unsigned widget;
-    bool implemented;
     uint8_t version1;
     const char *record;
 } OctaneVariant;
 
 /* Each variant at a port published inventories or the stock IDE use. */
 static const OctaneVariant variants[] = {
-    { "si", 11, true, 0x45, "GM10" },
-    { "si-t", 10, false, 0x45, "GM10" },
-    { "ssi", 9, true, 0x46, "GM20" },
-    { "mxi", 12, false, 0x66, "GM20" },
-    { "esi", 10, true, 0x51, "MOT10" },
-    { "esi-t", 11, false, 0x51, "MOT10" },
-    { "essi", 12, true, 0x72, "MOT20" },
-    { "emxi", 12, false, 0x72, "MOT20" },
+    { "si", 11, 0x45, "GM10" },
+    { "si-t", 10, 0x45, "GM10" },
+    { "ssi", 9, 0x46, "GM20" },
+    { "mxi", 12, 0x66, "GM20" },
+    { "esi", 10, 0x51, "MOT10" },
+    { "esi-t", 11, 0x51, "MOT10" },
+    { "essi", 12, 0x72, "MOT20" },
+    { "emxi", 12, 0x72, "MOT20" },
 };
 
 /*
@@ -730,14 +768,14 @@ static void test_variants(gconstpointer data)
     for (unsigned i = 0; i < G_N_ELEMENTS(variants); i++) {
         const OctaneVariant *v = &variants[i];
         g_autofree char *selection = g_strdup_printf(
-            ",graphics-board=%s,graphics-widget=%u", v->board, v->widget);
-        QTestState *qts = start(octane2, selection, v->implemented ? "" :
-                                "-global sgi-mgras.x-unimplemented-board=on");
+            "-device sgi-mgras,slot=widget-%u,product=%s", v->widget,
+            v->board);
+        QTestState *qts = start(octane2, selection, "");
         uint64_t sh = short_base(v->widget);
         uint32_t word;
 
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-present"),
-                        ==, CORE_LINKS | (1u << v->widget));
+                        ==, CORE_LINKS);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, CORE_LINKS | (1u << v->widget));
         g_assert_cmpuint(memtx_readl(qts, sh + 4, &word), ==, 0);
@@ -770,9 +808,9 @@ static void test_family_composition(gconstpointer data)
     for (unsigned i = 0; i < G_N_ELEMENTS(variants); i++) {
         const OctaneVariant *v = &variants[i];
         g_autofree char *selection = g_strdup_printf(
-            ",graphics-board=%s,graphics-widget=%u", v->board, v->widget);
-        QTestState *qts = start(octane2, selection, v->implemented ? "" :
-                                "-global sgi-mgras.x-unimplemented-board=on");
+            "-device sgi-mgras,slot=widget-%u,product=%s", v->widget,
+            v->board);
+        QTestState *qts = start(octane2, selection, "");
         uint64_t sh = short_base(v->widget);
         uint64_t lo = long_base(v->widget);
         uint32_t heart = qtest_readl(qts, HEART_WIDGET + CONTROL);
@@ -796,12 +834,13 @@ static void test_family_composition(gconstpointer data)
 static void test_widget_transport(gconstpointer data)
 {
     QTestState *qts = start(GPOINTER_TO_INT(data),
-                            ",graphics-board=essi,graphics-widget=12", "");
+                            "-device sgi-mgras,slot=widget-12,"
+                            "product=essi", "");
 
     local_dma(qts, short_base(12), long_base(12));
     qtest_quit(qts);
     qts = start(GPOINTER_TO_INT(data),
-                ",graphics-board=essi,graphics-widget=12", "");
+                "-device sgi-mgras,slot=widget-12,product=essi", "");
     interrupt_transport(qts, short_base(12), long_base(12));
     qtest_quit(qts);
 }
@@ -823,9 +862,9 @@ int main(int argc, char **argv)
         { "reset", test_reset },
         { "local-dma", test_local_dma },
         { "interrupt-transport", test_interrupt_transport },
-        { "rejected-selection", test_rejected_selection },
+        { "rejected-family", test_rejected_family },
         { "rejected-widget", test_rejected_widget },
-        { "rejected-widget-without-board", test_rejected_widget_without_board },
+        { "rejected-vga", test_rejected_vga },
         { "variants", test_variants },
         { "family-composition", test_family_composition },
         { "widget-transport", test_widget_transport },

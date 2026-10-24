@@ -10,7 +10,6 @@
 
 #include "qapi/qapi-types-sgi-machines.h"
 #include "qapi/error.h"
-#include "qobject/qdict.h"
 
 /*
  * The embedded catalogue, parsed on first use and kept for the process
@@ -142,30 +141,5 @@ const SGIModelNodePopulation *sgi_model_default_population(
 const SGIModelTopology *sgi_model_population_view(
     const SGIModelTopology *t, const SGIModelNodePopulation *row,
     Error **errp);
-
-/*
- * One graphics position of a topology and the option it holds: the one
- * heads.<position>= names, or the position's default.
- */
-typedef struct SGIHeadChoice {
-    const SGIModelGraphicsPosition *position;
-    const SGIModelGraphicsOption *option;
-} SGIHeadChoice;
-
-/*
- * Resolve @heads, the heads.<position>=<id> dictionary a machine stored
- * (NULL when the command line gave none), against topology @t: one
- * choice per modelled position, in @t's order, through @count. Refuses
- * an unknown position, an unknown or refused id, a position QEMU does not
- * model and more heads than @t builds, each prefixed with @machine, the
- * -M name. Returns NULL with @errp set on refusal; g_free() the result.
- */
-SGIHeadChoice *sgi_model_resolve_heads(const char *machine,
-                                       const SGIModelTopology *t,
-                                       const QDict *heads, size_t *count,
-                                       Error **errp);
-
-/* Whether @choice holds a head rather than an empty position. */
-bool sgi_model_head_fitted(const SGIHeadChoice *choice);
 
 #endif /* HW_MIPS_SGI_SGI_MACHINES_H */

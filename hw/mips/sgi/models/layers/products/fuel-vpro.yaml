@@ -20,18 +20,25 @@ layer:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0]
   memory_kits_per_node: [fuel-512-test-map]
-  # Graphics heads heads.<position>=<id> selects; the ids are
-  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
-  # Graphics heads).
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes).
   graphics:
-    max_heads: 1
-    positions:
+    max_pipes: 1
+    headless: false
+    headless_refused: "this topology is the Fuel with its VPro board, so use fuel for the serial configuration"
+    slots:
       - name: widget-13
         description: "the graphics connector at XBridge widget 13"
-        built_in: true
-        options:
-          - {id: v12, default: true, fidelity: implemented, pairing: established, assembly: "030-1726"}
-          - {id: v10, refused: "the v10 profile presents identity only"}
+        placement: {slot: widget-13}
+        default:
+          family: odyssey
+          product: v12
+        families:
+          - family: odyssey
+            products:
+              - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1726"}
   data:
     machine:
       name: Fuel with VPro

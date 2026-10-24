@@ -27,9 +27,10 @@ slow_qtests = {
   # psitech-rad4-test's 92 cases, with the RAD4 DMA engine's, took 94.5s
   # under debug_tcg at load 145 on 32 threads, 2026-10-05; three times that.
   'psitech-rad4-test': 300,
-  # sgi-heads-test starts a fresh QEMU for nearly every case; 20 subtests took
-  # 65-70s at load 100-150 on 32 threads, 2026-10-23, and overran the default.
-  'sgi-heads-test': 180,
+  # sgi-graphics-pipes-test starts a fresh QEMU for nearly every case, as
+  # sgi-heads-test before it did, whose 20 subtests took 65-70s at load
+  # 100-150 on 32 threads, 2026-10-23, and overran the default.
+  'sgi-graphics-pipes-test': 300,
   # Alone it took 55.6 s at load average 118, 2026-10-24 (11 s on a quiet
   # host), and overran the default in full runs; three times the loaded
   # figure, rounded up.
@@ -587,7 +588,7 @@ sgi_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sgi-heads-test'] : []) + \
+    ['sgi-graphics-pipes-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

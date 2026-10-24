@@ -212,22 +212,30 @@
         },
         "graphics": {
           "type": "object",
-          "description": "The graphics heads heads.<position>=<id> may select on this topology, resolved from the product's graphics section and hw/mips/sgi/models/graphics-heads.yaml.",
+          "description": "The graphics pipes this topology takes: its slots, the families, products and setting values each offers, its default pipe and the reasons for what it refuses, resolved from the product's graphics section and hw/mips/sgi/models/graphics-products.yaml. scripts/sgi_model/model_graphics.py checks the rest of the shape.",
           "required": [
+            "max_pipes",
             "headless",
-            "max_heads",
-            "positions"
+            "slots"
           ],
           "additionalProperties": false,
           "properties": {
+            "max_pipes": {
+              "type": "integer",
+              "minimum": 1
+            },
             "headless": {
               "type": "boolean"
             },
-            "max_heads": {
-              "type": "integer",
-              "minimum": 0
+            "headless_refused": {
+              "type": "string",
+              "minLength": 1
             },
-            "positions": {
+            "headless_note": {
+              "type": "string",
+              "minLength": 1
+            },
+            "slots": {
               "type": "array",
               "minItems": 1,
               "items": {
@@ -235,210 +243,10 @@
                 "required": [
                   "name",
                   "description",
-                  "built_in",
-                  "modelled",
-                  "options"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "name": {
-                    "type": "string",
-                    "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
-                  },
-                  "description": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "built_in": {
-                    "type": "boolean"
-                  },
-                  "modelled": {
-                    "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "options": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "required": [
-                        "configuration",
-                        "default",
-                        "selectable",
-                        "change"
-                      ],
-                      "additionalProperties": false,
-                      "properties": {
-                        "configuration": {
-                          "type": "object",
-                          "required": [
-                            "id",
-                            "family",
-                            "family_name",
-                            "product",
-                            "configuration",
-                            "parameters"
-                          ],
-                          "additionalProperties": false,
-                          "properties": {
-                            "id": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9][a-z0-9-]*$"
-                            },
-                            "family": {
-                              "enum": [
-                                "none",
-                                "mgras",
-                                "odyssey",
-                                "kona",
-                                "psitech"
-                              ]
-                            },
-                            "family_name": {
-                              "type": "string"
-                            },
-                            "product": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "configuration": {
-                              "type": "string"
-                            },
-                            "parameters": {
-                              "type": "object",
-                              "additionalProperties": false,
-                              "properties": {
-                                "geometry_engines": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                },
-                                "raster_engines": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                },
-                                "texture_mib": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                },
-                                "board_memory_mib": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                },
-                                "geometry_board": {
-                                  "type": "string"
-                                },
-                                "raster_manager": {
-                                  "type": "string"
-                                },
-                                "raster_manager_count": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                },
-                                "display_generator": {
-                                  "type": "string"
-                                },
-                                "display_channels": {
-                                  "type": "integer",
-                                  "minimum": 1
-                                }
-                              }
-                            },
-                            "options": {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        },
-                        "default": {
-                          "type": "boolean"
-                        },
-                        "selectable": {
-                          "type": "boolean"
-                        },
-                        "refused": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "fidelity": {
-                          "enum": [
-                            "validated",
-                            "implemented",
-                            "approximated"
-                          ]
-                        },
-                        "limitations": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "pairing": {
-                          "enum": [
-                            "established",
-                            "inferred"
-                          ]
-                        },
-                        "assembly": {
-                          "type": "string"
-                        },
-                        "change": {
-                          "enum": [
-                            "at-creation",
-                            "between-boots"
-                          ]
-                        },
-                        "accepted_memory_mib": {
-                          "type": "array",
-                          "items": {
-                            "type": "integer",
-                            "minimum": 1
-                          }
-                        },
-                        "processors": {
-                          "type": "array",
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "requires": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "required": [
-                              "kind",
-                              "value",
-                              "evidence"
-                            ],
-                            "additionalProperties": false,
-                            "properties": {
-                              "kind": {
-                                "enum": [
-                                  "crossbow-revision",
-                                  "power-supply",
-                                  "prom-revision",
-                                  "guest-release"
-                                ]
-                              },
-                              "value": {
-                                "type": "string"
-                              },
-                              "evidence": {
-                                "type": "string"
-                              },
-                              "met": {
-                                "type": "boolean"
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
+                  "placement",
+                  "changeable",
+                  "families"
+                ]
               }
             }
           }

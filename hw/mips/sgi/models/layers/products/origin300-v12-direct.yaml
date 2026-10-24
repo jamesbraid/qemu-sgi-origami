@@ -20,21 +20,28 @@ layer:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
   memory_kits_per_node: [kit-512-at-banks-2-3]
-  # Graphics heads heads.<position>=<id> selects; the ids are
-  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
-  # Graphics heads).
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes).
   graphics:
-    max_heads: 1
-    positions:
+    max_pipes: 1
+    headless: false
+    headless_refused: "this topology exists to fit its V12, so use origin300 for no graphics"
+    slots:
       - name: widget-11
-        description: "the XIO cable port, widget 11"
-        built_in: true
-        options:
-          - id: v12
-            default: true
-            fidelity: approximated
-            limitations:
-              - "not an SGI configuration: SGI documented no V12 wired directly to an Origin 300"
+        description: "the XIO cable port, widget 11, wired straight to a V12"
+        placement: {slot: widget-11}
+        default:
+          family: odyssey
+          product: v12
+        families:
+          - family: odyssey
+            products:
+              - product: v12
+                fidelity: approximated
+                limitations:
+                  - "not an SGI configuration: SGI documented the V-brick for Onyx 3000, not the Origin 300"
   data:
     machine:
       name: Origin 300 with a direct V12 widget

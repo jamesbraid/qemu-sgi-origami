@@ -86,7 +86,7 @@ BOARDS = {
 
 def device_args(board):
     """The -device argument that fits BOARD into IO3."""
-    spec = ','.join(('sgi-mgras', 'slot=io3', f'board={board.option}',
+    spec = ','.join(('sgi-mgras', 'slot=io3', f'product={board.option}',
                      *board.properties))
     return ('-device', spec)
 

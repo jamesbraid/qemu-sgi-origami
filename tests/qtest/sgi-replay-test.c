@@ -83,7 +83,7 @@ static const ReplayHead replay_heads[] = {
     },
     {
         .codename = "sgi-kona",
-        .machine = "-M origin2000 -smp 8 -m 256M "
+        .machine = "-M origin2000,x-uncatalogued-graphics=on -smp 8 -m 256M "
                    "-device sgi-kona,id=kona0,slot=io4",
         .mmio_base = SPACE_IO + (11ULL << 24),
         .mmio_size = 16 * MiB,
@@ -114,13 +114,11 @@ static const ReplayHead replay_heads[] = {
     {
         /*
          * The same machine with the SI board's textured sibling, SI+T, for
-         * captures of the texture path. The model presents SI+T only on
-         * request, since it implements part of the texture engine.
+         * captures of the texture path.
          */
         .codename = "sgi-mgras-si-t",
         .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
-                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=si-t,"
-                   "x-unimplemented-board=on",
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,product=si-t",
         .mmio_base = SPACE_IO + (0xfULL << 24),
         .mmio_size = 2 * MiB,
         .qom_path = "/machine/module0/io3",
@@ -138,7 +136,7 @@ static const ReplayHead replay_heads[] = {
          */
         .codename = "sgi-mgras-ssi",
         .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
-                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=ssi",
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,product=ssi",
         .mmio_base = SPACE_IO + (0xfULL << 24),
         .mmio_size = 2 * MiB,
         .qom_path = "/machine/module0/io3",

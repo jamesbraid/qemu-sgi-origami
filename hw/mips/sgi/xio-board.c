@@ -264,7 +264,9 @@ static bool sgi_xio_board_place_by_name(SGIXioBoardState *board,
     if (!DEVICE(board)->id) {
         DEVICE(board)->id = g_steal_pointer(&name);
     }
-    sgi_xio_board_distinct_serials(board, place.position);
+    if (!place.own_identity) {
+        sgi_xio_board_distinct_serials(board, place.position);
+    }
     return sgi_xio_link_connect(link, errp);
 }
 

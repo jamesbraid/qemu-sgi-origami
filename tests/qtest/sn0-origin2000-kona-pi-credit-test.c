@@ -51,7 +51,8 @@
 #define ENTRY               0x800
 
 #define MACHINE_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M -cpu R10000 " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on " \
+    "-smp 1 -m 64M -cpu R10000 " \
     "-accel tcg,thread=multi -no-reboot -no-shutdown -S " \
     "-device sgi-kona,id=kona0,slot=io4,fabric-hub-widget=9 "
 

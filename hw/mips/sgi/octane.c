@@ -45,19 +45,20 @@
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
-#include "qobject/qdict.h"
+#include "hw/mips/sgi/sgi-graphics.h"
+#include "hw/mips/sgi/xio-board.h"
+#include "hw/core/hotplug.h"
 #include "hw/mips/sgi/sgi-storage.h"
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
 #define OCTANE_SHORT_SPAN (16 * MiB)
 /*
- * The four Crossbow ports the Octane gives graphics and expansion boards.
- * Published inventories show IMPACT boards at 10, 11 and 12, and the
- * stock IDE probes 9 to 12. Widget 11 stays the default.
+ * The four Crossbow ports the Octane gives graphics and expansion boards,
+ * the catalogue's slots widget-9 to widget-12. Published inventories show
+ * IMPACT boards at 10, 11 and 12, and the stock IDE probes 9 to 12.
  */
 #define OCTANE_GRAPHICS_WIDGET_FIRST 9
-#define OCTANE_GRAPHICS_WIDGET_LAST 12
-#define OCTANE_GRAPHICS_WIDGET 11
+#define OCTANE_GRAPHICS_WIDGETS 4
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SECTOR (64 * KiB)
@@ -82,15 +83,24 @@ typedef struct OctaneMachineState {
     char *topology_name;
     /* nodes=, or zero for the topology's largest row. */
     uint32_t nodes_requested;
-    char *graphics_board;
-    bool graphics_board_set;
-    uint8_t graphics_widget;
-    bool graphics_widget_set;
-    /* heads.<position>=<id>, checked at realize; NULL when none given. */
-    QDict *heads;
-    MemoryRegion graphics_fabric;
-    MemoryRegion graphics_route;
-    MemoryRegion graphics_long;
+    /*
+     * Graphics pipes (docs/specs/sgi-ip30.rst, Graphics): each is a
+     * -device in one of the four graphics ports, by its slot name, or the
+     * topology's default pipe, created at init and realized by
+     * octane_machine_done() once no -device turned out to be a pipe.
+     * x-uncatalogued-graphics skips the catalogue checks and the default.
+     */
+    SGIXbowState *crossbow;
+    /* The processor's physical address space, which holds the long windows. */
+    MemoryRegion *physical;
+    SGIXioLink graphics_links[OCTANE_GRAPHICS_WIDGETS];
+    bool graphics_claimed[OCTANE_GRAPHICS_WIDGETS];
+    MemoryRegion graphics_long[OCTANE_GRAPHICS_WIDGETS];
+    bool uncatalogued_graphics;
+    DeviceState *default_pipe;
+    unsigned int pipes;
+    char *first_pipe;
+    Notifier machine_done;
     /* Catalogue storage item name -> the block node or drive it binds. */
     GHashTable *storage;
     bool flash_select;
@@ -98,174 +108,6 @@ typedef struct OctaneMachineState {
     /* mac=, or NULL for SGI_BOARD_DEFAULT_MAC. */
     char *mac;
 } OctaneMachineState;
-
-static char *octane_get_graphics_board(Object *obj, Error **errp)
-{
-    return g_strdup(((OctaneMachineState *)obj)->graphics_board);
-}
-
-static void octane_set_graphics_board(Object *obj, const char *value,
-                                      Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-
-    if (strcmp(value, "none") && strcmp(value, "vpro") &&
-        !sgi_mgras_board_known(value)) {
-        error_setg(errp, "octane graphics must be none, vpro or an MGRAS board: "
-                   "si, si-t, ssi, mxi, esi, esi-t, essi or emxi");
-        return;
-    }
-    g_free(s->graphics_board);
-    s->graphics_board = g_strdup(value);
-    s->graphics_board_set = true;
-}
-
-static void octane_get_graphics_widget(Object *obj, Visitor *v,
-                                       const char *name, void *opaque,
-                                       Error **errp)
-{
-    uint8_t value = ((OctaneMachineState *)obj)->graphics_widget;
-
-    visit_type_uint8(v, name, &value, errp);
-}
-
-static void octane_set_graphics_widget(Object *obj, Visitor *v,
-                                       const char *name, void *opaque,
-                                       Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-    uint8_t value;
-
-    if (!visit_type_uint8(v, name, &value, errp)) {
-        return;
-    }
-    if (value < OCTANE_GRAPHICS_WIDGET_FIRST ||
-        value > OCTANE_GRAPHICS_WIDGET_LAST) {
-        error_setg(errp, "octane graphics widget must be %d to %d",
-                   OCTANE_GRAPHICS_WIDGET_FIRST, OCTANE_GRAPHICS_WIDGET_LAST);
-        return;
-    }
-    s->graphics_widget = value;
-    s->graphics_widget_set = true;
-}
-
-static void octane_get_heads(Object *obj, Visitor *v, const char *name,
-                             void *opaque, Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-    QObject *value = s->heads ? QOBJECT(qobject_ref(s->heads)) :
-                     QOBJECT(qdict_new());
-
-    visit_type_any(v, name, &value, errp);
-    qobject_unref(value);
-}
-
-/*
- * heads.<position>=<id> arrives as one dictionary; keep it for realize,
- * which checks it against the topology topology= selects.
- */
-static void octane_set_heads(Object *obj, Visitor *v, const char *name,
-                             void *opaque, Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-    QObject *value = NULL;
-    QDict *heads;
-
-    if (!visit_type_any(v, name, &value, errp)) {
-        return;
-    }
-    heads = qobject_to(QDict, value);
-    if (!heads) {
-        error_setg(errp, "heads takes heads.<position>=<id>");
-        qobject_unref(value);
-        return;
-    }
-    qobject_unref(s->heads);
-    s->heads = heads;
-}
-
-static int octane_compare_keys(gconstpointer a, gconstpointer b)
-{
-    return strcmp(*(const char *const *)a, *(const char *const *)b);
-}
-
-/*
- * Turn heads.widget-N=<id> into the graphics board and widget the builder
- * fits: an MGRAS board by its own board name, or the V12 the vpro board
- * presents. Without heads, graphics-board= and graphics-widget= keep
- * deciding, as they always have. @profile is set when the selection names
- * a VPro profile the board must take.
- */
-static bool octane_apply_heads(OctaneMachineState *s, const char *machine,
-                               const char **profile, Error **errp)
-{
-    g_autofree SGIHeadChoice *choices = NULL;
-    size_t count;
-
-    *profile = NULL;
-    if (s->heads && qdict_size(s->heads) &&
-        (s->graphics_board_set || s->graphics_widget_set)) {
-        g_autoptr(GPtrArray) keys = g_ptr_array_new();
-        const char *key;
-
-        for (const QDictEntry *e = qdict_first(s->heads); e;
-             e = qdict_next(s->heads, e)) {
-            g_ptr_array_add(keys, (gpointer)qdict_entry_key(e));
-        }
-        g_ptr_array_sort(keys, octane_compare_keys);
-        key = g_ptr_array_index(keys, 0);
-        if (s->graphics_board_set) {
-            error_setg(errp, "%s: heads.%s and graphics-board both select a "
-                       "graphics board; use heads.%s", machine, key, key);
-        } else {
-            error_setg(errp, "%s: heads.%s and graphics-widget both place a "
-                       "graphics board; use heads.%s", machine, key, key);
-        }
-        return false;
-    }
-    choices = sgi_model_resolve_heads(machine, s->model, s->heads, &count,
-                                      errp);
-    if (!choices) {
-        return false;
-    }
-    if (!s->heads) {
-        return true;
-    }
-    for (size_t i = 0; i < count; i++) {
-        const SGIModelGraphicsConfiguration *c =
-            choices[i].option->configuration;
-        const char *name = choices[i].position->name;
-        unsigned int widget;
-
-        if (!sgi_model_head_fitted(&choices[i])) {
-            continue;
-        }
-        if (!g_str_has_prefix(name, "widget-")) {
-            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
-                       "machine", machine, c->id, name);
-            return false;
-        }
-        if (qemu_strtoui(name + strlen("widget-"), NULL, 10, &widget) ||
-            widget < OCTANE_GRAPHICS_WIDGET_FIRST ||
-            widget > OCTANE_GRAPHICS_WIDGET_LAST) {
-            error_setg(errp, "%s: graphics '%s' at %s is not built by this "
-                       "machine", machine, c->id, name);
-            return false;
-        }
-        g_free(s->graphics_board);
-        if (c->family == SGI_MODEL_GRAPHICS_FAMILY_MGRAS) {
-            s->graphics_board = g_strdup(c->id);
-            s->graphics_widget = widget;
-        } else {
-            /* The catalogue lists VPro only at the board's fixed port. */
-            g_assert(c->family == SGI_MODEL_GRAPHICS_FAMILY_ODYSSEY &&
-                     widget == OCTANE_GRAPHICS_WIDGET);
-            s->graphics_board = g_strdup("vpro");
-            *profile = c->id;
-        }
-    }
-    return true;
-}
 
 /* Whether @t is a topology this machine can build: one HEART node. */
 static bool octane_ip30_topology(const SGIModelTopology *t)
@@ -722,9 +564,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     const char *product = octane2 ? "octane2" : "octane";
     const char *flash_node, *nvram, *nvram_clock;
     uint64_t flash_size;
-    bool mgras, vpro, graphics;
-    unsigned int widget;
-    const char *vpro_profile;
     uint16_t links = (1 << 8) | (1 << 15);
 
     if (machine->kernel_filename) {
@@ -740,19 +579,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     }
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
-    if (!octane_apply_heads(s, MACHINE_GET_CLASS(machine)->name,
-                            &vpro_profile, errp)) {
-        return false;
-    }
-    mgras = sgi_mgras_board_known(s->graphics_board);
-    vpro = !strcmp(s->graphics_board, "vpro");
-    graphics = mgras || vpro;
-    widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
-
-    if (s->graphics_widget_set && !mgras) {
-        error_setg(errp, "graphics-widget requires an MGRAS graphics-board");
-        return false;
-    }
 
     if (machine->smp.cpus != 1) {
         error_setg(errp, "%s supports one CPU", product);
@@ -849,6 +675,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);
 
+    s->physical = physical;
     memory_region_init(physical, OBJECT(machine), "octane.physical",
                        OCTANE_PHYSICAL_SPAN);
     memory_region_add_subregion(system, 0, physical);
@@ -926,52 +753,10 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     object_unref(OBJECT(flash_chip));
 
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
+    s->crossbow = crossbow;
     qdev_prop_set_uint32(xbow, "revision",
                           s->model->crossbars->value->widget_revision);
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
-    if (graphics) {
-        const char *name = mgras ? "mgras" : "odyssey";
-        DeviceState *board = qdev_new(mgras ? TYPE_SGI_MGRAS : TYPE_SGI_ODYSSEY);
-        MemoryRegion *face;
-        g_autofree char *slot = g_strdup_printf("%u", widget);
-
-        memory_region_init(&s->graphics_fabric, OBJECT(machine),
-                           "octane.graphics-fabric",
-                           SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
-        object_property_add_child(OBJECT(machine), name, OBJECT(board));
-        board->id = g_strdup(name);
-
-        qdev_prop_set_uint32(board, "module", 0);
-        qdev_prop_set_string(board, "slot", slot);
-        if (mgras) {
-            qdev_prop_set_string(board, "board", s->graphics_board);
-            /*
-             * The PROM names the board from its serial-number record. The
-             * board's own default barcode and ROM serial are the marked
-             * synthetic ones, "EMUG00", like the other IP30 identities.
-             */
-            qdev_prop_set_bit(board, "board-record", true);
-            /*
-             * IP30 software writes 32-bit DMA page-list entries: IRIX
-             * 6.5.30's X server and kernel, and the Linux IMPACTSR
-             * driver's table of 32-bit words.
-             */
-            qdev_prop_set_uint8(board, "page-list-entry-bytes", 4);
-        } else if (vpro_profile) {
-            qdev_prop_set_string(board, "profile", vpro_profile);
-        }
-        if (!object_property_set_link(OBJECT(board), "fabric",
-                                      OBJECT(&s->graphics_fabric), errp) ||
-            !sysbus_realize(SYS_BUS_DEVICE(board), errp)) {
-            return false;
-        }
-        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board), 0);
-        if (!sgi_xbow_attach_endpoint(crossbow, widget, face, face, errp)) {
-            return false;
-        }
-        object_unref(OBJECT(board));
-        links |= 1 << widget;
-    }
     qdev_prop_set_uint16(xbow, "links-present", links);
     qdev_prop_set_uint16(xbow, "startup-links-alive", links);
     qdev_prop_set_uint16(xbow, "link-reset-restore-alive", links);
@@ -985,21 +770,6 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
         return false;
     }
 
-    if (graphics) {
-        /* Packet ingress exists only after Crossbow realization. */
-        memory_region_init_alias(&s->graphics_route, OBJECT(machine),
-                                 "octane.graphics-fabric-route",
-                                 sgi_xbow_packet_ingress(crossbow, widget),
-                                 0, SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
-        memory_region_add_subregion(&s->graphics_fabric, 0, &s->graphics_route);
-        memory_region_init_alias(&s->graphics_long, OBJECT(machine),
-                                 "octane.graphics-long",
-                                 sgi_xbow_packet_ingress(crossbow, 8),
-                                 (uint64_t)widget << 48,
-                                 OCTANE_LONG_SPAN);
-        memory_region_add_subregion(physical, widget * OCTANE_LONG_SPAN,
-                                    &s->graphics_long);
-    }
 
     memory_region_init_alias(proxy_route, OBJECT(machine),
                              "octane.bridge-fabric-route",
@@ -1027,14 +797,221 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                           errp);
 }
 
+/*
+ * The machine's side of a graphics board fitted by slot name
+ * (TYPE_SGI_XIO_SLOTS, xio-board.h): widget-9 to widget-12, the Crossbow
+ * ports the Octane gives graphics boards. The board takes its fabric from
+ * the link to the port and attaches to the realized Crossbow live; its
+ * long window, the 64 GiB of physical space the processor reaches the
+ * widget through by way of HEART's port, maps once a board is there.
+ */
+static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
+                                         const char *name,
+                                         SGIXioSlotPlace *place,
+                                         Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+    unsigned int widget, index;
+    g_autofree char *link_name = NULL;
+    g_autofree char *long_name = NULL;
+
+    if (!g_str_has_prefix(name, "widget-") ||
+        qemu_strtoui(name + strlen("widget-"), NULL, 10, &widget) ||
+        widget < OCTANE_GRAPHICS_WIDGET_FIRST ||
+        widget >= OCTANE_GRAPHICS_WIDGET_FIRST + OCTANE_GRAPHICS_WIDGETS) {
+        error_setg(errp, "topology '%s' has no graphics slot %s; its slots "
+                   "are widget-9, widget-10, widget-11 and widget-12",
+                   s->model->name, name);
+        return NULL;
+    }
+    if (place->module != SGI_XIO_BOARD_MODULE_UNSET && place->module) {
+        error_setg(errp, "graphics slot %s is in module 0, not module %u",
+                   name, place->module);
+        return NULL;
+    }
+    index = widget - OCTANE_GRAPHICS_WIDGET_FIRST;
+    if (s->graphics_claimed[index]) {
+        error_setg(errp, "graphics slot %s already holds a board", name);
+        return NULL;
+    }
+    s->graphics_claimed[index] = true;
+    link_name = g_strdup_printf("%s-link", name);
+    sgi_xio_link_init(&s->graphics_links[index], obj, link_name,
+                      OBJECT(s->crossbow), widget, board, 0);
+    long_name = g_strdup_printf("octane.%s-long", name);
+    memory_region_init_alias(&s->graphics_long[index], obj, long_name,
+                             sgi_xbow_packet_ingress(s->crossbow, 8),
+                             (uint64_t)widget << 48, OCTANE_LONG_SPAN);
+    memory_region_add_subregion(s->physical, widget * OCTANE_LONG_SPAN,
+                                &s->graphics_long[index]);
+    place->module = 0;
+    place->widget = widget;
+    place->position = index;
+    place->name = g_strdup(name);
+    place->label = g_strdup(name);
+    /*
+     * The one board keeps its own marked synthetic identity, "EMUG00",
+     * like the other IP30 identities; offsetting it by port would make the
+     * PROM name the same board differently in each port.
+     */
+    place->own_identity = true;
+    return &s->graphics_links[index];
+}
+
+/* A board given a fabric outright is a fixture's, not one of the ports. */
+static bool octane_claim_xio_fabric(Object *obj, Object *board,
+                                    MemoryRegion *fabric, uint32_t module,
+                                    uint32_t widget, char **name,
+                                    SGIXioLink **link, Error **errp)
+{
+    *link = NULL;
+    return true;
+}
+
+static bool octane_get_uncatalogued_graphics(Object *obj, Error **errp)
+{
+    return ((OctaneMachineState *)obj)->uncatalogued_graphics;
+}
+
+static void octane_set_uncatalogued_graphics(Object *obj, bool value,
+                                             Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "x-uncatalogued-graphics cannot change once the "
+                   "machine is built");
+        return;
+    }
+    ((OctaneMachineState *)obj)->uncatalogued_graphics = value;
+}
+
+static const HotplugHandler *octane_get_hotplug_handler(MachineState *machine,
+                                                        DeviceState *dev)
+{
+    SGIModelGraphicsFamilyKind family;
+
+    return sgi_graphics_pipe_family(dev, &family) ?
+           HOTPLUG_HANDLER(machine) : NULL;
+}
+
+/*
+ * Every pipe, a -device or the default, before it realizes: checked
+ * against the catalogue with every unset setting filled from the slot's
+ * defaults, then given what the IP30 board fixes for an IMPACT board: the
+ * serial-number record the PROM names the board from (its default barcode
+ * and ROM serial are the marked synthetic "EMUG00", like the other IP30
+ * identities), and 32-bit DMA page-list entries, which IRIX 6.5.30's X
+ * server and kernel and the Linux IMPACTSR driver all write.
+ */
+static void octane_pre_plug(const HotplugHandler *hotplug_dev,
+                            DeviceState *dev, Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)hotplug_dev;
+    SGIModelGraphicsFamilyKind family;
+
+    if (!sgi_graphics_pipe_family(dev, &family)) {
+        return;
+    }
+    if (!s->uncatalogued_graphics &&
+        !sgi_graphics_check_pipe(MACHINE_GET_CLASS(s)->name, s->model,
+                                 s->model->graphics,
+                                 QAPI_LIST_LENGTH(s->model->nodes), dev,
+                                 family, s->pipes, s->first_pipe, errp)) {
+        return;
+    }
+    if (family == SGI_MODEL_GRAPHICS_FAMILY_KIND_MGRAS) {
+        qdev_prop_set_bit(dev, "board-record", true);
+        qdev_prop_set_uint8(dev, "page-list-entry-bytes", 4);
+    }
+}
+
+static void octane_plug(const HotplugHandler *hotplug_dev, DeviceState *dev,
+                        Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)hotplug_dev;
+    const SGIModelGraphicsSlot *slot;
+    SGIModelGraphicsFamilyKind family;
+
+    if (!sgi_graphics_pipe_family(dev, &family)) {
+        return;
+    }
+    s->pipes++;
+    if (!s->first_pipe) {
+        slot = sgi_graphics_pipe_slot(s->model->graphics, dev, family);
+        s->first_pipe = g_strdup(slot ? slot->name : dev->id ? dev->id :
+                                 object_get_typename(OBJECT(dev)));
+    }
+}
+
+/*
+ * Fit the default pipe when no -device was one and -vga none did not ask
+ * for none, and bring every claimed graphics port's link alive, with the
+ * pre-reset health restore the HEART and Bridge links get: the stock PROM
+ * resets each link it finds attached and expects it back alive. It runs
+ * before the machine's cold reset.
+ */
+static void octane_machine_done(Notifier *notifier, void *data)
+{
+    OctaneMachineState *s = container_of(notifier, OctaneMachineState,
+                                         machine_done);
+
+    if (s->default_pipe) {
+        DeviceState *dev = s->default_pipe;
+
+        s->default_pipe = NULL;
+        if (s->pipes) {
+            object_unref(OBJECT(dev));
+        } else {
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+        }
+    }
+    if (!s->uncatalogued_graphics) {
+        sgi_graphics_check_headless(MACHINE_GET_CLASS(s)->name,
+                                    s->model->name, s->model->graphics,
+                                    s->pipes, &error_fatal);
+    }
+    for (unsigned int i = 0; i < OCTANE_GRAPHICS_WIDGETS; i++) {
+        if (sgi_xio_link_complete(&s->graphics_links[i])) {
+            sgi_xbow_mark_widget_alive(s->crossbow,
+                                       OCTANE_GRAPHICS_WIDGET_FIRST + i,
+                                       true, &error_fatal);
+        }
+    }
+}
+
+/*
+ * Check -vga and create the topology's default pipe, which
+ * octane_machine_done() realizes once it knows no -device was a pipe. It
+ * is created now, while the machine initializes, so it is not taken for a
+ * hot-plugged device when it realizes.
+ */
+static void octane_init_graphics(OctaneMachineState *s, Error **errp)
+{
+    const SGIModelGraphicsSlot *slot;
+    bool none;
+
+    if (!s->uncatalogued_graphics) {
+        if (!sgi_graphics_vga_none(MACHINE_GET_CLASS(s)->name, &none, errp)) {
+            return;
+        }
+        slot = none ? NULL : sgi_graphics_default_slot(s->model->graphics);
+        if (slot) {
+            s->default_pipe = sgi_graphics_new_default(slot);
+        }
+    }
+    s->machine_done.notify = octane_machine_done;
+    qemu_add_machine_init_done_notifier(&s->machine_done);
+}
+
 static void octane_init(MachineState *machine)
 {
     octane_realize(machine, false, &error_fatal);
+    octane_init_graphics((OctaneMachineState *)machine, &error_fatal);
 }
 
 static void octane2_init(MachineState *machine)
 {
     octane_realize(machine, true, &error_fatal);
+    octane_init_graphics((OctaneMachineState *)machine, &error_fatal);
 }
 
 static char *octane_get_topology(Object *obj, Error **errp)
@@ -1093,8 +1070,6 @@ static void octane_instance_init_common(Object *obj, const char *product)
 
     s->model = octane_default_model(product);
     s->node = s->model->nodes->value;
-    s->graphics_board = g_strdup("none");
-    s->graphics_widget = OCTANE_GRAPHICS_WIDGET;
     /* The catalogue's wiring, which a launcher may override. */
     s->flash_select = s->node->flash->has_select && s->node->flash->select;
     s->flash_strap = s->node->flash->has_strap && s->node->flash->strap;
@@ -1121,8 +1096,10 @@ static void octane_instance_finalize(Object *obj)
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
     g_free(s->topology_name);
-    g_free(s->graphics_board);
-    qobject_unref(s->heads);
+    g_free(s->first_pipe);
+    if (s->default_pipe) {
+        object_unref(OBJECT(s->default_pipe));
+    }
     g_free(s->mac);
     if (s->storage) {
         g_hash_table_destroy(s->storage);
@@ -1178,23 +1155,13 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
 {
     g_autoptr(GHashTable) seen = g_hash_table_new(g_str_hash, g_str_equal);
 
-    object_class_property_add_str(oc, "graphics-board",
-                                  octane_get_graphics_board,
-                                  octane_set_graphics_board);
-    object_class_property_set_description(oc, "graphics-board",
-        "Optional graphics board: none, vpro, si, si-t, ssi, mxi, esi, "
-        "esi-t, essi or emxi");
-    object_class_property_add(oc, "heads", "SGIHeads", octane_get_heads,
-                              octane_set_heads, NULL, NULL);
-    object_class_property_set_description(oc, "heads",
-        "Graphics heads by position, heads.<position>=<id> "
-        "(heads.widget-11=si-t); query-sgi-machines lists the positions and "
-        "ids. Use it or graphics-board, not both.");
-    object_class_property_add(oc, "graphics-widget", "uint8",
-                              octane_get_graphics_widget,
-                              octane_set_graphics_widget, NULL, NULL);
-    object_class_property_set_description(oc, "graphics-widget",
-        "Crossbow port of the graphics board, 9 to 12 (default 11)");
+    object_class_property_add_bool(oc, "x-uncatalogued-graphics",
+                                   octane_get_uncatalogued_graphics,
+                                   octane_set_uncatalogued_graphics);
+    object_class_property_set_description(oc, "x-uncatalogued-graphics",
+        "Skip the graphics catalogue: fit no default pipe, accept any -vga "
+        "and check no graphics -device against the topology. For "
+        "register-contract tests that use the machine to carry a board.");
     for (uintptr_t bank = 0; bank < HEART_BANKS; bank++) {
         g_autofree char *name = g_strdup_printf("bank%u-size",
                                                 (unsigned)bank);
@@ -1242,6 +1209,8 @@ static unsigned int octane_max_cpus(const char *product)
 static void octane_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    SGIXioSlotsClass *xc = SGI_XIO_SLOTS_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
     const char *product = data;
     const SGIModelTopology *t = octane_default_model(product);
     const SGIModelProcessor *processor =
@@ -1288,6 +1257,14 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     mc->block_default_type = IF_SCSI;
     mc->no_floppy = true;
     mc->no_cdrom = true;
+    /* A graphics pipe is a -device in one of the four graphics ports. */
+    mc->get_hotplug_handler = octane_get_hotplug_handler;
+    hc->pre_plug = octane_pre_plug;
+    hc->plug = octane_plug;
+    xc->claim = octane_claim_xio_slot;
+    xc->claim_fabric = octane_claim_xio_fabric;
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_MGRAS);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_ODYSSEY);
 }
 
 static const TypeInfo octane_machine_types[] = {
@@ -1299,6 +1276,11 @@ static const TypeInfo octane_machine_types[] = {
         .instance_finalize = octane_instance_finalize,
         .class_init = octane_class_init,
         .class_data = "octane",
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_XIO_SLOTS },
+            { TYPE_HOTPLUG_HANDLER },
+            { }
+        },
     },
     {
         .name = MACHINE_TYPE_NAME("octane2"),
@@ -1308,6 +1290,11 @@ static const TypeInfo octane_machine_types[] = {
         .instance_finalize = octane_instance_finalize,
         .class_init = octane_class_init,
         .class_data = "octane2",
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_XIO_SLOTS },
+            { TYPE_HOTPLUG_HANDLER },
+            { }
+        },
     },
 };
 

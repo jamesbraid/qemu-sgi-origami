@@ -1136,7 +1136,7 @@ def resolve_system_model(
         resolved.setdefault("machine", {})["graphics"] = (
             model_graphics.resolve_graphics(
                 selected["product"]["id"], graphics,
-                model_graphics.load_graphics_configurations(path.parent)))
+                model_graphics.load_graphics_products(path.parent)))
     machine = resolved.get("machine", {})
     routed = model_composition.reject_routed_firmware_graphs(resolved)
     population = selected["product"]["population"]

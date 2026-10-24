@@ -1596,7 +1596,7 @@ static void mgras_reset_exit(Object *obj, ResetType type)
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
-    const char *name = s->board_name ? s->board_name : "si";
+    const char *name = s->product ? s->product : "si";
     const SGIMgrasBoard *b = mgras_find_board(name);
 
     if (!b) {
@@ -1606,8 +1606,8 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
             g_string_append_printf(names, "%s%s", i ? ", " : "",
                                    mgras_boards[i].name);
         }
-        error_setg(errp, "sgi-mgras: unknown board '%s'", name);
-        error_append_hint(errp, "Valid boards: %s\n", names->str);
+        error_setg(errp, "sgi-mgras: unknown product '%s'", name);
+        error_append_hint(errp, "Valid products: %s\n", names->str);
         return false;
     }
     if (b->width > SGI_MGRAS_MAX_WIDTH) {
@@ -2355,13 +2355,7 @@ static const Property mgras_properties[] = {
     DEFINE_PROP_UINT32("revision", SGIMgrasState, revision, 0),
     DEFINE_PROP_UINT32("part", SGIMgrasState, part, 0xc003),
     DEFINE_PROP_UINT32("manufacturer", SGIMgrasState, manufacturer, 0x02aa),
-    DEFINE_PROP_STRING("board", SGIMgrasState, board_name),
-    /*
-     * Accepted and ignored: it presented ESI+T, MXI and EMXI before the
-     * model implemented them, and command lines from then still set it.
-     */
-    DEFINE_PROP_BOOL("x-unimplemented-board", SGIMgrasState,
-                     unimplemented_board, false),
+    DEFINE_PROP_STRING("product", SGIMgrasState, product),
     /* Experimental host renderer; ordinary board rendering stays native. */
     DEFINE_PROP_BOOL("x-mesa-renderer", SGIMgrasState,
                      gl_renderer_opt_in, false),

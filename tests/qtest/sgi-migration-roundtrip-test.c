@@ -949,14 +949,12 @@ static const RtRam node0_ram[] = {
     { 0, 0 }
 };
 
-#define ORIGIN2000_MGRAS(board, extra, devices) \
+#define ORIGIN2000_MGRAS(board, devices) \
     { "origin2000-mgras-" board, "origin2000", "sgi-mgras", \
-      "-M origin2000 -smp 8 -device sgi-mgras,slot=io3 " \
-      "-global sgi-mgras.board=" board extra, 0, devices, node0_ram }
+      "-M origin2000 -smp 8 -device sgi-mgras,slot=io3,product=" board, \
+      0, devices, node0_ram }
 #define ONE_RE                  origin2000_mgras_devices
 #define TWO_RE                  origin2000_mgras_two_re_devices
-/* Boards whose texture or MXI paths are not modelled refuse to realize. */
-#define UNIMPLEMENTED_BOARD " -global sgi-mgras.x-unimplemented-board=on"
 
 static const RtMachine machines[] = {
     { "origin200", "origin200", NULL, "-M origin200", 0,
@@ -965,23 +963,25 @@ static const RtMachine machines[] = {
       "-M origin200,topology=origin200-dual -m 128M -smp 4", 0,
       origin200_dual_devices, node0_ram },
     { "onyx2", "onyx2", NULL, "-M onyx2", 0, onyx2_devices, node0_ram },
-    ORIGIN2000_MGRAS("si", "", ONE_RE),
-    ORIGIN2000_MGRAS("ssi", "", TWO_RE),
-    ORIGIN2000_MGRAS("esi", "", ONE_RE),
-    ORIGIN2000_MGRAS("essi", "", TWO_RE),
-    ORIGIN2000_MGRAS("si-t", UNIMPLEMENTED_BOARD, ONE_RE),
-    ORIGIN2000_MGRAS("esi-t", UNIMPLEMENTED_BOARD, ONE_RE),
-    ORIGIN2000_MGRAS("mxi", UNIMPLEMENTED_BOARD, TWO_RE),
-    ORIGIN2000_MGRAS("emxi", UNIMPLEMENTED_BOARD, TWO_RE),
+    ORIGIN2000_MGRAS("si", ONE_RE),
+    ORIGIN2000_MGRAS("ssi", TWO_RE),
+    ORIGIN2000_MGRAS("esi", ONE_RE),
+    ORIGIN2000_MGRAS("essi", TWO_RE),
+    ORIGIN2000_MGRAS("si-t", ONE_RE),
+    ORIGIN2000_MGRAS("esi-t", ONE_RE),
+    ORIGIN2000_MGRAS("mxi", TWO_RE),
+    ORIGIN2000_MGRAS("emxi", TWO_RE),
     { "octane-mgras-si", "octane", "sgi-mgras",
-      "-M octane,graphics-board=si -m 128M -cpu R10000", 4,
+      "-M octane -m 128M -cpu R10000 "
+      "-device sgi-mgras,slot=widget-11,product=si", 4,
       octane_si_devices, octane_ram },
     { "octane2-mgras-si", "octane2", "sgi-mgras",
-      "-M octane2,graphics-board=si -m 256M -cpu " OCTANE2_CPU, 4,
+      "-M octane2 -m 256M -cpu " OCTANE2_CPU
+      " -device sgi-mgras,slot=widget-11,product=si", 4,
       octane_si_devices, octane_ram },
     { "octane-two-banks", "octane", NULL,
       "-M octane,bank0-size=67108864,bank1-size=67108864 -m 128M "
-      "-cpu R10000", 4, octane_banks_devices, octane_banks_ram },
+      "-cpu R10000 -vga none", 4, octane_banks_devices, octane_banks_ram },
     { "origin300", "origin300", NULL, "-M origin300 -cpu R14000 -smp 2 -m 512M",
       PROM_SIZE, origin300_devices, bedrock_ram },
     { "origin300-vpro", "origin300", "sgi-odyssey",

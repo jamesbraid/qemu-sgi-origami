@@ -197,8 +197,7 @@ static void test_gl_pixels_migration(void)
     g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
-#define TEX_MIGRATION_ARGS MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
-    "-global sgi-mgras.x-unimplemented-board=on"
+#define TEX_MIGRATION_ARGS MIGRATION_ARGS ",product=si-t"
 
 #define TEX_TEXMODE2_VOLUME 0x800000
 #define TEX_TXSIZE_2X2      0x1111
@@ -581,7 +580,7 @@ static void test_gl_texture_migration_rejects_tram_without_tram(void)
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
-    to = qtest_init(MIGRATION_ARGS " -global sgi-mgras.board=si "
+    to = qtest_init(MIGRATION_ARGS ",product=si "
                     "-incoming defer");
     qtest_set_expected_status(to, 1);
     qtest_qmp_assert_success(

@@ -67,8 +67,14 @@
 
 #define PCI_ROM_ENABLE      1u
 
+/*
+ * RAD4_SLOT and RAD4_KM_SLOT are not the Origin 200's option slots, which
+ * the machine's graphics catalogue offers, so the register contract here
+ * skips that catalogue.
+ */
+#define MACHINE "-M origin200,x-uncatalogued-graphics=on"
 #define MACHINE_WITH_BRIDGE \
-    "-M origin200 -device psitech-rad4,addr=" G_STRINGIFY(RAD4_SLOT)
+    MACHINE " -device psitech-rad4,addr=" G_STRINGIFY(RAD4_SLOT)
 #define MACHINE_WITH_BRIDGE_COMPAT_OFF \
     MACHINE_WITH_BRIDGE ",overlay-index-compat=off"
 
@@ -89,7 +95,7 @@
 
 /*
  * RAD4-KM (12d1:0105), the same shared psitech-rad4 implementation at
- * device-id=0x105. A second synthetic slot, one window further along than
+ * product=rad4-km. A second synthetic slot, one window further along than
  * RAD4_SLOT's, so both identities can be brought up independently in the same
  * process; like RAD4_SLOT, this is a convenient free device number for
  * register-contract testing, not a claim about which real Origin 200
@@ -100,8 +106,8 @@
 #define RAD4_KM_DEVICE_ID 0x0105
 
 #define MACHINE_WITH_BRIDGE_KM \
-    "-M origin200 -device psitech-rad4,addr=" G_STRINGIFY(RAD4_KM_SLOT) \
-    ",device-id=" G_STRINGIFY(RAD4_KM_DEVICE_ID)
+    MACHINE " -device psitech-rad4,addr=" G_STRINGIFY(RAD4_KM_SLOT) \
+    ",product=rad4-km"
 
 /* BAR0 offsets. */
 #define R_REG14         0x14
@@ -1067,7 +1073,7 @@ static void test_serial_eeprom_write(void)
 
 static QTestState *rad4_init_eeprom_drive(const char *path)
 {
-    QTestState *qts = qtest_initf("-M origin200"
+    QTestState *qts = qtest_initf(MACHINE
                                   " -drive if=none,id=rad4ee,format=raw,"
                                   "file=%s"
                                   " -device psitech-rad4,addr="

@@ -40,7 +40,7 @@
 #define KONA_QOM_PATH "/machine/module0/kona0"
 
 #define MACHINE_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
     "-device sgi-kona,id=kona0,slot=io4," \
     "fabric-hub-widget=9"
 
@@ -830,11 +830,11 @@ static void test_migration_without_blank_unblanks(void)
  * DG5-2 display generator, 030-1055-001, has two channels.
  */
 #define DG5_2_ARGS \
-    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
     "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\"," \
     "\"slot\":\"io4\",\"fabric-hub-widget\":9," \
     "\"other-identity-parts\":[],\"product\":\"ir2\"," \
-    "\"display-generator\":\"030-1055-001\"}'"
+    "\"display\":\"dg5-2\"}'"
 
 /*
  * Head `head` of the pipe as a PPM, pixels only; its size goes to *width

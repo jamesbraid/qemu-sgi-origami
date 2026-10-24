@@ -27,17 +27,21 @@ layer:
     default: {clock_mhz: 800, cache_mib: 8}
     slots: [cpu0, cpu1, cpu2, cpu3]
   memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes). The V12 is optional and fitted by -device only.
   graphics:
-    max_heads: 1
-    positions:
+    max_pipes: 1
+    headless: true
+    slots:
       - name: widget-12
-        description: "VPro at widget 12 in the captured graphics configuration"
-        options:
-          - {id: none, default: true, fidelity: validated}
-          - id: v12
-            fidelity: implemented
-            pairing: established
-            assembly: "030-1909-008"
+        description: "VPro at PIC widget 12 in the captured graphics configuration"
+        placement: {slot: widget-12}
+        families:
+          - family: odyssey
+            products:
+              - {product: v12, fidelity: implemented, pairing: established, assembly: "030-1909-008"}
   data:
     machine:
       name: Onyx 350 IP53 software profile

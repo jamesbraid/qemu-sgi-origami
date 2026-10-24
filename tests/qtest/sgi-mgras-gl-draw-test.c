@@ -3772,8 +3772,7 @@ static void test_gl_polygon_stipple_all_board_families(void)
             continue;
         }
         args = g_strdup_printf(
-            MACHINE_ARGS " -global sgi-mgras.board=%s "
-            "-global sgi-mgras.x-unimplemented-board=on", boards[board]);
+            MACHINE_ARGS ",product=%s", boards[board]);
         s = qtest_init(args);
 
         g_test_message("polygon stipple on MGRAS board %s", boards[board]);

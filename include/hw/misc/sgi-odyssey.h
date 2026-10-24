@@ -115,14 +115,14 @@ struct SGIOdysseyState {
     uint32_t memory_banks;
     uint32_t cas_latency;
     uint32_t backend_version;   /* bits 2:0 of 0x23380c */
-    char *profile;
+    char *product;
     uint64_t nic_serial;
     char *nic_record;
     /* Host selector; source and destination must match for migration. */
     bool mesa_renderer_enabled;
 
     /* Composed at realize from the properties above. */
-    const char *profile_record; /* the profile's record, if nic-record unset */
+    const char *product_record; /* the product's record, if nic-record unset */
     uint32_t memory_config;
 
     /* Modeled registers. */
@@ -281,7 +281,7 @@ struct SGIOdysseyState {
     bool obj_full_reported;
     /* A full store forgot an object (reported once, not migrated). */
     bool obj_forget_reported;
-    /* A destination base beyond the active profile's board memory. */
+    /* A destination base beyond the active product's board memory. */
     bool board_oob_reported;
 
     /*

@@ -598,7 +598,7 @@
  * version" (ESTABLISHED as driver behaviour). Published gfxinfo captures of
  * a V6, a V10 and a V12 all print "PB&J version 1", and a first-party
  * odydiags listing of a 128 MB board with BUZZ revision 10 reports 1 too, so
- * every profile answers 1 through the backend-version property. The
+ * every product answers 1 through the backend-version property. The
  * kernel's display back-end initialisation also reads this word and
  * branches on bit 10, returning early when it is set (ESTABLISHED as driver
  * behaviour). The model answers 0 in bit 10, as it always has; what bit 10
@@ -9684,12 +9684,12 @@ static bool odyssey_is_integer_colour(uint32_t word)
 }
 
 /*
- * True when base lies within the board memory the active profile reports
+ * True when base lies within the board memory the active product reports
  * (the "memory-size" property, in megabytes), false and reported, once per
  * reset, otherwise. A destination select's base is a board address in
  * 16-byte units, not bytes (established above, for the off-screen
  * board-memory objects), so the reported capacity is converted into that
- * same unit before the comparison. A profile's reported size is a
+ * same unit before the comparison. A product's reported size is a
  * register-answered capacity, not the model's own storage
  * (ODSY_OBJ_POOL_BYTES): a guest that addresses past it is a guest bug
  * against the board it was told it has, kept observable rather than
@@ -11442,14 +11442,14 @@ static const MemoryRegionOps odyssey_ops = {
  *
  * One field by default, because the stock IP35 PROM was observed reading
  * exactly one 32-byte page and stopping; a longer record is truncated
- * where the master stops clocking. Without a nic-record, a selected profile
+ * where the master stops clocking. Without a nic-record, a selected product
  * supplies its board's name, and otherwise the default is the public owner
  * record of the board the Odyssey contract describes.
  */
 static void odyssey_build_nic_rom(SGIOdysseyState *s,
                                   uint8_t rom[ODSY_NIC_ROM_SIZE])
 {
-    const char *fields = s->nic_record ?: s->profile_record ?:
+    const char *fields = s->nic_record ?: s->product_record ?:
                          ODSY_NIC_RECORD_DEFAULT;
     g_autofree char *record = g_strdup_printf("%c    ;%s;", 0x01, fields);
     size_t length = MIN(strlen(record), ODSY_NIC_ROM_SIZE);
@@ -11842,7 +11842,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
  * B.1 and PB&J 1 for a 32 MB V10 and a 128 MB V12, and four banks for the
  * V12. The V8's A.1, four banks and PB&J 1 are inferred from its generation
  * and size; the 32 MB boards' two banks are inferred, since gfxinfo prints a
- * fixed "Banks: 2" line for any 32 MB board. Every profile is CAS latency 3.
+ * fixed "Banks: 2" line for any 32 MB board. Every product is CAS latency 3.
  * The identity record is the Octane board's name as hinv -mv prints it.
  */
 static const struct {
@@ -11852,32 +11852,32 @@ static const struct {
     uint32_t memory_banks;
     uint32_t backend_version;
     const char *record;
-} odyssey_profiles[] = {
+} odyssey_products[] = {
     { "v12", 0xa, 128, 4, 1, "Name:ODY128VERSIONB" },  /* 030-1611 */
     { "v10", 0xa, 32, 2, 1, "Name:ODY32VERSIONB" },    /* 030-1655 */
     { "v8",  0x2, 128, 4, 1, "Name:ODY128" },          /* 030-1404 */
     { "v6",  0x2, 32, 2, 1, "Name:ODY32" },            /* 030-1403 */
 };
 
-static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
+static bool odyssey_resolve_product(SGIOdysseyState *s, Error **errp)
 {
     size_t i;
 
-    if (!s->profile) {
+    if (!s->product) {
         return true;
     }
-    for (i = 0; i < ARRAY_SIZE(odyssey_profiles); i++) {
-        if (!strcmp(s->profile, odyssey_profiles[i].name)) {
-            s->revision = odyssey_profiles[i].revision;
-            s->memory_size = odyssey_profiles[i].memory_size;
-            s->memory_banks = odyssey_profiles[i].memory_banks;
-            s->backend_version = odyssey_profiles[i].backend_version;
-            s->profile_record = odyssey_profiles[i].record;
+    for (i = 0; i < ARRAY_SIZE(odyssey_products); i++) {
+        if (!strcmp(s->product, odyssey_products[i].name)) {
+            s->revision = odyssey_products[i].revision;
+            s->memory_size = odyssey_products[i].memory_size;
+            s->memory_banks = odyssey_products[i].memory_banks;
+            s->backend_version = odyssey_products[i].backend_version;
+            s->product_record = odyssey_products[i].record;
             return true;
         }
     }
-    error_setg(errp, "sgi-odyssey profile must be v12, v10, v8 or v6, not %s",
-               s->profile);
+    error_setg(errp, "sgi-odyssey product must be v12, v10, v8 or v6, not %s",
+               s->product);
     return false;
 }
 
@@ -11885,7 +11885,7 @@ static bool odyssey_build_widget(SGIXioBoardState *board, Error **errp)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(board);
 
-    if (!odyssey_resolve_profile(s, errp)) {
+    if (!odyssey_resolve_product(s, errp)) {
         return false;
     }
     if (s->revision > 0xf) {
@@ -12408,8 +12408,8 @@ static void odyssey_instance_init(Object *obj)
  * defaults to the public owner record of the 128 MB board; the serial is
  * synthetic and says so.
  *
- * "profile" selects one marketed board, v12 (the measured board above), v10,
- * v8 or v6 (odyssey_profiles). Selecting one overrides "revision",
+ * "product" selects one marketed board, v12 (the measured board above), v10,
+ * v8 or v6 (odyssey_products). Selecting one overrides "revision",
  * "memory-size", "memory-banks" and "backend-version"; left unset, each
  * keeps its own default or override.
  */
@@ -12420,7 +12420,7 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_UINT32("memory-banks", SGIOdysseyState, memory_banks, 4),
     DEFINE_PROP_UINT32("cas-latency", SGIOdysseyState, cas_latency, 3),
     DEFINE_PROP_UINT32("backend-version", SGIOdysseyState, backend_version, 1),
-    DEFINE_PROP_STRING("profile", SGIOdysseyState, profile),
+    DEFINE_PROP_STRING("product", SGIOdysseyState, product),
     DEFINE_PROP_UINT64("nic-serial", SGIOdysseyState, nic_serial,
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),

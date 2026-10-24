@@ -72,39 +72,55 @@ layer:
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
       node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
   memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
-  # Graphics heads heads.<position>=<id> selects; the ids are
-  # hw/mips/sgi/models/graphics-heads.yaml's (docs/specs/sgi-sn.rst,
-  # Graphics heads).
+  # The slots a graphics pipe can take, what each offers and the pipe
+  # the machine fits by default; products and values are
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # Graphics pipes).
   graphics:
-    max_heads: 1
-    positions:
+    max_pipes: 1
+    headless: true
+    headless_note: "SGI sold no Onyx2 without an InfiniteReality pipe, so an Onyx2 started with -vga none or -nodefaults and no pipe -device is not a configuration SGI shipped"
+    slots:
       - name: io3
-        description: "Xtown in XIO slot 3, cabled to the graphics module's Ktown"
-        built_in: true
-        options:
-          - id: ir3-ge16-4-rm1
-            default: true
-            fidelity: approximated
-            pairing: established
-            assembly: "030-1398-001"
-            limitations:
-              - "presents the IRIX name InfiniteReality2 and a 64 MiB texture pool"
-              - "presents no RM, TM or DG board record"
-              - "configuration reply carries 0 RM records"
-              - "one display channel at 1280x1024"
-          - {id: ir3-ge16-4-rm1-gvo, refused: "the model presents one configuration"}
-          - {id: ir3-ge16-4-rm2, refused: "the model presents one configuration"}
-          - {id: ir3-ge16-4-rm4, refused: "the model presents one configuration"}
-          - {id: ir2-ge16-rm1, refused: "the model presents one configuration"}
-          - {id: ir2-ge16-rm2, refused: "the model presents one configuration"}
-          - {id: ir2-ge16-rm4, refused: "the model presents one configuration"}
-          - {id: ir4-ge16-4-rm1, refused: "the model presents one configuration"}
-          - {id: ir4-ge16-4-rm2, refused: "the model presents one configuration"}
-          - {id: ir4-ge16-4-rm4, refused: "the model presents one configuration"}
-      - names: [io2, io4, io5, io6, io7, io8]
-        description: "an Xtown slot for a further pipe"
-        modelled: false
-        reason: "the model builds one pipe"
+        description: "Xtown in XIO slot 3, cabled to the graphics module's Ktown: the rack's InfiniteReality pipe"
+        placement: {slot: io3}
+        default:
+          family: kona
+          product: ir3
+          settings: {rm-count: "1", display: dg5-2}
+        families:
+          - family: kona
+            products:
+              - product: ir2e
+                fidelity: approximated
+                limitations:
+                  - "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant"
+                  - "presents the TM7 as its 64 MB texture board, which is inferred"
+                  - "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                pairing: established
+                assembly: "030-1398-001"
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2", "4"], default: "1"}
+                  texture-mb: {values: ["64"]}
+                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+              - product: ir3
+                fidelity: approximated
+                limitations:
+                  - "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                pairing: established
+                assembly: "030-1398-001"
+                settings:
+                  geometry: {values: [ge16-4]}
+                  rm-type: {values: [rm9]}
+                  rm-count: {values: ["1", "2", "4"], default: "1"}
+                  texture-mb: {values: ["256"]}
+                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+        refusals:
+          - family: kona
+            product: ir2
+            reason: "no manual or capture places a GE14 InfiniteReality2 in an Onyx2 rack"
   data:
     machine:
       name: Onyx2 rack with one InfiniteReality pipe
