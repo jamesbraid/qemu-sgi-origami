@@ -905,11 +905,17 @@ static void aic7880_release_identity(AIC7880State *s)
     s->selection_wide = false;
 }
 
+static void aic7880_bus_free_qualify(AIC7880State *s)
+{
+    timer_mod(s->bus_free_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+}
+
 static void aic7880_bus_free_timer_cb(void *opaque)
 {
     AIC7880State *s = opaque;
 
-    if (!s->selected && !s->selection_pending &&
+    if (!s->selected && !s->selection_pending && !s->peer_reselection &&
         (!s->req || s->peer_nexus_disconnected)) {
         if (!s->peer_nexus_disconnected) {
             aic7880_release_identity(s);
@@ -933,8 +939,7 @@ static void aic7880_selection_timer_cb(void *opaque)
     s->selection_pending = false;
     s->regs[REG_SCSISIGI] &= ~0x08;
     s->regs[REG_SSTAT1] |= 0x80;
-    timer_mod(s->bus_free_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+    aic7880_bus_free_qualify(s);
     aic7880_update_scsi_irq(s);
 }
 
@@ -962,8 +967,7 @@ static void aic7880_cancel_selection(AIC7880State *s)
     if (s->selection_pending) {
         s->selection_pending = false;
         s->regs[REG_SCSISIGI] &= ~0x08;
-        timer_mod(s->bus_free_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+        aic7880_bus_free_qualify(s);
     }
 }
 
@@ -1224,8 +1228,7 @@ static void aic7880_nexus_message_done(AIC7880State *s)
         s->expected_phase = 0;
         s->regs[REG_SCSISIGI] = 0;
         s->regs[REG_SSTAT0] &= ~0x62;
-        timer_mod(s->bus_free_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 400);
+        aic7880_bus_free_qualify(s);
     } else {
         if (message == 2) { /* SAVE DATA POINTER. */
             s->peer_nexus_saved = true;
@@ -1334,11 +1337,11 @@ static void aic7880_pio_advance(AIC7880State *s)
         s->message_resume_command = false;
         s->regs[REG_SCSISIGI] = 0;
         s->regs[REG_SSTAT0] &= ~0x62;
-        s->regs[REG_SSTAT1] |= 0x08;
         s->selected = false;
         aic7880_release_identity(s);
         s->lun = 0;
         s->disconnect_allowed = false;
+        aic7880_bus_free_qualify(s);
         aic7880_pio_present(s);
         aic7880_update_scsi_irq(s);
     }
@@ -2776,6 +2779,7 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
             error_setg(errp, "invalid synthetic SCSI reselection");
             return;
         }
+        timer_del(s->bus_free_timer);
         s->peer_reselection = true;
         s->initiator_atn = false;
         s->regs[REG_SCSISIGI] = 0;
@@ -2795,8 +2799,8 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
         s->peer_nexus_message = 0;
         s->initiator_atn = false;
         s->regs[REG_SSTAT0] &= ~0x20;
-        s->regs[REG_SSTAT1] |= 0x08;
         s->regs[REG_SCSISIGI] = 0;
+        aic7880_bus_free_qualify(s);
         aic7880_update_scsi_irq(s);
         return;
     }
@@ -2868,7 +2872,7 @@ static void aic7880_peer_event_set(Object *obj, const char *value,
         s->expected_phase = 0;
         s->regs[REG_SCSISIGI] = 0;
         s->regs[REG_SSTAT0] &= ~0x62;
-        s->regs[REG_SSTAT1] |= 0x08;
+        aic7880_bus_free_qualify(s);
         aic7880_update_scsi_irq(s);
         return;
     }
