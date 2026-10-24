@@ -825,6 +825,335 @@ static void test_migration_without_blank_unblanks(void)
     g_rmdir(dir);
 }
 
+/*
+ * A deskside pipe configured as fancy-akita's: an InfiniteReality2 whose
+ * DG5-2 display generator, 030-1055-001, has two channels.
+ */
+#define DG5_2_ARGS \
+    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\"," \
+    "\"slot\":\"io4\",\"fabric-hub-widget\":9," \
+    "\"other-identity-parts\":[],\"product\":\"ir2\"," \
+    "\"display-generator\":\"030-1055-001\"}'"
+
+/*
+ * Head `head` of the pipe as a PPM, pixels only; its size goes to *width
+ * and *height. The file is removed.
+ */
+static uint8_t *kona_screendump_head(QTestState *s, const char *dir,
+                                     unsigned head, unsigned *width,
+                                     unsigned *height)
+{
+    g_autofree char *path = g_build_filename(dir, "head.ppm", NULL);
+    gchar *data = NULL;
+    gsize len = 0;
+    int header = 0;
+    uint8_t *pixels;
+
+    qtest_qmp_assert_success(s,
+        "{'execute': 'screendump', 'arguments': {'filename': %s, "
+        "'device': 'kona0', 'head': %u}}", path, head);
+    g_assert_true(g_file_get_contents(path, &data, &len, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(sscanf(data, "P6\n%u %u\n255\n%n", width, height,
+                           &header), ==, 2);
+    g_assert_cmpuint(len, ==, header + (gsize)*width * *height * 3);
+    pixels = g_memdup2(data + header, len - header);
+    g_free(data);
+    return pixels;
+}
+
+static uint32_t ppm_pixel_in(const uint8_t *pixels, unsigned width,
+                             unsigned x, unsigned line)
+{
+    const uint8_t *p = pixels + ((size_t)line * width + x) * 3;
+
+    return (p[0] << 16) | (p[1] << 8) | p[2];
+}
+
+/* One video command at the video token's slot, with its checksum. */
+static void kona_video(QTestState *s, uint32_t command, const uint32_t *data,
+                       unsigned count)
+{
+    uint32_t sum = command;
+
+    qtest_writel(s, REG_VIDEO_SLOT, command);
+    for (unsigned i = 0; i < count; i++) {
+        qtest_writel(s, REG_COMMAND_DATA, data[i]);
+        sum += data[i];
+    }
+    qtest_writel(s, REG_COMMAND_DATA, sum);
+}
+
+/*
+ * Channel `channel` loaded as the X server's combination load sends it:
+ * DisableChannel, a blank, LoadFormat with the format's active lines and
+ * pixels in words 23 and 24, Resize with the input rectangle's top row
+ * counted from the bottom of the managed area, an unblank and the two
+ * EnableChannel passes.
+ */
+static void kona_load_channel(QTestState *s, uint32_t channel,
+                              uint32_t format_w, uint32_t format_h,
+                              uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    uint32_t format[383] = { channel, 1 };
+
+    format[19] = 60 << 16;
+    format[23] = format_h;
+    format[24] = format_w;
+    kona_video(s, 0x18, (uint32_t[]){ channel }, 1);
+    kona_video(s, 0x1f, (uint32_t[]){ channel, 1 }, 2);
+    kona_video(s, 0x16, format, ARRAY_SIZE(format));
+    kona_video(s, 0x14, (uint32_t[]){ channel, x, KONA_FB_HEIGHT - 1 - y,
+                                      w, h, 1, 1, 0 }, 8);
+    kona_video(s, 0x1f, (uint32_t[]){ channel, 0 }, 2);
+    kona_video(s, 0x17, (uint32_t[]){ channel, 1, 0 }, 3);
+    kona_video(s, 0x17, (uint32_t[]){ channel, 0, 1 }, 3);
+}
+
+/*
+ * The managed area for the channel cases: grey everywhere, orange over
+ * the top 480 lines of the right half, and one blue point at column 700,
+ * display line 23.
+ */
+static void kona_draw_halves(QTestState *s)
+{
+    kona_load_colour(s, 1, 0x40, 0x40, 0x40);
+    kona_load_colour(s, 2, 0xc0, 0x80, 0x40);
+    kona_load_colour(s, 3, 0x00, 0x00, 0xff);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(s, 0x5, (uint32_t[]){ 0, 0, 1279, 1023 }, 4);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 2 }, 1);
+    kona_textport_push(s, 0x5, (uint32_t[]){ 640, wire_line(479), 1279,
+                                             1023 }, 4);
+    kona_textport_push(s, 0x2, (uint32_t[]){ 3 }, 1);
+    kona_textport_push(s, 0x6, (uint32_t[]){ 700, wire_line(23) }, 2);
+}
+
+/*
+ * Each channel of a two-channel display generator has its own console,
+ * head n of the device. Channel 1 starts off. Loaded as a 640x480 format
+ * showing the managed area's 640x480 rectangle at (640, 0), it shows
+ * exactly that: its top-left pixel is the managed area's (640, 0), the
+ * blue point at (700, 23) is its (60, 23), and its last pixel is
+ * (1279, 479)'s. Channel 0 still shows the whole managed area.
+ */
+static void test_channels_show_their_rectangles(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree uint8_t *ch0 = NULL;
+    g_autofree uint8_t *ch1 = NULL;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    kona_load_channel(s, 1, 640, 480, 640, 0, 640, 480);
+
+    ch1 = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmpuint(w, ==, 640);
+    g_assert_cmpuint(h, ==, 480);
+    g_assert_cmphex(ppm_pixel_in(ch1, w, 0, 0), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(ch1, w, 60, 23), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(ch1, w, 61, 23), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(ch1, w, 639, 479), ==, 0xc08040);
+
+    ch0 = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmpuint(w, ==, 1280);
+    g_assert_cmpuint(h, ==, 1024);
+    g_assert_cmphex(ppm_pixel_in(ch0, w, 0, 0), ==, 0x404040);
+    g_assert_cmphex(ppm_pixel_in(ch0, w, 700, 23), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(ch0, w, 640, 480), ==, 0x404040);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
+/*
+ * A channel whose input rectangle is smaller than its format shows it
+ * sampled up, nearest pixel: a 320x240 rectangle at (640, 0) on a 640x480
+ * format shows the blue point (700, 23) as output pixels (120, 46) to
+ * (121, 47). Drawing after the load repaints the channel's lines: a point
+ * at (641, 1) appears at (2, 2). ChannelBlanking shows the channel black
+ * and leaves channel 0 alone; DisableChannel stops it, so its console
+ * has no mode, and channel 0 keeps showing.
+ */
+static void test_channel_scales_blanks_and_stops(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *log = g_build_filename(dir, "trace.log", NULL);
+    g_autofree char *found = NULL;
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_initf("%s -trace enable=sgi_scanout_mode -D %s",
+                                DG5_2_ARGS, log);
+
+    kona_draw_halves(s);
+    kona_load_channel(s, 1, 640, 480, 640, 0, 320, 240);
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmpuint(w, ==, 640);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 119, 46), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 120, 46), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 121, 47), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 122, 47), ==, 0xc08040);
+    g_free(frame);
+
+    kona_textport_push(s, 0x6, (uint32_t[]){ 641, wire_line(1) }, 2);
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 2, 2), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 3, 3), ==, 0x0000ff);
+    g_free(frame);
+
+    kona_video(s, 0x1f, (uint32_t[]){ 1, 1 }, 2);
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 120, 46), ==, 0);
+    g_free(frame);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 700, 23), ==, 0x0000ff);
+    g_free(frame);
+
+    kona_video(s, 0x18, (uint32_t[]){ 1 }, 1);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmpuint(w, ==, 1280);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 700, 23), ==, 0x0000ff);
+    g_free(frame);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "sgi_scanout_mode 640x480 frame 0 "
+                                   "clocks at 0 Hz"));
+    g_assert_nonnull(strstr(found, "sgi_scanout_mode 0x0 frame 0 "
+                                   "clocks at 0 Hz"));
+    g_rmdir(dir);
+}
+
+static void cursor_register(QTestState *s, uint32_t selector, uint32_t value)
+{
+    qtest_writel(s, KONA_REG(0x8003c0), selector);
+    qtest_writel(s, KONA_REG(0x8003d0), value);
+}
+
+/*
+ * The cursor shows on the channel the kernel selects (selector 0x100), at
+ * the position it gives relative to that channel's origin (0x102), and on
+ * no other. A 64x64 image whose top-left pixel is red, loaded at cursor
+ * memory offset 0 and shown (0x103 = 2): at channel 0 position (100, 50)
+ * it shows on head 0 there; moved to channel 1 at (10, 20) it shows on
+ * head 1 there and head 0's pixel is the managed area's again.
+ */
+static void test_cursor_follows_its_channel(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    uint32_t image[260] = { 0 };
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    kona_load_channel(s, 1, 640, 480, 640, 0, 640, 480);
+    image[0] = 0x80000000;
+    image[257] = 0x3ff00000;
+    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x130), 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(image); i++) {
+        qtest_writel(s, REG_COMMAND_DATA, image[i]);
+    }
+    cursor_register(s, 0x100, 0);
+    cursor_register(s, 0x101, 0);
+    cursor_register(s, 0x102, (100 + 32) | ((50 + 32) << 13));
+    cursor_register(s, 0x103, 2);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0xff0000);
+    g_free(frame);
+
+    cursor_register(s, 0x100, 1);
+    cursor_register(s, 0x102, (10 + 32) | ((20 + 32) << 13));
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0xff0000);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 11, 20), ==, 0xc08040);
+    g_free(frame);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 100, 50), ==, 0x404040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 10, 20), ==, 0x404040);
+    g_free(frame);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
+/*
+ * A channel's gamma map: map 0, the table the X gamma load fills, or the
+ * linear map the X server sends as -2. With a table that maps the
+ * orange's components (red 0xc0, green 0x80 and blue 0x40, entries
+ * 0xc0c, 0x808 and 0x404 of their components) to 0xfff, channel 1 on map
+ * 0 shows the orange as white; moved to the linear map it shows the
+ * orange itself, while channel 0 stays on the table.
+ */
+static void test_channel_gamma_map(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    kona_load_channel(s, 1, 640, 480, 640, 0, 640, 480);
+    for (uint32_t c = 0; c < 3; c++) {
+        static const uint32_t entry[] = { 0xc0c, 0x808, 0x404 };
+
+        qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x12f),
+                     c * 0x1000 + entry[c]);
+        qtest_writel(s, REG_COMMAND_DATA, 1);
+        qtest_writel(s, REG_COMMAND_DATA, 0xfff);
+    }
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), ==, 0xffffff);
+    g_free(frame);
+
+    kona_video(s, 0x0f, (uint32_t[]){ 1, 0xfffffffe }, 2);
+    frame = kona_screendump_head(s, dir, 1, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), ==, 0xc08040);
+    g_free(frame);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 640, 0), ==, 0xffffff);
+    g_free(frame);
+    qtest_quit(s);
+    g_rmdir(dir);
+}
+
+/*
+ * The channels cross a migration: the destination's channel 1 shows the
+ * same rectangle, scaled the same way, and channel 0 the managed area.
+ */
+static void test_migration_carries_channels(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *dest_args = NULL;
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *from, *to;
+
+    from = qtest_init(DG5_2_ARGS);
+    kona_draw_halves(from);
+    kona_load_channel(from, 1, 640, 480, 640, 0, 320, 240);
+
+    dest_args = g_strdup_printf("%s -incoming %s", DG5_2_ARGS, uri);
+    to = qtest_init(dest_args);
+    sgi_migrate_stopped(from, uri);
+
+    frame = kona_screendump_head(to, dir, 1, &w, &h);
+    g_assert_cmpuint(w, ==, 640);
+    g_assert_cmpuint(h, ==, 480);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 120, 46), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 119, 46), ==, 0xc08040);
+    g_free(frame);
+    frame = kona_screendump_head(to, dir, 0, &w, &h);
+    g_assert_cmpuint(w, ==, 1280);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 700, 23), ==, 0x0000ff);
+    g_free(frame);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -872,6 +1201,19 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-scanout/"
                    "migration-without-blank-unblanks",
                    test_migration_without_blank_unblanks);
+
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "channels-show-their-rectangles",
+                   test_channels_show_their_rectangles);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "channel-scales-blanks-and-stops",
+                   test_channel_scales_blanks_and_stops);
+    qtest_add_func("sn0/origin2000/kona-scanout/cursor-follows-its-channel",
+                   test_cursor_follows_its_channel);
+    qtest_add_func("sn0/origin2000/kona-scanout/channel-gamma-map",
+                   test_channel_gamma_map);
+    qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-channels",
+                   test_migration_carries_channels);
 
     ret = g_test_run();
     qtest_quit(qts);

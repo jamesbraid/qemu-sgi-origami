@@ -560,7 +560,7 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
     sgi_plane_store(&s->mem, front, x, y, word);
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_front_tag), x, y,
                     SGI_KONA_TAG_DIRECT);
-    sgi_scanout_invalidate_plane(&s->scanout, front, y, y);
+    sgi_kona_invalidate_plane(s, front, y, y);
 }
 
 /*
@@ -579,11 +579,22 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
  * loads it, its index width, and whether it applies to the cursor (the
  * shared scanout composes the cursor afterwards, uncorrected) are
  * unknown.
+ *
+ * Each channel shows through the map ChannelGammaMap gave it: map 0 is
+ * this table, the only one the model holds, since the board answers
+ * GetBoardConfig's word 4 with 0 and the X server then keeps one gamma
+ * map; SGI_KONA_GAMMA_MAP_LINEAR, which the X server sends for a map it
+ * marks linear, shows the pixel unchanged (inferred from its log
+ * message, "Linear Gamma being used for bind").
  */
-static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, uint32_t rgb)
+static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, unsigned channel,
+                                     uint32_t rgb)
 {
     uint32_t out = 0;
 
+    if (s->channel[channel].gamma_map == SGI_KONA_GAMMA_MAP_LINEAR) {
+        return rgb;
+    }
     for (unsigned c = 0; c < SGI_KONA_GAMMA_COMPONENTS; c++) {
         unsigned shift = 16 - 8 * c;
         unsigned v = (rgb >> shift) & 0xff;
@@ -598,23 +609,17 @@ static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, uint32_t rgb)
 }
 
 /*
- * Display line y for the shared scanout: each pixel resolved by its tag
- * from the bank shown there (see sgi_kona_displayed_bank()), with the
- * unused top byte of an x8r8g8b8 word cleared, then through the gamma
- * table; every pixel black while the display is blanked (see
- * sgi_kona_video_temp_blank()). The shared scanout composes the loaded
- * cursor after resolving the row.
+ * Managed-area display line y (0 the top) as the display generator takes
+ * it in: each pixel resolved by its tag from the bank shown there (see
+ * sgi_kona_displayed_bank()), with the unused top byte of an x8r8g8b8 word
+ * cleared. The gamma table and blanking are each channel's, after.
  */
-static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
+static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
+                                          uint32_t *dst)
 {
-    SGIKonaState *s = opaque;
     int row = SGI_KONA_FB_HEIGHT - 1 - y;
     SGIClipRect r;
 
-    if (s->video_blanked) {
-        memset(dst, 0, SGI_KONA_FB_WIDTH * sizeof(*dst));
-        return;
-    }
     for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
         dst[x] = sgi_kona_bank_read(s, 0, x, row) & 0x00ffffff;
     }
@@ -630,9 +635,194 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         }
     }
     for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
-        dst[x] = sgi_kona_gamma_apply(s,
-                     sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff);
+        dst[x] = sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff;
     }
+}
+
+/*
+ * Display channels.
+ *
+ * Every channel of a pipe shows part of one framebuffer, the managed
+ * area, which the X server manages as one screen; ircombine places each
+ * channel's rectangle in it, and channels may overlap (public: SGI's
+ * answers on comp.sys.sgi.admin, 27 June 1997, and comp.sys.sgi.graphics,
+ * 13 June 2003). A channel's input rectangle is what GetResize reports
+ * for it; its output is its video format's active size. The model shows
+ * channel c on its own console, head c of the device: channel 0 on
+ * s->scanout, which also keeps the retrace and the swap queue, the others
+ * on s->channel_scanout[], with no retrace of their own.
+ *
+ * Approximated: an input rectangle smaller or larger than the format is
+ * sampled to it, nearest pixel, and a part outside the managed area shows
+ * black. How the display generator filters a resized channel is not
+ * known; nearest sampling keeps unscaled channels exact.
+ */
+typedef struct SGIKonaChannelView {
+    int64_t x, top;             /* managed-area column and display line */
+    uint32_t width, height;     /* the input rectangle */
+    uint32_t out_width, out_height; /* the format's active size */
+} SGIKonaChannelView;
+
+static unsigned sgi_kona_channel_count(const SGIKonaState *s)
+{
+    return s->config.channels ? s->config.channels : 1;
+}
+
+static SGIScanout *sgi_kona_channel_scanout(SGIKonaState *s, unsigned c)
+{
+    return c ? &s->channel_scanout[c - 1] : &s->scanout;
+}
+
+/* Whether channel c shows anything, and where it takes it from. */
+static bool sgi_kona_channel_view(const SGIKonaState *s, unsigned c,
+                                  SGIKonaChannelView *v)
+{
+    const SGIKonaChannel *ch = &s->channel[c];
+
+    if (c >= sgi_kona_channel_count(s) || !ch->enabled ||
+        !ch->format_width || !ch->format_height ||
+        !ch->input_width || !ch->input_height) {
+        return false;
+    }
+    *v = (SGIKonaChannelView) {
+        .x = ch->input_x,
+        .top = (int64_t)SGI_KONA_FB_HEIGHT - 1 - ch->input_y,
+        .width = ch->input_width,
+        .height = ch->input_height,
+        .out_width = ch->format_width,
+        .out_height = ch->format_height,
+    };
+    return true;
+}
+
+/*
+ * Managed-area display lines first..last changed: repaint the lines of
+ * every channel whose input rectangle takes from them.
+ */
+static void sgi_kona_invalidate_lines(SGIKonaState *s, int64_t first,
+                                      int64_t last)
+{
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        SGIKonaChannelView v;
+        int64_t a, b, l0, l1;
+
+        if (!sgi_kona_channel_view(s, c, &v)) {
+            continue;
+        }
+        a = MAX(first, v.top) - v.top;
+        b = MIN(last, v.top + v.height - 1) - v.top;
+        if (a > b) {
+            continue;
+        }
+        /* The output lines l whose source line l * height / out_height. */
+        l0 = DIV_ROUND_UP(a * v.out_height, v.height);
+        l1 = DIV_ROUND_UP((b + 1) * v.out_height, v.height) - 1;
+        sgi_scanout_invalidate(sgi_kona_channel_scanout(s, c), l0,
+                               l1 - l0 + 1);
+    }
+}
+
+void sgi_kona_invalidate_plane(SGIKonaState *s, const SGIPlane *p,
+                               int y0, int y1)
+{
+    if (p->bottom_origin) {
+        sgi_kona_invalidate_lines(s, (int64_t)p->height - 1 - MAX(y0, y1),
+                                  (int64_t)p->height - 1 - MIN(y0, y1));
+    } else {
+        sgi_kona_invalidate_lines(s, MIN(y0, y1), MAX(y0, y1));
+    }
+}
+
+/* Repaint every channel. */
+static void sgi_kona_invalidate_all(SGIKonaState *s)
+{
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        sgi_scanout_invalidate_all(sgi_kona_channel_scanout(s, c));
+    }
+}
+
+/*
+ * Output line y of a channel for its scanout: the input rectangle's line
+ * sampled to the format's width, then through the channel's gamma table;
+ * every pixel black while the display is blanked (see
+ * sgi_kona_video_temp_blank()) or outside the managed area. The shared
+ * scanout composes the cursor after resolving the row.
+ */
+static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
+                                         uint32_t *dst)
+{
+    SGIKonaChannelHook *h = opaque;
+    SGIKonaState *s = h->kona;
+    SGIKonaChannelView v;
+    int64_t line;
+
+    if (!sgi_kona_channel_view(s, h->index, &v)) {
+        memset(dst, 0, sgi_kona_channel_scanout(s, h->index)->mode.width *
+                       sizeof(*dst));
+        return;
+    }
+    line = v.top + (int64_t)y * v.height / v.out_height;
+    if (s->video_blanked || s->channel[h->index].blanked ||
+        line < 0 || line >= SGI_KONA_FB_HEIGHT) {
+        memset(dst, 0, v.out_width * sizeof(*dst));
+        return;
+    }
+    if (v.x == 0 && v.width == SGI_KONA_FB_WIDTH &&
+        v.out_width == SGI_KONA_FB_WIDTH) {
+        sgi_kona_resolve_managed_line(s, line, dst);
+    } else {
+        sgi_kona_resolve_managed_line(s, line, s->resolve_line);
+        for (uint32_t x = 0; x < v.out_width; x++) {
+            int64_t sx = v.x + (int64_t)x * v.width / v.out_width;
+
+            dst[x] = sx >= 0 && sx < SGI_KONA_FB_WIDTH ?
+                     s->resolve_line[sx] : 0;
+        }
+    }
+    for (uint32_t x = 0; x < v.out_width; x++) {
+        dst[x] = sgi_kona_gamma_apply(s, h->index, dst[x]);
+    }
+}
+
+/*
+ * The channels as the display generator starts: channel 0 shows the whole
+ * managed area at 1280x1024, the format the PROM falls back to (see the
+ * display datasheet), and every other channel is off.
+ *
+ * Approximated: a real display generator starts the combination stored
+ * in its own memory, which ircombine and setmon -x write; the model holds
+ * none, so it starts the single-channel combination every captured pipe
+ * can show. Nothing is known of what a reset does to a running
+ * combination.
+ */
+static void sgi_kona_channels_default(SGIKonaChannel *channel)
+{
+    memset(channel, 0, sizeof(*channel) * SGI_KONA_MAX_CHANNELS);
+    for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
+        channel[c].source = c;
+    }
+    channel[0] = (SGIKonaChannel) {
+        .enabled = true,
+        .format_width = SGI_KONA_FB_WIDTH,
+        .format_height = SGI_KONA_FB_HEIGHT,
+        .input_x = 0,
+        .input_y = SGI_KONA_FB_HEIGHT - 1,
+        .input_width = SGI_KONA_FB_WIDTH,
+        .input_height = SGI_KONA_FB_HEIGHT,
+    };
+}
+
+static void sgi_kona_channels_reset(SGIKonaState *s)
+{
+    sgi_kona_channels_default(s->channel);
+}
+
+/* Channel 0's rows; its scanout's hooks are handed the pipe itself. */
+static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
+{
+    SGIKonaState *s = opaque;
+
+    sgi_kona_channel_resolve_row(&s->channel_hook[0], y, dst);
 }
 
 static void sgi_kona_retrace(void *opaque);
@@ -649,17 +839,46 @@ static const SGIHeadOps sgi_kona_head_ops = {
     .retrace = sgi_kona_retrace,
 };
 
-/*
- * The one mode the model presents: the framebuffer's size, with the
- * retrace at SGI_KONA_FIELD_HZ (see that macro for why it is the model's
- * choice). A 60 Hz clock counting one per frame expresses it exactly.
- */
-static const SGIScanoutMode sgi_kona_scanout_mode = {
-    .width = SGI_KONA_FB_WIDTH,
-    .height = SGI_KONA_FB_HEIGHT,
-    .frame_clocks = 1,
-    .clock_hz = SGI_KONA_FIELD_HZ,
+/* The other channels only present; they queue no swaps. */
+static const SGIHeadOps sgi_kona_channel_head_ops = {
+    .resolve_row = sgi_kona_channel_resolve_row,
 };
+
+/*
+ * A channel's mode: its format's active size when it shows anything,
+ * none otherwise. Channel 0's carries the retrace at SGI_KONA_FIELD_HZ
+ * whatever it shows (see that macro for why the rate is the model's
+ * choice); a 60 Hz clock counting one per frame expresses it exactly.
+ * Inferred: the retrace interrupt the driver takes is the encoder
+ * channel's, and the model makes channel 0 the encoder.
+ */
+static void sgi_kona_channel_apply(SGIKonaState *s, unsigned c)
+{
+    SGIScanout *so = sgi_kona_channel_scanout(s, c);
+    SGIKonaChannelView v;
+    SGIScanoutMode mode = {
+        .frame_clocks = c ? 0 : 1,
+        .clock_hz = c ? 0 : SGI_KONA_FIELD_HZ,
+    };
+
+    if (sgi_kona_channel_view(s, c, &v)) {
+        mode.width = v.out_width;
+        mode.height = v.out_height;
+    }
+    if (so->mode.width != mode.width || so->mode.height != mode.height ||
+        so->mode.clock_hz != mode.clock_hz) {
+        sgi_scanout_set_mode(so, &mode);
+    } else {
+        sgi_scanout_invalidate_all(so);
+    }
+}
+
+static void sgi_kona_channels_apply(SGIKonaState *s)
+{
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        sgi_kona_channel_apply(s, c);
+    }
+}
 
 /*
  * Every drawing primitive shares this one colormap resolve step: command 6
@@ -698,7 +917,7 @@ static void sgi_kona_draw_point(SGIKonaState *s, int32_t x, int32_t y)
     sgi_plane_store(&s->mem, front, x, y, s->draw_color & 0xff);
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_front_tag), x, y,
                     SGI_KONA_TAG_COLOR_INDEX);
-    sgi_scanout_invalidate_plane(&s->scanout, front, y, y);
+    sgi_kona_invalidate_plane(s, front, y, y);
 }
 
 /*
@@ -965,6 +1184,8 @@ static void sgi_kona_swap_published(SGIKonaState *s, const SGICompletion *c)
     case SGI_DONE_SWAPPED:
         s->retrace_tag = tag;
         s->retrace_completed = true;
+        /* Channel 0's scanout repaints itself after a swap; the rest too. */
+        sgi_kona_invalidate_all(s);
         trace_sgi_kona_retrace_done(tag);
         if (owner && owner->context == slot && slot >= 0 &&
             slot < SGI_KONA_CONTEXTS && s->state[slot] &&
@@ -1240,7 +1461,7 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
 
             s->colormap[index] = (r << 16) | (g << 8) | b;
             /* Pixels already drawn in this entry change colour. */
-            sgi_scanout_invalidate_all(&s->scanout);
+            sgi_kona_invalidate_all(s);
         }
         break;
     case 0x5:
@@ -2215,6 +2436,7 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
                    "030-1242-001", dg_part);
         goto refused;
     }
+    c->channels = c->display->channels;
     if (s->channels && s->channels != c->display->channels) {
         error_setg(errp, "sgi-kona: channels %u: display generator %s "
                    "reports %u", s->channels, dg_part,
@@ -2369,12 +2591,16 @@ static const struct {
  * The pixel depth stays small (0) and the size 1280x1024: they follow the
  * video format combination, and the model draws only that one.
  *
- * Approximated: the channel count reported here (two, or eight for
- * 030-1087-001) is presentation only. The video commands, the cursor and
- * the gamma maps model channel 0 alone: GetBoardConfig answers the same
- * single-channel reply as an unconfigured pipe, and GetChannelConfig or
- * command 0x15 for any other channel is logged and answered with nothing
- * (sgi_kona_video_complete()). Only channel 0 scans out.
+ * The display generator's channel count goes both at +0x14, which gfxinfo
+ * prints, and at +0x44, which the combination checker in setmon,
+ * ircombine and the X server (vfmtActualHWToKonaTarget, setmon
+ * 0x100195a0, reading the GFX_GETBOARDINFO copy 0x28 bytes in) compares
+ * a combination's enabled channels against; with 0 there every
+ * combination is refused as "too many channels". That +0x44 is the
+ * display generator's own count, and +0x48 to +0x50, which the checker
+ * also reads and the model leaves zero, its revision and an option
+ * board's channel type and revision, is inferred from that use. Every
+ * channel is driven: see "Display channels" above.
  */
 #define SGI_KONA_CFG_BOARD_SET      0x00
 #define SGI_KONA_CFG_ENGINES        0x04
@@ -2385,6 +2611,7 @@ static const struct {
 #define SGI_KONA_CFG_GAMMA          0x20
 #define SGI_KONA_CFG_RM_PRESENT(i)  (0x24 + 8 * (i))
 #define SGI_KONA_CFG_RM_TEXTURE(i)  (0x28 + 8 * (i))
+#define SGI_KONA_CFG_DG_CHANNEL_COUNT 0x44
 #define SGI_KONA_CFG_ACTIVE_ENGINES 0x54
 #define SGI_KONA_CFG_ACTIVE_RMS     0x58
 #define SGI_KONA_CFG_OCCUPANCY      0x5c
@@ -2469,6 +2696,7 @@ static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
     stl_be_p(block + SGI_KONA_CFG_VIDEO_OPTION,
              c->option ? c->option->code : 0);
     stl_be_p(block + SGI_KONA_CFG_GAMMA, c->display->external_gamma);
+    stl_be_p(block + SGI_KONA_CFG_DG_CHANNEL_COUNT, channels);
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_ENGINES, c->geometry->engines);
     stl_be_p(block + SGI_KONA_CFG_ACTIVE_RMS, c->rm_count);
     stl_be_p(block + SGI_KONA_CFG_OCCUPANCY, c->geometry->occupancy);
@@ -2984,15 +3212,95 @@ static void sgi_kona_video_open(SGIKonaState *s, uint32_t command)
     s->video_tail_sum = 0;
 }
 
-/* Fixed single-channel model replies; unspecified words are zero. */
-static const struct {
-    uint32_t command;
-    uint32_t words[5];
-} sgi_kona_video_replies[] = {
-    { SGI_KONA_VIDEO_GET_BOARD_CONFIG, { 1, 1, 0, 0, 0 } },
-    { SGI_KONA_VIDEO_GET_CHANNEL_CONFIG, { 0xf } },
-    { 0x15, { 0, 1023, 1280, 1024 } },
-};
+/*
+ * Whether a channel-describing Get names a channel the display generator
+ * has: the board mask's bits are its physical channels 0 to n - 1.
+ */
+static bool sgi_kona_video_names_channel(uint32_t command)
+{
+    switch (command) {
+    case SGI_KONA_VIDEO_GET_CHANNEL_CONFIG:
+    case SGI_KONA_VIDEO_GET_RESIZE:
+    case SGI_KONA_VIDEO_GET_VAMPIRE:
+    case SGI_KONA_VIDEO_GET_CHANNEL_ENABLES:
+    case SGI_KONA_VIDEO_GET_FORMAT_INFO:
+    case SGI_KONA_VIDEO_GET_CHANNEL_BLANKING:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * The data words of a Get's reply, from the channels' state; every word
+ * not set here is zero. The layouts are those the 6.5.30 X server's video
+ * initialiser (konal.so 0x4f4490) and its channel routines read, from the
+ * command grammar datasheet's display channel section:
+ *
+ * - GetBoardConfig: version 1, the board mask (bit n: physical channel n
+ *   exists), option mask 0, options code 0 (no option board), flag 0.
+ * - GetChannelConfig: word 0 bit 0x1 present, 0x2 the encoder (channel
+ *   0), 0x4 and 0x8 together enabled and active; 18 the cursor priority.
+ *   Words 1-16 would name the format, which the X server looks up as a
+ *   .vfo file itself, and 17 its datestamp: no setter sends a name, so
+ *   where a pipe takes them from is unknown, and the model sends none,
+ *   as the true-wombat capture's channel 0 shows ("0 pixels, 0 lines").
+ * - GetChannelBlanking: word 0 whether ChannelBlanking blanks it.
+ * - GetResize: words 0-3 the input rectangle (x, the top row counted from
+ *   the bottom of the managed area, width, height), 4-7 the rectangle a
+ *   resize may pan over, 8-11 the steps a resize moves in, 12-13 the
+ *   largest size.
+ * - GetVampire: word 0 the physical channel whose timing this one takes,
+ *   the one Vampire last named; the channel itself after reset.
+ * - GetChannelEnables: word 1 whether the channel is enabled.
+ *
+ * Approximated: no reply has been captured from a pipe. The panning
+ * rectangle (the whole managed area), the steps (one pixel), the largest
+ * size (the managed area) and every word no reader takes are the model's
+ * choices, and so is version 1, which the X server only prints. A step or
+ * largest size of 0 would pin every resize the X server asks for to an
+ * empty rectangle.
+ */
+static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
+                                       uint32_t channel, uint32_t *words)
+{
+    const SGIKonaChannel *ch = &s->channel[channel];
+
+    switch (command) {
+    case SGI_KONA_VIDEO_GET_BOARD_CONFIG:
+        words[0] = 1;
+        words[1] = MAKE_64BIT_MASK(0, sgi_kona_channel_count(s));
+        break;
+    case SGI_KONA_VIDEO_GET_CHANNEL_CONFIG:
+        words[0] = 0x1 | (channel == 0 ? 0x2 : 0) | (ch->enabled ? 0xc : 0);
+        words[18] = ch->cursor_priority;
+        break;
+    case SGI_KONA_VIDEO_GET_RESIZE:
+        words[0] = ch->input_x;
+        words[1] = ch->input_y;
+        words[2] = ch->input_width;
+        words[3] = ch->input_height;
+        words[4] = 0;
+        words[5] = SGI_KONA_FB_HEIGHT - 1;
+        words[6] = SGI_KONA_FB_WIDTH;
+        words[7] = SGI_KONA_FB_HEIGHT;
+        words[8] = words[9] = words[10] = words[11] = 1;
+        words[12] = SGI_KONA_FB_WIDTH;
+        words[13] = SGI_KONA_FB_HEIGHT;
+        break;
+    case SGI_KONA_VIDEO_GET_VAMPIRE:
+        words[0] = ch->source;
+        break;
+    case SGI_KONA_VIDEO_GET_CHANNEL_BLANKING:
+        words[0] = ch->blanked;
+        break;
+    case SGI_KONA_VIDEO_GET_CHANNEL_ENABLES:
+        words[1] = ch->enabled;
+        break;
+    default:
+        break;
+    }
+}
 
 /*
  * Post the reply to a video Get on the return page: word 2 the reply id,
@@ -3014,19 +3322,17 @@ static void sgi_kona_video_reply(SGIKonaState *s,
                                  const SGIKonaVideoCommand *v)
 {
     uint8_t reply[4 + SGI_KONA_VIDEO_MAX_REPLY_BYTES + 4] = { 0 };
+    uint32_t data[SGI_KONA_VIDEO_MAX_REPLY_BYTES / 4] = { 0 };
     uint32_t words = v->reply_bytes / 4;
     uint32_t sum = v->reply_id;
+    uint32_t channel = sgi_kona_video_names_channel(v->command) ?
+                       s->video_first : 0;
 
     assert(v->reply_bytes <= SGI_KONA_VIDEO_MAX_REPLY_BYTES);
-    for (size_t i = 0; i < ARRAY_SIZE(sgi_kona_video_replies); i++) {
-        if (sgi_kona_video_replies[i].command != v->command) {
-            continue;
-        }
-        for (uint32_t w = 0;
-             w < words && w < ARRAY_SIZE(sgi_kona_video_replies[i].words);
-             w++) {
-            stl_be_p(reply + 4 + 4 * w, sgi_kona_video_replies[i].words[w]);
-        }
+    assert(channel < SGI_KONA_MAX_CHANNELS);
+    sgi_kona_video_reply_words(s, v->command, channel, data);
+    for (uint32_t w = 0; w < words; w++) {
+        stl_be_p(reply + 4 + 4 * w, data[w]);
     }
     stl_be_p(reply, v->reply_id);
     for (uint32_t w = 0; w < words; w++) {
@@ -3056,8 +3362,154 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
 {
     if (s->video_blanked != (blank != 0)) {
         s->video_blanked = blank != 0;
-        sgi_scanout_invalidate_all(&s->scanout);
+        sgi_kona_invalidate_all(s);
     }
+}
+
+/*
+ * The channel setters, as the 6.5.30 X server's combination load
+ * (konLdCombination, konal.so 0x503e00) and its channel requests send
+ * them; the command grammar datasheet's display channel section gives
+ * each word's source. Word 0 of every one is the physical channel, the
+ * board mask's bit number.
+ *
+ * - DisableChannel [channel]: the channel stops; its console shows no
+ *   mode.
+ * - LoadFormat [channel, 1, ...]: the channel's format; words 23 and 24
+ *   are the format's active lines and pixels, the channel's output size.
+ *   The channel runs.
+ * - EnableChannel [channel, on, own timing]: word 1 nonzero runs the
+ *   channel; zero leaves it as it is.
+ * - Resize [channel, x, top row from the bottom, width, height, 1,
+ *   flicker, 0]: the input rectangle.
+ * - ChannelBlanking [channel, blank]: nonzero shows the channel black.
+ * - ChannelGammaMap [channel, map]: the gamma map the channel shows
+ *   through.
+ * - CursorPriority [channel, priority], Vampire [channel, source, ...]:
+ *   kept for GetChannelConfig's word 18 and GetVampire's word 0.
+ *
+ * Inferred: the load sends DisableChannel for every channel, then each
+ * enabled channel's LoadFormat, Resize and ChannelBlanking [channel, 0],
+ * then two EnableChannel passes, [channel, on, 0] then [channel, 0, own
+ * timing]; it sends the master channel's as [1, 1, 0] and [1, 0, own]
+ * whatever channel the master is. Word 1 cannot be the channel's state,
+ * or the second pass would turn every channel off, and a master channel
+ * 0 would get no EnableChannel at all. So the model runs a channel from
+ * its LoadFormat, and takes EnableChannel's word 1 only as a request to
+ * run. Every sequence the shipped senders make leaves the same channels
+ * running under this reading; what words 1 and 2, and the literal 1, mean
+ * to the display generator is unknown. A hardware trace of a load would
+ * settle it.
+ *
+ * Approximated: a vampire channel, one that takes another channel's
+ * timing and pixels, and a channel bound to an X window are logged as
+ * unimplemented; the channel keeps showing its own input rectangle.
+ * Every other setter is framed and has no effect, the timing words of
+ * LoadFormat included: each channel's console updates at the model's
+ * one retrace rate.
+ */
+static void sgi_kona_cursor_update(SGIKonaState *s);
+
+static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
+{
+    const uint32_t *d = s->video_data;
+    uint32_t channel = d[0];
+    SGIKonaChannel *ch;
+
+    switch (command) {
+    case SGI_KONA_VIDEO_DISABLE_CHANNEL:
+    case SGI_KONA_VIDEO_LOAD_FORMAT:
+    case SGI_KONA_VIDEO_ENABLE_CHANNEL:
+    case SGI_KONA_VIDEO_RESIZE:
+    case SGI_KONA_VIDEO_CHANNEL_BLANKING:
+    case SGI_KONA_VIDEO_CHANNEL_GAMMA_MAP:
+    case SGI_KONA_VIDEO_CURSOR_PRIORITY:
+    case SGI_KONA_VIDEO_VAMPIRE:
+    case SGI_KONA_VIDEO_BIND_TO_X_WINDOW:
+        break;
+    case SGI_KONA_VIDEO_SETUP_FRAME_BUFFER:
+        if (d[0] != SGI_KONA_FB_WIDTH || d[1] != SGI_KONA_FB_HEIGHT) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: managed area %ux%u: the "
+                          "framebuffer is %ux%u\n", d[0], d[1],
+                          SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT);
+        }
+        return;
+    default:
+        return;
+    }
+    if (channel >= sgi_kona_channel_count(s)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported video channel %u for 0x%x\n",
+                      channel, command);
+        return;
+    }
+    ch = &s->channel[channel];
+    trace_sgi_kona_video_channel(command, channel, d[1], d[2], d[3], d[4]);
+    switch (command) {
+    case SGI_KONA_VIDEO_DISABLE_CHANNEL:
+        ch->enabled = false;
+        break;
+    case SGI_KONA_VIDEO_LOAD_FORMAT:
+        if (!d[23] || !d[24] || d[23] > SGI_SCANOUT_MAX_DIM ||
+            d[24] > SGI_SCANOUT_MAX_DIM) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: channel %u format "
+                          "%ux%u is outside the sizes presented\n", channel,
+                          d[24], d[23]);
+            return;
+        }
+        ch->format_width = d[24];
+        ch->format_height = d[23];
+        ch->enabled = true;
+        break;
+    case SGI_KONA_VIDEO_ENABLE_CHANNEL:
+        if (d[1]) {
+            ch->enabled = true;
+        }
+        break;
+    case SGI_KONA_VIDEO_RESIZE:
+        if (d[1] > SGI_SCANOUT_MAX_DIM || d[2] > SGI_SCANOUT_MAX_DIM ||
+            d[3] > SGI_SCANOUT_MAX_DIM || d[4] > SGI_SCANOUT_MAX_DIM) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: channel %u input "
+                          "%ux%u at %u,%u is outside the sizes presented\n",
+                          channel, d[3], d[4], d[1], d[2]);
+            return;
+        }
+        ch->input_x = d[1];
+        ch->input_y = d[2];
+        ch->input_width = d[3];
+        ch->input_height = d[4];
+        break;
+    case SGI_KONA_VIDEO_CHANNEL_BLANKING:
+        ch->blanked = d[1] != 0;
+        break;
+    case SGI_KONA_VIDEO_CHANNEL_GAMMA_MAP:
+        if (d[1] != 0 && d[1] != SGI_KONA_GAMMA_MAP_LINEAR) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: channel %u gamma map %d: "
+                          "the model holds map 0 alone\n", channel,
+                          (int32_t)d[1]);
+            return;
+        }
+        ch->gamma_map = d[1];
+        break;
+    case SGI_KONA_VIDEO_CURSOR_PRIORITY:
+        ch->cursor_priority = d[1];
+        return;
+    case SGI_KONA_VIDEO_VAMPIRE:
+        ch->source = d[1];
+        if (d[1] != channel) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: channel %u taking channel "
+                          "%u's timing is not modelled\n", channel, d[1]);
+        }
+        return;
+    case SGI_KONA_VIDEO_BIND_TO_X_WINDOW:
+        if (d[1]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: channel %u bound to X "
+                          "window 0x%x is not modelled\n", channel, d[1]);
+        }
+        return;
+    }
+    sgi_kona_channel_apply(s, channel);
+    sgi_kona_cursor_update(s);
 }
 
 static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
@@ -3086,9 +3538,10 @@ static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
     if (v->command == SGI_KONA_VIDEO_TEMP_BLANK) {
         sgi_kona_video_temp_blank(s, s->video_first);
     }
+    sgi_kona_video_setter(s, v->command);
     if (v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
-        if ((v->command == SGI_KONA_VIDEO_GET_CHANNEL_CONFIG ||
-             v->command == 0x15) && s->video_first != 0) {
+        if (sgi_kona_video_names_channel(v->command) &&
+            s->video_first >= sgi_kona_channel_count(s)) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: unsupported video channel %u for 0x%x\n",
                           s->video_first, v->command);
@@ -3107,6 +3560,10 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
         word == sgi_kona_video_sum(s) : s->video_have == length) {
         sgi_kona_video_complete(s, word);
         return;
+    }
+    if (length != SGI_KONA_VIDEO_DATA_UNKNOWN &&
+        s->video_have < SGI_KONA_VIDEO_MAX_DATA_WORDS) {
+        s->video_data[s->video_have] = word;
     }
     if (s->video_have++ == 0) {
         s->video_first = word;
@@ -3174,7 +3631,7 @@ static void sgi_kona_color_map_word(SGIKonaState *s, uint32_t word)
     if (addr < SGI_KONA_X_COLOR_MAP_ENTRIES) {
         s->x_color_map[addr] = word;
         /* X pixels already drawn in this entry change colour. */
-        sgi_scanout_invalidate_all(&s->scanout);
+        sgi_kona_invalidate_all(s);
     } else {
         s->color_map_outside++;
     }
@@ -3221,7 +3678,7 @@ static void sgi_kona_gamma_update(SGIKonaState *s)
             }
         }
     }
-    sgi_scanout_invalidate_all(&s->scanout);
+    sgi_kona_invalidate_all(s);
 }
 
 static void sgi_kona_gamma_complete(SGIKonaState *s)
@@ -3287,16 +3744,27 @@ static int sgi_kona_cursor_coord(uint32_t value)
     return (coord >= 4096 ? coord - 8192 : coord) - 32;
 }
 
+/*
+ * The cursor shows on one channel, the one the kernel last selected with
+ * selector 0x100, at the position selector 0x102 gives, which the kernel
+ * computes relative to that channel's origin (see the command grammar's
+ * cursor section). Every other channel shows none. A channel number the
+ * display generator does not have shows the cursor nowhere.
+ */
 static void sgi_kona_cursor_update(SGIKonaState *s)
 {
     uint32_t argb[64 * 64];
     unsigned entry = s->cursor_offset / SGI_KONA_X_CURSOR_DATA_WORDS;
     int x = sgi_kona_cursor_coord(s->cursor_position);
     int y = sgi_kona_cursor_coord(s->cursor_position >> 13);
-    bool on = s->cursor_mode == 2 && !s->cursor_channel &&
+    unsigned channel = s->cursor_channel;
+    SGIKonaChannelView v;
+    bool on = s->cursor_mode == 2 &&
               sgi_kona_cursor_offset_valid(s->cursor_offset) &&
-              s->cursor_valid[entry] && x >= -63 && x < SGI_KONA_FB_WIDTH &&
-              y >= -63 && y < SGI_KONA_FB_HEIGHT;
+              s->cursor_valid[entry] &&
+              sgi_kona_channel_view(s, channel, &v) &&
+              x >= -63 && x < (int)v.out_width &&
+              y >= -63 && y < (int)v.out_height;
 
     if (on) {
         const uint32_t *image = s->cursor_images + entry * 260;
@@ -3316,9 +3784,13 @@ static void sgi_kona_cursor_update(SGIKonaState *s)
                 argb[row * 64 + col] = colors[a + 2 * b];
             }
         }
-        sgi_scanout_cursor_define(&s->scanout, 64, 64, 0, 0, argb);
+        sgi_scanout_cursor_define(sgi_kona_channel_scanout(s, channel),
+                                  64, 64, 0, 0, argb);
     }
-    sgi_scanout_cursor_move(&s->scanout, x, y, on);
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        sgi_scanout_cursor_move(sgi_kona_channel_scanout(s, c), x, y,
+                                on && c == channel);
+    }
 }
 
 static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
@@ -3326,10 +3798,10 @@ static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
     switch (s->cursor_selector) {
     case 0x100:
         s->cursor_channel = value;
-        if (value) {
+        if (value >= sgi_kona_channel_count(s)) {
             qemu_log_mask(LOG_UNIMP,
-                          "sgi-kona: unsupported cursor channel %u\n",
-                          value);
+                          "sgi-kona: unsupported cursor channel %u of %u\n",
+                          value, sgi_kona_channel_count(s));
         }
         break;
     case 0x101:
@@ -3688,7 +4160,7 @@ static void sgi_kona_gl_store_colour(void *opaque, SGIColourTarget target,
     sgi_plane_store(&s->mem, sgi_kona_plane(s, sgi_kona_bank_tag_plane(s,
                                                                   bank)),
                     x, y, SGI_KONA_TAG_DIRECT);
-    sgi_scanout_invalidate_plane(&s->scanout, p, y, y);
+    sgi_kona_invalidate_plane(s, p, y, y);
 }
 
 static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
@@ -3716,7 +4188,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
         sgi_plane_store(&s->desktop_mem, p, x, y,
                         (old & ~mask) | (index & mask));
         s->desktop_state_used = true;
-        sgi_scanout_invalidate_plane(&s->scanout, p, y, y);
+        sgi_kona_invalidate_plane(s, p, y, y);
         return;
     }
     if (bank < 0 || (bits != 8 && bits != 12) ||
@@ -3735,7 +4207,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
     sgi_plane_store(&s->mem, sgi_kona_plane(s,
                        sgi_kona_bank_tag_plane(s, bank)),
                     x, y, SGI_KONA_TAG_X_INDEX16);
-    sgi_scanout_invalidate_plane(&s->scanout, p, y, y);
+    sgi_kona_invalidate_plane(s, p, y, y);
 }
 
 static uint32_t sgi_kona_gl_load_colour(void *opaque, SGIColourTarget target,
@@ -3895,7 +4367,7 @@ static void sgi_kona_mesa_dirty_plane(void *opaque, uint32_t id,
                       id == s->plane_back_tag ? s->plane_back : id;
 
     if (colour == s->plane_front || colour == s->plane_back) {
-        sgi_scanout_invalidate_plane(&s->scanout,
+        sgi_kona_invalidate_plane(s,
                                      sgi_kona_plane(s, colour), y0, y1);
     }
 }
@@ -11192,7 +11664,7 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                 }
             }
             if (changed) {
-                sgi_scanout_invalidate_plane(&s->scanout, front[bank],
+                sgi_kona_invalidate_plane(s, front[bank],
                                              row, row);
             }
         }
@@ -12998,7 +13470,7 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
             changed = true;
         }
         if (changed) {
-            sgi_scanout_invalidate_plane(&s->scanout, front, dst_row, dst_row);
+            sgi_kona_invalidate_plane(s, front, dst_row, dst_row);
         }
     }
 }
@@ -13093,7 +13565,7 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
             }
         }
         if (changed) {
-            sgi_scanout_invalidate_plane(&s->scanout, front, py, py);
+            sgi_kona_invalidate_plane(s, front, py, py);
         }
     }
 }
@@ -13220,7 +13692,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
             sgi_kona_gl_read_dma_refuse(s);
             memset(&s->state[i]->window, 0, sizeof(s->state[i]->window));
             sgi_kona_gl_set_drawable(s, i);
-            sgi_scanout_invalidate_all(&s->scanout);
+            sgi_kona_invalidate_all(s);
         }
         sgi_kona_post_reason(s, selector, args[0]);
         break;
@@ -13395,7 +13867,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
             s->desktop_map_valid[args[0]] = true;
             s->desktop_map_reported[args[0]] = false;
             s->desktop_state_used = true;
-            sgi_scanout_invalidate_all(&s->scanout);
+            sgi_kona_invalidate_all(s);
         } else {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported desktop map "
                           "ID %u raw=0x%08x\n", args[0], args[1]);
@@ -13853,6 +14325,7 @@ static void sgi_kona_input_save(SGIKonaState *s, int owner)
     v->video_first = s->video_first;
     v->video_tail_sum = s->video_tail_sum;
     v->flash_op = s->flash_op;
+    memcpy(v->video_data, s->video_data, sizeof(v->video_data));
     v->color_map_start = s->color_map_start;
     v->color_map_count = s->color_map_count;
     v->color_map_remaining = s->color_map_remaining;
@@ -14004,6 +14477,7 @@ static void sgi_kona_input_restore(SGIKonaState *s, int owner)
     s->video_first = v->video_first;
     s->video_tail_sum = v->video_tail_sum;
     s->flash_op = v->flash_op;
+    memcpy(s->video_data, v->video_data, sizeof(s->video_data));
     s->color_map_start = v->color_map_start;
     s->color_map_count = v->color_map_count;
     s->color_map_remaining = v->color_map_remaining;
@@ -15181,9 +15655,21 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 
         sgi_board_memory_add_plane(&s->x_write_mem, &plane, &error_abort);
     }
+    for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
+        s->channel_hook[c] = (SGIKonaChannelHook) { .kona = s, .index = c };
+    }
     sgi_scanout_init(&s->scanout, DEVICE(s), &sgi_kona_head_ops, s);
     s->scanout.composite_cursor = true;
-    sgi_scanout_set_mode(&s->scanout, &sgi_kona_scanout_mode);
+    s->channel_scanouts = sgi_kona_channel_count(s) - 1;
+    for (unsigned c = 1; c < sgi_kona_channel_count(s); c++) {
+        SGIScanout *so = sgi_kona_channel_scanout(s, c);
+
+        sgi_scanout_init_head(so, DEVICE(s), c, &sgi_kona_channel_head_ops,
+                              &s->channel_hook[c]);
+        so->composite_cursor = true;
+    }
+    sgi_kona_channels_reset(s);
+    sgi_kona_channels_apply(s);
     return true;
 }
 
@@ -15798,6 +16284,11 @@ static void sgi_kona_instance_finalize(Object *obj)
     if (s->scanout.con) {
         sgi_scanout_cleanup(&s->scanout);
     }
+    for (unsigned c = 1; c < SGI_KONA_MAX_CHANNELS; c++) {
+        if (s->channel_scanout[c - 1].con) {
+            sgi_scanout_cleanup(&s->channel_scanout[c - 1]);
+        }
+    }
     /*
      * fabric_as is an embedded AddressSpace, not a pointer: a board that
      * never reached finish_realize() never called address_space_init()
@@ -16041,7 +16532,11 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->desktop_id_reported = false;
     s->packed_index_short_reported = false;
     s->fb_word_low_bits_reported = false;
-    sgi_scanout_reset(&s->scanout);
+    sgi_kona_channels_reset(s);
+    sgi_kona_channels_apply(s);
+    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+        sgi_scanout_reset(sgi_kona_channel_scanout(s, c));
+    }
 }
 
 static const Property sgi_kona_properties[] = {
@@ -16167,6 +16662,12 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     /* The same for a held 1 1. */
     s->gl_level1_held = 0;
     s->gl_level1_arg = 0;
+    /*
+     * The channels subsection only when a channel left its reset state,
+     * and the video-data one only while a command takes its words.
+     */
+    sgi_kona_channels_reset(s);
+    memset(s->video_data, 0, sizeof(s->video_data));
     return 0;
 }
 
@@ -16453,7 +16954,7 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
           s->textport_expect_sync))) {
         return -EINVAL;
     }
-    sgi_scanout_invalidate_all(&s->scanout);
+    sgi_kona_invalidate_all(s);
     sgi_kona_cursor_update(s);
     return 0;
 }
@@ -16504,7 +17005,7 @@ static int sgi_kona_desktop_post_load(void *opaque, int version_id)
     }
     s->desktop_state_used = true;
     s->display_id_generation++;
-    sgi_scanout_invalidate_all(&s->scanout);
+    sgi_kona_invalidate_all(s);
     return 0;
 }
 
@@ -16576,6 +17077,99 @@ static const VMStateDescription vmstate_sgi_kona_desktop = {
 
 DEFINE_VMSTATE_SGI_SCANOUT(vmstate_sgi_kona_scanout, TYPE_SGI_KONA "/scanout",
                            SGIKonaState, scanout);
+
+/*
+ * The display channels, and the consoles of channels past 0, whose
+ * scanouts carry their own modes and cursors. Needed on a pipe with more
+ * than one channel, or once channel 0 left the state reset gives it.
+ */
+static bool sgi_kona_channels_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+    SGIKonaChannel reset[SGI_KONA_MAX_CHANNELS];
+
+    sgi_kona_channels_default(reset);
+    return s->channel_scanouts ||
+           memcmp(reset, s->channel, sizeof(reset)) != 0;
+}
+
+static int sgi_kona_channels_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
+        const SGIKonaChannel *ch = &s->channel[c];
+
+        if (ch->format_width > SGI_SCANOUT_MAX_DIM ||
+            ch->format_height > SGI_SCANOUT_MAX_DIM ||
+            ch->input_width > SGI_SCANOUT_MAX_DIM ||
+            ch->input_height > SGI_SCANOUT_MAX_DIM ||
+            ch->input_x > SGI_SCANOUT_MAX_DIM ||
+            ch->input_y > SGI_SCANOUT_MAX_DIM) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_channel = {
+    .name = TYPE_SGI_KONA "/channel-entry",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(enabled, SGIKonaChannel),
+        VMSTATE_UINT32(format_width, SGIKonaChannel),
+        VMSTATE_UINT32(format_height, SGIKonaChannel),
+        VMSTATE_UINT32(input_x, SGIKonaChannel),
+        VMSTATE_UINT32(input_y, SGIKonaChannel),
+        VMSTATE_UINT32(input_width, SGIKonaChannel),
+        VMSTATE_UINT32(input_height, SGIKonaChannel),
+        VMSTATE_BOOL(blanked, SGIKonaChannel),
+        VMSTATE_UINT32(gamma_map, SGIKonaChannel),
+        VMSTATE_UINT32(cursor_priority, SGIKonaChannel),
+        VMSTATE_UINT32(source, SGIKonaChannel),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_channels = {
+    .name = TYPE_SGI_KONA "/channels",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_channels_needed,
+    .post_load = sgi_kona_channels_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(channel, SGIKonaState, SGI_KONA_MAX_CHANNELS, 1,
+                             vmstate_sgi_kona_channel, SGIKonaChannel),
+        VMSTATE_UINT32_EQUAL(channel_scanouts, SGIKonaState),
+        VMSTATE_STRUCT_VARRAY_UINT32(channel_scanout, SGIKonaState,
+                                     channel_scanouts, 1, vmstate_sgi_scanout,
+                                     SGIScanout),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* The data words of a video command still open, for its action. */
+static bool sgi_kona_video_data_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->video_open && s->video_have &&
+           sgi_kona_video_data_words(s->video_command) !=
+           SGI_KONA_VIDEO_DATA_UNKNOWN;
+}
+
+static const VMStateDescription vmstate_sgi_kona_video_data = {
+    .name = TYPE_SGI_KONA "/video-data",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_video_data_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(video_data, SGIKonaState,
+                             SGI_KONA_VIDEO_MAX_DATA_WORDS),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 /*
  * State for the X server's commands: the sum of an open video command's
@@ -16932,6 +17526,27 @@ static const VMStateDescription vmstate_sgi_kona_saved_flash_op = {
     },
 };
 
+static bool sgi_kona_saved_video_data_needed(void *opaque)
+{
+    SGIKonaSavedInput *v = opaque;
+
+    return v->video_open && v->video_have &&
+           sgi_kona_video_data_words(v->video_command) !=
+           SGI_KONA_VIDEO_DATA_UNKNOWN;
+}
+
+static const VMStateDescription vmstate_sgi_kona_saved_video_data = {
+    .name = TYPE_SGI_KONA "/saved-input-entry/video-data",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_saved_video_data_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(video_data, SGIKonaSavedInput,
+                             SGI_KONA_VIDEO_MAX_DATA_WORDS),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_saved_one = {
     .name = TYPE_SGI_KONA "/saved-input-entry",
     .version_id = 3,
@@ -16997,6 +17612,7 @@ static const VMStateDescription vmstate_sgi_kona_saved_one = {
         &vmstate_sgi_kona_saved_gl_run,
         &vmstate_sgi_kona_saved_flash_op,
         &vmstate_sgi_kona_saved_level1,
+        &vmstate_sgi_kona_saved_video_data,
         NULL
     },
 };
@@ -19183,6 +19799,8 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_flash,
         &vmstate_sgi_kona_flash_op_open,
         &vmstate_sgi_kona_gl_level1,
+        &vmstate_sgi_kona_channels,
+        &vmstate_sgi_kona_video_data,
         NULL
     },
 };

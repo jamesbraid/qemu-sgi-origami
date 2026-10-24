@@ -135,7 +135,7 @@ static int sgi_kona_dma_item(SGIKonaState *s, SGIPixelDMA *t,
     t->cookie = ret || last ? cookie : SGI_KONA_DMA_COOKIE_NONE;
     sgi_dma_pixels_finish(t, ret, &sgi_kona_dma_head_ops, s);
     if (!ret && t->dir == SGI_DMA_TO_PLANE && t->plane == s->plane_front) {
-        sgi_scanout_invalidate_plane(&s->scanout,
+        sgi_kona_invalidate_plane(s,
                                      sgi_board_memory_plane(&s->mem,
                                                             t->plane),
                                      t->y, t->y + t->h - 1);

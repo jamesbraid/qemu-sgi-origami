@@ -44,6 +44,7 @@ typedef struct SGIKonaConfig {
     const struct SGIKonaDisplay *display;
     const struct SGIKonaOption *option;
     uint32_t rm_count;
+    uint32_t channels;          /* the display generator's channel count */
 } SGIKonaConfig;
 OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
 typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
@@ -741,6 +742,8 @@ typedef enum SGIKonaBitmapState {
  */
 #define SGI_KONA_GAMMA_COMPONENTS        3
 #define SGI_KONA_GAMMA_COMPONENT_ENTRIES 0x1000
+/* ChannelGammaMap's map for a linear ramp ("Linear Gamma being used"). */
+#define SGI_KONA_GAMMA_MAP_LINEAR        0xfffffffe
 #define SGI_KONA_GAMMA_ENTRIES \
     (SGI_KONA_GAMMA_COMPONENTS * SGI_KONA_GAMMA_COMPONENT_ENTRIES)
 
@@ -795,6 +798,39 @@ typedef enum SGIKonaBitmapState {
 /* The native framebuffer this increment publishes as a display surface. */
 #define SGI_KONA_FB_WIDTH  1280
 #define SGI_KONA_FB_HEIGHT 1024
+
+/*
+ * Display channels: the most a display generator drives (the 030-1087-001
+ * board reports eight), and what each shows. A channel shows the input
+ * rectangle of the managed area (the framebuffer) at its format's active
+ * size; see sgi_kona_channel_view() for the mapping and what is inferred.
+ * input_y counts rows from the bottom of the managed area to the
+ * rectangle's top row, as GetResize's word 1 and Resize's word 2 do.
+ * blanked is ChannelBlanking's, gamma_map ChannelGammaMap's, source the
+ * channel Vampire names and cursor_priority CursorPriority's; see the
+ * video setters in sgi-kona.c.
+ */
+#define SGI_KONA_MAX_CHANNELS 8
+
+typedef struct SGIKonaChannel {
+    bool enabled;
+    uint32_t format_width;
+    uint32_t format_height;
+    uint32_t input_x;
+    uint32_t input_y;
+    uint32_t input_width;
+    uint32_t input_height;
+    bool blanked;
+    uint32_t gamma_map;
+    uint32_t cursor_priority;
+    uint32_t source;
+} SGIKonaChannel;
+
+/* What a channel's scanout hooks are handed: not guest state. */
+typedef struct SGIKonaChannelHook {
+    struct SGIKonaState *kona;
+    unsigned index;
+} SGIKonaChannelHook;
 
 /*
  * The field rate the scanout's vertical retrace runs at. The model's own
@@ -968,6 +1004,7 @@ typedef struct SGIKonaSavedInput {
     uint32_t video_have;
     uint32_t video_first;
     uint32_t video_tail_sum;
+    uint32_t video_data[SGI_KONA_VIDEO_MAX_DATA_WORDS];
     uint32_t color_map_start;
     uint32_t color_map_count;
     uint32_t color_map_remaining;
@@ -1292,15 +1329,16 @@ struct SGIKonaState {
      * counts the data words so far, video_first is the first of them (the
      * one the trace and log show), and video_tail_sum the sum of the rest,
      * modulo 2^32, which with the number and video_first gives the
-     * checksum a word must match. Only the first word and a sum are kept:
-     * no command the model answers reads its data. See
-     * sgi_kona_video_word().
+     * checksum a word must match. video_data keeps every data word of a
+     * command with a known count, for the channel commands that act on
+     * them. See sgi_kona_video_word().
      */
     bool video_open;
     uint32_t video_command;
     uint32_t video_have;
     uint32_t video_first;
     uint32_t video_tail_sum;
+    uint32_t video_data[SGI_KONA_VIDEO_MAX_DATA_WORDS];
     /*
      * Whether the last TempBlankAllChannels video command blanked the
      * display; see sgi_kona_video_temp_blank().
@@ -1584,6 +1622,19 @@ struct SGIKonaState {
     SGIScanout scanout;
 
     /*
+     * The display channels: channel 0 presents through scanout above,
+     * which also runs the retrace and the swap queue; channel c > 0
+     * through channel_scanout[c - 1], with no retrace. Only the
+     * configured channel count have consoles. resolve_line holds one
+     * managed-area line while a scaled channel samples it.
+     */
+    SGIKonaChannel channel[SGI_KONA_MAX_CHANNELS];
+    SGIScanout channel_scanout[SGI_KONA_MAX_CHANNELS - 1];
+    SGIKonaChannelHook channel_hook[SGI_KONA_MAX_CHANNELS];
+    uint32_t channel_scanouts;  /* consoles past channel 0's, from config */
+    uint32_t resolve_line[SGI_KONA_FB_WIDTH];
+
+    /*
      * Host-only qtest introspection coordinates for x-test-pixel. Not
      * guest state and not migrated, matching hw/misc/sgi-mgras.c's own
      * test_pixel_x/test_pixel_y precedent.
@@ -1668,5 +1719,12 @@ void sgi_kona_publish(void *opaque, const SGICompletion *c);
 /* A command port framed a packet of `words` words; see the definition. */
 void sgi_kona_port_consumed(SGIKonaState *s, uint32_t words);
 void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word);
+
+/*
+ * Managed-area pixels changed: plane rows y0..y1 of a bottom-origin plane
+ * as tall as the managed area. Every channel showing them repaints.
+ */
+void sgi_kona_invalidate_plane(SGIKonaState *s, const SGIPlane *p,
+                               int y0, int y1);
 
 #endif
