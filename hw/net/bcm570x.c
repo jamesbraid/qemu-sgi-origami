@@ -264,6 +264,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MI_STS              0x0450
 #define BCM570X_MICOMM_DATA         0x0000ffffu
 #define BCM570X_MICOMM_REG          0x001f0000u     /* bits 20:16 */
+#define BCM570X_MICOMM_READ_FIELDS  0x0fff0000u     /* command and address */
 #define BCM570X_MICOMM_REG_SHIFT    16
 #define BCM570X_MICMD_WRITE         0x04000000u
 #define BCM570X_MICMD_READ          0x08000000u
@@ -1859,7 +1860,8 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         }
 
         if (opcode == BCM570X_MICMD_READ) {
-            val = bcm570x_phy_read(&s->phy, reg);
+            val = (command & BCM570X_MICOMM_READ_FIELDS) |
+                  bcm570x_phy_read(&s->phy, reg);
             op = "read";
         } else if (opcode == BCM570X_MICMD_WRITE) {
             bcm570x_phy_write(&s->phy, reg,

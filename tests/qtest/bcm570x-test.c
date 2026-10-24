@@ -112,6 +112,7 @@
 #define BCM_MI_COMM             0x044cu
 #define BCM_MI_STS              0x0450u
 #define BCM_MICOMM_BUSY         0x20000000u
+#define BCM_MICOMM_READ_FIELDS  0x0fff0000u
 #define BCM_MICMD_READ          0x08000000u
 #define BCM_MICMD_WRITE         0x04000000u
 #define BCM_MICOMM_REG_SHIFT    16
@@ -1091,10 +1092,10 @@ static void test_hcc_mode_clears_to_zero(const void *data)
 /*
  * The MII BUSY handshake. The driver issues an MI command with START/BUSY
  * (0x20000000) set and polls BUSY for CLEAR ("BUSY bit never cleared" on
- * timeout); a read command must also leave the addressed PHY register's value
- * in the low 16 bits. The chip completes the transaction at once. Reading the
- * FULL command word back (not just its low half) proves BUSY is gone for the
- * poll, for both a read and a write command.
+ * timeout); a successful read retains the command/address fields and replaces
+ * the data field with the PHY value. The model completes the transaction at
+ * once. Reading the FULL command word back proves BUSY is gone for the poll,
+ * for both read and write commands.
  */
 static void test_mi_busy_clears(const void *data)
 {
@@ -1107,6 +1108,13 @@ static void test_mi_busy_clears(const void *data)
     g_auto(GStrv) log_entries = NULL;
     static const uint32_t unsupported_opcodes[] = {
         0, BCM_MICMD_READ | BCM_MICMD_WRITE,
+    };
+    static const struct {
+        uint32_t command;
+        uint32_t result;
+    } successful_reads[] = {
+        { 0x2822ffff, 0x08220020 },
+        { 0xf822ffff, 0x08220020 },
     };
     uint32_t (*read_reg)(Bcm *, uint32_t);
     void (*write_reg)(Bcm *, uint32_t, uint32_t);
@@ -1133,6 +1141,12 @@ static void test_mi_busy_clears(const void *data)
         read_reg = path ? ind_reg_readl : bar_readl;
         write_reg = path ? ind_reg_writel : bar_writel;
 
+        for (i = 0; i < G_N_ELEMENTS(successful_reads); i++) {
+            write_reg(&b, BCM_MI_COMM, successful_reads[i].command);
+            g_assert_cmphex(read_reg(&b, BCM_MI_COMM), ==,
+                            successful_reads[i].result);
+        }
+
         read_command = BCM_MICOMM_BUSY | BCM_MICMD_READ |
                        (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
                        (MII_ANAR << BCM_MICOMM_REG_SHIFT);
@@ -1140,7 +1154,9 @@ static void test_mi_busy_clears(const void *data)
         comm = read_reg(&b, BCM_MI_COMM);
         g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
         baseline_anar = comm & 0xffff;
-        g_assert_cmphex(comm, ==, baseline_anar);
+        g_assert_cmphex(comm, ==,
+                        (read_command & BCM_MICOMM_READ_FIELDS) |
+                        baseline_anar);
 
         write_value = baseline_anar ^ MII_ANAR_10_HALF;
         expected_anar = write_value;
@@ -1159,7 +1175,9 @@ static void test_mi_busy_clears(const void *data)
         write_reg(&b, BCM_MI_COMM, read_command);
         comm = read_reg(&b, BCM_MI_COMM);
         g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
-        g_assert_cmphex(comm, ==, baseline_anar);
+        g_assert_cmphex(comm, ==,
+                        (read_command & BCM_MICOMM_READ_FIELDS) |
+                        baseline_anar);
 
         read_command = BCM_MICMD_READ |
                        (BCM_PHY_ADDR << BCM_MICOMM_PHY_SHIFT) |
@@ -1170,7 +1188,9 @@ static void test_mi_busy_clears(const void *data)
         write_reg(&b, BCM_MI_COMM, read_command | BCM_MICOMM_BUSY);
         comm = read_reg(&b, BCM_MI_COMM);
         g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
-        g_assert_cmphex(comm, ==, BCM_PHY_IDR1_VALUE);
+        g_assert_cmphex(comm, ==,
+                        (read_command & BCM_MICOMM_READ_FIELDS) |
+                        BCM_PHY_IDR1_VALUE);
 
         write_reg(&b, BCM_MI_COMM, write_command | BCM_MICOMM_BUSY);
         comm = read_reg(&b, BCM_MI_COMM);
@@ -1181,7 +1201,9 @@ static void test_mi_busy_clears(const void *data)
         write_reg(&b, BCM_MI_COMM, read_command);
         comm = read_reg(&b, BCM_MI_COMM);
         g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
-        g_assert_cmphex(comm, ==, expected_anar);
+        g_assert_cmphex(comm, ==,
+                        (read_command & BCM_MICOMM_READ_FIELDS) |
+                        expected_anar);
         g_assert_cmphex(expected_anar, !=, baseline_anar);
 
         for (i = 0; i < G_N_ELEMENTS(unsupported_opcodes); i++) {
@@ -1199,7 +1221,9 @@ static void test_mi_busy_clears(const void *data)
             write_reg(&b, BCM_MI_COMM, read_command);
             comm = read_reg(&b, BCM_MI_COMM);
             g_assert_cmphex(comm & BCM_MICOMM_BUSY, ==, 0);
-            g_assert_cmphex(comm, ==, expected_anar);
+            g_assert_cmphex(comm, ==,
+                            (read_command & BCM_MICOMM_READ_FIELDS) |
+                            expected_anar);
         }
     }
 
