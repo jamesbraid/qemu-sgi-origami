@@ -135,6 +135,238 @@ static void test_reset(void)
     qtest_quit(q);
 }
 
+
+static void reset_planes(QTestState *q)
+{
+    const uint8_t overlay[] = { 7, 0, 9 };
+
+    setup(q);
+    pixel(q, 0, 0x123456fe);
+    pixel(q, 4, 0xabcdefa7);
+    pixel(q, 65536, 0x987654ab);
+    pixel(q, 65540, 0x334455ab);
+    descriptor(q, 16, 0x4007);
+    qtest_memwrite(q, 0x70000, overlay, sizeof(overlay));
+    wr(q, CMAP(4359), 0x89abcd00);
+    wr(q, CMAP(4361), 0x76543200);
+    wr(q, 0x20000, 1 << 5);
+    wr(q, 0x20008, (LIST + 32) | 1);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+}
+
+static void test_dma_reset_registers(void)
+{
+    QTestState *q = start("");
+    const unsigned regs[] = { 0x30000, 0x20000 };
+    const uint32_t bits[] = { 1u << 15, 1u << 13 };
+
+    mode(q);
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 155);
+    for (unsigned i = 0; i < 2; i++) {
+        uint32_t shape = 1 << 5 | (i ? 0 : 1 << 13);
+        uint32_t counter = rd(q, VT(0));
+
+        g_assert_cmphex(rd(q, regs[i]), ==, 0);
+        wr(q, regs[i], shape | bits[i] | 0xffff0000u);
+        g_assert_cmphex(rd(q, regs[i]), ==, shape | bits[i]);
+        qtest_writeb(q, BASE + regs[i], 0);
+        qtest_writew(q, BASE + regs[i], 0);
+        qtest_writeq(q, BASE + regs[i], 0);
+        qtest_writel(q, BASE + regs[i] + 1, 0);
+        g_assert_cmphex(rd(q, regs[i]), ==, shape | bits[i]);
+        g_assert_cmphex(rd(q, VT(0)), ==, counter);
+        wr(q, regs[i], bits[i] | shape | 1);
+        g_assert_cmphex(rd(q, regs[i]), ==, bits[i] | shape | 1);
+        wr(q, regs[i], shape | 2);
+        g_assert_cmphex(rd(q, regs[i]), ==, shape | 2);
+        wr(q, regs[i], bits[i]);
+    }
+    qtest_clock_step(q, 45);
+    g_assert_cmphex(rd(q, VT(0)), ==, 2);
+    qtest_system_reset(q);
+    g_assert_cmphex(rd(q, 0x30000), ==, 0);
+    g_assert_cmphex(rd(q, 0x20000), ==, 0);
+    g_assert_cmphex(rd(q, 0x30008), ==, 0);
+    g_assert_cmphex(rd(q, 0x20004), ==, 0);
+    qtest_quit(q);
+
+    q = qtest_init("-M none -cpu R10000 -display none "
+                   "-device sgi-o2-gbe,id=gbe");
+    qtest_sysbus_mmio_map(q, PATH, 0, BASE);
+    for (unsigned i = 0; i < 2; i++) {
+        wr(q, regs[i], 0x1234);
+        wr(q, regs[i], bits[i] | 1);
+        g_assert_cmphex(rd(q, regs[i]), ==, 0x1234);
+    }
+    qtest_quit(q);
+}
+
+static void test_dma_reset_planes(void)
+{
+    for (unsigned plane = 0; plane < 2; plane++) {
+        QTestState *q = start("");
+        unsigned reg = plane ? 0x20000 : 0x30000;
+        uint32_t shape = 1 << 5 | (plane ? 0 : 2 << 13);
+        uint32_t bit = 1u << (plane ? 13 : 15);
+        uint8_t saved[2], actual[2];
+
+        reset_planes(q);
+        wr(q, VT(0), 17 | 2 << 12);
+        qtest_memread(q, 0x10000, saved, sizeof(saved));
+        wr(q, reg, shape | bit);
+        g_assert_cmphex(rd(q, reg), ==, shape | bit);
+        g_assert_cmphex(rd(q, VT(0)), ==, 17 | 2 << 12);
+        g_assert_cmphex(rd(q, 0x30008), ==, LIST | 1);
+        g_assert_cmphex(rd(q, 0x3000c), ==, LIST | 1);
+        g_assert_cmphex(rd(q, 0x20004), ==, (LIST + 32) | 1);
+        g_assert_cmphex(rd(q, 0x20008), ==, (LIST + 32) | 1);
+        g_assert_cmphex(rd(q, 0x30004), ==, 128 << 16);
+        g_assert_cmphex(rd(q, 0x40000), ==, 0);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==,
+                        plane ? 0x123456 : 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==,
+                        plane ? 0xabcdef : 0);
+        qtest_memread(q, 0x10000, actual, sizeof(actual));
+        g_assert_cmpmem(actual, sizeof(actual), saved, sizeof(saved));
+        /* Zero normal input still passes through the WID/color pipeline. */
+        if (!plane) {
+            wr(q, WID(0), 3);
+            wr(q, CMAP(0), 0x31415900);
+            g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x314159);
+            wr(q, WID(0), 3 | 5 << 2);
+        }
+        descriptor(q, plane ? 16 : 0, plane ? 0x4008 : 0x4003);
+        pixel(q, 0, 0x55667700);
+        const uint8_t replacement[] = { 9, 0, 7 };
+        qtest_memwrite(q, 0x80000, replacement, sizeof(replacement));
+        wr(q, reg, shape | bit); /* Repeated assertion keeps the hold. */
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==,
+                        plane ? 0x556677 : 0x89abcd);
+        wr(q, reg, shape);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==,
+                        plane ? 0x556677 : 0x89abcd);
+        g_assert_cmphex(screen(q, 31, 4, 1, 0), ==,
+                        plane ? 0xabcdef : 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, 0, 0), ==,
+                        plane ? 0x765432 : 0x89abcd);
+        if (!plane) {
+            const uint8_t transparent = 0;
+            qtest_memwrite(q, 0x70000, &transparent, 1);
+            wr(q, WID(0), 3 | 5 << 2);
+            g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x987654);
+        }
+        qtest_quit(q);
+    }
+}
+
+static void test_dma_reset_recovery(void)
+{
+    for (unsigned plane = 0; plane < 2; plane++) {
+        QTestState *q = start("");
+        unsigned reg = plane ? 0x20000 : 0x30000;
+        unsigned active = plane ? 0x20004 : 0x30008;
+        unsigned shadow = active + 4;
+        unsigned slot = plane ? 16 : 0;
+        uint32_t bit = 1u << (plane ? 13 : 15);
+        uint32_t shape = 1 << 5 | (plane ? 0 : 2 << 13);
+
+        reset_planes(q);
+        descriptor(q, slot, 0x4400); /* Outside the linked RAM. */
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        wr(q, reg, shape | bit);
+        descriptor(q, slot, plane ? 0x4007 : 0x4002);
+        descriptor(q, 32, plane ? 0x4007 : 0x4002);
+        wr(q, shadow, (LIST + 64) | 1);
+        frame(q);
+        g_assert_cmphex(rd(q, active), ==, (LIST + 64) | 1);
+        wr(q, VT(0), 0x80000000u | 11 | 2 << 12);
+        wr(q, reg, shape);
+        frame(q);
+        g_assert_cmphex(rd(q, VT(0)), ==, 0x80000000u | 11 | 2 << 12);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        wr(q, VT(0), 11 | 2 << 12);
+        qtest_clock_step(q, 100);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x89abcd : 0xabcdef);
+        wr(q, 4, 0); /* PLL stopped; a pulse cannot invent blanking. */
+        wr(q, reg, shape | bit);
+        wr(q, reg, shape);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x123456 : 0);
+        wr(q, 4, 3 | 3u << 14 | 1u << 20);
+        frame(q);
+        g_assert_cmphex(screen(q, 31, 4, plane ? 0 : 1, 0), ==,
+                        plane ? 0x89abcd : 0xabcdef);
+        qtest_quit(q);
+    }
+}
+
+static void test_dma_reset_migration(void)
+{
+    for (unsigned plane = 0; plane < 2; plane++) {
+        for (unsigned released = 0; released < 2; released++) {
+            g_autofree char *dir = g_dir_make_tmp("gbe-reset-migrate-XXXXXX",
+                                                 NULL);
+            g_autofree char *sock = g_build_filename(dir, "migration.sock",
+                                                    NULL);
+            g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+            QTestState *from = start("");
+            QTestState *to = start("-incoming defer");
+            unsigned reg = plane ? 0x20000 : 0x30000;
+            uint32_t bit = 1u << (plane ? 13 : 15);
+            uint32_t shape = 1 << 5 | (plane ? 0 : 2 << 13);
+
+            reset_planes(from);
+            qtest_irq_intercept_out_named(from, PATH, "sysbus-irq");
+            qtest_irq_intercept_out_named(to, PATH, "sysbus-irq");
+            wr(from, VT(8), 7 | 6 << 12);
+            wr(from, reg, shape | bit);
+            descriptor(from, plane ? 16 : 0, plane ? 0x4007 : 0x4003);
+            if (released) {
+                wr(from, reg, shape);
+            }
+            uint32_t counter = rd(from, VT(0));
+            qtest_qmp_assert_success(to,
+                "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+            sgi_migrate_stopped(from, uri);
+            sgi_wait_migration(to, "completed");
+            g_assert_cmphex(rd(to, VT(0)), ==, counter);
+            g_assert_cmphex(rd(to, reg), ==, shape | (released ? 0 : bit));
+            g_assert_cmphex(screen(to, 31, 4, plane ? 0 : 1, 0), ==,
+                            plane ? 0x123456 : 0);
+            g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 0);
+            if (!released) {
+                wr(from, reg, shape);
+                wr(to, reg, shape);
+            }
+            frame(from);
+            frame(to);
+            g_assert_cmphex(rd(to, VT(0)), ==, rd(from, VT(0)));
+            g_assert_cmphex(screen(to, 31, 4, plane ? 0 : 1, 0), ==,
+                            screen(from, 31, 4, plane ? 0 : 1, 0));
+            g_assert_cmphex(screen(to, 31, 4, plane ? 0 : 1, 0), ==,
+                            plane ? 0x89abcd : 0x334455);
+            g_assert_cmpuint(qtest_get_irq_raise_count(to, 0), ==, 1);
+            qtest_quit(from);
+            qtest_quit(to);
+            g_unlink(sock);
+            g_rmdir(dir);
+        }
+    }
+}
+
 static void test_clock(void)
 {
     QTestState *q = start("");
@@ -564,10 +796,10 @@ static void test_access_and_unsupported(void)
     qtest_writeq(q, BASE + 0x30000, UINT64_MAX);
     g_assert_cmphex(rd(q, 0x30000), ==, 0x1234);
     wr(q, 0x30000, 0x8000);
-    g_assert_cmphex(rd(q, 0x30000), ==, 0x1234);
+    g_assert_cmphex(rd(q, 0x30000), ==, 0x8000);
     wr(q, 0x20000, 0x1234);
     wr(q, 0x20000, 0x2000);
-    g_assert_cmphex(rd(q, 0x20000), ==, 0x1234);
+    g_assert_cmphex(rd(q, 0x20000), ==, 0x2000);
     wr(q, 4, 1 << 24);
     g_assert_cmphex(rd(q, 4) & 0x10ffff, ==, 0);
     wr(q, 0xc, 0);
@@ -910,6 +1142,76 @@ static void test_board_interrupts(void)
     g_rmdir(dir);
 }
 
+
+static void test_board_dma_reset(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-board-reset-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "synthetic.bin", NULL);
+    const uint64_t causes = 3u << 16;
+    const uint32_t normal = 0x48020000u, overlay = 0x50030000u;
+    const uint32_t replacement = 0x58040000u;
+    uint8_t saved[8], actual[8];
+
+    g_assert_true(g_file_set_contents(image, "\0", 1, NULL));
+    QTestState *q = start_board(image, false);
+    qtest_irq_intercept_out_named(q, "/machine/crime", "cpu-ip");
+    mode(q);
+    palette(q);
+    qtest_writew(q, LIST, normal >> 16);
+    qtest_writew(q, LIST + 32, overlay >> 16);
+    qtest_writel(q, normal, 0x123456fe);
+    qtest_writel(q, normal + 4, 0xabcdefa7);
+    qtest_writel(q, replacement, 0x987654ab);
+    qtest_writel(q, replacement + 4, 0x334455cd);
+    qtest_writel(q, overlay, 0x07000900);
+    wr(q, CMAP(4359), 0x89abcd00);
+    wr(q, CMAP(4361), 0x76543200);
+    wr(q, 0x30000, 2 << 13 | 1 << 5);
+    wr(q, 0x30004, 128 << 16);
+    wr(q, 0x3000c, LIST | 1);
+    wr(q, 0x20000, 1 << 5);
+    wr(q, 0x20008, (LIST + 32) | 1);
+    wr(q, VT(8), 2 | 1 << 12);
+    wr(q, VT(0), 0);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0xabcdef);
+    g_assert_cmphex(qtest_readq(q, CRIME_BASE + 0x28) & causes, ==, causes);
+    qtest_writeq(q, CRIME_BASE + 0x18, causes);
+    assert_cpu_route(q, false, true);
+    qtest_memread(q, normal, saved, sizeof(saved));
+    wr(q, 0x30000, 1u << 15 | 2 << 13 | 1 << 5);
+    g_assert_cmphex(qtest_readq(q, CRIME_BASE + 0x28) & causes, ==, causes);
+    assert_cpu_route(q, false, true);
+    g_assert_cmphex(rd(q, 0x30008), ==, LIST | 1);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0);
+    qtest_memread(q, normal, actual, sizeof(actual));
+    g_assert_cmpmem(saved, sizeof(saved), actual, sizeof(actual));
+    qtest_writew(q, LIST, replacement >> 16);
+    qtest_writel(q, normal + 4, 0x55667700);
+    wr(q, 0x20000, 1u << 13 | 1 << 5);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0);
+    wr(q, 0x30000, 2 << 13 | 1 << 5);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x987654);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x334455);
+    wr(q, 0x20000, 1 << 5);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x987654);
+    qtest_writeq(q, CRIME_BASE + 0x28, (uint32_t)~causes);
+    g_assert_cmphex(qtest_readq(q, CRIME_BASE + 0x28) & causes, ==, 0);
+    assert_cpu_route(q, false, false);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
+    g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x334455);
+    g_assert_cmphex(qtest_readq(q, CRIME_BASE + 0x28) & causes, ==, causes);
+    assert_cpu_route(q, false, true);
+    qtest_quit(q);
+    g_unlink(image);
+    g_rmdir(dir);
+}
+
 static void test_board_mte_scanout(void)
 {
     static const struct {
@@ -1019,6 +1321,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi-gbe/reset", test_reset);
+    qtest_add_func("/sgi-gbe/dma-reset/registers", test_dma_reset_registers);
+    qtest_add_func("/sgi-gbe/dma-reset/planes", test_dma_reset_planes);
+    qtest_add_func("/sgi-gbe/dma-reset/recovery", test_dma_reset_recovery);
+    qtest_add_func("/sgi-gbe/dma-reset/migration", test_dma_reset_migration);
     qtest_add_func("/sgi-gbe/clock", test_clock);
     qtest_add_func("/sgi-gbe/rgb8-geometry-cursor", test_rgb8_geometry);
     qtest_add_func("/sgi-gbe/formats", test_formats);
@@ -1046,6 +1352,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/fractional-clock",
                    test_fractional_and_changed_clock);
     qtest_add_func("/sgi-gbe/board-interrupts", test_board_interrupts);
+    qtest_add_func("/sgi-gbe/dma-reset/board", test_board_dma_reset);
     qtest_add_func("/sgi-gbe/board-mte-scanout", test_board_mte_scanout);
     return g_test_run();
 }
