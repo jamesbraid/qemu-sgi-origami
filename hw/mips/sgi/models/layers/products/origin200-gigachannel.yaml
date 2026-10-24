@@ -66,7 +66,7 @@ layer:
               - {product: rad4, fidelity: validated, pairing: established}
               - {product: rad4-km, fidelity: implemented, pairing: established}
       - names: [pci-6, pci-7]
-        description: "PCI option slot on the system board's Bridge"
+        description: "PCI option slot, device {number}, on the system board's Bridge"
         placement: {bus: pci, addr: "{number}"}
         families:
           - family: psitech

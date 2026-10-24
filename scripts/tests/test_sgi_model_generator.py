@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "64012980ed195778d526d5f99ea01e5b855e0370a7dbe87c267c507f7c3b6554"
+    "122d0b3b1f2f1d5d08ae4ee4656ad2b7d0c3068bdb31ffc5d774680e0ff98e44"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -293,6 +293,8 @@ class GraphicsPipeTests(unittest.TestCase):
                              not graphics["headless"])
             names = [slot["name"] for slot in graphics["slots"]]
             self.assertEqual(len(names), len(set(names)))
+            texts = [slot["description"] for slot in graphics["slots"]]
+            self.assertEqual(len(texts), len(set(texts)))
             defaults = [slot for slot in graphics["slots"] if "default" in slot]
             self.assertLessEqual(len(defaults), 1)
             if not defaults:
@@ -352,16 +354,25 @@ class GraphicsPipeTests(unittest.TestCase):
                          [{"name": "bus", "value": "pci"},
                           {"name": "addr", "value": "6"}])
 
-    def test_one_section_names_many_slots(self):
-        graphics = self.resolve({"max_pipes": 1, "headless": True, "slots": [
-            {"names": ["io2", "io3"], "description": "XIO slot",
+    def many_slots(self, description):
+        return {"max_pipes": 1, "headless": True, "slots": [
+            {"names": ["io2", "io3"], "description": description,
              "placement": {"slot": "{name}"},
              "families": [{"family": "mgras", "products": [
-                 {"product": "si", "fidelity": "implemented"}]}]}]})
+                 {"product": "si", "fidelity": "implemented"}]}]}]}
+
+    def test_one_section_names_many_slots(self):
+        graphics = self.resolve(self.many_slots("XIO slot {number}"))
         self.assertEqual([slot["name"] for slot in graphics["slots"]],
                          ["io2", "io3"])
         self.assertEqual(graphics["slots"][1]["placement"],
                          [{"name": "slot", "value": "io3"}])
+        self.assertEqual([slot["description"] for slot in graphics["slots"]],
+                         ["XIO slot 2", "XIO slot 3"])
+
+    def test_slots_need_distinct_descriptions(self):
+        with self.assertRaisesRegex(ResolutionError, "describes two slots"):
+            self.resolve(self.many_slots("XIO slot"))
 
     def test_unknown_product_is_refused(self):
         with self.assertRaisesRegex(ResolutionError, "does not list"):

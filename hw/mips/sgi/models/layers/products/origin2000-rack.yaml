@@ -75,7 +75,7 @@ layer:
     headless: true
     slots:
       - names: [io2, io3, io4, io5, io6, io7, io8, io9, io10, io11, io12]
-        description: "XIO slot"
+        description: "XIO slot {number}"
         placement: {slot: "{name}"}
         families:
           - family: mgras

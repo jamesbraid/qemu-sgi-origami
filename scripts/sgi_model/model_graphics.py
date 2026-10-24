@@ -139,24 +139,30 @@ def load_graphics_products(model_root: pathlib.Path) -> dict[str, dict]:
     return families
 
 
+def _slot_text(text: str, name: str, label: str) -> str:
+    """@text with {name} standing for slot @name and {number} for the
+    number it ends with."""
+    number = re.search(r"([0-9]+)$", name)
+    if "{number}" in text and not number:
+        raise ResolutionError(f"{label} needs a slot name that ends with a "
+                              "number")
+    return text.replace("{name}", name).replace(
+        "{number}", number.group(1) if number else "")
+
+
 def _placement(raw: Any, name: str, label: str) -> list[dict]:
     """The -device properties that put a pipe in slot @name: the layer's
     placement mapping, with {name} standing for the slot's name and
     {number} for the number it ends with."""
     if not isinstance(raw, dict) or not raw:
         raise ResolutionError(f"{label} needs a placement mapping")
-    number = re.search(r"([0-9]+)$", name)
     result = []
     for key, value in raw.items():
         if not isinstance(key, str) or not isinstance(value, (str, int)):
             raise ResolutionError(f"{label} has an invalid placement")
-        text = str(value)
-        if "{number}" in text and not number:
-            raise ResolutionError(f"{label} placement needs a slot name "
-                                  "that ends with a number")
-        text = text.replace("{name}", name).replace(
-            "{number}", number.group(1) if number else "")
-        result.append({"name": key, "value": text})
+        result.append({"name": key,
+                       "value": _slot_text(str(value), name,
+                                           f"{label} placement")})
     return result
 
 
@@ -353,8 +359,9 @@ def resolve_graphics(product_id: str, section: Any,
             where = f"{label} slot '{name}'"
             slot: dict[str, Any] = {
                 "name": name,
-                "description": _string(raw.get("description"),
-                                       f"{where} description"),
+                "description": _slot_text(
+                    _string(raw.get("description"), f"{where} description"),
+                    name, f"{where} description"),
                 "placement": _placement(raw.get("placement"), name, where),
                 "changeable": False,
                 "families": [],
@@ -397,6 +404,12 @@ def resolve_graphics(product_id: str, section: Any,
     duplicate = next((name for name in names if names.count(name) > 1), None)
     if duplicate:
         raise ResolutionError(f"{label} lists slot '{duplicate}' twice")
+    # A launcher shows each slot by its description.
+    texts = [slot["description"] for slot in slots]
+    duplicate = next((text for text in texts if texts.count(text) > 1), None)
+    if duplicate:
+        raise ResolutionError(f"{label} describes two slots as "
+                              f"'{duplicate}'")
     defaults = [slot for slot in slots if "default" in slot]
     if len(defaults) > 1:
         raise ResolutionError(f"{label} has more than one default pipe")

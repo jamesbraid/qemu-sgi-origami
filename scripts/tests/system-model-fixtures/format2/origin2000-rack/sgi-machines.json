@@ -3167,7 +3167,7 @@
         "slots": [
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 2",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3273,7 +3273,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 3",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3379,7 +3379,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 4",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3485,7 +3485,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 5",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3591,7 +3591,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 6",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3697,7 +3697,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 7",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3806,7 +3806,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 8",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -3915,7 +3915,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 9",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -4024,7 +4024,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 10",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -4133,7 +4133,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 11",
             "families": [
               {
                 "device": "sgi-mgras",
@@ -4242,7 +4242,7 @@
           },
           {
             "changeable": false,
-            "description": "XIO slot",
+            "description": "XIO slot 12",
             "families": [
               {
                 "device": "sgi-mgras",

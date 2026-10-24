@@ -3374,7 +3374,7 @@
         },
         {
           "changeable": false,
-          "description": "PCI option slot on the system board's Bridge",
+          "description": "PCI option slot, device 6, on the system board's Bridge",
           "families": [
             {
               "device": "psitech-rad4",
@@ -3414,7 +3414,7 @@
         },
         {
           "changeable": false,
-          "description": "PCI option slot on the system board's Bridge",
+          "description": "PCI option slot, device 7, on the system board's Bridge",
           "families": [
             {
               "device": "psitech-rad4",
