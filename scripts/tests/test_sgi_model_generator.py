@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "92e5d85cf10f9263b09c3bbfc9800a78a762e70e650bc1c6176874038cf68640"
+    "c3781824c12be55fa31ae4479a5011bb5bba9ae62aa281773ba74bbba411a951"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
