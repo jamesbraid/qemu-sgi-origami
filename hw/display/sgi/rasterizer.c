@@ -394,6 +394,31 @@ static bool sgi_soft_owns(const SGISoftVertex *a, const SGISoftVertex *b,
 }
 
 /*
+ * Narrow [*lo, *hi], pixel steps along a row from a start whose edge value
+ * is e, to the steps where sgi_soft_owns() holds for the edge from a to b,
+ * whose value moves by step a pixel. The edge function is linear along the
+ * row, so the owned steps are one run: e + k * step >= need, where need is
+ * 0 for an edge that owns the centres on it and 1 for one that does not.
+ */
+static void sgi_soft_owned_run(const SGISoftVertex *a, const SGISoftVertex *b,
+                               int64_t e, int64_t step, int64_t *lo,
+                               int64_t *hi)
+{
+    int64_t need = sgi_soft_owns(a, b, 0) ? 0 : 1;
+    int64_t d = need - e;
+
+    if (step > 0) {
+        /* The first k with k * step >= d, rounding the quotient up. */
+        *lo = MAX(*lo, d > 0 ? (d + step - 1) / step : -(-d / step));
+    } else if (step < 0) {
+        /* The last k with k * -step <= -d, rounding the quotient down. */
+        *hi = MIN(*hi, -d >= 0 ? -d / -step : -((d - step - 1) / -step));
+    } else if (d > 0) {
+        *hi = *lo - 1;
+    }
+}
+
+/*
  * Whether value passes a test comparing it with ref by func, the
  * comparison minus GL_NEVER: the depth test's incoming depth against the
  * stored one (4.1.5), the alpha test's alpha against its reference
@@ -2827,6 +2852,10 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     /*
      * Each edge function is linear in x, so across a row it steps by an
      * exact integer: the same values sgi_soft_edge() gives at each centre.
+     * A centre is drawn where all three edges own it, which on a row is
+     * the overlap of each edge's run of owned centres: solving for that
+     * run's ends visits only the pixels a test of every centre between
+     * px0 and px1 would keep.
      */
     step0 = -(v[2].y - v[1].y) * (1 << sub);
     step1 = -(v[0].y - v[2].y) * (1 << sub);
@@ -2839,17 +2868,21 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
         int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
         int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
+        int64_t lo = 0, hi = (int64_t)px1 - px0;
 
-        for (int px = px0; px <= px1;
-             px++, e0 += step0, e1 += step1, e2 += step2) {
+        sgi_soft_owned_run(&v[1], &v[2], e0, step0, &lo, &hi);
+        sgi_soft_owned_run(&v[2], &v[0], e1, step1, &lo, &hi);
+        sgi_soft_owned_run(&v[0], &v[1], e2, step2, &lo, &hi);
+        if (lo > hi) {
+            continue;
+        }
+        e1 += lo * step1;
+        e2 += lo * step2;
+        for (int px = px0 + lo; px <= px0 + hi;
+             px++, e1 += step1, e2 += step2) {
             double b1, b2, z, w0, w1, w2, sum, depth_w;
             bool background;
 
-            if (!sgi_soft_owns(&v[1], &v[2], e0) ||
-                !sgi_soft_owns(&v[2], &v[0], e1) ||
-                !sgi_soft_owns(&v[0], &v[1], e2)) {
-                continue;
-            }
             /* Window phase precedes plane translation and fragment work. */
             if (!sgi_soft_stipple_pass(r, px, py, &background)) {
                 continue;
