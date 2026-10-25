@@ -3496,6 +3496,130 @@ static void test_lighting_two_sided_draws(void)
     }
 }
 
+/* Counts the colour stores at each pixel, so a pixel drawn twice shows. */
+static void coverage_store_colour(void *opaque, SGIColourTarget target,
+                                  int x, int y, uint32_t colour)
+{
+    Planes *p = opaque;
+
+    p->colour[target][planes_index(x, y)]++;
+}
+
+/*
+ * Edge function of a to b at (x, y), all in subpixels, and whether the
+ * edge owns a centre it passes through: the top-left rule with rows
+ * counted up, for a counter-clockwise triangle (OpenGL 1.2.1, 3.5.1).
+ */
+static int64_t coverage_edge(const int64_t a[2], const int64_t b[2],
+                             int64_t x, int64_t y)
+{
+    int64_t dx = b[0] - a[0], dy = b[1] - a[1];
+
+    return dx * (y - a[1]) - dy * (x - a[0]);
+}
+
+static bool coverage_owns(const int64_t a[2], const int64_t b[2], int64_t e)
+{
+    return e ? e > 0 : b[1] < a[1] || (b[1] == a[1] && b[0] < a[0]);
+}
+
+/* A subpixel coordinate in [0, 64 << 8] of the kind the case asks for. */
+static int64_t coverage_coord(GRand *rand, unsigned kind, int64_t near)
+{
+    int64_t v = g_rand_int_range(rand, 0, (W << 8) + 1);
+
+    switch (kind) {
+    case 0:
+        return (v & ~0xff) | 0x80;      /* a pixel centre */
+    case 1:
+        return v & ~0xff;               /* a pixel corner */
+    case 2:                             /* within two pixels of near */
+        return MIN(MAX(near + g_rand_int_range(rand, -512, 513), 0),
+                   W << 8);
+    default:
+        return v;
+    }
+}
+
+/*
+ * The fragments a filled triangle produces are the pixel centres inside
+ * it and those on edges the tie rule gives it, each once (3.5.1), for
+ * any vertex order. Vertices sit exactly on the 8-bit subpixel grid, so
+ * the expected set is computed here from integer edge functions: random
+ * triangles, slivers, sub-pixel ones and edges through pixel centres.
+ */
+static void test_triangle_coverage_exact(void)
+{
+    static Planes p;
+    GRand *rand = g_rand_new_with_seed(0x7e1a);
+    SGIRasterTarget t = planes_target(&p);
+    SGIGLContext c;
+    float verts[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+    SGIGLDraw d = {
+        .context = 0x1234,
+        .mode = SGI_GL_TRIANGLES,
+        .count = 3,
+        .vertices = &verts[0][0],
+    };
+    unsigned drawn = 0;
+
+    t.store_colour = coverage_store_colour;
+    context_init(&c);
+    c.cur.shade_model = SGI_GL_FLAT;
+    c.cur.draw_buffers = SGI_GL_DRAW_FRONT;
+    d.state = &c.cur;
+    for (unsigned n = 0; n < 20000; n++) {
+        int64_t v[3][2];
+        unsigned kind = g_rand_int_range(rand, 0, 4);
+        int64_t area;
+
+        for (int i = 0; i < 3; i++) {
+            for (int k = 0; k < 2; k++) {
+                v[i][k] = coverage_coord(rand, kind, i ? v[0][k] : 0);
+            }
+            verts[i][SGI_GL_V_POSITION + 0] = v[i][0] / 8192.0f - 1;
+            verts[i][SGI_GL_V_POSITION + 1] = v[i][1] / 8192.0f - 1;
+            verts[i][SGI_GL_V_POSITION + 3] = 1;
+            verts[i][SGI_GL_V_COLOR + 0] = 1;
+        }
+        if (n % 5 == 0) {
+            /* A horizontal edge and a vertical one. */
+            v[1][1] = v[0][1];
+            v[2][0] = v[1][0];
+            verts[1][SGI_GL_V_POSITION + 1] = verts[0][SGI_GL_V_POSITION + 1];
+            verts[2][SGI_GL_V_POSITION + 0] = verts[1][SGI_GL_V_POSITION + 0];
+        }
+        memset(&p, 0, sizeof(p));
+        sgi_soft_draw(&rules_supported, &t, &d);
+
+        area = coverage_edge(v[0], v[1], v[2][0], v[2][1]);
+        if (area < 0) {
+            int64_t swap[2] = { v[1][0], v[1][1] };
+
+            memcpy(v[1], v[2], sizeof(swap));
+            memcpy(v[2], swap, sizeof(swap));
+        }
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int64_t cx = x * 256 + 128, cy = y * 256 + 128;
+                bool in = area &&
+                    coverage_owns(v[1], v[2],
+                                  coverage_edge(v[1], v[2], cx, cy)) &&
+                    coverage_owns(v[2], v[0],
+                                  coverage_edge(v[2], v[0], cx, cy)) &&
+                    coverage_owns(v[0], v[1],
+                                  coverage_edge(v[0], v[1], cx, cy));
+
+                g_assert_cmpuint(p.colour[0][planes_index(x, y)], ==, in);
+                drawn += in;
+            }
+        }
+    }
+    /* The cases cover over a million centres, not just empty slivers. */
+    g_assert_cmpuint(drawn, >, 1000000);
+    g_rand_free(rand);
+}
+
 /* The triangles a draw hands the sink, as the x of each vertex times ten. */
 typedef struct MeshLog {
     unsigned n;
@@ -14012,6 +14136,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-clips-behind-eye",
                     test_texture_clips_behind_eye);
     g_test_add_func("/sgi-gl/batch-matches-pieces", test_batch_matches_pieces);
+    g_test_add_func("/sgi-gl/triangle-coverage-exact",
+                    test_triangle_coverage_exact);
     g_test_add_func("/sgi-gl/finish-is-a-fence", test_finish_is_a_fence);
     g_test_add_func("/sgi-gl/clear-op", test_clear_op);
     g_test_add_func("/sgi-gl/rounding", test_rounding);
