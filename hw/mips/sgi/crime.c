@@ -961,7 +961,9 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
 {
     unsigned mode = p[0], source_bank = (mode >> 5) & 7;
     unsigned destination_bank = (mode >> 2) & 7;
-    bool copy = mode & 0x800, overlap, unique = true;
+    bool copy = mode & 0x800, stipple = mode & 0x400;
+    bool overlap, unique = true;
+    unsigned depth = (mode >> 8) & 3, pixel_bytes = 1U << depth;
     int dy = p[9] == 1 ? 1 : -1;
     int dx0 = p[6] >> 16, dx1 = p[7] >> 16;
     int dy0 = p[6] & 0xffff, dy1 = p[7] & 0xffff;
@@ -972,8 +974,9 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
     bool seen[256] = { false };
     g_autofree CrimeRenderPixel *pixels = NULL;
 
-    if ((mode & ~0x8ffU) || destination_bank >= 3 ||
-        (copy && source_bank >= 3) ||
+    if ((mode & ~0xfffU) || depth == 3 || destination_bank >= 3 ||
+        (copy && (source_bank >= 3 || depth || stipple)) ||
+        (!copy && (dx0 % pixel_bytes || (dx1 + 1) % pixel_bytes)) ||
         (p[9] != 1 && (!copy || p[9] != UINT32_MAX)) ||
         (copy && p[8] != p[9]) ||
         dx0 >= 8192 || dx1 >= 8192 || dy0 >= 2048 || dy1 >= 2048 ||
@@ -1033,7 +1036,10 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
     for (unsigned i = 0; i < count; i++) {
         unsigned x = dx0 + i % width;
 
-        if (p[1] & (0x80000000U >> (x & 31))) {
+        unsigned bit = ((x - (dx0 & ~31U)) / pixel_bytes) & 31;
+
+        if ((p[1] & (0x80000000U >> (x & 31))) &&
+            (!stipple || (p[2] & (0x80000000U >> bit)))) {
             pixels[enabled++] = pixels[i];
         }
     }
@@ -1247,6 +1253,15 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
             if (offset == CRIME_TRANSFER + 0x870) {
                 return crime_transfer_commit(s, offset,
                                                CRIME_TRANSFER_PARAMETERS, 0);
+            }
+            if (offset == CRIME_TRANSFER + 0x810) {
+                uint32_t mode = s->transfer.parameter[0];
+
+                if ((mode & 0x800) || ((mode >> 2) & 7) >= 3) {
+                    return crime_transfer_fail(offset,
+                                               "stipple START requires tiled clear");
+                }
+                return crime_transfer_commit(s, offset, 2, value);
             }
             if (offset >= CRIME_TRANSFER + 0x800 &&
                 offset < CRIME_TRANSFER + 0x850 &&

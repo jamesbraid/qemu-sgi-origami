@@ -17,17 +17,30 @@
 
 static const char *selected_profile = "1.5";
 
-static QTestState *start_profile(bool functional, const char *extra)
+static QTestState *start_profile_ram(bool functional, bool migrate_ram,
+                                    const char *extra)
 {
-    QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx,"
-        "migrate-ram=/objects/fit/fit[0] -M none -cpu R10000 -S -d guest_errors,unimp "
+    QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx%s "
+        "-M none -cpu R10000 -S -d guest_errors,unimp "
         "-object memory-backend-ram,id=fit,size=64M "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
         "crime-profile=%s,functional-memory-transfer=%s %s",
+        migrate_ram ? ",migrate-ram=/objects/fit/fit[0]" : "",
         selected_profile, functional ? "on" : "off", extra);
 
     qtest_sysbus_mmio_map(s, "/machine/peripheral/crime", 0, BASE);
     return s;
+}
+
+static QTestState *start_profile(bool functional, const char *extra)
+{
+    return start_profile_ram(functional, true, extra);
+}
+
+/* State observations need the device stream, not a copy of the live RAM. */
+static QTestState *start_state_options(const char *extra)
+{
+    return start_profile_ram(true, false, extra);
 }
 
 static QTestState *start_options(const char *extra)
@@ -839,7 +852,7 @@ static void test_clip_programming(void)
     };
     uint8_t state[CLIP_STATE_BYTES], previous[CLIP_STATE_BYTES];
     uint64_t expected[4] = { 0 };
-    QTestState *s = start();
+    QTestState *s = start_state_options("");
 
     clip_save(s, path, previous);
     qtest_memset(s, 0x30000, 0x5a, 64);
@@ -1014,7 +1027,7 @@ static void test_clip_failure(void)
     for (unsigned fault = 0; fault < ARRAY_SIZE(faults) + 4; fault++) {
         uint16_t entries[16];
         uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES], page[65536];
-        QTestState *s = start_options(
+        QTestState *s = start_state_options(
             "-device sgi-crime-test-fixture,id=inject,"
             "crime=/machine/peripheral/crime");
 
@@ -1106,7 +1119,7 @@ static void test_clip_accesses(void)
     uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
     g_autofree char *dir = g_dir_make_tmp("crime-clip-access-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *s = start();
+    QTestState *s = start_state_options("");
 
     clip_entries(entries);
     clip_program(s, entries);
@@ -1470,7 +1483,7 @@ static void test_tiled_start_forms(void)
     uint8_t state[CLIP_STATE_BYTES];
     g_autofree char *dir = g_dir_make_tmp("crime-tiled-start-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *s = start();
+    QTestState *s = start_state_options("");
 
     for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
         unsigned offset = offsets[i];
@@ -1573,7 +1586,7 @@ static void test_tiled_failure(void)
 
     for (unsigned fault = 0; fault < 13; fault++) {
         for (unsigned trigger = 8; trigger <= 0x18; trigger += 0x10) {
-            QTestState *s = start_options(
+            QTestState *s = start_state_options(
                 "-device sgi-crime-test-fixture,id=inject,"
                 "crime=/machine/peripheral/crime");
             bool copy = fault == 7 || fault == 11 || fault == 12;
@@ -1618,7 +1631,7 @@ static void test_tiled_failure(void)
                 qtest_writel(s, MTE + 0x38, tiled_xy(512, 126));
                 break;
             case 5:
-                qtest_writel(s, MTE, 1U << 8);
+                qtest_writel(s, MTE, 3U << 8);
                 break;
             case 6:
                 tiled_entry(s, 0, 17, 0);
@@ -1810,6 +1823,677 @@ static void test_tiled_profiles(void)
     }
 }
 
+typedef struct MteClear {
+    unsigned bank, depth, x0, y0, x1, y1;
+    bool stipple;
+    uint32_t mask, pattern, fill;
+} MteClear;
+
+static MteClear mte_clear_default(unsigned depth)
+{
+    unsigned bytes = 1U << depth;
+    unsigned first = (503 / bytes) * bytes;
+
+    return (MteClear) {
+        .bank = depth, .depth = depth,
+        .x0 = first, .y0 = 127, .x1 = first + 35 * bytes - 1, .y1 = 128,
+        .stipple = true, .mask = 0xa53c96e1,
+        .pattern = 0x96a53c81, .fill = 0x123456a5,
+    };
+}
+
+static void mte_clear_words(const MteClear *c, uint32_t words[10])
+{
+    words[0] = (c->bank << 2) | (7U << 5) | (c->depth << 8) |
+               (c->stipple ? 1U << 10 : 0) | 2;
+    words[1] = c->mask;
+    words[2] = c->pattern;
+    words[3] = c->fill;
+    words[4] = 0x12345678;
+    words[5] = 0x87654321;
+    words[6] = tiled_xy(c->x0, c->y0);
+    words[7] = tiled_xy(c->x1, c->y1);
+    words[8] = 0xa1b2c3d4;
+    words[9] = 1;
+}
+
+static void mte_clear_stage(QTestState *s, const MteClear *c)
+{
+    uint32_t words[10];
+
+    mte_clear_words(c, words);
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        qtest_writel(s, MTE + i * 8, words[i]);
+    }
+}
+
+static uint8_t mte_clear_expected(const MteClear *c, unsigned x, unsigned y)
+{
+    const uint8_t lanes[] = { c->fill >> 24, c->fill >> 16,
+                             c->fill >> 8, c->fill };
+    unsigned bytes = 1U << c->depth;
+    unsigned initial = (c->x0 % 32) / bytes;
+
+    if (x >= c->x0 && x <= c->x1 && y >= c->y0 && y <= c->y1) {
+        unsigned pixel = (x - c->x0) / bytes;
+        unsigned bit = (initial + pixel) % 32;
+        bool pattern = c->pattern & (0x80000000U >> bit);
+        bool mask = c->mask & (0x80000000U >> (x % 32));
+
+        if (mask && (!c->stipple || pattern)) {
+            return lanes[x % 4];
+        }
+    }
+    return tiled_old_byte(x, y);
+}
+
+static void mte_clear_memory(QTestState *s, const MteClear *c,
+                              bool initialize, bool executed)
+{
+    unsigned bytes = 1U << c->depth;
+    unsigned first = c->x0 >= bytes ? c->x0 - bytes : 0;
+    unsigned last = MIN(c->x1 + bytes, 8191);
+    unsigned first_y = c->y0 ? c->y0 - 1 : 0;
+    unsigned last_y = MIN(c->y1 + 1, 2047);
+    uint8_t row[8192];
+
+    if (initialize) {
+        tiled_map(s, c->bank, first, first_y, last, last_y);
+    }
+    for (unsigned y = first_y; y <= last_y; y++) {
+        if (!initialize) {
+            tiled_bytes(s, c->bank, first, y, row, last - first + 1, false);
+        }
+        for (unsigned x = first; x <= last; x++) {
+            if (initialize) {
+                row[x - first] = tiled_old_byte(x, y);
+            } else {
+                g_assert_cmphex(row[x - first], ==, executed ?
+                    mte_clear_expected(c, x, y) : tiled_old_byte(x, y));
+            }
+        }
+        if (initialize) {
+            tiled_bytes(s, c->bank, first, y, row, last - first + 1, true);
+        }
+    }
+}
+
+static void mte_clear_run(QTestState *s, const MteClear *c, unsigned trigger)
+{
+    uint32_t words[10];
+
+    mte_clear_words(c, words);
+    mte_clear_memory(s, c, true, false);
+    mte_clear_stage(s, c);
+    if (trigger != 0x70) {
+        qtest_writel(s, MTE + trigger, trigger == 0 ? 0x80000000 :
+                     trigger == 0x48 ? 0 : ~words[trigger / 8]);
+    }
+    qtest_writel(s, MTE + 0x70, 0x12345678);
+    qtest_writel(s, MTE + 0x78, 0);
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    mte_clear_memory(s, c, false, false);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
+        trigger == 0x70 ? 0xfedcba98 : words[trigger / 8]), ==, MEMTX_OK);
+    mte_clear_memory(s, c, false, true);
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0);
+}
+
+static uint32_t mte_bitmap_rotate(uint32_t word, unsigned count)
+{
+    return count ? (word >> count) | (word << (32 - count)) : word;
+}
+
+static void test_mte_stipple_rotations(void)
+{
+    const unsigned starts[] = { 505, 535, 564 };
+    const uint32_t prepared[] = { 0x40201008, 0x21008040, 0x08040201 };
+    QTestState *s = start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(starts); i++) {
+        MteClear c = mte_clear_default(2);
+
+        c.bank = i;
+        c.x0 = starts[i] * 4;
+        c.x1 = c.x0 + 35 * 4 - 1;
+        c.mask = UINT32_MAX;
+        c.pattern = mte_bitmap_rotate(0x80402010, starts[i] % 8);
+        g_assert_cmphex(c.pattern, ==, prepared[i]);
+        mte_clear_run(s, &c, 0x70);
+    }
+    qtest_quit(s);
+}
+
+static void test_mte_stipple_masks(void)
+{
+    QTestState *s = start();
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        for (unsigned active = 0; active < 2; active++) {
+            for (unsigned bit = 0; bit < 32; bit++) {
+                MteClear c = mte_clear_default(depth);
+
+                c.stipple = active;
+                c.mask = 1U << bit;
+                mte_clear_run(s, &c, 0x70);
+            }
+        }
+        for (unsigned bit = 0; bit < 32; bit++) {
+            MteClear c = mte_clear_default(depth);
+
+            c.mask = UINT32_MAX;
+            c.pattern = 1U << bit;
+            mte_clear_run(s, &c, 0x70);
+        }
+        for (unsigned zero = 0; zero < 4; zero++) {
+            MteClear c = mte_clear_default(depth);
+
+            c.mask = zero & 1 ? 0 : UINT32_MAX;
+            c.pattern = zero & 2 ? 0 : UINT32_MAX;
+            mte_clear_run(s, &c, 0x10);
+            c.stipple = false;
+            mte_clear_run(s, &c, 0x10);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_mte_stipple_phases(void)
+{
+    const unsigned lengths[] = { 7, 32, 65 };
+    QTestState *s = start();
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        unsigned bytes = 1U << depth;
+
+        for (unsigned phase = 0; phase < 32 / bytes; phase++) {
+            for (unsigned n = 0; n < ARRAY_SIZE(lengths); n++) {
+                MteClear c = mte_clear_default(depth);
+
+                c.x0 = 480 + phase * bytes;
+                c.x1 = c.x0 + lengths[n] * bytes - 1;
+                c.mask = UINT32_MAX;
+                mte_clear_run(s, &c, 0x70);
+            }
+        }
+        MteClear c = mte_clear_default(depth);
+
+        c.x0 = 8192 - bytes;
+        c.x1 = 8191;
+        c.y0 = c.y1 = 2047;
+        c.pattern = UINT32_MAX;
+        c.mask = UINT32_MAX;
+        mte_clear_run(s, &c, 0x70);
+    }
+    qtest_quit(s);
+}
+
+static void test_mte_stipple_starts(void)
+{
+    const unsigned offsets[] = { 0, 8, 0x10, 0x18, 0x20, 0x28, 0x30,
+                                 0x38, 0x40, 0x48, 0x70 };
+    uint8_t state[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_state_options("");
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        for (unsigned active = 0; active < 2; active++) {
+            MteClear c = mte_clear_default(depth);
+            uint32_t words[10];
+
+            c.stipple = active;
+            mte_clear_words(&c, words);
+            for (unsigned n = 0; n < ARRAY_SIZE(offsets); n++) {
+                mte_clear_run(s, &c, offsets[n]);
+                if (offsets[n] == 0x10 || offsets[n] == 0x30 ||
+                    offsets[n] == 0x38) {
+                    clip_save(s, path, state);
+                    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+                        uint32_t actual = ldl_be_p(state + 2 + 256 + i * 4);
+
+                        g_assert_cmphex(actual, ==, words[i]);
+                    }
+                } else {
+                    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+                        if (i != 2 && i != 6 && i != 7) {
+                            g_assert_cmphex(qtest_readl(s, MTE + i * 8),
+                                            ==, words[i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_mte_stipple_rows(void)
+{
+    const unsigned lengths[] = { 7, 13, 19 };
+    const uint32_t bitmap[] = { 0xa53c69e1, 0x69e1a53c };
+    uint8_t state[CLIP_STATE_BYTES], row[256];
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-rows-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_state_options("");
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        unsigned bytes = 1U << depth;
+
+        for (unsigned n = 0; n < ARRAY_SIZE(lengths); n++) {
+            MteClear whole = mte_clear_default(depth), rows[2];
+
+            whole.x0 = 512 - bytes;
+            whole.x1 = whole.x0 + lengths[n] * bytes - 1;
+            whole.mask = UINT32_MAX;
+            mte_clear_memory(s, &whole, true, false);
+            for (unsigned pass = 0; pass < 2; pass++) {
+                rows[pass] = whole;
+                rows[pass].y0 = rows[pass].y1 = 127 + pass;
+                rows[pass].pattern = mte_bitmap_rotate(bitmap[pass],
+                                                       32 / bytes - 1);
+                mte_clear_stage(s, &rows[pass]);
+                if (!pass) {
+                    qtest_writel(s, MTE + 0x10, ~rows[pass].pattern);
+                }
+                g_assert_cmpint(memtx_writel(s, MTE + (pass ? 0x870 : 0x810),
+                    pass ? 0 : rows[pass].pattern), ==, MEMTX_OK);
+                clip_save(s, path, state);
+                uint32_t pattern = ldl_be_p(state + 2 + 256 + 2 * 4);
+
+                g_assert_cmphex(pattern, ==, rows[pass].pattern);
+                for (unsigned y = 126; y <= 129; y++) {
+                    unsigned first = whole.x0 - bytes;
+                    unsigned last = whole.x1 + bytes;
+
+                    tiled_bytes(s, whole.bank, first, y, row,
+                                last - first + 1, false);
+                    for (unsigned x = first; x <= last; x++) {
+                        uint8_t expected = y == 127 ?
+                            mte_clear_expected(&rows[0], x, y) :
+                            y == 128 && pass ?
+                            mte_clear_expected(&rows[1], x, y) :
+                            tiled_old_byte(x, y);
+
+                        g_assert_cmphex(row[x - first], ==, expected);
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_mte_stipple_failure(void)
+{
+    const uint32_t patterns[] = { 0, UINT32_MAX, 0x80000001, 0x96a53c81 };
+    const unsigned triggers[] = { 0x10, 0x18 };
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        QTestState *s = start_state_options(
+            "-device sgi-crime-test-fixture,id=inject,"
+            "crime=/machine/peripheral/crime");
+
+        qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+        qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+        qtest_writeq(s, BASE + 0x18, 1U << 4);
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':'memory-error-status','value':234881024}}");
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+            "'property':'memory-error-address','value':74565}}");
+        for (unsigned fault = 0; fault < 16; fault++) {
+            if (!depth && (fault == 12 || fault == 13)) {
+                continue;
+            }
+            unsigned variants = fault == 10 || fault == 11 ?
+                                ARRAY_SIZE(patterns) : 1;
+
+            for (unsigned variant = 0; variant < variants; variant++) {
+                for (unsigned t = 0; t < ARRAY_SIZE(triggers); t++) {
+                    MteClear c = mte_clear_default(depth);
+                    unsigned trigger = triggers[t];
+                    uint32_t words[10];
+                    uint8_t table[512], table_after[512];
+                    uint64_t table_addr = 0x15001000ULL + c.bank * 512;
+
+                    if (!fault || fault == 4) {
+                        c.pattern = 0;
+                    } else if (fault == 1) {
+                        c.mask = 0;
+                    } else if (variants > 1) {
+                        c.pattern = patterns[variant];
+                    }
+                    if (fault == 4) {
+                        c.y0 = 0;
+                    }
+                    mte_clear_words(&c, words);
+                    mte_clear_memory(s, &c, true, false);
+                    mte_clear_stage(s, &c);
+                    switch (fault) {
+                    case 0:
+                    case 1:
+                        tiled_entry(s, c.bank, 17, 0);
+                        break;
+                    case 2:
+                        tiled_entry(s, c.bank, 17, 0x8400);
+                        break;
+                    case 3:
+                        tiled_entry(s, c.bank, 17, 0x9400);
+                        break;
+                    case 4:
+                        tiled_entry(s, c.bank, 16,
+                                    0x8000 | tiled_page(c.bank, 0));
+                        tiled_entry(s, c.bank, 17,
+                                    0x8000 | tiled_page(c.bank, 1));
+                        break;
+                    case 5:
+                        qtest_writel(s, MTE + 0x38, tiled_xy(8192, c.y1));
+                        break;
+                    case 6:
+                        qtest_writel(s, MTE + 0x38, tiled_xy(c.x1, 2048));
+                        break;
+                    case 7:
+                        qtest_writel(s, MTE + 0x30,
+                                     tiled_xy(c.x1 + 1, c.y0));
+                        break;
+                    case 8:
+                        qtest_writel(s, MTE + 0x30,
+                                     tiled_xy(c.x0, c.y1 + 1));
+                        break;
+                    case 9:
+                        qtest_writel(s, MTE + 0x48, UINT32_MAX);
+                        break;
+                    case 10:
+                        qtest_writel(s, MTE, (words[0] & ~0x300U) | 0x300);
+                        break;
+                    case 11:
+                        qtest_writel(s, MTE, words[0] | 0x80000000U);
+                        break;
+                    case 12:
+                        qtest_writel(s, MTE + 0x30,
+                                     tiled_xy(c.x0 + 1, c.y0));
+                        break;
+                    case 13:
+                        qtest_writel(s, MTE + 0x38,
+                                     tiled_xy(c.x1 - 1, c.y1));
+                        break;
+                    case 14:
+                        qtest_writel(s, MTE, words[0] | (1U << 11));
+                        break;
+                    case 15:
+                        qtest_writel(s, MTE, (words[0] & ~0x1cU) | (7U << 2));
+                        break;
+                    }
+                    qtest_memread(s, table_addr, table, sizeof(table));
+                    g_assert_cmphex(ldq_be_p(table), ==,
+                                    qtest_readq(s, table_addr));
+                    clip_save(s, path, before);
+                    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+                    g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
+                        trigger == 0x10 ? ~c.pattern : ~c.fill), ==,
+                        MEMTX_ERROR);
+                    clip_stopped(s);
+                    mte_clear_memory(s, &c, false, false);
+                    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+                    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+                    g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+                    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==,
+                                    234881024);
+                    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 74565);
+                    for (unsigned i = 0; i < 5; i++) {
+                        g_assert_cmpint(qtest_get_irq(s, i), ==, i == 0);
+                    }
+                    qtest_memread(s, table_addr, table_after,
+                                  sizeof(table_after));
+                    g_assert_cmphex(ldq_be_p(table_after), ==,
+                                    qtest_readq(s, table_addr));
+                    for (unsigned i = 0; i < sizeof(table) / 8; i++) {
+                        g_assert_cmphex(ldq_be_p(table_after + i * 8), ==,
+                                        ldq_be_p(table + i * 8));
+                    }
+                    clip_save(s, path, after);
+                    g_assert_cmpmem(before, sizeof(before),
+                                    after, sizeof(after));
+                    unsigned bytes = 1U << depth;
+
+                    tiled_map(s, c.bank, c.x0 >= bytes ? c.x0 - bytes : 0,
+                              c.y0 ? c.y0 - 1 : 0,
+                              MIN(c.x1 + bytes, 8191), MIN(c.y1 + 1, 2047));
+                    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+                        if (i * 8 != trigger) {
+                            qtest_writel(s, MTE + i * 8, words[i]);
+                        }
+                    }
+                    g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==,
+                                    MEMTX_OK);
+                    mte_clear_memory(s, &c, false, true);
+                }
+            }
+        }
+        qtest_quit(s);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_mte_stipple_exclusions(void)
+{
+    const uint32_t modes[] = {
+        1U << 11, (1U << 11) | (1U << 10),
+        (1U << 11) | (1U << 8), (1U << 11) | (2U << 8),
+        4U << 2, (1U << 11) | (4U << 5) | (5U << 2),
+        CLIP_MODE, CLIP_MODE | (1U << 10),
+        (4U << 2) | (1U << 10), 3U << 2, 7U << 2,
+    };
+    const struct { unsigned offset, width; bool write; } accesses[] = {
+        { 0x810, 1, true }, { 0x810, 2, true }, { 0x810, 8, true },
+        { 0x811, 4, true }, { 0x80c, 8, true },
+        { 0x810, 4, false }, { 0x810, 8, false }, { 0x10, 4, false },
+    };
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-exclude-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_state_options("");
+    MteClear c = mte_clear_default(0);
+
+    for (unsigned n = 0; n < ARRAY_SIZE(modes); n++) {
+        for (unsigned zero = 0; zero < 2; zero++) {
+            mte_clear_memory(s, &c, true, false);
+            mte_clear_stage(s, &c);
+            qtest_writel(s, MTE, modes[n]);
+            uint64_t target = 0;
+            uint8_t result = 0;
+
+            if (n == 0) {
+                tiled_map(s, 0, 0, 0, 7, 0);
+                qtest_writel(s, MTE + 8, UINT32_MAX);
+                qtest_writel(s, MTE + 0x20, 0);
+                qtest_writel(s, MTE + 0x28, tiled_xy(3, 0));
+                qtest_writel(s, MTE + 0x30, tiled_xy(4, 0));
+                qtest_writel(s, MTE + 0x38, tiled_xy(7, 0));
+                qtest_writel(s, MTE + 0x40, 1);
+                qtest_memset(s, tiled_address(0, 0, 0), 0x3c, 4);
+                target = tiled_address(0, 4, 0);
+                result = 0x3c;
+            } else if (n == 4 || n == 5) {
+                page_pair(s, 0, 0, 3, 0);
+                page_pair(s, 1, 0, 9, 0);
+                qtest_writel(s, MTE + 8, UINT32_MAX);
+                qtest_writel(s, MTE + 0x18, 0x123456b7);
+                qtest_writel(s, MTE + 0x20, 7);
+                qtest_writel(s, MTE + 0x28, 10);
+                qtest_writel(s, MTE + 0x30, 7);
+                qtest_writel(s, MTE + 0x38, 10);
+                qtest_memset(s, 0x3007, 0x3c, 4);
+                target = n == 4 ? 0x3007 : 0x9007;
+                result = n == 4 ? 0xb7 : 0x3c;
+            } else if (n == 6) {
+                uint16_t entries[16];
+
+                clip_entries(entries);
+                clip_program(s, entries);
+                qtest_writel(s, MTE + 8, UINT32_MAX);
+                qtest_writel(s, MTE + 0x18, 0x123456b7);
+                qtest_writel(s, MTE + 0x30, tiled_xy(7, 0));
+                qtest_writel(s, MTE + 0x38, tiled_xy(10, 0));
+                target = 0x30007;
+                result = 0xb7;
+            }
+            if (target) {
+                qtest_memset(s, target, 0xa5, 4);
+            }
+            clip_save(s, path, before);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writel(s, MTE + 0x810,
+                                         zero ? 0 : UINT32_MAX), ==,
+                            MEMTX_ERROR);
+            clip_stopped(s);
+            mte_clear_memory(s, &c, false, false);
+            clip_save(s, path, after);
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            if (target) {
+                assert_bytes(s, target, 4, 0xa5);
+                g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+                assert_bytes(s, target, 4, result);
+            }
+        }
+    }
+    mte_clear_stage(s, &c);
+    clip_save(s, path, before);
+    for (unsigned n = 0; n < ARRAY_SIZE(accesses); n++) {
+        uint64_t value;
+
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+        g_assert_cmpint(accesses[n].write ?
+            memtx_write(s, MTE + accesses[n].offset, 0x123456789abcdef0ULL,
+                         accesses[n].width) :
+            memtx_read(s, MTE + accesses[n].offset, &value, accesses[n].width),
+            ==, MEMTX_ERROR);
+        clip_stopped(s);
+        clip_save(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    }
+    qtest_quit(s);
+    const char *previous = selected_profile;
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            if (legacy && functional) {
+                continue;
+            }
+            selected_profile = legacy ? "legacy-software" : "1.5";
+            s = start_profile_ram(functional, false, "");
+            selected_profile = previous;
+            g_assert_cmpint(memtx_writel(s, MTE + 0x810, 0x96a53c81), ==,
+                            MEMTX_ERROR);
+            clip_save(s, path, after);
+            for (unsigned i = 0; i < 10; i++) {
+                uint32_t value = ldl_be_p(after + 2 + 256 + i * 4);
+
+                g_assert_cmphex(value, ==, 0);
+            }
+            qtest_quit(s);
+        }
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_mte_stipple_migration(void)
+{
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-stipple-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        QTestState *s = start(), *to = start_options("-incoming defer");
+        MteClear c = mte_clear_default(depth);
+        uint32_t words[10];
+        uint64_t extra = 0x012389ab0000cdefULL;
+        uint64_t table = 0x15001000ULL + c.bank * 512;
+
+        mte_clear_words(&c, words);
+        mte_clear_memory(s, &c, true, false);
+        mte_clear_stage(s, &c);
+        qtest_writeq(s, table + 63 * 8, extra);
+        /* Unsupported pending state remains raw until a command consumes it. */
+        qtest_writel(s, MTE, (words[0] & ~0x300U) | 0x300);
+        qtest_writel(s, MTE + 0x38, tiled_xy(c.x1, 2048));
+        clip_save(s, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+        sgi_wait_migration(to, "completed");
+        clip_save(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmphex(qtest_readq(to, table + 63 * 8), ==, extra);
+        mte_clear_memory(to, &c, false, false);
+        g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 0);
+        for (unsigned peer = 0; peer < 2; peer++) {
+            QTestState *q = peer ? to : s;
+
+            qtest_qmp_assert_success(q, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writel(q, MTE + 0x810, ~c.pattern), ==,
+                            MEMTX_ERROR);
+            clip_stopped(q);
+            mte_clear_memory(q, &c, false, false);
+        }
+        clip_save(to, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        for (unsigned peer = 0; peer < 2; peer++) {
+            QTestState *q = peer ? to : s;
+
+            qtest_writel(q, MTE, words[0]);
+            qtest_writel(q, MTE + 0x38, words[7]);
+            g_assert_cmpint(memtx_writel(q, MTE + 0x870, 0), ==, MEMTX_OK);
+            mte_clear_memory(q, &c, false, true);
+        }
+        uint64_t marker = 0;
+
+        for (unsigned x = c.x0; x <= c.x1; x++) {
+            if (mte_clear_expected(&c, x, c.y0) != tiled_old_byte(x, c.y0)) {
+                marker = tiled_address(c.bank, x, c.y0);
+                break;
+            }
+        }
+        g_assert_cmpuint(marker, !=, 0);
+        qtest_writeb(to, marker, 0x77);
+        qtest_writel(to, MTE + 0x70, 0x12345678);
+        qtest_writel(to, MTE + 0x78, 0);
+        g_assert_cmphex(qtest_readl(to, STATUS), ==, 0x1e000000);
+        g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
+        qtest_system_reset(to);
+        g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
+        clip_save(to, path, after);
+        for (unsigned i = 0; i < 10; i++) {
+            uint32_t value = ldl_be_p(after + 2 + 256 + i * 4);
+
+            g_assert_cmphex(value, ==, 0);
+        }
+        g_assert_cmphex(qtest_readq(to, table), ==, 0);
+        g_assert_cmphex(qtest_readq(to, table + 63 * 8), ==, 0);
+        c.x0 += 1U << depth;
+        c.x1 = c.x0 + 33 * (1U << depth) - 1;
+        c.pattern = 0x80402010;
+        mte_clear_run(to, &c, 0x10);
+        qtest_quit(s);
+        qtest_quit(to);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 typedef struct TransferCase {
     const char *name;
     GTestFunc function;
@@ -1890,6 +2574,20 @@ int main(int argc, char **argv)
         { "migration", test_tiled_migration, NULL, NULL, "legacy-software" },
         { "profiles", test_tiled_profiles, NULL, NULL, "legacy-software" },
     };
+    static const TransferCase stipple_tests[] = {
+        { "rotations", test_mte_stipple_rotations, NULL, NULL,
+          "legacy-software" },
+        { "masks", test_mte_stipple_masks, NULL, NULL, "legacy-software" },
+        { "phases", test_mte_stipple_phases, NULL, NULL, "legacy-software" },
+        { "start-forms", test_mte_stipple_starts, NULL, NULL,
+          "legacy-software" },
+        { "finite-rows", test_mte_stipple_rows, NULL, NULL, "legacy-software" },
+        { "failure", test_mte_stipple_failure, NULL, NULL, "legacy-software" },
+        { "exclusions", test_mte_stipple_exclusions, NULL, NULL,
+          "legacy-software" },
+        { "migration", test_mte_stipple_migration, NULL, NULL,
+          "legacy-software" },
+    };
     const char *profiles[] = { "1.5", "legacy-software" };
 
     g_test_init(&argc, &argv, NULL);
@@ -1915,6 +2613,12 @@ int main(int argc, char **argv)
                                                tiled_tests[i].name);
 
         qtest_add_data_func(name, &tiled_tests[i], run_transfer_case);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(stipple_tests); i++) {
+        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/stipple/%s",
+                                               stipple_tests[i].name);
+
+        qtest_add_data_func(name, &stipple_tests[i], run_transfer_case);
     }
     return g_test_run();
 }
