@@ -30,3 +30,4 @@ ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/invalid-stream
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/width-stop
 renderer /mips64/sgi/crime/renderer/cpu
 state /mips64/sgi/crime/legacy
+bank-word /mips64/sgi/crime/legacy/bank-word

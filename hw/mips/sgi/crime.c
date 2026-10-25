@@ -1596,6 +1596,15 @@ static MemTxResult crime_read(void *opaque, hwaddr offset, uint64_t *value,
         *value = s->legacy_software ? 0xa1 : CRIME_ID_REVISION;
         return MEMTX_OK;
     }
+    /* Legacy compatibility reads extend the documented doubleword interface. */
+    if (s->legacy_software && size == 4 && !(offset & 3) &&
+        offset >= 0x208 && offset <= 0x244) {
+        unsigned bank = (offset - 0x208) / 8;
+        uint64_t control = s->eight_128m_banks ? s->bank_control[bank] : bank;
+
+        *value = offset & 4 ? (uint32_t)control : control >> 32;
+        return MEMTX_OK;
+    }
     if (size != 8 || offset & 7) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-crime: invalid %u-byte read at 0x%" HWADDR_PRIx

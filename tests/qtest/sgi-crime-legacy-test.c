@@ -865,6 +865,211 @@ static void test_banks(void)
     qtest_quit(s);
 }
 
+static QTestState *start_bank_words(bool legacy, const char *extra)
+{
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE
+        "-M none -cpu R10000 -S -object memory-backend-ram,id=fit,size=1G "
+        "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
+        "crime-profile=%s,eight-128m-banks=on,reset-low-ram-approx=on %s",
+        legacy ? "legacy-software" : "1.5", extra);
+
+    qtest_sysbus_mmio_map(s, CRIME_PATH, 0, BASE);
+    return s;
+}
+
+static void check_bank_words(QTestState *s, bool legacy)
+{
+    for (unsigned bank = 0; bank < 8; bank++) {
+        uint64_t address = BASE + 0x208 + 8 * bank;
+        uint64_t native = qtest_readq(s, address);
+
+        /* Alternate lane order so the reads cannot rely on a paired latch. */
+        for (unsigned i = 0; i < 2; i++) {
+            unsigned half = i ^ (bank & 1);
+            uint32_t word;
+            MemTxResult result = memtx_readl(s, address + 4 * half, &word);
+
+            if (legacy) {
+                g_assert_cmpint(result, ==, MEMTX_OK);
+                g_assert_cmphex(word, ==,
+                                half ? (uint32_t)native : native >> 32);
+            } else {
+                g_assert_cmpint(result, !=, MEMTX_OK);
+            }
+        }
+        g_assert_cmphex(qtest_readq(s, address), ==, native);
+    }
+}
+
+static void test_bank_words(void)
+{
+    QTestState *flat = start_profile(true, "");
+
+    check_bank_words(flat, true);
+    qtest_quit(flat);
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_bank_words(legacy, "");
+        uint32_t word;
+        uint8_t byte;
+
+        qtest_writeb(s, 0x40000300, 0x5a);
+        qtest_writeq(s, BASE + 0x20, 1U << 28);
+        for (unsigned bank = 0; bank < 8; bank++) {
+            g_assert_cmphex(qtest_readq(s, BASE + 0x208 + 8 * bank), ==, bank);
+        }
+        check_bank_words(s, legacy);
+        check_bank_words(s, legacy);
+        g_assert_cmphex(qtest_readb(s, 0x300), ==, 0x5a);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 28);
+        for (unsigned bank = 0; bank < 8; bank++) {
+            qtest_writeq(s, BASE + 0x208 + 8 * bank, 0x103 | (bank << 2));
+        }
+        check_bank_words(s, legacy);
+        if (legacy) {
+            g_assert_cmpint(memtx_readl(s, BASE + 0x208, &word), ==, MEMTX_OK);
+            g_assert_cmphex(word, ==, 0);
+            qtest_writeq(s, BASE + 0x208, 0x101);
+            g_assert_cmpint(memtx_readl(s, BASE + 0x20c, &word), ==, MEMTX_OK);
+            g_assert_cmphex(word, ==, 0x101);
+            qtest_writeq(s, BASE + 0x208, 0x102);
+            g_assert_cmpint(memtx_readl(s, BASE + 0x20c, &word), ==, MEMTX_OK);
+            g_assert_cmphex(word, ==, 0x102);
+            g_assert_cmpint(memtx_readl(s, BASE + 0x208, &word), ==, MEMTX_OK);
+            g_assert_cmphex(word, ==, 0);
+        }
+        /* Preserve a nonzero decoder error as well as ordinary RAM and IRQs. */
+        g_assert_cmpint(memtx_readb(s, 0x50000300, &byte), ==, MEMTX_OK);
+        for (unsigned bank = 0; bank < 8; bank++) {
+            qtest_writeq(s, BASE + 0x208 + 8 * bank, 0x100);
+        }
+        g_assert_cmpint(memtx_readb(s, 0x48000300, &byte), !=, MEMTX_OK);
+        check_bank_words(s, legacy);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 1U << 25);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0x08000300);
+        g_assert_cmphex(qtest_readb(s, 0x300), ==, 0x5a);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 28);
+        qtest_system_reset(s);
+        check_bank_words(s, legacy);
+        g_assert_cmphex(qtest_readb(s, 0x300), ==, 0x5a);
+        qtest_writeq(s, BASE + 0x208, 0);
+        g_assert_cmpint(memtx_readb(s, 0x300, &byte), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 0);
+        qtest_quit(s);
+    }
+}
+
+static void reject_bank_word(QTestState *s, uint64_t address,
+                             unsigned size, bool write)
+{
+    uint64_t value;
+    MemTxResult result;
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    result = write ? memtx_store(s, address, UINT32_MAX, size) :
+                     memtx_load(s, address, &value, size);
+    g_assert_cmpint(result, !=, MEMTX_OK);
+    assert_stopped(s);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_assert_cmphex(qtest_readq(s, BASE + 0x208 + 8 * bank), ==, bank);
+    }
+    g_assert_cmphex(qtest_readb(s, 0x300), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 28);
+    qtest_system_reset(s);
+    qtest_writeq(s, BASE + 0x20, 1U << 28);
+}
+
+static void test_bank_word_refusal(void)
+{
+    static const unsigned nearby[] = { 0x204, 0x248, 0x250, 0x254,
+                                        0x258, 0x25c, 0x280 };
+    g_autofree char *directory = g_dir_make_tmp("crime-bank-word-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(directory, "device.txt", NULL);
+    g_autofree char *extra =
+        g_strdup_printf("-d guest_errors,unimp -D %s", path);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_bank_words(true, extra);
+
+    qtest_writeb(s, 0x40000300, 0x5a);
+    qtest_writeq(s, BASE + 0x20, 1U << 28);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        uint64_t address = BASE + 0x208 + 8 * bank;
+
+        for (unsigned half = 0; half < 2; half++) {
+            reject_bank_word(s, address + 4 * half, 4, true);
+            reject_bank_word(s, address + 4 * half, 1, false);
+            reject_bank_word(s, address + 4 * half, 2, false);
+        }
+        for (unsigned offset = 1; offset < 8; offset++) {
+            if (offset != 4) {
+                reject_bank_word(s, address + offset, 4, false);
+            }
+            reject_bank_word(s, address + offset, 8, false);
+            reject_bank_word(s, address + offset, 8, true);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(nearby); i++) {
+        reject_bank_word(s, BASE + nearby[i], 4, false);
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents, "invalid register width or alignment"));
+    g_assert_nonnull(strstr(contents, "0x1400020c"));
+    g_assert_nonnull(strstr(contents, "0x14000244"));
+    g_unlink(path);
+    g_rmdir(directory);
+}
+
+static void test_bank_word_cpu(void)
+{
+    QTestState *s;
+    unsigned pc = 0x1000;
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    s = qtest_init(MEMTX_TEST_DEVICE
+        "-M o2-test,crime-profile=legacy-software,"
+        "bank-profile=8x128m-synthetic,reset-low-ram-approx=on "
+        "-cpu R10000 -m 1G -nodefaults -accel tcg,thread=single -S "
+        "-device loader,addr=0xffffffffa0001000,cpu-num=0");
+    qtest_writel(s, pc, mips_lui(8, 0xb400));
+    pc += 4;
+    qtest_writel(s, pc, mips_lui(10, 0xa000));
+    pc += 4;
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, BASE + 0x208 + 8 * bank, 0x103 | (bank << 2));
+        for (unsigned half = 0; half < 2; half++) {
+            qtest_writel(s, pc, mips_lw(9, 8, 0x208 + 8 * bank + 4 * half));
+            pc += 4;
+            qtest_writel(s, pc, mips_sw(9, 10, 0x300 + 8 * bank + 4 * half));
+            pc += 4;
+        }
+    }
+    qtest_writel(s, pc, mips_ori(9, 0, 0x55));
+    qtest_writel(s, pc + 4, mips_sw(9, 10, 0x380));
+    qtest_writel(s, pc + 8, mips_branch(MIPS_OPC_BEQ, 0, 0, -1));
+    qtest_writel(s, pc + 12, 0);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (qtest_readl(s, 0x380) != 0x55) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'stop'}");
+    for (unsigned bank = 0; bank < 8; bank++) {
+        uint64_t native = qtest_readq(s, BASE + 0x208 + 8 * bank);
+
+        g_assert_cmphex(qtest_readl(s, 0x300 + 8 * bank), ==, native >> 32);
+        g_assert_cmphex(qtest_readl(s, 0x304 + 8 * bank), ==, (uint32_t)native);
+    }
+    qtest_quit(s);
+}
+
 static void test_immutable(void)
 {
     QTestState *s = start_profile(true, "");
@@ -2644,6 +2849,9 @@ int main(int argc, char **argv)
     add_case("sgi/crime/1.5/interrupt-mask-upper-refusal",
                    test_interrupt_mask_upper_refusal);
     add_case("sgi/crime/legacy/banks", test_banks);
+    add_case("sgi/crime/legacy/bank-word/read", test_bank_words);
+    add_case("sgi/crime/legacy/bank-word/refusal", test_bank_word_refusal);
+    add_case("sgi/crime/legacy/bank-word/cpu", test_bank_word_cpu);
     add_case("sgi/crime/legacy/immutable", test_immutable);
     add_case("sgi/crime/legacy/level-latches", test_level_latches);
     add_data_case("sgi/crime/legacy/source-routing",
