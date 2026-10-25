@@ -869,6 +869,21 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
     rules.smooth_rule = g_rand_int_range(rand, 0,
                                          SGI_SMOOTH_TWO_PIXEL_FILTER + 1);
     rules.depth_float = corpus_chance(rand, 20);
+    if (corpus_chance(rand, 30)) {
+        /*
+         * Depth from the head's own eye-space row, as VPro gives it: about
+         * (z / w + 1) / 2, so most fragments land inside [0, 1].
+         */
+        rules.depth_row_given = true;
+        rules.depth_row[2] = 0.5 + g_rand_double_range(rand, -0.05, 0.05);
+        rules.depth_row[3] = 0.5 + g_rand_double_range(rand, -0.05, 0.05);
+        if (g_rand_boolean(rand)) {
+            rules.depth_divisor_given = true;
+            rules.depth_divisor[2] = g_rand_double_range(rand, -0.1, 0.1);
+            rules.depth_divisor[3] = 1;
+        }
+        rules.depth_slack = g_rand_double_range(rand, 0, 0.01);
+    }
 
     for (unsigned i = 0; i < CW * CH; i++) {
         c->colour[0][i] = g_rand_int(rand);
@@ -957,6 +972,25 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         d.polygon_modes = modes;
     }
 
+    if (corpus_chance(rand, 40)) {
+        /*
+         * The state most drawing uses: none of the per-fragment work beyond
+         * interpolation, the depth test and the store, so the cases reach
+         * whatever shorter path the rasterizer keeps for it.
+         */
+        SGIGLDrawState *st = &ctx.cur;
+
+        st->texture_2d = 0;
+        st->fog = st->clip_planes = st->alpha_test = st->stencil_test = 0;
+        st->blend = st->color_logic_op = st->index_logic_op = 0;
+        st->index_bits = 0;
+        st->colour_mask = corpus_chance(rand, 90) ? SGI_GL_COLOUR_MASK_ALL :
+                          0;
+        st->depth_test = corpus_chance(rand, 70);
+        d.polygon_stipple_enabled = false;
+        d.polygon_modes = NULL;
+        d.polygon_smooth = false;
+    }
     t = (SGIRasterTarget) {
         .store_colour = rgba ? NULL : corpus_store_colour,
         .load_colour = rgba ? NULL : corpus_load_colour,
