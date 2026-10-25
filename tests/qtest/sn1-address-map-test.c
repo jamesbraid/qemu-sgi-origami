@@ -4522,7 +4522,7 @@ static void test_own_node_ii_handshake(const void *data)
     bool routed = config & 4;
     bool control = config & 8;
     const char *topology = routed ?
-        "origin300-numalink-pci-expansion-experiment" : "origin300-two-chassis";
+        "origin300-numalink-pci-expansion" : "origin300-two-chassis";
     g_autofree char *prom = NULL;
     g_autofree char *image = NULL;
     g_autoptr(GError) error = NULL;
@@ -4663,7 +4663,7 @@ static void test_routed_cpu_number_read_is_per_cpu(const void *data)
     g_assert_cmpint(close(fd), ==, 0);
     for (unsigned renumber = 0; renumber < 2; renumber++) {
         QTestState *qts = qtest_initf(
-            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "-M origin300,topology=origin300-numalink-pci-expansion,"
             "expansion-storage.0=expansion-enclosure=cfg "
             "-cpu R14000 -smp 4 -m 1G -bios %s "
             "-drive if=none,id=cfg,file=%s,format=raw "
@@ -4913,7 +4913,7 @@ static QTestState *routed_memory_start_machine_type(const char *prom,
     const char *image, const char *extra, bool two_routers, bool public_ports)
 {
     QTestState *qts = qtest_initf(
-        "-M %s,activate=on,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M %s,activate=on,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=%s "
@@ -6007,7 +6007,7 @@ static void test_routed_instruction_translation(const void *data)
     g_assert_cmpint(close(fd), ==, 0);
     quoted = g_shell_quote(log_path);
     qts = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -6126,7 +6126,7 @@ static void test_mmio_execution_state(const void *data)
     unsigned own = config & 3;
     bool routed = config & 4;
     const char *topology = routed ?
-        "origin300-numalink-pci-expansion-experiment" : "origin300-two-chassis";
+        "origin300-numalink-pci-expansion" : "origin300-two-chassis";
     const uint32_t probe[] = {
         0x34111200 | own, 0x34125678, 0x34130000,
         0x3c109200, 0x0010803c, 0x3c080160, 0x02088025, 0x36108010,
@@ -7180,7 +7180,7 @@ int main(int argc, char **argv)
                         NULL, test_routed_cpu_number_read_is_per_cpu);
     qtest_add_data_func(
                         "sn1/address-map/routed-remote-ram-cross-page-execution",
-                        "origin300-numalink-pci-expansion-experiment",
+                        "origin300-numalink-pci-expansion",
                         test_remote_ram_cross_page_execution);
     qtest_add_data_func(
                         "sn1/address-map/direct-remote-ram-cross-page-execution",

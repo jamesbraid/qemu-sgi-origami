@@ -394,7 +394,7 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
 
 class ComputeOptionIntxTests(unittest.TestCase):
     def test_catalogue_preserves_compute_option_maps(self):
-        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model = _resolved("origin300-numalink-pci-expansion")
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]
         nodes = topology["nodes"]
         for node in nodes:
@@ -402,13 +402,13 @@ class ComputeOptionIntxTests(unittest.TestCase):
                              [1, 5, 1, 5, 2, 6, 2, 6])
 
     def test_unknown_compute_option_owner_is_refused(self):
-        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model = _resolved("origin300-numalink-pci-expansion")
         model["machine"]["emulation"]["option_intx_maps"]["missing"] = [1] * 8
         with self.assertRaises(CompileError):
             compile_model(model)
 
     def test_selected_experiment_has_independent_option_maps(self):
-        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model = _resolved("origin300-numalink-pci-expansion")
         model["machine"]["emulation"]["option_intx_maps"] = {
             "master-bedrock": [1, 5, 1, 5, 2, 6, 2, 6],
             "slave-bedrock": [2, 6, 2, 6, 1, 5, 1, 5],
@@ -433,7 +433,7 @@ class ComputeOptionIntxTests(unittest.TestCase):
 
     def test_invalid_compute_option_map_is_refused(self):
         for value in ([1] * 7, [8] * 8, [True] * 8):
-            model = _resolved("origin300-numalink-pci-expansion-experiment")
+            model = _resolved("origin300-numalink-pci-expansion")
             model["machine"]["emulation"]["option_intx_maps"] = {
                 "master-bedrock": value,
             }
@@ -446,7 +446,7 @@ class LaunchPolicyFieldTests(unittest.TestCase):
     comparing topology names."""
 
     def test_router_diagnostics_reach_every_router_of_their_topology(self):
-        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model = _resolved("origin300-numalink-pci-expansion")
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]
         self.assertTrue(topology["routers"])
         for router in topology["routers"]:
@@ -4093,7 +4093,7 @@ class GoldenTests(unittest.TestCase):
 
 class Origin300RoutedContractTests(unittest.TestCase):
     def model(self):
-        return _resolved("origin300-numalink-pci-expansion-experiment")
+        return _resolved("origin300-numalink-pci-expansion")
 
     def test_selected_router_and_cables(self):
         topology = compile_model(self.model())

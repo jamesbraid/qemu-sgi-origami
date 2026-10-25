@@ -77,7 +77,7 @@ class ExportTests(unittest.TestCase):
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual(sorted(topology["name"] for topology in catalogue["topologies"]),
                          ["origin300",
-                          "origin300-numalink-pci-expansion-experiment",
+                          "origin300-numalink-pci-expansion",
                           "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
@@ -85,7 +85,7 @@ class ExportTests(unittest.TestCase):
                           "origin300-two-chassis"])
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
-                          "origin300-numalink-pci-expansion-experiment",
+                          "origin300-numalink-pci-expansion",
                           "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
@@ -107,14 +107,14 @@ class ExportTests(unittest.TestCase):
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual({topology["name"] for topology in catalogue["topologies"]},
                          {"origin300",
-                          "origin300-numalink-pci-expansion-experiment",
+                          "origin300-numalink-pci-expansion",
                           "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment"})
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
-                          "origin300-numalink-pci-expansion-experiment",
+                          "origin300-numalink-pci-expansion",
                           "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",

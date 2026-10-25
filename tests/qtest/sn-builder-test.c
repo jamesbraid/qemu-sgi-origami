@@ -5666,7 +5666,7 @@ static void test_routed_expansion_population(const void *opaque)
     unsigned counts[2];
     QTestState *qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-numalink-pci-expansion-experiment,"
+        "origin300-numalink-pci-expansion,"
         "population=%s," STORAGE_BINDING " "
         "-cpu R14000 -smp %u -m 1024M -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -7228,7 +7228,7 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
 }
 
 #define ROUTED_TOPOLOGY \
-    "origin300,topology=origin300-numalink-pci-expansion-experiment"
+    "origin300,topology=origin300-numalink-pci-expansion"
 
 static uint64_t routed_uart_read(void *opaque, uint64_t offset);
 static void routed_uart_write(void *opaque, uint64_t offset, uint64_t value);
@@ -7775,7 +7775,7 @@ static void test_routed_memory_cleanup(const void *data)
     }
     qts = qtest_initf(
         "-M sn-builder-routed-cleanup-test,activate=on,"
-        "topology=origin300-numalink-pci-expansion-experiment,"
+        "topology=origin300-numalink-pci-expansion,"
         STORAGE_BINDING " -cpu R14000 -smp 4 -m 1G -S -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-nodefaults -display none %s", prom, image,

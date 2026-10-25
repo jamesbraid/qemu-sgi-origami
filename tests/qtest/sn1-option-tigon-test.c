@@ -16,7 +16,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#define TOPOLOGY "origin300-numalink-pci-expansion-experiment"
+#define TOPOLOGY "origin300-numalink-pci-expansion"
 #define MAC "52:54:00:12:34:56"
 #define NODE(n) ((uint64_t)(n) << 33)
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))

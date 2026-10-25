@@ -2997,9 +2997,9 @@ def compile_model(model: dict) -> dict:
     if not isinstance(option_maps, dict):
         raise CompileError("compute option INTx maps must be a node map")
     if (option_maps and model["composition"]["product"] !=
-            "origin300-numalink-pci-expansion-experiment"):
+            "origin300-numalink-pci-expansion"):
         raise CompileError("compute option INTx map requires selection of "
-                           "the Origin 300 routed PCI experiment")
+                           "the Origin 300 routed NUMAlink and PCI expansion")
     known_nodes = {entry["component"]["id"] for entry in graph["nodes"]}
     if set(option_maps) - known_nodes:
         raise CompileError("compute option INTx map has no node owner")

@@ -177,7 +177,7 @@ static void test_experimental_status_write(void)
     g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     s = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -484,7 +484,7 @@ static void test_experimental_status_write(void)
     socket = g_build_filename(dir, "socket", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     to = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -653,7 +653,7 @@ static void test_experimental_local_reset(void)
     g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     s = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -724,7 +724,7 @@ static void test_experimental_local_reset(void)
     socket = g_build_filename(dir, "socket", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     to = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -782,7 +782,7 @@ static void test_experimental_port_errors(void)
     g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     s = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -865,7 +865,7 @@ static void test_experimental_zero_reset_restore(void)
     g_assert_cmpint(ftruncate(fd, 1476264), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     s = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
@@ -1814,7 +1814,7 @@ static void test_migration_profile_mismatch(const void *data)
         g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
         g_assert_cmpint(close(fd), ==, 0);
         args = g_strdup_printf(
-            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "-M origin300,topology=origin300-numalink-pci-expansion,"
             "expansion-storage.0=expansion-enclosure=cfg "
             "-cpu R14000 -smp 4 -m 1G -bios %s "
             "-drive if=none,id=cfg,file=%s,format=raw "
@@ -1834,7 +1834,7 @@ static void test_migration_profile_mismatch(const void *data)
     if (synthetic) {
         g_free(args);
         args = g_strdup_printf(
-            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "-M origin300,topology=origin300-numalink-pci-expansion,"
             "expansion-storage.0=expansion-enclosure=cfg "
             "-cpu R14000 -smp 4 -m 1G -bios %s "
             "-drive if=none,id=cfg,file=%s,format=raw "
