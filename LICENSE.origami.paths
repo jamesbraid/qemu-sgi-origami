@@ -137,7 +137,7 @@ hw/mips/sgi/models/layers/products/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion.yaml
 hw/mips/sgi/models/layers/products/origin300-two-chassis.yaml
 hw/mips/sgi/models/layers/products/origin300.yaml
-hw/mips/sgi/models/layers/products/origin3000-reference-bricks.yaml
+hw/mips/sgi/models/layers/products/origin3200.yaml
 hw/mips/sgi/models/layers/products/origin350-reference.yaml
 hw/mips/sgi/models/layers/products/origin350.yaml
 hw/mips/sgi/models/layers/products/tezro-rack.yaml
@@ -168,7 +168,7 @@ hw/mips/sgi/models/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/origin300-pci-expansion.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
 hw/mips/sgi/models/origin300.yaml
-hw/mips/sgi/models/origin3000-reference-bricks.yaml
+hw/mips/sgi/models/origin3200.yaml
 hw/mips/sgi/models/origin350-reference.yaml
 hw/mips/sgi/models/origin350.yaml
 hw/mips/sgi/models/references.schema.json
