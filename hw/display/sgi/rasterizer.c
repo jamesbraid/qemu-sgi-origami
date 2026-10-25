@@ -2760,6 +2760,208 @@ static bool sgi_soft_texture_coefficients(const SGISoftDraw *r,
  * Depth is interpolated linearly in window coordinates and colour with
  * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
  */
+/*
+ * Whether a triangle's fragments can take sgi_soft_simple_row() instead of
+ * the full per-fragment path: state that leaves each fragment's work at
+ * interpolation, the depth range, pixel ownership, the depth test and an
+ * unconditional store. Everything it excludes either reads a fragment
+ * value the simple row does not interpolate (texture coordinates, fog
+ * distance, clip-plane values, an index) or does per-pixel work it does
+ * not do (stipple, alpha and stencil tests, destination reads).
+ */
+static bool sgi_soft_simple_fragments(const SGISoftDraw *r)
+{
+    const SGIGLDrawState *st = r->st;
+    const SGIRasterTarget *t = r->t;
+
+    if (r->texture || st->fog || st->clip_planes || r->polygon_stipple ||
+        st->index_bits || r->blend || r->logic_op || st->alpha_test ||
+        st->stencil_test) {
+        return false;
+    }
+    /* sgi_raster_depth_stencil() drops every fragment of such a draw. */
+    if (st->depth_test &&
+        (!t->load_depth || (st->depth_mask && !t->store_depth))) {
+        return false;
+    }
+    if (t->store_rgba) {
+        return !r->rgba_read;
+    }
+    return !r->colour_mask ||
+           r->colour_mask == sgi_soft_colour_bits(r->rules);
+}
+
+/*
+ * One row of a triangle under sgi_soft_simple_fragments(): pixels px0 to
+ * px1 of row py, whose edge values for v[2]-v[0] and v[0]-v[1] at px0 are
+ * e1 and e2. Each fragment's values and each target call are those
+ * sgi_soft_fragment() makes for it, in the same order; the work that
+ * cannot vary along the row, or with the state excluded, is done once.
+ * The constant flags select a specialisation each, so the per-pixel loop
+ * carries no test of them.
+ */
+static inline __attribute__((always_inline))
+void sgi_soft_simple_row(const SGISoftDraw *r, const SGISoftVertex v[3],
+                         int py, int px0, int px1, int64_t e1, int64_t e2,
+                         int64_t step1, int64_t step2, int64_t area,
+                         double offset, const SGISoftFrag *flat,
+                         const bool smooth, const bool rgba,
+                         const bool depth_row)
+{
+    const SGIRasterRules *rules = r->rules;
+    const SGIGLDrawState *st = r->st;
+    const SGIRasterTarget *t = r->t;
+    const int y = r->win.oy + py;
+    /* A flat colour is the same at every pixel unless dithered. */
+    const bool fixed = !smooth && !r->dither;
+    const bool store = rgba ? r->rgba_mask && r->ntargets : r->colour_mask;
+    const bool clipped = r->win.clip->n > 1;
+    SGIRasterColour fixed_rgba = { 0 };
+    uint32_t fixed_colour = 0;
+
+    if (st->scissor_test && !clipped) {
+        /* sgi_soft_owned_at()'s scissor test, decided for the whole row. */
+        int64_t sx0 = st->scissor[0];
+        int64_t sx1 = (int64_t)st->scissor[0] + st->scissor[2] - 1;
+
+        if (!(py >= st->scissor[1] &&
+              (int64_t)py < (int64_t)st->scissor[1] + st->scissor[3])) {
+            return;
+        }
+        if (sx0 > px0) {
+            if (sx0 > px1) {
+                return;
+            }
+            e1 += (sx0 - px0) * step1;
+            e2 += (sx0 - px0) * step2;
+            px0 = sx0;
+        }
+        px1 = MIN(px1, sx1);
+    }
+    if (fixed && store) {
+        if (rgba) {
+            double alpha = sgi_soft_alpha(rules, flat->rgba[3]) /
+                           (double)sgi_soft_alpha_max(rules);
+
+            fixed_rgba = sgi_soft_rgba_value(rules,
+                                             sgi_soft_rgb(rules, flat->rgba),
+                                             alpha);
+        } else {
+            fixed_colour = sgi_soft_rgb(rules, flat->rgba);
+        }
+    }
+    for (int px = px0; px <= px1; px++, e1 += step1, e2 += step2) {
+        const int x = r->win.ox + px;
+        double b1 = (double)e1 / area;
+        double b2 = (double)e2 / area;
+        double z = v[0].z + b1 * (v[1].z - v[0].z) + b2 * (v[2].z - v[0].z);
+        double off = offset, zw;
+        double colour[4];
+
+        if (depth_row) {
+            double depth_w = (1.0 - b1 - b2) * v[0].depth_w +
+                             b1 * v[1].depth_w + b2 * v[2].depth_w;
+            double slack = rules->depth_slack;
+
+            z = (z + off) / depth_w;
+            off = 0;
+            if (z < 0 && z >= -slack) {
+                z = 0;
+            } else if (z > 1 && z <= 1 + slack) {
+                z = 1;
+            }
+        }
+        if (!sgi_raster_window_depth(st, z, off, &zw) ||
+            !(zw >= 0.0 && zw <= 1.0)) {
+            continue;
+        }
+        if (clipped && !sgi_soft_owned_at(r, px, py)) {
+            continue;
+        }
+        if (st->depth_test || store) {
+            uint32_t zq = sgi_raster_depth_code(rules, zw);
+
+            if (st->depth_test) {
+                if (!sgi_soft_compare(st->depth_func, zq,
+                                      t->load_depth(t->opaque, x, y))) {
+                    continue;
+                }
+                if (st->depth_mask) {
+                    t->store_depth(t->opaque, x, y, zq);
+                }
+            }
+        }
+        if (!store) {
+            continue;
+        }
+        if (smooth) {
+            double w0 = (1.0 - b1 - b2) * v[0].inv_w;
+            double w1 = b1 * v[1].inv_w;
+            double w2 = b2 * v[2].inv_w;
+            double sum = w0 + w1 + w2;
+
+            for (int k = 0; k < 4; k++) {
+                colour[k] = (w0 * v[0].rgba[k] + w1 * v[1].rgba[k] +
+                             w2 * v[2].rgba[k]) / sum;
+            }
+        } else {
+            memcpy(colour, flat->rgba, sizeof(colour));
+        }
+        if (rgba) {
+            SGIRasterColour out = fixed_rgba;
+
+            if (!fixed) {
+                double alpha = sgi_soft_alpha(rules, colour[3]) /
+                               (double)sgi_soft_alpha_max(rules);
+
+                out = sgi_soft_rgba_value(rules,
+                                          sgi_soft_store_rgb(r, x, y, colour),
+                                          alpha);
+            }
+            for (unsigned i = 0; i < r->ntargets; i++) {
+                t->store_rgba(t->opaque, r->targets[i], x, y, &out);
+            }
+        } else {
+            uint32_t out = fixed ? fixed_colour :
+                                   sgi_soft_store_rgb(r, x, y, colour);
+
+            for (unsigned i = 0; i < r->ntargets; i++) {
+                t->store_colour(t->opaque, r->targets[i], x, y, out);
+            }
+        }
+    }
+}
+
+static void sgi_soft_simple_span(const SGISoftDraw *r,
+                                 const SGISoftVertex v[3], int py, int px0,
+                                 int px1, int64_t e1, int64_t e2,
+                                 int64_t step1, int64_t step2, int64_t area,
+                                 double offset, const SGISoftFrag *flat,
+                                 bool smooth)
+{
+    bool rgba = r->t->store_rgba;
+
+#define SGI_SOFT_SIMPLE(sm, rg, dr) \
+    sgi_soft_simple_row(r, v, py, px0, px1, e1, e2, step1, step2, area, \
+                        offset, flat, sm, rg, dr)
+    if (r->rules->depth_row_given) {
+        if (rgba) {
+            smooth ? SGI_SOFT_SIMPLE(true, true, true) :
+                     SGI_SOFT_SIMPLE(false, true, true);
+        } else {
+            smooth ? SGI_SOFT_SIMPLE(true, false, true) :
+                     SGI_SOFT_SIMPLE(false, false, true);
+        }
+    } else if (rgba) {
+        smooth ? SGI_SOFT_SIMPLE(true, true, false) :
+                 SGI_SOFT_SIMPLE(false, true, false);
+    } else {
+        smooth ? SGI_SOFT_SIMPLE(true, false, false) :
+                 SGI_SOFT_SIMPLE(false, false, false);
+    }
+#undef SGI_SOFT_SIMPLE
+}
+
 static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                       const SGIVolumeVertex *va,
                                       const SGIVolumeVertex *vb,
@@ -2782,6 +2984,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     bool ccw, front;
     int px0, px1, py0, py1;
     bool smooth = st->shade_model != SGI_GL_FLAT;
+    bool simple = sgi_soft_simple_fragments(r);
     const int sub = r->rules->subpixel_bits;
 
     for (int i = 0; i < 3; i++) {
@@ -2878,6 +3081,11 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         }
         e1 += lo * step1;
         e2 += lo * step2;
+        if (simple) {
+            sgi_soft_simple_span(r, v, py, px0 + lo, px0 + hi, e1, e2, step1,
+                                 step2, area, offset, &flat_frag, smooth);
+            continue;
+        }
         for (int px = px0 + lo; px <= px0 + hi;
              px++, e1 += step1, e2 += step2) {
             double b1, b2, z, w0, w1, w2, sum, depth_w;
