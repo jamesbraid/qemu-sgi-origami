@@ -78,18 +78,12 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(sorted(topology["name"] for topology in catalogue["topologies"]),
                          ["origin300",
                           "origin300-numalink-pci-expansion",
-                          "origin300-pci-expansion-configuration-storage-experiment",
-                          "origin300-pci-expansion-experiment",
-                          "origin300-pci-expansion-pending-register-experiment",
-                          "origin300-pci-expansion-unconnected-uart-experiment",
+                          "origin300-pci-expansion",
                           "origin300-two-chassis"])
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
                           "origin300-numalink-pci-expansion",
-                          "origin300-pci-expansion-configuration-storage-experiment",
-                          "origin300-pci-expansion-experiment",
-                          "origin300-pci-expansion-pending-register-experiment",
-                          "origin300-pci-expansion-unconnected-uart-experiment",
+                          "origin300-pci-expansion",
                           "origin300-two-chassis"})
 
     def test_planned_target_stays_out_of_the_export(self):
@@ -108,17 +102,11 @@ class ExportTests(unittest.TestCase):
         self.assertEqual({topology["name"] for topology in catalogue["topologies"]},
                          {"origin300",
                           "origin300-numalink-pci-expansion",
-                          "origin300-pci-expansion-configuration-storage-experiment",
-                          "origin300-pci-expansion-experiment",
-                          "origin300-pci-expansion-pending-register-experiment",
-                          "origin300-pci-expansion-unconnected-uart-experiment"})
+                          "origin300-pci-expansion"})
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
                          {"origin300",
                           "origin300-numalink-pci-expansion",
-                          "origin300-pci-expansion-configuration-storage-experiment",
-                          "origin300-pci-expansion-experiment",
-                          "origin300-pci-expansion-pending-register-experiment",
-                          "origin300-pci-expansion-unconnected-uart-experiment"})
+                          "origin300-pci-expansion"})
 
     def test_bad_selection_does_not_create_destination(self):
         with tempfile.TemporaryDirectory() as directory:

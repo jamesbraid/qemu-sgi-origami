@@ -1002,7 +1002,7 @@ controllers. Each element is ``controller-index=serial``, using the
 zero-based controller index in the selected topology, as
 ``controller-board-eeprom`` and ``controller-chardev`` do. For example::
 
-  -M origin300,topology=origin300-pci-expansion-experiment,controller-brick-serial.0=1=EXP-A
+  -M origin300,topology=origin300-pci-expansion,controller-brick-serial.0=1=EXP-A,expansion-storage.0=expansion-enclosure=cfg1
 
 This sets the expansion controller's existing ``brick-serial`` property
 before realization. The serial must contain 1 to 32 bytes. Everything
@@ -1041,11 +1041,11 @@ control access. Migration requires matching immutable experiment selection.
 Expansion configuration storage experiment
 ==========================================
 
-The ``origin300-pci-expansion-configuration-storage-experiment`` topology
-explicitly selects expansion main power and an independent Bedrock flash
-attachment. It accepts one caller-owned image, bound by exact module ID::
+The ``origin300-pci-expansion`` topology selects expansion main power and an
+independent Bedrock flash attachment. Every launch binds one caller-owned
+image, by exact module ID::
 
-  -M origin300,topology=origin300-pci-expansion-configuration-storage-experiment,expansion-storage.0=expansion-enclosure=cfg1
+  -M origin300,topology=origin300-pci-expansion,expansion-storage.0=expansion-enclosure=cfg1
   -drive if=none,id=cfg1,file=CALLER.raw,format=raw,readonly=off
 
 ``expansion-storage`` is a machine string list. The bounded implementation

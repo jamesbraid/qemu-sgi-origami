@@ -908,17 +908,7 @@ static void test_existing_topologies_have_no_io_peers(void)
 
         if (g_str_equal(entry->value->name,
                         "origin300-numalink-pci-expansion") ||
-            g_str_equal(entry->value->name,
-                        "origin300-pci-expansion-experiment") ||
-            g_str_equal(
-                entry->value->name,
-                "origin300-pci-expansion-configuration-storage-experiment") ||
-            g_str_equal(
-                entry->value->name,
-                "origin300-pci-expansion-unconnected-uart-experiment") ||
-            g_str_equal(
-                entry->value->name,
-                "origin300-pci-expansion-pending-register-experiment")) {
+            g_str_equal(entry->value->name, "origin300-pci-expansion")) {
             continue;
         }
         g_assert_false(entry->value->has_io_peers);
@@ -943,7 +933,7 @@ static void test_expansion_offering(void)
 
     for (entry = catalogue->topologies; entry; entry = entry->next) {
         if (g_str_equal(entry->value->name,
-                        "origin300-pci-expansion-experiment")) {
+                        "origin300-pci-expansion")) {
             t = entry->value;
             break;
         }
@@ -1007,8 +997,7 @@ static void test_expansion_storage_offering(void)
     uint32_t owner;
 
     for (entry = catalogue->topologies; entry; entry = entry->next) {
-        if (g_str_equal(entry->value->name,
-                "origin300-pci-expansion-configuration-storage-experiment")) {
+        if (g_str_equal(entry->value->name, "origin300-pci-expansion")) {
             topology = entry->value;
             break;
         }

@@ -1987,7 +1987,7 @@ class RecordShapeTests(unittest.TestCase):
 
     def test_synthetic_expansion_pending_selection(self):
         model = _resolved(
-            "origin300-pci-expansion-unconnected-uart-experiment")
+            "origin300-pci-expansion")
         raw = model["machine"]["emulation"]["io_assemblies"][0]
         raw["pending_register_experiment"] = True
         descriptor = compile_model(model)["io_assemblies"][0]
@@ -2004,7 +2004,7 @@ class RecordShapeTests(unittest.TestCase):
 
     def test_synthetic_expansion_uart_selection(self):
         model = _resolved(
-            "origin300-pci-expansion-configuration-storage-experiment")
+            "origin300-pci-expansion")
         raw = model["machine"]["emulation"]["io_assemblies"][0]
         raw["unconnected_uart"] = True
         descriptor = compile_model(model)["io_assemblies"][0]
@@ -2143,7 +2143,7 @@ class RecordShapeTests(unittest.TestCase):
         return model
 
     def test_expansion_experiment_owns_its_internal_xio_links(self):
-        model = _resolved("origin300-pci-expansion-experiment")
+        model = _resolved("origin300-pci-expansion")
         compiled = compile_model(model)
         self.assertEqual(len(compiled["nodes"]), 1)
         self.assertEqual(len(compiled["io_peers"]), 1)
@@ -2221,8 +2221,13 @@ class RecordShapeTests(unittest.TestCase):
                 compile_model(model)
 
     def test_power_command_requires_selected_power_and_compute_owner(self):
-        model = _resolved("origin300-pci-expansion-experiment")
+        model = _resolved("origin300-pci-expansion")
         raw = model["machine"]["emulation"]["io_assemblies"][0]
+        # Storage and the synthetic registers need main power themselves,
+        # so drop them to reach the power command's own check.
+        for key in ("configuration_storage", "unconnected_uart",
+                    "pending_register_experiment"):
+            raw.pop(key, None)
         raw["power_command_issuer"] = "compute-l1"
         descriptor = compile_model(model)["io_assemblies"][0]
         self.assertEqual(descriptor["power_command_issuer"], 0)
@@ -2240,7 +2245,7 @@ class RecordShapeTests(unittest.TestCase):
 
     def test_power_command_issuer_cannot_control_two_assemblies(self):
         from sgi_model.model_compile import _compile_io_assemblies
-        model = _resolved("origin300-pci-expansion-experiment")
+        model = _resolved("origin300-pci-expansion")
         compiled = compile_model(model)
         peers = copy.deepcopy(compiled["io_peers"])
         modules = copy.deepcopy(compiled["modules"])
@@ -2322,10 +2327,7 @@ class RecordShapeTests(unittest.TestCase):
     def test_expansion_experiment_profiles_use_reviewed_intx_map(self):
         expected = [1, 5, 1, 5, 2, 6, 2, 6] * 6
         for name in (
-            "origin300-pci-expansion-experiment",
-            "origin300-pci-expansion-configuration-storage-experiment",
-            "origin300-pci-expansion-unconnected-uart-experiment",
-            "origin300-pci-expansion-pending-register-experiment",
+            "origin300-pci-expansion",
         ):
             with self.subTest(profile=name):
                 model = _resolved(name)

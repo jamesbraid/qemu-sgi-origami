@@ -2930,7 +2930,7 @@ static void test_ip53_runtime_permission_refusals(void)
           "profile", false },
         { "onyx4-host,topology=onyx4-host-g2n,ip53-experimental=on",
           "8G", "4", "R16000", "unknown topology", false },
-        { "origin350,topology=origin300-pci-expansion-experiment,"
+        { "origin350,topology=origin300-pci-expansion,"
           "ip53-experimental=on", "2G", "4", "R16000",
           "unknown topology", false },
         { "sn-builder-bedrock-test,construction-fault=ip53-pic-io9,"
@@ -5618,7 +5618,7 @@ static void test_expansion_storage_binding_required(void)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M",
-        "origin300,topology=origin300-pci-expansion-configuration-storage-experiment",
+        "origin300,topology=origin300-pci-expansion",
         "-cpu", "R14000", "-smp", "2", "-m", "512M", "-S",
         "-nodefaults", "-display", "none", NULL
     };
@@ -5628,7 +5628,7 @@ static void test_expansion_storage_binding_required(void)
 }
 
 #define STORAGE_TOPOLOGY \
-    "origin300,topology=origin300-pci-expansion-configuration-storage-experiment"
+    "origin300,topology=origin300-pci-expansion"
 #define STORAGE_BINDING "expansion-storage.0=expansion-enclosure=cfg"
 
 static char *expansion_storage_image(off_t size)
@@ -5642,6 +5642,27 @@ static char *expansion_storage_image(off_t size)
     g_assert_cmpint(close(fd), ==, 0);
     return path;
 }
+
+static void expansion_storage_unlink(gpointer path)
+{
+    g_unlink(path);
+    g_free(path);
+}
+
+/*
+ * Every origin300-pci-expansion launch binds one configuration-storage
+ * image: a fresh 16 MiB image and the -drive that names it "cfg" for
+ * STORAGE_BINDING. The image is removed when the test case ends.
+ */
+static char *expansion_storage_drive(char **image)
+{
+    *image = expansion_storage_image(16 * 1024 * 1024);
+    g_test_queue_destroy(expansion_storage_unlink, g_strdup(*image));
+    return g_strdup_printf(
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", *image);
+}
+
+#define EXPANSION_MACHINE "-M " STORAGE_TOPOLOGY "," STORAGE_BINDING
 
 typedef struct RoutedPopulationCase {
     const char *population;
@@ -5704,8 +5725,8 @@ static void test_expansion_storage_input_refusals(void)
         const char *machine;
         const char *message;
     } cases[] = {
-        { "origin300,topology=origin300-pci-expansion-experiment,"
-          STORAGE_BINDING, "binding requires selection" },
+        { "origin300,topology=origin300," STORAGE_BINDING,
+          "binding requires selection" },
         { STORAGE_TOPOLOGY ",expansion-storage.0=unknown=cfg",
           "names an unselected module" },
         { STORAGE_TOPOLOGY ",expansion-storage.0=compute-module=cfg",
@@ -5824,15 +5845,17 @@ static void test_expansion_compute_board_identity(void)
     g_autoptr(GError) error = NULL;
     uint8_t bytes[8];
     int fd = g_file_open_tmp("compute-board-identity-XXXXXX", &log, &error);
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = expansion_storage_drive(&storage);
     QTestState *qts;
 
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
-        "-d guest_errors -D %s", prom, log);
+        "-d guest_errors -D %s", storage_drive, prom, log);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     for (unsigned cpu = 0; cpu < 2; cpu++) {
         for (unsigned form = 0; form < G_N_ELEMENTS(addresses); form++) {
@@ -5931,18 +5954,22 @@ static void test_expansion_compute_board_identity_migration(void)
         g_dir_make_tmp("compute-board-migrate-XXXXXX", &error);
     g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = expansion_storage_drive(&storage);
+    g_autofree char *to_storage = NULL;
+    g_autofree char *to_storage_drive = expansion_storage_drive(&to_storage);
     QTestState *from, *to;
     uint8_t bytes[8];
 
     g_assert_no_error(error);
     from = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none",
-        prom);
+        storage_drive, prom);
     to = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
-        "-incoming defer", prom);
+        "-incoming defer", to_storage_drive, prom);
     expansion_vector(from, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     qtest_writeq(from, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
                  UINT64_C(2) << 32);
@@ -5997,6 +6024,10 @@ static void test_expansion_compute_remote_boot(const void *data)
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     uint8_t bytes[8];
     int fd = open(pflash ? flash : prom, O_WRONLY);
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = expansion_storage_drive(&storage);
+    g_autofree char *to_storage = NULL;
+    g_autofree char *to_storage_drive = expansion_storage_drive(&to_storage);
     QTestState *qts, *to;
 
     g_assert_no_error(error);
@@ -6011,9 +6042,9 @@ static void test_expansion_compute_remote_boot(const void *data)
     g_assert_cmpint(close(fd), ==, 0);
     /* A bound flash holds the PROM itself, so it takes no -bios. */
     qts = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S %s%s %s "
-        "-nodefaults -display none", pflash ? "" : "-bios ",
+        "-nodefaults -display none", storage_drive, pflash ? "" : "-bios ",
         pflash ? "" : prom, drive);
     /* Before peer activation, the CPU claim reaches the global boot alias. */
     g_assert_cmphex(qtest_readq(qts, remote), ==, value);
@@ -6066,10 +6097,10 @@ static void test_expansion_compute_remote_boot(const void *data)
         g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10438000020)), ==, 'Q');
     }
     to = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S %s%s %s "
-        "-nodefaults -display none -incoming defer", pflash ? "" : "-bios ",
-        pflash ? "" : prom, destination_drive);
+        "-nodefaults -display none -incoming defer", to_storage_drive,
+        pflash ? "" : "-bios ", pflash ? "" : prom, destination_drive);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(qts, uri);
@@ -6107,15 +6138,17 @@ static void test_expansion_processor_absence(void)
     g_autoptr(GError) error = NULL;
     uint8_t bytes[8];
     int fd = g_file_open_tmp("expansion-presence-XXXXXX", &log, &error);
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = expansion_storage_drive(&storage);
     QTestState *qts;
 
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
+        EXPANSION_MACHINE " %s "
         "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
-        "-d unimp -D %s", prom, log);
+        "-d unimp -D %s", storage_drive, prom, log);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     for (unsigned cpu = 0; cpu < 2; cpu++) {
         for (unsigned word = 0; word < G_N_ELEMENTS(offsets); word++) {
@@ -6172,7 +6205,7 @@ static void test_expansion_six_head_pio(void)
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "origin300-pci-expansion,%s "
         "-cpu R14000 -smp 2 -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-bios %s -nodefaults -display none -d guest_errors -D %s",
@@ -6288,7 +6321,7 @@ static void test_expansion_composed_adapters(void)
     }
     qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "origin300-pci-expansion,%s "
         "-cpu R14000 -smp 2 -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-bios %s -nodefaults -display none -d guest_errors,unimp -D %s %s",
@@ -6451,7 +6484,7 @@ static void test_expansion_dma_memory_decode(void)
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "origin300-pci-expansion,%s "
         "-cpu R14000 -smp 2 -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-bios %s -nodefaults -display none -d guest_errors -D %s "
@@ -6590,7 +6623,7 @@ static void test_compute_memory_projection(gconstpointer opaque)
     QTestState *qts = qtest_initf(
         "-M origin300%s -cpu R14000 -smp %u -m 512M -S %s -bios %s "
         "-nodefaults -display none", expansion ? ",topology="
-        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING :
+        "origin300-pci-expansion," STORAGE_BINDING :
         "", cpus, drive, prom);
 
     if (expansion) {
@@ -6712,7 +6745,7 @@ static void test_compute_uart_with_expansion(gconstpointer opaque)
     g_autofree char *prom = expansion_prom();
     g_autofree char *machine = expansion ? g_strdup_printf(
         "origin300,topology="
-        "origin300-pci-expansion-pending-register-experiment,%s",
+        "origin300-pci-expansion,%s",
         STORAGE_BINDING) : g_strdup("origin300");
     g_autofree char *drive = expansion ? g_strdup_printf(
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", image) :
@@ -6789,7 +6822,7 @@ static void test_expansion_pending_registers(gconstpointer opaque)
     uint8_t bytes[8];
     QTestState *qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-pending-register-experiment,%s "
+        "origin300-pci-expansion,%s "
         "-cpu R14000 -smp %u -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-bios %s -nodefaults -display none",
@@ -6828,7 +6861,7 @@ static void test_expansion_unconnected_uart(gconstpointer opaque)
     uint8_t bytes[8];
     QTestState *qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "origin300-pci-expansion,%s "
         "-cpu R14000 -smp %u -m 512M -S "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-bios %s -nodefaults -display none",
@@ -7026,7 +7059,7 @@ static QTestState *expansion_lifecycle_start(const char *prom,
 {
     QTestState *qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING
+        "origin300-pci-expansion," STORAGE_BINDING
         ",controller-brick-serial.0=1=EXP-LIFECYCLE "
         "-device sgi-l1-uart,id=serial-expansion,controller=/machine/module1/l1 "
         "-device sgi-bridge-dma-test,bus=expansion0-u0-head-e.0,addr=1 "
@@ -8295,7 +8328,7 @@ static void test_expansion_compute_dma(const void *data)
         "-M origin300%s -cpu R14000 -smp 2 -m 512M -S %s -bios %s "
         "-device sgi-bridge-dma-test,bus=head-f.0,addr=2 "
         "-nodefaults -display none", expansion ? ",topology="
-        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING :
+        "origin300-pci-expansion," STORAGE_BINDING :
         "", drive, prom);
     uint8_t bytes[8], expected[8], untouched[8];
 
@@ -8374,29 +8407,32 @@ static void test_expansion_controller_serial(const void *data)
         const char *compute;
         const char *expansion;
     } cases[] = {
-        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+        { EXPANSION_MACHINE ","
           "controller-brick-serial.0=1=EXP-A~} "
           "-global sgi-l1.brick-serial=COMPUTE-A", "COMPUTE-A", "EXP-A~}" },
-        { "-M origin300,topology=origin300-pci-expansion-experiment",
+        { EXPANSION_MACHINE,
           NULL, NULL },
-        { "-M origin300,topology=origin300-pci-expansion-experiment "
+        { EXPANSION_MACHINE " "
           "-global sgi-l1.brick-serial=SHARED", "SHARED", "SHARED" },
-        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+        { EXPANSION_MACHINE ","
           "controller-brick-serial.0=1=SHARED "
           "-global sgi-l1.brick-serial=SHARED", "SHARED", "SHARED" },
-        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+        { EXPANSION_MACHINE ","
           "controller-brick-serial.0=1=12345678901234567890123456789012",
           NULL, "12345678901234567890123456789012" },
-        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+        { EXPANSION_MACHINE ","
           "controller-brick-serial.0=1=part=serial", NULL, "part=serial" },
     };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
         g_autofree char *prom = expansion_prom();
+        g_autofree char *storage = NULL;
+        g_autofree char *storage_drive = expansion_storage_drive(&storage);
         QTestState *qts = qtest_initf(
-            "%s -device sgi-l1-uart,id=serial-expansion,"
+            "%s %s -device sgi-l1-uart,id=serial-expansion,"
             "controller=/machine/module1/l1 -cpu R14000 -smp 2 -m 512M "
-            "-bios %s -nodefaults -display none", cases[i].options, prom);
+            "-bios %s -nodefaults -display none", cases[i].options,
+            storage_drive, prom);
         uint8_t reply[131];
 
         if (cases[i].compute) {
@@ -8478,10 +8514,13 @@ static void test_expansion_serial_refusals(const void *data)
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
         g_autofree char *machine = g_strdup_printf(
-            "origin300,topology=origin300-pci-expansion-experiment,"
-            "controller-brick-serial.0=%s", cases[i].input);
+            STORAGE_TOPOLOGY "," STORAGE_BINDING
+            ",controller-brick-serial.0=%s", cases[i].input);
+        g_autofree char *storage = NULL;
+        g_autofree char *drive_option = expansion_storage_drive(&storage);
+        const char *drive = drive_option + strlen("-drive ");
         const char *args[] = { qtest_qemu_binary(NULL), "-M", machine,
-            "-cpu", "R14000", "-smp", "2", "-m", "512M",
+            "-drive", drive, "-cpu", "R14000", "-smp", "2", "-m", "512M",
             "-display", "none", NULL };
 
         assert_qemu_rejects(args, cases[i].message);
@@ -8586,6 +8625,8 @@ static void test_expansion_cpu_board_load(const void *data)
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
     g_autofree char *path = NULL;
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = NULL;
     QTestState *qts;
     uint64_t result = 0;
     int fd;
@@ -8611,7 +8652,8 @@ static void test_expansion_cpu_board_load(const void *data)
         0x00000000,
     };
 
-    uint64_t expected = data ? 0x41 : 0xc000;
+    /* The controller latch reads the expansion controller's synthetic bay 2. */
+    uint64_t expected = data ? 0x42 : 0xc000;
 
     if (data) {
         code[8] = 0x35293500; /* ori t1, t1, 0x3500 */
@@ -8632,9 +8674,11 @@ static void test_expansion_cpu_board_load(const void *data)
     g_assert_no_error(error);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
+    storage_drive = expansion_storage_drive(&storage);
     qts = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
-        "-cpu R14000 -bios %s -accel tcg,thread=multi -no-shutdown -S", path);
+        EXPANSION_MACHINE " %s "
+        "-cpu R14000 -bios %s -accel tcg,thread=multi -no-shutdown -S",
+        storage_drive, path);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     for (unsigned tries = 0; tries < 1000; tries++) {
@@ -8661,9 +8705,12 @@ static void test_expansion_physical_board_lookup(const void *data)
 
     for (unsigned compute_number = 0; compute_number < 2; compute_number++) {
         unsigned peer_number = compute_number ^ 1;
+        g_autofree char *storage = NULL;
+        g_autofree char *storage_drive = expansion_storage_drive(&storage);
         QTestState *qts = qtest_initf(
-            "-M origin300,topology=origin300-pci-expansion-experiment "
-            "-cpu R14000 -bios %s -nodefaults -display none", prom);
+            EXPANSION_MACHINE " %s "
+            "-cpu R14000 -bios %s -nodefaults -display none", storage_drive,
+            prom);
         uint64_t compute_identity = qtest_readq(qts, UINT64_C(0x10014000000));
         uint64_t compute_revision = qtest_readq(qts, EXPANSION_LB_LOCAL +
                                                EXPANSION_LB_REVISION);
@@ -8701,7 +8748,8 @@ static void test_expansion_physical_board_lookup(const void *data)
             g_autofree char *reply = qtest_hmp(qts, "%s", command);
 
             g_assert_null(strstr(reply, "Cannot access memory"));
-            g_assert_nonnull(strstr(reply, "0x0041"));
+            /* The expansion controller has synthetic bay 2 here. */
+            g_assert_nonnull(strstr(reply, "0x0042"));
             g_free(command);
             command = g_strdup_printf("xp/1wx 0x%" PRIx64,
                                        UINT64_C(0x10000000000) + physical);
@@ -8718,19 +8766,23 @@ static void test_expansion_physical_board_lookup(const void *data)
 static void test_expansion_controller_startup(const void *data)
 {
     g_autofree char *prom = expansion_prom();
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = expansion_storage_drive(&storage);
     QTestState *qts = qtest_initf(
-        "-M origin300,topology=origin300-pci-expansion-experiment "
-        "-cpu R14000 -bios %s -nodefaults -display none", prom);
+        EXPANSION_MACHINE " %s "
+        "-cpu R14000 -bios %s -nodefaults -display none", storage_drive,
+        prom);
     uint64_t peer_revision = expansion_vector(qts, EXPANSION_LB_REVISION,
                                               false, 0);
 
+    /* The completed bytes carry the expansion controller's bay, 2. */
     expansion_vector(qts, EXPANSION_LB_REVISION, true,
                      peer_revision | (UINT64_C(1) << 32));
-    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x41);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x42);
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     expansion_vector(qts, EXPANSION_LB_REVISION, true,
                      peer_revision | (UINT64_C(1) << 32));
-    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x41);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x42);
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -8746,7 +8798,7 @@ static void test_expansion_controller_locations(void)
     const uint32_t types[] = { 0x34, 0x25, 0x25 };
     QTestState *qts = qtest_initf(
         "-M origin300,topology="
-        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING
+        "origin300-pci-expansion," STORAGE_BINDING
         " -cpu R14000 -bios %s -nodefaults -display none "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", prom, image);
 
@@ -8825,6 +8877,9 @@ static void test_expansion_builder(const void *data)
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
     g_autofree char *path = NULL;
+    g_autofree char *storage = NULL;
+    g_autofree char *storage_drive = data ?
+        expansion_storage_drive(&storage) : g_strdup("");
     QTestState *qts;
     int fd = g_file_open_tmp("sn-builder-expansion-prom-XXXXXX.bin", &path,
                              &error);
@@ -8832,9 +8887,10 @@ static void test_expansion_builder(const void *data)
     g_assert_no_error(error);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
-    qts = qtest_initf("-M %s -cpu R14000 -bios %s "
+    qts = qtest_initf("-M %s %s -cpu R14000 -bios %s "
                       "-nodefaults -display none", data ? (const char *)data :
-                      "sn-builder-expansion-test,activate=true", path);
+                      "sn-builder-expansion-test,activate=true", storage_drive,
+                      path);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly",
                                  "placement"), ==, 1);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly/bic/lb",
@@ -9695,8 +9751,8 @@ int main(int argc, char **argv)
         NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
     qtest_add_data_func("sn/builder/expansion/construction",
                         NULL, test_expansion_builder);
-    qtest_add_data_func("sn/builder/expansion/experimental-offering",
-                        "origin300,topology=origin300-pci-expansion-experiment",
+    qtest_add_data_func("sn/builder/expansion/offering",
+                        STORAGE_TOPOLOGY "," STORAGE_BINDING,
                         test_expansion_builder);
     qtest_add_data_func("sn/builder/expansion/composed-lifecycle/reset",
                         NULL, test_expansion_composed_lifecycle);

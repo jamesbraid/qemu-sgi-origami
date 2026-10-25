@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Experimental direct NI attachment of the PCI expansion assembly.
+# Origin 300 with a PCI expansion module cabled to its LINK (NI) connector.
 layer_version: 1
 sources:
   owner-2cpu: "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C"
@@ -7,7 +7,7 @@ sources:
   108-0263-004: "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
 layer:
   kind: product
-  id: origin300-pci-expansion-experiment
+  id: origin300-pci-expansion
   requires: {assembly: ip45}
   topology:
     min_nodes: 1
@@ -26,17 +26,35 @@ layer:
   memory_kits_per_node: [kit-512-at-banks-2-3]
   data:
     machine:
-      name: Origin 300
+      name: Origin 300 with PCI expansion module
       model_role: emulation-target
       notes: >-
-        Experimental PCI expansion composition using the reviewed CPU-free
-        and RAM-free BIC, NI route and synthetic interrupt adapter. The BIC
-        resets with node number zero. Firmware must discover it by route
-        and assign its node number. Board records are optional operator
-        inputs. The selected functional controller startup experiment assigns
-        rack and bay through completed BIC bytes; it models no physical bus.
-        Construction support does not establish stock PROM or IRIX acceptance.
+        An Origin 300 compute module cabled from its LINK (NI) connector to a
+        PCI expansion module (007-4499-002 printed page 12, figure 1-8). The
+        expansion's CPU-free and RAM-free Bedrock interface card (BIC) resets
+        with node number zero; firmware discovers it by route and assigns its
+        node number. Board records are optional operator inputs. Every launch
+        binds one caller-owned writable raw image as the expansion's
+        configuration storage; it supplies no factory contents or physical
+        flash identification. The model carries these approximations, none
+        settled by hardware evidence and all proposed for independent
+        evidence review together: a synthetic unconnected 16550 register bank
+        at the remote BIC Hub-special window, with no backend or packet
+        service; synthetic pending-register visibility through the owned
+        zero-processor PI children in the remote I/O register window; the
+        caller-backed configuration storage; functional controller startup,
+        which assigns rack and bay through completed BIC bytes and models no
+        physical bus; functional main power under the compute L1's command;
+        a synthetic expansion INTx map; BIC identity 0xC000; and synthetic L1
+        bay numbers 1 and 2.
       emulation:
+        initial_module_numbers:
+          - component: compute-module
+            number: 1
+            reason: Synthetic compute controller bay for distinct concrete L1 routing.
+          - component: expansion-enclosure
+            number: 2
+            reason: Synthetic expansion controller bay for distinct concrete L1 routing.
         bedrock_nodes:
           compute-bedrock:
             board_id_word: 32769
@@ -80,8 +98,8 @@ layer:
           sources: ["firmware:ip35-prom-6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
           notes: The values every Origin 300 run has flashed, now carried as data; established against the PROM's own table.
         machine_name: origin300
-        display_description: SGI Origin 300 (IP45), experimental PCI expansion
-        profile: pci-expansion-experiment
+        display_description: SGI Origin 300 (IP45) with PCI expansion module
+        profile: pci-expansion
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib: [512]
@@ -132,6 +150,9 @@ layer:
             controller_profile: pci-expansion
             # Functional controller assignment; not a physical BIC bus model.
             controller_startup: bic-functional-experiment
+            configuration_storage: bedrock-flash-experiment
+            unconnected_uart: true
+            pending_register_experiment: true
             main_power: functional-experiment
             initial_main_power: true
             power_command_issuer: compute-l1

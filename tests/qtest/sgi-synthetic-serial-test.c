@@ -74,12 +74,7 @@ static const TopologyExtra topology_extras[] = {
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },
-    { "origin300-pci-expansion-configuration-storage-experiment",
-      STORAGE_BINDING, true },
-    { "origin300-pci-expansion-pending-register-experiment",
-      STORAGE_BINDING, true },
-    { "origin300-pci-expansion-unconnected-uart-experiment",
-      STORAGE_BINDING, true },
+    { "origin300-pci-expansion", STORAGE_BINDING, true },
 };
 
 typedef struct MachineCase {

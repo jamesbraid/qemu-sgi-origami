@@ -872,8 +872,7 @@ static void test_ds1744_bound(void)
 }
 
 /* An Origin 300 PCI expansion module's configuration storage. */
-#define EXPANSION "origin300,topology=origin300-pci-expansion-" \
-    "configuration-storage-experiment"
+#define EXPANSION "origin300,topology=origin300-pci-expansion"
 
 static void test_expansion_flash_bound(void)
 {
