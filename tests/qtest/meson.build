@@ -646,7 +646,7 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
-    ['sgi-mace-serial-dma-test'] : []) + \
+    ['sgi-mace-serial-dma-test', 'sgi-mace-audio-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') and
    config_all_devices.has_key('CONFIG_ONEWIRE') ?
     ['sgi-mace-id-test'] : []) + \
