@@ -4168,9 +4168,6 @@ static void test_machine_node_board_profiles(void)
         { "tezro,topology=tezro-tower-multi", "4G", 4,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
-        { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
-          "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
-          { 1, 48, 1 }, 0, 0, 0, true },
         { "tezro,topology=tezro-rack", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
@@ -4774,8 +4771,6 @@ static void test_machine_port_speed_profiles(void)
           "0x009bad85", "0x400000", 1, 0x51, true },
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
           "0x009dad85", "0x1000000", 1, 0x37, true },
-        { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
-          "0x009bad85", "0x400000", 0, 0x39, false, true },
     };
     int fd;
 

@@ -3000,7 +3000,7 @@ static void test_sgi_catalogue_references(void)
 {
     static const char *const names[] = {
         "onyx350-base", "onyx350-observed-module", "onyx4-host-g2",
-        "onyx4-host-g2n", "origin350-reference", "tezro-deskside-compat",
+        "onyx4-host-g2n", "origin350-reference",
         "tezro-rack-two-enclosure", "tezro-tower-four",
     };
     QTestState *qts = qtest_init("-M none");
@@ -3244,8 +3244,6 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
         g_str_has_prefix(machine, "tezro,") ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int flash_fd, data_fd, clock_fd;
-    bool ds1742 = strstr(machine,
-                        "tezro-deskside-700mhz-4mib-serial-trial") != NULL;
 
     flash_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-flash-XXXXXX",
                                &fixture->flash_path, &err);
@@ -3255,7 +3253,7 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
     data_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-data-XXXXXX",
                               &fixture->data_path, &err);
     g_assert_no_error(err);
-    g_assert_cmpint(ftruncate(data_fd, ds1742 ? 0x800 : 0x8000), ==, 0);
+    g_assert_cmpint(ftruncate(data_fd, 0x8000), ==, 0);
     g_assert_cmpint(close(data_fd), ==, 0);
     clock_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-clock-XXXXXX",
                                &fixture->clock_path, &err);
@@ -3272,8 +3270,8 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
         "-display none -S %s", machine,
-        ds1742 ? "" : ",nvram0=sgi-ds1742-data-io9,"
-        "nvram0-clock=sgi-ds1742-clock-io9", memory, cpus, cpu,
+        ",nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
+        memory, cpus, cpu,
         fixture->flash_path, fixture->data_path,
         fixture->clock_path,
         extra ? extra : "");
@@ -3368,12 +3366,12 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
     ip53_runtime_test_stop(fixture);
 }
 
-static void test_tezro_trial_builds_two_pic_hosts(void)
+static void test_tezro_tower_multi_builds_two_pic_hosts(void)
 {
     IP53RuntimeTestFixture *fixture =
         ip53_runtime_test_start_with_binary_profile(
-        NULL, "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial,"
-        "ip53-experimental=on", NULL, "4", "4G", "0x009bad85");
+        NULL, "tezro,topology=tezro-tower-multi,ip53-experimental=on", NULL,
+        "4", "4G", "0x009bad85");
     g_autofree char *pic_b = qom_child_type(fixture->qts, "/machine",
                                            "pic-pic-xio-b");
     g_autofree char *pic_f = qom_child_type(fixture->qts, "/machine",
@@ -3487,7 +3485,6 @@ static void test_tezro_legacy_experimental_populations(void)
         { "tezro-tower-multi", "2" },
         { "tezro-rack", "2" },
         { "tezro-rack", "4" },
-        { "tezro-deskside-700mhz-4mib-serial-trial", "4" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(profiles); i++) {
@@ -9627,8 +9624,8 @@ int main(int argc, char **argv)
                    test_ip53_runtime_construction);
     qtest_add_func("sn/builder/onyx4-host-ip53-compatibility-construction",
                    test_onyx4_host_ip53_compatibility_construction);
-    qtest_add_func("sn/builder/tezro-trial-builds-two-pic-hosts",
-                   test_tezro_trial_builds_two_pic_hosts);
+    qtest_add_func("sn/builder/tezro-tower-multi-builds-two-pic-hosts",
+                   test_tezro_tower_multi_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
     qtest_add_func("sn/builder/tezro-legacy-experimental-populations",
