@@ -1097,7 +1097,7 @@ static const unsigned ifb_parameters[] = {
     0, 8, 0x10, 0x18, 0x50, 0x58, 0xd8, 0x1b0, 0x1b8,
 };
 static const uint32_t ifb_values[] = {
-    0x124, 0, 0x210, 0x1002f8, 0, 0, 0x89abcdef, 6, 0x0f0f0f0f,
+    0x124, 0, 0x21, 0x1002f8, 0, 0, 0x89abcdef, 6, 0x0f0f0f0f,
 };
 
 static void seed_ifb_state(QTestState *s)

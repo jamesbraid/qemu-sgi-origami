@@ -13,19 +13,32 @@
 #define MTE (RE + 0x3000)
 #define STATUS (RE + 0x4000)
 
-static QTestState *start_profile(const char *profile, bool banked,
-                                 bool functional, const char *extra)
+static QTestState *start_profile_ram(const char *profile, bool banked,
+                                     bool functional, bool migrate_ram,
+                                     const char *extra)
 {
-    QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx,"
-        "migrate-ram=/objects/fit/fit[0] -M none -cpu R10000 -S -d guest_errors,unimp "
+    QTestState *s = qtest_initf("-device memory-transaction-test,id=memtx%s "
+        "-M none -cpu R10000 -S -d guest_errors,unimp "
         "-object memory-backend-ram,id=fit,size=%s "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
         "crime-profile=%s,functional-memory-transfer=%s%s %s",
+        migrate_ram ? ",migrate-ram=/objects/fit/fit[0]" : "",
         banked ? "1G" : "64M", profile, functional ? "on" : "off",
         banked ? ",eight-128m-banks=on,reset-low-ram-approx=on" : "", extra);
 
     qtest_sysbus_mmio_map(s, "/machine/peripheral/crime", 0, CRIME);
     return s;
+}
+
+static QTestState *start_profile(const char *profile, bool banked,
+                                 bool functional, const char *extra)
+{
+    return start_profile_ram(profile, banked, functional, true, extra);
+}
+
+static QTestState *start_indexed_state(void)
+{
+    return start_profile_ram("legacy-software", false, true, false, "");
 }
 
 static QTestState *start_options(const char *extra)
@@ -90,6 +103,29 @@ static void test_fill(void)
     g_assert_cmphex(ldl_be_p(bytes + 4), ==, 0x1234abcd);
     g_assert_cmphex(ldl_be_p(bytes + 8), ==, 0x5c5c5c5c);
     g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    qtest_quit(s);
+}
+
+static void test_indexed_word_regression(void)
+{
+    QTestState *s = start();
+
+    tile(s, 0, 0, 3);
+    setup(s, 0x200, false);
+    qtest_writel(s, DE + 0x18, 0x208);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0x1b8, 0);
+    qtest_writel(s, DE + 0xd0, 0x12345616);
+    qtest_writel(s, DE + 0x70, xy(0, 0));
+    qtest_writel(s, DE + 0x74, xy(0, 0));
+    qtest_writel(s, 0x30000, 0xa1b2c35a);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0xa1b2c34c);
+    qtest_writel(s, 0x30000, 0xa1b2c35a);
+    qtest_writel(s, DE + 0x18, 0x288);
+    qtest_writel(s, DE + 0x1b8, 0x0f);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0xa1b2c35c);
     qtest_quit(s);
 }
 
@@ -532,8 +568,8 @@ static void test_clipping(void)
             setup(s, 0, false);
             qtest_writeq(s, DE + 0x20 + mask * 8, bounds(2, 2, 5, 5));
             qtest_writeq(s, DE + 0x48, bounds(1, 3, 6, 6));
-            qtest_writel(s, DE + 0x10, (1U << (9 - mask)) |
-                         (inside ? 1U << (4 - mask) : 0));
+            qtest_writel(s, DE + 0x10, (1U << (5 + mask)) |
+                         (inside ? 1U << mask : 0));
             qtest_writel(s, DE + 0x18, 0x1000f8);
             qtest_writel(s, DE + 0xd0, 0xb7);
             for (unsigned y = 0; y < 7; y++) {
@@ -603,8 +639,8 @@ static void test_actual_accesses(void)
                 qtest_writel(s, DE + 0x18, (copy ? 0x2002f8 : 0xf8) | 0x100000);
                 qtest_writeq(s, DE + 0x48, bounds(0, 0, 512, 1));
             } else {
-                qtest_writel(s, DE + 0x10, (1U << (9 - clip)) |
-                             (1U << (4 - clip)));
+                qtest_writel(s, DE + 0x10, (1U << (5 + clip)) |
+                             (1U << clip));
                 qtest_writeq(s, DE + 0x20 + clip * 8, bounds(0, 0, 512, 1));
             }
             qtest_writeb(s, 0x301ff, 0x5c);
@@ -699,7 +735,7 @@ static void test_start_forms(void)
         if (r->offset >= 0x20 && r->offset <= 0x40) {
             unsigned n = (r->offset - 0x20) / 8;
 
-            qtest_writel(s, DE + 0x10, (1U << (9 - n)) | (1U << (4 - n)));
+            qtest_writel(s, DE + 0x10, (1U << (5 + n)) | (1U << n));
         }
         /* The old pending value must not control prospective execution. */
         switch (r->offset) {
@@ -1204,7 +1240,7 @@ static void test_migration(void)
     qtest_writel(from, DE + 0x18, 0x3002f8);
     qtest_writeq(from, DE + 0x48, bounds(0, 0, 8, 1));
     qtest_writeq(from, DE + 0x20, bounds(0, 0, 8, 1));
-    qtest_writel(from, DE + 0x10, 0x210);
+    qtest_writel(from, DE + 0x10, 0x21);
     qtest_writel(from, DE + 0x70, xy(7, 0));
     qtest_writel(from, DE + 0x74, xy(1, 0));
     qtest_writel(from, DE + 0x60, 0x03010000);
@@ -1599,7 +1635,7 @@ static void test_native64_start(void)
         qtest_writel(s, DE + 0x1b0, 6);
         qtest_writel(s, DE + 0xd0, 0xcc);
         if (n < 5) {
-            qtest_writel(s, DE + 0x10, (1U << (9 - n)) | (1U << (4 - n)));
+            qtest_writel(s, DE + 0x10, (1U << (5 + n)) | (1U << n));
         }
         qtest_writel(s, DE + 0x70, xy(0, 0));
         qtest_writel(s, DE + 0x74, xy(5, 5));
@@ -1791,9 +1827,9 @@ static void reference_fragment(const Shape *c, uint32_t *pixels,
     }
     if (c->clip) {
         for (unsigned n = 0; n < 5; n++) {
-            if ((c->clip & (1U << (9 - n))) &&
+            if ((c->clip & (1U << (5 + n))) &&
                 inside_bounds(c->screen, x, y) !=
-                !!(c->clip & (1U << (4 - n)))) {
+                !!(c->clip & (1U << n))) {
                 return;
             }
         }
@@ -2221,7 +2257,7 @@ static void test_stipple_clipping(void)
                 c.primitive |= 65;
                 c.draw |= (1U << 19) | (scissor << 20);
                 c.stipple_mode = (3U << 24) | (9U << 16) | 0x101;
-                c.clip = (1U << (9 - n)) | (inside << (4 - n));
+                c.clip = (1U << (5 + n)) | (inside << n);
                 c.screen = bounds(12, 9, 23, 16);
                 c.scissor = bounds(8, 10, 31, 15);
                 shape_run(s, &c);
@@ -2424,7 +2460,7 @@ static void test_stipple_accesses(void)
         if (hide >= 1 && hide <= 5) {
             unsigned n = hide - 1;
 
-            c.clip = (1U << (9 - n)) | (1U << (4 - n));
+            c.clip = (1U << (5 + n)) | (1U << n);
             c.screen = bounds(1, 1, 512, 129);
         } else if (hide == 6) {
             c.draw |= 1U << 20;
@@ -2592,7 +2628,7 @@ static void test_stipple_start_forms(void)
             prospective.bytes = 2;
             break;
         case 0x10:
-            prospective.clip = 0x210;
+            prospective.clip = 0x21;
             prospective.screen = bounds(4, 2, 7, 5);
             break;
         case 0x18:
@@ -2601,7 +2637,7 @@ static void test_stipple_start_forms(void)
         case 0x20: case 0x28: case 0x30: case 0x38: case 0x40: {
             unsigned n = (reg->offset - 0x20) / 8;
 
-            prospective.clip = (1U << (9 - n)) | (1U << (4 - n));
+            prospective.clip = (1U << (5 + n)) | (1U << n);
             prospective.screen = bounds(4, 2, 7, 5);
             break;
         }
@@ -3093,7 +3129,7 @@ static void test_validity_clips_masks(void)
             c.y0 = c.y1 = 2;
             c.primitive = 0x03020000;
             if (hide < 5) {
-                c.clip = (1U << (9 - hide)) | (inside << (4 - hide));
+                c.clip = (1U << (5 + hide)) | (inside << hide);
                 c.screen = inside ? bounds(510, 1, 512, 4) :
                                     bounds(512, 1, 1024, 4);
             } else if (hide == 5) {
@@ -3348,7 +3384,7 @@ static void test_validity_retirement(void)
         if (reg->offset >= 0x20 && reg->offset <= 0x40) {
             unsigned n = (reg->offset - 0x20) / 8;
 
-            c.clip = (1U << (9 - n)) | (1U << (4 - n));
+            c.clip = (1U << (5 + n)) | (1U << n);
         } else if (reg->offset == 0x48) {
             c.draw |= 1U << 20;
         }
@@ -3877,103 +3913,976 @@ static void test_paired_start_migration(void)
     g_rmdir(dir);
 }
 
+typedef struct IndexedRect {
+    unsigned bank, x, y, width, height;
+    uint64_t p[128];
+    const uint16_t *entries;
+} IndexedRect;
+
+static IndexedRect indexed_default(unsigned bank)
+{
+    IndexedRect c = { .bank = bank, .x = 125, .y = 126,
+                      .width = 8, .height = 5 };
+
+    c.p[0] = 0xfedcba98;
+    c.p[8 / 4] = (bank << 10) | (2U << 8);
+    c.p[0x18 / 4] = 0x208;
+    c.p[0x60 / 4] = 0x03020000;
+    c.p[0x70 / 4] = xy(126, 127);
+    c.p[0x74 / 4] = xy(130, 129);
+    c.p[0xa0 / 4] = 0xfedcba98;
+    c.p[0xa8 / 4] = 0x13572468;
+    c.p[0xac / 4] = 0x89abcdef;
+    c.p[0xc0 / 4] = 0xfedcba98;
+    c.p[0xc4 / 4] = 0x96a53c81;
+    c.p[0xd0 / 4] = 0x12345616;
+    c.p[0xd8 / 4] = 0x98765432;
+    c.p[0x1b0 / 4] = 6;
+    return c;
+}
+
+static uint32_t indexed_old(const IndexedRect *c, unsigned x, unsigned y)
+{
+    return 0xa1b2c35a ^ ((x - c->x) + 13 * (y - c->y)) * 0x01030711U;
+}
+
+static bool indexed_eligible(const IndexedRect *c, unsigned x, unsigned y)
+{
+    unsigned x0 = c->p[0x70 / 4] >> 16, y0 = c->p[0x70 / 4] & 0xffff;
+    unsigned x1 = c->p[0x74 / 4] >> 16, y1 = c->p[0x74 / 4] & 0xffff;
+    unsigned clip = c->p[0x10 / 4];
+    bool screen = !clip;
+
+    if (x < MIN(x0, x1) || x > MAX(x0, x1) ||
+        y < MIN(y0, y1) || y > MAX(y0, y1) ||
+        ((c->p[0x18 / 4] & (1U << 20)) &&
+         !inside_bounds(c->p[0x48 / 4], x, y))) {
+        return false;
+    }
+    for (unsigned n = 0; n < 5; n++) {
+        if (clip & (1U << (5 + n))) {
+            bool interior = inside_bounds(c->p[(0x20 + n * 8) / 4], x, y);
+
+            screen |= interior == !!(clip & (1U << n));
+        }
+    }
+    return screen && (!c->entries ||
+        (c->entries[(y / 128) * 16 + x / 128] & 0x8000));
+}
+
+static uint32_t indexed_expected(const IndexedRect *c, unsigned x, unsigned y,
+                                  unsigned passes)
+{
+    uint32_t old = indexed_old(c, x, y), result = old;
+    uint32_t draw = c->p[0x18 / 4];
+    uint32_t plane = draw & 0x80 ? c->p[0x1b8 / 4] & 255 : 255;
+
+    if (!(draw & 8) || !indexed_eligible(c, x, y)) {
+        return old;
+    }
+    for (unsigned i = 0; i < passes; i++) {
+        uint32_t source = c->p[0xd0 / 4] & 255;
+        uint32_t rop = draw & 0x200 ?
+            rop_result(c->p[0x1b0 / 4], source, result & 255, 8) : source;
+
+        result = (result & ~plane) | (rop & plane);
+    }
+    return result;
+}
+
+/* Compare complete storage words and guards, not just the logical index. */
+static void indexed_memory(QTestState *s, const IndexedRect *c,
+                             bool initialize, unsigned passes)
+{
+    for (unsigned y = c->y; y < c->y + c->height; y++) {
+        for (unsigned x = c->x; x < c->x + c->width;) {
+            unsigned count = MIN(c->x + c->width - x, 128 - x % 128);
+            g_autofree uint8_t *data = g_malloc(count * 4);
+            uint64_t address = pixel_address(c->bank, x, y, 4);
+
+            if (!initialize) {
+                qtest_memread(s, address, data, count * 4);
+            }
+            for (unsigned n = 0; n < count; n++) {
+                if (initialize) {
+                    stl_be_p(data + n * 4, indexed_old(c, x + n, y));
+                } else {
+                    uint32_t actual = ldl_be_p(data + n * 4);
+
+                    g_assert_cmphex(actual, ==,
+                        indexed_expected(c, x + n, y, passes));
+                }
+            }
+            if (initialize) {
+                qtest_memwrite(s, address, data, count * 4);
+            }
+            x += count;
+        }
+    }
+}
+
+static void indexed_stage(QTestState *s, const IndexedRect *c)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(registers); i++) {
+        const Register *r = &registers[i];
+
+        if (r->width == 8) {
+            qtest_writeq(s, DE + r->offset, c->p[r->offset / 4]);
+        } else {
+            qtest_writel(s, DE + r->offset, c->p[r->offset / 4]);
+        }
+    }
+}
+
+static void indexed_prepare(QTestState *s, const IndexedRect *c)
+{
+    map_region(s, c->bank, 4, c->x, c->y,
+               c->x + c->width - 1, c->y + c->height - 1);
+    indexed_memory(s, c, true, 0);
+    indexed_stage(s, c);
+}
+
+static void indexed_run(QTestState *s, const IndexedRect *c)
+{
+    indexed_prepare(s, c);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xfedcba98), ==, MEMTX_OK);
+    indexed_memory(s, c, false, 1);
+    assert_idle(s);
+}
+
+static void test_indexed_word_rops(void)
+{
+    QTestState *s = start_indexed_state();
+    const uint32_t planes[] = { 0, 0xff, 0x0f, 0xa5, 0x1234565a };
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned op = 0; op < 16; op++) {
+            for (unsigned mask = 0; mask < ARRAY_SIZE(planes); mask++) {
+                IndexedRect c = indexed_default(bank);
+
+                c.p[0x18 / 4] |= 0x80;
+                c.p[0x1b0 / 4] = op;
+                c.p[0x1b8 / 4] = planes[mask];
+                indexed_run(s, &c);
+            }
+        }
+        IndexedRect c = indexed_default(bank);
+
+        indexed_run(s, &c);
+        qtest_writel(s, DE + 0x9f0, 1);
+        indexed_memory(s, &c, false, 2);
+        /* Inactive ROP and plane masks do not consume their raw contents. */
+        c.p[0x18 / 4] = 8;
+        c.p[0x1b0 / 4] = 0xdeadbeef;
+        c.p[0x1b8 / 4] = 0xffffff00;
+        indexed_run(s, &c);
+    }
+    qtest_quit(s);
+}
+
+static void test_indexed_word_masks(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned bit = 0; bit <= 8; bit++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                IndexedRect c = indexed_default(bank);
+
+                c.p[0x18 / 4] = 0x280 | (lanes << 3);
+                c.p[0x1b0 / 4] = 15;
+                c.p[0x1b8 / 4] = bit == 8 ? 0 : 1U << bit;
+                indexed_run(s, &c);
+            }
+        }
+        for (unsigned lanes = 0; lanes < 16; lanes++) {
+            IndexedRect c = indexed_default(bank);
+
+            c.p[0x18 / 4] = 0x200 | (lanes << 3);
+            c.p[0x1b8 / 4] = 0xffffff00;
+            indexed_run(s, &c);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_indexed_word_geometry(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned direction = 0; direction < 4; direction++) {
+            for (unsigned vertical = 0; vertical < 2; vertical++) {
+                IndexedRect c = indexed_default(bank);
+
+                c.width = 132;
+                c.p[0x70 / 4] = xy(direction & 1 ? 254 : 126,
+                                      direction & 2 ? 127 : 129);
+                c.p[0x74 / 4] = xy(direction & 1 ? 126 : 254,
+                                      direction & 2 ? 129 : 127);
+                c.p[0x60 / 4] = 0x03000000 | (direction << 16);
+                if (vertical) {
+                    c.p[0x70 / 4] = (c.p[0x70 / 4] & 0xffff) | (128U << 16);
+                    c.p[0x74 / 4] = (c.p[0x74 / 4] & 0xffff) | (128U << 16);
+                }
+                indexed_run(s, &c);
+                indexed_memory(s, &c, true, 0);
+                /* Independent disjoint commands must match one wide command. */
+                for (unsigned part = 0; part < (vertical ? 1 : 2); part++) {
+                    IndexedRect split = c;
+                    unsigned lo = vertical ? 128 : part ? 128 : 126;
+                    unsigned hi = vertical ? 128 : part ? 254 : 127;
+
+                    split.p[0x70 / 4] = (split.p[0x70 / 4] & 0xffff) |
+                        ((direction & 1 ? hi : lo) << 16);
+                    split.p[0x74 / 4] = (split.p[0x74 / 4] & 0xffff) |
+                        ((direction & 1 ? lo : hi) << 16);
+                    indexed_stage(s, &split);
+                    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==,
+                                    MEMTX_OK);
+                }
+                indexed_memory(s, &c, false, 1);
+            }
+        }
+        IndexedRect edge = indexed_default(bank);
+
+        edge.x = edge.y = 2046;
+        edge.width = edge.height = 2;
+        edge.p[0x70 / 4] = edge.p[0x74 / 4] = xy(2047, 2047);
+        indexed_run(s, &edge);
+    }
+    qtest_quit(s);
+}
+
+static void test_indexed_word_clipping(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned selected = 1; selected < 32; selected++) {
+            for (unsigned scissor = 0; scissor < 2; scissor++) {
+                IndexedRect c = indexed_default(bank);
+
+                c.p[0x10 / 4] = selected | (selected << 5);
+                for (unsigned n = 0; n < 5; n++) {
+                    c.p[(0x20 + n * 8) / 4] =
+                        bounds(126 + n % 3, 127 + n / 3,
+                               128 + n % 3, 129 + n / 3);
+                }
+                if (scissor) {
+                    c.p[0x18 / 4] |= 1U << 20;
+                    c.p[0x48 / 4] = bounds(127, 128, 131, 130);
+                }
+                indexed_run(s, &c);
+                if (!(selected & (selected - 1))) {
+                    c.p[0x10 / 4] = selected << 5;
+                    indexed_run(s, &c);
+                }
+            }
+        }
+        for (unsigned slot = 0; slot < 5; slot++) {
+            for (unsigned inside = 0; inside < 2; inside++) {
+                IndexedRect c = indexed_default(bank);
+
+                for (unsigned n = 0; n < 5; n++) {
+                    c.p[(0x20 + n * 8) / 4] =
+                        bounds(126 + n, 127, 127 + n, 130);
+                }
+                c.p[0x10 / 4] = (1U << (5 + slot)) | (inside << slot);
+                indexed_run(s, &c);
+            }
+        }
+        IndexedRect empty = indexed_default(bank);
+
+        empty.p[0x10 / 4] = 0x3ff;
+        for (unsigned n = 0; n < 5; n++) {
+            empty.p[(0x20 + n * 8) / 4] = bounds(127, 128, 127, 128);
+        }
+        indexed_run(s, &empty);
+    }
+    qtest_quit(s);
+}
+
+static void indexed_raw(QTestState *s, const char *path,
+                          const IndexedRect *c)
+{
+    uint64_t words[RENDER_WORDS];
+
+    save_paired_renderer(s, path, words);
+    for (unsigned i = 0; i < ARRAY_SIZE(c->p); i++) {
+        g_assert_cmphex(words[192 + i], ==, c->p[i]);
+    }
+}
+
+static void test_indexed_word_start_forms(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-indexed-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(registers) + 4; n++) {
+        IndexedRect c = indexed_default(n % 3);
+        unsigned offset = n < ARRAY_SIZE(registers) ? registers[n].offset :
+            n == ARRAY_SIZE(registers) ? 0x1f0 :
+            paired_start_offsets[n - ARRAY_SIZE(registers) - 1];
+        unsigned width = n < ARRAY_SIZE(registers) ? registers[n].width :
+            offset == 0x1f0 ? 4 : 8;
+        uint64_t value;
+
+        c.p[0x18 / 4] |= 0x80;
+        c.p[0x1b8 / 4] = 0x5a;
+        if (offset == 0x10) {
+            c.p[0x10 / 4] = 0x63;
+            c.p[0x20 / 4] = bounds(126, 127, 129, 129);
+            c.p[0x28 / 4] = bounds(128, 128, 131, 130);
+        } else if (offset >= 0x20 && offset <= 0x40) {
+            unsigned slot = (offset - 0x20) / 8;
+
+            c.p[0x10 / 4] = (1U << (5 + slot)) | (1U << slot);
+            c.p[offset / 4] = bounds(127, 128, 130, 130);
+        } else if (offset == 0x48) {
+            c.p[0x18 / 4] |= 1U << 20;
+            c.p[0x48 / 4] = bounds(127, 128, 130, 130);
+        }
+        indexed_prepare(s, &c);
+        if (offset == 0x1f0) {
+            value = 0x13579bdf;
+        } else if (n > ARRAY_SIZE(registers)) {
+            value = (c.p[offset / 4] << 32) | c.p[offset / 4 + 1];
+            qtest_writeq(s, DE + offset, 0x1122334455667788ULL);
+        } else {
+            value = c.p[offset / 4];
+            if (width == 8) {
+                qtest_writeq(s, DE + offset, bounds(131, 130, 126, 127));
+            } else {
+                qtest_writel(s, DE + offset, ~value);
+            }
+        }
+        indexed_memory(s, &c, false, 0);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width),
+                        ==, MEMTX_OK);
+        indexed_memory(s, &c, false, 1);
+        indexed_raw(s, path, &c);
+        /* Direct NULL, FLUSH and status reads cannot replay an XOR. */
+        qtest_writel(s, DE + 0x1f0, 0xfedcba98);
+        qtest_writel(s, DE + 0x1f8, 0);
+        assert_idle(s);
+        indexed_memory(s, &c, false, 1);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void indexed_failure(QTestState *s, const IndexedRect *c,
+                              const char *path, uint64_t address,
+                              uint64_t value, unsigned width)
+{
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint64_t cpu_address = qtest_readq(s, CRIME + 0x40);
+    uint64_t cpu_status = qtest_readq(s, CRIME + 0x48);
+    unsigned outputs = 0;
+
+    for (unsigned i = 0; i < 5; i++) {
+        outputs |= qtest_get_irq(s, i) << i;
+    }
+    save_paired_renderer(s, path, before);
+    assert_failure(s, address, value, width);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x40), ==, cpu_address);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x48), ==, cpu_status);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmpint(qtest_get_irq(s, i), ==, !!(outputs & (1U << i)));
+    }
+    indexed_memory(s, c, false, 0);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+}
+
+static void indexed_fault_seed(QTestState *s)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-address','value':305419896}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'cpu-error-status','value':5}}");
+    qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+    qtest_writeq(s, CRIME + 0x18, 1U << 4);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-status','value':234881024}}");
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/inject',"
+        "'property':'memory-error-address','value':74565}}");
+}
+
+static void test_indexed_word_failure(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-indexed-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+        "-device sgi-crime-test-fixture,id=inject,"
+        "crime=/machine/peripheral/crime");
+    const uint32_t bad_modes[] = { 0x100, 0x201, 0x204, 0x210, 0x300,
+                                   0xe00, 0x80000200 };
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned n = 0; n < 54; n++) {
+        unsigned fault = n % 27;
+        IndexedRect c = indexed_default(fault % 3);
+
+        qtest_system_reset(s);
+        if (fault < ARRAY_SIZE(bad_modes)) {
+            c.p[8 / 4] = bad_modes[fault];
+        } else {
+            switch (fault) {
+            case 7:
+                c.p[0x60 / 4] = 0;
+                break;
+            case 8:
+                c.p[0x60 / 4] = 0x01000000;
+                break;
+            case 9:
+                c.p[0x18 / 4] |= 1U << 18;
+                break;
+            case 10:
+                c.p[0x18 / 4] |= 1U << 21;
+                break;
+            case 11:
+                c.p[0x18 / 4] |= 1U << 17;
+                break;
+            case 12:
+                c.p[0x18 / 4] |= 1U << 19;
+                break;
+            case 13:
+                c.p[0x1b0 / 4] = 0x100;
+                break;
+            case 14:
+                c.p[0x50 / 4] = 1;
+                break;
+            case 15:
+                c.p[0x58 / 4] = 1;
+                break;
+            case 16:
+                c.p[0x60 / 4] |= 1;
+                break;
+            case 17:
+                c.p[0x74 / 4] = xy(2048, 129);
+                break;
+            case 18:
+                c.p[0x70 / 4] = xy(126, 2048);
+                break;
+            case 19:
+                c.p[0x10 / 4] = 1;
+                break;
+            case 20:
+                c.p[0x10 / 4] = 0x22;
+                break;
+            case 21:
+                c.p[0x10 / 4] = 0x400;
+                break;
+            case 22:
+                c.p[0x10 / 4] = 0x60;
+                break;
+            case 23:
+                c.p[0x10 / 4] = 0x61;
+                break;
+            case 24:
+                c.p[0x10 / 4] = 0x3ff;
+                c.p[0x40 / 4] = bounds(130, 129, 126, 127);
+                break;
+            case 25:
+                c.p[0x18 / 4] |= 1U << 20;
+                c.p[0x48 / 4] = bounds(130, 129, 126, 127);
+                break;
+            case 26:
+                c.p[0x60 / 4] ^= 1U << 16;
+                break;
+            }
+        }
+        if (n >= 27) {
+            c.p[0x18 / 4] &= ~8U;
+        }
+        indexed_prepare(s, &c);
+        indexed_fault_seed(s);
+        indexed_failure(s, &c, path, DE + 0x8d0, 0x23456789, 4);
+        for (unsigned i = 0; i < 5; i++) {
+            g_assert_cmpint(qtest_get_irq(s, i), ==, i == 0);
+        }
+        /* Repair only setup; a later valid command exposes the old color. */
+        IndexedRect repaired = indexed_default(c.bank);
+
+        indexed_stage(s, &repaired);
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        indexed_memory(s, &repaired, false, 1);
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(registers) + 4; n++) {
+        IndexedRect c = indexed_default(n % 3);
+        unsigned offset = n < ARRAY_SIZE(registers) ? registers[n].offset :
+            n == ARRAY_SIZE(registers) ? 0x1f0 :
+            paired_start_offsets[n - ARRAY_SIZE(registers) - 1];
+        unsigned width = n < ARRAY_SIZE(registers) ? registers[n].width :
+            offset == 0x1f0 ? 4 : 8;
+        uint64_t value = offset == 0x1f0 ? 0 : c.p[offset / 4];
+
+        qtest_system_reset(s);
+        c.p[(offset == 0x58 ? 0x50 : 0x58) / 4] = 1;
+        indexed_prepare(s, &c);
+        indexed_fault_seed(s);
+        if (n > ARRAY_SIZE(registers)) {
+            value = (value << 32) | c.p[offset / 4 + 1];
+        }
+        indexed_failure(s, &c, path, DE + 0x800 + offset, value, width);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_indexed_word_accesses(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-indexed-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned hidden = 0; hidden < 4; hidden++) {
+            IndexedRect c = indexed_default(bank);
+            unsigned index = 16 + 1;
+
+            qtest_system_reset(s);
+            c.p[0x1b0 / 4] = 5;
+            if (hidden == 0) {
+                c.p[0x18 / 4] |= 1U << 20;
+                c.p[0x48 / 4] = bounds(0, 0, 128, 2048);
+            } else if (hidden == 1) {
+                c.p[0x10 / 4] = 0x21;
+                c.p[0x20 / 4] = bounds(0, 0, 128, 2048);
+            } else if (hidden == 2) {
+                c.p[0x18 / 4] |= 0x80;
+                c.p[0x1b8 / 4] = 0;
+            } else {
+                c.p[0x18 / 4] &= ~8U;
+            }
+            indexed_prepare(s, &c);
+            tile(s, bank, index, 0x400);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            indexed_memory(s, &c, false, 0);
+            c.p[0x10 / 4] = 0;
+            c.p[0x18 / 4] = 0x208;
+            indexed_stage(s, &c);
+            indexed_failure(s, &c, path, DE + 0x8d0, 0x23456789, 4);
+            /* NOOP still reads an eligible byte and validates the decoder. */
+            tile(s, bank, index, page_for(bank, index));
+            c.p[0x1b0 / 4] = 6;
+            indexed_stage(s, &c);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            indexed_memory(s, &c, false, 1);
+        }
+        IndexedRect c = indexed_default(bank);
+        uint16_t entries[256] = { 0 };
+
+        qtest_system_reset(s);
+        indexed_prepare(s, &c);
+        for (unsigned i = 0; i < 256; i++) {
+            entries[i] = 0x8000 | page_for(bank, i);
+        }
+        entries[17] &= 0x7fff;
+        uint64_t address = RE + 0x1000 + bank * 512 + 4 * 8;
+        uint64_t word = qtest_readq(s, address);
+
+        qtest_writeq(s, address, word & ~(0x8000ULL << 32));
+        c.entries = entries;
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        indexed_memory(s, &c, false, 1);
+        /* Different tile indices naming one index byte must roll back. */
+        qtest_system_reset(s);
+        c.entries = NULL;
+        c.x = c.y = 0;
+        c.width = 258;
+        c.height = 1;
+        c.p[0x70 / 4] = xy(0, 0);
+        c.p[0x74 / 4] = xy(256, 0);
+        indexed_prepare(s, &c);
+        tile(s, bank, 2, page_for(bank, 0));
+        indexed_failure(s, &c, path, DE + 0x8d0, 0x23456789, 4);
+    }
+    for (unsigned bank = 0; bank < 3; bank++) {
+        IndexedRect c = indexed_default(bank);
+
+        indexed_prepare(s, &c);
+        for (unsigned y = c.y / 128; y <= (c.y + c.height - 1) / 128; y++) {
+            for (unsigned x = c.x / 128;
+                 x <= (c.x + c.width - 1) / 128; x++) {
+                unsigned index = y * 16 + x;
+
+                tile(s, bank, index, 0x4000 + page_for(bank, index));
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        indexed_memory(s, &c, false, 1);
+    }
+    for (unsigned profile = 0; profile < 2; profile++) {
+        QTestState *control = start_profile_ram(profile ? "legacy-software" :
+            "1.5", false, !profile, false, "");
+
+        qtest_writeq(control, 0x30000, 0xa1b2c35a12345678ULL);
+        g_assert_cmpint(memtx_writel(control, DE + 8, 0x200), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_writel(control, DE + 0x9f0, 0), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(control, 0x30000), ==,
+                        0xa1b2c35a12345678ULL);
+        qtest_quit(control);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_clip_unions_packed(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned depth = 0; depth < 3; depth++) {
+        unsigned bytes = 1U << depth;
+
+        for (unsigned selected = 1; selected < 32; selected++) {
+            setup(s, modes[depth], false);
+            map_region(s, 0, bytes, 0, 0, 8, 4);
+            qtest_writel(s, DE + 0x18, 0x2f8);
+            qtest_writel(s, DE + 0xd0, 0xcccccccc);
+            qtest_writel(s, DE + 0x1b0, 6);
+            qtest_writel(s, DE + 0x10, selected | (selected << 5));
+            for (unsigned n = 0; n < 5; n++) {
+                qtest_writeq(s, DE + 0x20 + n * 8,
+                             bounds(n, n & 1, n + 3, 3));
+            }
+            for (unsigned y = 0; y < 4; y++) {
+                qtest_memset(s, pixel_address(0, 0, y, bytes), 0x5a, 9 * bytes);
+            }
+            rectangle(s, 0, 0, 7, 3, 0, 0);
+            for (unsigned y = 0; y < 4; y++) {
+                for (unsigned x = 0; x < 9; x++) {
+                    bool eligible = false;
+                    uint32_t mask = UINT32_MAX >> (32 - bytes * 8);
+
+                    for (unsigned n = 0; n < 5; n++) {
+                        eligible |= (selected & (1U << n)) && x >= n &&
+                                    x < n + 3 && y >= (n & 1) && y < 3;
+                    }
+                    g_assert_cmphex(pixel_read(s,
+                        pixel_address(0, x, y, bytes), bytes), ==,
+                        (eligible ? 0x96969696U : 0x5a5a5a5aU) & mask);
+                }
+            }
+        }
+    }
+    /* Multiple masks remain refused for every previously admitted source. */
+    for (unsigned kind = 0; kind < 4; kind++) {
+        setup(s, 0, kind == 0);
+        qtest_writel(s, DE + 0x10, 0x63);
+        qtest_writeq(s, DE + 0x20, bounds(0, 0, 2, 2));
+        qtest_writeq(s, DE + 0x28, bounds(1, 0, 3, 2));
+        qtest_writel(s, DE + 0x70, 0);
+        qtest_writel(s, DE + 0x74, xy(2, 1));
+        if (kind == 1 || kind == 2) {
+            qtest_writel(s, DE + 0x60, kind == 1 ? 0 : 0x01000000);
+        } else if (kind == 3) {
+            qtest_writel(s, DE + 0x18, 0x400f8);
+            qtest_writel(s, DE + 0xc0, 0x001f0000);
+        }
+        qtest_memset(s, 0x30000, 0x5a, 32);
+        assert_failure(s, DE + 0x9f0, 0, 4);
+        g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x5a5a5a5a5a5a5a5aULL);
+    }
+    qtest_quit(s);
+}
+
+static void test_indexed_word_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-indexed-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *next = g_build_filename(dir, "next", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        QTestState *control = start_indexed_state();
+        IndexedRect c = indexed_default(bank);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+        c.p[0x10 / 4] = 0x3ff;
+        c.p[0x18 / 4] |= 0x80 | (1U << 20);
+        c.p[0x1b8 / 4] = 0x123456a5;
+        c.p[0x48 / 4] = bounds(126, 127, 131, 130);
+        for (unsigned n = 0; n < 5; n++) {
+            c.p[(0x20 + n * 8) / 4] = bounds(126 + n % 3, 127,
+                                             128 + n % 3, 130);
+        }
+        indexed_prepare(from, &c);
+        indexed_prepare(control, &c);
+        /* Unsupported pending words migrate raw and are consumed only at GO. */
+        qtest_writel(from, DE + 8, c.p[8 / 4] | 1);
+        qtest_writel(control, DE + 8, c.p[8 / 4] | 1);
+        save_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, next, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        indexed_memory(to, &c, false, 0);
+        for (unsigned peer = 0; peer < 2; peer++) {
+            QTestState *q = peer ? to : control;
+
+            assert_failure(q, DE + 0x8d0, 0x23456789, 4);
+            indexed_memory(q, &c, false, 0);
+            qtest_writel(q, DE + 8, c.p[8 / 4]);
+            g_assert_cmpint(memtx_writel(q, DE + 0x9f0, 0), ==, MEMTX_OK);
+            indexed_memory(q, &c, false, 1);
+            qtest_writel(q, DE + 0x1f0, 0x12345678);
+            qtest_writel(q, DE + 0x1f8, 0);
+            indexed_memory(q, &c, false, 1);
+        }
+        save_paired_renderer(to, next, after);
+        save_paired_renderer(control, path, before);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        qtest_system_reset(to);
+        indexed_memory(to, &c, false, 1);
+        save_paired_renderer(to, next, after);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(after[i], ==, 0);
+        }
+        /* Reprogramming the reset device must restore the same operation. */
+        indexed_run(to, &c);
+        qtest_quit(from);
+        qtest_quit(to);
+        qtest_quit(control);
+    }
+    g_unlink(path);
+    g_unlink(next);
+    g_rmdir(dir);
+}
+
+static void test_clip_slot_shapes(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned kind = 0; kind < 4; kind++) {
+        for (unsigned slot = 0; slot < 5; slot++) {
+            for (unsigned inside = 0; inside < 2; inside++) {
+                setup(s, 0, kind == 0);
+                map_region(s, 0, 1, 0, 0, 8, 4);
+                map_region(s, 1, 1, 0, 0, 8, 4);
+                qtest_writel(s, DE, 0x400);
+                qtest_writel(s, DE + 0xd0, 0xcc);
+                for (unsigned n = 0; n < 5; n++) {
+                    qtest_writeq(s, DE + 0x20 + n * 8,
+                                 bounds(n + 1, 1, n + 2, 4));
+                }
+                qtest_writel(s, DE + 0x10,
+                             (1U << (5 + slot)) | (inside << slot));
+                qtest_writel(s, DE + 0x70,
+                             kind == 1 ? xy(slot + 1, 2) : xy(0, 2));
+                qtest_writel(s, DE + 0x74, xy(7, 2));
+                qtest_writel(s, DE + 0x60, kind == 1 ? 0 :
+                             kind == 2 ? 0x01000000 : 0x03020000);
+                qtest_writel(s, DE + 0xa0, xy(0, 2));
+                if (kind == 3) {
+                    qtest_writel(s, DE + 0x18, 0x400f8);
+                    qtest_writel(s, DE + 0xc0, 0x001f0000);
+                    qtest_writel(s, DE + 0xc4, UINT32_MAX);
+                }
+                for (unsigned y = 0; y < 5; y++) {
+                    qtest_memset(s, pixel_address(0, 0, y, 1), 0x5a, 9);
+                    qtest_memset(s, pixel_address(1, 0, y, 1), 0xcc, 9);
+                }
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                for (unsigned y = 0; y < 5; y++) {
+                    uint8_t data[9];
+
+                    qtest_memread(s, pixel_address(0, 0, y, 1), data, 9);
+                    for (unsigned x = 0; x < 9; x++) {
+                        bool interior = x == slot + 1 && y >= 1 && y < 4;
+                        bool drawn = y == 2 && x <= 7 &&
+                            (kind != 1 || x == slot + 1) &&
+                            interior == inside;
+
+                        g_assert_cmphex(data[x], ==, drawn ? 0xcc : 0x5a);
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+/* Use the native Meson groups while retaining one TAP plan per process. */
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
+{
+    int kept = 1;
+
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
+        }
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+}
+
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
+
+    if (!group_paths) {
+        return true;
+    }
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
+
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_func(path, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/sgi/crime/render/paired-start/accesses",
+    add_case("sgi/crime/render/indexed-word/clip-slot-shapes",
+                   test_clip_slot_shapes);
+    add_case("sgi/crime/render/indexed-word/migration",
+                   test_indexed_word_migration);
+    add_case("sgi/crime/render/indexed-word/start-forms",
+                   test_indexed_word_start_forms);
+    add_case("sgi/crime/render/indexed-word/failure",
+                   test_indexed_word_failure);
+    add_case("sgi/crime/render/indexed-word/accesses",
+                   test_indexed_word_accesses);
+    add_case("sgi/crime/render/indexed-word/packed-unions",
+                   test_clip_unions_packed);
+    add_case("sgi/crime/render/indexed-word/rops",
+                   test_indexed_word_rops);
+    add_case("sgi/crime/render/indexed-word/masks",
+                   test_indexed_word_masks);
+    add_case("sgi/crime/render/indexed-word/geometry",
+                   test_indexed_word_geometry);
+    add_case("sgi/crime/render/indexed-word/clipping",
+                   test_indexed_word_clipping);
+    add_case("sgi/crime/render/indexed-word/regression",
+                   test_indexed_word_regression);
+    add_case("sgi/crime/render/paired-start/accesses",
                    test_paired_start_accesses);
-    qtest_add_func("/sgi/crime/render/paired-start/migration",
+    add_case("sgi/crime/render/paired-start/migration",
                    test_paired_start_migration);
-    qtest_add_func("/sgi/crime/render/paired-start/shapes",
+    add_case("sgi/crime/render/paired-start/shapes",
                    test_paired_start_shapes);
-    qtest_add_func("/sgi/crime/render/paired-start/rollback",
+    add_case("sgi/crime/render/paired-start/rollback",
                    test_paired_start_rollback);
-    qtest_add_func("/sgi/crime/render/paired-start/copy",
+    add_case("sgi/crime/render/paired-start/copy",
                    test_paired_start_copy);
-    qtest_add_func("/sgi/crime/render/fill", test_fill);
-    qtest_add_func("/sgi/crime/render/registers", test_registers);
-    qtest_add_func("/sgi/crime/render/tile-boundaries", test_tile_boundaries);
-    qtest_add_func("/sgi/crime/render/rops", test_rops);
-    qtest_add_func("/sgi/crime/render/masks", test_masks);
-    qtest_add_func("/sgi/crime/render/overlap", test_overlap);
-    qtest_add_func("/sgi/crime/render/clipping", test_clipping);
-    qtest_add_func("/sgi/crime/render/actual-accesses", test_actual_accesses);
-    qtest_add_func("/sgi/crime/render/start-forms", test_start_forms);
-    qtest_add_func("/sgi/crime/render/atomic-commands", test_atomic_commands);
-    qtest_add_func("/sgi/crime/render/mte-start-forms", test_mte_start_forms);
-    qtest_add_func("/sgi/crime/render/mte-scroll", test_mte_scroll);
-    qtest_add_func("/sgi/crime/render/mte-rejected", test_mte_rejected);
-    qtest_add_func("/sgi/crime/render/malformed-access-stops",
+    add_case("sgi/crime/render/fill", test_fill);
+    add_case("sgi/crime/render/registers", test_registers);
+    add_case("sgi/crime/render/tile-boundaries", test_tile_boundaries);
+    add_case("sgi/crime/render/rops", test_rops);
+    add_case("sgi/crime/render/masks", test_masks);
+    add_case("sgi/crime/render/overlap", test_overlap);
+    add_case("sgi/crime/render/clipping", test_clipping);
+    add_case("sgi/crime/render/actual-accesses", test_actual_accesses);
+    add_case("sgi/crime/render/start-forms", test_start_forms);
+    add_case("sgi/crime/render/atomic-commands", test_atomic_commands);
+    add_case("sgi/crime/render/mte-start-forms", test_mte_start_forms);
+    add_case("sgi/crime/render/mte-scroll", test_mte_scroll);
+    add_case("sgi/crime/render/mte-rejected", test_mte_rejected);
+    add_case("sgi/crime/render/malformed-access-stops",
                    test_malformed_access_stops);
-    qtest_add_func("/sgi/crime/render/unsupported", test_unsupported);
-    qtest_add_func("/sgi/crime/render/migration", test_migration);
-    qtest_add_func("/sgi/crime/render/banked-decoder", test_banked_decoder);
-    qtest_add_func("/sgi/crime/render/unselected-profile",
+    add_case("sgi/crime/render/unsupported", test_unsupported);
+    add_case("sgi/crime/render/migration", test_migration);
+    add_case("sgi/crime/render/banked-decoder", test_banked_decoder);
+    add_case("sgi/crime/render/unselected-profile",
                    test_unselected_profile);
-    qtest_add_func("/sgi/crime/render/coordinate-limit", test_coordinate_limit);
+    add_case("sgi/crime/render/coordinate-limit", test_coordinate_limit);
     if (qtest_has_machine("o2-test")) {
-        qtest_add_func("/sgi/crime/render/rom-canary", test_rom_canary);
+        add_case("sgi/crime/render/rom-canary", test_rom_canary);
     }
-    qtest_add_func("/sgi/crime/render/wide-slot", test_wide_slot);
-    qtest_add_func("/sgi/crime/render/wide-slot-state", test_wide_slot_state);
-    qtest_add_func("/sgi/crime/render/wide-pairs", test_wide_pairs);
-    qtest_add_func("/sgi/crime/render/wide-rejected", test_wide_rejected);
-    qtest_add_func("/sgi/crime/render/native64-start", test_native64_start);
-    qtest_add_func("/sgi/crime/render/wide-migration", test_wide_migration);
-    qtest_add_func("/sgi/crime/render/point", test_point);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/point-geometry",
+    add_case("sgi/crime/render/wide-slot", test_wide_slot);
+    add_case("sgi/crime/render/wide-slot-state", test_wide_slot_state);
+    add_case("sgi/crime/render/wide-pairs", test_wide_pairs);
+    add_case("sgi/crime/render/wide-rejected", test_wide_rejected);
+    add_case("sgi/crime/render/native64-start", test_native64_start);
+    add_case("sgi/crime/render/wide-migration", test_wide_migration);
+    add_case("sgi/crime/render/point", test_point);
+    add_case("sgi/crime/render/point-line-stipple/point-geometry",
                    test_point_geometry);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/line-geometry",
+    add_case("sgi/crime/render/point-line-stipple/line-geometry",
                    test_line_geometry);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/line-width",
+    add_case("sgi/crime/render/point-line-stipple/line-width",
                    test_line_width);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-phase",
+    add_case("sgi/crime/render/point-line-stipple/stipple-phase",
                    test_stipple_phase);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-pipeline",
+    add_case("sgi/crime/render/point-line-stipple/stipple-pipeline",
                    test_stipple_pipeline);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-clipping",
+    add_case("sgi/crime/render/point-line-stipple/stipple-clipping",
                    test_stipple_clipping);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-state",
+    add_case("sgi/crime/render/point-line-stipple/stipple-state",
                    test_stipple_state);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-masks-colors",
+    add_case("sgi/crime/render/point-line-stipple/stipple-masks-colors",
                    test_stipple_masks_colors);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-invalid",
+    add_case("sgi/crime/render/point-line-stipple/stipple-invalid",
                    test_stipple_invalid);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-accesses",
+    add_case("sgi/crime/render/point-line-stipple/stipple-accesses",
                    test_stipple_accesses);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-null",
+    add_case("sgi/crime/render/point-line-stipple/stipple-null",
                    test_stipple_null);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/line-shared-endpoint",
+    add_case("sgi/crime/render/point-line-stipple/line-shared-endpoint",
                    test_line_shared_endpoint);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-start-forms",
+    add_case("sgi/crime/render/point-line-stipple/stipple-start-forms",
                    test_stipple_start_forms);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-migration",
+    add_case("sgi/crime/render/point-line-stipple/stipple-migration",
                    test_stipple_migration);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/shape-tile-banks",
+    add_case("sgi/crime/render/point-line-stipple/shape-tile-banks",
                    test_shape_tile_banks);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/stipple-inclusive",
+    add_case("sgi/crime/render/point-line-stipple/stipple-inclusive",
                    test_stipple_inclusive);
-    qtest_add_func("/sgi/crime/render/point-line-stipple/bank-decoder",
+    add_case("sgi/crime/render/point-line-stipple/bank-decoder",
                    test_shape_bank_decoder);
-    qtest_add_func("/sgi/crime/render/tiled-validity/fill",
+    add_case("sgi/crime/render/tiled-validity/fill",
                    test_tiled_validity_fill);
-    qtest_add_func("/sgi/crime/render/tiled-validity/banks-depths",
+    add_case("sgi/crime/render/tiled-validity/banks-depths",
                    test_validity_banks_depths);
-    qtest_add_func("/sgi/crime/render/tiled-validity/geometry-phase",
+    add_case("sgi/crime/render/tiled-validity/geometry-phase",
                    test_validity_geometry_phase);
-    qtest_add_func("/sgi/crime/render/tiled-validity/clips-masks",
+    add_case("sgi/crime/render/tiled-validity/clips-masks",
                    test_validity_clips_masks);
-    qtest_add_func("/sgi/crime/render/tiled-validity/faults",
+    add_case("sgi/crime/render/tiled-validity/faults",
                    test_validity_faults);
-    qtest_add_func("/sgi/crime/render/tiled-validity/semantics",
+    add_case("sgi/crime/render/tiled-validity/semantics",
                    test_validity_semantics);
-    qtest_add_func("/sgi/crime/render/tiled-validity/copies",
+    add_case("sgi/crime/render/tiled-validity/copies",
                    test_validity_copies);
-    qtest_add_func("/sgi/crime/render/tiled-validity/retirement",
+    add_case("sgi/crime/render/tiled-validity/retirement",
                    test_validity_retirement);
-    qtest_add_func("/sgi/crime/render/tiled-validity/migration",
+    add_case("sgi/crime/render/tiled-validity/migration",
                    test_validity_migration);
-    qtest_add_func("/sgi/crime/render/tiled-validity/profiles",
+    add_case("sgi/crime/render/tiled-validity/profiles",
                    test_validity_profiles);
     return g_test_run();
 }
