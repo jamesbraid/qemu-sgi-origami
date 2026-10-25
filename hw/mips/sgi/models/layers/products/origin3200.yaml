@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3200 minimum configuration: one two-processor C-brick, one I-brick.
+layer_version: 1
+sources:
+  007-4311-002-ranges: "007-4311-002 printed page 10, Tables 2-1 and 2-2: the minimum system is one two-processor node brick and one I-brick; the Origin 3200 holds 2 to 8 processors and at most two I/O bricks in a short rack"
+  007-4311-002-3200: "007-4311-002 printed page 87, Appendix A: an Origin 3200 has one or two C-bricks, at most two I/O bricks of which one must be an I-brick, and no R-brick"
+  007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: an Origin 3200 C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+layer:
+  kind: product
+  id: origin3200
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    provenance: vendor-document
+    sources: [007-4311-002-ranges, 007-4311-002-3200]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The guide gives the C-brick's bank sizes and the system's memory range but no installed memory for this configuration.
+      provenance: derived
+      sources: [007-4311-002-3200]
+    provenance: vendor-document
+    sources: [007-4311-002-ranges, 007-4311-002-3200, 007-4311-002-pimm]
+  data:
+    machine:
+      name: Origin 3200
+      model_role: reference
+      notes: >-
+        The smallest Origin 3200 the configuration guide allows: one C-brick
+        with two processors (one PIMM) and one I-brick in a short rack, with
+        no R-brick, which the Origin 3200 does not support. A second C-brick,
+        a second PIMM per C-brick and a second I/O brick are documented
+        expansions this composition does not show. Processor clock and cache
+        are not asserted: the closure record names R12000 360 MHz and R12000A
+        400 MHz for the C-brick without a cache size. The I-brick's host port,
+        XBridge head and PCI device numbers are the provisional placements the
+        module layers already carry. This configuration never compiles: no
+        QEMU consumer for the Origin 3000 family exists.
+    evidence_policy: strict

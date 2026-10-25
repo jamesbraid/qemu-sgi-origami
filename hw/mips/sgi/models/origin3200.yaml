@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3000 reference-bricks composition. Resolve before validation or generation.
+# Origin 3200 reference composition: one two-processor C-brick and one I-brick.
+# Resolve before validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip35.yaml
   - layers/modules/c-brick.yaml
-  - layers/products/origin3000-reference-bricks.yaml
+  - layers/products/origin3200.yaml
 module_instances:
-  - model: layers/modules/r-brick.yaml
-    prefix: rbrick-
-    parent: chassis
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
     parent: chassis
