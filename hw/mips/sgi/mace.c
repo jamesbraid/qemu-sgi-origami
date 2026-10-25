@@ -15,6 +15,7 @@
 #include "hw/pci/pci_host.h"
 #include "hw/mips/sgi/mace-timer.h"
 #include "mace-serial-dma.h"
+#include "mace-audio.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/char/serial.h"
 #include "hw/core/qdev-properties.h"
@@ -81,6 +82,9 @@ struct SGIMACEState {
     MemoryRegion cpu_pci_high_view;
     MemoryRegion cpu_pci_pio_low;
     MemoryRegion cpu_pci_pio_high;
+    MACEAudio audio;
+    MemoryRegion audio_regs;
+    qemu_irq audio_ttl[2];
     MACESerialDMA serial_dma;
     AddressSpace serial_dma_as;
     MemoryRegion peripheral_dma;
@@ -153,6 +157,51 @@ static void mace_update_irqs(SGIMACEState *s)
     qemu_set_irq(s->crime[4], (active & 0xffff0000U) != 0);
     qemu_set_irq(s->crime[5], (active & 0x0000eb00U) != 0);
     qemu_set_irq(s->crime[6], (active & 0x000000ffU) != 0);
+}
+
+static uint32_t mace_audio_ust(void *opaque, int64_t event_ns)
+{
+    SGIMACEState *s = opaque;
+
+    return MAX(event_ns - s->epoch_ns, 0) / MACE_TIMER_NS;
+}
+
+static void mace_audio_irq(void *opaque, uint32_t status)
+{
+    SGIMACEState *s = opaque;
+
+    s->istat = (s->istat & ~255U) | status;
+    mace_update_irqs(s);
+}
+
+static void mace_audio_ttl(void *opaque, unsigned outputs)
+{
+    SGIMACEState *s = opaque;
+
+    for (unsigned i = 0; i < 2; i++) {
+        qemu_set_irq(s->audio_ttl[i], (outputs >> i) & 1);
+    }
+}
+
+static void mace_audio_button(void *opaque, int n, int level)
+{
+    mace_audio_volume(&SGI_MACE(opaque)->audio, n, level);
+}
+
+static void mace_audio_power(void *opaque, int n, int level)
+{
+    mace_audio_pwrdwn(&SGI_MACE(opaque)->audio, level);
+}
+
+static void mace_audio_feedthrough(void *opaque, int n, int level)
+{
+    mace_audio_pdmnft(&SGI_MACE(opaque)->audio, level);
+}
+
+static bool mace_audio_timer_access(hwaddr offset, unsigned size)
+{
+    return offset >= 0x340020 && offset < 0x340038 &&
+           (size == 4 || size == 8) && !(offset & (size - 1));
 }
 
 static void mace_eth_irq(void *opaque, int n, int level)
@@ -734,6 +783,10 @@ static uint64_t mace_read(void *opaque, hwaddr offset, unsigned size)
     SGIMACEState *s = opaque;
     int index = mace_compare_index(offset);
 
+    if (mace_audio_timer_access(offset, size)) {
+        return mace_audio_timestamp_read(&s->audio, (offset - 0x340020) / 8,
+                                          (offset & 4) != 0, size);
+    }
     if (size == 8) {
         if (index >= 0) {
             if (!s->compare_programmed[index]) {
@@ -764,6 +817,11 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
     SGIMACEState *s = opaque;
     int index = mace_compare_index(offset);
 
+    if (mace_audio_timer_access(offset, size)) {
+        mace_audio_timestamp_write(&s->audio, (offset - 0x340020) / 8,
+                                     (offset & 4) != 0, size, value);
+        return;
+    }
     if (size == 8) {
         if (index >= 0) {
             s->compare[index] = value;
@@ -783,6 +841,13 @@ static void mace_write(void *opaque, hwaddr offset, uint64_t value,
         case MACE_RING_BASE: {
             bool assert_reset = !(s->ring_base & 1) && (value & 1);
 
+            if (((s->ring_base ^ value) & 0xffff8000U) &&
+                !mace_audio_base_allowed(&s->audio)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-mace: ring base change with audio DMA "
+                              "out of reset\n");
+                return;
+            }
             if (!mace_serial_dma_base_allowed(&s->serial_dma, value)) {
                 return;
             }
@@ -914,6 +979,7 @@ static void mace_reset_hold(Object *obj, ResetType type)
     s->ring_base = 1;
     s->uart_irq_level = 0;
     mace_serial_dma_reset(&s->serial_dma);
+    mace_audio_reset(&s->audio);
     s->istat = 0;
     s->imask = 0;
     s->pci_control = 0;
@@ -941,6 +1007,7 @@ static int mace_pre_save(void *opaque)
 {
     SGIMACEState *s = opaque;
 
+    mace_audio_sync(&s->audio);
     s->saved_elapsed_ns = MAX(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
                               s->epoch_ns, 0);
     return mace_serial_dma_pre_save(&s->serial_dma);
@@ -969,6 +1036,9 @@ static int mace_post_load(void *opaque, int version_id)
     serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
     mace_schedule_compare(s);
+    if (mace_audio_post_load(&s->audio) < 0) {
+        return -EINVAL;
+    }
     return mace_serial_dma_post_load(&s->serial_dma);
 }
 
@@ -996,6 +1066,7 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT8(pci_bus_level, SGIMACEState),
         VMSTATE_STRUCT_ARRAY(uart, SGIMACEState, 2, 0, vmstate_serial,
                              SerialState),
+        VMSTATE_STRUCT(audio, SGIMACEState, 0, vmstate_mace_audio, MACEAudio),
         VMSTATE_STRUCT(serial_dma, SGIMACEState, 0,
                        vmstate_mace_serial_dma, MACESerialDMA),
         VMSTATE_END_OF_LIST()
@@ -1027,12 +1098,24 @@ static void mace_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), mace_ps2_irq, "ps2", 4);
     qdev_init_gpio_in_named(DEVICE(obj), mace_uart_irq, "uart", 2);
     qdev_init_gpio_in_named(DEVICE(obj), mace_pci_wire_irq, "pci", 8);
+    qdev_init_gpio_out_named(DEVICE(obj), s->audio_ttl, "audio-ttl", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_audio_button, "volume", 2);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_audio_power, "audio-pwrdwn", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), mace_audio_feedthrough,
+                            "audio-pdmnft", 1);
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
     memory_region_init(&s->eth_dma, obj, "sgi-mace-eth-dma", 1ULL << 32);
     memory_region_init(&s->peripheral_dma, obj, "sgi-mace-peripheral-dma",
                        1ULL << 32);
     address_space_init(&s->serial_dma_as, &s->peripheral_dma,
                        "sgi-mace-serial-dma");
+    mace_audio_init(&s->audio, &s->serial_dma_as, &s->ring_base,
+                     mace_audio_ust, mace_audio_irq, s);
+    s->audio.update_ttl = mace_audio_ttl;
+    memory_region_init_io(&s->audio_regs, obj, &mace_audio_ops, &s->audio,
+                          "sgi-mace-audio", 0x10000);
+    memory_region_add_subregion_overlap(&s->aperture, 0x300000,
+                                        &s->audio_regs, 1);
     object_property_add_alias(obj, "netdev", OBJECT(&s->eth), "netdev");
     object_property_add_alias(obj, "mac", OBJECT(&s->eth), "mac");
     object_property_add_alias(obj, "phy-ics1890", OBJECT(&s->eth),
@@ -1056,6 +1139,7 @@ static void mace_finalize(Object *obj)
 {
     SGIMACEState *s = SGI_MACE(obj);
 
+    mace_audio_cleanup(&s->audio);
     timer_free(s->timer);
 }
 
@@ -1151,6 +1235,9 @@ static void mace_realize(DeviceState *dev, Error **errp)
                                     &s->eth_full_ram);
         memory_region_add_subregion(&s->eth_dma, 0x80000000,
                                     &s->eth_no_ecc_ram);
+    }
+    if (!mace_audio_realize(&s->audio, errp)) {
+        return;
     }
     object_property_set_link(OBJECT(&s->eth), "dma-memory",
                              OBJECT(&s->eth_dma), &error_abort);
@@ -1347,6 +1434,7 @@ static void mace_unrealize(DeviceState *dev)
         object_unparent(OBJECT(ps2));
         SGI_MACE(dev)->ps2 = NULL;
     }
+    mace_audio_cleanup(&SGI_MACE(dev)->audio);
     mace_serial_dma_cleanup(&SGI_MACE(dev)->serial_dma);
     address_space_destroy(&SGI_MACE(dev)->serial_dma_as);
     address_space_destroy(&SGI_MACE(dev)->pci_dma_as);
@@ -1367,6 +1455,7 @@ static void mace_unrealize(DeviceState *dev)
 }
 
 static const Property mace_properties[] = {
+    DEFINE_AUDIO_PROPERTIES(SGIMACEState, audio.backend),
     DEFINE_PROP_BOOL("password-clear-input", SGIMACEState,
                      password_clear_input, false),
     DEFINE_PROP_LINK("ram", SGIMACEState, ram, TYPE_MEMORY_REGION,
