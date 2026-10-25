@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "8dfdb01d8fd2fdea1b904522d9ff93fc3c2f6166a0d8b75af6e052101569ce15"
+    "a18751cc54e24aad89b2269cd5b5213991cbe63df8829914f1a45fe47862ed5c"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -27,7 +27,6 @@ from sgi_model import model_graphics
 from sgi_model.exceptions import ResolutionError
 from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.model_qemu import generate_qemu_inputs, render_qemu_inputs
-from sgi_model.model_compile import compile_reference_construction
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
 from sgi_model.system_model import _layer
 from sgi_model.registry import (
@@ -36,39 +35,6 @@ from sgi_model.registry import (
 
 
 class GeneratorTests(unittest.TestCase):
-    def test_tezro_deskside_compatibility_composition_is_explicit(self):
-        model = load_checked_system_model(
-            INPUTS / "tezro-deskside-compat.yaml", model_schema=schema(INPUTS))
-        topology = compile_reference_construction(model)
-        catalogue = json.loads(
-            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
-        self.assertFalse(any(
-            item["name"] == "tezro-deskside-compat"
-            for item in catalogue["topologies"]))
-        self.assertFalse(any(
-            item["topology"] == "tezro-deskside-compat"
-            for item in catalogue["offerings"]))
-        self.assertEqual(
-            [item["compatibility_profile"]
-             for item in topology["pci_host_bridges"]],
-            ["pic-rev3-bedrock-tezro-experimental"] * 2)
-        self.assertEqual(
-            [item["widget"] for item in topology["xio_attachments"]],
-            [11, 15])
-        io9 = next(item for item in topology["io_boards"]
-                   if item["id"] == "io9")
-        self.assertEqual(io9["pci_host_index"], 1)
-        self.assertEqual(io9["pci_head"], 0)
-        self.assertEqual(io9["pci_functions"], [])
-        node = topology["nodes"][0]
-        self.assertEqual(node["bank_mib"], [1024, 1024, 512, 512,
-                                              512, 512, 0, 0])
-        processor = node["cpu_slots"][0]["assembly"]
-        self.assertEqual(processor["clock_hz"], 700000000)
-        self.assertEqual(processor["cache_mib"], 4)
-        self.assertEqual(processor["cache_clock_hz"], 350000000)
-        self.assertNotIn("mode_bits", processor)
-
     def test_onyx4_host_serial_profile_names_its_ip53_compatibility(self):
         catalogue = json.loads(
             render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
@@ -243,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 119)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 38)
-        self.assertEqual(len(layers), 79)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 115)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 36)
+        self.assertEqual(len(layers), 77)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):

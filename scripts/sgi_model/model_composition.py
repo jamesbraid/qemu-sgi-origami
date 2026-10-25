@@ -994,10 +994,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             "onyx4-host-serial-compat": (
                 "onyx4-host", "ip53-onyx4-host-serial-compat"),
             "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
-            "tezro-deskside-700mhz-4mib-serial-trial": (
-                "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
-            "tezro-deskside-compat": (
-                "tezro", "ip53-tezro-deskside-compat"),
             "tezro-tower-one": (
                 "tezro", "tezro-tower-one-serial-compat"),
             "tezro-tower-multi": (
@@ -1013,11 +1009,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "launch_recipe") == "ip53-discovery"
         )
         tezro_experiment = (
-            product in {"tezro-deskside-compat", "tezro-tower-one",
-                        "tezro-tower-multi", "tezro-rack"}
+            product in {"tezro-tower-one", "tezro-tower-multi", "tezro-rack"}
             and emulation.get("machine_name") == "tezro"
             and emulation.get("profile") in {
-                "ip53-tezro-deskside-compat",
                 "tezro-tower-one-serial-compat",
                 "tezro-tower-multi-serial-compat",
                 "tezro-rack-serial-compat",
@@ -1122,9 +1116,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
                 if product in {
-                    "tezro-deskside-700mhz-4mib-serial-trial",
-                    "tezro-tower-one", "tezro-tower-multi",
-                    "tezro-rack",
+                    "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
                 }:
                     if "hardware_revision" in identity:
                         integer(identity["hardware_revision"], 15,

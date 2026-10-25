@@ -399,10 +399,10 @@ Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
      - 1
      - 4 (fixed)
      - 8192 MiB (fixed)
-   * - ``tezro-deskside-700mhz-4mib-serial-trial`` (default)
+   * - ``tezro-tower-multi`` (default)
      - ``tezro``
      - 1
-     - 4 (fixed)
+     - 2 or 4
      - 4096 MiB (fixed)
    * - ``onyx4-host-serial-compat`` (default)
      - ``onyx4-host``

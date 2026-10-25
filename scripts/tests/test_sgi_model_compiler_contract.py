@@ -788,17 +788,6 @@ class Ip53CpuContextTests(unittest.TestCase):
                     model["machine"]["firmware_config"][
                         "processor_reset_mode"], reset)
 
-    def test_unselected_tezro_trial_keeps_legacy_firmware_value(self):
-        profiles = {"tezro-deskside-700mhz-4mib-serial-trial": 0x009bad85}
-        for name, reset_mode in profiles.items():
-            with self.subTest(profile=name):
-                topology = compile_model(_resolved(name))
-
-                self.assertEqual(topology["ip35_firmware"]["cpu_mode_word"],
-                                 reset_mode)
-                self.assertNotIn(
-                    "cpu_context", topology["controllers"][0]["l1"])
-
     def test_full_word_must_match_the_fitted_reset_mode(self):
         model = _resolved("origin350")
         model["machine"]["firmware_config"][
@@ -1323,16 +1312,16 @@ class PicIo9DescriptorTests(unittest.TestCase):
 
         self.assertNotIn("ds1742", board)
 
-    def test_tezro_trial_emits_its_linked_io9_clock_resource(self):
-        topology = compile_model(
-            _resolved("tezro-deskside-700mhz-4mib-serial-trial"))
+    def test_tezro_tower_emits_its_io9_timekeeper(self):
+        topology = compile_model(_resolved("tezro-tower-multi"))
         board = next(item for item in topology["io_boards"]
                      if item["id"] == "io9")
 
         self.assertEqual([item["id"] for item in topology["pci_host_bridges"]],
                          ["pic-xio-b", "pic-xio-f"])
-        self.assertTrue(board["ds1742"])
-        self.assertEqual(board["ds1742_fresh_year_base"], 1968)
+        self.assertNotIn("ds1742", board)
+        self.assertEqual(board["system_timekeeper"]["kind"], "ds1744")
+        self.assertEqual(board["system_timekeeper"]["year_base"], 1968)
 
     def test_io9_clock_link_schema_is_narrow_and_optional(self):
         from jsonschema import Draft202012Validator
@@ -3589,8 +3578,7 @@ class CatalogueJsonTests(unittest.TestCase):
     def test_only_six_cleared_ip53_offerings_drop_cpu_requirements(self):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
-            "tezro-deskside-700mhz-4mib-serial-trial", "tezro-tower-one",
-            "tezro-tower-multi", "tezro-rack",
+            "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
         )
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in profile_names]))
@@ -3626,7 +3614,7 @@ class CatalogueJsonTests(unittest.TestCase):
                     required_properties, key,
                 )
         self.assertEqual(actual_normal, normal)
-        self.assertEqual(len(offerings), 10)
+        self.assertEqual(len(offerings), 9)
 
         tower = topologies["tezro-tower-multi"]
         self.assertEqual(

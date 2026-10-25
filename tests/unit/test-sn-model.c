@@ -1251,17 +1251,16 @@ static void test_tezro_requires_explicit_topology(void)
     g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *topology;
     const SGIModelOfferingList *offering;
-    bool trial_found = false;
+    bool tower_found = false;
     bool tezro_found = false;
 
     for (topology = catalogue->topologies; topology;
          topology = topology->next) {
-        if (!strcmp(topology->value->name,
-                    "tezro-deskside-700mhz-4mib-serial-trial")) {
-            trial_found = true;
+        if (!strcmp(topology->value->name, "tezro-tower-multi")) {
+            tower_found = true;
         }
     }
-    g_assert_true(trial_found);
+    g_assert_true(tower_found);
     for (offering = catalogue->offerings; offering;
          offering = offering->next) {
         if (!strcmp(offering->value->product, "onyx350")) {
@@ -1270,8 +1269,7 @@ static void test_tezro_requires_explicit_topology(void)
         if (strcmp(offering->value->product, "tezro")) {
             continue;
         }
-        if (!strcmp(offering->value->topology,
-                    "tezro-deskside-700mhz-4mib-serial-trial")) {
+        if (!strcmp(offering->value->topology, "tezro-tower-multi")) {
             tezro_found = true;
         }
         g_assert_null(offering->value->default_topology);

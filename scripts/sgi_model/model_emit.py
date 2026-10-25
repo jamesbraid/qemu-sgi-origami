@@ -1043,10 +1043,6 @@ def _is_ip53_runtime_profile(model: dict) -> bool:
         "onyx4-host-serial-compat": (
             "onyx4-host", "ip53-onyx4-host-serial-compat"),
         "onyx350-compat": ("onyx350", "ip53-onyx350-compat"),
-        "tezro-deskside-700mhz-4mib-serial-trial": (
-            "tezro", "tezro-deskside-700mhz-4mib-serial-trial"),
-        "tezro-deskside-compat": (
-            "tezro", "ip53-tezro-deskside-compat"),
         "tezro-tower-one": (
             "tezro", "tezro-tower-one-serial-compat"),
         "tezro-tower-multi": (
