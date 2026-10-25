@@ -49,6 +49,7 @@ struct SGIMACEIDState {
     char *eprom_file;
     char *status_hex;
     int64_t low_start_ns;
+    int64_t startup_low_start_ns;
     int64_t high_start_ns;
     int64_t presence_start_ns;
     int64_t presence_end_ns;
@@ -62,6 +63,8 @@ struct SGIMACEIDState {
     uint32_t led_control;
     bool high_seen;
     bool reset_ready;
+    bool startup_pending;
+    bool startup_low_valid;
     bool session;
     bool slot_pull;
 };
@@ -141,6 +144,10 @@ static void mace_id_write_control(SGIMACEIDState *s, uint64_t value,
     s->led_control = value & (MACE_ID_RED_LED | MACE_ID_GREEN_LED);
     s->flash_write_enabled = value & MACE_ID_FLASH_ENABLE;
     qemu_set_irq(s->flash_write_enable_irq, s->flash_write_enabled);
+    if (!release && s->startup_pending && !s->startup_low_valid) {
+        s->startup_low_valid = true;
+        s->startup_low_start_ns = now;
+    }
     if (release == s->released) {
         return;
     }
@@ -156,6 +163,27 @@ static void mace_id_write_control(SGIMACEIDState *s, uint64_t value,
     }
 
     s->high_start_ns = now;
+    if (s->startup_pending) {
+        int64_t startup_low_ns = s->startup_low_valid ?
+                                 now - s->startup_low_start_ns : -1;
+
+        s->startup_pending = false;
+        s->startup_low_valid = false;
+        if (!s->high_seen) {
+            s->high_seen = true;
+        }
+        if (startup_low_ns >= MACE_ID_RESET_MIN_NS) {
+            mace_id_clear_windows(s);
+            s->session = false;
+            onewire_reset(s->bus);
+            s->session = true;
+            s->presence_start_ns = now + MACE_ID_PRESENCE_DELAY_NS;
+            s->presence_end_ns = now + MACE_ID_PRESENCE_END_NS;
+            trace_mace_id_presence_schedule(now, s->presence_start_ns,
+                                            s->presence_end_ns);
+        }
+        return;
+    }
     if (!s->high_seen) {
         s->high_seen = true;
         return;
@@ -270,8 +298,11 @@ static void mace_id_reset_hold(Object *obj, ResetType type)
     s->led_control = MACE_ID_GREEN_LED;
     s->high_seen = false;
     s->reset_ready = false;
+    s->startup_pending = true;
+    s->startup_low_valid = false;
     s->session = false;
     s->low_start_ns = 0;
+    s->startup_low_start_ns = 0;
     s->high_start_ns = 0;
     onewire_reset(s->bus);
 }
