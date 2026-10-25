@@ -4,4 +4,4 @@ layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip53-tezro.yaml
   - layers/modules/tezro-serial-compat-module.yaml
-  - layers/products/tezro-rack-base.yaml
+  - layers/products/tezro-rack.yaml

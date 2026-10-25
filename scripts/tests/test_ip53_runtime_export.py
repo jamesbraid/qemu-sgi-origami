@@ -178,12 +178,12 @@ class IP53RuntimeExportTests(unittest.TestCase):
                     model_schema=model_schema)
                 self.assertEqual(model["composition"]["product"], product)
 
-    def test_tezro_tower_and_rack_base_compile_as_explicit_ip53_profiles(self):
+    def test_tezro_tower_and_rack_compile_as_explicit_ip53_profiles(self):
         model_schema = schema(ROOT / "hw/mips/sgi/models")
         expected = {
             "tezro-tower-one": {"populations": [[1]], "pics": 1},
             "tezro-tower-multi": {"populations": [[4], [2]], "pics": 2},
-            "tezro-rack-base": {"populations": [[1], [2], [4]], "pics": 1},
+            "tezro-rack": {"populations": [[1], [2], [4]], "pics": 1},
         }
         models = []
         for name, facts in expected.items():
@@ -204,9 +204,9 @@ class IP53RuntimeExportTests(unittest.TestCase):
                 ))
                 self.assertEqual(len(topology["pci_host_bridges"]), facts["pics"])
                 self.assertEqual(len(topology["io_boards"]), 1)
-                if name in {"tezro-tower-one", "tezro-rack-base"}:
+                if name in {"tezro-tower-one", "tezro-rack"}:
                     self.assertEqual(model["composition"]["population"]["cpus_per_node"], [1])
-                    # These profiles author cpu0 as fitted. Rack-base also
+                    # These profiles author cpu0 as fitted. The rack also
                     # advertises two/four-CPU populations; its remaining
                     # compiled slots describe selectable capacity.
                     self.assertEqual(

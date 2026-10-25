@@ -19361,7 +19361,7 @@
         "netboot"
       ],
       "launch-recipe": "ip53-discovery",
-      "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
+      "machine-options": "tezro,topology=tezro-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           4096
@@ -19477,7 +19477,7 @@
       ],
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
-      "topology": "tezro-rack-base"
+      "topology": "tezro-rack"
     },
     {
       "console": "l1-uart",
@@ -19543,7 +19543,7 @@
         "netboot"
       ],
       "launch-recipe": "ip53-discovery",
-      "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
+      "machine-options": "tezro,topology=tezro-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           4096
@@ -19664,7 +19664,7 @@
       ],
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
-      "topology": "tezro-rack-base"
+      "topology": "tezro-rack"
     },
     {
       "console": "l1-uart",
@@ -19730,7 +19730,7 @@
         "netboot"
       ],
       "launch-recipe": "ip53-discovery",
-      "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
+      "machine-options": "tezro,topology=tezro-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           4096
@@ -19851,7 +19851,7 @@
       ],
       "supported-guests": [],
       "synthesized-firmware-toggle": false,
-      "topology": "tezro-rack-base"
+      "topology": "tezro-rack"
     },
     {
       "console": "l1-uart",
@@ -34790,7 +34790,7 @@
           "serial": ""
         }
       ],
-      "name": "tezro-rack-base",
+      "name": "tezro-rack",
       "node-populations": [
         {
           "cables": [],

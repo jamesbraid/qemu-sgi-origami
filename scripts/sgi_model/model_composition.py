@@ -1002,8 +1002,8 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "tezro", "tezro-tower-one-serial-compat"),
             "tezro-tower-multi": (
                 "tezro", "tezro-tower-multi-serial-compat"),
-            "tezro-rack-base": (
-                "tezro", "tezro-rack-base-serial-compat"),
+            "tezro-rack": (
+                "tezro", "tezro-rack-serial-compat"),
         }.get(product)
         experiment = (
             expected is not None
@@ -1014,13 +1014,13 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         )
         tezro_experiment = (
             product in {"tezro-deskside-compat", "tezro-tower-one",
-                        "tezro-tower-multi", "tezro-rack-base"}
+                        "tezro-tower-multi", "tezro-rack"}
             and emulation.get("machine_name") == "tezro"
             and emulation.get("profile") in {
                 "ip53-tezro-deskside-compat",
                 "tezro-tower-one-serial-compat",
                 "tezro-tower-multi-serial-compat",
-                "tezro-rack-base-serial-compat",
+                "tezro-rack-serial-compat",
             }
         )
         if profile != "pic-rev3-bedrock" and not (
@@ -1124,7 +1124,7 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 if product in {
                     "tezro-deskside-700mhz-4mib-serial-trial",
                     "tezro-tower-one", "tezro-tower-multi",
-                    "tezro-rack-base",
+                    "tezro-rack",
                 }:
                     if "hardware_revision" in identity:
                         integer(identity["hardware_revision"], 15,

@@ -33,7 +33,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "tezro-deskside-700mhz-4mib-serial-trial",
     "tezro-tower-one",
     "tezro-tower-multi",
-    "tezro-rack-base",
+    "tezro-rack",
 )
 
 # Authored reference compositions are useful for comparing product topology,
