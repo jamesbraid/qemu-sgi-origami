@@ -4482,6 +4482,7 @@
         "machine-type": 0
       },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,

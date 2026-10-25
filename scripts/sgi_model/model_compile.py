@@ -3118,6 +3118,12 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
                     for position, entry in enumerate(graph["io_peers"])]
         routers = [_compile_router(model, entry, index)
                    for index, entry in enumerate(graph["routers"])]
+        if machine.get("emulation", {}).get("synthetic_router_diagnostics"):
+            if generation != "SN1" or not routers:
+                raise CompileError("synthetic Router diagnostics require "
+                                   "SN1 Routers")
+            for router in routers:
+                router["synthetic_diagnostics"] = True
         controllers = _compile_controllers(model, components, modules_by_id)
         modules = [_compile_module(model, module["id"], module["index"],
                                     graph["nodes"], controllers, graph["io_peers"])
@@ -3276,7 +3282,28 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
         model_graphics.attach_slot_requirements(topology)
     if pci_host_bridges:
         topology["pci_host_bridges"] = pci_host_bridges
+    ip53_runtime = machine.get("emulation", {}).get("ip53_runtime")
+    if ip53_runtime is not None:
+        topology["ip53_runtime"] = _compile_ip53_runtime(
+            ip53_runtime, ip53_graph_nodes, pci_host_bridges)
     return topology
+
+
+def _compile_ip53_runtime(raw: dict, ip53_nodes: list,
+                          pci_host_bridges: list) -> dict:
+    """The authored IP53 runtime profile, checked against the topology it
+    describes: it needs IP53 node boards, and every PIC host must select
+    the profile's own PIC compatibility profile, which the emulator
+    otherwise refuses at launch.
+    """
+    if not ip53_nodes:
+        raise CompileError("an IP53 runtime profile requires IP53 node boards")
+    for host in pci_host_bridges:
+        if host.get("compatibility_profile") != raw["pic_profile"]:
+            raise CompileError(
+                f"PIC host '{host['id']}' does not select the IP53 runtime "
+                f"profile's {raw['pic_profile']}")
+    return copy.deepcopy(raw)
 
 
 def _compile_ip35_firmware(model: dict) -> dict:

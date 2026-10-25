@@ -515,6 +515,10 @@
 #
 # @serial: fitted-part one-wire serial
 #
+# @synthetic-diagnostics: whether this SN1 Router answers the model's
+#     synthetic status, reset and port-error diagnostics, which no
+#     hardware record settles; absent means it does not
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelRouter',
@@ -524,7 +528,8 @@
             'part': 'uint16',
             'revision': 'uint8',
             'chip-inputs': 'uint8',
-            'serial': 'uint64' } }
+            'serial': 'uint64',
+            '*synthetic-diagnostics': 'bool' } }
 
 ##
 # @SGIModelIoPeer:
@@ -1739,6 +1744,81 @@
             'target-controller-index': 'uint32' } }
 
 ##
+# @SGIModelIp53NormalSelection:
+#
+# The one resolved launch an IP53 runtime profile accepts without
+# `ip53-experimental=on`.
+#
+# @cpus: the -smp count the launch requests
+#
+# @fitted-cpus: how many processor slots the node fits
+#
+# @memory-mib: the memory size the launch requests, in MiB
+#
+# @clock-hz: every fitted processor's clock
+#
+# @cache-mib: every fitted processor's secondary cache size
+#
+# @mode-word: every fitted processor's R16000 reset mode word
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIp53NormalSelection',
+  'data': { 'cpus': 'uint32',
+            'fitted-cpus': 'uint32',
+            'memory-mib': 'uint64',
+            'clock-hz': 'uint64',
+            'cache-mib': 'uint32',
+            'mode-word': 'uint32' } }
+
+##
+# @SGIModelIp53NodeBoard:
+#
+# The node-board identity an IP53 profile's L1 reports for a node.
+#
+# @processors: the processor count of a node that reports this board
+#
+# @name: board name
+#
+# @part: board part number
+#
+# @revision: board revision
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIp53NodeBoard',
+  'data': { 'processors': 'uint32',
+            'name': 'str',
+            'part': 'str',
+            'revision': 'str' } }
+
+##
+# @SGIModelIp53Runtime:
+#
+# How a topology built from IP53 node boards runs as a registered IP53
+# runtime profile.
+#
+# @pic-profile: the compatibility profile every PIC host of the
+#     topology selects once the IP53 runtime is authorized
+#
+# @normal-selection: the launch admitted without
+#     `ip53-experimental=on`; absent where every launch needs it
+#
+# @l1-irouter-compat: whether the node's L1 answers the
+#     router-compatible command set and reports a first port speed
+#
+# @node-board: the node-board identity the L1 reports, absent where
+#     the node keeps the L1's generic record
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIp53Runtime',
+  'data': { 'pic-profile': 'SGIModelPicCompatibilityProfile',
+            '*normal-selection': 'SGIModelIp53NormalSelection',
+            'l1-irouter-compat': 'bool',
+            '*node-board': 'SGIModelIp53NodeBoard' } }
+
+##
 # @SGIModelTopology:
 #
 # One chassis a product ships in: its wiring with every node slot
@@ -1814,6 +1894,14 @@
 # @graphics: the graphics pipes the topology takes; absent where it
 #     has no graphics slot
 #
+# @ip53-runtime: how the topology runs as an IP53 runtime profile;
+#     absent where it is not one
+#
+# @machine-default: whether the `-M` machine of @product takes its
+#     description and its -smp and -m defaults from this topology.
+#     One topology of each product sets it, including a product that
+#     requires `topology=`; absent means false
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -1841,7 +1929,9 @@
             '*ip27-firmware': 'SGIModelIp27FirmwareConfig',
             '*ip35-firmware': 'SGIModelIp35FirmwareConfig',
             '*processor-options': ['SGIModelProcessorOption'],
-            '*graphics': 'SGIModelGraphics' } }
+            '*graphics': 'SGIModelGraphics',
+            '*ip53-runtime': 'SGIModelIp53Runtime',
+            '*machine-default': 'bool' } }
 
 ##
 # @SGIModelConsole:

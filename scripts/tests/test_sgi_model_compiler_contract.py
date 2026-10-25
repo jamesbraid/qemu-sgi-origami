@@ -441,6 +441,64 @@ class ComputeOptionIntxTests(unittest.TestCase):
                 compile_model(model)
 
 
+class LaunchPolicyFieldTests(unittest.TestCase):
+    """The catalogue fields the emulator and launchers read in place of
+    comparing topology names."""
+
+    def test_router_diagnostics_reach_every_router_of_their_topology(self):
+        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        topology = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertTrue(topology["routers"])
+        for router in topology["routers"]:
+            self.assertIs(router.get("synthetic-diagnostics"), True)
+
+    def test_router_diagnostics_need_sn1_routers(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["synthetic_router_diagnostics"] = True
+        with self.assertRaisesRegex(CompileError, "SN1 Routers"):
+            compile_model(model)
+
+    def test_ip53_runtime_is_emitted_as_authored(self):
+        model = _resolved("tezro-tower-one")
+        topology = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(topology["ip53-runtime"], {
+            "pic-profile": "pic-rev3-bedrock-tezro-experimental",
+            "normal-selection": {
+                "cpus": 1, "fitted-cpus": 1, "memory-mib": 4096,
+                "clock-hz": 700_000_000, "cache-mib": 4,
+                "mode-word": 0x009bad85,
+            },
+            "l1-irouter-compat": True,
+        })
+
+    def test_ip53_runtime_pic_profile_must_match_its_hosts(self):
+        model = _resolved("origin350")
+        model["machine"]["emulation"]["ip53_runtime"]["pic_profile"] = (
+            "pic-rev3-bedrock-tezro-experimental")
+        with self.assertRaisesRegex(CompileError, "does not select"):
+            compile_model(model)
+
+    def test_ip53_runtime_needs_ip53_nodes(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["ip53_runtime"] = copy.deepcopy(
+            _resolved("origin350")["machine"]["emulation"]["ip53_runtime"])
+        with self.assertRaisesRegex(CompileError, "IP53 node boards"):
+            compile_model(model)
+
+    def test_each_product_has_one_machine_default(self):
+        models = [_resolved(name) for name in sorted({
+            *PRODUCT_MODELS.values(), "origin200-dual",
+            "tezro-tower-one", "onyx2-deskside"})]
+        topologies = json.loads(render_catalogue_json(models))["topologies"]
+        defaults = {}
+        for topology in topologies:
+            if topology.get("machine-default"):
+                self.assertNotIn(topology["product"], defaults)
+                defaults[topology["product"]] = topology["name"]
+        self.assertEqual(set(defaults), set(PRODUCT_MODELS))
+        self.assertEqual(defaults["origin2000"], "origin2000-rack")
+
+
 class BedrockConfigurationTests(unittest.TestCase):
     def catalogue(self, model):
         return json.loads(render_catalogue_json([model]))["topologies"][0]

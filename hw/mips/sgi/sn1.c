@@ -21,32 +21,24 @@ static const char * const sgi_sn1_r16000_cpu_types[] = {
 
 /*
  * The Bedrock products differ only in catalogue data, so one class init
- * serves each, keyed by its product and selected descriptor topology.
+ * serves each, described by the topology the catalogue names as its
+ * machine class's own.
  */
 static void sn1_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const char *product = data;
-    const char *topology = product;
     bool ip53 = g_str_equal(product, "origin350") ||
                 g_str_equal(product, "onyx4-host") ||
                 g_str_equal(product, "onyx350") ||
                 g_str_equal(product, "tezro");
-    const SGIModelTopology *t;
+    const SGIModelTopology *t = sgi_model_machine_topology(product);
 
-    if (g_str_equal(product, "onyx4-host")) {
-        topology = "onyx4-host-serial-compat";
-    } else if (g_str_equal(product, "onyx350")) {
-        topology = "onyx350-compat";
-    } else if (g_str_equal(product, "tezro")) {
-        topology = "tezro-deskside-700mhz-4mib-serial-trial";
-    }
-    t = sgi_model_find_topology(topology);
     g_assert(t);
     smc->product = product;
     /* Preflight still requires topology= for products without a default. */
-    smc->default_topology = topology;
+    smc->default_topology = t->name;
     mc->desc = t->description;
     mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
                                  sgi_sn1_r14000_cpu_types;

@@ -60,6 +60,9 @@ layer:
           provenance: derived
           sources: ["firmware:ip35-prom-6.210 CPU-configuration table rows 6 and 7 and the flash comparison", hw/mips/sgi/sn1-node.c]
           notes: Origin 300 values carried into the synthetic routed configuration.
+        # The routers answer the model's synthetic diagnostics, which no
+        # hardware record settles.
+        synthetic_router_diagnostics: true
         # Synthetic public default rule; physical riser wiring is unresolved.
         option_intx_maps:
           master-bedrock: [1, 5, 1, 5, 2, 6, 2, 6]
