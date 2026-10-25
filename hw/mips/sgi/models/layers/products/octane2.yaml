@@ -138,7 +138,7 @@ layer:
         prom_dialogue: none
         default_cpu_model: R12000
         disk_bus: scsi
-        netboot_adapter: none
+        netboot_adapter: ioc3-ethernet
         default_topology: octane2
         # The candidate part's 1 MiB array (docs/specs/sgi-ip30.rst,
         # Boot flash wiring), which the reviewed CFI01 boot flash
@@ -149,7 +149,7 @@ layer:
         identity_inputs: []
         supported_guests:
         - irix
-        install_media: []
+        install_media: [disk-image, netboot]
         provenance: derived
         sources:
         - hw/mips/sgi/octane.c

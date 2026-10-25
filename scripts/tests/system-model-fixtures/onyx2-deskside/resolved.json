@@ -2405,7 +2405,8 @@
       "default_topology": "onyx2-deskside",
       "disk_bus": "scsi.0",
       "install_media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "netboot_adapter": "ioc3-ethernet",
       "prom_dialogue": "ip27-menu",

@@ -1301,7 +1301,7 @@ product sections of these pages state it.
      - ``ioc3-serial-a``
      - ``none``
      - ``scsi``
-     - ``none``
+     - ``ioc3-ethernet``
      - R10000, R12000
 
 .. _sgi-sn-launch-console:
@@ -1341,6 +1341,20 @@ IRIX installation run; that is a harness limit, not a machine one. The
 Onyx2 offerings reuse the Origin 2000 module's dialogue, console and
 disk bus, since they are built on the same IP27 node boards and stock
 PROM.
+
+The install media list ``netboot`` where the harness installs IRIX by
+booting the miniroot over the netboot adapter from an install server, the
+PROM's "Install System Software" from a remote directory. The IRIX
+6.5.30 ``prom(1M)`` page documents that menu choice and its network
+source for SGI PROMs generally. On the model it was confirmed by complete
+IRIX 6.5.30 installs on 2026-10-24: an Origin 2000 with one node, BaseIO-G
+and an SI board, an Onyx2 rack with one node, an Octane with SI and an
+Octane2 with V12, each to the installed system's login prompt, and an
+Onyx2 deskside to the miniroot's first question. The Origin 2000 deskside
+and two-module offerings inherit the entry from the module layer without
+an install of their own. Fuel lists ``netboot`` for the harness's existing
+Fuel serial installation; no Fuel install was repeated for this entry.
+``disk-image`` means a launcher can boot an installed disk image.
 
 The Origin 300 offering lists identity inputs a launcher may supply:
 raw chassis, board and SPD EEPROM records, a brick serial and L1 debug

@@ -207,6 +207,6 @@ layer:
         identity_inputs: [chassis-eeprom, board-eeprom]
         identity_record_slots: [node-board]
         supported_guests: []
-        install_media: []
+        install_media: [disk-image, netboot]
         provenance: derived
         sources: ["web:tingo-fuel-irix-console raw HTML lines 139 to 146: IP34 node board inventory", "web:tingo-fuel-irix-console raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-console]

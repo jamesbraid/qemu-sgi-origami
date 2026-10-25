@@ -217,7 +217,7 @@ layer:
         netboot_adapter: ioc3-ethernet
         default_topology: four-node-module
         supported_guests: [irix]
-        install_media: [disk-image]
+        install_media: [disk-image, netboot]
         provenance: derived
         sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", qemu:docs/specs/sgi-sn.rst#sgi-sn-firmware-supply, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict
