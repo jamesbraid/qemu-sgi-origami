@@ -972,11 +972,10 @@
           "required": [
             "console", "prom_dialogue", "disk_bus", "netboot_adapter",
             "default_cpu_model", "default_topology", "supported_guests",
-            "install_media",
-            "provenance", "sources"
+            "install_media"
           ],
           "additionalProperties": false,
-          "description": "Launch metadata emitted into the compiled catalogue: console dialogue, supported guests and accepted launch options.",
+          "description": "Launch metadata emitted into the compiled catalogue: console dialogue, supported guests and accepted launch options. These are harness choices, not hardware claims, so provenance and sources are optional here; a value that states a hardware fact may cite one.",
           "properties": {
             "firmware_bytes": { "type": "integer", "minimum": 1 },
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
