@@ -574,7 +574,7 @@ static void test_device_replaces_default(void)
 
 /*
  * -vga none skips the default on every topology, whatever the catalogue's
- * headless flag tells a launcher.
+ * headless flag tells a launcher; -nographic does not.
  */
 static void test_vga_none(void)
 {
@@ -599,6 +599,14 @@ static void test_vga_none(void)
         g_autofree char *type = qom_type(qts, "/machine/module0/widget-11");
 
         g_assert_null(type);
+        qtest_quit(qts);
+    }
+    /* -nographic keeps the default pipe: it changes consoles, not -vga. */
+    {
+        QTestState *qts = start(launch_for("octane2"), "-nographic");
+        g_autofree char *type = qom_type(qts, "/machine/module0/widget-11");
+
+        g_assert_cmpstr(type, ==, "sgi-odyssey");
         qtest_quit(qts);
     }
     /* A pipe -device beside -vga none is still a pipe. */
