@@ -97,3 +97,16 @@ transfer-upload-aliases /mips64/sgi/crime/render/transfer/upload/aliases
 transfer-download-aliases /mips64/sgi/crime/render/transfer/download/aliases
 transfer-upload-ram-views /mips64/sgi/crime/render/transfer/upload/ram-views
 transfer-download-ram-views /mips64/sgi/crime/render/transfer/download/ram-views
+ordinary-pattern-start /mips64/sgi/crime/render/ordinary/pattern-start
+ordinary-phase /mips64/sgi/crime/render/ordinary/phase
+ordinary-geometry /mips64/sgi/crime/render/ordinary/geometry
+ordinary-origins /mips64/sgi/crime/render/ordinary/origins
+ordinary-logic /mips64/sgi/crime/render/ordinary/logic
+ordinary-unions /mips64/sgi/crime/render/ordinary/unions
+ordinary-faults /mips64/sgi/crime/render/ordinary/faults
+ordinary-suppression /mips64/sgi/crime/render/ordinary/suppression
+ordinary-start-forms /mips64/sgi/crime/render/ordinary/start-forms
+ordinary-lifecycle /mips64/sgi/crime/render/ordinary/lifecycle
+ordinary-copies /mips64/sgi/crime/render/ordinary/copies
+ordinary-copy-faults /mips64/sgi/crime/render/ordinary/copy-faults
+ordinary-copy-banks /mips64/sgi/crime/render/ordinary/copy-banks

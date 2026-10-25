@@ -697,11 +697,16 @@ typedef struct CrimeRenderGeometry {
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
+    bool terminal_span;
 
     g->opcode = primitive >> 24;
     g->x0 = p[0x70 / 4] >> 16;
     g->y0 = p[0x70 / 4] & 0xffff;
-    if (g->x0 >= 2048 || g->y0 >= 2048) {
+    g->x1 = p[0x74 / 4] >> 16;
+    g->y1 = p[0x74 / 4] & 0xffff;
+    terminal_span = g->opcode == 1 && (primitive & 0x40000) &&
+                    g->y0 == g->y1 && g->x0 <= g->x1 && g->x1 == 2048;
+    if ((g->x0 >= 2048 && !terminal_span) || g->y0 >= 2048) {
         return false;
     }
     if (g->opcode <= 1) {
@@ -715,9 +720,7 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
     } else if ((primitive & ~0x30000U) != 0x3000000) {
         return false;
     }
-    g->x1 = p[0x74 / 4] >> 16;
-    g->y1 = p[0x74 / 4] & 0xffff;
-    if (g->x1 >= 2048 || g->y1 >= 2048) {
+    if ((g->x1 >= 2048 && !terminal_span) || g->y1 >= 2048) {
         return false;
     }
     if (g->opcode == 1) {
@@ -774,7 +777,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     unsigned source_bytes, source_stride, screen_count = 0;
     unsigned count = 0, suppressed = 0, operation;
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
-    int sx, sy;
+    int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
@@ -791,10 +794,13 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     draw = p[0x18 / 4];
     clip = p[0x10 / 4];
     copy = draw & 0x200000;
-    if ((draw & ~0x3e02f8U) || p[0x50 / 4] || p[0x58 / 4] ||
+    if ((draw & ~0x3e02f8U) || p[0x50 / 4] ||
+        (copy ? p[0x58 / 4] != 0 : (p[0x58 / 4] & 0x80008000U)) ||
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
     }
+    destination_x = p[0x58 / 4] >> 16;
+    destination_y = p[0x58 / 4] & 0xffff;
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
     if (copy && (geometry.opcode != 3 || stipple)) {
@@ -827,8 +833,6 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             return crime_transfer_fail(offset, "unsupported indexed transfer");
         }
     } else if (destination_bank >= 4 || (copy && source_bank >= 4) ||
-               (stride != bytes &&
-                (geometry.opcode != 3 || (draw & ~0x1002f8U))) ||
                (copy && (source_bytes != bytes || source_stride != stride ||
                          p[0xa8 / 4] != 1 || p[0xac / 4] != 1))) {
         return crime_transfer_fail(offset, "unsupported rectangle layout");
@@ -856,8 +860,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
     }
     if (screen_count > 1 &&
-        ((clip & 31) != (clip >> 5) || geometry.opcode != 3 ||
-         copy || stipple)) {
+        ((clip & 31) != (clip >> 5) || transfer)) {
         return crime_transfer_fail(offset, "unsupported screen mask union");
     }
     scissor = crime_render_clip(p[0x48 / 4]);
@@ -913,7 +916,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 repeat++;
             } else {
                 repeat = 0;
-                bit = bit == last ? first : bit + 1;
+                bit = bit == last ? 0 : bit + 1;
             }
         }
         if (!foreground) {
@@ -934,10 +937,12 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             }
         }
         for (unsigned row = 0; row < stripe_y; row++) {
-            int y = cy + (int)row;
+            int local_y = cy + (int)row;
+            int y = local_y + destination_y;
 
             for (unsigned col = 0; col < stripe_x; col++) {
-                int x = cx + (int)col;
+                int local_x = cx + (int)col;
+                int x = local_x + destination_x;
                 uint32_t mask = plane;
                 CrimeRenderPixel *pixel;
                 CrimeRenderTranslation translation;
@@ -949,7 +954,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 }
                 if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
                     ((draw & 0x100000) &&
-                     !crime_render_inside(&scissor, x, y)) ||
+                     !crime_render_inside(&scissor, local_x, local_y)) ||
                     !screen_pass) {
                     continue;
                 }

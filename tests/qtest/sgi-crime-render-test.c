@@ -1789,6 +1789,9 @@ typedef struct Shape {
     uint64_t screen, scissor;
     const uint16_t *entries;
     unsigned *suppressed;
+    bool indexed;
+    unsigned origin_x, origin_y;
+    const uint64_t *screens;
 } Shape;
 
 static Shape shape_default(void)
@@ -1812,34 +1815,40 @@ static bool inside_bounds(uint64_t box, int x, int y)
 static void reference_fragment(const Shape *c, uint32_t *pixels,
                                int x, int y, uint32_t source)
 {
-    unsigned bits = c->bytes * 8;
+    unsigned bits = c->indexed ? 8 : c->bytes * 8;
+    unsigned first_byte = c->indexed ? 3 : 0;
     uint32_t mask = UINT32_MAX >> (32 - bits);
     uint32_t old, result, plane;
     unsigned index;
+    bool screen_pass = !c->clip;
 
+    if ((c->draw & (1U << 20)) && !inside_bounds(c->scissor, x, y)) {
+        return;
+    }
+    x += c->origin_x;
+    y += c->origin_y;
     if (x < 0 || y < 0 || x >= 2048 || y >= 2048 ||
         x < c->x || y < c->y || x >= c->x + c->width ||
         y >= c->y + c->height) {
         return;
     }
-    if ((c->draw & (1U << 20)) && !inside_bounds(c->scissor, x, y)) {
-        return;
-    }
-    if (c->clip) {
-        for (unsigned n = 0; n < 5; n++) {
-            if ((c->clip & (1U << (5 + n))) &&
-                inside_bounds(c->screen, x, y) !=
-                !!(c->clip & (1U << n))) {
-                return;
-            }
+    for (unsigned n = 0; n < 5; n++) {
+        if (c->clip & (1U << (5 + n))) {
+            uint64_t box = c->screens ? c->screens[n] : c->screen;
+
+            screen_pass |= inside_bounds(box, x, y) ==
+                           !!(c->clip & (1U << n));
         }
+    }
+    if (!screen_pass) {
+        return;
     }
     if (c->entries) {
         uint32_t enabled = 0;
         uint32_t effective = c->draw & 0x80 ? c->plane & mask : mask;
         unsigned tile_index = (y / 128) * 16 + (x * c->bytes) / 512;
 
-        for (unsigned b = 0; b < c->bytes; b++) {
+        for (unsigned b = first_byte; b < c->bytes; b++) {
             unsigned lane = 3 - ((x * c->bytes + b) & 3);
 
             if (c->draw & (1U << (3 + lane))) {
@@ -1858,8 +1867,11 @@ static void reference_fragment(const Shape *c, uint32_t *pixels,
     old = pixels[index];
     result = c->draw & 0x200 ? rop_result(c->logic, source, old, bits) : source;
     plane = c->draw & 0x80 ? c->plane & mask : mask;
-    result = ((old & ~plane) | (result & plane)) & mask;
-    for (unsigned b = 0; b < c->bytes; b++) {
+    result = (old & ~plane) | (result & plane);
+    if (!c->indexed) {
+        result &= mask;
+    }
+    for (unsigned b = first_byte; b < c->bytes; b++) {
         unsigned lane = 3 - ((x * c->bytes + b) & 3);
         uint32_t byte = 0xffU << ((c->bytes - 1 - b) * 8);
 
@@ -1884,7 +1896,7 @@ static bool reference_color(const Shape *c, unsigned sample, uint32_t *color)
         unsigned repeat = (c->stipple_mode >> 8) & 255;
         unsigned period = (c->stipple_mode & 255) + 1;
         unsigned rank = (sample + repeat) / period;
-        unsigned position = first + rank % (last - first + 1);
+        unsigned position = (first + rank) % (last + 1);
 
         bit = !!(c->pattern & (1U << (31 - position)));
     }
@@ -1993,7 +2005,8 @@ static void shape_stage(QTestState *s, const Shape *c)
 {
     unsigned depth = c->bytes == 4 ? 2 : c->bytes == 2 ? 1 : 0;
 
-    setup(s, modes[depth] | (c->bank << 10), false);
+    setup(s, (c->indexed ? 0x200 : modes[depth]) | (c->bank << 10), false);
+    qtest_writel(s, DE + 0x58, xy(c->origin_x, c->origin_y));
     qtest_writel(s, DE, UINT32_MAX);
     qtest_writel(s, DE + 0xa0, UINT32_MAX);
     qtest_writel(s, DE + 0xa8, UINT32_MAX);
@@ -2012,7 +2025,8 @@ static void shape_stage(QTestState *s, const Shape *c)
     qtest_writel(s, DE + 0x10, c->clip);
     qtest_writeq(s, DE + 0x48, c->scissor);
     for (unsigned n = 0; n < 5; n++) {
-        qtest_writeq(s, DE + 0x20 + n * 8, c->screen);
+        qtest_writeq(s, DE + 0x20 + n * 8,
+                     c->screens ? c->screens[n] : c->screen);
     }
 }
 
@@ -2699,7 +2713,7 @@ static void test_stipple_start_forms(void)
             memtx_write(q, DE + reg->offset, old, reg->width);
             qtest_writel(q, MTE, 0x12345678);
             if (fail) {
-                qtest_writel(q, DE + other_window, 1);
+                qtest_writel(q, DE + other_window, 0x80000000);
                 assert_failure(q, DE + 0x800 + reg->offset, value, reg->width);
                 expected = g_new(uint32_t, staged.width * staged.height);
                 for (unsigned i = 0; i < staged.width * staged.height; i++) {
@@ -4337,10 +4351,10 @@ static void test_indexed_word_failure(void)
         } else {
             switch (fault) {
             case 7:
-                c.p[0x60 / 4] = 0;
+                c.p[0x60 / 4] = 0x00080000;
                 break;
             case 8:
-                c.p[0x60 / 4] = 0x01000000;
+                c.p[0x60 / 4] = 0x02000000;
                 break;
             case 9:
                 c.p[0x18 / 4] |= 1U << 18;
@@ -4349,10 +4363,10 @@ static void test_indexed_word_failure(void)
                 c.p[0x18 / 4] |= 1U << 21;
                 break;
             case 11:
-                c.p[0x18 / 4] |= 1U << 17;
+                c.p[0x18 / 4] |= 1U << 16;
                 break;
             case 12:
-                c.p[0x18 / 4] |= 1U << 19;
+                c.p[0x18 / 4] |= 1U << 10;
                 break;
             case 13:
                 c.p[0x1b0 / 4] = 0x100;
@@ -4361,7 +4375,7 @@ static void test_indexed_word_failure(void)
                 c.p[0x50 / 4] = 1;
                 break;
             case 15:
-                c.p[0x58 / 4] = 1;
+                c.p[0x58 / 4] = 0x80000000;
                 break;
             case 16:
                 c.p[0x60 / 4] |= 1;
@@ -4426,7 +4440,7 @@ static void test_indexed_word_failure(void)
         uint64_t value = offset == 0x1f0 ? 0 : c.p[offset / 4];
 
         qtest_system_reset(s);
-        c.p[(offset == 0x58 ? 0x50 : 0x58) / 4] = 1;
+        c.p[(offset == 0x58 ? 0x50 : 0x58) / 4] = 0x80000000;
         indexed_prepare(s, &c);
         indexed_fault_seed(s);
         if (n > ARRAY_SIZE(registers)) {
@@ -4576,10 +4590,10 @@ static void test_clip_unions_packed(void)
             }
         }
     }
-    /* Multiple masks remain refused for every previously admitted source. */
+    /* Mixed masks remain refused for every ordinary primitive and copy. */
     for (unsigned kind = 0; kind < 4; kind++) {
         setup(s, 0, kind == 0);
-        qtest_writel(s, DE + 0x10, 0x63);
+        qtest_writel(s, DE + 0x10, 0x61);
         qtest_writeq(s, DE + 0x20, bounds(0, 0, 2, 2));
         qtest_writeq(s, DE + 0x28, bounds(1, 0, 3, 2));
         qtest_writel(s, DE + 0x70, 0);
@@ -5382,7 +5396,7 @@ static void test_transfer_semantics(gconstpointer data)
             break;
         case 29:
             c.p[download ? destination : source] =
-                (c.bank << 10) | 0x200;
+                (c.bank << 10) | (c.storage == 4 ? 0 : 0x200);
             break;
         case 30:
             c.p[download ? 0xb0 / 4 : 0xa0 / 4] = 0xfffffffe;
@@ -5850,6 +5864,863 @@ static void test_transfer_migration(gconstpointer data)
     g_rmdir(dir);
 }
 
+
+static Shape ordinary_shape(unsigned bank)
+{
+    Shape c = shape_default();
+
+    c.indexed = true;
+    c.bytes = 4;
+    c.bank = bank;
+    c.old = 0xa1b2c35a;
+    c.foreground = 0x12345607;
+    c.background = 0x9876541a;
+    c.draw = 0xa0208;
+    c.logic = 3;
+    c.primitive = 0x01040020;
+    c.stipple_mode = 0x011f0000;
+    c.pattern = 0x55555555;
+    c.x = 96;
+    c.y = 96;
+    c.width = 24;
+    c.height = 12;
+    c.x0 = 101;
+    c.y0 = c.y1 = 100;
+    c.x1 = 113;
+    return c;
+}
+
+static void test_ordinary_pattern_start(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned opaque = 0; opaque < 2; opaque++) {
+            Shape c = ordinary_shape(bank);
+
+            c.draw = 0x80208 | (opaque << 17);
+            map_region(s, bank, 4, 96, 96, 119, 107);
+            shape_memory(s, &c, NULL);
+            shape_stage(s, &c);
+            qtest_writel(s, DE + 0xc4, 0xaaaaaaaa);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8c4, c.pattern), ==,
+                            MEMTX_OK);
+            for (unsigned y = 96; y < 108; y++) {
+                for (unsigned x = 96; x < 120; x++) {
+                    uint32_t expected = c.old;
+
+                    if (y == 100 && x >= 101 && x < 113) {
+                        if ((x - 101) % 2 == 0) {
+                            expected = 0xa1b2c307;
+                        } else if (opaque) {
+                            expected = 0xa1b2c31a;
+                        }
+                    }
+                    g_assert_cmphex(qtest_readl(s,
+                        pixel_address(bank, x, y, 4)), ==, expected);
+                }
+            }
+            g_assert_cmphex(qtest_readl(s, DE + 0xc0), ==, c.stipple_mode);
+            g_assert_cmphex(qtest_readl(s, DE + 0xc4), ==, c.pattern);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_ordinary_phase(void)
+{
+    QTestState *s = start_indexed_state();
+    const unsigned repeats[][2] = { {0, 0}, {1, 2}, {2, 2}, {254, 255} };
+
+    for (unsigned format = 0; format < 4; format++) {
+        for (unsigned kind = 0; kind < 2; kind++) {
+            for (unsigned r = 0; r < ARRAY_SIZE(repeats); r++) {
+                Shape c = ordinary_shape(format % 3);
+                g_autofree uint32_t *expected = NULL;
+
+                c.indexed = format == 3;
+                c.bytes = format == 3 ? 4 : 1U << format;
+                c.primitive = kind ? 0x03020000 : 0x01040040;
+                c.draw = kind ? 0x602f8 : 0xa02f8;
+                c.width = 64;
+                c.x = c.y = 0;
+                c.height = 8;
+                c.x0 = 0;
+                c.x1 = 62;
+                c.y0 = c.y1 = 3;
+                c.stipple_mode = 0x02050000 | (repeats[r][0] << 8) |
+                                  repeats[r][1];
+                c.pattern = 0xa4000000;
+                shape_run(s, &c);
+                expected = shape_reference(&c);
+                reference_shape(&c, expected);
+                qtest_writel(s, DE + 0x9f0, 0);
+                shape_memory(s, &c, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_ordinary_geometry(void)
+{
+    QTestState *s = start_indexed_state();
+    const unsigned widths[] = {0, 1, 31, 32, 33, 64, 65, 127};
+    const int endpoints[][2] = {
+        {7, 3}, {3, 7}, {-3, 7}, {-7, 3}, {-7, -3}, {-3, -7},
+        {3, -7}, {7, -3}, {7, 0}, {0, -7}, {0, 0},
+    };
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned n = 0; n < ARRAY_SIZE(endpoints); n++) {
+            for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+                Shape c = ordinary_shape(bank);
+
+                c.x = c.y = 120;
+                c.width = c.height = 20;
+                c.x0 = c.y0 = 129;
+                c.x1 = c.x0 + endpoints[n][0];
+                c.y1 = c.y0 + endpoints[n][1];
+                c.primitive = 0x01000000 | widths[w] |
+                              ((w & 1) << 18);
+                c.draw = 0x208;
+                c.logic = 6;
+                shape_run(s, &c);
+                c.primitive = 0x00071234;
+                c.x1 = c.y1 = 0xffff;
+                c.stipple_mode = UINT32_MAX;
+                c.draw |= 0xe0000;
+                shape_run(s, &c);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_ordinary_origins(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned format = 0; format < 4; format++) {
+        for (unsigned kind = 0; kind < 4; kind++) {
+            Shape c = ordinary_shape(format % 3);
+            uint64_t screens[5] = { bounds(126, 126, 131, 130), 0, 0, 0, 0 };
+
+            c.indexed = format == 3;
+            c.bytes = format == 3 ? 4 : 1U << format;
+            c.x = c.y = 120;
+            c.width = c.height = 20;
+            c.origin_x = 127;
+            c.origin_y = 128;
+            c.x0 = c.y0 = 0;
+            c.x1 = 5;
+            c.y1 = 0;
+            c.primitive = kind == 0 ? 0 : kind == 1 ? 0x010000a0 :
+                          kind == 2 ? 0x01040020 : 0x03020000;
+            c.draw = 0x1002f8;
+            c.scissor = bounds(0, 0, 4, 2);
+            c.clip = 0x21;
+            c.screens = screens;
+            shape_run(s, &c);
+            /* A negative local width fragment is visible after translation. */
+            c.draw = 0x2f8;
+            c.clip = 0;
+            shape_run(s, &c);
+            c.origin_x = c.origin_y = 32767;
+            shape_run(s, &c);
+            c.origin_x = 2047;
+            c.origin_y = 2047;
+            c.x = c.y = 2040;
+            c.width = c.height = 8;
+            shape_run(s, &c);
+        }
+    }
+    /* Only the omitted last sample may use the right viewport boundary. */
+    for (unsigned first = 2046; first <= 2048; first++) {
+        Shape c = ordinary_shape(0);
+
+        c.x = 2044;
+        c.y = 98;
+        c.width = 4;
+        c.height = 4;
+        c.x0 = first;
+        c.x1 = 2048;
+        c.primitive = 0x01040020;
+        c.draw = 0x208;
+        shape_run(s, &c);
+    }
+    qtest_quit(s);
+}
+
+
+static void test_ordinary_logic(void)
+{
+    QTestState *s = start_indexed_state();
+    const uint32_t masks[] = {0, 255, 0xa5, 0x0f, 0x1234565a};
+
+    for (unsigned kind = 0; kind < 3; kind++) {
+        for (unsigned op = 0; op < 16; op++) {
+            for (unsigned m = 0; m < ARRAY_SIZE(masks); m++) {
+                Shape c = ordinary_shape(op % 3);
+
+                c.primitive = kind == 0 ? 0 : kind == 1 ? 0x01000040 :
+                              0x03020000;
+                c.y1 = c.y0 + (kind == 2 ? 3 : 0);
+                c.draw |= 0x80;
+                c.logic = op;
+                c.plane = masks[m];
+                shape_run(s, &c);
+            }
+        }
+        for (unsigned bit = 0; bit <= 8; bit++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                Shape c = ordinary_shape(bit % 3);
+
+                c.primitive = kind == 0 ? 0 : kind == 1 ? 0x01000040 :
+                              0x03020000;
+                c.y1 = c.y0 + (kind == 2 ? 3 : 0);
+                c.draw = 0x280 | lanes << 3;
+                c.logic = 15;
+                c.plane = bit == 8 ? 0 : 1U << bit;
+                shape_run(s, &c);
+                if (bit == 8) {
+                    c.draw &= ~0x280U;
+                    c.logic = UINT32_MAX;
+                    shape_run(s, &c);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_ordinary_unions(void)
+{
+    QTestState *s = start_indexed_state();
+
+    for (unsigned format = 0; format < 4; format++) {
+        for (unsigned kind = 0; kind < 5; kind++) {
+            for (unsigned selected = 1; selected < 32; selected++) {
+                Shape c = ordinary_shape(format % 3);
+                uint64_t screens[5];
+
+                c.indexed = format == 3;
+                c.bytes = format == 3 ? 4 : 1U << format;
+                c.x = c.y = 0;
+                c.width = 12;
+                c.height = 8;
+                c.x0 = c.y0 = 2;
+                c.x1 = 8;
+                c.y1 = kind < 3 ? 2 : 4;
+                c.origin_x = 1;
+                c.origin_y = 2;
+                c.primitive = kind == 0 ? 0 : kind < 3 ? 0x01000040 :
+                              0x03020000;
+                c.draw = 0x1002f8 | (kind == 2 ? 0xa0000 :
+                                       kind == 3 ? 0x60000 : 0);
+                c.scissor = bounds(1, 1, 8, 5);
+                c.logic = 6;
+                c.clip = selected | selected << 5;
+                c.screens = screens;
+                c.stipple_mode = 0x02050000;
+                for (unsigned n = 0; n < 5; n++) {
+                    screens[n] = bounds(2 + n, 2 + n % 2, 5 + n, 6);
+                }
+                shape_run(s, &c);
+                if (!(selected & (selected - 1))) {
+                    c.clip &= ~31U;
+                    shape_run(s, &c);
+                }
+                screens[0] = screens[1] = screens[2] = screens[3] =
+                    screens[4] = bounds(1, 1, 1, 1);
+                shape_run(s, &c);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static uint32_t *ordinary_initial(const Shape *c)
+{
+    uint32_t *pixels = g_new(uint32_t, c->width * c->height);
+    uint32_t mask = UINT32_MAX >> (32 - c->bytes * 8);
+
+    for (unsigned i = 0; i < c->width * c->height; i++) {
+        pixels[i] = c->old & mask;
+    }
+    return pixels;
+}
+
+static void ordinary_prepare(QTestState *s, const Shape *c)
+{
+    map_region(s, c->bank, c->bytes, c->x, c->y,
+               c->x + c->width - 1, c->y + c->height - 1);
+    shape_memory(s, c, NULL);
+    shape_stage(s, c);
+}
+
+static void ordinary_failure(QTestState *s, const Shape *c, const char *path,
+                             uint64_t address, uint64_t value, unsigned width)
+{
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    g_autofree uint32_t *pixels = ordinary_initial(c);
+    uint64_t cpu_address = qtest_readq(s, CRIME + 0x40);
+    uint64_t cpu_status = qtest_readq(s, CRIME + 0x48);
+    unsigned outputs = 0;
+
+    for (unsigned i = 0; i < 5; i++) {
+        outputs |= qtest_get_irq(s, i) << i;
+    }
+    save_paired_renderer(s, path, before);
+    assert_failure(s, address, value, width);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x40), ==, cpu_address);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x48), ==, cpu_status);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmpint(qtest_get_irq(s, i), ==, !!(outputs & (1U << i)));
+    }
+    shape_memory(s, c, pixels);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+}
+
+static void test_ordinary_faults(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-ordinary-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+        "-device sgi-crime-test-fixture,id=inject,"
+        "crime=/machine/peripheral/crime");
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned fault = 0; fault < 25; fault++) {
+        Shape c = ordinary_shape(fault % 3);
+
+        ordinary_prepare(s, &c);
+        switch (fault) {
+        case 0:
+            qtest_writel(s, DE + 0x58, 0x80000000);
+            break;
+        case 1:
+            qtest_writel(s, DE + 0x58, 0x8000);
+            break;
+        case 2:
+            qtest_writel(s, DE + 0x50, 1);
+            break;
+        case 3:
+            qtest_writel(s, DE + 0x60, c.primitive | 1U << 19);
+            break;
+        case 4:
+            qtest_writel(s, DE + 0x10, 0x800);
+            break;
+        case 5:
+            qtest_writel(s, DE + 0x10, 0xc00);
+            break;
+        case 6:
+            qtest_writel(s, DE + 0x10, 0x61);
+            break;
+        case 7:
+            qtest_writel(s, DE + 0x10, 0x60);
+            break;
+        case 8:
+            qtest_writel(s, DE + 0x10, 1);
+            break;
+        case 9:
+            qtest_writel(s, DE + 0xc0, 0x08070000);
+            break;
+        case 10:
+            qtest_writel(s, DE + 0xc0, 0x02050100);
+            break;
+        case 11:
+            qtest_writel(s, DE + 0xc0, 0x00200000);
+            break;
+        case 12:
+            qtest_writel(s, DE + 0x74, xy(2048, 101));
+            break;
+        case 13:
+            qtest_writel(s, DE + 0x60, 0x01000020);
+            qtest_writel(s, DE + 0x74, xy(2048, 100));
+            break;
+        case 14:
+            qtest_writel(s, DE + 0x70, xy(100, 2046));
+            qtest_writel(s, DE + 0x74, xy(100, 2048));
+            break;
+        case 15:
+            qtest_writel(s, DE + 0x70, xy(2048, 100));
+            qtest_writel(s, DE + 0x74, xy(2046, 100));
+            break;
+        case 16:
+            qtest_writel(s, DE + 8, (c.bank << 10) | 0x100);
+            break;
+        case 17:
+            qtest_writel(s, DE + 8, (c.bank << 10) | 0x210);
+            break;
+        case 18:
+            qtest_writel(s, DE + 0x18, c.draw | 1U << 21);
+            break;
+        case 19:
+            qtest_writel(s, DE + 0x10, 0x21);
+            qtest_writeq(s, DE + 0x20, bounds(4, 3, 2, 1));
+            break;
+        case 20:
+            qtest_writel(s, DE + 0x18, c.draw | 1U << 20);
+            qtest_writeq(s, DE + 0x48, bounds(4, 3, 2, 1));
+            break;
+        default:
+            /* A late valid entry must still pass the physical RAM decoder. */
+            c.x = c.y = 124;
+            c.width = c.height = 12;
+            c.x0 = 126;
+            c.x1 = 131;
+            c.y0 = c.y1 = 128;
+            ordinary_prepare(s, &c);
+            tile(s, c.bank, 17, fault == 21 ? 0x400 :
+                 fault == 22 ? 0x1000 : fault == 23 ? 0x1fc0 : 0x7fff);
+            break;
+        }
+        indexed_fault_seed(s);
+        ordinary_failure(s, &c, path, DE + 0x8d0, 0xdeadbeef, 4);
+        if (fault < 21) {
+            qtest_writel(s, DE + 0x18, qtest_readl(s, DE + 0x18) | 0x80);
+            qtest_writel(s, DE + 0x1b8, 0);
+            ordinary_failure(s, &c, path, DE + 0x8d0, 0xdeadbeef, 4);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ordinary_suppression(void)
+{
+    ValidityLog v = validity_start(false, "");
+
+    for (unsigned kind = 0; kind < 3; kind++) {
+        for (unsigned hidden = 0; hidden < 5; hidden++) {
+            Shape c = ordinary_shape(kind);
+            uint16_t entries[256];
+
+            validity_entries(entries, kind);
+            c.x = c.y = 124;
+            c.width = 24;
+            c.height = 12;
+            c.x0 = 126;
+            c.x1 = 145;
+            c.y0 = 128;
+            c.y1 = kind == 2 ? 130 : 128;
+            c.primitive = kind == 0 ? 0 : kind == 1 ? 0x01040040 :
+                          0x03020000;
+            c.draw = 0xa0208 | (kind == 2 ? 1U << 18 : 0);
+            c.stipple_mode = 0x02050000;
+            c.pattern = 0xa4000000;
+            /* Invalid entries never turn their lower payload into RAM. */
+            entries[16] = 0x7fff;
+            entries[17] = 0x8000 | page_for(kind, 17);
+            if (hidden == 1) {
+                c.draw |= 1U << 20;
+                c.scissor = bounds(128, 128, 144, 130);
+            } else if (hidden == 2) {
+                c.draw &= ~0x20000U;
+                c.pattern = 0;
+            } else if (hidden == 3) {
+                c.draw |= 0x80;
+                c.plane = 0;
+            } else if (hidden == 4) {
+                c.draw &= ~8U;
+            }
+            validity_run(&v, &c, entries);
+        }
+    }
+    validity_finish(&v);
+}
+
+static void test_ordinary_start_forms(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-ordinary-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned n = 0; n < ARRAY_SIZE(registers) + 4; n++) {
+        Shape c = ordinary_shape(n % 3);
+        unsigned offset = n < ARRAY_SIZE(registers) ? registers[n].offset :
+            n == ARRAY_SIZE(registers) ? 0x1f0 :
+            paired_start_offsets[n - ARRAY_SIZE(registers) - 1];
+        unsigned width = n < ARRAY_SIZE(registers) ? registers[n].width :
+            offset == 0x1f0 ? 4 : 8;
+        bool pair = width == 8 && (offset == 0x70 || offset == 0xa8 ||
+                                   offset == 0xc0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+        g_autofree uint32_t *expected = NULL;
+
+        c.logic = 6;
+        c.origin_x = 3;
+        c.origin_y = 2;
+        c.draw |= 1U << 20;
+        c.scissor = bounds(101, 100, 111, 101);
+        c.clip = 0x63;
+        c.screen = bounds(104, 102, 116, 104);
+        ordinary_prepare(s, &c);
+        save_paired_renderer(s, path, before);
+        value = offset == 0x1f0 ? 0x13579bdf :
+            pair ? (before[192 + offset / 4] << 32) |
+                   before[192 + offset / 4 + 1] : before[192 + offset / 4];
+        if (offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + offset, ~value, width), ==,
+                            MEMTX_OK);
+        }
+        /* Neither member can publish while another consumed origin is bad. */
+        qtest_writel(s, DE + (offset == 0x50 ? 0x58 : 0x50), 0x80000000);
+        ordinary_failure(s, &c, path, DE + 0x800 + offset, value, width);
+        qtest_writel(s, DE + (offset == 0x50 ? 0x58 : 0x50),
+                     offset == 0x50 ? xy(c.origin_x, c.origin_y) : 0);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width), ==,
+                        MEMTX_OK);
+        expected = shape_reference(&c);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        qtest_writel(s, DE + 0x1f0, 0xfedcba98);
+        qtest_writel(s, DE + 0x1f8, 0);
+        assert_idle(s);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ordinary_lifecycle(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-ordinary-move-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *next = g_build_filename(dir, "next", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *uri = g_strdup_printf("exec:cat %s", quoted);
+    QTestState *from = start(), *to = start_options("-incoming defer");
+    QTestState *peer = start_indexed_state();
+    Shape c = ordinary_shape(2);
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    g_autofree uint32_t *expected = NULL;
+
+    c.origin_x = 3;
+    c.origin_y = 2;
+    c.clip = 0x63;
+    c.screen = bounds(104, 102, 116, 104);
+    c.draw |= 1U << 20;
+    c.scissor = bounds(102, 100, 111, 101);
+    c.logic = 6;
+    for (unsigned i = 0; i < 2; i++) {
+        QTestState *q = i ? peer : from;
+
+        ordinary_prepare(q, &c);
+        qtest_writel(q, DE + 0x58, 0x80000001);
+        qtest_writel(q, DE + 0xc0, UINT32_MAX);
+    }
+    save_renderer(from, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+    save_paired_renderer(to, next, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    expected = ordinary_initial(&c);
+    shape_memory(to, &c, expected);
+    for (unsigned i = 0; i < 2; i++) {
+        QTestState *q = i ? peer : to;
+
+        qtest_irq_intercept_out_named(q, "/machine/peripheral/crime", "cpu-ip");
+        ordinary_failure(q, &c, next, DE + 0x8d0, 0xdeadbeef, 4);
+        qtest_writel(q, DE + 0x58, xy(c.origin_x, c.origin_y));
+        ordinary_failure(q, &c, next, DE + 0x8d0, 0xdeadbeef, 4);
+        qtest_writel(q, DE + 0xc0, c.stipple_mode);
+        qtest_writel(q, DE + 0x9f0, 0);
+        reference_shape(&c, expected);
+        shape_memory(q, &c, expected);
+        /* Each peer starts with the same reference image. */
+        if (!i) {
+            g_clear_pointer(&expected, g_free);
+            expected = ordinary_initial(&c);
+        }
+    }
+    save_paired_renderer(peer, path, before);
+    save_paired_renderer(to, next, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    qtest_system_reset(to);
+    shape_memory(to, &c, expected);
+    save_paired_renderer(to, next, after);
+    for (unsigned i = 0; i < RENDER_WORDS; i++) {
+        g_assert_cmphex(after[i], ==, 0);
+    }
+    ordinary_prepare(to, &c);
+    qtest_writel(to, DE + 0x9f0, 0);
+    shape_memory(to, &c, expected);
+    qtest_quit(from);
+    qtest_quit(to);
+    qtest_quit(peer);
+    g_unlink(path);
+    g_unlink(next);
+    g_rmdir(dir);
+}
+
+
+static void test_ordinary_copies(void)
+{
+    const unsigned corners[][6] = {
+        {7, 0, 1, 0, 6, 0}, {0, 0, 6, 0, 1, 0},
+        {0, 7, 0, 1, 0, 6}, {0, 0, 0, 6, 0, 1},
+        {7, 7, 1, 1, 6, 6}, {1, 0, 7, 0, 0, 0},
+        {0, 1, 0, 7, 0, 0}, {1, 1, 7, 7, 0, 0},
+    };
+    QTestState *s = start_indexed_state();
+    g_autofree char *dir = g_dir_make_tmp("crime-copy-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned alias = 0; alias < 4; alias++) {
+        for (unsigned op = 0; op < 16; op++) {
+            for (unsigned m = 0; m < 3; m++) {
+                const unsigned *v = corners[op % ARRAY_SIZE(corners)];
+                unsigned bank = op % 3;
+                unsigned source_bank = alias ? (bank + 1) % 3 : bank;
+                uint32_t expected[8][8], source[8][8];
+                int dx = v[2] < v[0] ? -1 : 1;
+                int dy = v[3] < v[1] ? -1 : 1;
+                Shape c = ordinary_shape(bank);
+
+                c.x = c.y = 124;
+                c.width = c.height = 8;
+                c.x0 = 124 + v[0];
+                c.y0 = 124 + v[1];
+                c.x1 = 124 + v[2];
+                c.y1 = 124 + v[3];
+                c.primitive = 0x03000000 | (dx < 0 ? 1U << 16 : 0) |
+                              (dy > 0 ? 1U << 17 : 0);
+                c.draw = 0x200288;
+                c.logic = op;
+                c.plane = m == 0 ? 255 : m == 1 ? 0xa5 : 0;
+                c.clip = (op + 1) | (op + 1) << 5;
+                c.screen = bounds(124, 124, 132, 132);
+                c.draw |= 1U << 20;
+                c.scissor = bounds(124, 124, 131, 132);
+                ordinary_prepare(s, &c);
+                for (unsigned y = 0; y < 2; y++) {
+                    for (unsigned x = 0; x < 2; x++) {
+                        unsigned index = y * 16 + x;
+                        unsigned page = alias == 3 ?
+                            page_for(source_bank, index) :
+                            page_for(bank, index);
+
+                        tile(s, source_bank, index,
+                             page + (alias == 2 ? 0x4000 : 0));
+                    }
+                }
+                for (unsigned y = 0; y < 8; y++) {
+                    for (unsigned x = 0; x < 8; x++) {
+                        expected[y][x] = 0xa1b2c300 | (y * 8 + x + 1);
+                        source[y][x] = 0x98765400 |
+                                       ((y * 8 * 37 + x * 37 + 0x71) & 255);
+                        qtest_writel(s, pixel_address(bank,
+                            124 + x, 124 + y, 4), expected[y][x]);
+                        if (alias == 3) {
+                            qtest_writel(s, pixel_address(source_bank,
+                                124 + x, 124 + y, 4), source[y][x]);
+                        }
+                    }
+                }
+                for (unsigned y = 0; y <= abs((int)v[3] - v[1]); y++) {
+                    for (unsigned x = 0; x <= abs((int)v[2] - v[0]); x++) {
+                        unsigned px = v[0] + (int)x * dx;
+                        unsigned py = v[1] + (int)y * dy;
+                        unsigned sx = v[4] + (int)x * dx;
+                        unsigned sy = v[5] + (int)y * dy;
+                        uint32_t old = expected[py][px];
+                        uint32_t index = alias == 3 ? source[sy][sx] :
+                                                     expected[sy][sx];
+
+                        if (124 + px < 131) {
+                            uint32_t result = rop_result(op, index & 255,
+                                                        old & 255, 8);
+
+                            expected[py][px] = (old & ~c.plane) |
+                                              (result & c.plane);
+                        }
+                    }
+                }
+                qtest_writel(s, DE, (source_bank << 10) | 0x200);
+                qtest_writel(s, DE + 0xa8, 1);
+                qtest_writel(s, DE + 0xac, 1);
+                qtest_writel(s, DE + 0xa0, xy(124 + v[4], 124 + v[5]));
+                {
+                    unsigned n = ((alias * 16 + op) * 3 + m) %
+                                 (ARRAY_SIZE(registers) + 4);
+                    unsigned offset = n < ARRAY_SIZE(registers) ?
+                        registers[n].offset : n == ARRAY_SIZE(registers) ?
+                        0x1f0 :
+                        paired_start_offsets[n - ARRAY_SIZE(registers) - 1];
+                    unsigned width = n < ARRAY_SIZE(registers) ?
+                        registers[n].width : offset == 0x1f0 ? 4 : 8;
+                    bool pair = width == 8 &&
+                        (offset == 0x70 || offset == 0xa8 || offset == 0xc0);
+                    uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+
+                    save_paired_renderer(s, path, before);
+                    value = offset == 0x1f0 ? 0 : pair ?
+                        (before[192 + offset / 4] << 32) |
+                        before[192 + offset / 4 + 1] : before[192 + offset / 4];
+                    if (offset != 0x1f0) {
+                        g_assert_cmpint(memtx_write(s, DE + offset,
+                                                   ~value, width),
+                                        ==, MEMTX_OK);
+                    }
+                    g_assert_cmpint(memtx_write(s, DE + 0x800 + offset,
+                                               value, width), ==, MEMTX_OK);
+                    save_paired_renderer(s, path, after);
+                    g_assert_cmpmem(before, sizeof(before),
+                                    after, sizeof(after));
+                }
+                for (unsigned y = 0; y < 8; y++) {
+                    for (unsigned x = 0; x < 8; x++) {
+                        g_assert_cmphex(qtest_readl(s,
+                            pixel_address(bank, 124 + x, 124 + y, 4)), ==,
+                            expected[y][x]);
+                        if (alias == 3) {
+                            g_assert_cmphex(qtest_readl(s,
+                                pixel_address(source_bank,
+                                    124 + x, 124 + y, 4)), ==, source[y][x]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ordinary_copy_faults(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-copy-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned fault = 0; fault < 12; fault++) {
+        Shape c = ordinary_shape(0);
+
+        c.x = c.y = c.x0 = c.y0 = 0;
+        c.width = 130;
+        c.height = 2;
+        c.x1 = 128;
+        c.y1 = 0;
+        c.primitive = 0x03020000;
+        c.draw = 0x200288;
+        c.logic = fault & 1 ? 5 : 0;
+        c.plane = 255;
+        ordinary_prepare(s, &c);
+        map_region(s, 1, 4, 0, 0, 129, 1);
+        qtest_writel(s, DE, 0x600);
+        qtest_writel(s, DE + 0xa0, 0);
+        qtest_writel(s, DE + 0xa8, 1);
+        qtest_writel(s, DE + 0xac, 1);
+        if (fault < 4) {
+            unsigned bank = fault < 2 ? 0 : 1;
+            uint64_t address = RE + 0x1000 + bank * 512;
+
+            qtest_writeq(s, address,
+                qtest_readq(s, address) & ~(UINT64_C(0x8000) << 32));
+        } else if (fault < 6) {
+            tile(s, 0, 1, 0x4000 + page_for(0, 0));
+        } else if (fault < 8) {
+            qtest_writel(s, DE + (fault & 1 ? 0x50 : 0x58), 1);
+        } else if (fault < 10) {
+            qtest_writel(s, DE, fault & 1 ? 0x400 : 0x628);
+        } else {
+            qtest_writel(s, DE + (fault & 1 ? 0xa8 : 0xac), 2);
+        }
+        /* Invalid mappings can be hidden, but semantic failures cannot. */
+        if (fault < 6) {
+            qtest_writel(s, DE + 0x1b8, 0);
+            g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+            qtest_writel(s, DE + 0x1b8, 255);
+        }
+        ordinary_failure(s, &c, path, DE + 0x8d0, 0xdeadbeef, 4);
+    }
+    /* Repeated source identities do not create duplicate destinations. */
+    {
+        Shape c = ordinary_shape(0);
+
+        c.x = c.y = c.x0 = c.y0 = 0;
+        c.width = 130;
+        c.height = 2;
+        c.x1 = 128;
+        c.y1 = 0;
+        c.primitive = 0x03020000;
+        c.draw = 0x200208;
+        c.logic = 3;
+        ordinary_prepare(s, &c);
+        map_region(s, 1, 4, 0, 0, 127, 0);
+        tile(s, 1, 1, 0x4000 + page_for(1, 0));
+        for (unsigned x = 0; x < 128; x++) {
+            qtest_writel(s, pixel_address(1, x, 0, 4), 0x12345600 | x);
+        }
+        qtest_writel(s, DE, 0x600);
+        qtest_writel(s, DE + 0xa0, 0);
+        qtest_writel(s, DE + 0xa8, 1);
+        qtest_writel(s, DE + 0xac, 1);
+        qtest_writel(s, DE + 0x9f0, 0);
+        for (unsigned x = 0; x <= 128; x++) {
+            g_assert_cmphex(qtest_readl(s, pixel_address(0, x, 0, 4)), ==,
+                            0xa1b2c300 | (x % 128));
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_ordinary_copy_banks(void)
+{
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | bank * 4);
+    }
+    for (unsigned bank = 1; bank < 8; bank++) {
+        unsigned page = (0x40000000ULL + bank * 0x08000000ULL) >> 16;
+        uint64_t first = ((uint64_t)(page - 1) << 16) + 65532;
+        uint64_t second = ((uint64_t)page << 16) + 65024;
+        uint64_t destination[2] = {pixel_address(1, 127, 128, 4),
+                                   pixel_address(1, 128, 128, 4)};
+
+        setup(s, 0x600, true);
+        qtest_writel(s, DE, 0x200);
+        qtest_writel(s, DE + 0x18, 0x200208);
+        qtest_writel(s, DE + 0x70, xy(127, 128));
+        qtest_writel(s, DE + 0x74, xy(128, 128));
+        qtest_writel(s, DE + 0xa0, xy(127, 127));
+        tile(s, 0, 0, page - 1);
+        tile(s, 0, 1, page);
+        map_region(s, 1, 4, 127, 128, 128, 128);
+        qtest_writel(s, first, 0x1234569b);
+        qtest_writel(s, second, 0x987654ac);
+        for (unsigned x = 0; x < 2; x++) {
+            qtest_writel(s, destination[x], 0xa1b2c35a);
+        }
+        for (unsigned fault = 0; fault < 2; fault++) {
+            qtest_writeq(s, CRIME + 0x208 + bank * 8,
+                         fault ? bank * 4 : 0x100);
+            assert_failure(s, DE + 0x8d0, 0xdeadbeef, 4);
+            qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | bank * 4);
+            for (unsigned x = 0; x < 2; x++) {
+                g_assert_cmphex(qtest_readl(s, destination[x]), ==, 0xa1b2c35a);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readl(s, destination[0]), ==, 0xa1b2c39b);
+        g_assert_cmphex(qtest_readl(s, destination[1]), ==, 0xa1b2c3ac);
+    }
+    qtest_quit(s);
+}
+
 /* Use the native Meson groups while retaining one TAP plan per process. */
 static GPtrArray *group_paths;
 
@@ -5909,6 +6780,32 @@ int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
+    add_case("sgi/crime/render/ordinary/copies",
+             test_ordinary_copies);
+    add_case("sgi/crime/render/ordinary/copy-faults",
+             test_ordinary_copy_faults);
+    add_case("sgi/crime/render/ordinary/copy-banks",
+             test_ordinary_copy_banks);
+
+    add_case("sgi/crime/render/ordinary/logic",
+             test_ordinary_logic);
+    add_case("sgi/crime/render/ordinary/unions",
+             test_ordinary_unions);
+    add_case("sgi/crime/render/ordinary/faults",
+             test_ordinary_faults);
+    add_case("sgi/crime/render/ordinary/suppression",
+             test_ordinary_suppression);
+    add_case("sgi/crime/render/ordinary/start-forms",
+             test_ordinary_start_forms);
+    add_case("sgi/crime/render/ordinary/lifecycle",
+             test_ordinary_lifecycle);
+
+    add_case("sgi/crime/render/ordinary/pattern-start",
+             test_ordinary_pattern_start);
+    add_case("sgi/crime/render/ordinary/phase", test_ordinary_phase);
+    add_case("sgi/crime/render/ordinary/geometry", test_ordinary_geometry);
+    add_case("sgi/crime/render/ordinary/origins", test_ordinary_origins);
+
     add_data_case("sgi/crime/render/transfer/upload/aliases",
                   GUINT_TO_POINTER(0), test_transfer_aliases);
     add_data_case("sgi/crime/render/transfer/upload/ram-views",
