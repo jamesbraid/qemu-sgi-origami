@@ -75,6 +75,23 @@ layer:
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib: [8192]
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-experimental
+          normal_selection:
+            cpus: 4
+            fitted_cpus: 4
+            memory_mib: 8192
+            clock_hz: 800000000
+            cache_mib: 8
+            mode_word: 0x009caf85
+          l1_irouter_compat: true
+          node_board:
+            processors: 4
+            name: IP53_4CPU
+            part: "030-2013-001"
+            revision: "-D"
         pic_profiles:
           pic: pic-rev3-bedrock-experimental
         synthetic_identities:

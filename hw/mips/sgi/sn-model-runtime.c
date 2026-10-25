@@ -48,13 +48,14 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         if (!node->has_option_intx_map) {
             continue;
         }
-        if (strcmp(t->name,
-                   "origin300-numalink-pci-expansion-experiment") ||
-            node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK ||
+        /*
+         * The catalogue generator admits a map only on the topology whose
+         * product layer authors one; here it must still fit the board.
+         */
+        if (node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK ||
             QAPI_LIST_LENGTH(node->option_intx_map) != 8) {
-            error_setg(errp, "compute option INTx map requires the selected "
-                       "Origin 300 experiment, a Bedrock board and "
-                       "eight head inputs");
+            error_setg(errp, "compute option INTx map requires a Bedrock "
+                       "board and eight head inputs");
             return false;
         }
         for (const uint8List *pin = node->option_intx_map; pin;
@@ -588,6 +589,9 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->has_processor_options = t->has_processor_options;
     view->processor_options = t->processor_options;
     view->graphics = t->graphics;
+    view->ip53_runtime = t->ip53_runtime;
+    view->has_machine_default = t->has_machine_default;
+    view->machine_default = t->machine_default;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;

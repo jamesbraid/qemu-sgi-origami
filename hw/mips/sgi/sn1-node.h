@@ -77,6 +77,7 @@ typedef struct SN1NodeState {
     uint32_t firmware_machine_type;
     uint32_t firmware_mode_word;
     uint32_t l1_type_code;
+    bool l1_irouter_compat;
     int32_t l1_revision[3];
     char *l1_mac_eeprom;
     uint8_t bedrock_revision;

@@ -100,7 +100,7 @@
                 "operator_firmware": { "type": "boolean" }
               } },
               "emulation": {
-                "required": ["machine_name", "pic_profiles"],
+                "required": ["machine_name", "pic_profiles", "ip53_runtime"],
                 "properties": {
                   "machine_name": { "enum": ["origin350", "onyx4-host", "onyx350", "tezro"] },
                   "pic_profiles": {
@@ -311,6 +311,48 @@
           "required": ["machine_name", "display_description", "profile", "lifecycle"],
           "additionalProperties": false,
           "properties": {
+            "ip53_runtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pic_profile", "l1_irouter_compat"],
+              "description": "How this IP53 topology runs as a registered runtime profile. The emulator and launchers read these fields instead of comparing topology names.",
+              "properties": {
+                "pic_profile": {
+                  "enum": ["pic-rev3-bedrock-experimental", "pic-rev3-bedrock-tezro-experimental"],
+                  "description": "The compatibility profile every PIC host selects once the IP53 runtime is authorized."
+                },
+                "normal_selection": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["cpus", "fitted_cpus", "memory_mib", "clock_hz", "cache_mib", "mode_word"],
+                  "description": "The one launch admitted without ip53-experimental=on.",
+                  "properties": {
+                    "cpus": { "type": "integer", "minimum": 1 },
+                    "fitted_cpus": { "type": "integer", "minimum": 1 },
+                    "memory_mib": { "type": "integer", "minimum": 1 },
+                    "clock_hz": { "type": "integer", "minimum": 1 },
+                    "cache_mib": { "type": "integer", "minimum": 1 },
+                    "mode_word": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+                  }
+                },
+                "l1_irouter_compat": { "type": "boolean" },
+                "node_board": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["processors", "name", "part", "revision"],
+                  "properties": {
+                    "processors": { "type": "integer", "minimum": 1 },
+                    "name": { "type": "string", "minLength": 1 },
+                    "part": { "type": "string", "minLength": 1 },
+                    "revision": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            },
+            "synthetic_router_diagnostics": {
+              "type": "boolean",
+              "description": "Whether this topology's SN1 Routers answer the model's synthetic diagnostics."
+            },
             "option_intx_maps": {
               "type": "object",
               "additionalProperties": {

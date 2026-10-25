@@ -30,6 +30,13 @@ const SGIModelTopology *sgi_model_find_topology(const char *name);
 const char *sgi_model_default_topology(const char *product);
 
 /*
+ * The topology @product's -M machine class describes itself and sizes its
+ * -smp and -m defaults from, whether or not the product also requires
+ * topology=; NULL when the catalogue names none.
+ */
+const SGIModelTopology *sgi_model_machine_topology(const char *product);
+
+/*
  * Refuse endpoints whose runtime construction is not implemented, before
  * population selection can drop or misclassify their records.
  */

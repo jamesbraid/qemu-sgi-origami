@@ -84,6 +84,18 @@ layer:
         emulator_constraints:
           accepted_bank_sizes_mib:
           - 4096
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-tezro-experimental
+          normal_selection:
+            cpus: 4
+            fitted_cpus: 4
+            memory_mib: 4096
+            clock_hz: 700000000
+            cache_mib: 4
+            mode_word: 0x009bad85
+          l1_irouter_compat: true
         pic_profiles:
           pic-xio-b: pic-rev3-bedrock-tezro-experimental
           pic-xio-f: pic-rev3-bedrock-tezro-experimental

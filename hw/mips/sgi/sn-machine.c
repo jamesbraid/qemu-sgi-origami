@@ -757,33 +757,28 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
  * the system board's component 1 area and the MAC text record. Each further
  * node takes the next address, so two chassis' IOC3s differ. An Origin 300
  * node also gets its node board's identity for its processor count, and a
- * Fuel its one system board's. A raw record supplied for an area still wins
- * inside the L1.
+ * Fuel its one system board's. An IP53 runtime profile that names a node
+ * board gives that board's identity to a node with its processor count. A
+ * raw record supplied for an area still wins inside the L1.
  */
 static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                         unsigned int node_index, Error **errp)
 {
-    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(s);
-    const char *topology = s->topology_name ? s->topology_name :
-                           smc->default_topology;
+    const SGIModelIp53NodeBoard *ip53_board;
     SGIModelIoBoardPreset preset;
     uint32_t processors;
-    bool origin350 = g_strcmp0(smc->product, "origin350") == 0 &&
-                     g_strcmp0(topology, "origin350") == 0;
-    bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0 &&
-                   g_strcmp0(topology, "onyx350-compat") == 0;
     g_autofree char *address = NULL;
 
     if (!s->view) {
         return true;
     }
+    ip53_board = s->view->ip53_runtime ? s->view->ip53_runtime->node_board :
+                 NULL;
     processors = sgi_machine_l1_node_processors(s, l1);
-    if (processors == 4 && (origin350 || onyx350)) {
-        qdev_prop_set_string(l1, "node-board-name", "IP53_4CPU");
-        qdev_prop_set_string(l1, "node-board-part",
-                             origin350 ? "030-1868-001" : "030-2013-001");
-        qdev_prop_set_string(l1, "node-board-revision",
-                             origin350 ? "-C" : "-D");
+    if (ip53_board && processors == ip53_board->processors) {
+        qdev_prop_set_string(l1, "node-board-name", ip53_board->name);
+        qdev_prop_set_string(l1, "node-board-part", ip53_board->part);
+        qdev_prop_set_string(l1, "node-board-revision", ip53_board->revision);
         return true;
     }
     if (!sgi_machine_node_io_preset(s->view, node_index, &preset)) {
@@ -1292,15 +1287,16 @@ static bool sgi_machine_preflight_io_descriptors(
     const SGIModelTopology *t, bool allow_ip53_fixture,
     bool allow_ip53_experiment, bool tezro, Error **errp);
 
+/*
+ * The profile a PIC host must select: the IP53 runtime profile's own once
+ * that runtime is authorized, which only a topology carrying one can be.
+ */
 static SGIModelPicCompatibilityProfile sgi_machine_ip53_pic_profile(
-    bool runtime_experiment, bool tezro)
+    const SGIModelTopology *t, bool runtime_experiment)
 {
     if (runtime_experiment) {
-        if (tezro) {
-            return SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
-        }
-        return
-            SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_EXPERIMENTAL;
+        g_assert(t->ip53_runtime);
+        return t->ip53_runtime->pic_profile;
     }
     return SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK;
 }
@@ -1309,32 +1305,16 @@ static bool sgi_machine_ip53_experiment_policy(
     SGIMachineState *s, SGIMachineClass *smc, const SGIModelTopology *t,
     bool *allow_ip53_experiment, Error **errp)
 {
-    bool origin350 = g_strcmp0(smc->product, "origin350") == 0;
     bool onyx350 = g_strcmp0(smc->product, "onyx350") == 0;
     bool tezro = g_strcmp0(smc->product, "tezro") == 0;
-    bool onyx4_host = g_strcmp0(smc->product, "onyx4-host") == 0;
-    bool origin350_topology = g_strcmp0(t->name, "origin350") == 0;
-    bool onyx350_topology = g_strcmp0(t->name, "onyx350-compat") == 0;
-    bool tezro_runtime_profile =
-        g_strcmp0(t->name,
-                  "tezro-deskside-700mhz-4mib-serial-trial") == 0 ||
-        g_strcmp0(t->name, "tezro-tower-one") == 0 ||
-        g_strcmp0(t->name, "tezro-tower-multi") == 0 ||
-        g_strcmp0(t->name, "tezro-rack-base") == 0;
-    bool onyx4_host_runtime_profile = g_strcmp0(
-        t->name, "onyx4-host-serial-compat") == 0;
-    bool normal_candidate =
-        (origin350 && origin350_topology) ||
-        (onyx350 && onyx350_topology) ||
-        (tezro && (g_strcmp0(t->name, "tezro-tower-one") == 0 ||
-                   g_strcmp0(t->name, "tezro-tower-multi") == 0 ||
-                   g_strcmp0(t->name, "tezro-rack-base") == 0)) ||
-        (onyx4_host && onyx4_host_runtime_profile);
-
-    bool registered_ip53_product =
-        (origin350 && origin350_topology) || (onyx350 && onyx350_topology) ||
-        (tezro && tezro_runtime_profile) ||
-        (onyx4_host && onyx4_host_runtime_profile);
+    /*
+     * The catalogue marks which topologies are IP53 runtime profiles and
+     * which of those admit a normal launch; topology= is product-scoped, so
+     * the topology found is already this product's own.
+     */
+    bool registered_ip53_product = t->ip53_runtime != NULL;
+    bool normal_candidate = registered_ip53_product &&
+                            t->ip53_runtime->normal_selection != NULL;
 
     if (onyx350 && !s->topology_name) {
         error_setg(errp, "Onyx 350 runtime trial requires explicit "
@@ -1377,75 +1357,48 @@ static bool sgi_machine_ip53_experiment_policy(
  * memory selection have been checked.
  */
 static bool sgi_machine_ip53_normal_tuple(
-    SGIMachineClass *smc, const SGIModelTopology *t, MachineState *machine,
+    const SGIModelTopology *t, MachineState *machine,
     const unsigned int *requested, unsigned int node_count,
     const SGIModelNode **nodes, const SGIModelProcessor *processor,
     const SGIModelProcessorOption *processor_option)
 {
-    static const struct {
-        const char *product;
-        const char *topology;
-        unsigned int cpus;
-        unsigned int fitted_cpus;
-        uint64_t memory_mib;
-        uint64_t clock_hz;
-        unsigned int cache_mib;
-        uint32_t mode;
-    } profiles[] = {
-        { "origin350", "origin350", 4, 4, 2048, 700000000, 8,
-          0x009cad85 },
-        { "onyx350", "onyx350-compat", 4, 4, 8192, 800000000, 8,
-          0x009caf85 },
-        { "tezro", "tezro-tower-one", 1, 1, 4096, 700000000, 4,
-          0x009bad85 },
-        { "tezro", "tezro-tower-multi", 4, 4, 4096, 700000000, 4,
-          0x009bad85 },
-        { "tezro", "tezro-rack-base", 1, 4, 4096, 700000000, 4,
-          0x009bad85 },
-        { "onyx4-host", "onyx4-host-serial-compat", 4, 4, 8192,
-          1000000000, 16, 0x009dad85 },
-    };
-    size_t i;
+    const SGIModelIp53NormalSelection *profile =
+        t->ip53_runtime ? t->ip53_runtime->normal_selection : NULL;
+    const SGIModelCpuSlotList *slot;
+    unsigned int fitted_count = 0;
 
-    if (node_count != 1 || machine->smp.cpus != machine->smp.max_cpus ||
+    if (!profile || node_count != 1 ||
+        machine->smp.cpus != machine->smp.max_cpus ||
         !processor ||
         (processor_option && processor_option->assembly != processor)) {
         return false;
     }
-    for (i = 0; i < G_N_ELEMENTS(profiles); i++) {
-        const SGIModelCpuSlotList *slot;
-        unsigned int fitted_count = 0;
+    if (machine->smp.cpus != profile->cpus ||
+        requested[0] != profile->cpus ||
+        machine->ram_size != profile->memory_mib * MiB ||
+        processor->clock_hz != profile->clock_hz ||
+        processor->cache_mib != profile->cache_mib ||
+        !processor->has_mode_bits ||
+        processor->mode_bits != profile->mode_word ||
+        g_strcmp0(processor->kind, "R16000")) {
+        return false;
+    }
+    for (slot = nodes[0]->cpu_slots; slot; slot = slot->next) {
+        const SGIModelProcessor *assembly = slot->value->assembly;
 
-        if (g_strcmp0(smc->product, profiles[i].product) ||
-            g_strcmp0(t->name, profiles[i].topology) ||
-            machine->smp.cpus != profiles[i].cpus ||
-            requested[0] != profiles[i].cpus ||
-            machine->ram_size != profiles[i].memory_mib * MiB ||
-            processor->clock_hz != profiles[i].clock_hz ||
-            processor->cache_mib != profiles[i].cache_mib ||
-            !processor->has_mode_bits ||
-            processor->mode_bits != profiles[i].mode ||
-            g_strcmp0(processor->kind, "R16000")) {
+        if (!assembly) {
             continue;
         }
-        for (slot = nodes[0]->cpu_slots; slot; slot = slot->next) {
-            const SGIModelProcessor *assembly = slot->value->assembly;
-
-            if (!assembly) {
-                continue;
-            }
-            if (g_strcmp0(assembly->kind, "R16000") ||
-                assembly->clock_hz != profiles[i].clock_hz ||
-                assembly->cache_mib != profiles[i].cache_mib ||
-                !assembly->has_mode_bits ||
-                assembly->mode_bits != profiles[i].mode) {
-                return false;
-            }
-            fitted_count++;
+        if (g_strcmp0(assembly->kind, "R16000") ||
+            assembly->clock_hz != profile->clock_hz ||
+            assembly->cache_mib != profile->cache_mib ||
+            !assembly->has_mode_bits ||
+            assembly->mode_bits != profile->mode_word) {
+            return false;
         }
-        return fitted_count == profiles[i].fitted_cpus;
+        fitted_count++;
     }
-    return false;
+    return fitted_count == profile->fitted_cpus;
 }
 
 /*
@@ -5732,8 +5685,8 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
             return false;
         }
         router = qdev_new(TYPE_SGI_SN1_ROUTER);
-        if (!strcmp(t->name,
-                    "origin300-numalink-pci-expansion-experiment")) {
+        if (record->has_synthetic_diagnostics &&
+            record->synthetic_diagnostics) {
             sgi_sn1_router_enable_synthetic_diagnostics(
                 SGI_SN1_ROUTER(router));
         }
@@ -6447,9 +6400,6 @@ static bool sgi_machine_preflight_io_descriptors(
     bool has_io9 = false;
     bool has_ip53 = false;
     bool all_ip53 = true;
-    bool tezro_new_profile = tezro &&
-        !g_str_equal(t->name,
-                     "tezro-deskside-700mhz-4mib-serial-trial");
     size_t expected_host_count = tezro ? 0 : 1;
     const SGIModelNodeList *node_entry;
 
@@ -6497,9 +6447,7 @@ static bool sgi_machine_preflight_io_descriptors(
         }
         if (host->has_compatibility_profile &&
             host->compatibility_profile !=
-                sgi_machine_ip53_pic_profile(
-                    allow_ip53_experiment,
-                    tezro_new_profile)) {
+                sgi_machine_ip53_pic_profile(t, allow_ip53_experiment)) {
             if (allow_ip53_experiment) {
                 error_setg(errp, "topology '%s' PCI host '%s' must select "
                            "its authored runtime PIC profile", t->name,
@@ -6764,9 +6712,8 @@ static bool sgi_machine_preflight_io_descriptors(
         for (i = 0; i < host_count; i++) {
             if (!hosts[i]->has_compatibility_profile ||
                 hosts[i]->compatibility_profile !=
-                    sgi_machine_ip53_pic_profile(
-                        allow_ip53_experiment,
-                        tezro_new_profile)) {
+                    sgi_machine_ip53_pic_profile(t,
+                                                 allow_ip53_experiment)) {
                 error_setg(errp, "topology '%s' PCI host '%s' has no "
                            "compatibility profile", t->name, hosts[i]->id);
                 return false;
@@ -7410,7 +7357,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     if (allow_ip53_experiment && !s->ip53_experimental &&
         !sgi_machine_ip53_normal_tuple(
-            smc, t, machine, requested, node_count, nodes, s->processor,
+            t, machine, requested, node_count, nodes, s->processor,
             s->processor_option)) {
         error_setg(errp, "%s: topology '%s' does not match an approved normal "
                    "IP53 serial profile tuple; pass ip53-experimental=on for "
@@ -7678,6 +7625,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                          t->ip35_firmware->machine_type);
                     qdev_prop_set_uint32(DEVICE(node), "firmware-mode-word",
                                          t->ip35_firmware->cpu_mode_word);
+                }
+                if (t->ip53_runtime) {
+                    qdev_prop_set_bit(DEVICE(node), "l1-irouter-compat",
+                                      t->ip53_runtime->l1_irouter_compat);
                 }
                 qdev_prop_set_uint8(DEVICE(node), "bedrock-revision",
                                     config->revision);
@@ -9592,7 +9543,7 @@ static const char *origin200_get_default_cpu_type(const MachineState *ms)
     }
     t = sgi_model_product_topology(sgi_machines(), "origin200",
                                    s->topology_name ? s->topology_name :
-                                   "origin200");
+                                   SGI_MACHINE_GET_CLASS(s)->default_topology);
     for (entry = t ? t->processor_options : NULL; entry;
          entry = entry->next) {
         if (g_str_equal(entry->value->assembly->id, s->processor_name) &&
@@ -9607,11 +9558,11 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
-    const SGIModelTopology *t = sgi_model_find_topology("origin200");
+    const SGIModelTopology *t = sgi_model_machine_topology("origin200");
 
     g_assert(t);
     smc->product = "origin200";
-    smc->default_topology = "origin200";
+    smc->default_topology = t->name;
     smc->node_memory = &sn0_hub_memory;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_origin200_cpu_types;
@@ -9628,11 +9579,11 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
-    const SGIModelTopology *t = sgi_model_find_topology("origin2000-rack");
+    const SGIModelTopology *t = sgi_model_machine_topology("origin2000");
 
     g_assert(t);
     smc->product = "origin2000";
-    smc->default_topology = "origin2000-rack";
+    smc->default_topology = t->name;
     smc->node_memory = &sn0_ip27_memory;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
@@ -9662,11 +9613,11 @@ static void onyx2_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
-    const SGIModelTopology *t = sgi_model_find_topology("onyx2-rack");
+    const SGIModelTopology *t = sgi_model_machine_topology("onyx2");
 
     g_assert(t);
     smc->product = "onyx2";
-    smc->default_topology = "onyx2-rack";
+    smc->default_topology = t->name;
     smc->node_memory = &sn0_ip27_memory;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;

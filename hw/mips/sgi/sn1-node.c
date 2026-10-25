@@ -2147,11 +2147,6 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
 {
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
-    g_autofree char *topology_property = object_property_get_str(
-        OBJECT(machine), "topology", &error_abort);
-    const char *topology = topology_property[0] ? topology_property :
-        SGI_MACHINE_GET_CLASS(machine)->default_topology;
-    const char *product = SGI_MACHINE_GET_CLASS(machine)->product;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
@@ -2164,16 +2159,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     }
     if (node->model_node->has_board_kind &&
         node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53 &&
-        ((g_strcmp0(product, "origin350") == 0 &&
-          g_strcmp0(topology, "origin350") == 0) ||
-         (g_strcmp0(product, "onyx350") == 0 &&
-          g_strcmp0(topology, "onyx350-compat") == 0) ||
-         (g_strcmp0(product, "tezro") == 0 &&
-          (g_strcmp0(topology, "tezro-tower-one") == 0 ||
-           g_strcmp0(topology, "tezro-tower-multi") == 0 ||
-           g_strcmp0(topology, "tezro-rack-base") == 0)) ||
-         (g_strcmp0(product, "onyx4-host") == 0 &&
-          g_strcmp0(topology, "onyx4-host-serial-compat") == 0))) {
+        node->l1_irouter_compat) {
         qdev_prop_set_bit(node->l1, "irouter-compat", true);
         qdev_prop_set_uint32(node->l1, "port-speed-first", 1);
     }
@@ -2834,6 +2820,13 @@ static const Property sn1_node_properties[] = {
                        firmware_machine_type, 1),
     DEFINE_PROP_UINT32("firmware-mode-word", SN1NodeState,
                        firmware_mode_word, 0x549aa985),
+    /*
+     * The catalogue's IP53 runtime profile says whether an IP53 node's L1
+     * answers the router-compatible commands and reports a first port
+     * speed.
+     */
+    DEFINE_PROP_BOOL("l1-irouter-compat", SN1NodeState, l1_irouter_compat,
+                     false),
     DEFINE_PROP_UINT32("l1-type-code", SN1NodeState, l1_type_code, 0),
     DEFINE_PROP_INT32("l1-revision-major", SN1NodeState, l1_revision[0], -1),
     DEFINE_PROP_INT32("l1-revision-minor", SN1NodeState, l1_revision[1], -1),

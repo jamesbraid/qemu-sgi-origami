@@ -162,6 +162,8 @@ def _router(raw: dict) -> dict:
         "revision": raw["revision"],
         "chip-inputs": raw["chip_inputs"],
         "serial": raw["serial"],
+        **({"synthetic-diagnostics": True}
+           if raw.get("synthetic_diagnostics") else {}),
     }
 
 
@@ -342,7 +344,8 @@ def _controller(raw: dict) -> dict:
     return controller
 
 
-def _render_topology(topology: dict, machine_name: str) -> dict:
+def _render_topology(topology: dict, machine_name: str,
+                     machine_default: bool = False) -> dict:
     """One `compile_model` entry as the catalogue's `topologies` JSON shape,
     trimmed to what the catalogue output rule keeps: member names
     kebab-cased, enumerations lower-cased, every device-internal fact
@@ -399,6 +402,10 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
         result["processor-options"] = _kebab_keys(topology["processor_options"])
     if "graphics" in topology:
         result["graphics"] = _kebab_keys(topology["graphics"])
+    if "ip53_runtime" in topology:
+        result["ip53-runtime"] = _kebab_keys(topology["ip53_runtime"])
+    if machine_default:
+        result["machine-default"] = True
     return result
 
 def _node_population(raw: dict) -> dict:
@@ -1284,7 +1291,12 @@ def render_catalogue_json(models: list[dict], *,
         topology = compile_model(model)
         _validate_export_profiles(model, topology)
         machine_name = model["machine"]["emulation"]["machine_name"]
-        topologies.append(_render_topology(topology, machine_name))
+        # The -M machine describes itself from its product's own base
+        # model, whether or not the product also requires topology=.
+        topologies.append(_render_topology(
+            topology, machine_name,
+            topology["name"] ==
+            product_models[machine_name]["composition"]["product"]))
         offerings.extend(_offerings_for(model, topology, product_models))
     catalogue = {
         "schema": "sgi-machines",

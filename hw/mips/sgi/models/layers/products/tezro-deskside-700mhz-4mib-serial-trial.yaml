@@ -53,6 +53,11 @@ layer:
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib: [4096]
+        # How the emulator and launchers run this IP53 profile, read in
+        # place of comparing topology names.
+        ip53_runtime:
+          pic_profile: pic-rev3-bedrock-experimental
+          l1_irouter_compat: false
         pic_profiles:
           pic-xio-b: pic-rev3-bedrock-experimental
           pic-xio-f: pic-rev3-bedrock-experimental

@@ -75,6 +75,21 @@ const char *sgi_model_default_topology(const char *product)
     return NULL;
 }
 
+const SGIModelTopology *sgi_model_machine_topology(const char *product)
+{
+    SGIModelTopologyList *entry;
+
+    sgi_machines_load();
+    for (entry = machines->topologies; entry; entry = entry->next) {
+        if (!strcmp(entry->value->product, product) &&
+            entry->value->has_machine_default &&
+            entry->value->machine_default) {
+            return entry->value;
+        }
+    }
+    return NULL;
+}
+
 SGIMachines *qmp_query_sgi_machines(Error **errp)
 {
     return QAPI_CLONE(SGIMachines, sgi_machines());

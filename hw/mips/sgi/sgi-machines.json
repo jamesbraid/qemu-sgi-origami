@@ -20569,6 +20569,7 @@
         "machine-type": 2
       },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -21156,6 +21157,7 @@
         }
       ],
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": -1,
@@ -21789,6 +21791,7 @@
         }
       ],
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": -1,
@@ -23098,6 +23101,7 @@
         "machine-type": 0
       },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -24131,7 +24135,26 @@
         "cpu-mode-word": 1453109125,
         "machine-type": 0
       },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-board": {
+          "name": "IP53_4CPU",
+          "part": "030-2013-001",
+          "processors": 4,
+          "revision": "-D"
+        },
+        "normal-selection": {
+          "cache-mib": 8,
+          "clock-hz": 800000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 8192,
+          "mode-word": 10268549
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -24364,7 +24387,20 @@
         "cpu-mode-word": 1453174149,
         "machine-type": 0
       },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "normal-selection": {
+          "cache-mib": 16,
+          "clock-hz": 1000000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 8192,
+          "mode-word": 10333573
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -26375,6 +26411,7 @@
         "machine-type": 1
       },
       "junk-uart": 0,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": -1,
@@ -30373,6 +30410,7 @@
         "machine-type": 0
       },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -31943,7 +31981,8 @@
           "part": 12311,
           "revision": 1,
           "serial": 89358092030464,
-          "slot": 0
+          "slot": 0,
+          "synthetic-diagnostics": true
         }
       ],
       "xio-attachments": [
@@ -34009,6 +34048,7 @@
         "machine-type": 1
       },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -34233,7 +34273,26 @@
         "cpu-mode-word": 1453108613,
         "machine-type": 0
       },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "node-board": {
+          "name": "IP53_4CPU",
+          "part": "030-1868-001",
+          "processors": 4,
+          "revision": "-C"
+        },
+        "normal-selection": {
+          "cache-mib": 8,
+          "clock-hz": 700000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 2048,
+          "mode-word": 10268037
+        },
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -34458,7 +34517,12 @@
         "cpu-mode-word": 10202501,
         "machine-type": 1
       },
+      "ip53-runtime": {
+        "l1-irouter-compat": false,
+        "pic-profile": "pic-rev3-bedrock-experimental"
+      },
       "junk-uart": -1,
+      "machine-default": true,
       "modules": [
         {
           "controller-index": 0,
@@ -34701,6 +34765,18 @@
       "ip35-firmware": {
         "cpu-mode-word": 1419488645,
         "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "normal-selection": {
+          "cache-mib": 4,
+          "clock-hz": 700000000,
+          "cpus": 1,
+          "fitted-cpus": 4,
+          "memory-mib": 4096,
+          "mode-word": 10202501
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
       "modules": [
@@ -34980,6 +35056,18 @@
         "cpu-mode-word": 1419488645,
         "machine-type": 0
       },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "normal-selection": {
+          "cache-mib": 4,
+          "clock-hz": 700000000,
+          "cpus": 4,
+          "fitted-cpus": 4,
+          "memory-mib": 4096,
+          "mode-word": 10202501
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
+      },
       "junk-uart": -1,
       "modules": [
         {
@@ -35228,6 +35316,18 @@
       "ip35-firmware": {
         "cpu-mode-word": 1419488645,
         "machine-type": 0
+      },
+      "ip53-runtime": {
+        "l1-irouter-compat": true,
+        "normal-selection": {
+          "cache-mib": 4,
+          "clock-hz": 700000000,
+          "cpus": 1,
+          "fitted-cpus": 1,
+          "memory-mib": 4096,
+          "mode-word": 10202501
+        },
+        "pic-profile": "pic-rev3-bedrock-tezro-experimental"
       },
       "junk-uart": -1,
       "modules": [
