@@ -12,18 +12,31 @@
 #define CRIME_PATH "/machine/peripheral/crime"
 #define LEVEL_LATCHED 0x81cf0000U
 
-static QTestState *start_profile(bool legacy, const char *extra)
+static QTestState *start_profile_ram(bool legacy, bool migrate_ram,
+                                    const char *extra)
 {
     QTestState *s = qtest_initf(
         "-object memory-backend-ram,id=fit,size=64M "
-        "-device memory-transaction-test,id=memtx,"
-        "migrate-ram=/objects/fit/fit[0] "
+        "-device memory-transaction-test,id=memtx%s "
         "-M none -cpu R10000 -S -d guest_errors,unimp "
         "-device sgi-crime,id=crime,ram=/objects/fit/fit[0],"
-        "crime-profile=%s %s", legacy ? "legacy-software" : "1.5", extra);
+        "crime-profile=%s %s",
+        migrate_ram ? ",migrate-ram=/objects/fit/fit[0]" : "",
+        legacy ? "legacy-software" : "1.5", extra);
 
     qtest_sysbus_mmio_map(s, CRIME_PATH, 0, BASE);
     return s;
+}
+
+static QTestState *start_profile(bool legacy, const char *extra)
+{
+    return start_profile_ram(legacy, true, extra);
+}
+
+/* Keep live RAM, but omit it from device-state observations. */
+static QTestState *start_state_profile(bool legacy, const char *extra)
+{
+    return start_profile_ram(legacy, false, extra);
 }
 
 static void cause(QTestState *s, unsigned source, bool level)
@@ -1038,9 +1051,11 @@ static void seed_renderer_state(QTestState *s)
 static void assert_renderer_state(QTestState *s)
 {
     const unsigned parameters[] = { 0, 8, 0x18, 0x20, 0x28, 0x40, 0x48 };
+    uint8_t tlb[32 * 8];
 
+    qtest_memread(s, LINEAR_TLB, tlb, sizeof(tlb));
     for (unsigned i = 0; i < 32; i++) {
-        g_assert_cmphex(qtest_readq(s, LINEAR_TLB + 8 * i),
+        g_assert_cmphex(ldq_be_p(tlb + 8 * i),
                         ==, 0x8000000380000009ULL + i);
     }
     for (unsigned i = 0; i < ARRAY_SIZE(parameters); i++) {
@@ -1622,7 +1637,7 @@ static void test_transfer_mask_stage(void)
     const uint32_t masks[] = { 0, UINT32_MAX, 0x80402001, 0x13579bdf, 0 };
     g_autofree char *dir = g_dir_make_tmp("crime-stipple-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *s = start_profile(true,
+    QTestState *s = start_state_profile(true,
         "-global sgi-crime.functional-memory-transfer=on "
         "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
 
@@ -1655,7 +1670,7 @@ static void test_transfer_mask_refusal(void)
 
     for (unsigned i = 0; i < ARRAY_SIZE(accesses); i++) {
         const RendererAccess *a = &accesses[i];
-        QTestState *s = start_profile(true,
+        QTestState *s = start_state_profile(true,
             "-global sgi-crime.functional-memory-transfer=on "
             "-device sgi-crime-test-fixture,id=inject,crime=" CRIME_PATH);
         uint64_t value;
@@ -1679,7 +1694,7 @@ static void test_transfer_mask_refusal(void)
             if (legacy && functional) {
                 continue;
             }
-            s = start_profile(legacy, functional ?
+            s = start_state_profile(legacy, functional ?
                 "-global sgi-crime.functional-memory-transfer=on" : "");
             g_assert_cmpint(memtx_writel(s, TRANSFER + 0x10, 0x80402001),
                             ==, MEMTX_ERROR);
@@ -1762,7 +1777,7 @@ static void test_transfer_mask_tiled(void)
     g_autofree char *path = g_build_filename(dir, "state", NULL);
 
     for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
-        QTestState *s = start_profile(true,
+        QTestState *s = start_state_profile(true,
             "-global sgi-crime.functional-memory-transfer=on");
 
         qtest_writel(s, TRANSFER + 0x10, masks[i]);
@@ -2523,6 +2538,61 @@ static void test_ecc_replacement_width_stop(void)
     }
 }
 
+/* Use the native Meson groups while retaining one TAP plan per process. */
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
+{
+    int kept = 1;
+
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
+        }
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+}
+
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
+
+    if (!group_paths) {
+        return true;
+    }
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
+
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_func(path, fn);
+    }
+}
+
+static void add_data_case(const char *path, gconstpointer data,
+                          GTestDataFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_data_func(path, data, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *faults[] = {
@@ -2533,101 +2603,102 @@ int main(int argc, char **argv)
         "posted-store", "read-bus-error", "control-stop", "go-stop",
         "malformed-stop", "status-bank-store",
     };
+    take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/sgi/crime/transfer-mask/tiled", test_transfer_mask_tiled);
-    qtest_add_func("/sgi/crime/transfer-mask/stage", test_transfer_mask_stage);
-    qtest_add_func("/sgi/crime/transfer-mask/refusal",
+    add_case("sgi/crime/transfer-mask/tiled", test_transfer_mask_tiled);
+    add_case("sgi/crime/transfer-mask/stage", test_transfer_mask_stage);
+    add_case("sgi/crime/transfer-mask/refusal",
                    test_transfer_mask_refusal);
-    qtest_add_func("/sgi/crime/transfer-mask/commands",
+    add_case("sgi/crime/transfer-mask/commands",
                    test_transfer_mask_commands);
-    qtest_add_func("/sgi/crime/renderer/ifb/read", test_ifb_read);
-    qtest_add_data_func("/sgi/crime/renderer/ifb/write",
+    add_case("sgi/crime/renderer/ifb/read", test_ifb_read);
+    add_data_case("sgi/crime/renderer/ifb/write",
                         GUINT_TO_POINTER(0), test_opaque_renderer_write);
-    qtest_add_data_func("/sgi/crime/renderer/status-bank/write",
+    add_data_case("sgi/crime/renderer/status-bank/write",
                         GUINT_TO_POINTER(1), test_opaque_renderer_write);
-    qtest_add_func("/sgi/crime/renderer/status-bank/refusal",
+    add_case("sgi/crime/renderer/status-bank/refusal",
                    test_status_bank_refusal);
-    qtest_add_func("/sgi/crime/renderer/status-bank/profiles",
+    add_case("sgi/crime/renderer/status-bank/profiles",
                    test_status_bank_profiles);
-    qtest_add_func("/sgi/crime/renderer/ifb/refusal", test_ifb_refusal);
-    qtest_add_func("/sgi/crime/renderer/ifb/profiles", test_ifb_profiles);
-    qtest_add_func("/sgi/crime/renderer/refusal", test_renderer_refusal);
-    qtest_add_func("/sgi/crime/renderer/hard-stop", test_renderer_hard_stop);
-    qtest_add_func("/sgi/crime/renderer/profiles",
+    add_case("sgi/crime/renderer/ifb/refusal", test_ifb_refusal);
+    add_case("sgi/crime/renderer/ifb/profiles", test_ifb_profiles);
+    add_case("sgi/crime/renderer/refusal", test_renderer_refusal);
+    add_case("sgi/crime/renderer/hard-stop", test_renderer_hard_stop);
+    add_case("sgi/crime/renderer/profiles",
                    test_renderer_profile_policy);
     for (unsigned i = 0; i < ARRAY_SIZE(renderer_cpu); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/renderer/cpu/%s",
+        g_autofree char *name = g_strdup_printf("sgi/crime/renderer/cpu/%s",
                                                renderer_cpu[i]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(i), test_renderer_cpu);
+        add_data_case(name, GUINT_TO_POINTER(i), test_renderer_cpu);
     }
-    qtest_add_func("/sgi/crime/legacy/identity", test_identity);
-    qtest_add_func("/sgi/crime/legacy/controls", test_controls);
-    qtest_add_func("/sgi/crime/legacy/error-enable-zero",
+    add_case("sgi/crime/legacy/identity", test_identity);
+    add_case("sgi/crime/legacy/controls", test_controls);
+    add_case("sgi/crime/legacy/error-enable-zero",
                    test_error_enable_zero);
-    qtest_add_func("/sgi/crime/legacy/error-enable-refusal",
+    add_case("sgi/crime/legacy/error-enable-refusal",
                    test_error_enable_refusal);
-    qtest_add_func("/sgi/crime/legacy/register-access", test_register_access);
-    qtest_add_func("/sgi/crime/legacy/interrupt-mask-upper",
+    add_case("sgi/crime/legacy/register-access", test_register_access);
+    add_case("sgi/crime/legacy/interrupt-mask-upper",
                    test_interrupt_mask_upper);
-    qtest_add_func("/sgi/crime/1.5/interrupt-mask-upper-refusal",
+    add_case("sgi/crime/1.5/interrupt-mask-upper-refusal",
                    test_interrupt_mask_upper_refusal);
-    qtest_add_func("/sgi/crime/legacy/banks", test_banks);
-    qtest_add_func("/sgi/crime/legacy/immutable", test_immutable);
-    qtest_add_func("/sgi/crime/legacy/level-latches", test_level_latches);
-    qtest_add_data_func("/sgi/crime/legacy/source-routing",
+    add_case("sgi/crime/legacy/banks", test_banks);
+    add_case("sgi/crime/legacy/immutable", test_immutable);
+    add_case("sgi/crime/legacy/level-latches", test_level_latches);
+    add_data_case("sgi/crime/legacy/source-routing",
                         GUINT_TO_POINTER(0), test_source_routing);
-    qtest_add_data_func("/sgi/crime/legacy/functional-source-routing",
+    add_data_case("sgi/crime/legacy/functional-source-routing",
                         GUINT_TO_POINTER(1), test_source_routing);
-    qtest_add_data_func("/sgi/crime/legacy/source-reset",
+    add_data_case("sgi/crime/legacy/source-reset",
                         GUINT_TO_POINTER(0), test_source_reset);
-    qtest_add_data_func("/sgi/crime/legacy/functional-source-reset",
+    add_data_case("sgi/crime/legacy/functional-source-reset",
                         GUINT_TO_POINTER(1), test_source_reset);
-    qtest_add_func("/sgi/crime/renderer/no-generated-irq",
+    add_case("sgi/crime/renderer/no-generated-irq",
                    test_renderer_no_generated_irq);
-    qtest_add_func("/sgi/crime/legacy/counter", test_counter);
-    qtest_add_data_func("/sgi/crime/legacy/migration",
+    add_case("sgi/crime/legacy/counter", test_counter);
+    add_data_case("sgi/crime/legacy/migration",
                         GINT_TO_POINTER(1), test_migration);
-    qtest_add_data_func("/sgi/crime/default/migration-sources",
+    add_data_case("sgi/crime/default/migration-sources",
                         GINT_TO_POINTER(0), test_migration);
-    qtest_add_data_func("/sgi/crime/legacy/functional-migration-sources",
+    add_data_case("sgi/crime/legacy/functional-migration-sources",
                         GUINT_TO_POINTER(3), test_migration);
-    qtest_add_data_func("/sgi/crime/default/functional-migration-sources",
+    add_data_case("sgi/crime/default/functional-migration-sources",
                         GUINT_TO_POINTER(2), test_migration);
-    qtest_add_func("/sgi/crime/legacy/cpu-clock-interrupt",
+    add_case("sgi/crime/legacy/cpu-clock-interrupt",
                    test_clock_interrupt_independence);
-    qtest_add_func("/sgi/crime/legacy/machine-admission",
+    add_case("sgi/crime/legacy/machine-admission",
                    test_machine_admission);
-    qtest_add_data_func("/sgi/crime/legacy/mismatch-to-default",
+    add_data_case("sgi/crime/legacy/mismatch-to-default",
                         GINT_TO_POINTER(1), test_profile_mismatch);
-    qtest_add_data_func("/sgi/crime/legacy/mismatch-from-default",
+    add_data_case("sgi/crime/legacy/mismatch-from-default",
                         GINT_TO_POINTER(0), test_profile_mismatch);
     for (unsigned i = 0; i < ARRAY_SIZE(faults); i++) {
-        g_autofree char *name = g_strdup_printf("/sgi/crime/legacy/invalid-%s",
+        g_autofree char *name = g_strdup_printf("sgi/crime/legacy/invalid-%s",
                                                faults[i]);
 
-        qtest_add_data_func(name, GUINT_TO_POINTER(i),
+        add_data_case(name, GUINT_TO_POINTER(i),
                             test_invalid_profile_state);
     }
-    qtest_add_data_func("/sgi/crime/legacy/feature-id-word", "prom-id-word",
+    add_data_case("sgi/crime/legacy/feature-id-word", "prom-id-word",
                         test_feature_mismatch);
-    qtest_add_data_func("/sgi/crime/legacy/feature-inert-renderer",
+    add_data_case("sgi/crime/legacy/feature-inert-renderer",
                         "empty-renderer-status", test_feature_mismatch);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/stage",
+    add_case("sgi/crime/legacy/ecc-replacement/stage",
                    test_ecc_replacement_stage);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/values",
+    add_case("sgi/crime/legacy/ecc-replacement/values",
                    test_ecc_replacement_values);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/refusal",
+    add_case("sgi/crime/legacy/ecc-replacement/refusal",
                    test_ecc_replacement_refusal);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/controls",
+    add_case("sgi/crime/legacy/ecc-replacement/controls",
                    test_ecc_replacement_controls);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/peers",
+    add_case("sgi/crime/legacy/ecc-replacement/peers",
                    test_ecc_replacement_peers);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/migration",
+    add_case("sgi/crime/legacy/ecc-replacement/migration",
                    test_ecc_replacement_migration);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/invalid-stream",
+    add_case("sgi/crime/legacy/ecc-replacement/invalid-stream",
                    test_ecc_replacement_invalid_stream);
-    qtest_add_func("/sgi/crime/legacy/ecc-replacement/width-stop",
+    add_case("sgi/crime/legacy/ecc-replacement/width-stop",
                    test_ecc_replacement_width_stop);
     return g_test_run();
 }
