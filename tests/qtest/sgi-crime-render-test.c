@@ -780,7 +780,7 @@ static void mte_setup(QTestState *s, bool copy, unsigned source_bank,
     qtest_writel(s, MTE, (copy ? 1U << 11 : 0) |
                  (source_bank << 5) | (destination_bank << 2));
     qtest_writel(s, MTE + 8, UINT32_MAX);
-    qtest_writel(s, MTE + 0x18, 0xb7);
+    qtest_writel(s, MTE + 0x18, 0xb7b7b7b7);
     qtest_writel(s, MTE + 0x40, 1);
     qtest_writel(s, MTE + 0x48, 1);
 }
@@ -824,7 +824,7 @@ static void test_mte_start_forms(void)
                 g_assert_cmphex(qtest_readl(s, MTE + 8), ==, 0);
                 break;
             case 0x18:
-                value = 0xb7;
+                value = 0xb7b7b7b7;
                 qtest_writel(s, MTE + 0x18, 0x11);
                 break;
             case 0x30:
@@ -1064,8 +1064,10 @@ static void test_mte_rejected(void)
             qtest_writel(s, MTE + 0x30, xy(0, 1));
             qtest_writel(s, MTE + 0x38, xy(3, 129));
             break;
-        case 6:
-            qtest_writel(s, MTE + 8, 0xfffffffe);
+        case 6: /* Zero mask cannot hide the invalid second source tile. */
+            qtest_writel(s, MTE + 8, 0);
+            qtest_writel(s, MTE + 0x20, xy(511, 0));
+            qtest_writel(s, MTE + 0x28, xy(514, 1));
             break;
         }
         qtest_memset(s, 0x30000, 0x5a, 1536);

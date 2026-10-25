@@ -1279,6 +1279,537 @@ static void test_clip_invalid_stream(void)
     g_rmdir(dir);
 }
 
+static unsigned tiled_page(unsigned bank, unsigned index)
+{
+    return 1 + bank * 256 + ((index * 73) & 255);
+}
+
+static uint64_t tiled_address(unsigned bank, unsigned x, unsigned y)
+{
+    unsigned index = (y / 128) * 16 + x / 512;
+
+    return (uint64_t)tiled_page(bank, index) * 65536 +
+           (y % 128) * 512 + x % 512;
+}
+
+static void tiled_entry(QTestState *s, unsigned bank, unsigned index,
+                         uint16_t entry)
+{
+    uint64_t address = 0x15001000ULL + bank * 512 + (index / 4) * 8;
+    unsigned shift = 48 - (index % 4) * 16;
+    uint64_t word = qtest_readq(s, address);
+
+    word = (word & ~(0xffffULL << shift)) | ((uint64_t)entry << shift);
+    qtest_writeq(s, address, word);
+}
+
+static void tiled_map(QTestState *s, unsigned bank, unsigned x0, unsigned y0,
+                       unsigned x1, unsigned y1)
+{
+    for (unsigned ty = y0 / 128; ty <= y1 / 128; ty++) {
+        for (unsigned tx = x0 / 512; tx <= x1 / 512; tx++) {
+            unsigned index = ty * 16 + tx;
+
+            tiled_entry(s, bank, index, 0x8000 | tiled_page(bank, index));
+        }
+    }
+}
+
+static void tiled_bytes(QTestState *s, unsigned bank, unsigned x, unsigned y,
+                         uint8_t *bytes, unsigned length, bool write)
+{
+    while (length) {
+        unsigned n = MIN(length, 512 - x % 512);
+        uint64_t address = tiled_address(bank, x, y);
+
+        if (write) {
+            qtest_memwrite(s, address, bytes, n);
+        } else {
+            qtest_memread(s, address, bytes, n);
+        }
+        bytes += n;
+        length -= n;
+        x += n;
+    }
+}
+
+static uint32_t tiled_xy(unsigned x, unsigned y)
+{
+    return (x << 16) | y;
+}
+
+static void tiled_stage(QTestState *s, unsigned x0, unsigned y0,
+                         unsigned x1, unsigned y1, uint32_t mask, uint32_t fill)
+{
+    qtest_writel(s, MTE, 0);
+    qtest_writel(s, MTE + 8, mask);
+    qtest_writel(s, MTE + 0x18, fill);
+    qtest_writel(s, MTE + 0x20, 0x12345678);
+    qtest_writel(s, MTE + 0x28, 0x87654321);
+    qtest_writel(s, MTE + 0x30, tiled_xy(x0, y0));
+    qtest_writel(s, MTE + 0x38, tiled_xy(x1, y1));
+    qtest_writel(s, MTE + 0x40, 1);
+    qtest_writel(s, MTE + 0x48, 1);
+}
+
+static uint8_t tiled_old_byte(unsigned x, unsigned y)
+{
+    return 0x5a ^ (x * 13 + y * 7);
+}
+
+static void tiled_check_clear(QTestState *s, unsigned x0, unsigned y0,
+                               unsigned x1, unsigned y1, uint32_t mask,
+                               uint32_t fill, unsigned trigger)
+{
+    const uint8_t lanes[] = { fill >> 24, fill >> 16, fill >> 8, fill };
+    unsigned first = x0 ? x0 - 1 : 0, last = MIN(x1 + 1, 8191);
+    uint8_t bytes[8192];
+    uint32_t value;
+
+    tiled_map(s, 0, first, y0, last, y1);
+    tiled_stage(s, x0, y0, x1, y1, mask, fill);
+    value = trigger == 0x70 ? 0x13579bdf :
+            trigger == 0x30 ? tiled_xy(x0, y0) :
+            trigger == 0x38 ? tiled_xy(x1, y1) : qtest_readl(s, MTE + trigger);
+    if (trigger != 0x70) {
+        qtest_writel(s, MTE + trigger, trigger == 0 ? 0x80000000 :
+                     trigger == 0x48 ? UINT32_MAX : 0);
+    }
+    for (unsigned y = y0; y <= y1; y++) {
+        for (unsigned x = first; x <= last; x++) {
+            bytes[x - first] = tiled_old_byte(x, y);
+        }
+        tiled_bytes(s, 0, first, y, bytes, last - first + 1, true);
+    }
+    g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger, value), ==,
+                    MEMTX_OK);
+    for (unsigned y = y0; y <= y1; y++) {
+        tiled_bytes(s, 0, first, y, bytes, last - first + 1, false);
+        for (unsigned x = first; x <= last; x++) {
+            bool selected = x >= x0 && x <= x1 &&
+                            (mask & (0x80000000U >> (x % 32)));
+
+            g_assert_cmphex(bytes[x - first], ==,
+                            selected ? lanes[x % 4] : tiled_old_byte(x, y));
+        }
+    }
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+}
+
+static void test_tiled_fill_lanes(void)
+{
+    const uint32_t fills[] = { 0x123456a5, 0xabcdefa5, 0x12345678 };
+    QTestState *s = start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(fills); i++) {
+        tiled_check_clear(s, 3, 127, 73, 128, UINT32_MAX, fills[i], 0x70);
+    }
+    qtest_quit(s);
+}
+
+static void test_tiled_masks(void)
+{
+    QTestState *s = start();
+
+    for (unsigned bit = 0; bit < 32; bit++) {
+        for (unsigned complement = 0; complement < 2; complement++) {
+            uint32_t mask = 1U << bit;
+
+            tiled_check_clear(s, 503, 127, 573, 128,
+                              complement ? ~mask : mask, 0x13579ba5, 0x70);
+        }
+    }
+    for (unsigned phase = 0; phase < 32; phase++) {
+        tiled_check_clear(s, 475 + phase, 127, 543 + phase, 128,
+                          0xa53c96e1, 0xabcdef01, 0x70);
+    }
+    tiled_check_clear(s, 503, 127, 573, 128, 0, 0x13579ba5, 0x70);
+    qtest_quit(s);
+}
+
+static void test_tiled_indexed_bytes(void)
+{
+    const uint32_t masks[] = { 0x00010001, 0x00100010, 0x01000100, 0x10001000 };
+    const uint8_t values[] = { 0x12, 0x34, 0x56, 0x78 };
+    uint8_t bytes[64];
+    QTestState *s = start();
+
+    tiled_map(s, 0, 0, 127, 63, 128);
+    for (unsigned y = 127; y <= 128; y++) {
+        memset(bytes, 0xa5, sizeof(bytes));
+        tiled_bytes(s, 0, 0, y, bytes, sizeof(bytes), true);
+    }
+    for (unsigned pass = 0; pass < ARRAY_SIZE(masks); pass++) {
+        tiled_stage(s, 0, 127, 63, 128, masks[pass], 0x12345678U >> (pass * 8));
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+    }
+    for (unsigned y = 127; y <= 128; y++) {
+        tiled_bytes(s, 0, 0, y, bytes, sizeof(bytes), false);
+        for (unsigned x = 0; x < sizeof(bytes); x++) {
+            g_assert_cmphex(bytes[x], ==,
+                            x % 4 == 3 ? values[(x / 4) % 4] : 0xa5);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_tiled_canvas(void)
+{
+    QTestState *s = start();
+
+    tiled_check_clear(s, 2047, 127, 2048, 128, UINT32_MAX, 0x12345678, 0x70);
+    tiled_check_clear(s, 5119, 2046, 5120, 2047, UINT32_MAX, 0x12345678, 0x70);
+    tiled_check_clear(s, 8191, 2047, 8191, 2047, UINT32_MAX, 0x12345678, 0x70);
+    qtest_quit(s);
+}
+
+static void test_tiled_start_forms(void)
+{
+    const unsigned offsets[] = { 0, 8, 0x18, 0x20, 0x28, 0x30, 0x38,
+                                 0x40, 0x48, 0x70 };
+    uint8_t state[CLIP_STATE_BYTES];
+    g_autofree char *dir = g_dir_make_tmp("crime-tiled-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+        unsigned offset = offsets[i];
+        uint32_t expected = offset == 0 ? 0 : offset == 8 ? 0xa53c96e1 :
+            offset == 0x18 ? 0x123456a5 : offset == 0x20 ? 0x12345678 :
+            offset == 0x28 ? 0x87654321 : offset == 0x30 ? tiled_xy(3, 127) :
+            offset == 0x38 ? tiled_xy(73, 128) : 1;
+
+        tiled_check_clear(s, 3, 127, 73, 128, 0xa53c96e1, 0x123456a5, offset);
+        clip_save(s, path, state);
+        if (offset != 0x70) {
+            uint32_t actual = ldl_be_p(state + 2 + 256 + (offset / 8) * 4);
+
+            g_assert_cmphex(actual, ==, expected);
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_tiled_copy_masks(void)
+{
+    const uint32_t masks[] = { 0, UINT32_MAX, 0xa53c96e1, 0x80000001 };
+    uint8_t source[69], actual[69];
+    QTestState *s = start();
+
+    for (unsigned pass = 0; pass < ARRAY_SIZE(masks); pass++) {
+        unsigned destination = 1 + pass % 2;
+
+        tiled_map(s, 0, 509, 127, 577, 128);
+        tiled_map(s, destination, 503, 127, 571, 128);
+        for (unsigned y = 127; y <= 128; y++) {
+            for (unsigned i = 0; i < sizeof(source); i++) {
+                source[i] = i * 19 + y;
+            }
+            tiled_bytes(s, 0, 509, y, source, sizeof(source), true);
+            memset(actual, 0xa5, sizeof(actual));
+            tiled_bytes(s, destination, 503, y, actual, sizeof(actual), true);
+        }
+        tiled_stage(s, 503, 127, 571, 128, masks[pass], 0x12345678);
+        qtest_writel(s, MTE, (1U << 11) | (destination << 2));
+        qtest_writel(s, MTE + 0x20, tiled_xy(509, 127));
+        qtest_writel(s, MTE + 0x28, tiled_xy(577, 128));
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+        for (unsigned y = 127; y <= 128; y++) {
+            tiled_bytes(s, destination, 503, y, actual, sizeof(actual), false);
+            tiled_bytes(s, 0, 509, y, source, sizeof(source), false);
+            for (unsigned i = 0; i < sizeof(actual); i++) {
+                g_assert_cmphex(source[i], ==, (uint8_t)(i * 19 + y));
+                g_assert_cmphex(actual[i], ==,
+                    (masks[pass] & (0x80000000U >> ((503 + i) % 32))) ?
+                    source[i] : 0xa5);
+            }
+        }
+    }
+    for (unsigned reverse = 0; reverse < 2; reverse++) {
+        uint8_t expected[4][37];
+
+        tiled_map(s, 0, 503, 126, 539, 129);
+        for (unsigned row = 0; row < 4; row++) {
+            for (unsigned x = 0; x < 37; x++) {
+                expected[row][x] = row * 41 + x * 7;
+            }
+            tiled_bytes(s, 0, 503, 126 + row, expected[row], 37, true);
+        }
+        tiled_stage(s, 503, reverse ? 128 : 127, 539, reverse ? 126 : 129,
+                    0xa53c96e1, 0xdeadbeef);
+        qtest_writel(s, MTE, 1U << 11);
+        qtest_writel(s, MTE + 0x20, tiled_xy(503, reverse ? 129 : 126));
+        qtest_writel(s, MTE + 0x28, tiled_xy(539, reverse ? 127 : 128));
+        qtest_writel(s, MTE + 0x40, reverse ? UINT32_MAX : 1);
+        qtest_writel(s, MTE + 0x48, reverse ? UINT32_MAX : 1);
+        for (unsigned i = 0; i < 3; i++) {
+            unsigned source_row = reverse ? 3 - i : i;
+            unsigned dest_row = reverse ? 2 - i : i + 1;
+
+            for (unsigned x = 0; x < 37; x++) {
+                if (0xa53c96e1U & (0x80000000U >> ((503 + x) % 32))) {
+                    expected[dest_row][x] = expected[source_row][x];
+                }
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+        for (unsigned row = 0; row < 4; row++) {
+            uint8_t bytes[37];
+
+            tiled_bytes(s, 0, 503, 126 + row, bytes, sizeof(bytes), false);
+            g_assert_cmpmem(bytes, sizeof(bytes), expected[row], sizeof(bytes));
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_tiled_failure(void)
+{
+    const unsigned indices[] = { 0, 1, 16, 17 };
+    g_autofree char *dir = g_dir_make_tmp("crime-tiled-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+    for (unsigned fault = 0; fault < 13; fault++) {
+        for (unsigned trigger = 8; trigger <= 0x18; trigger += 0x10) {
+            QTestState *s = start_options(
+                "-device sgi-crime-test-fixture,id=inject,"
+                "crime=/machine/peripheral/crime");
+            bool copy = fault == 7 || fault == 11 || fault == 12;
+            unsigned first_y = fault == 10 ? 0 : 127;
+            uint32_t mask = fault & 1 ? 0x80000000U : 1;
+            uint32_t good[10] = {
+                copy ? (1U << 11) | (1U << 5) : 0, mask, 0, 0x123456a5,
+                tiled_xy(511, first_y), tiled_xy(512, 128),
+                tiled_xy(511, first_y), tiled_xy(512, 128), 1, 1,
+            };
+            uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];
+            uint8_t page[65536];
+            uint64_t tables[2][ARRAY_SIZE(indices)];
+
+            tiled_map(s, 0, 511, first_y, 512, 128);
+            tiled_map(s, 1, 511, first_y, 512, 128);
+            tiled_stage(s, 511, first_y, 512, 128, mask, good[3]);
+            qtest_writel(s, MTE, good[0]);
+            qtest_writel(s, MTE + 0x20, good[4]);
+            qtest_writel(s, MTE + 0x28, good[5]);
+            for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+                qtest_memset(s, tiled_page(0, indices[i]) * 65536ULL,
+                             0xa5, sizeof(page));
+                qtest_memset(s, tiled_page(1, indices[i]) * 65536ULL,
+                             0x3c, sizeof(page));
+            }
+            switch (fault) {
+            case 0:
+                qtest_writel(s, MTE + 0x38, tiled_xy(8192, 128));
+                break;
+            case 1:
+                qtest_writel(s, MTE + 0x38, tiled_xy(512, 2048));
+                break;
+            case 2:
+                qtest_writel(s, MTE + 0x30, tiled_xy(513, 127));
+                break;
+            case 3:
+                qtest_writel(s, MTE + 0x30, tiled_xy(511, 129));
+                break;
+            case 4:
+                qtest_writel(s, MTE + 0x48, UINT32_MAX);
+                qtest_writel(s, MTE + 0x38, tiled_xy(512, 126));
+                break;
+            case 5:
+                qtest_writel(s, MTE, 1U << 8);
+                break;
+            case 6:
+                tiled_entry(s, 0, 17, 0);
+                break;
+            case 7:
+                tiled_entry(s, 1, 17, 0);
+                break;
+            case 8:
+                tiled_entry(s, 0, 17, 0x8400);
+                break;
+            case 9:
+                tiled_entry(s, 0, 17, 0x9400);
+                break;
+            case 10:
+                tiled_entry(s, 0, 16, 0x8000 | tiled_page(0, 0));
+                tiled_entry(s, 0, 17, 0x8000 | tiled_page(0, 1));
+                break;
+            case 11: /* Masking cannot legalize horizontal overlap. */
+                qtest_writel(s, MTE, 1U << 11);
+                qtest_writel(s, MTE + 0x20, tiled_xy(510, 127));
+                qtest_writel(s, MTE + 0x28, tiled_xy(511, 128));
+                break;
+            case 12:
+                qtest_writel(s, MTE + 0x40, UINT32_MAX);
+                break;
+            }
+            qtest_qmp_assert_success(s,
+                "{'execute':'qom-set',"
+                "'arguments':{'path':'/machine/peripheral/inject',"
+                "'property':'memory-error-status','value':234881024}}");
+            qtest_qmp_assert_success(s,
+                "{'execute':'qom-set',"
+                "'arguments':{'path':'/machine/peripheral/inject',"
+                "'property':'memory-error-address','value':74565}}");
+            qtest_irq_intercept_out_named(s, "/machine/peripheral/crime",
+                                          "cpu-ip");
+            qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+            qtest_writeq(s, BASE + 0x18, 1U << 4);
+            for (unsigned bank = 0; bank < 2; bank++) {
+                for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+                    tables[bank][i] = qtest_readq(s, 0x15001000ULL +
+                        bank * 512 + (indices[i] / 4) * 8);
+                }
+            }
+            clip_save(s, path, before);
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            g_assert_cmpint(memtx_writel(s, MTE + 0x800 + trigger,
+                trigger == 8 ? 0 : 0xabcdef12), ==, MEMTX_ERROR);
+            clip_stopped(s);
+            g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 1U << 4);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x18), ==, 1U << 4);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x250), ==, 234881024);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x258), ==, 74565);
+            g_assert_cmpint(qtest_get_irq(s, 0), ==, 1);
+            for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+                assert_bytes(s, tiled_page(0, indices[i]) * 65536ULL,
+                             sizeof(page), 0xa5);
+                assert_bytes(s, tiled_page(1, indices[i]) * 65536ULL,
+                             sizeof(page), 0x3c);
+            }
+            for (unsigned bank = 0; bank < 2; bank++) {
+                for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+                    g_assert_cmphex(qtest_readq(s, 0x15001000ULL +
+                        bank * 512 + (indices[i] / 4) * 8), ==,
+                                    tables[bank][i]);
+                }
+            }
+            clip_save(s, path, after);
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            tiled_map(s, 0, 511, first_y, 512, 128);
+            tiled_map(s, 1, 511, first_y, 512, 128);
+            for (unsigned i = 0; i < ARRAY_SIZE(good); i++) {
+                if (i != 2 && i * 8 != trigger) {
+                    qtest_writel(s, MTE + i * 8, good[i]);
+                }
+            }
+            g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+            for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+                unsigned index = indices[i];
+
+                qtest_memread(s, tiled_page(0, index) * 65536ULL,
+                             page, sizeof(page));
+                for (unsigned byte = 0; byte < sizeof(page); byte++) {
+                    unsigned x = (index % 16) * 512 + byte % 512;
+                    unsigned y = (index / 16) * 128 + byte / 512;
+                    bool enabled = x >= 511 && x <= 512 &&
+                        y >= first_y && y <= 128 &&
+                        (mask & (0x80000000U >> (x % 32)));
+                    uint8_t fill = good[3] >> (8 * (3 - x % 4));
+
+                    g_assert_cmphex(page[byte], ==,
+                                    enabled ? copy ? 0x3c : fill : 0xa5);
+                }
+            }
+            qtest_quit(s);
+        }
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_tiled_migration(void)
+{
+    uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES], bytes[73];
+    const uint32_t mask = 0xa53c96e1, fill = 0x12345678;
+    const uint8_t lanes[] = { 0x12, 0x34, 0x56, 0x78 };
+    g_autofree char *dir = g_dir_make_tmp("crime-tiled-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+    QTestState *s = start(), *to = start_options("-incoming defer");
+
+    tiled_map(s, 0, 502, 127, 574, 128);
+    tiled_stage(s, 503, 127, 573, 128, mask, fill);
+    for (unsigned y = 127; y <= 128; y++) {
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            bytes[i] = tiled_old_byte(502 + i, y);
+        }
+        tiled_bytes(s, 0, 502, y, bytes, sizeof(bytes), true);
+    }
+    clip_save(s, path, before);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+    sgi_wait_migration(to, "completed");
+    clip_save(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    for (unsigned y = 127; y <= 128; y++) {
+        tiled_bytes(to, 0, 502, y, bytes, sizeof(bytes), false);
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            g_assert_cmphex(bytes[i], ==, tiled_old_byte(502 + i, y));
+        }
+    }
+    g_assert_cmpint(memtx_writel(to, MTE + 0x870, 0), ==, MEMTX_OK);
+    for (unsigned y = 127; y <= 128; y++) {
+        tiled_bytes(to, 0, 502, y, bytes, sizeof(bytes), false);
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            unsigned x = 502 + i;
+            bool enabled = x >= 503 && x <= 573 &&
+                           (mask & (0x80000000U >> (x % 32)));
+
+            g_assert_cmphex(bytes[i], ==,
+                            enabled ? lanes[x % 4] : tiled_old_byte(x, y));
+        }
+    }
+    uint64_t marker = tiled_address(0, 504, 127);
+
+    qtest_writeb(to, marker, 0x77);
+    g_assert_cmphex(qtest_readl(to, STATUS), ==, 0x1e000000);
+    qtest_writel(to, MTE + 0x70, 0x12345678);
+    qtest_writel(to, MTE + 0x78, 0);
+    g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
+    qtest_system_reset(to);
+    g_assert_cmphex(qtest_readl(to, MTE + 8), ==, 0);
+    g_assert_cmphex(qtest_readl(to, MTE + 0x18), ==, 0);
+    g_assert_cmphex(qtest_readq(to, 0x15001000), ==, 0);
+    g_assert_cmphex(qtest_readb(to, marker), ==, 0x77);
+    qtest_quit(s);
+    qtest_quit(to);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_tiled_profiles(void)
+{
+    const char *previous = selected_profile;
+
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        for (unsigned functional = 0; functional < 2; functional++) {
+            QTestState *s;
+
+            if (legacy && functional) {
+                continue;
+            }
+            selected_profile = legacy ? "legacy-software" : "1.5";
+            s = start_profile(functional, "");
+            selected_profile = previous;
+            qtest_memset(s, 0x10000, 0x5a, 64);
+            if (functional) {
+                tiled_stage(s, 3, 0, 33, 0, 0xa53c96e1, 0x12345678);
+            } else {
+                g_assert_cmpint(memtx_writel(s, MTE + 8, 0xa53c96e1), ==,
+                                MEMTX_ERROR);
+            }
+            g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_ERROR);
+            assert_bytes(s, 0x10000, 64, 0x5a);
+            qtest_quit(s);
+        }
+    }
+}
+
 typedef struct TransferCase {
     const char *name;
     GTestFunc function;
@@ -1346,6 +1877,19 @@ int main(int argc, char **argv)
         { "invalid-stream", test_clip_invalid_stream, NULL, NULL,
           "legacy-software" },
     };
+    static const TransferCase tiled_tests[] = {
+        { "fill-lanes", test_tiled_fill_lanes, NULL, NULL, "legacy-software" },
+        { "masks", test_tiled_masks, NULL, NULL, "legacy-software" },
+        { "indexed-bytes", test_tiled_indexed_bytes, NULL, NULL,
+          "legacy-software" },
+        { "canvas", test_tiled_canvas, NULL, NULL, "legacy-software" },
+        { "start-forms", test_tiled_start_forms, NULL, NULL,
+          "legacy-software" },
+        { "copy-masks", test_tiled_copy_masks, NULL, NULL, "legacy-software" },
+        { "failure", test_tiled_failure, NULL, NULL, "legacy-software" },
+        { "migration", test_tiled_migration, NULL, NULL, "legacy-software" },
+        { "profiles", test_tiled_profiles, NULL, NULL, "legacy-software" },
+    };
     const char *profiles[] = { "1.5", "legacy-software" };
 
     g_test_init(&argc, &argv, NULL);
@@ -1365,6 +1909,12 @@ int main(int argc, char **argv)
                                                clip_tests[i].name);
 
         qtest_add_data_func(name, &clip_tests[i], run_transfer_case);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(tiled_tests); i++) {
+        g_autofree char *name = g_strdup_printf("/sgi/crime/mte/tiled/%s",
+                                               tiled_tests[i].name);
+
+        qtest_add_data_func(name, &tiled_tests[i], run_transfer_case);
     }
     return g_test_run();
 }
