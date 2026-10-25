@@ -752,6 +752,7 @@ tests/qtest/sgi-bic-board-interface-test.c
 tests/qtest/sgi-board-test.c
 tests/qtest/sgi-bridge-bus-test.c
 tests/qtest/sgi-command-port-test.c
+tests/qtest/sgi-crime-legacy-test-groups.txt
 tests/qtest/sgi-crime-render-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
