@@ -368,6 +368,7 @@ static const CrimeRenderRegister crime_render_registers[] = {
     { 0x060, 4, false }, { 0x070, 4, false }, { 0x074, 4, false },
     { 0x078, 4, false }, { 0x0a0, 4, false },
     { 0x0a8, 4, false }, { 0x0ac, 4, false },
+    { 0x0b0, 4, false }, { 0x0b4, 4, false },
     { 0x0c0, 4, true }, { 0x0c4, 4, true },
     { 0x0d0, 4, false }, { 0x0d8, 4, true },
     { 0x1b0, 4, true }, { 0x1b8, 4, true },
@@ -460,6 +461,25 @@ static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
     return crime_framebuffer_translate(s, bank,
                                         (uint64_t)x * stride + stride - bytes,
                                         y, bytes, physical, identity);
+}
+
+static CrimeRenderTranslation crime_render_linear(SGICrimeState *s,
+                                                   unsigned bank,
+                                                   uint32_t address,
+                                                   uint64_t *physical,
+                                                   uint64_t *identity)
+{
+    CrimeTransferSpan span;
+    unsigned count;
+    uint64_t length;
+
+    if (!crime_transfer_spans(s, bank - 4, address, address, &span,
+                              &count, &length, NULL)) {
+        return CRIME_RENDER_TRANSLATION_ERROR;
+    }
+    *physical = span.physical;
+    *identity = span.offset;
+    return CRIME_RENDER_MAPPED;
 }
 
 static int crime_render_compare_destination(const void *a, const void *b,
@@ -636,11 +656,14 @@ static bool crime_render_mode(uint32_t mode, unsigned *bank, unsigned *bytes,
     unsigned pixel_depth = (mode >> 2) & 3;
 
     *bank = mode >> 10;
-    if (*bank >= 3 || (mode & 3)) {
+    if ((*bank >= 3 && *bank != 4 && *bank != 5) || (mode & 3)) {
         return false;
     }
     *bytes = 1U << pixel_depth;
     *stride = 1U << storage_depth;
+    if (*bank >= 4) {
+        return pixel_type == 0 && pixel_depth == 0 && storage_depth == 0;
+    }
     return (pixel_type == 0 && pixel_depth == 0 &&
             (storage_depth == 0 || storage_depth == 2)) ||
            (pixel_type == 2 && storage_depth == pixel_depth &&
@@ -745,14 +768,14 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
                                            unsigned words)
 {
-    uint64_t p[128];
+    uint64_t p[128], linear_first = 0, linear_pitch = 0, linear_last = 0;
     uint32_t draw, clip, plane, stipple_mode;
     unsigned destination_bank, source_bank = 0, bytes, stride;
     unsigned source_bytes, source_stride, screen_count = 0;
     unsigned count = 0, suppressed = 0, operation;
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy;
-    bool copy, stipple, overlap, inside;
+    bool copy, stipple, overlap, inside, upload, download, transfer;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     g_autofree CrimeRenderPixel *pixels = NULL;
@@ -792,17 +815,27 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes, &stride)) {
         return crime_transfer_fail(offset, "unsupported destination mode");
     }
-    if (stride != bytes &&
-        (geometry.opcode != 3 || (draw & ~0x1002f8U))) {
-        return crime_transfer_fail(offset,
-                                   "unsupported indexed storage command");
-    }
     if (copy &&
-        (!crime_render_mode(p[0], &source_bank, &source_bytes,
-                            &source_stride) ||
-         source_bytes != bytes || source_stride != stride ||
-         p[0xa8 / 4] != 1 || p[0xac / 4] != 1)) {
+        !crime_render_mode(p[0], &source_bank, &source_bytes, &source_stride)) {
         return crime_transfer_fail(offset, "unsupported rectangle source");
+    }
+    upload = copy && source_bank >= 4 && destination_bank < 3;
+    download = copy && source_bank < 3 && destination_bank >= 4;
+    transfer = upload || download;
+    if (transfer) {
+        if (bytes != 1 || source_bytes != 1 || (draw & ~0x3002f8U)) {
+            return crime_transfer_fail(offset, "unsupported indexed transfer");
+        }
+    } else if (destination_bank >= 4 || (copy && source_bank >= 4) ||
+               (stride != bytes &&
+                (geometry.opcode != 3 || (draw & ~0x1002f8U))) ||
+               (copy && (source_bytes != bytes || source_stride != stride ||
+                         p[0xa8 / 4] != 1 || p[0xac / 4] != 1))) {
+        return crime_transfer_fail(offset, "unsupported rectangle layout");
+    }
+    if (words && (index == 0xb0 / 4 || index == 0xb4 / 4) && !download) {
+        return crime_transfer_fail(offset,
+                                   "destination START requires download");
     }
     operation = draw & 0x200 ? p[0x1b0 / 4] : 3;
     if ((draw & 0x200) && p[0x1b0 / 4] > 15) {
@@ -834,12 +867,35 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     }
     sx = p[0xa0 / 4] >> 16;
     sy = p[0xa0 / 4] & 0xffff;
-    if (copy && (sx >= 2048 || sy >= 2048 ||
-                 sx + geometry.x1 - geometry.x0 < 0 ||
-                 sx + geometry.x1 - geometry.x0 >= 2048 ||
-                 sy + geometry.y1 - geometry.y0 < 0 ||
-                 sy + geometry.y1 - geometry.y0 >= 2048)) {
+    if (download) {
+        if (sx >= 2048 || sy >= 2048 || sx + geometry.width > 2048 ||
+            sy + geometry.samples / geometry.width > 2048 ||
+            p[0xa8 / 4] != 1 || p[0xac / 4] != 1 || p[0xb4 / 4] != 1) {
+            return crime_transfer_fail(offset, "invalid indexed download");
+        }
+        linear_first = p[0xb0 / 4];
+        linear_pitch = geometry.width;
+        linear_last = linear_first + geometry.samples - 1;
+    } else if (upload) {
+        if (p[0xa8 / 4] != 1 || !p[0xac / 4] || p[0xac / 4] >= 0x10000000) {
+            return crime_transfer_fail(offset,
+                                       "unsupported upload source step");
+        }
+        linear_first = p[0xa0 / 4];
+        linear_pitch = geometry.width - 1 + p[0xac / 4];
+        linear_last = linear_first +
+            (geometry.samples / geometry.width - 1) * linear_pitch +
+            geometry.width - 1;
+    } else if (copy && (sx >= 2048 || sy >= 2048 ||
+                        sx + geometry.x1 - geometry.x0 < 0 ||
+                        sx + geometry.x1 - geometry.x0 >= 2048 ||
+                        sy + geometry.y1 - geometry.y0 < 0 ||
+                        sy + geometry.y1 - geometry.y0 >= 2048)) {
         return crime_transfer_fail(offset, "invalid source rectangle");
+    }
+    if (transfer && (linear_last > UINT32_MAX ||
+        (linear_last >> 12) - (linear_first >> 12) >= 32)) {
+        return crime_transfer_fail(offset, "invalid indexed linear envelope");
     }
     plane = draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX;
     plane &= UINT32_MAX >> (32 - 8 * bytes);
@@ -848,6 +904,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         int cx, cy;
         unsigned stripe_x = 1, stripe_y = 1;
         uint32_t color = p[0xd0 / 4];
+        uint32_t linear = transfer ? linear_first +
+            (i / geometry.width) * linear_pitch + i % geometry.width : 0;
         bool foreground = !stipple || (p[0xc4 / 4] & (1U << (31 - bit)));
 
         if (stipple) {
@@ -896,7 +954,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                     continue;
                 }
                 for (unsigned b = 0; b < bytes; b++) {
-                    unsigned lane = (x * stride + stride - bytes + b) & 3;
+                    unsigned lane = download ? (linear & 3) :
+                        (x * stride + stride - bytes + b) & 3;
 
                     if (!(draw & (1U << (6 - lane)))) {
                         mask &= ~(0xffU << (8 * (bytes - 1 - b)));
@@ -906,20 +965,42 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                     continue;
                 }
                 pixel = &pixels[count];
-                translation = crime_render_translate(
-                    s, destination_bank, x, y, bytes, stride,
-                    &pixel->destination, &pixel->destination_id);
+                if (download) {
+                    translation = crime_render_linear(
+                        s, destination_bank, linear, &pixel->destination,
+                        &pixel->destination_id);
+                } else {
+                    translation = crime_render_translate(
+                        s, destination_bank, x, y, bytes, stride,
+                        &pixel->destination, &pixel->destination_id);
+                }
 
                 if (!copy && translation == CRIME_RENDER_INVALID_TILE) {
                     suppressed++;
                     continue;
                 }
-                if (translation != CRIME_RENDER_MAPPED ||
-                    (copy && crime_render_translate(
-                        s, source_bank, sx + x - geometry.x0,
-                        sy + y - geometry.y0, bytes, stride,
-                        &pixel->source, &pixel->source_id) !=
-                        CRIME_RENDER_MAPPED)) {
+                if (translation != CRIME_RENDER_MAPPED) {
+                    return crime_transfer_fail(offset,
+                                               "invalid primitive mapping");
+                }
+                if (copy) {
+                    if (upload) {
+                        translation = crime_render_linear(
+                            s, source_bank, linear, &pixel->source,
+                            &pixel->source_id);
+                    } else {
+                        int origin_x = download ?
+                            MIN(geometry.x0, geometry.x1) : geometry.x0;
+                        int origin_y = download ?
+                            MIN(geometry.y0, geometry.y1) : geometry.y0;
+
+                        translation = crime_render_translate(
+                            s, source_bank, sx + x - origin_x,
+                            sy + y - origin_y, source_bytes, source_stride,
+                            &pixel->source, &pixel->source_id);
+                    }
+                }
+                if (copy && translation != CRIME_RENDER_MAPPED) {
                     return crime_transfer_fail(offset,
                                                "invalid primitive mapping");
                 }
@@ -929,8 +1010,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             }
         }
     }
-    if (!crime_render_validate(pixels, count, bytes, false, &overlap)) {
-        return crime_transfer_fail(offset, "destination aliases itself");
+    if (!crime_render_validate(pixels, count, bytes, transfer, &overlap) ||
+        (transfer && overlap)) {
+        return crime_transfer_fail(offset, "primitive memory aliases");
     }
     /* MMIO holds the BQL, keeping prevalidated RAM mappings stable. */
     result = crime_render_execute(offset, pixels, count, bytes, copy,

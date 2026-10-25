@@ -4716,6 +4716,1140 @@ static void test_clip_slot_shapes(void)
     qtest_quit(s);
 }
 
+static void test_transfer_upload_regression(void)
+{
+    QTestState *s = start_indexed_state();
+    const uint8_t source[] = { 0x13, 0x57, 0x9b, 0xed, 0xda, 0x24, 0x68, 0xac };
+
+    qtest_writeq(s, RE + 0x1700, 0x0000000080000040ULL);
+    qtest_writeq(s, RE + 0x1708, 0x8000004200000000ULL);
+    qtest_memwrite(s, 0x40ffd, source, 3);
+    qtest_memwrite(s, 0x42000, source + 3, 5);
+    map_region(s, 0, 4, 126, 126, 130, 129);
+    for (unsigned y = 126; y <= 129; y++) {
+        for (unsigned x = 126; x <= 130; x++) {
+            pixel_write(s, pixel_address(0, x, y, 4), 4, 0xa1b2c35a);
+        }
+    }
+    setup(s, 0x200, true);
+    qtest_writel(s, DE, 4U << 10);
+    qtest_writel(s, DE + 0x18, 0x200008);
+    qtest_writel(s, DE + 0x70, xy(127, 127));
+    qtest_writel(s, DE + 0x74, xy(129, 128));
+    qtest_writel(s, DE + 0xa8, 1);
+    qtest_writel(s, DE + 0xac, 3);
+    qtest_writel(s, DE + 0xd0, 0xdeadc0de);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8a0, 0x1ffd), ==, MEMTX_OK);
+    for (unsigned y = 126; y <= 129; y++) {
+        for (unsigned x = 126; x <= 130; x++) {
+            uint32_t expected = 0xa1b2c35a;
+
+            if (x >= 127 && x <= 129 && y >= 127 && y <= 128) {
+                expected = 0xa1b2c300 | source[(y - 127) * 5 + x - 127];
+            }
+            g_assert_cmphex(pixel_read(s, pixel_address(0, x, y, 4), 4), ==,
+                            expected);
+        }
+    }
+    qtest_quit(s);
+}
+
+typedef struct DeTransfer {
+    bool download;
+    unsigned bank, linear, storage, direction, width, height;
+    unsigned gx, gy, tx, ty, pitch, salt;
+    uint32_t address;
+    uint64_t p[128];
+} DeTransfer;
+
+static void de_transfer_geometry(DeTransfer *c)
+{
+    unsigned x1 = c->gx + c->width - 1, y1 = c->gy + c->height - 1;
+
+    c->p[0x60 / 4] = 0x03000000 | (c->direction << 16);
+    c->p[0x70 / 4] = xy(c->direction & 1 ? x1 : c->gx,
+                          c->direction & 2 ? c->gy : y1);
+    c->p[0x74 / 4] = xy(c->direction & 1 ? c->gx : x1,
+                          c->direction & 2 ? y1 : c->gy);
+    c->p[0xa0 / 4] = c->download ? xy(c->tx, c->ty) : c->address;
+    c->p[0xa8 / 4] = 1;
+    c->p[0xac / 4] = c->download ? 1 : c->pitch - c->width + 1;
+    c->p[0xb0 / 4] = c->download ? c->address : 0x89abcdef;
+    c->p[0xb4 / 4] = c->download ? 1 : 0xfedcba98;
+}
+
+static DeTransfer de_transfer_default(bool download, unsigned bank,
+                                       unsigned linear, unsigned storage,
+                                       unsigned direction)
+{
+    DeTransfer c = { .download = download, .bank = bank, .linear = linear,
+                    .storage = storage, .direction = direction,
+                    .width = 3, .height = 2, .address = 0x1ffd,
+                    .gx = download ? 7 : 127, .gy = download ? 13 : 127,
+                    .tx = 127, .ty = 127, .pitch = download ? 3 : 5 };
+    uint32_t tiled = (bank << 10) | (storage == 4 ? 0x200 : 0);
+    uint32_t packed = (4 + linear) << 10;
+
+    c.p[0] = download ? tiled : packed;
+    c.p[8 / 4] = download ? packed : tiled;
+    c.p[0x18 / 4] = 0x2002f8;
+    c.p[0xc0 / 4] = 0xfedcba98;
+    c.p[0xc4 / 4] = 0x96a53c81;
+    c.p[0xd0 / 4] = 0xdeadc0de;
+    c.p[0xd8 / 4] = 0x12345678;
+    c.p[0x1b0 / 4] = 3;
+    c.p[0x1b8 / 4] = UINT32_MAX;
+    de_transfer_geometry(&c);
+    return c;
+}
+
+static uint64_t de_linear_address(const DeTransfer *c, uint32_t address)
+{
+    return 0x400000 + c->linear * 0x40000 +
+           ((address >> 12) & 31) * 0x2000 + (address & 0xfff);
+}
+
+static uint32_t de_tile_old(unsigned x, unsigned y, unsigned salt)
+{
+    return (0xa1b2c35a ^ (x * 3 + y * 13) * 0x01030711U) ^ salt;
+}
+
+static uint8_t de_linear_old(uint32_t address, unsigned salt)
+{
+    return ((address * 37 + 17) ^ ((address & 0xfff) >> 8)) ^ salt;
+}
+
+static bool de_transfer_visible(const DeTransfer *c, unsigned x, unsigned y)
+{
+    uint32_t draw = c->p[0x18 / 4], clip = c->p[0x10 / 4];
+
+    if ((draw & (1U << 20)) && !inside_bounds(c->p[0x48 / 4], x, y)) {
+        return false;
+    }
+    for (unsigned n = 0; n < 5; n++) {
+        if ((clip & (1U << (5 + n))) &&
+            inside_bounds(c->p[(0x20 + n * 8) / 4], x, y) !=
+            !!(clip & (1U << n))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint32_t de_transfer_result(const DeTransfer *c, uint32_t old,
+                                    uint8_t source, unsigned lane,
+                                    unsigned passes)
+{
+    uint32_t mask = c->p[0x18 / 4] & 0x80 ? c->p[0x1b8 / 4] & 255 : 255;
+
+    if (!(c->p[0x18 / 4] & (1U << (6 - lane)))) {
+        return old;
+    }
+    for (unsigned i = 0; i < passes; i++) {
+        uint32_t value = c->p[0x18 / 4] & 0x200 ?
+            rop_result(c->p[0x1b0 / 4], source, old & 255, 8) : source;
+
+        old = (old & ~mask) | (value & mask);
+    }
+    return old;
+}
+
+static void de_transfer_memory(QTestState *s, const DeTransfer *c,
+                                bool initialize, unsigned passes)
+{
+    uint64_t first = c->address ? c->address - 1 : 0;
+    uint64_t last = (uint64_t)c->address +
+                    (c->height - 1) * c->pitch + c->width;
+    unsigned tx0 = c->tx ? c->tx - 1 : 0, ty0 = c->ty ? c->ty - 1 : 0;
+    unsigned tx1 = MIN(2047, c->tx + c->width);
+    unsigned ty1 = MIN(2047, c->ty + c->height);
+
+    g_assert_cmpuint(last - first, <=, 0x21000);
+    if (c->download && last - c->address == 0x20000) {
+        /* The table wraps both outside guards onto active bytes. */
+        first = c->address;
+        last--;
+    }
+    for (uint64_t v = first; v <= last;) {
+        unsigned count = MIN(last - v + 1, 4096 - (v & 0xfff));
+        g_autofree uint8_t *data = g_malloc(count);
+
+        if (!initialize) {
+            qtest_memread(s, de_linear_address(c, v), data, count);
+        }
+        for (unsigned n = 0; n < count; n++) {
+            uint32_t address = v + n;
+            uint32_t expected = de_linear_old(address,
+                                               c->download ? 0 : c->salt);
+
+            if (passes && c->download && address >= c->address) {
+                unsigned delta = address - c->address;
+                unsigned row = delta / c->width, col = delta % c->width;
+                unsigned x = c->gx +
+                    (c->direction & 1 ? c->width - 1 - col : col);
+                unsigned y = c->gy +
+                    (c->direction & 2 ? row : c->height - 1 - row);
+
+                if (row < c->height && de_transfer_visible(c, x, y)) {
+                    uint8_t source = de_tile_old(c->tx + x - c->gx,
+                                                 c->ty + y - c->gy, c->salt);
+
+                    expected = de_transfer_result(c, expected, source,
+                                                   address & 3, passes);
+                }
+            }
+            if (initialize) {
+                data[n] = expected;
+            } else {
+                g_assert_cmphex(data[n], ==, expected);
+            }
+        }
+        if (initialize) {
+            qtest_memwrite(s, de_linear_address(c, v), data, count);
+        }
+        v += count;
+    }
+    for (unsigned y = ty0; y <= ty1; y++) {
+        for (unsigned x = tx0; x <= tx1;) {
+            unsigned count = MIN(tx1 - x + 1,
+                                  (512 - x * c->storage % 512) / c->storage);
+            g_autofree uint8_t *data = g_malloc(count * c->storage);
+            uint64_t physical = pixel_address(c->bank, x, y, c->storage);
+
+            if (!initialize) {
+                qtest_memread(s, physical, data, count * c->storage);
+            }
+            for (unsigned n = 0; n < count; n++) {
+                unsigned px = x + n;
+                uint32_t expected = de_tile_old(px, y,
+                                                 c->download ? c->salt : 0);
+
+                if (passes && !c->download && px >= c->tx &&
+                    px < c->tx + c->width &&
+                    y >= c->ty && y < c->ty + c->height &&
+                    de_transfer_visible(c, px, y)) {
+                    unsigned col = c->direction & 1 ?
+                        c->tx + c->width - 1 - px : px - c->tx;
+                    unsigned row = c->direction & 2 ?
+                        y - c->ty : c->ty + c->height - 1 - y;
+                    uint8_t source = de_linear_old(
+                        c->address + row * c->pitch + col, c->salt);
+
+                    expected = de_transfer_result(c, expected, source,
+                        (px * c->storage + c->storage - 1) & 3, passes);
+                }
+                if (c->storage == 1) {
+                    expected &= 255;
+                }
+                if (initialize) {
+                    if (c->storage == 1) {
+                        data[n] = expected;
+                    } else {
+                        stl_be_p(data + n * 4, expected);
+                    }
+                } else {
+                    uint32_t actual = c->storage == 1 ? data[n] :
+                                      (uint32_t)ldl_be_p(data + n * 4);
+
+                    g_assert_cmphex(actual, ==, expected);
+                }
+            }
+            if (initialize) {
+                qtest_memwrite(s, physical, data, count * c->storage);
+            }
+            x += count;
+        }
+    }
+}
+
+static void de_transfer_stage(QTestState *s, const DeTransfer *c)
+{
+    IndexedRect raw = { 0 };
+
+    memcpy(raw.p, c->p, sizeof(raw.p));
+    indexed_stage(s, &raw);
+    qtest_writel(s, DE + 0xb0, c->p[0xb0 / 4]);
+    qtest_writel(s, DE + 0xb4, c->p[0xb4 / 4]);
+}
+
+static void de_transfer_prepare(QTestState *s, const DeTransfer *c)
+{
+    map_region(s, c->bank, c->storage, c->tx ? c->tx - 1 : 0,
+               c->ty ? c->ty - 1 : 0, MIN(2047, c->tx + c->width),
+               MIN(2047, c->ty + c->height));
+    for (unsigned word = 0; word < 16; word++) {
+        uint32_t page = 0x400 + c->linear * 0x40 + word * 4;
+
+        qtest_writeq(s, RE + 0x1700 + c->linear * 128 + word * 8,
+                     ((uint64_t)(0x80000000U | page) << 32) |
+                     (0x80000000U | (page + 2)));
+    }
+    de_transfer_memory(s, c, true, 0);
+    de_transfer_stage(s, c);
+}
+
+static void de_transfer_run(QTestState *s, const DeTransfer *c)
+{
+    de_transfer_prepare(s, c);
+    de_transfer_memory(s, c, false, 0);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
+    de_transfer_memory(s, c, false, 1);
+    assert_idle(s);
+}
+
+static void test_transfer_formats(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned linear = 0; linear < 2; linear++) {
+            for (unsigned storage = 1; storage <= 4; storage += 3) {
+                for (unsigned direction = 0; direction < 4; direction++) {
+                    DeTransfer c = de_transfer_default(download, bank, linear,
+                                                        storage, direction);
+
+                    if (storage == 1) {
+                        c.tx = 511;
+                        if (!download) {
+                            c.gx = c.tx;
+                        }
+                        de_transfer_geometry(&c);
+                    }
+                    de_transfer_run(s, &c);
+                    c.salt = 0x80;
+                    de_transfer_memory(s, &c, true, 0);
+                    /* Repeating START must read the source's current bytes. */
+                    qtest_writel(s, DE + 0x9f0, 0);
+                    de_transfer_memory(s, &c, false, 1);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_transfer_rops(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_indexed_state();
+    const uint32_t masks[] = { 0, 255, 0xa5, 0x0f, 0x1234565a };
+
+    for (unsigned storage = 1; storage <= 4; storage += 3) {
+        for (unsigned op = 0; op < 16; op++) {
+            for (unsigned mask = 0; mask < ARRAY_SIZE(masks); mask++) {
+                DeTransfer c = de_transfer_default(download, op % 3, op % 2,
+                                                    storage, op % 4);
+
+                c.p[0x1b0 / 4] = op;
+                c.p[0x1b8 / 4] = masks[mask];
+                de_transfer_run(s, &c);
+            }
+        }
+        DeTransfer c = de_transfer_default(download, 0, 1, storage, 2);
+
+        c.p[0x1b0 / 4] = 6;
+        de_transfer_run(s, &c);
+        qtest_writel(s, DE + 0x9f0, 0);
+        de_transfer_memory(s, &c, false, 2);
+        c.p[0x18 / 4] &= ~(0x200U | 0x80U);
+        c.p[0x1b0 / 4] = 0xdeadbeef;
+        c.p[0x1b8 / 4] = 0;
+        de_transfer_run(s, &c);
+    }
+    qtest_quit(s);
+}
+
+static void test_transfer_masks(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned storage = 1; storage <= 4; storage += 3) {
+        for (unsigned bit = 0; bit <= 8; bit++) {
+            for (unsigned lanes = 0; lanes < 16; lanes++) {
+                DeTransfer c = de_transfer_default(download, bit % 3, lanes % 2,
+                                                    storage, lanes % 4);
+
+                c.p[0x18 / 4] = 0x200280 | (lanes << 3);
+                c.p[0x1b0 / 4] = 15;
+                c.p[0x1b8 / 4] = bit == 8 ? 0 : 1U << bit;
+                de_transfer_run(s, &c);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_transfer_clipping(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned direction = 0; direction < 4; direction++) {
+        for (unsigned slot = 0; slot < 6; slot++) {
+            for (unsigned inside = 0; inside < 2; inside++) {
+                DeTransfer c = de_transfer_default(download, slot % 3, slot % 2,
+                                                    inside ? 4 : 1, direction);
+                uint64_t box = bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 1);
+
+                c.p[0x18 / 4] |= 1U << 20;
+                c.p[0x48 / 4] = bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 2);
+                if (slot < 5) {
+                    c.p[0x10 / 4] = (1U << (5 + slot)) | (inside << slot);
+                    c.p[(0x20 + slot * 8) / 4] = box;
+                }
+                de_transfer_run(s, &c);
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void de_transfer_raw(QTestState *s, const char *path,
+                            const DeTransfer *c)
+{
+    IndexedRect raw = { 0 };
+
+    memcpy(raw.p, c->p, sizeof(raw.p));
+    indexed_raw(s, path, &raw);
+}
+
+static void de_transfer_failure(QTestState *s, const DeTransfer *c,
+                                const char *path, uint64_t address,
+                                uint64_t value, unsigned width)
+{
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint64_t cpu_address = qtest_readq(s, CRIME + 0x40);
+    uint64_t cpu_status = qtest_readq(s, CRIME + 0x48);
+    uint64_t memory_status = qtest_readq(s, CRIME + 0x250);
+    uint64_t memory_address = qtest_readq(s, CRIME + 0x258);
+    uint64_t interrupts = qtest_readq(s, CRIME + 0x10);
+    unsigned outputs = 0;
+
+    for (unsigned i = 0; i < 5; i++) {
+        outputs |= qtest_get_irq(s, i) << i;
+    }
+    save_paired_renderer(s, path, before);
+    assert_failure(s, address, value, width);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x40), ==, cpu_address);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x48), ==, cpu_status);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x250), ==, memory_status);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x258), ==, memory_address);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, interrupts);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmpint(qtest_get_irq(s, i), ==, !!(outputs & (1U << i)));
+    }
+    de_transfer_memory(s, c, false, 0);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+}
+
+static void de_transfer_entry(QTestState *s, unsigned bank, unsigned slot,
+                              uint32_t entry)
+{
+    uint64_t address = RE + 0x1700 + bank * 128 + (slot / 2) * 8;
+    unsigned shift = slot & 1 ? 0 : 32;
+    uint64_t old = qtest_readq(s, address);
+
+    qtest_writeq(s, address,
+                 (old & ~(UINT64_C(0xffffffff) << shift)) |
+                 ((uint64_t)entry << shift));
+}
+
+static void test_transfer_boundaries(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned linear = 0; linear < 2; linear++) {
+        for (unsigned storage = 1; storage <= 4; storage += 3) {
+            DeTransfer c = de_transfer_default(download, linear, linear,
+                                                storage, 2);
+
+            c.address = 0x1fffd;
+            de_transfer_geometry(&c);
+            de_transfer_run(s, &c);
+            /* An odd initial slot must not consume its unused companion. */
+            c.address = 0x1ffd;
+            de_transfer_geometry(&c);
+            de_transfer_prepare(s, &c);
+            de_transfer_entry(s, linear, 0, 0);
+            de_transfer_entry(s, linear, 3, 0);
+            qtest_writel(s, DE + 0x9f0, 0);
+            de_transfer_memory(s, &c, false, 1);
+            /* Include every page in the envelope, even upload row gaps. */
+            c.gx = c.tx = c.gy = c.ty = 0;
+            c.address = 0x1000;
+            c.width = download ? 2048 : 1;
+            c.height = download ? 64 : 32;
+            c.pitch = download ? c.width : 4096;
+            de_transfer_geometry(&c);
+            de_transfer_run(s, &c);
+            c.gx = c.gy = download ? 7 : 2047;
+            c.tx = c.ty = 2047;
+            c.width = c.height = c.pitch = 1;
+            de_transfer_geometry(&c);
+            de_transfer_run(s, &c);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_transfer_ram_views(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    QTestState *s = start_profile_ram("legacy-software", true, true, false, "");
+    const unsigned views[] = { 0, 0x40000, 0x80000 };
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | (bank * 4));
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(views); view++) {
+        DeTransfer c = de_transfer_default(download, view, view & 1, 4, 2);
+
+        de_transfer_prepare(s, &c);
+        for (unsigned slot = 0; slot < 32; slot++) {
+            de_transfer_entry(s, c.linear, slot, 0x80000000U | views[view] |
+                              (0x400 + c.linear * 0x40 + slot * 2));
+        }
+        /* Tiled entries can name the full view, linear entries also no-ECC. */
+        for (unsigned y = 0; y < 2; y++) {
+            for (unsigned x = 0; x < 2; x++) {
+                unsigned index = 16 * y + x;
+
+                tile(s, c.bank, index, 0x4000 + page_for(c.bank, index));
+            }
+        }
+        qtest_writel(s, DE + 0x9f0, 0);
+        de_transfer_memory(s, &c, false, 1);
+    }
+    for (unsigned bank = 1; bank < 8; bank++) {
+        DeTransfer c = de_transfer_default(download, 0, bank & 1, 4, 2);
+        uint64_t boundary = 0x40000000ULL + (uint64_t)bank * 0x08000000;
+        unsigned page = boundary >> 12;
+        uint8_t before[10], after[10];
+        const uint8_t source[] = { 0x13, 0x57, 0x9b, 0x24, 0x68, 0xac };
+
+        de_transfer_prepare(s, &c);
+        de_transfer_entry(s, c.linear, 1, 0x80000000U | (page - 1));
+        de_transfer_entry(s, c.linear, 2, 0x80000000U | page);
+        qtest_memset(s, boundary - 4, 0x5a, sizeof(before));
+        if (!download) {
+            qtest_memwrite(s, boundary - 3, source, 3);
+            qtest_memwrite(s, boundary + 2, source + 3, 3);
+        }
+        qtest_memread(s, boundary - 4, before, sizeof(before));
+        /* A late missing placement or wrong geometry must write nothing. */
+        for (unsigned fault = 0; fault < 2; fault++) {
+            qtest_writeq(s, CRIME + 0x208 + bank * 8,
+                         fault ? bank * 4 : 0x100);
+            assert_failure(s, DE + 0x8d0, 0x12345678, 4);
+            qtest_writeq(s, CRIME + 0x208 + bank * 8, 0x100 | bank * 4);
+            qtest_memread(s, boundary - 4, after, sizeof(after));
+            g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+            de_transfer_memory(s, &c, false, 0);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        for (unsigned y = 0; y < 2; y++) {
+            for (unsigned x = 0; x < 3; x++) {
+                uint64_t tiled = pixel_address(c.bank, c.tx + x, c.ty + y, 4);
+                uint64_t linear = boundary - 3 + (download ? 3 : 5) * y + x;
+
+                if (download) {
+                    g_assert_cmphex(qtest_readb(s, linear), ==,
+                                    de_tile_old(c.tx + x, c.ty + y, 0) & 255);
+                } else {
+                    uint32_t expected = de_tile_old(c.tx + x, c.ty + y, 0);
+
+                    g_assert_cmphex(qtest_readl(s, tiled), ==,
+                                    (expected & ~255U) | source[y * 3 + x]);
+                }
+            }
+        }
+        g_assert_cmphex(qtest_readb(s, boundary - 4), ==, 0x5a);
+        g_assert_cmphex(qtest_readb(s, boundary + (download ? 3 : 5)), ==,
+                        0x5a);
+    }
+    qtest_quit(s);
+}
+
+static void test_transfer_semantics(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    g_autofree char *dir = g_dir_make_tmp("crime-transfer-fail-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_profile_ram("legacy-software", false, true, false,
+        "-device sgi-crime-test-fixture,id=inject,"
+        "crime=/machine/peripheral/crime");
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned fault = 0; fault < 36; fault++) {
+        DeTransfer c = de_transfer_default(download, fault % 3, fault % 2,
+                                            fault & 1 ? 4 : 1, 2);
+        unsigned source = 0, destination = 8 / 4;
+
+        de_transfer_prepare(s, &c);
+        switch (fault) {
+        case 0:
+            c.p[source] |= 1;
+            break;
+        case 1:
+            c.p[destination] |= 2;
+            break;
+        case 2:
+            c.p[source] |= 4;
+            break;
+        case 3:
+            c.p[destination] |= 0x100;
+            break;
+        case 4:
+            c.p[source] |= 0x10;
+            break;
+        case 5:
+            c.p[destination] |= 1U << 31;
+            break;
+        case 6:
+            c.p[0x18 / 4] |= 1;
+            break;
+        case 7:
+            c.p[0x18 / 4] |= 1U << 18;
+            break;
+        case 8:
+            c.p[0x18 / 4] |= 1U << 19;
+            break;
+        case 9:
+            c.p[0x50 / 4] = 1;
+            break;
+        case 10:
+            c.p[0x58 / 4] = 1;
+            break;
+        case 11:
+            c.p[0x60 / 4] = 0;
+            break;
+        case 12:
+            c.p[0x60 / 4] = 0x01000000;
+            break;
+        case 13:
+            c.p[0x60 / 4] |= 1;
+            break;
+        case 14:
+            c.p[0x70 / 4] = xy(2048, 127);
+            break;
+        case 15:
+            c.p[0x74 / 4] = xy(129, 2048);
+            break;
+        case 16:
+            c.p[0x1b0 / 4] = 16;
+            break;
+        case 17:
+            c.p[0xa8 / 4] = 0;
+            break;
+        case 18:
+            c.p[0xa8 / 4] = 2;
+            break;
+        case 19:
+            c.p[0xac / 4] = 0;
+            break;
+        case 20:
+            c.p[0xac / 4] = 0xffffffff;
+            break;
+        case 21:
+            c.p[0xac / 4] = 0x10000000;
+            break;
+        case 22:
+            c.p[0x10 / 4] = 1;
+            break;
+        case 23:
+            c.p[0x10 / 4] = 0x63;
+            break;
+        case 24:
+            c.p[0x10 / 4] = 0x60;
+            break;
+        case 25:
+            c.p[0x10 / 4] = 1U << 10;
+            break;
+        case 26:
+            c.p[0x10 / 4] = 0x21;
+            c.p[0x20 / 4] = bounds(3, 2, 1, 4);
+            break;
+        case 27:
+            c.p[0x18 / 4] |= 1U << 20;
+            c.p[0x48 / 4] = bounds(3, 2, 1, 4);
+            break;
+        case 28:
+            c.p[download ? source : destination] = (4 + c.linear) << 10;
+            break;
+        case 29:
+            c.p[download ? destination : source] =
+                (c.bank << 10) | 0x200;
+            break;
+        case 30:
+            c.p[download ? 0xb0 / 4 : 0xa0 / 4] = 0xfffffffe;
+            break;
+        case 31:
+            c.p[0x74 / 4] = xy(c.gx + 1023, c.gy + 127);
+            c.p[0xac / 4] = download ? 1 : 1024;
+            c.p[download ? 0xb0 / 4 : 0xa0 / 4] = 0x1001;
+            break;
+        case 32:
+            if (download) {
+                c.p[0xa0 / 4] = xy(2047, 127);
+            } else {
+                c.p[0xac / 4] = 32 * 4096;
+            }
+            break;
+        case 33:
+            if (download) {
+                c.p[0xa0 / 4] = xy(127, 2047);
+            } else {
+                c.p[0xa8 / 4] = 0x10000001;
+            }
+            break;
+        case 34:
+            if (download) {
+                c.p[0xb4 / 4] = 2;
+            } else {
+                c.p[0xac / 4] = 0x0fffffff;
+            }
+            break;
+        case 35:
+            c.p[0x18 / 4] |= 1U << 20;
+            c.p[0x48 / 4] = bounds(0, 0, 0, 0);
+            c.p[download ? 0xb0 / 4 : 0xa0 / 4] = 0xfffffffe;
+            break;
+        }
+        g_test_message("%s rejected state %u", download ? "download" : "upload",
+                       fault);
+        de_transfer_stage(s, &c);
+        indexed_fault_seed(s);
+        de_transfer_failure(s, &c, path, DE + 0x8d0, 0x23456789, 4);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_actual_accesses(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    g_autofree char *dir = g_dir_make_tmp("crime-transfer-access-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned storage = 1; storage <= 4; storage += 3) {
+        for (unsigned fault = 0; fault < 7; fault++) {
+            for (unsigned suppression = 0; suppression < 4; suppression++) {
+                DeTransfer c = de_transfer_default(download, fault % 3,
+                                                    fault % 2, storage, 2);
+                unsigned slot = 2;
+                unsigned index = (128 / 128) * 16 + 128 * storage / 512;
+
+                de_transfer_prepare(s, &c);
+                switch (fault) {
+                case 0:
+                    de_transfer_entry(s, c.linear, slot, 0);
+                    break;
+                case 1:
+                    de_transfer_entry(s, c.linear, slot, 0x80010000);
+                    break;
+                case 2:
+                    de_transfer_entry(s, c.linear, slot, 0x80004000);
+                    break;
+                case 3:
+                    de_transfer_entry(s, c.linear, slot, 0x800c0000);
+                    break;
+                case 4: {
+                    uint64_t address = RE + 0x1000 +
+                                       c.bank * 512 + index / 4 * 8;
+
+                    qtest_writeq(s, address, qtest_readq(s, address) &
+                        ~(UINT64_C(0x8000) << (48 - index % 4 * 16)));
+                    break;
+                }
+                case 5:
+                    tile(s, c.bank, index, 0x400);
+                    break;
+                case 6:
+                    tile(s, c.bank, index, 0x1000);
+                    break;
+                }
+                /* Hide the late fault without requiring any translation. */
+                if (suppression == 0) {
+                    c.p[0x18 / 4] |= 1U << 20;
+                    c.p[0x48 / 4] = bounds(0, 0, 0, 0);
+                } else if (suppression == 1) {
+                    c.p[0x1b8 / 4] = 0;
+                } else if (suppression == 2) {
+                    c.p[0x18 / 4] &= ~0x78U;
+                } else {
+                    c.p[0x10 / 4] = 0x21;
+                    c.p[0x20 / 4] = bounds(0, 0, 0, 0);
+                }
+                de_transfer_stage(s, &c);
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                de_transfer_memory(s, &c, false, 0);
+                /* A mapped prefix can pass with the faulty suffix clipped. */
+                c.p[0x18 / 4] = 0x3002f8;
+                c.p[0x10 / 4] = 0;
+                c.p[0x1b0 / 4] = 5;
+                c.p[0x1b8 / 4] = 255;
+                c.p[0x48 / 4] = bounds(c.gx, c.gy,
+                                         c.gx + c.width, c.gy + 1);
+                de_transfer_stage(s, &c);
+                g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                de_transfer_memory(s, &c, false, 0);
+                /* CLEAR and NOOP still consume every active mapping. */
+                c.p[0x18 / 4] = 0x2002f8;
+                c.p[0x10 / 4] = 0;
+                c.p[0x1b8 / 4] = 255;
+                for (unsigned op = 0; op <= 5; op += 5) {
+                    c.p[0x1b0 / 4] = op;
+                    de_transfer_stage(s, &c);
+                    de_transfer_failure(s, &c, path, DE + 0x8d0,
+                                        0x12345678, 4);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_aliases(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    g_autofree char *dir = g_dir_make_tmp("crime-transfer-alias-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned view = 0; view < 3; view++) {
+        DeTransfer c = de_transfer_default(download, 0, 0, 4, 2);
+        uint32_t page = 0x3f | (view == 1 ? 0x40000 :
+                                  view == 2 ? 0x80000 : 0);
+
+        de_transfer_prepare(s, &c);
+        /* A late active byte aliases the other layout's first index. */
+        de_transfer_entry(s, 0, 1, 0x80000000U | page);
+        de_transfer_failure(s, &c, path, DE + 0x8d0, 0x12345678, 4);
+        c.width = c.height = c.pitch = 1;
+        c.address = 0x1fff;
+        de_transfer_geometry(&c);
+        de_transfer_prepare(s, &c);
+        de_transfer_entry(s, 0, 1, 0x80000000U | page);
+        de_transfer_failure(s, &c, path, DE + 0x8d0, 0x12345678, 4);
+    }
+    for (unsigned storage = 1; storage <= 4; storage += 3) {
+        DeTransfer c = de_transfer_default(download, 0, 0, storage, 2);
+
+        c.gx = c.tx = c.gy = c.ty = 0;
+        c.address = 0x1000;
+        c.width = download ? 2048 : 512 / storage + 1;
+        c.height = download ? 3 : 1;
+        c.pitch = c.width;
+        de_transfer_geometry(&c);
+        de_transfer_prepare(s, &c);
+        if (download) {
+            de_transfer_entry(s, 0, 2, 0x80040402);
+        } else {
+            tile(s, 0, 1, 0x4000 + page_for(0, 0));
+        }
+        de_transfer_failure(s, &c, path, DE + 0x8d0, 0x12345678, 4);
+        /* Repeated source identities remain legal with disjoint output. */
+        c.width = download ? 512 / storage + 1 : 1;
+        c.height = download ? 1 : 2;
+        c.pitch = download ? c.width : 4096;
+        de_transfer_geometry(&c);
+        de_transfer_prepare(s, &c);
+        c.p[0x18 / 4] &= ~0x200U;
+        de_transfer_stage(s, &c);
+        if (download) {
+            tile(s, 0, 1, page_for(0, 0));
+            for (unsigned x = 0; x < 512 / storage; x++) {
+                pixel_write(s, pixel_address(0, x, 0, storage), storage,
+                            0xa1b2c300 | ((x * 37 + 0x79) & 255));
+            }
+        } else {
+            de_transfer_entry(s, 0, 2, 0x80000402);
+            qtest_writeb(s, de_linear_address(&c, 0x1000), 0x79);
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+        if (download) {
+            for (unsigned x = 0; x < c.width; x++) {
+                uint64_t address = de_linear_address(&c, c.address + x);
+
+                g_assert_cmphex(qtest_readb(s, address), ==,
+                                ((x % (512 / storage)) * 37 + 0x79) & 255);
+            }
+        } else {
+            for (unsigned y = 0; y < 2; y++) {
+                uint32_t expected = de_tile_old(0, y, 0);
+
+                expected = (expected & ~255U) | 0x79;
+                if (storage == 1) {
+                    expected &= 255;
+                }
+                g_assert_cmphex(pixel_read(s, pixel_address(0, 0, y, storage),
+                                           storage), ==, expected);
+            }
+        }
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_start_forms(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    g_autofree char *dir = g_dir_make_tmp("crime-transfer-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    unsigned total = ARRAY_SIZE(registers) + 4 + (download ? 2 : 0);
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned n = 0; n < total; n++) {
+        DeTransfer c = de_transfer_default(download, n % 3, n % 2,
+                                            n & 1 ? 4 : 1, n % 4);
+        unsigned offset = n < ARRAY_SIZE(registers) ? registers[n].offset :
+            n == ARRAY_SIZE(registers) ? 0x1f0 :
+            n < ARRAY_SIZE(registers) + 4 ?
+                paired_start_offsets[n - ARRAY_SIZE(registers) - 1] :
+                0xb0 + 4 * (n - ARRAY_SIZE(registers) - 4);
+        unsigned width = n < ARRAY_SIZE(registers) ? registers[n].width :
+            n > ARRAY_SIZE(registers) && n < ARRAY_SIZE(registers) + 4 ? 8 : 4;
+        bool pair = width == 8 && (offset == 0x70 || offset == 0xa8 ||
+                                   offset == 0xc0);
+        uint64_t value, old, words[RENDER_WORDS];
+
+        c.p[0x1b0 / 4] = 6;
+        c.p[0x1b8 / 4] = 0xa5;
+        if (offset == 0x10 || (offset >= 0x20 && offset <= 0x40)) {
+            unsigned slot = offset == 0x10 ? 4 : (offset - 0x20) / 8;
+
+            c.p[0x10 / 4] = (1U << (5 + slot)) | (1U << slot);
+            c.p[(0x20 + slot * 8) / 4] =
+                bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 1);
+        } else if (offset == 0x48) {
+            c.p[0x18 / 4] |= 1U << 20;
+            c.p[0x48 / 4] = bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 1);
+        }
+        de_transfer_prepare(s, &c);
+        value = offset == 0x1f0 ? 0x13579bdf : pair ?
+            (c.p[offset / 4] << 32) | c.p[offset / 4 + 1] : c.p[offset / 4];
+        old = ~value;
+        if (offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + offset, old, width), ==,
+                            MEMTX_OK);
+        }
+        /* Invalid prospective state cannot publish either paired member. */
+        qtest_writel(s, DE + (offset == 0x58 ? 0x50 : 0x58), 1);
+        de_transfer_failure(s, &c, path, DE + 0x800 + offset, value, width);
+        save_paired_renderer(s, path, words);
+        if (offset != 0x1f0) {
+            g_assert_cmphex(words[192 + offset / 4], ==,
+                            pair ? old >> 32 :
+                            width == 4 ? (uint32_t)old : old);
+            if (pair) {
+                g_assert_cmphex(words[192 + offset / 4 + 1], ==, (uint32_t)old);
+            }
+        }
+        qtest_writel(s, DE + (offset == 0x58 ? 0x50 : 0x58), 0);
+        de_transfer_memory(s, &c, false, 0);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width), ==,
+                        MEMTX_OK);
+        de_transfer_memory(s, &c, false, 1);
+        de_transfer_raw(s, path, &c);
+        qtest_writel(s, DE + 0x1f0, 0xfedcba98);
+        qtest_writel(s, DE + 0x1f8, 0);
+        assert_idle(s);
+        de_transfer_memory(s, &c, false, 1);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_accesses(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-transfer-map-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    for (unsigned download = 0; download < 2; download++) {
+        DeTransfer c = de_transfer_default(download, 1, 1, 4, 2);
+
+        de_transfer_prepare(s, &c);
+        de_transfer_raw(s, path, &c);
+        for (unsigned offset = 0xb0; offset <= 0xb4; offset += 4) {
+            for (unsigned width = 1; width <= 8; width *= 2) {
+                uint64_t readback;
+
+                g_assert_cmpint(memtx_read(s, DE + offset, &readback, width),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_read(s, DE + 0x800 + offset, &readback,
+                                           width), !=, MEMTX_OK);
+                if (width != 4) {
+                    de_transfer_failure(s, &c, path, DE + offset,
+                                        0x1122334455667788ULL, width);
+                    de_transfer_failure(s, &c, path, DE + 0x800 + offset,
+                                        0x1122334455667788ULL, width);
+                }
+            }
+            for (unsigned delta = 1; delta <= 3; delta++) {
+                uint64_t readback;
+
+                g_assert_cmpint(memtx_read(s, DE + offset + delta,
+                                           &readback, 4), !=, MEMTX_OK);
+                g_assert_cmpint(memtx_read(s, DE + 0x800 + offset + delta,
+                                           &readback, 4), !=, MEMTX_OK);
+                de_transfer_failure(s, &c, path, DE + offset + delta,
+                                    0x12345678, 4);
+                de_transfer_failure(s, &c, path, DE + 0x800 + offset + delta,
+                                    0x12345678, 4);
+            }
+            if (!download) {
+                de_transfer_failure(s, &c, path, DE + 0x800 + offset, 1, 4);
+            }
+        }
+        de_transfer_raw(s, path, &c);
+        for (unsigned n = 0; n < 3; n++) {
+            unsigned offset = n == 0 ? 0xa4 : n == 1 ? 0xa0 : 0x80;
+            unsigned width = n == 1 ? 8 : 4;
+
+            if (n == 1) {
+                de_transfer_failure(s, &c, path, DE + offset,
+                                    0x11223344, width);
+            } else {
+                g_assert_cmpint(memtx_write(s, DE + offset, 0x11223344, width),
+                                !=, MEMTX_OK);
+                de_transfer_raw(s, path, &c);
+                de_transfer_memory(s, &c, false, 0);
+            }
+            de_transfer_failure(s, &c, path, DE + 0x800 + offset,
+                                0x11223344, width);
+        }
+    }
+    /* The new aliases cannot execute fills or an existing tiled copy. */
+    for (unsigned copy = 0; copy < 2; copy++) {
+        DeTransfer c = de_transfer_default(false, 0, 0, 1, 2);
+
+        de_transfer_prepare(s, &c);
+        c.p[0] = c.p[8 / 4];
+        c.p[0xa0 / 4] = xy(c.tx, c.ty);
+        c.p[0xac / 4] = 1;
+        if (!copy) {
+            c.p[0x18 / 4] &= ~0x200000U;
+        }
+        de_transfer_stage(s, &c);
+        for (unsigned offset = 0xb0; offset <= 0xb4; offset += 4) {
+            de_transfer_failure(s, &c, path, DE + 0x800 + offset, 1, 4);
+        }
+    }
+    qtest_quit(s);
+    for (unsigned profile = 0; profile < 2; profile++) {
+        QTestState *other = start_profile_ram(profile ? "legacy-software" :
+            "1.5", false, !profile, false, "");
+        uint64_t readback;
+
+        qtest_writeq(other, 0x30000, 0xa1b2c35a12345678ULL);
+        for (unsigned offset = 0xb0; offset <= 0xb4; offset += 4) {
+            for (unsigned start = 0; start < 2; start++) {
+                uint64_t address = DE + start * 0x800 + offset;
+
+                g_assert_cmpint(memtx_write(other, address, 1, 4), !=,
+                                MEMTX_OK);
+                g_assert_cmpint(memtx_read(other, address, &readback, 4), !=,
+                                MEMTX_OK);
+                g_assert_cmphex(qtest_readq(other, 0x30000), ==,
+                                0xa1b2c35a12345678ULL);
+            }
+        }
+        qtest_quit(other);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_transfer_migration(gconstpointer data)
+{
+    bool download = GPOINTER_TO_UINT(data);
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-transfer-migrate-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *next = g_build_filename(dir, "next", NULL);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *incoming = g_strdup_printf("exec:cat %s", quoted);
+
+    for (unsigned linear = 0; linear < 2; linear++) {
+        QTestState *from = start(), *to = start_options("-incoming defer");
+        QTestState *control = start_indexed_state();
+        DeTransfer c = de_transfer_default(download, linear + 1, linear, 4, 1);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+        c.p[0x18 / 4] |= 1U << 20;
+        c.p[0x48 / 4] = bounds(c.gx + 1, c.gy, c.gx + 3, c.gy + 2);
+        c.p[0x1b0 / 4] = 6;
+        c.p[0x1b8 / 4] = 0x123456a5;
+        for (unsigned peer = 0; peer < 2; peer++) {
+            QTestState *q = peer ? control : from;
+
+            de_transfer_prepare(q, &c);
+            /* Both banks and unused destination words survive exactly. */
+            de_transfer_entry(q, !linear, 3, 0x80000654);
+            qtest_writel(q, DE + 0xa8, 0xf1234567);
+        }
+        save_renderer(from, path, before);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", incoming);
+        sgi_wait_migration(to, "completed");
+        save_paired_renderer(to, next, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        de_transfer_memory(to, &c, false, 0);
+        for (unsigned word = 0; word < 32; word++) {
+            g_assert_cmphex(qtest_readq(to, RE + 0x1700 + word * 8), ==,
+                            qtest_readq(control, RE + 0x1700 + word * 8));
+        }
+        for (unsigned peer = 0; peer < 2; peer++) {
+            QTestState *q = peer ? to : control;
+
+            qtest_irq_intercept_out_named(q, "/machine/peripheral/crime",
+                                           "cpu-ip");
+            de_transfer_failure(q, &c, next, DE + 0x8d0, 0x12345678, 4);
+            qtest_writel(q, DE + 0xa8, 1);
+            qtest_writel(q, DE + 0x9f0, 0);
+            de_transfer_memory(q, &c, false, 1);
+            qtest_writel(q, DE + 0x1f0, 0x12345678);
+            qtest_writel(q, DE + 0x1f8, 0);
+            assert_idle(q);
+            de_transfer_memory(q, &c, false, 1);
+        }
+        save_paired_renderer(to, next, after);
+        save_paired_renderer(control, path, before);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        qtest_system_reset(to);
+        de_transfer_memory(to, &c, false, 1);
+        save_paired_renderer(to, next, after);
+        for (unsigned i = 0; i < RENDER_WORDS; i++) {
+            g_assert_cmphex(after[i], ==, 0);
+        }
+        for (unsigned word = 0; word < 32; word++) {
+            g_assert_cmphex(qtest_readq(to, RE + 0x1700 + word * 8), ==, 0);
+        }
+        de_transfer_run(to, &c);
+        qtest_quit(from);
+        qtest_quit(to);
+        qtest_quit(control);
+    }
+    g_unlink(path);
+    g_unlink(next);
+    g_rmdir(dir);
+}
+
 /* Use the native Meson groups while retaining one TAP plan per process. */
 static GPtrArray *group_paths;
 
@@ -4763,10 +5897,65 @@ static void add_case(const char *path, GTestFunc fn)
     }
 }
 
+static void add_data_case(const char *path, gconstpointer data,
+                          GTestDataFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_data_func(path, data, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
+    add_data_case("sgi/crime/render/transfer/upload/aliases",
+                  GUINT_TO_POINTER(0), test_transfer_aliases);
+    add_data_case("sgi/crime/render/transfer/upload/ram-views",
+                  GUINT_TO_POINTER(0), test_transfer_ram_views);
+    add_data_case("sgi/crime/render/transfer/upload/boundaries",
+                  GUINT_TO_POINTER(0), test_transfer_boundaries);
+    add_data_case("sgi/crime/render/transfer/upload/semantics",
+                  GUINT_TO_POINTER(0), test_transfer_semantics);
+    add_data_case("sgi/crime/render/transfer/upload/actual-accesses",
+                  GUINT_TO_POINTER(0), test_transfer_actual_accesses);
+    add_data_case("sgi/crime/render/transfer/upload/start-forms",
+                  GUINT_TO_POINTER(0), test_transfer_start_forms);
+    add_data_case("sgi/crime/render/transfer/upload/migration",
+                  GUINT_TO_POINTER(0), test_transfer_migration);
+    add_data_case("sgi/crime/render/transfer/download/aliases",
+                  GUINT_TO_POINTER(1), test_transfer_aliases);
+    add_data_case("sgi/crime/render/transfer/download/ram-views",
+                  GUINT_TO_POINTER(1), test_transfer_ram_views);
+    add_data_case("sgi/crime/render/transfer/download/boundaries",
+                  GUINT_TO_POINTER(1), test_transfer_boundaries);
+    add_data_case("sgi/crime/render/transfer/download/semantics",
+                  GUINT_TO_POINTER(1), test_transfer_semantics);
+    add_data_case("sgi/crime/render/transfer/download/actual-accesses",
+                  GUINT_TO_POINTER(1), test_transfer_actual_accesses);
+    add_data_case("sgi/crime/render/transfer/download/start-forms",
+                  GUINT_TO_POINTER(1), test_transfer_start_forms);
+    add_data_case("sgi/crime/render/transfer/download/migration",
+                  GUINT_TO_POINTER(1), test_transfer_migration);
+    add_case("sgi/crime/render/transfer/accesses", test_transfer_accesses);
+    add_data_case("sgi/crime/render/transfer/upload/formats",
+                  GUINT_TO_POINTER(0), test_transfer_formats);
+    add_data_case("sgi/crime/render/transfer/upload/rops",
+                  GUINT_TO_POINTER(0), test_transfer_rops);
+    add_data_case("sgi/crime/render/transfer/upload/masks",
+                  GUINT_TO_POINTER(0), test_transfer_masks);
+    add_data_case("sgi/crime/render/transfer/upload/clipping",
+                  GUINT_TO_POINTER(0), test_transfer_clipping);
+    add_data_case("sgi/crime/render/transfer/download/formats",
+                  GUINT_TO_POINTER(1), test_transfer_formats);
+    add_data_case("sgi/crime/render/transfer/download/rops",
+                  GUINT_TO_POINTER(1), test_transfer_rops);
+    add_data_case("sgi/crime/render/transfer/download/masks",
+                  GUINT_TO_POINTER(1), test_transfer_masks);
+    add_data_case("sgi/crime/render/transfer/download/clipping",
+                  GUINT_TO_POINTER(1), test_transfer_clipping);
+    add_case("sgi/crime/render/transfer/upload-regression",
+             test_transfer_upload_regression);
     add_case("sgi/crime/render/indexed-word/clip-slot-shapes",
                    test_clip_slot_shapes);
     add_case("sgi/crime/render/indexed-word/migration",
