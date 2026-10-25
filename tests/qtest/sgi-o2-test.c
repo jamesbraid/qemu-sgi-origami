@@ -5487,7 +5487,8 @@ static void test_storage_host_offset_four(void)
             }
             o2_storage_host_setup(t.qts, address, count, true);
             while (consumed < count) {
-                unsigned valid = MIN(count - consumed, 256);
+                uint8_t fifo[256];
+                unsigned valid = MIN(count - consumed, sizeof(fifo));
                 unsigned accepted = consumed + valid;
 
                 qtest_writeb(t.qts, o2_storage_aic(0x93), 0x0c);
@@ -5503,9 +5504,9 @@ static void test_storage_host_offset_four(void)
                 qtest_writeb(t.qts, o2_storage_aic(0x93), 4);
                 g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x93)) & 0x38,
                                 ==, 0);
+                qtest_readb_repeated(t.qts, o2_storage_aic(0x99), fifo, valid);
                 for (unsigned i = 0; i < valid; i++) {
-                    g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x99)),
-                                    ==, guarded[12 + consumed + i]);
+                    g_assert_cmphex(fifo[i], ==, guarded[12 + consumed + i]);
                 }
                 g_assert_cmphex(qtest_readb(t.qts, o2_storage_aic(0x94)) & 0x23,
                                 ==, 0x21);
@@ -8000,223 +8001,271 @@ static void test_storage_diagnostic_rejections(void)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+/* Use the native Meson groups while retaining one TAP plan per process. */
+static GPtrArray *group_paths;
+
+static void take_group_paths(int *argc, char **argv)
+{
+    int kept = 1;
+
+    for (int i = 1; i < *argc; i++) {
+        if (g_str_equal(argv[i], "--group-path") && i + 1 < *argc) {
+            if (!group_paths) {
+                group_paths = g_ptr_array_new();
+            }
+            g_ptr_array_add(group_paths, argv[++i]);
+        } else {
+            argv[kept++] = argv[i];
+        }
+    }
+    argv[kept] = NULL;
+    *argc = kept;
+}
+
+static bool in_group(const char *path)
+{
+    g_autofree char *full = g_strdup_printf("/%s/%s", qtest_get_arch(),
+                                            path);
+    g_autofree char *suite = g_path_get_dirname(full);
+
+    if (!group_paths) {
+        return true;
+    }
+    for (guint i = 0; i < group_paths->len; i++) {
+        const char *taken = g_ptr_array_index(group_paths, i);
+
+        if (g_str_equal(taken, full) || g_str_equal(taken, suite)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_case(const char *path, GTestFunc fn)
+{
+    if (in_group(path)) {
+        qtest_add_func(path, fn);
+    }
+}
+
 int main(int argc, char **argv)
 {
+    take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/o2/mace-pci-functional/unused-aic-config",
+    add_case("o2/mace-pci-functional/unused-aic-config",
                    test_mace_pci_unused_aic_config);
-    qtest_add_func("/o2/mace-pci-functional/fresh-reads",
+    add_case("o2/mace-pci-functional/fresh-reads",
                    test_mace_pci_fresh_reads);
-    qtest_add_func("/o2/ram-aliases", test_ram_aliases);
-    qtest_add_func("/o2/banked-registers", test_banked_registers);
-    qtest_add_func("/o2/banked-approx-reset-ram",
+    add_case("o2/ram-aliases", test_ram_aliases);
+    add_case("o2/banked-registers", test_banked_registers);
+    add_case("o2/banked-approx-reset-ram",
                    test_banked_approx_reset_ram);
-    qtest_add_func("/o2/empty-renderer-status",
+    add_case("o2/empty-renderer-status",
                    test_empty_renderer_status);
-    qtest_add_func("/o2/banked-approx-first-write",
+    add_case("o2/banked-approx-first-write",
                    test_banked_approx_first_write);
-    qtest_add_func("/o2/banked-approx-bank-one-cpu-error",
+    add_case("o2/banked-approx-bank-one-cpu-error",
                    test_banked_approx_bank_one_cpu_error);
-    qtest_add_func("/o2/banked-approx-uncached-ram",
+    add_case("o2/banked-approx-uncached-ram",
                    test_banked_approx_uncached_ram);
-    qtest_add_func("/o2/banked-aliases", test_banked_aliases);
-    qtest_add_func("/o2/banked-remap", test_banked_remap);
-    qtest_add_func("/o2/banked-reset", test_banked_reset);
-    qtest_add_func("/o2/banked-migration", test_banked_migration);
-    qtest_add_func("/o2/banked-incoming-migration",
+    add_case("o2/banked-aliases", test_banked_aliases);
+    add_case("o2/banked-remap", test_banked_remap);
+    add_case("o2/banked-reset", test_banked_reset);
+    add_case("o2/banked-migration", test_banked_migration);
+    add_case("o2/banked-incoming-migration",
                    test_banked_incoming_migration);
-    qtest_add_func("/o2/mace-ram-link", test_mace_ram_link);
-    qtest_add_func("/o2/ram-128m-aliases", test_ram_128m_aliases);
-    qtest_add_func("/o2/reset-registers", test_reset_registers);
-    qtest_add_func("/o2/interrupt-chain", test_interrupt_chain);
-    qtest_add_func("/o2/banked-interrupt-chain",
+    add_case("o2/mace-ram-link", test_mace_ram_link);
+    add_case("o2/ram-128m-aliases", test_ram_128m_aliases);
+    add_case("o2/reset-registers", test_reset_registers);
+    add_case("o2/interrupt-chain", test_interrupt_chain);
+    add_case("o2/banked-interrupt-chain",
                    test_banked_interrupt_chain);
-    qtest_add_func("/o2/rom-aliases", test_rom_aliases);
-    qtest_add_func("/o2/banked-approx-rom-aliases",
+    add_case("o2/rom-aliases", test_rom_aliases);
+    add_case("o2/banked-approx-rom-aliases",
                    test_banked_approx_rom_aliases);
-    qtest_add_func("/o2/banked-approx-rom-first-fetch",
+    add_case("o2/banked-approx-rom-first-fetch",
                    test_banked_approx_rom_first_fetch);
-    qtest_add_func("/o2/cpu-reset-restarts-rom",
+    add_case("o2/cpu-reset-restarts-rom",
                    test_cpu_reset_restarts_rom);
-    qtest_add_func("/o2/private-window-backing-isolation",
+    add_case("o2/private-window-backing-isolation",
                    test_private_window_backing_isolation);
-    qtest_add_func("/o2/private-window-boundary",
+    add_case("o2/private-window-boundary",
                    test_private_window_boundary);
-    qtest_add_func("/o2/private-window-backing-remap",
+    add_case("o2/private-window-backing-remap",
                    test_private_window_backing_remap);
-    qtest_add_func("/o2/private-window-other-cache-algorithms",
+    add_case("o2/private-window-other-cache-algorithms",
                    test_private_window_other_cache_algorithms);
-    qtest_add_func("/o2/private-window-missed-rom-trigger",
+    add_case("o2/private-window-missed-rom-trigger",
                    test_private_window_missed_rom_trigger);
-    qtest_add_func("/o2/private-window-missed-rom-poll",
+    add_case("o2/private-window-missed-rom-poll",
                    test_private_window_missed_rom_poll);
-    qtest_add_func("/o2/private-window-low-fetch-report",
+    add_case("o2/private-window-low-fetch-report",
                    test_private_window_low_fetch_report);
-    qtest_add_func("/o2/private-window-uncached-low-fetch-release",
+    add_case("o2/private-window-uncached-low-fetch-release",
                    test_private_window_uncached_low_fetch_release);
-    qtest_add_func("/o2/private-window-guest-copy-release",
+    add_case("o2/private-window-guest-copy-release",
                    test_private_window_guest_copy_release);
-    qtest_add_func("/o2/private-window-incomplete-copy",
+    add_case("o2/private-window-incomplete-copy",
                    test_private_window_incomplete_copy);
-    qtest_add_func("/o2/private-window-high-sp-release",
+    add_case("o2/private-window-high-sp-release",
                    test_private_window_high_sp_release);
-    qtest_add_func("/o2/coherent-ram", test_coherent_ram);
-    qtest_add_func("/o2/uncached-window", test_uncached_window);
-    qtest_add_func("/o2/uncached-mmio", test_uncached_mmio);
-    qtest_add_func("/o2/uncached-128m-boundary",
+    add_case("o2/coherent-ram", test_coherent_ram);
+    add_case("o2/uncached-window", test_uncached_window);
+    add_case("o2/uncached-mmio", test_uncached_mmio);
+    add_case("o2/uncached-128m-boundary",
                    test_uncached_128m_boundary);
-    qtest_add_func("/o2/banked-uncached-window",
+    add_case("o2/banked-uncached-window",
                    test_banked_uncached_window);
-    qtest_add_func("/o2/banked-approx-uncached-remap",
+    add_case("o2/banked-approx-uncached-remap",
                    test_banked_approx_uncached_remap);
-    qtest_add_func("/o2/module-profile", test_module_profile);
-    qtest_add_func("/o2/prom-sb64-reset", test_prom_sb64_reset);
-    qtest_add_func("/o2/gbe11-registers", test_gbe11_registers);
-    qtest_add_func("/o2/gbe-external-ttl/default",
+    add_case("o2/module-profile", test_module_profile);
+    add_case("o2/prom-sb64-reset", test_prom_sb64_reset);
+    add_case("o2/gbe11-registers", test_gbe11_registers);
+    add_case("o2/gbe-external-ttl/default",
                    test_gbe_external_ttl_default);
-    qtest_add_func("/o2/gbe-external-ttl/board", test_gbe_external_ttl_board);
-    qtest_add_func("/o2/gbe-external-ttl/configuration",
+    add_case("o2/gbe-external-ttl/board", test_gbe_external_ttl_board);
+    add_case("o2/gbe-external-ttl/configuration",
                    test_gbe_external_ttl_configuration);
-    qtest_add_func("/o2/gbe-external-ttl/migration",
+    add_case("o2/gbe-external-ttl/migration",
                    test_gbe_external_ttl_migration);
-    qtest_add_func("/o2/aic-pci-diagnostic", test_aic_pci_diagnostic);
-    qtest_add_func("/o2/aic-pci-low-dma-policy-off",
+    add_case("o2/aic-pci-diagnostic", test_aic_pci_diagnostic);
+    add_case("o2/aic-pci-low-dma-policy-off",
                    test_aic_pci_low_dma_policy_off);
-    qtest_add_func("/o2/mace-low-dma-option-scope",
+    add_case("o2/mace-low-dma-option-scope",
                    test_mace_low_dma_option_scope);
-    qtest_add_func("/o2/aic-pci-diagnostic-rejections",
+    add_case("o2/aic-pci-diagnostic-rejections",
                    test_aic_pci_diagnostic_rejections);
-    qtest_add_func("/o2/mace-native-bytes", test_mace_native_bytes);
-    qtest_add_func("/o2/mace-native-failure-prefix",
+    add_case("o2/mace-native-bytes", test_mace_native_bytes);
+    add_case("o2/mace-native-failure-prefix",
                    test_mace_native_failure_prefix);
-    qtest_add_func("/o2/mace-banked-dma-fixture",
+    add_case("o2/mace-banked-dma-fixture",
                    test_mace_banked_dma_fixture);
-    qtest_add_func("/o2/mace-banked-dma-fixture-lifetime",
+    add_case("o2/mace-banked-dma-fixture-lifetime",
                    test_mace_banked_dma_fixture_lifetime);
-    qtest_add_func("/o2/mace-banked-dma-fixture-rejections",
+    add_case("o2/mace-banked-dma-fixture-rejections",
                    test_mace_banked_dma_fixture_rejections);
-    qtest_add_func("/o2/storage-diagnostic-apertures",
+    add_case("o2/storage-diagnostic-apertures",
                    test_storage_diagnostic_apertures);
-    qtest_add_func("/o2/storage-pio-byte-lanes",
+    add_case("o2/storage-pio-byte-lanes",
                    test_storage_pio_byte_lanes);
-    qtest_add_func("/o2/storage-pio-aic-hcntrl",
+    add_case("o2/storage-pio-aic-hcntrl",
                    test_storage_pio_aic_hcntrl);
-    qtest_add_func("/o2/storage-diagnostic-pci-parity-readback",
+    add_case("o2/storage-diagnostic-pci-parity-readback",
                    test_storage_diagnostic_pci_parity_readback);
-    qtest_add_func("/o2/storage-diagnostic-tcg-inventory",
+    add_case("o2/storage-diagnostic-tcg-inventory",
                    test_storage_diagnostic_tcg_inventory);
-    qtest_add_func("/o2/storage-host-dfdat-pci-route",
+    add_case("o2/storage-host-dfdat-pci-route",
                    test_storage_host_dfdat_pci_route);
-    qtest_add_func("/o2/storage-host-offset-four",
+    add_case("o2/storage-host-offset-four",
                    test_storage_host_offset_four);
-    qtest_add_func("/o2/storage-host-offset-four-write",
+    add_case("o2/storage-host-offset-four-write",
                    test_storage_host_offset_four_write);
-    qtest_add_func("/o2/storage-host-offset-four-refusals",
+    add_case("o2/storage-host-offset-four-refusals",
                    test_storage_host_offset_four_refusals);
-    qtest_add_func("/o2/storage-host-offset-four-disabled",
+    add_case("o2/storage-host-offset-four-disabled",
                    test_storage_host_offset_four_disabled);
-    qtest_add_func("/o2/storage-diagnostic-dma-events",
+    add_case("o2/storage-diagnostic-dma-events",
                    test_storage_diagnostic_dma_events);
-    qtest_add_func("/o2/low-ethernet-dma-preserves-aic-pci",
+    add_case("o2/low-ethernet-dma-preserves-aic-pci",
                    test_low_ethernet_dma_preserves_aic_pci);
-    qtest_add_func("/o2/default-aic-64m", test_default_aic_64m);
-    qtest_add_func("/o2/default-aic-128m", test_default_aic_128m);
-    qtest_add_func("/o2/default-aic-full-1g", test_default_aic_full_1g);
-    qtest_add_func("/o2/default-aic-low-dma-28-bytes",
+    add_case("o2/default-aic-64m", test_default_aic_64m);
+    add_case("o2/default-aic-128m", test_default_aic_128m);
+    add_case("o2/default-aic-full-1g", test_default_aic_full_1g);
+    add_case("o2/default-aic-low-dma-28-bytes",
                    test_default_aic_low_dma_28_bytes);
-    qtest_add_func("/o2/default-aic-low-dma-write",
+    add_case("o2/default-aic-low-dma-write",
                    test_default_aic_low_dma_write);
-    qtest_add_func("/o2/full-identity-ethernet-aic",
+    add_case("o2/full-identity-ethernet-aic",
                    test_full_identity_ethernet_aic);
-    qtest_add_func("/o2/storage-queue-before-completion-interrupt",
+    add_case("o2/storage-queue-before-completion-interrupt",
                    test_storage_queue_before_completion_interrupt);
-    qtest_add_func("/o2/storage-high-id-selection-timeout",
+    add_case("o2/storage-high-id-selection-timeout",
                    test_storage_high_id_selection_timeout);
-    qtest_add_func("/o2/storage-second-controller-dma-irq",
+    add_case("o2/storage-second-controller-dma-irq",
                    test_storage_second_controller_dma_irq);
-    qtest_add_func("/o2/storage-second-controller-dma-irq-tcg",
+    add_case("o2/storage-second-controller-dma-irq-tcg",
                    test_storage_second_controller_dma_irq_tcg);
-    qtest_add_func("/o2/storage-queued-metadata-fetch",
+    add_case("o2/storage-queued-metadata-fetch",
                    test_storage_queued_metadata_fetch);
-    qtest_add_func("/o2/storage-completion-window-before-irq",
+    add_case("o2/storage-completion-window-before-irq",
                    test_storage_completion_window_before_irq);
-    qtest_add_func("/o2/storage-completion-window-failure",
+    add_case("o2/storage-completion-window-failure",
                    test_storage_completion_window_failure);
-    qtest_add_func("/o2/storage-queued-inquiry-to-completion",
+    add_case("o2/storage-queued-inquiry-to-completion",
                    test_storage_queued_inquiry_to_completion);
-    qtest_add_func("/o2/storage-queued-read-to-completion",
+    add_case("o2/storage-queued-read-to-completion",
                    test_storage_queued_read_to_completion);
-    qtest_add_func("/o2/storage-queued-write-to-completion",
+    add_case("o2/storage-queued-write-to-completion",
                    test_storage_queued_write_to_completion);
-    qtest_add_func("/o2/storage-queued-read-second-controller",
+    add_case("o2/storage-queued-read-second-controller",
                    test_storage_queued_read_second_controller);
-    qtest_add_func("/o2/storage-queued-write-second-controller",
+    add_case("o2/storage-queued-write-second-controller",
                    test_storage_queued_write_second_controller);
-    qtest_add_func("/o2/storage-queued-second-dma-failure",
+    add_case("o2/storage-queued-second-dma-failure",
                    test_storage_queued_second_dma_failure);
-    qtest_add_func("/o2/storage-queued-check-condition",
+    add_case("o2/storage-queued-check-condition",
                    test_storage_queued_check_condition);
-    qtest_add_func("/o2/storage-queued-scsi-reset",
+    add_case("o2/storage-queued-scsi-reset",
                    test_storage_queued_scsi_reset);
-    qtest_add_func("/o2/storage-queued-chip-reset",
+    add_case("o2/storage-queued-chip-reset",
                    test_storage_queued_chip_reset);
-    qtest_add_func("/o2/storage-queued-pci-reset",
+    add_case("o2/storage-queued-pci-reset",
                    test_storage_queued_pci_reset);
-    qtest_add_func("/o2/storage-diagnostic-event-loss",
+    add_case("o2/storage-diagnostic-event-loss",
                    test_storage_diagnostic_event_loss);
-    qtest_add_func("/o2/storage-diagnostic-target-unplug",
+    add_case("o2/storage-diagnostic-target-unplug",
                    test_storage_diagnostic_target_unplug);
-    qtest_add_func("/o2/storage-diagnostic-target-qom-unrealize",
+    add_case("o2/storage-diagnostic-target-qom-unrealize",
                    test_storage_diagnostic_target_qom_unrealize);
-    qtest_add_func("/o2/storage-diagnostic-final-sync-loss",
+    add_case("o2/storage-diagnostic-final-sync-loss",
                    test_storage_diagnostic_final_sync_loss);
-    qtest_add_func("/o2/storage-diagnostic-master-gate",
+    add_case("o2/storage-diagnostic-master-gate",
                    test_storage_diagnostic_master_gate);
-    qtest_add_func("/o2/storage-diagnostic-dma-bounds",
+    add_case("o2/storage-diagnostic-dma-bounds",
                    test_storage_diagnostic_dma_bounds);
-    qtest_add_func("/o2/storage-diagnostic-reverse-dma",
+    add_case("o2/storage-diagnostic-reverse-dma",
                    test_storage_diagnostic_reverse_dma);
-    qtest_add_func("/o2/storage-diagnostic-byte-widths",
+    add_case("o2/storage-diagnostic-byte-widths",
                    test_storage_diagnostic_byte_widths);
-    qtest_add_func("/o2/storage-diagnostic-window-ends",
+    add_case("o2/storage-diagnostic-window-ends",
                    test_storage_diagnostic_window_ends);
-    qtest_add_func("/o2/storage-diagnostic-bank-crossing",
+    add_case("o2/storage-diagnostic-bank-crossing",
                    test_storage_diagnostic_bank_crossing);
-    qtest_add_func("/o2/storage-diagnostic-full-transfer-crossing",
+    add_case("o2/storage-diagnostic-full-transfer-crossing",
                    test_storage_diagnostic_full_transfer_crossing);
-    qtest_add_func("/o2/storage-second-segment-dma-failure",
+    add_case("o2/storage-second-segment-dma-failure",
                    test_storage_second_segment_dma_failure);
-    qtest_add_func("/o2/storage-diagnostic-rejections",
+    add_case("o2/storage-diagnostic-rejections",
                    test_storage_diagnostic_rejections);
-    qtest_add_func("/o2/gbe-one-tile-retired", test_gbe_one_tile_retired);
-    qtest_add_func("/o2/prom-id-word", test_prom_id_word);
-    qtest_add_func("/o2/prom-id-word-configuration",
+    add_case("o2/gbe-one-tile-retired", test_gbe_one_tile_retired);
+    add_case("o2/prom-id-word", test_prom_id_word);
+    add_case("o2/prom-id-word-configuration",
                    test_prom_id_word_configuration);
-    qtest_add_func("/o2/gbe11-registers-configuration",
+    add_case("o2/gbe11-registers-configuration",
                    test_gbe11_registers_configuration);
-    qtest_add_func("/o2/serial-a", test_serial_a);
-    qtest_add_func("/o2/configuration", test_configuration);
-    qtest_add_func("/o2/banked-configuration", test_banked_configuration);
-    qtest_add_func("/o2/banked-approx-configuration",
+    add_case("o2/serial-a", test_serial_a);
+    add_case("o2/configuration", test_configuration);
+    add_case("o2/banked-configuration", test_banked_configuration);
+    add_case("o2/banked-approx-configuration",
                    test_banked_approx_configuration);
-    qtest_add_func("/o2/empty-renderer-configuration",
+    add_case("o2/empty-renderer-configuration",
                    test_empty_renderer_configuration);
-    qtest_add_func("/o2/functional-transfer-configuration",
+    add_case("o2/functional-transfer-configuration",
                    test_functional_transfer_configuration);
-    qtest_add_func("/o2/private-window-configuration",
+    add_case("o2/private-window-configuration",
                    test_private_window_configuration);
-    qtest_add_func("/o2/prom-sb64-reset-configuration",
+    add_case("o2/prom-sb64-reset-configuration",
                    test_prom_sb64_reset_configuration);
-    qtest_add_func("/o2/banked-approx-rom-rejected",
+    add_case("o2/banked-approx-rom-rejected",
                    test_banked_approx_rom_rejected);
-    qtest_add_func("/o2/banked-profile-immutable",
+    add_case("o2/banked-profile-immutable",
                    test_banked_profile_immutable);
-    qtest_add_func("/o2/banked-rom-immutable", test_banked_rom_immutable);
-    qtest_add_func("/o2/banked-approx-immutable",
+    add_case("o2/banked-rom-immutable", test_banked_rom_immutable);
+    add_case("o2/banked-approx-immutable",
                    test_banked_approx_immutable);
-    qtest_add_func("/o2/banked-approx-child-immutable",
+    add_case("o2/banked-approx-child-immutable",
                    test_banked_approx_child_immutable);
-    qtest_add_func("/o2/banked-approx-migration",
+    add_case("o2/banked-approx-migration",
                    test_banked_approx_migration);
     return g_test_run();
 }
