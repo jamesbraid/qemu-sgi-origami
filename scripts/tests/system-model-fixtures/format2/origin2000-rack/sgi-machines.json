@@ -3192,7 +3192,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3235,7 +3238,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3298,7 +3302,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3341,7 +3348,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3404,7 +3412,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3447,7 +3458,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3510,7 +3522,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3553,7 +3568,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3616,7 +3632,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3659,7 +3678,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3722,7 +3742,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3765,7 +3788,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3831,7 +3855,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3874,7 +3901,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -3940,7 +3968,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -3983,7 +4014,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -4049,7 +4081,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -4092,7 +4127,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -4158,7 +4194,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -4201,7 +4240,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",
@@ -4267,7 +4307,10 @@
                   },
                   {
                     "description": "2 GE11, 2 RE4, no texture",
-                    "fidelity": "implemented",
+                    "fidelity": "approximated",
+                    "limitations": [
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
+                    ],
                     "name": "SSI",
                     "pairing": "established",
                     "product": "ssi",
@@ -4310,7 +4353,8 @@
                     "description": "2 GE12, 2 RE4, no texture",
                     "fidelity": "approximated",
                     "limitations": [
-                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"
+                      "renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1",
+                      "no capture gives a two-RE board's register values, so the model's are inferred"
                     ],
                     "name": "ESSI",
                     "pairing": "established",

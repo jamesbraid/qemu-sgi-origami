@@ -48,11 +48,11 @@ layer:
             products:
               - {product: si, fidelity: implemented, pairing: inferred}
               - {product: si-t, fidelity: implemented, pairing: inferred}
-              - {product: ssi, fidelity: implemented, pairing: inferred}
+              - {product: ssi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
               - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
-              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
           - family: odyssey
             products:
@@ -65,11 +65,11 @@ layer:
             products:
               - {product: si, fidelity: implemented, pairing: inferred}
               - {product: si-t, fidelity: implemented, pairing: inferred}
-              - {product: ssi, fidelity: implemented, pairing: inferred}
+              - {product: ssi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: mxi, fidelity: approximated, limitations: ["no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: esi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
               - {product: esi-t, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
-              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1"], pairing: inferred}
+              - {product: essi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
               - {product: emxi, fidelity: approximated, limitations: ["renders the E-series GE12 and PP1 revision E as the first-generation GE11 and PP1", "no capture gives a two-RE board's register values, so the model's are inferred"], pairing: inferred}
   data:
     machine:
