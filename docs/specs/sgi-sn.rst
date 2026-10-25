@@ -666,8 +666,8 @@ ships with graphics fits its catalogue default unless a graphics
 ``-device`` or ``-vga none`` is given: ``octane`` an SI at ``widget-11``,
 ``octane2`` a V12 at ``widget-11``, the Onyx2 desksides whole-tetra's
 InfiniteReality2 and the racks true-wombat's InfiniteReality3 with a
-plain DG5-2, and ``fuel`` and ``origin300-vbrick`` their V12. The Origin
-200 and Origin 2000 fit none.
+plain DG5-2, and ``fuel`` its V12. The Origin 200 and Origin 2000 fit
+none.
 Any graphics ``-device`` replaces the default, whichever slot it names,
 so an Octane with ``-device sgi-mgras,slot=widget-9`` leaves
 ``widget-11`` empty. A ``-device`` that leaves a setting unset takes the
@@ -680,8 +680,7 @@ cannot tell the two options apart, so it refuses neither. A machine is
 one topology whether or not a pipe is fitted. The catalogue's
 ``headless`` flag only tells a launcher which topologies to offer
 without graphics. It is false, with the reason in ``headless-refused``,
-for an Onyx2, which SGI never sold without a pipe, a Fuel, and
-``origin300-vbrick``, whose V-brick exists only to hold its V12. No SGI
+for an Onyx2, which SGI never sold without a pipe, and a Fuel. No SGI
 machine takes a PC display adapter, so a ``-vga`` value the machine can
 tell from the default, such as ``std``, is refused. A machine sees only
 the adapter type ``-vga`` leaves behind, and with no ``-vga`` QEMU picks
@@ -694,11 +693,11 @@ handler, so the check sees the device's final property values,
 from its machine-init-done notifier: the device is created while the
 machine initializes, so it is not taken for a hot-plugged one, and
 realized only when no ``-device`` turned out to be a pipe. The Onyx2's
-InfiniteReality pipe, the Fuel's VPro and the V-brick's V12 are slots of
+InfiniteReality pipe and the Fuel's VPro are slots of
 the topology's own I/O board records: the builder fits nothing there,
 and the pipe that claims the slot takes the record's port, identity
 records and the Hub its packets go to, keeping the QOM name the builder
-gave it (``io4``, ``io3``, ``graphics-slot``, ``vbrick-v12``). A
+gave it (``io4``, ``io3``, ``graphics-slot``). A
 Crossbow port such a record names starts empty, as an empty XIO slot's
 does, until its pipe attaches.
 
@@ -795,10 +794,6 @@ What each topology offers today:
    * - ``fuel``
      - ``widget-13``
      - ``v12``
-     - ``v12``
-   * - ``origin300-vbrick``
-     - ``widget-11``
-     - ``v12``, approximated: not an SGI configuration
      - ``v12``
    * - ``tezro-tower-multi``, ``onyx350-compat``
      - ``widget-12`` on the PIC fabric

@@ -970,12 +970,13 @@
 #
 # @mscsi: the MSCSI XIO card, four QLogic ISP1040 SCSI controllers
 #
-# @odyssey: a synthetic direct V12 widget on the Origin 300 XBridge
-#     external port, without a physical V-brick enclosure
+# @odyssey: a V12 widget wired straight to a node's XBridge
+#     external port, as the Fuel's graphics board is at widget 13
 #
-# @vbrick: an experimental Origin 300 attachment with a separate
-#     XBridge and V12 board; a neutral object marks the L1 position.
-#     Its processor route is a QEMU projection
+# @vbrick: a V-brick enclosure, with its own XBridge and V12 board,
+#     cabled to a node's XBridge external port; a neutral object marks
+#     the L1 position.  Its processor route is a QEMU projection.  No
+#     topology uses it
 #
 # @mgras: the SI/MXI (MGRAS) graphics board, an XIO card whose widget
 #     answers XIO directly with no Bridge; the widget's own

@@ -564,15 +564,6 @@ class BedrockConfigurationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Timekeeper"):
                     compile_model(model)
 
-    def test_unused_l1_cannot_accept_reported_configuration(self):
-        model = _resolved("origin300-vbrick")
-        model["machine"]["emulation"]["l1_controllers"]["graphics-l1"] = {
-            "reported_type": 0x34,
-            "revision": {"major": 1, "minor": 18, "patch": 5},
-        }
-        with self.assertRaisesRegex(ValueError, "no Bedrock"):
-            compile_model(model)
-
     def test_local_region_limit_matches_device(self):
         model = _resolved("origin300")
         model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
@@ -2379,28 +2370,6 @@ class RecordShapeTests(unittest.TestCase):
                          ["implicit-module", "graphics-brick"])
         self.assertEqual(entry["modules"][1]["nodes"], [])
         self.assertEqual(entry["nodes"][0]["module_index"], 0)
-
-    def test_origin300_vbrick_exports_one_enclosure_preset(self):
-        entry = compile_model(_resolved("origin300-vbrick"))
-
-        self.assertEqual([(module["id"], module["nodes"])
-                          for module in entry["modules"]],
-                         [("implicit-module", [0]), ("graphics-vbrick", [])])
-        self.assertEqual([(board["id"], board["module_index"],
-                           board["board_kind"]) for board in entry["io_boards"]],
-                         [("xbridge-bridge-e", 0, "IO8"),
-                          ("xbridge-bridge-f", 0, "IO8"),
-                          ("graphics-vbrick", 1, "VBRICK")])
-        self.assertEqual(entry["xio_attachments"][2], {
-            "crossbar_index": -1, "widget": 11, "node_index": 0,
-        })
-        self.assertEqual([(controller["id"], controller["module_index"])
-                          for controller in entry["controllers"]],
-                         [("graphics-l1", 1), ("l1", 0)])
-        catalogue = json.loads(render_catalogue_json([_resolved("origin300-vbrick")]))
-        board = catalogue["topologies"][0]["io-boards"][2]
-        self.assertEqual((board["preset"], board["module-index"],
-                          board["attachment"]), ("vbrick", 1, 2))
 
     def test_node_and_processor_shape(self):
         model = _resolved("origin200")

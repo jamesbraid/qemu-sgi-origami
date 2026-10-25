@@ -6791,18 +6791,8 @@ static void test_bic_startup_active_save(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
-#define VBRICK_L1 "/machine/module1/vbrick-l1"
-#define VBRICK_ADDRESS ((1u << 18) | (2u << 12))
-
-static QTestState *vbrick_start(const char *prom, const char *extra)
-{
-    QTestState *s = qtest_initf("-M origin300,topology=origin300-vbrick "
-                               "-smp 2 -m 512M -bios %s -S %s", prom, extra);
-
-    l1_test_base = 0x11000000;
-    qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
-    return s;
-}
+/* A standalone controller's own address, with the task in the low bits. */
+#define VBRICK_ADDRESS 0x0ffff000u
 
 static void vbrick_request(QTestState *s, uint32_t address, uint16_t command,
                             uint8_t channel, bool malformed)
@@ -6824,21 +6814,25 @@ static void vbrick_expect(QTestState *s, uint8_t channel, int status)
     g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
 }
 
+/*
+ * The V-brick discovery-reference profile refuses what no capture gives:
+ * identity, EEPROM, environment and lifecycle queries on the system task
+ * answer -104, a malformed request -100, and other tasks and text commands
+ * -101.
+ */
 static void vbrick_query_check(QTestState *s)
 {
     static const uint16_t commands[] = {
         3, 4, 6, 7, 0xc, 1, 0x1002, 0x1003, 0x2001, 0xffff,
     };
-    uint8_t reply[131];
+    static const char *text_commands[] = {
+        "pwr d", "reset", "env", "eeprom",
+    };
 
     for (unsigned i = 0; i < ARRAY_SIZE(commands); i++) {
         vbrick_request(s, VBRICK_ADDRESS | 6, commands[i], i, false);
         vbrick_expect(s, i, -104);
     }
-    vbrick_request(s, 0x4ffff006, 3, 17, false);
-    vbrick_request(s, 0x4ffff006, 0xc, 18, false);
-    vbrick_expect(s, 17, -104);
-    vbrick_expect(s, 18, -104);
     vbrick_request(s, VBRICK_ADDRESS | 6, 3, 19, true);
     vbrick_expect(s, 19, -100);
     for (unsigned task = 3; task <= 21; task++) {
@@ -6848,124 +6842,36 @@ static void vbrick_query_check(QTestState *s)
         vbrick_request(s, VBRICK_ADDRESS | task, 0x1002, 20, false);
         vbrick_expect(s, 20, -101);
     }
-    {
-        static const char *text_commands[] = {
-            "pwr d", "reset", "env", "eeprom",
-        };
+    for (unsigned i = 0; i < ARRAY_SIZE(text_commands); i++) {
+        uint8_t request[64] = { 23 };
+        size_t n = strlen(text_commands[i]) + 1;
 
-        for (unsigned i = 0; i < ARRAY_SIZE(text_commands); i++) {
-            uint8_t request[64] = { 23 };
-            size_t n = strlen(text_commands[i]) + 1;
-
-            set_destination(request, VBRICK_ADDRESS | 3);
-            request[7] = 1;
-            request[8] = 1;
-            memcpy(request + 9, text_commands[i], n);
-            send_frame(s, request, 9 + n, false);
-            vbrick_expect(s, 23, -101);
-        }
+        set_destination(request, VBRICK_ADDRESS | 3);
+        request[7] = 1;
+        request[8] = 1;
+        memcpy(request + 9, text_commands[i], n);
+        send_frame(s, request, 9 + n, false);
+        vbrick_expect(s, 23, -101);
     }
-    /* The compute controller still supplies its established identity. */
-    g_assert_cmpuint(general(s, 3, NULL, 0, 0, reply), ==, 16);
-    g_assert_cmphex(reply[15], ==, 0x34);
 }
 
-static void vbrick_expect_bool(QTestState *s, const char *path,
-                                const char *property, bool value)
+/*
+ * The profile on a standalone controller, as no topology fits a V-brick:
+ * it refuses without raising a node reset, and a system reset leaves the
+ * refusals in place.
+ */
+static void test_vbrick_reference_refusals(void)
 {
-    QDict *reply = qtest_qmp(s,
-        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
-        path, property);
+    QTestState *s = start_irouter("brick-type=vbrick-discovery-reference",
+                                  false, "");
 
-    g_assert_true(qdict_haskey(reply, "return"));
-    g_assert_cmpint(qdict_get_bool(reply, "return"), ==, value);
-    qobject_unref(reply);
-}
-
-static void test_vbrick_discovery_reference(void)
-{
-    g_autofree char *prom = NULL;
-    int fd = g_file_open_tmp("vbrick-l1-prom-XXXXXX", &prom, NULL);
-    QTestState *s;
-    QDict *reply;
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
-    close(fd);
-    s = vbrick_start(prom, "");
-    vbrick_expect_bool(s, "/machine", "origin300-l1cmd-compat", false);
-    vbrick_expect_bool(s, "/machine/node0/l1", "o300-l1cmd-compat", false);
-    {
-        uint8_t request[59];
-        size_t length = o300_irouter_request(request, "brick ");
-
-        /* Without the opt-in, the generic router reply has chunk type zero. */
-        send_frame(s, request, length, false);
-        expect_router_error(s, 16);
-    }
-    reply = qtest_qmp(s,
-        "{'execute':'qom-get','arguments':{'path':"
-        "'" VBRICK_L1 "','property':'brick-type'}}");
-    g_assert_true(qdict_haskey(reply, "return"));
-    g_assert_cmpstr(qdict_get_str(reply, "return"), ==,
-                    "vbrick-discovery-reference");
-    qobject_unref(reply);
-    /* Match the existing Origin 300 RAM setup before using a sentinel. */
-    qtest_writeq(s, SPACE_IO + 0x01800000 + 0x780008,
-                  (UINT64_C(2) << 32) | 0x3300);
-    qtest_writel(s, 0x10000, 0x1234abcd);
-    g_assert_cmphex(qtest_readl(s, 0x10000), ==, 0x1234abcd);
-    qtest_irq_intercept_out_named(s, VBRICK_L1, "node-reset");
-    qtest_qmp_set_event_callback(s, reject_expansion_lifecycle_event, NULL);
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/l1c", "node-reset");
     vbrick_query_check(s);
     g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
-    qtest_qmp_set_event_callback(s, NULL, NULL);
-    g_assert_cmphex(qtest_readl(s, 0x10000), ==, 0x1234abcd);
-    qtest_qmp_assert_success(s,
-        "{'execute':'qom-set','arguments':{'path':'/machine',"
-        "'property':'l1-association0-reachable','value':false}}");
-    vbrick_request(s, 0x4ffff006, 3, 21, false);
-    expect_router_error(s, 21);
-    qtest_qmp_assert_success(s,
-        "{'execute':'qom-set','arguments':{'path':'/machine',"
-        "'property':'l1-association0-reachable','value':true}}");
-    vbrick_request(s, 0x4ffff006, 3, 22, false);
-    vbrick_expect(s, 22, -104);
     qtest_system_reset(s);
-    qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     vbrick_query_check(s);
     qtest_quit(s);
-    g_unlink(prom);
-}
-
-static void test_vbrick_compute_irouter_opt_in(void)
-{
-    g_autofree char *prom = NULL;
-    int fd = g_file_open_tmp("vbrick-l1-prom-XXXXXX", &prom, NULL);
-    QTestState *s;
-    uint8_t request[59], inner[IROUTER_FRAGMENT_MAX], channel;
-    size_t length;
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
-    close(fd);
-    s = vbrick_start(prom, "-machine origin300-l1cmd-compat=on");
-    vbrick_expect_bool(s, "/machine", "origin300-l1cmd-compat", true);
-    vbrick_expect_bool(s, "/machine/node0/l1", "o300-l1cmd-compat", true);
-    vbrick_expect_bool(s, VBRICK_L1, "o300-l1cmd-compat", false);
-    vbrick_expect_bool(s, VBRICK_L1, "irouter-compat", false);
-
-    send_frame(s, request, o300_irouter_request(request, "brick "), false);
-    /* The existing consumer checks every 0x3001/0x3003 chunk header. */
-    length = irouter_receive(s, BASE, &channel, inner, sizeof(inner));
-    g_assert_cmphex(channel, ==, 0x30);
-    g_assert_cmphex(ldl_be_p(inner + 8), ==, 0x00041215);
-    g_assert_cmphex(ldl_be_p(inner + 12), ==, 0x00041003);
-    g_assert_nonnull(g_strstr_len((char *)inner + 36, length - 36,
-                                  "type: C (IP45) [EMU-UNKNOWN flash]"));
-    vbrick_query_check(s);
-    qtest_quit(s);
-    g_unlink(prom);
 }
 
 static void test_vbrick_compat_refusal(void)
@@ -6981,29 +6887,6 @@ static void test_vbrick_compat_refusal(void)
     vbrick_request(s, 0x0ffff006, 3, 17, false);
     vbrick_expect(s, 17, -104);
     qtest_quit(s);
-}
-
-static void test_vbrick_duplicate_location(void)
-{
-    g_autofree char *prom = NULL;
-    g_autofree char *error_output = NULL;
-    int fd = g_file_open_tmp("vbrick-l1-prom-XXXXXX", &prom, NULL);
-    int status;
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin300,topology=origin300-vbrick",
-        "-smp", "2", "-m", "512M", "-bios", prom, "-display", "none",
-        "-global", "sgi-l1.bay=2", "-qtest", "stdio", "-accel", "qtest", NULL,
-    };
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
-    close(fd);
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &status, NULL));
-    g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output,
-                            "V-brick L1 location duplicates another owner"));
-    g_unlink(prom);
 }
 
 static void test_vbrick_profile_mismatch(void)
@@ -7027,53 +6910,15 @@ static void test_vbrick_profile_mismatch(void)
     g_rmdir(dir);
 }
 
-static void test_vbrick_discovery_migration(void)
-{
-    g_autofree char *prom = NULL;
-    g_autofree char *dir = g_dir_make_tmp("vbrick-l1-migration-XXXXXX", NULL);
-    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
-    int fd = g_file_open_tmp("vbrick-l1-prom-XXXXXX", &prom, NULL);
-    QTestState *from, *to;
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
-    close(fd);
-    from = vbrick_start(prom, "");
-    to = vbrick_start(prom, "-incoming defer");
-    qtest_qmp_assert_success(from,
-        "{'execute':'qom-set','arguments':{'path':'/machine',"
-        "'property':'l1-association0-reachable','value':false}}");
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    sgi_migrate_stopped(from, uri);
-    sgi_wait_migration(to, "completed");
-    qtest_quit(from);
-    vbrick_request(to, 0x4ffff006, 3, 3, false);
-    expect_router_error(to, 3);
-    qtest_qmp_assert_success(to,
-        "{'execute':'qom-set','arguments':{'path':'/machine',"
-        "'property':'l1-association0-reachable','value':true}}");
-    vbrick_query_check(to);
-    qtest_quit(to);
-    g_unlink(prom);
-    g_rmdir(dir);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("sn1/l1/vbrick/discovery-reference",
-                   test_vbrick_discovery_reference);
-    qtest_add_func("sn1/l1/vbrick/discovery-migration",
-                   test_vbrick_discovery_migration);
+    qtest_add_func("sn1/l1/vbrick/reference-refusals",
+                   test_vbrick_reference_refusals);
     qtest_add_func("sn1/l1/vbrick/profile-mismatch",
                    test_vbrick_profile_mismatch);
-    qtest_add_func("sn1/l1/vbrick/compute-irouter-opt-in",
-                   test_vbrick_compute_irouter_opt_in);
     qtest_add_func("sn1/l1/vbrick/compat-refusal",
                    test_vbrick_compat_refusal);
-    qtest_add_func("sn1/l1/vbrick/duplicate-location",
-                   test_vbrick_duplicate_location);
     qtest_add_func("sn1/l1/bic-startup/failure-visibility",
                    test_bic_startup_failure_visibility);
     qtest_add_func("sn1/l1/bic-startup/active-save",

@@ -2974,10 +2974,13 @@ static bool sgi_machine_instantiate_mgras(
 }
 
 /*
- * Experimental Origin 300-to-V-brick route. The published enclosure has
- * its own XBridge, L1 and V12; the cable ports and nested processor address
- * are not established. The 8 MiB split is a machine-local QEMU projection:
- * V12 at the cable widget base, then the enclosure XBridge's crossbar.
+ * A V-brick cabled to a node's XBridge external port. No topology uses it:
+ * the Origin 300 pairing it was written for was never an SGI configuration
+ * and was removed, and it stays for a later Onyx 3000 or Origin 350
+ * topology. The published enclosure has its own XBridge, L1 and V12; the
+ * cable ports and nested processor address are not established. The
+ * 8 MiB split is a machine-local QEMU projection: V12 at the cable widget
+ * base, then the enclosure XBridge's crossbar.
  * The enclosure's V12 at XBridge port 8 is the topology's pipe slot
  * widget-11, which a pipe -device or the default pipe claims
  * (sgi_machine_claim_pipe_record()).
