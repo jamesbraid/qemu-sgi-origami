@@ -1769,7 +1769,7 @@ static void test_transfer_mask_tiled(void)
         qtest_writeq(s, RENDERER + 0x1000, 0x8003000000000000ULL);
         qtest_writel(s, TRANSFER, 0);
         qtest_writel(s, TRANSFER + 8, UINT32_MAX);
-        qtest_writel(s, TRANSFER + 0x18, 0xb7);
+        qtest_writel(s, TRANSFER + 0x18, 0xb7b7b7b7);
         qtest_writel(s, TRANSFER + 0x40, 1);
         qtest_writel(s, TRANSFER + 0x48, 1);
         qtest_writel(s, TRANSFER + 0x30, 7U << 16);
@@ -1791,7 +1791,7 @@ static void test_transfer_mask_tiled(void)
         g_assert_cmpint(memtx_writel(s, TRANSFER + 0x818, 0x55), ==,
                         MEMTX_ERROR);
         assert_stopped(s);
-        g_assert_cmphex(qtest_readl(s, TRANSFER + 0x18), ==, 0xb7);
+        g_assert_cmphex(qtest_readl(s, TRANSFER + 0x18), ==, 0xb7b7b7b7);
         for (unsigned b = 0; b < 64; b++) {
             g_assert_cmphex(qtest_readb(s, 0x30000 + b), ==,
                 (b >= 7 && b <= 22) || (b >= 32 && b <= 47) ? 0xb7 : 0x6c);

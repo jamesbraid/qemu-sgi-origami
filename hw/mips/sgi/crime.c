@@ -415,20 +415,20 @@ typedef enum CrimeRenderTranslation {
 } CrimeRenderTranslation;
 
 /* Resolve through the populated-bank decoder before coherent DMA. */
-static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
-                                                      unsigned bank,
-                                                      unsigned x, unsigned y,
-                                                      unsigned bytes,
-                                                      uint64_t *physical,
-                                                      uint64_t *identity)
+static CrimeRenderTranslation crime_framebuffer_translate(SGICrimeState *s,
+                                                           unsigned bank,
+                                                           uint64_t byte_x,
+                                                           unsigned y,
+                                                           unsigned bytes,
+                                                           uint64_t *physical,
+                                                           uint64_t *identity)
 {
-    unsigned byte_x = x * bytes;
-    unsigned index = (y / 128) * 16 + byte_x / 512;
+    uint64_t index = (uint64_t)(y / 128) * 16 + byte_x / 512;
     uint64_t word, address;
     uint16_t entry;
     CrimeTransferSpan span;
 
-    if (bank >= 3 || x >= 2048 || y >= 2048 || index >= 256) {
+    if (bank >= 3 || byte_x >= 8192 || y >= 2048 || index >= 256) {
         return CRIME_RENDER_TRANSLATION_ERROR;
     }
     word = s->render.tlb[bank * 64 + index / 4];
@@ -444,6 +444,20 @@ static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
     *physical = address;
     *identity = span.offset;
     return CRIME_RENDER_MAPPED;
+}
+
+static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
+                                                      unsigned bank,
+                                                      unsigned x, unsigned y,
+                                                      unsigned bytes,
+                                                      uint64_t *physical,
+                                                      uint64_t *identity)
+{
+    if (x >= 2048) {
+        return CRIME_RENDER_TRANSLATION_ERROR;
+    }
+    return crime_framebuffer_translate(s, bank, (uint64_t)x * bytes, y, bytes,
+                                        physical, identity);
 }
 
 static int crime_render_compare_destination(const void *a, const void *b,
@@ -953,23 +967,23 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
     int dy0 = p[6] & 0xffff, dy1 = p[7] & 0xffff;
     int sx0 = p[4] >> 16, sx1 = p[5] >> 16;
     int sy0 = p[4] & 0xffff, sy1 = p[5] & 0xffff;
-    unsigned width, height, count = 0;
+    unsigned width, height, count = 0, enabled = 0;
     uint64_t bases[256] = { 0 };
     bool seen[256] = { false };
     g_autofree CrimeRenderPixel *pixels = NULL;
 
     if ((mode & ~0x8ffU) || destination_bank >= 3 ||
-        (copy && source_bank >= 3) || p[1] != UINT32_MAX ||
+        (copy && source_bank >= 3) ||
         (p[9] != 1 && (!copy || p[9] != UINT32_MAX)) ||
         (copy && p[8] != p[9]) ||
-        dx0 >= 2048 || dx1 >= 2048 || dy0 >= 2048 || dy1 >= 2048 ||
+        dx0 >= 8192 || dx1 >= 8192 || dy0 >= 2048 || dy1 >= 2048 ||
         dx1 < dx0 || (dy1 - dy0) * dy < 0) {
         return crime_transfer_fail(offset, "unsupported tiled transfer");
     }
     width = dx1 - dx0 + 1;
     height = abs(dy1 - dy0) + 1;
     if (copy &&
-        (sx0 >= 2048 || sx1 >= 2048 || sy0 >= 2048 || sy1 >= 2048 ||
+        (sx0 >= 8192 || sx1 >= 8192 || sy0 >= 2048 || sy1 >= 2048 ||
          sx1 < sx0 || (sy1 - sy0) * dy < 0 ||
          sx1 - sx0 + 1 != width || abs(sy1 - sy0) + 1 != height)) {
         return crime_transfer_fail(offset, "invalid tiled source bounds");
@@ -984,14 +998,15 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
             CrimeRenderPixel *pixel = &pixels[count++];
 
             pixel->mask = 0xff;
-            pixel->color = p[3] & 0xff;
-            if (crime_render_translate(s, destination_bank, x, y, 1,
-                                        &pixel->destination,
-                                        &pixel->destination_id) !=
+            pixel->color = (p[3] >> (8 * (3 - (x & 3)))) & 0xff;
+            if (crime_framebuffer_translate(s, destination_bank, x, y, 1,
+                                            &pixel->destination,
+                                            &pixel->destination_id) !=
                 CRIME_RENDER_MAPPED ||
-                (copy && crime_render_translate(s, source_bank, sx, sy, 1,
-                                                &pixel->source,
-                                                &pixel->source_id) !=
+                (copy &&
+                 crime_framebuffer_translate(s, source_bank, sx, sy, 1,
+                                             &pixel->source,
+                                             &pixel->source_id) !=
                  CRIME_RENDER_MAPPED)) {
                 return crime_transfer_fail(offset, "invalid tiled mapping");
             }
@@ -1014,7 +1029,15 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
     if ((mode & 1) || (copy && (mode & 2))) {
         crime_healthy_memory_notice(s);
     }
-    return crime_render_execute(offset, pixels, count, 1, copy, 3, false);
+    /* A disabled byte still participates in full-rectangle preflight. */
+    for (unsigned i = 0; i < count; i++) {
+        unsigned x = dx0 + i % width;
+
+        if (p[1] & (0x80000000U >> (x & 31))) {
+            pixels[enabled++] = pixels[i];
+        }
+    }
+    return crime_render_execute(offset, pixels, enabled, 1, copy, 3, false);
 }
 
 static MemTxResult crime_render_state_read(SGICrimeState *s, hwaddr offset,
