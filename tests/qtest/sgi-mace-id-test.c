@@ -44,6 +44,19 @@ static QTestState *id_start(const char *image)
     return qts;
 }
 
+static QTestState *id_start_misc(const char *image)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 "
+                                  "-device sgi-mace-id,id=identity,misc-word-pio=on,"
+                                  "test-serial=1032547698ba,"
+                                  "eprom-file=%s,status=0123456789abcd",
+                                  image);
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/identity", 0,
+                          MACE_ID_REG);
+    return qts;
+}
+
 static void id_stop(QTestState *qts, const char *image)
 {
     qtest_quit(qts);
@@ -212,6 +225,101 @@ static void test_reset_presence(void)
     qtest_clock_step(qts, 120000);
     g_assert_cmphex(qtest_readq(qts, MACE_ID_REG) & MACE_ID_SAMPLE, ==,
                     MACE_ID_SAMPLE);
+    id_stop(qts, image);
+}
+
+static void test_startup_reset_pulse(void)
+{
+    g_autofree char *image = id_image_file();
+    QTestState *qts = id_start(image);
+
+    /* An explicit low at virtual time zero qualifies at the 480 us boundary. */
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 480000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_false(id_level(qts));
+    qtest_clock_step(qts, 120000);
+    g_assert_true(id_level(qts));
+
+    /* The final short interval cannot replace the first explicit low. */
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 76000000);
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 100000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_false(id_level(qts));
+    qtest_clock_step(qts, 120000);
+    g_assert_true(id_level(qts));
+
+    /*
+     * A too-short first release consumes the exception; the next long low is
+     * still subject to the normal upper bound and prior-high requirement.
+     */
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 479000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 500000);
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 1000000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_true(id_level(qts));
+
+    qtest_clock_step(qts, 500000);
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 520000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_false(id_level(qts));
+    qtest_clock_step(qts, 120000);
+    g_assert_true(id_level(qts));
+
+    /* Reset cancels a marked interval and restores the startup lifecycle. */
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 500000);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 200000);
+    g_assert_true(id_level(qts));
+
+    id_stop(qts, image);
+}
+
+static void test_startup_reset_rejections(void)
+{
+    g_autofree char *image = id_image_file();
+    QTestState *qts = id_start(image);
+
+    /* Time passing and reads do not replace an explicit low write. */
+    qtest_clock_step(qts, 1000000);
+    (void)qtest_readq(qts, MACE_ID_REG);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_true(id_level(qts));
+    id_stop(qts, image);
+
+    g_clear_pointer(&image, g_free);
+    image = id_image_file();
+    qts = id_start(image);
+    qtest_writeq(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 479000);
+    qtest_writeq(qts, MACE_ID_REG, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_true(id_level(qts));
+    id_stop(qts, image);
+
+    g_clear_pointer(&image, g_free);
+    image = id_image_file();
+    qts = id_start_misc(image);
+    qtest_writel(qts, MACE_ID_REG, 0);
+    qtest_clock_step(qts, 520000);
+    qtest_writel(qts, MACE_ID_REG + 4, MACE_ID_RELEASE);
+    qtest_clock_step(qts, 30000);
+    g_assert_true(id_level(qts));
     id_stop(qts, image);
 }
 
@@ -779,6 +887,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/mace-id/reset-presence", test_reset_presence);
+    qtest_add_func("/sgi/mace-id/startup-reset-pulse",
+                   test_startup_reset_pulse);
+    qtest_add_func("/sgi/mace-id/startup-reset-rejections",
+                   test_startup_reset_rejections);
     qtest_add_func("/sgi/mace-id/rom-selection", test_rom_selection);
     qtest_add_func("/sgi/mace-id/match-search-rejection",
                    test_match_and_search_rejection);
