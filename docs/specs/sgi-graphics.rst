@@ -55,9 +55,8 @@ Sources
   pages under ``share/man/man4/man4.sgi``.
 - Linux at ``2f9060b1db4aa2c21c248e34476d8936a2b69cf6``:
   ``arch/mips/include/asm/xtalk/xwidget.h``.
-- *Origin 300 User's Guide*, 007-4365-002, printed page 8 (the rear XIO
-  connector), and *Onyx 3000 Series Graphics System Hardware Owner's Guide*,
-  007-4264-002, printed pages 10, 52 and 54 (the V-brick).
+- *Onyx 3000 Series Graphics System Hardware Owner's Guide*, 007-4264-002,
+  printed pages 10, 52 and 54 (the V-brick).
 - The Higher Intellect wiki page on IMPACT graphics
   (``web:preterhuman-impact``).
 - Owner captures of a Fuel with a V10 board (``web:tingo-fuel-irix-console``,
@@ -254,11 +253,10 @@ Attachment
 
 An Odyssey board is a widget on a crossbar port. The V-brick, the graphics
 enclosure of the Origin 3000 family, adds a midplane, an L1 controller and
-its own routing (007-4264-002 printed pages 10, 52 and 54). The Origin 300's
-rear XIO connector joins it to a graphics pipeline (007-4365-002 printed page
-8) through a V-brick; no V-brick board revision, widget route, NIC, memory
-or display option was measured. The Fuel's board is
-the widget the system board's XBridge crossbar reaches at port 13: established
+its own routing (007-4264-002 printed pages 10, 52 and 54). No emulated
+topology fits one: an Origin 300 with a V-brick was never an SGI
+configuration, and no V-brick board revision, widget route, NIC, memory or
+display option was measured. The Fuel's board is the widget the system board's XBridge crossbar reaches at port 13: established
 by the owner captures (``web:tingo-fuel-irix-console``;
 ``web:miod-openbsd-sgi-story``).
 

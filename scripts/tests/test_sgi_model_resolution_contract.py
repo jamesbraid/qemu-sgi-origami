@@ -55,7 +55,7 @@ class SystemModelResolutionTests(unittest.TestCase):
     # copy from real_model() instead of paying for their own resolution.
     REAL_COMPOSITIONS = (
         "origin200", "origin200-dual", "origin200-gigachannel",
-        "origin2000", "origin2000-rack", "origin300", "origin300-vbrick",
+        "origin2000", "origin2000-rack", "origin300",
     )
 
     @classmethod
@@ -80,21 +80,6 @@ class SystemModelResolutionTests(unittest.TestCase):
     def real_model(self, name):
         """A fresh deep copy of `name`'s once-per-class-resolved composition."""
         return copy.deepcopy(self._real_models[name])
-
-    def test_origin300_vbrick_keeps_own_xbridge_and_l1_position(self):
-        model = self.real_model("origin300-vbrick")
-        components = {item["id"]: item for item in model["components"]}
-        self.assertEqual(model["machine"]["model_role"], "emulation-target")
-        self.assertEqual(components["graphics-xbridge"]["parent"],
-                         "graphics-vbrick")
-        self.assertEqual(components["graphics-l1"]["parent"],
-                         "graphics-vbrick")
-        self.assertEqual(components["graphics-cable-port"]["parent"],
-                         "graphics-vbrick")
-        self.assertEqual(components["graphics-cable-port-b"]["parent"],
-                         "graphics-vbrick")
-        self.assertEqual(components["graphics-graphics-port"]["parent"],
-                         "graphics-vbrick")
 
     def reload_model(self, model):
         return self.resolver._validate_resolved_system_model(copy.deepcopy(model))

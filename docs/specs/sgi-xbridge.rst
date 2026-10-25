@@ -288,9 +288,10 @@ can both be set before either device is realized.
 the chip is realized; the buses are also named ``head-e.0`` and
 ``head-f.0`` after the children.
 
-The ``origin300-vbrick`` experiment joins the node's external port
-``0xb`` to a second XBridge's cable port ``0xa`` and attaches V12 to
-that chip's internal port ``8``. The node's processor view of widget
+The machine's V-brick route, which no topology uses since the Origin 300
+pairing it was written for was removed as never an SGI configuration,
+joins the node's external port ``0xb`` to a second XBridge's cable port
+``0xa`` and attaches V12 to that chip's internal port ``8``. The node's processor view of widget
 ``0xb`` projects V12 into the first 8 MiB and the second XBridge's
 crossbar into the next 8 MiB. This split is a QEMU address choice;
 the physical route and V-brick L1 protocol remain unknown.

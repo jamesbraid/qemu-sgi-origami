@@ -815,61 +815,6 @@ static void test_every_topology_is_well_formed(void)
     g_assert_cmpuint(topology_count, >, 0);
 }
 
-static void test_origin300_graphics_attachment(gconstpointer data)
-{
-    const char *name = data;
-    SGIModelIoBoardPreset preset = SGI_MODEL_IO_BOARD_PRESET_VBRICK;
-    g_autoptr(SGIMachines) catalogue = load_catalogue();
-    const SGIModelTopologyList *entry;
-
-    for (entry = catalogue->topologies; entry; entry = entry->next) {
-        const SGIModelTopology *t = entry->value;
-        const SGIModelIoBoardList *board;
-        const SGIModelXioAttachmentList *attachment;
-        const unsigned int widgets[] = { 14, 15, 11 };
-        unsigned int index = 0;
-        unsigned int io8_count = 0, empty_count = 0, graphics_count = 0;
-
-        if (!g_str_equal(t->name, name)) {
-            continue;
-        }
-        g_assert_null(t->xio_slots);
-        g_assert_cmpuint(io_board_count(t), ==, 3);
-        for (attachment = t->xio_attachments; attachment;
-             attachment = attachment->next, index++) {
-            g_assert_cmpuint(index, <, G_N_ELEMENTS(widgets));
-            g_assert_cmpint(attachment->value->crossbar_index, ==, -1);
-            g_assert_cmpuint(attachment->value->node_index, ==, 0);
-            g_assert_cmpuint(attachment->value->widget, ==, widgets[index]);
-        }
-        g_assert_cmpuint(index, ==, G_N_ELEMENTS(widgets));
-        for (board = t->io_boards; board; board = board->next) {
-            if (board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8) {
-                if (board->value->populated) {
-                    g_assert_cmpuint(board->value->attachment, ==, 1);
-                    g_assert_nonnull(board->value->pci_functions);
-                    io8_count++;
-                } else {
-                    g_assert_cmpuint(board->value->attachment, ==, 0);
-                    g_assert_null(board->value->pci_functions);
-                    g_assert_null(board->value->system_timekeeper);
-                    empty_count++;
-                }
-                continue;
-            }
-            g_assert_cmpint(board->value->preset, ==, preset);
-            g_assert_true(board->value->populated);
-            g_assert_cmpuint(board->value->attachment, ==, 2);
-            graphics_count++;
-        }
-        g_assert_cmpuint(io8_count, ==, 1);
-        g_assert_cmpuint(empty_count, ==, 1);
-        g_assert_cmpuint(graphics_count, ==, 1);
-        return;
-    }
-    g_error("%s is missing", name);
-}
-
 /* These identities are synthetic parser data, not a fitted hardware profile. */
 #define IO_PEER_JSON \
     "{ 'id': 'io-bedrock', 'module-index': 1, 'slot': 0," \
@@ -1589,9 +1534,6 @@ int main(int argc, char **argv)
                     test_io9_hosts_and_boards_follow_projected_attachments);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
-    g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
-                         "origin300-vbrick",
-                         test_origin300_graphics_attachment);
     g_test_add_func("/sn-model/tezro-requires-explicit-topology",
                     test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",
