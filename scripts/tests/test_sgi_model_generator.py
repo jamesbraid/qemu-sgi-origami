@@ -556,6 +556,39 @@ class Origin300TimekeeperTests(unittest.TestCase):
                 model_composition.validate_system_timekeepers(altered)
 
 
+class SourcesRequirementTests(unittest.TestCase):
+    """Sources are required on hardware claims, not on harness choices."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.schema = schema(INPUTS)
+        cls.model = load_checked_system_model(
+            INPUTS / "octane2.yaml", model_schema=cls.schema)
+
+    def errors(self, model):
+        import jsonschema
+        return [error.message for error in
+                jsonschema.Draft202012Validator(self.schema).iter_errors(model)]
+
+    def test_harness_without_sources_is_accepted(self):
+        model = copy.deepcopy(self.model)
+        harness = model["machine"]["harness"]
+        self.assertIn("sources", harness)
+        del harness["provenance"], harness["sources"]
+        self.assertEqual(self.errors(model), [])
+
+    def test_hardware_claim_without_sources_is_refused(self):
+        model = copy.deepcopy(self.model)
+        wiring = model["machine"]["emulation"]["boot_flash_wiring"]
+        del wiring["sources"]
+        self.assertTrue(any("sources" in message
+                            for message in self.errors(model)))
+        model = copy.deepcopy(self.model)
+        del model["machine"]["emulation"]["boot_flash_wiring"]["provenance"]
+        self.assertTrue(any("provenance" in message
+                            for message in self.errors(model)))
+
+
 class FuelTests(unittest.TestCase):
     def test_fuel_offerings_keep_all_console_ports(self):
         """A fresh Fuel flash answers on L1, and IOC3 serial A and B
