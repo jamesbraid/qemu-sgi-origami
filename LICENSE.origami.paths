@@ -780,6 +780,7 @@ tests/qtest/sgi-migrate.h
 tests/qtest/sgi-migration-roundtrip-test.c
 tests/qtest/sgi-mips-emit.h
 tests/qtest/sgi-o2-rom-test.c
+tests/qtest/sgi-o2-test-groups.txt
 tests/qtest/sgi-o2-test.c
 tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c

@@ -243,6 +243,7 @@ void qtest_wait_qemu(QTestState *s)
 #ifndef _WIN32
         pid_t pid;
         uint64_t end;
+        unsigned delay_us = 1000;
 
         /* poll for a while until sending SIGKILL */
         end = g_get_monotonic_time() + WAITPID_TIMEOUT * G_TIME_SPAN_SECOND;
@@ -252,7 +253,9 @@ void qtest_wait_qemu(QTestState *s)
             if (pid != 0) {
                 break;
             }
-            g_usleep(100 * 1000);
+            /* Short-lived test processes usually exit within milliseconds. */
+            g_usleep(delay_us);
+            delay_us = MIN(delay_us * 2, 100 * 1000);
         } while (g_get_monotonic_time() < end);
 
         if (pid == 0) {
@@ -1382,13 +1385,12 @@ void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value)
     qtest_write(s, "writeq", addr, value);
 }
 
-static uint64_t qtest_read(QTestState *s, const char *cmd, uint64_t addr)
+static uint64_t qtest_read_response(QTestState *s)
 {
     gchar **args;
     int ret;
     uint64_t value;
 
-    qtest_sendf(s, "%s 0x%" PRIx64 "\n", cmd, addr);
     args = qtest_rsp_args(s, 2);
     ret = qemu_strtou64(args[1], NULL, 0, &value);
     g_assert(!ret);
@@ -1397,9 +1399,37 @@ static uint64_t qtest_read(QTestState *s, const char *cmd, uint64_t addr)
     return value;
 }
 
+static uint64_t qtest_read(QTestState *s, const char *cmd, uint64_t addr)
+{
+    qtest_sendf(s, "%s 0x%" PRIx64 "\n", cmd, addr);
+    return qtest_read_response(s);
+}
+
 uint8_t qtest_readb(QTestState *s, uint64_t addr)
 {
     return qtest_read(s, "readb", addr);
+}
+
+void qtest_readb_repeated(QTestState *s, uint64_t addr, uint8_t *data,
+                          size_t count)
+{
+    g_autofree char *command = g_strdup_printf("readb 0x%" PRIx64 "\n", addr);
+    g_autoptr(GString) requests = g_string_new(NULL);
+
+    while (count) {
+        size_t batch = MIN(count, 64);
+
+        /* Bound queued requests so sending cannot fill both socket buffers. */
+        g_string_truncate(requests, 0);
+        for (size_t i = 0; i < batch; i++) {
+            g_string_append(requests, command);
+        }
+        s->ops.send(s, requests->str);
+        for (size_t i = 0; i < batch; i++) {
+            *data++ = qtest_read_response(s);
+        }
+        count -= batch;
+    }
 }
 
 uint16_t qtest_readw(QTestState *s, uint64_t addr)

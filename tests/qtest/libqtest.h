@@ -651,6 +651,20 @@ void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value);
 uint8_t qtest_readb(QTestState *s, uint64_t addr);
 
 /**
+ * qtest_readb_repeated:
+ * @s: #QTestState instance to operate on.
+ * @addr: Guest address to read repeatedly.
+ * @data: Buffer receiving the byte values in transaction order.
+ * @count: Number of byte transactions to issue.
+ *
+ * Pipeline individual byte reads of the same address in bounded batches.
+ * This preserves byte-wide FIFO accesses without a round trip per byte.
+ * A zero count sends no commands.
+ */
+void qtest_readb_repeated(QTestState *s, uint64_t addr, uint8_t *data,
+                          size_t count);
+
+/**
  * qtest_readw:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to read from.
