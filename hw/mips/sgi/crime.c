@@ -450,14 +450,16 @@ static CrimeRenderTranslation crime_render_translate(SGICrimeState *s,
                                                       unsigned bank,
                                                       unsigned x, unsigned y,
                                                       unsigned bytes,
+                                                      unsigned stride,
                                                       uint64_t *physical,
                                                       uint64_t *identity)
 {
     if (x >= 2048) {
         return CRIME_RENDER_TRANSLATION_ERROR;
     }
-    return crime_framebuffer_translate(s, bank, (uint64_t)x * bytes, y, bytes,
-                                        physical, identity);
+    return crime_framebuffer_translate(s, bank,
+                                        (uint64_t)x * stride + stride - bytes,
+                                        y, bytes, physical, identity);
 }
 
 static int crime_render_compare_destination(const void *a, const void *b,
@@ -626,25 +628,23 @@ static MemTxResult crime_render_execute(hwaddr offset,
     return MEMTX_OK;
 }
 
-static bool crime_render_mode(uint32_t mode, unsigned *bank, unsigned *bytes)
+static bool crime_render_mode(uint32_t mode, unsigned *bank, unsigned *bytes,
+                                unsigned *stride)
 {
+    unsigned storage_depth = (mode >> 8) & 3;
+    unsigned pixel_type = (mode >> 4) & 15;
+    unsigned pixel_depth = (mode >> 2) & 3;
+
     *bank = mode >> 10;
-    if (*bank >= 3) {
+    if (*bank >= 3 || (mode & 3)) {
         return false;
     }
-    switch (mode & 0x3ff) {
-    case 0:
-        *bytes = 1;
-        return true;
-    case 0x124:
-        *bytes = 2;
-        return true;
-    case 0x228:
-        *bytes = 4;
-        return true;
-    default:
-        return false;
-    }
+    *bytes = 1U << pixel_depth;
+    *stride = 1U << storage_depth;
+    return (pixel_type == 0 && pixel_depth == 0 &&
+            (storage_depth == 0 || storage_depth == 2)) ||
+           (pixel_type == 2 && storage_depth == pixel_depth &&
+            (pixel_depth == 1 || pixel_depth == 2));
 }
 
 typedef struct CrimeRenderClip {
@@ -747,12 +747,13 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
 {
     uint64_t p[128];
     uint32_t draw, clip, plane, stipple_mode;
-    unsigned destination_bank, source_bank = 0, bytes, source_bytes;
+    unsigned destination_bank, source_bank = 0, bytes, stride;
+    unsigned source_bytes, source_stride, screen_count = 0;
     unsigned count = 0, suppressed = 0, operation;
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy;
-    bool copy, stipple, overlap, screen_enabled = false, inside = false;
-    CrimeRenderClip scissor, screen = { 0 };
+    bool copy, stipple, overlap, inside;
+    CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     g_autofree CrimeRenderPixel *pixels = NULL;
     MemTxResult result;
@@ -788,37 +789,43 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             return crime_transfer_fail(offset, "invalid stipple mode");
         }
     }
-    if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes)) {
+    if (!crime_render_mode(p[0x8 / 4], &destination_bank, &bytes, &stride)) {
         return crime_transfer_fail(offset, "unsupported destination mode");
     }
+    if (stride != bytes &&
+        (geometry.opcode != 3 || (draw & ~0x1002f8U))) {
+        return crime_transfer_fail(offset,
+                                   "unsupported indexed storage command");
+    }
     if (copy &&
-        (!crime_render_mode(p[0], &source_bank, &source_bytes) ||
-         source_bytes != bytes || p[0xa8 / 4] != 1 || p[0xac / 4] != 1)) {
+        (!crime_render_mode(p[0], &source_bank, &source_bytes,
+                            &source_stride) ||
+         source_bytes != bytes || source_stride != stride ||
+         p[0xa8 / 4] != 1 || p[0xac / 4] != 1)) {
         return crime_transfer_fail(offset, "unsupported rectangle source");
     }
     operation = draw & 0x200 ? p[0x1b0 / 4] : 3;
     if ((draw & 0x200) && p[0x1b0 / 4] > 15) {
         return crime_transfer_fail(offset, "unsupported raster operation");
     }
-    if (clip & ~0x3ffU) {
+    inside = clip & 31;
+    if ((clip & ~0x3ffU) || ((clip & 31) & ~(clip >> 5))) {
         return crime_transfer_fail(offset, "unsupported clip mode");
     }
     for (unsigned n = 0; n < 5; n++) {
-        unsigned enable = 1U << (9 - n), select = 1U << (4 - n);
+        if (clip & (1U << (5 + n))) {
+            CrimeRenderClip box = crime_render_clip(p[(0x20 + 8 * n) / 4]);
 
-        if (clip & enable) {
-            if (screen_enabled || (clip & ~(enable | select))) {
-                return crime_transfer_fail(offset, "multiple screen masks");
+            if (box.xmin > box.xmax || box.ymin > box.ymax) {
+                return crime_transfer_fail(offset, "invalid screen mask");
             }
-            screen_enabled = true;
-            inside = clip & select;
-            screen = crime_render_clip(p[(0x20 + 8 * n) / 4]);
+            screen[screen_count++] = box;
         }
     }
-    if ((clip && !screen_enabled) ||
-        (screen_enabled && (screen.xmin > screen.xmax ||
-                            screen.ymin > screen.ymax))) {
-        return crime_transfer_fail(offset, "invalid screen mask");
+    if (screen_count > 1 &&
+        ((clip & 31) != (clip >> 5) || geometry.opcode != 3 ||
+         copy || stipple)) {
+        return crime_transfer_fail(offset, "unsupported screen mask union");
     }
     scissor = crime_render_clip(p[0x48 / 4]);
     if ((draw & 0x100000) &&
@@ -876,16 +883,22 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 uint32_t mask = plane;
                 CrimeRenderPixel *pixel;
                 CrimeRenderTranslation translation;
+                bool screen_pass = !screen_count;
 
+                for (unsigned n = 0; n < screen_count; n++) {
+                    screen_pass |= crime_render_inside(&screen[n], x, y) ==
+                                   inside;
+                }
                 if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
                     ((draw & 0x100000) &&
                      !crime_render_inside(&scissor, x, y)) ||
-                    (screen_enabled &&
-                     crime_render_inside(&screen, x, y) != inside)) {
+                    !screen_pass) {
                     continue;
                 }
                 for (unsigned b = 0; b < bytes; b++) {
-                    if (!(draw & (1U << (6 - ((x * bytes + b) & 3))))) {
+                    unsigned lane = (x * stride + stride - bytes + b) & 3;
+
+                    if (!(draw & (1U << (6 - lane)))) {
                         mask &= ~(0xffU << (8 * (bytes - 1 - b)));
                     }
                 }
@@ -894,7 +907,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 }
                 pixel = &pixels[count];
                 translation = crime_render_translate(
-                    s, destination_bank, x, y, bytes,
+                    s, destination_bank, x, y, bytes, stride,
                     &pixel->destination, &pixel->destination_id);
 
                 if (!copy && translation == CRIME_RENDER_INVALID_TILE) {
@@ -904,7 +917,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 if (translation != CRIME_RENDER_MAPPED ||
                     (copy && crime_render_translate(
                         s, source_bank, sx + x - geometry.x0,
-                        sy + y - geometry.y0, bytes,
+                        sy + y - geometry.y0, bytes, stride,
                         &pixel->source, &pixel->source_id) !=
                         CRIME_RENDER_MAPPED)) {
                     return crime_transfer_fail(offset,
