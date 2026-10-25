@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Native Meson groups for independent O2 board fixtures. Each case remains
 # in the quick qtest suite exactly once. scripts/check-qtest-registered.py
 # checks this list against the source registrations. Without --group-path,
