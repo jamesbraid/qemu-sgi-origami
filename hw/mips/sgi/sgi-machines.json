@@ -15344,7 +15344,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300 routed NUMAlink and PCI expansion experiment",
+      "display-name": "Origin 300 routed NUMAlink and PCI expansion",
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -15364,7 +15364,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-numalink-pci-expansion-experiment,nodes=2",
+      "machine-options": "origin300,topology=origin300-numalink-pci-expansion,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -15546,7 +15546,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300-numalink-pci-expansion-experiment"
+      "topology": "origin300-numalink-pci-expansion"
     },
     {
       "console": "l1-uart",
@@ -15575,7 +15575,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300 routed NUMAlink and PCI expansion experiment",
+      "display-name": "Origin 300 routed NUMAlink and PCI expansion",
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -15595,7 +15595,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-numalink-pci-expansion-experiment,nodes=2",
+      "machine-options": "origin300,topology=origin300-numalink-pci-expansion,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -15777,7 +15777,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300-numalink-pci-expansion-experiment"
+      "topology": "origin300-numalink-pci-expansion"
     },
     {
       "console": "l1-uart",
@@ -15806,7 +15806,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300 routed NUMAlink and PCI expansion experiment",
+      "display-name": "Origin 300 routed NUMAlink and PCI expansion",
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -15826,7 +15826,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-numalink-pci-expansion-experiment,nodes=2",
+      "machine-options": "origin300,topology=origin300-numalink-pci-expansion,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -16008,7 +16008,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300-numalink-pci-expansion-experiment"
+      "topology": "origin300-numalink-pci-expansion"
     },
     {
       "console": "l1-uart",
@@ -16037,7 +16037,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300 routed NUMAlink and PCI expansion experiment",
+      "display-name": "Origin 300 routed NUMAlink and PCI expansion",
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -16057,7 +16057,7 @@
         "disk-image",
         "netboot"
       ],
-      "machine-options": "origin300,topology=origin300-numalink-pci-expansion-experiment,nodes=2",
+      "machine-options": "origin300,topology=origin300-numalink-pci-expansion,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -16239,7 +16239,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300-numalink-pci-expansion-experiment"
+      "topology": "origin300-numalink-pci-expansion"
     },
     {
       "console": "l1-uart",
@@ -31237,7 +31237,7 @@
         }
       ],
       "crossbars": [],
-      "description": "SGI Origin 300 (IP45), routed NUMAlink and PCI expansion experiment",
+      "description": "SGI Origin 300 (IP45), routed NUMAlink and PCI expansion",
       "generation": "sn1",
       "io-assemblies": [
         {
@@ -31510,7 +31510,7 @@
           "serial": ""
         }
       ],
-      "name": "origin300-numalink-pci-expansion-experiment",
+      "name": "origin300-numalink-pci-expansion",
       "node-populations": [
         {
           "cables": [

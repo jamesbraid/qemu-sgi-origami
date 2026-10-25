@@ -2,7 +2,7 @@
 layer_version: 1
 layer:
   kind: product
-  id: origin300-numalink-pci-expansion-experiment
+  id: origin300-numalink-pci-expansion
   requires:
     assembly: ip45
   topology:
@@ -44,7 +44,7 @@ layer:
   - kit-512-at-banks-2-3
   data:
     machine:
-      name: Origin 300 routed NUMAlink and PCI expansion experiment
+      name: Origin 300 routed NUMAlink and PCI expansion
       model_role: emulation-target
       notes: Two Origin 300 compute modules reach a PCI expansion module through an inferred eight-port
         SN1 router. This selects explicit numbered cables and the reviewed router revision inference.
@@ -52,6 +52,8 @@ layer:
         compute lifecycle commands. USB/L2 transport, router main power and inter-module reset propagation
         remain unsupported. Routes and node inventory are
         not initialized for firmware. Construction support does not establish stock PROM or IRIX acceptance.
+        The SN1 router contract, including the inferred silicon and the synthetic diagnostics, remains a
+        proposal for independent evidence review; naming the topology without "experiment" does not clear it.
       emulation:
         # Both compute modules use the Origin 300 PROM and CPU profile.
         ip35_firmware:
@@ -158,8 +160,8 @@ layer:
             notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy.
               Existing compatibility part, capacity and mapping assumptions are unchanged.
         machine_name: origin300
-        display_description: SGI Origin 300 (IP45), routed NUMAlink and PCI expansion experiment
-        profile: numalink-pci-expansion-experiment
+        display_description: SGI Origin 300 (IP45), routed NUMAlink and PCI expansion
+        profile: numalink-pci-expansion
         lifecycle: implemented
         emulator_constraints:
           accepted_bank_sizes_mib:

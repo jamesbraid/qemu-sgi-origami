@@ -483,7 +483,7 @@ static void test_routed_hub_special_decoding(void)
     g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
-        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "-M origin300,topology=origin300-numalink-pci-expansion,"
         "expansion-storage.0=expansion-enclosure=cfg "
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw",
@@ -1614,7 +1614,7 @@ static QTestState *option_start(bool selected, char **image, const char *extra)
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-device sgi-compute-option-intx-fixture,id=opt%s "
         "-nodefaults -display none %s",
-        selected ? "origin300-numalink-pci-expansion-experiment" :
+        selected ? "origin300-numalink-pci-expansion" :
                    "origin300-two-chassis",
         selected ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
         prom_path, *image, extra[0] == ',' ? extra : "",
@@ -1865,7 +1865,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/cross-node/bte-memory/direct",
                         "origin300-two-chassis", test_bte_memory_route);
     qtest_add_data_func("sn1/cross-node/bte-memory/routed",
-                        "origin300-numalink-pci-expansion-experiment",
+                        "origin300-numalink-pci-expansion",
                         test_bte_memory_route);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
                    test_bte_data_goes_by_number);

@@ -907,7 +907,7 @@ static void test_existing_topologies_have_no_io_peers(void)
         const SGIModelModuleList *module;
 
         if (g_str_equal(entry->value->name,
-                        "origin300-numalink-pci-expansion-experiment") ||
+                        "origin300-numalink-pci-expansion") ||
             g_str_equal(entry->value->name,
                         "origin300-pci-expansion-experiment") ||
             g_str_equal(

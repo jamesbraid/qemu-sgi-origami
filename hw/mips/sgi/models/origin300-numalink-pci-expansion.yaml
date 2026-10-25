@@ -3,7 +3,7 @@ configuration_version: 1
 layers:
 - layers/architectures/sn1.yaml
 - layers/assemblies/ip45.yaml
-- layers/products/origin300-numalink-pci-expansion-experiment.yaml
+- layers/products/origin300-numalink-pci-expansion.yaml
 module_instances:
 - model: layers/modules/origin300-base.yaml
   prefix: master-

@@ -1963,7 +1963,7 @@ static void routed_memory_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     const SGIModelTopology *source = sgi_model_find_topology(
-        "origin300-numalink-pci-expansion-experiment");
+        "origin300-numalink-pci-expansion");
     SGIModelTopology *t = g_memdup2(source, sizeof(*t));
     SGIModelNodeList **node_tail = &t->nodes;
     SGIModelModuleList **module_tail = &t->modules;
