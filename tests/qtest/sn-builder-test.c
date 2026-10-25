@@ -3459,7 +3459,7 @@ static void test_tezro_named_serial_profiles_build(void)
     } profiles[] = {
         { "tezro-tower-one", "1" },
         { "tezro-tower-multi", "4" },
-        { "tezro-rack-base", "1" },
+        { "tezro-rack", "1" },
     };
 
     for (size_t i = 0; i < G_N_ELEMENTS(profiles); i++) {
@@ -3485,8 +3485,8 @@ static void test_tezro_legacy_experimental_populations(void)
         const char *cpus;
     } profiles[] = {
         { "tezro-tower-multi", "2" },
-        { "tezro-rack-base", "2" },
-        { "tezro-rack-base", "4" },
+        { "tezro-rack", "2" },
+        { "tezro-rack", "4" },
         { "tezro-deskside-700mhz-4mib-serial-trial", "4" },
     };
 
@@ -3524,7 +3524,7 @@ static void test_ip53_normal_selection_profiles(void)
           4 * MiB, 700000000, 1 },
         { "tezro,topology=tezro-tower-multi", "4", "4G", 0x009bad85,
           4 * MiB, 700000000, 4 },
-        { "tezro,topology=tezro-rack-base", "1", "4G", 0x009bad85,
+        { "tezro,topology=tezro-rack", "1", "4G", 0x009bad85,
           4 * MiB, 700000000, 1 },
         { "onyx4-host,topology=onyx4-host-serial-compat", "4", "8G",
           0x009dad85, 16 * MiB, 1000000000, 4 },
@@ -5351,7 +5351,7 @@ static void test_ip53_runtime_cpu_property_refusals(void)
             { "origin350", "2G", "4,maxcpus=8",
               "Invalid SMP CPUs 8. The max CPUs supported by machine "
               "'origin350' is 4" },
-            { "tezro,topology=tezro-rack-base", "4G", "1,maxcpus=4",
+            { "tezro,topology=tezro-rack", "4G", "1,maxcpus=4",
               "does not match an approved normal IP53 serial profile tuple" },
         };
 

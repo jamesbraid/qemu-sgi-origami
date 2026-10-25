@@ -69,7 +69,7 @@ static const TopologyExtra topology_extras[] = {
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-deskside-700mhz-4mib-serial-trial",
       ",ip53-experimental=on", .io9 = true, .ds1742 = true },
-    { "tezro-rack-base", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+    { "tezro-rack", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-tower-multi", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
       "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },

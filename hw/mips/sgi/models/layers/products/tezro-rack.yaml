@@ -9,7 +9,7 @@ sources:
   tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
-  id: tezro-rack-base
+  id: tezro-rack
   requires:
     assembly: ip53-tezro
     module: tezro-serial-compat-module
@@ -63,7 +63,7 @@ layer:
       emulation:
         machine_name: tezro
         display_description: SGI Tezro rack first enclosure serial compatibility profile
-        profile: tezro-rack-base-serial-compat
+        profile: tezro-rack-serial-compat
         synthetic_identities:
         - component: bedrock
           serial: '0x51454d554e00'
@@ -169,7 +169,7 @@ layer:
           requires_boot_flash: false
           requires_network_identity: false
           discovery_prerequisites: []
-        default_topology: tezro-rack-base
+        default_topology: tezro-rack
         requires_per_node_flash: false
         has_managed_boot_flash: true
         operator_firmware: true

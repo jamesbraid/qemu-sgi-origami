@@ -1051,8 +1051,8 @@ def _is_ip53_runtime_profile(model: dict) -> bool:
             "tezro", "tezro-tower-one-serial-compat"),
         "tezro-tower-multi": (
             "tezro", "tezro-tower-multi-serial-compat"),
-        "tezro-rack-base": (
-            "tezro", "tezro-rack-base-serial-compat"),
+        "tezro-rack": (
+            "tezro", "tezro-rack-serial-compat"),
     }.get(product)
     return (expected is not None
             and emulation.get("machine_name") == expected[0]

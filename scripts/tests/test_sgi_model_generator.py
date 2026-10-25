@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "8a966341e1b8f0072b5018d4044bee816545518cc22d2870cc53fe54ddde0cec"
+    "8dfdb01d8fd2fdea1b904522d9ff93fc3c2f6166a0d8b75af6e052101569ce15"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -526,7 +526,7 @@ class StorageTests(unittest.TestCase):
         DS1744-compatible profiles start their backed image from zeroes."""
         ds1744_topologies = {
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
-            "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base",
+            "tezro-tower-one", "tezro-tower-multi", "tezro-rack",
         }
         for offering in self.catalogue["offerings"]:
             nvram = {item["initial"] for item in offering["storage"]
@@ -770,7 +770,7 @@ class FuelTests(unittest.TestCase):
             "onyx350-compat": 0x569caf85,
             "tezro-tower-one": 0x549bad85,
             "tezro-tower-multi": 0x549bad85,
-            "tezro-rack-base": 0x549bad85,
+            "tezro-rack": 0x549bad85,
             "onyx4-host-serial-compat": 0x569dad85,
         }
         for topology in catalogue["topologies"]:
@@ -906,7 +906,7 @@ class Origin350ClockPolicyTests(unittest.TestCase):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         names = {"origin350", "onyx350-compat", "onyx4-host-serial-compat",
-                 "tezro-tower-one", "tezro-tower-multi", "tezro-rack-base"}
+                 "tezro-tower-one", "tezro-tower-multi", "tezro-rack"}
         topologies = {row["name"]: row for row in catalogue["topologies"]
                       if row["name"] in names}
         self.assertEqual(set(topologies), names)

@@ -753,7 +753,7 @@ class Ip53CpuContextTests(unittest.TestCase):
                 ("onyx350-compat", 0x569caf85, 800_000_000, 0x009caf85),
                 ("tezro-tower-one", 0x549bad85, 700_000_000, 0x009bad85),
                 ("tezro-tower-multi", 0x549bad85, 700_000_000, 0x009bad85),
-                ("tezro-rack-base", 0x549bad85, 700_000_000, 0x009bad85),
+                ("tezro-rack", 0x549bad85, 700_000_000, 0x009bad85),
                 ("onyx4-host-serial-compat", 0x569dad85, 1_000_000_000,
                  0x009dad85)):
             with self.subTest(profile=name):
@@ -3590,7 +3590,7 @@ class CatalogueJsonTests(unittest.TestCase):
         profile_names = (
             "origin350", "onyx350-compat", "onyx4-host-serial-compat",
             "tezro-deskside-700mhz-4mib-serial-trial", "tezro-tower-one",
-            "tezro-tower-multi", "tezro-rack-base",
+            "tezro-tower-multi", "tezro-rack",
         )
         catalogue = json.loads(render_catalogue_json(
             [_resolved(name) for name in profile_names]))
@@ -3606,7 +3606,7 @@ class CatalogueJsonTests(unittest.TestCase):
             ("onyx4-host", "onyx4-host-serial-compat", (4,)),
             ("tezro", "tezro-tower-one", (1,)),
             ("tezro", "tezro-tower-multi", (4,)),
-            ("tezro", "tezro-rack-base", (1,)),
+            ("tezro", "tezro-rack", (1,)),
         }
         topologies = {item["name"]: item for item in catalogue["topologies"]}
         actual_normal = set()
