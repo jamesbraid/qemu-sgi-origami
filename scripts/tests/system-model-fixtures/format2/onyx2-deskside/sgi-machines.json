@@ -46,7 +46,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
@@ -256,7 +257,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
@@ -466,7 +468,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=2",
       "memory-per-node-mib": {
@@ -674,7 +677,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=1",
       "memory-per-node-mib": {
@@ -876,7 +880,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "onyx2,topology=onyx2-deskside,nodes=1",
       "memory-per-node-mib": {

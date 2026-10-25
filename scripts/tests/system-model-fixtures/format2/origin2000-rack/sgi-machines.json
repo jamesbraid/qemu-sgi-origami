@@ -50,7 +50,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=4",
       "memory-per-node-mib": {
@@ -276,7 +277,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=4",
       "memory-per-node-mib": {
@@ -502,7 +504,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=4",
       "memory-per-node-mib": {
@@ -728,7 +731,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=4",
       "memory-per-node-mib": {
@@ -954,7 +958,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=4",
       "memory-per-node-mib": {
@@ -1178,7 +1183,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=3",
       "memory-per-node-mib": {
@@ -1396,7 +1402,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=3",
       "memory-per-node-mib": {
@@ -1614,7 +1621,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=3",
       "memory-per-node-mib": {
@@ -1832,7 +1840,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=3",
       "memory-per-node-mib": {
@@ -2048,7 +2057,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=2",
       "memory-per-node-mib": {
@@ -2258,7 +2268,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=2",
       "memory-per-node-mib": {
@@ -2468,7 +2479,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=2",
       "memory-per-node-mib": {
@@ -2676,7 +2688,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=1",
       "memory-per-node-mib": {
@@ -2878,7 +2891,8 @@
         }
       ],
       "install-media": [
-        "disk-image"
+        "disk-image",
+        "netboot"
       ],
       "machine-options": "origin2000,topology=origin2000-rack,nodes=1",
       "memory-per-node-mib": {

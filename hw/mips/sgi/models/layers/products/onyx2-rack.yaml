@@ -248,7 +248,7 @@ layer:
         netboot_adapter: ioc3-ethernet
         default_topology: onyx2-rack
         supported_guests: [irix]
-        install_media: [disk-image]
+        install_media: [disk-image, netboot]
         provenance: derived
         sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", "qemu:hw/mips/sgi/models/layers/products/origin2000-rack.yaml the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"]
     evidence_policy: strict

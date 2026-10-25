@@ -823,8 +823,15 @@ These are emulator choices for launchers, not hardware facts.
 - Disk bus ``scsi``: the boot disk attaches to the first onboard SCSI
   controller. The owner's hardware graph places its disk at PCI device
   0, target 1 (:ref:`sgi-ip30-octane2-graph`); the physical bay and channel wiring are unknown.
-- Netboot adapter ``none``; supported guest ``irix``; default CPU
-  model R10000 or R12000.
+- Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
+  media ``disk-image`` and ``netboot``. The stock PROM's "Install System
+  Software" netbooted the IRIX 6.5.30 miniroot through it on the model,
+  and complete installs on an Octane with SI and an Octane2 with V12 on
+  2026-10-24 reached the installed system's login prompt
+  (:ref:`sgi-sn-launch-disk-bus`). The physical PROM's network install
+  rests on the IRIX 6.5.30 ``prom(1M)`` page, not on a measurement of
+  this board. Supported guest ``irix``; default CPU model R10000 or
+  R12000.
 
 .. _sgi-ip30-unknowns:
 
