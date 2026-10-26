@@ -144,7 +144,7 @@ layer:
         prom_dialogue: none
         default_cpu_model: R16000
         disk_bus: scsi.0
-        netboot_adapter: unsupported
+        netboot_adapter: bcm5701-ethernet
         smdk:
           package_path: assets/boot/smdk
           tftp_mode: fixed
@@ -159,7 +159,7 @@ layer:
         firmware_bytes: 1476264
         identity_inputs: []
         supported_guests: []
-        install_media: []
+        install_media: [netboot]
         provenance: derived
         sources: [onyx350-compatibility-proposal, onyx350-flash-candidate, onyx350-hinv]
   evidence_policy: strict
