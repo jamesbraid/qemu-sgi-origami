@@ -3765,7 +3765,7 @@ static void test_swap_in_inline(void)
     qtest_quit(s);
 }
 
-/* A suspend is answered with 0x104 and a count of 0: nothing to resume. */
+/* A suspend is answered with 0x104 and a count of 0 words. */
 static void test_suspend_replies(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -3791,6 +3791,39 @@ static void test_suspend_replies(void)
     reason_acknowledge(s);
     g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
     qtest_quit(s);
+}
+
+/*
+ * The kernel's resume can come before its interrupt handler has read the
+ * suspend's reply: the allocation then waits for the reply, and sends
+ * 0x1de and the reply's words, none here, followed by its own work. The
+ * resume must frame as a whole command, and the reply stays readable.
+ */
+static void test_suspend_reply_read_after_resume(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    swap_setup(s);
+    guest_fill_word(s, REASON_PAGE + 4, 0xa5a5a5a5);
+    kona_command_kicked(s, 0x1df, (uint32_t[]){ 0x104 }, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x104);
+    kona_command_kicked(s, 0x1de, NULL, 0);
+    swap_out(s, 0x740);
+    assert_textport_in_step(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x104);
+    g_assert_cmphex(guest_word(s, REASON_PAGE + 4), ==, 0);
+    reason_acknowledge(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_null(strstr(found, "unknown"));
+    g_assert_cmpuint(count_occurrences(found,
+                                       "sgi_kona_kernel_command token 0x1de "),
+                     ==, 1);
 }
 
 /* A swap-in part-way through its inline words, and a waiting reason. */
@@ -4016,6 +4049,8 @@ int main(int argc, char **argv)
                    test_swap_in_inline);
     qtest_add_func("sn0/origin2000/kona-context/swap/suspend-replies",
                    test_suspend_replies);
+    qtest_add_func("sn0/origin2000/kona-context/swap/resume-before-reply",
+                   test_suspend_reply_read_after_resume);
     qtest_add_func("sn0/origin2000/kona-context/swap/migration",
                    test_swap_migration);
     qtest_add_func("sn0/origin2000/kona-context/reply-after-deactivation",
