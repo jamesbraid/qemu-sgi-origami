@@ -1467,7 +1467,9 @@ static void test_resolve_product_scope(void)
 
 /*
  * The machine numbers a board's io<N>-flash and nvram<N> stores and a
- * module's module<N>-nvram store by the runtime's own rules. Every
+ * module's module<N>-nvram store by the runtime's own rules, and names an
+ * IO9 board's DS1742 pair and an expansion module's configuration storage
+ * for their owners. Every
  * Scalable Node offering's storage list, which the generator writes, must
  * name exactly the stores those rules number, in the same order.
  */
@@ -1485,6 +1487,7 @@ static void test_storage_board_rules(void)
         const SGIModelIoBoardList *board;
         const SGIModelStorageItemList *item;
         const SGIModelModuleList *module;
+        const SGIModelIoAssemblyList *assembly;
         const SGIModelTopology *fitted;
 
         g_assert_nonnull(t);
@@ -1510,6 +1513,28 @@ static void test_storage_board_rules(void)
         /* Module stores follow the nodes this offering fits. */
         fitted = sgi_model_resolve_population(t, offering->nodes,
                                               &error_abort);
+        /* An IO9 board's DS1742 pair is named for the board. */
+        for (board = fitted->io_boards; board; board = board->next) {
+            if (board->value->has_ds1742 && board->value->ds1742) {
+                g_string_append_printf(expected,
+                                       "ds1742-%s-data ds1742-%s-clock ",
+                                       board->value->id, board->value->id);
+            }
+        }
+        /* An expansion module's configuration storage, for its module. */
+        for (assembly = fitted->io_assemblies; assembly;
+             assembly = assembly->next) {
+            const SGIModelModuleList *owner = fitted->modules;
+
+            if (!assembly->value->has_configuration_storage) {
+                continue;
+            }
+            for (size_t i = 0; i < assembly->value->module_index; i++) {
+                owner = owner->next;
+            }
+            g_assert_nonnull(owner);
+            g_string_append_printf(expected, "%s-flash ", owner->value->id);
+        }
         for (module = fitted->modules; module; module = module->next) {
             if (sgi_model_module_has_nvram(fitted, module->value)) {
                 g_string_append_printf(expected, "module%u-nvram ",
