@@ -2562,25 +2562,15 @@
         2
       ],
       "dimms_per_node": [
-        2,
-        2,
-        2,
-        2
+        4,
+        4,
+        4,
+        4
       ],
       "memory_bank_mib_per_node": [
         [
-          64,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0
-        ],
-        [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -2589,8 +2579,8 @@
           0
         ],
         [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -2599,8 +2589,18 @@
           0
         ],
         [
-          64,
+          128,
+          128,
           0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          128,
+          128,
           0,
           0,
           0,
@@ -2610,15 +2610,16 @@
         ]
       ],
       "memory_mib_per_node": [
-        64,
-        64,
-        64,
-        64
+        256,
+        256,
+        256,
+        256
       ],
       "nodes": 4,
       "provenance": "derived",
       "sources": [
-        "007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"
+        "007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18",
+        "SGI Origin 2000 remanufactured product guide 1068 (9/99) printed page 7 PDF page 7: node card main memory 256MB to 4GB per card; printed page 6 PDF page 6: from 256MB to 4GB ECC main memory per board"
       ]
     },
     "product": "origin2000-rack",
@@ -5109,7 +5110,7 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 2000 rack module",
-    "notes": "Selected installation with two processors and one 64 MiB bank per node. Optional I/O slots and external CrayLink connectors are empty. This is a selected population, not a captured machine inventory. Selected hardware configuration. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
+    "notes": "Selected installation with two processors and 256 MiB per node in two 128 MB banks. Optional I/O slots and external CrayLink connectors are empty. This is a selected population, not a captured machine inventory. Selected hardware configuration. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
   },
   "model_version": 1,
   "open_questions": [],

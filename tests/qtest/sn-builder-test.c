@@ -1294,6 +1294,44 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
 }
 
 /*
+ * SGI shipped no Origin 2000 or Onyx2 node board with less than 256 MB
+ * (the remanufactured Origin 2000 product guide 1068, printed page 7, and
+ * Onyx2 product guide 1073, printed page 3), so a chassis left without -m
+ * fits 256 MiB on every node. The 64 MiB DIMM pair from the memory
+ * specification (007-3439-002, printed page 35) stays selectable. The
+ * machine's default total is the four-node rack's, so a smaller chassis
+ * names -m itself; the catalogue's per-node default is checked by
+ * test_sgi_model_generator.py.
+ */
+static void test_ip27_chassis_default_to_256_mib_per_node(const void *data)
+{
+    static const struct {
+        const char *machine;
+        unsigned int nodes;
+    } cases[] = {
+        { "-M origin2000,topology=origin2000-rack -smp 8", 4 },
+        { "-M origin2000,topology=origin2000-deskside -smp 8", 4 },
+        { "-M onyx2,topology=onyx2-rack -smp 8", 4 },
+    };
+    size_t i;
+
+    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *qts = qtest_initf("%s -display none", cases[i].machine);
+        g_autoptr(QDict) memory = qtest_qmp(qts,
+            "{'execute':'query-memory-size-summary'}");
+
+        g_assert_cmpuint(qdict_get_uint(qdict_get_qdict(memory, "return"),
+                                        "base-memory"), ==,
+                         (UINT64_C(256) << 20) * cases[i].nodes);
+        qtest_quit(qts);
+
+        qts = qtest_initf("%s -m %uM -display none", cases[i].machine,
+                          64 * cases[i].nodes);
+        qtest_quit(qts);
+    }
+}
+
+/*
  * The Onyx2's node board is the Origin 2000's. Its 16-Mb DIMM pairs make
  * 64 or 128 MB banks (SGI 007-3439-002, printed page 35), so both Onyx2
  * chassis take 256 MiB per node, laid out as two 128 MB banks.
@@ -9733,6 +9771,8 @@ int main(int argc, char **argv)
         test_origin2000_one_node_has_two_cpus_on_node_zero);
     qtest_add_data_func("sn/builder/onyx2-accepts-256-mib-per-node", NULL,
                         test_onyx2_accepts_256_mib_per_node);
+    qtest_add_data_func("sn/builder/ip27-chassis-default-to-256-mib-per-node",
+                        NULL, test_ip27_chassis_default_to_256_mib_per_node);
     qtest_add_data_func("sn/builder/ip27-nodes-take-up-to-4-gib", NULL,
                         test_ip27_nodes_take_up_to_4_gib);
     qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",

@@ -26,8 +26,8 @@
       "default-cpu-model": "R10000",
       "default-topology": "onyx2-rack",
       "dimms-per-node": [
-        2,
-        2
+        4,
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
@@ -108,7 +108,7 @@
           3712,
           4096
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -237,8 +237,8 @@
       "default-cpu-model": "R10000",
       "default-topology": "onyx2-rack",
       "dimms-per-node": [
-        2,
-        2
+        4,
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
@@ -319,7 +319,7 @@
           3712,
           4096
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -448,8 +448,8 @@
       "default-cpu-model": "R10000",
       "default-topology": "onyx2-rack",
       "dimms-per-node": [
-        2,
-        2
+        4,
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
@@ -530,7 +530,7 @@
           3712,
           4096
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -658,7 +658,7 @@
       "default-cpu-model": "R10000",
       "default-topology": "onyx2-rack",
       "dimms-per-node": [
-        2
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
@@ -739,7 +739,7 @@
           3712,
           4096
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -861,7 +861,7 @@
       "default-cpu-model": "R10000",
       "default-topology": "onyx2-rack",
       "dimms-per-node": [
-        2
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 deskside with one InfiniteReality pipe",
@@ -942,7 +942,7 @@
           3712,
           4096
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -1526,8 +1526,8 @@
           ],
           "asic-kind": "hub",
           "bank-mib": [
-            64,
-            0,
+            128,
+            128,
             0,
             0,
             0,
@@ -1642,8 +1642,8 @@
           ],
           "asic-kind": "hub",
           "bank-mib": [
-            64,
-            0,
+            128,
+            128,
             0,
             0,
             0,

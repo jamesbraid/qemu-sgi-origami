@@ -1474,13 +1474,13 @@
         2
       ],
       "dimms_per_node": [
-        2,
-        2
+        4,
+        4
       ],
       "memory_bank_mib_per_node": [
         [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -1489,8 +1489,8 @@
           0
         ],
         [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -1500,8 +1500,8 @@
         ]
       ],
       "memory_mib_per_node": [
-        64,
-        64
+        256,
+        256
       ],
       "nodes": 2,
       "provenance": "derived",
@@ -1579,7 +1579,8 @@
       ],
       "provenance": "vendor-document",
       "sources": [
-        "007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors"
+        "007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors",
+        "SGI Onyx2 remanufactured product guide 1073 (6/99) printed page 3 PDF page 3: every Onyx2 deskside and single-rack system lists 256MB as the smallest system RAM; the node card minimum is 256MB (1068 printed page 7), the Onyx2 using the same node board"
       ],
       "supported_cpu_populations": [
         [
@@ -2460,7 +2461,7 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Onyx2 deskside with one InfiniteReality pipe",
-    "notes": "Selected installation of two node boards, each with two processors and one 64 MiB bank, joined by the midplane's Null Router. IO1 holds a BaseIO-G with its MediaIO daughtercard; the graphics board set takes XIO4 directly, with a geometry board, one raster manager with texture memory and a display generator, and no Ktown, so the pipe's one-wire chain answers the geometry record alone. The other XIO slots are empty. This is a selected population, not a captured machine inventory. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
+    "notes": "Selected installation of two node boards, each with two processors and 256 MiB in two 128 MB banks, joined by the midplane's Null Router. IO1 holds a BaseIO-G with its MediaIO daughtercard; the graphics board set takes XIO4 directly, with a geometry board, one raster manager with texture memory and a display generator, and no Ktown, so the pipe's one-wire chain answers the geometry record alone. The other XIO slots are empty. This is a selected population, not a captured machine inventory. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
   },
   "model_version": 1,
   "open_questions": [],

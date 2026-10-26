@@ -2789,25 +2789,15 @@
         2
       ],
       "dimms_per_node": [
-        2,
-        2,
-        2,
-        2
+        4,
+        4,
+        4,
+        4
       ],
       "memory_bank_mib_per_node": [
         [
-          64,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0
-        ],
-        [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -2816,8 +2806,8 @@
           0
         ],
         [
-          64,
-          0,
+          128,
+          128,
           0,
           0,
           0,
@@ -2826,8 +2816,18 @@
           0
         ],
         [
-          64,
+          128,
+          128,
           0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          128,
+          128,
           0,
           0,
           0,
@@ -2837,15 +2837,16 @@
         ]
       ],
       "memory_mib_per_node": [
-        64,
-        64,
-        64,
-        64
+        256,
+        256,
+        256,
+        256
       ],
       "nodes": 4,
       "provenance": "derived",
       "sources": [
-        "007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"
+        "007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18",
+        "SGI Onyx2 remanufactured product guide 1073 (6/99) printed page 3 PDF page 3: every Onyx2 deskside and single-rack system lists 256MB as the smallest system RAM; the node card minimum is 256MB (1068 printed page 7), the Onyx2 using the same node board"
       ]
     },
     "product": "onyx2-rack",
@@ -4427,7 +4428,7 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Onyx2 rack with one InfiniteReality pipe",
-    "notes": "Selected installation with two processors and one 64 MiB bank per node. IO1 holds a BaseIO-G with its MediaIO daughtercard, and IO3 holds the Xtown that cables to one pipe in the graphics module: a geometry board, one raster manager with texture memory and a display generator, reached through the graphics module's Ktown. The pipe's one-wire chain answers the geometry record, then the Ktown's. The other optional I/O slots and external CrayLink connectors are empty. This is a selected population, not a captured machine inventory. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
+    "notes": "Selected installation with two processors and 256 MiB in two 128 MB banks per node. IO1 holds a BaseIO-G with its MediaIO daughtercard, and IO3 holds the Xtown that cables to one pipe in the graphics module: a geometry board, one raster manager with texture memory and a display generator, reached through the graphics module's Ktown. The pipe's one-wire chain answers the geometry record, then the Ktown's. The other optional I/O slots and external CrayLink connectors are empty. This is a selected population, not a captured machine inventory. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
   },
   "model_version": 1,
   "open_questions": [],

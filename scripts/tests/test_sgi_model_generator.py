@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "b9d6d1358c3110fe72e2e7eae05f67e1152c57d33e24865acc659b53c62e1f10"
+    "76a7111e309e57cbad8fc07ead4d03d6b9f5a689f6e9c9f1ed226a058bbfb523"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -106,6 +106,24 @@ class GeneratorTests(unittest.TestCase):
                              for item in catalogue["offerings"]}
         self.assertFalse(set(REFERENCE_TOPOLOGIES) & runtime_names)
         self.assertFalse(set(REFERENCE_TOPOLOGIES) & runtime_offerings)
+
+    def test_ip27_chassis_default_to_the_shipped_256_mib_node_board(self):
+        # SGI sold no Origin 2000 or Onyx2 node board under 256 MB
+        # (remanufactured Origin 2000 guide 1068 printed page 7, Onyx2
+        # guide 1073 printed page 3), so every offering defaults to 256 MiB
+        # per node while the 64 MiB DIMM pair stays selectable
+        # (007-3439-002 printed page 35).
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        offerings = [item for item in catalogue["offerings"]
+                     if item["product"] in ("origin2000", "onyx2")]
+        self.assertTrue(offerings)
+        for item in offerings:
+            memory = item["memory-per-node-mib"]
+            with self.subTest(topology=item["topology"], nodes=item["nodes"]):
+                self.assertEqual(memory["default"], 256)
+                self.assertIn(64, memory["accepted"])
+                self.assertIn(256, memory["accepted"])
 
     def test_default_export_is_complete_and_compatible(self):
         outputs = render_qemu_inputs(INPUTS)
