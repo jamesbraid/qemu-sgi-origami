@@ -14267,7 +14267,10 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
  * through the mailbox with 0x102, one per swap-in, in order, or the pipe
  * dies with reason 15. An allocation under pressure may first send 0x1df
  * 0x104, a suspend whose reply on the reason page is 0x104, a count n and
- * n words for the kernel's later 0x1de resume.
+ * n words. The kernel's resume reads its suspend count before waiting: if
+ * the interrupt handler has already taken the reply, it sends nothing
+ * when n is below 2; if not, it waits for the reply and then sends 0x1de
+ * and the reply's n words, whatever n is.
  *
  * The kernel keeps the swapped-out buffer untouched and only hands it back
  * on swap-in, so the bytes are the pipe's own. Approximated: the model
@@ -14275,7 +14278,8 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
  * object, whatever the pool placement, so a swap moves none of it. A
  * swap-out writes zeros of the full length into the buffer, a swap-in
  * reads the buffer and discards it, and both complete at once. A suspend
- * replies n = 0, so no resume follows; what a real pipe saves is unknown.
+ * replies n = 0 (SGI_KONA_SUSPEND_REPLY_WORDS), and a resume, when one
+ * comes, is a bare 0x1de; what a real pipe saves is unknown.
  * A pool-pressure qtest checks the completions as stated; the guest check
  * is two texture programs sharing a 64 MB pipe.
  */
@@ -14704,8 +14708,12 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
                           " 0x%" PRIx32 "; answered as 0x104\n", args[0]);
         }
         sgi_kona_post_reason_words(s, selector,
-                                   (uint32_t[]){ SGI_KONA_REASON_SUSPEND, 0 },
+                                   (uint32_t[]){ SGI_KONA_REASON_SUSPEND,
+                                                 SGI_KONA_SUSPEND_REPLY_WORDS },
                                    2);
+        break;
+    case SGI_KONA_CMD_MEM_RESUME:
+        /* The reply's words come back, and the model saved nothing. */
         break;
     case SGI_KONA_CMD_MEM_REGION:
         trace_sgi_kona_kernel_mem_region(args[0], args[1], args[2], args[3]);

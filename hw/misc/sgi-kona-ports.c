@@ -120,14 +120,15 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
      * swap-in frames its first six words, class to host address >> 12;
      * sgi-kona.c takes the rest, which carry its data inline or a tagged
      * offset. A suspend is 0x1df and its completion reason 0x104. The
-     * resume, 0x1de, is not here: it carries the words a suspend reply
-     * returned, and the model's reply returns none.
+     * resume, 0x1de, carries the words the suspend's reply returned, as
+     * many as the model's reply gives.
      */
     { SGI_KONA_CMD_MEM_REGION, 4 },
     { SGI_KONA_CMD_MEM_COPY_DOWN, 4 },
     { SGI_KONA_CMD_MEM_SWAP_OUT, 8 },
     { SGI_KONA_CMD_MEM_SWAP_IN, 6 },
     { SGI_KONA_CMD_MEM_SUSPEND, 1 },
+    { SGI_KONA_CMD_MEM_RESUME, SGI_KONA_SUSPEND_REPLY_WORDS },
     { SGI_KONA_CMD_RESOURCE_SYNC, 1 },
     { SGI_KONA_CMD_X_INIT, 3 },        /* width, height, depth code */
     /* The X server's GC load, from its per-GC state */

@@ -88,6 +88,12 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_MEM_SWAP_OUT   0x1e3
 #define SGI_KONA_CMD_MEM_SWAP_IN    0x1e2
 #define SGI_KONA_CMD_MEM_SUSPEND    0x1df
+#define SGI_KONA_CMD_MEM_RESUME     0x1de
+/*
+ * The words the model's suspend reply returns, which the kernel's resume
+ * then carries after 0x1de (see sgi_kona_mem_swap_out()'s comment).
+ */
+#define SGI_KONA_SUSPEND_REPLY_WORDS 0
 /* The completion reasons of a swap and of a suspend. */
 #define SGI_KONA_REASON_SWAP        0x102
 #define SGI_KONA_REASON_SUSPEND     0x104
