@@ -571,6 +571,95 @@ static void test_video_table_shape(void)
     }
 }
 
+/* The table's own linear answer, which the port's lookup must match. */
+static const SGICommandPortSelector *
+search_table(const SGICommandPortSelector *selectors, unsigned num_selectors,
+             uint32_t selector)
+{
+    for (unsigned i = 0; i < num_selectors; i++) {
+        if (selectors[i].selector == selector) {
+            return &selectors[i];
+        }
+    }
+    return NULL;
+}
+
+/* Every 16-bit word and a few wider ones resolve as a search would. */
+static void check_lookup_matches_search(const SGICommandPortSelector *selectors,
+                                        unsigned num_selectors)
+{
+    static const uint32_t wide[] = {
+        0x10000, 0x10071, 0xffff0071, 0xdeadbeef, UINT32_MAX,
+    };
+    RecordedPacket r = { 0 };
+    SGICommandPort p;
+
+    sgi_command_port_init(&p, &test_ops, &r, 0, selectors, num_selectors);
+    for (uint32_t word = 0; word <= 0xffff; word++) {
+        g_assert_true(sgi_command_port_selector(&p, word) ==
+                      search_table(selectors, num_selectors, word));
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(wide); i++) {
+        g_assert_true(sgi_command_port_selector(&p, wide[i]) ==
+                      search_table(selectors, num_selectors, wide[i]));
+    }
+}
+
+static void test_lookup_matches_search(void)
+{
+    check_lookup_matches_search(sgi_kona_command_tokens,
+                                sgi_kona_command_num_tokens);
+    check_lookup_matches_search(sgi_kona_gl_tokens, sgi_kona_gl_num_tokens);
+    check_lookup_matches_search(sgi_kona_textport_selectors,
+                                sgi_kona_textport_num_selectors);
+    check_lookup_matches_search(sgi_kona_fifo_selectors,
+                                sgi_kona_fifo_num_selectors);
+    check_lookup_matches_search(sgi_kona_doorbell_selectors,
+                                sgi_kona_doorbell_num_selectors);
+}
+
+/* A selector too wide to index still frames, as does every other one. */
+static void test_lookup_wide_selector(void)
+{
+    static const SGICommandPortSelector table[] = {
+        { 0x10, 1 },
+        { 0x12345678, 2 },
+    };
+    RecordedPacket r = { 0 };
+    SGICommandPort p;
+
+    check_lookup_matches_search(table, ARRAY_SIZE(table));
+    sgi_command_port_init(&p, &test_ops, &r, 0, table, ARRAY_SIZE(table));
+    sgi_command_port_write(&p, 0x12345678, 4);
+    sgi_command_port_write(&p, 1, 4);
+    g_assert_false(r.got_packet);
+    sgi_command_port_write(&p, 2, 4);
+    g_assert_true(r.got_packet);
+    g_assert_cmphex(r.selector, ==, 0x12345678);
+    g_assert_cmpuint(r.argc, ==, 2);
+}
+
+/* Two ports given one table at different lengths each see their own. */
+static void test_lookup_table_prefix(void)
+{
+    static const SGICommandPortSelector table[] = {
+        { 0x20, 0 },
+        { 0x21, 0 },
+    };
+    RecordedPacket r = { 0 };
+    SGICommandPort whole, prefix;
+
+    sgi_command_port_init(&whole, &test_ops, &r, 0, table, 2);
+    sgi_command_port_init(&prefix, &test_ops, &r, 0, table, 1);
+    g_assert_true(sgi_command_port_selector(&whole, 0x21) == &table[1]);
+    g_assert_null(sgi_command_port_selector(&prefix, 0x21));
+    g_assert_true(sgi_command_port_selector(&prefix, 0x20) == &table[0]);
+    sgi_command_port_write(&prefix, 0x21, 4);
+    g_assert_false(r.got_packet);
+    g_assert_true(r.got_unsupported);
+    g_assert_cmphex(r.unsupported_word, ==, 0x21);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -603,5 +692,11 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-ports/doorbell/excluded-selectors",
                     test_doorbell_excluded_selectors);
     g_test_add_func("/sgi-kona-ports/command/data5", test_command_data5);
+    g_test_add_func("/sgi-kona-ports/lookup/matches-search",
+                    test_lookup_matches_search);
+    g_test_add_func("/sgi-kona-ports/lookup/wide-selector",
+                    test_lookup_wide_selector);
+    g_test_add_func("/sgi-kona-ports/lookup/table-prefix",
+                    test_lookup_table_prefix);
     return g_test_run();
 }

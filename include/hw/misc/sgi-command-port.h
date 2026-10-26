@@ -26,6 +26,9 @@ typedef struct SGICommandPortSelector {
     uint32_t argc;
 } SGICommandPortSelector;
 
+/* A table's selector lookup, built and kept by sgi_command_port_init(). */
+typedef struct SGICommandPortIndex SGICommandPortIndex;
+
 typedef struct SGICommandPortOps {
     /*
      * A complete packet: selector plus its argc argument words. Called
@@ -66,6 +69,7 @@ typedef struct SGICommandPort {
     unsigned port_id;
     const SGICommandPortSelector *selectors;
     unsigned num_selectors;
+    const SGICommandPortIndex *index;
 
     /* Migrated state below; the owner's VMStateDescription lists these. */
     uint32_t kick;
@@ -82,6 +86,10 @@ void sgi_command_port_init(SGICommandPort *p, const SGICommandPortOps *ops,
                             unsigned num_selectors);
 
 void sgi_command_port_reset(SGICommandPort *p);
+
+/* The port's table entry for selector, or NULL when the table has none. */
+const SGICommandPortSelector *
+sgi_command_port_selector(const SGICommandPort *p, uint32_t selector);
 
 /*
  * The push port: a 32 or 64-bit store at the port's own address. A 64-bit
