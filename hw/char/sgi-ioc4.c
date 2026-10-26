@@ -875,15 +875,18 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
         p->tx_produce = value;
         ioc4_tx_run(p);
         break;
+    /*
+     * The engine advances these two, and software can still place them:
+     * the IOC3 board test writes the transmit consume index and reads it
+     * back, and IOC4 has the same register. Only the pointer field stores.
+     */
     case 2:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-ioc4: guest write to device-owned TX consumer on port %u\n",
-                      n);
+        p->tx_consume = value & mask;
+        ioc4_tx_run(p);
         break;
     case 3:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-ioc4: guest write to device-owned RX producer on port %u\n",
-                      n);
+        p->rx_produce = value & mask;
+        ioc4_update_rx_threshold(p);
         break;
     case 4: {
         uint32_t pointer = value & ~IOC4_SRCIR_TIMER_ARM;
