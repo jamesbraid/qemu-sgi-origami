@@ -1271,6 +1271,41 @@ static void test_dma_rx_timer_due_before_access(void)
     close(sv[0]);
 }
 
+/*
+ * The receive timer register reads its live count in bits 16-27. A reload
+ * write loads the count too, and an idle timer holds it; a running timer
+ * counts down from its reload. The IOC3 board test checks the same fields.
+ */
+static void test_dma_rx_timer_count_reads_back(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input = 0x63;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_RX_TIMER(0), 0xfff);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_TIMER(0)) & 0x0fff0fff, ==,
+                    0x0fff0fff);
+    qtest_clock_step(qts, 0x10 * 62500);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_TIMER(0)) & 0x0fff0fff, ==,
+                    0x0fff0fff);
+
+    reg_write(qts, SDMA_RX_TIMER(0), 0x140);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], &input, 1), ==, 1);
+    g_usleep(10000);
+    qtest_clock_step(qts, 0x40 * 62500);
+    g_assert_cmphex((reg_read(qts, SDMA_RX_TIMER(0)) >> 16) & 0xfff, ==,
+                    0x100);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2810,6 +2845,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-rx-timer-count-reads-back",
+                   test_dma_rx_timer_count_reads_back);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-due-before-access",
                    test_dma_rx_timer_due_before_access);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry-after-full-entry",
