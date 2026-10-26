@@ -1779,6 +1779,49 @@ static void test_read_selection(void)
     assert_read_colour(qts, 0x0000ff);
 }
 
+static void assert_draw_buffer(QTestState *s, uint32_t buffer)
+{
+    qtest_memset(s, RETURN_PAGE + 8, 0xa5, 8);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xc01 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, buffer);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
+}
+
+/*
+ * glGet of GL_DRAW_BUFFER, which SPEC GLperf asks before every test and
+ * then waits on: the enumerant glDrawBuffer last gave, including a NONE
+ * or a left-buffer name, the visual's default FRONT or BACK before any,
+ * and the colour-buffer attribute group's saved value after a pop.
+ */
+static void test_draw_buffer_query(void)
+{
+    static const uint32_t double_config[10] = { 0, 12, 0, 1 };
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 0);
+    assert_draw_buffer(qts, 0x404);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x400 }, 1);
+    assert_draw_buffer(qts, 0x400);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0 }, 1);
+    assert_draw_buffer(qts, 0);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0xdead }, 1);
+    assert_draw_buffer(qts, 0);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x406 }, 1);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x4000 }, 1);
+    assert_reply_posted(qts);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    assert_draw_buffer(qts, 0x404);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_draw_buffer(qts, 0x406);
+
+    kona_command(qts, 1, double_config, 10);
+    assert_draw_buffer(qts, 0x405);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x408 }, 1);
+    assert_draw_buffer(qts, 0x408);
+}
+
 /*
  * glGet's 0x4c: the modelview matrix glLoadMatrixf set, as sixteen float
  * words from byte 8; the viewport as four integers; the depth range
@@ -2674,6 +2717,7 @@ static void test_native_state_migrates(void)
     kona_command(from, 0xcf, range, 4);
     kona_command(from, 0x1f, clear, 2);
     kona_command(from, 0x37, (uint32_t[]){ 0x400 }, 1);
+    kona_command(from, 0xc4, (uint32_t[]){ 0x400 }, 1);
     kona_command(from, 0xc9, (uint32_t[]){ 0x800 | 0x100 | 0x20 }, 1);
     assert_reply_posted(from);
     kona_command_d(from, 0xcf, (double[]){ 0.75, 0.125 }, 2);
@@ -2688,6 +2732,7 @@ static void test_native_state_migrates(void)
     assert_native_depth(to, 0xb70, range, 4);
     assert_native_depth(to, 0xb73, clear, 2);
     assert_read_buffer(to, 0x400);
+    assert_draw_buffer(to, 0x400);
     assert_read_colour(to, 0x4080bf);
     qtest_quit(to);
     qtest_quit(from);
@@ -17501,6 +17546,8 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-3d/read-selection",
              test_read_selection);
     add_case("sn0/origin2000/kona-3d/get-queries", test_get_queries);
+    add_case("sn0/origin2000/kona-3d/draw-buffer-query",
+             test_draw_buffer_query);
     add_case("sn0/origin2000/kona-3d/native-depth-state",
              test_native_depth_state);
     add_case("sn0/origin2000/kona-3d/native-state-migrates",

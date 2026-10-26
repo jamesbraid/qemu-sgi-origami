@@ -6159,6 +6159,7 @@ static void sgi_kona_gl_buffer_config(SGIKonaState *s, const uint32_t *args)
     s->state[i]->pipe.depth_bits = args[SGI_KONA_GL_BUFFER_CONFIG_DEPTH];
     buffers = s->state[i]->window.double_buffered ? SGI_GL_DRAW_BACK :
                                                 SGI_GL_DRAW_FRONT;
+    s->state[i]->pipe.returns.draw_buffer = 0;
     sgi_kona_gl_sink(s, &sink);
     sgi_gl_command(&s->state[i]->gl, &sink,
                    &(SGIGLCmd) { SGI_GL_OP_DRAW_BUFFERS, 1, &buffers });
@@ -7118,6 +7119,7 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
                           PRIx32 " ignored\n", args[0]);
             return true;
         }
+        s->state[i]->pipe.returns.draw_buffer = args[0];
         cmd = (SGIGLCmd) { SGI_GL_OP_DRAW_BUFFERS, 1, a };
         break;
     case SGI_KONA_CMD_GL_HINT:
@@ -8140,6 +8142,26 @@ refused:
     sgi_kona_gl_read_dma_clear(s);
 }
 
+/*
+ * GL_DRAW_BUFFER's value: the enumerant glDrawBuffer last gave, else the
+ * one the draw mask holds, the visual's FRONT or BACK default (OpenGL
+ * 1.2.1 section 4.2.1). A NONE leaves the mask empty, so either way it
+ * reads back as NONE.
+ */
+static uint32_t sgi_kona_gl_draw_buffer(SGIKonaGLState *st)
+{
+    uint32_t mask = st->gl.cur.draw_buffers &
+                    (SGI_GL_DRAW_FRONT | SGI_GL_DRAW_BACK);
+
+    if (st->pipe.returns.draw_buffer) {
+        return st->pipe.returns.draw_buffer;
+    }
+    return mask == (SGI_GL_DRAW_FRONT | SGI_GL_DRAW_BACK) ?
+               SGI_GL_FRONT_AND_BACK :
+           mask == SGI_GL_DRAW_BACK ? SGI_GL_BACK :
+           mask == SGI_GL_DRAW_FRONT ? SGI_GL_FRONT : 0;
+}
+
 /* Native descriptors authorize layout; the source mapping authorizes values. */
 static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
 {
@@ -8178,6 +8200,9 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
 
         /* Empty storage represents the public one-entry zero table. */
         native[0] = map->count ? map->count : 1;
+        n = 1;
+    } else if (name == 0xc01) {
+        native[0] = sgi_kona_gl_draw_buffer(s->state[i]);
         n = 1;
     } else if (name == 0xc02) {
         if (sgi_kona_gl_read_bank(s, i, &out[0]) < 0) {
@@ -8587,6 +8612,10 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
     if (s->state[i]->attrib_mask[k] & 0x100) {
         s->state[i]->pipe.returns.clear_depth =
             s->state[i]->return_attrib[k].clear_depth;
+    }
+    if (s->state[i]->attrib_mask[k] & 0x4000) {
+        s->state[i]->pipe.returns.draw_buffer =
+            s->state[i]->return_attrib[k].draw_buffer;
     }
     if (s->state[i]->attrib_mask[k] & 0x20) {
         memcpy(s->state[i]->pipe.pixel_zoom,
@@ -17997,12 +18026,14 @@ static bool sgi_kona_gl_native_depth_valid(uint64_t bits)
 static int sgi_kona_gl_returns_post_load(void *opaque, int version_id)
 {
     SGIKonaGLReturnState *r = opaque;
+    uint32_t mask;
 
     if (!sgi_kona_gl_native_depth_valid(r->depth_range[0]) ||
         !sgi_kona_gl_native_depth_valid(r->depth_range[1]) ||
         !sgi_kona_gl_native_depth_valid(r->clear_depth) ||
         (r->read_buffer_unsupported ? sgi_kona_gl_read_enum(r->read_buffer) :
-         r->read_buffer && !sgi_kona_gl_read_enum(r->read_buffer))) {
+         r->read_buffer && !sgi_kona_gl_read_enum(r->read_buffer)) ||
+        (r->draw_buffer && !sgi_kona_gl_draw_buffers(r->draw_buffer, &mask))) {
         return -EINVAL;
     }
     return 0;
@@ -18010,14 +18041,15 @@ static int sgi_kona_gl_returns_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_returns = {
     .name = TYPE_SGI_KONA "/gl-return-state",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = sgi_kona_gl_returns_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64_ARRAY(depth_range, SGIKonaGLReturnState, 2),
         VMSTATE_UINT64(clear_depth, SGIKonaGLReturnState),
         VMSTATE_UINT32(read_buffer, SGIKonaGLReturnState),
         VMSTATE_BOOL(read_buffer_unsupported, SGIKonaGLReturnState),
+        VMSTATE_UINT32(draw_buffer, SGIKonaGLReturnState),
         VMSTATE_END_OF_LIST()
     },
 };
