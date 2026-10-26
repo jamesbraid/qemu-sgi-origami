@@ -271,6 +271,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_TEX_TABLE, 1 },
     { SGI_KONA_CMD_GL_LINE_DISTANCE, 1 },
     { SGI_KONA_CMD_GL_LAZY_MODE, 1 },
+    { SGI_KONA_CMD_GL_RENDER_MODE, 1 },
     { SGI_KONA_CMD_GL_VIEWPORT, 4 },
     { SGI_KONA_CMD_GL_SCISSOR, 4 },
     { SGI_KONA_CMD_GL_SET_ERROR, 1 },

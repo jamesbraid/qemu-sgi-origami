@@ -18534,6 +18534,28 @@ static void test_colour_matrix_texture(void)
     qtest_quit(s);
 }
 
+/*
+ * glRenderMode's 0x19 and mode frame as one command, as GLperf sends
+ * 0x19 0x1c00 at every start: the words after it are commands again. The
+ * feedback and selection modes are logged as not modelled.
+ */
+static void test_render_mode(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c02 }, 1);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    assert_convolution_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "expected a sync word"));
+    g_assert_cmpuint(count_occurrences(found, "render mode 0x1c02"), ==, 1);
+}
+
 /* The filter and its enable migrate with the context. */
 static void test_convolution_state_migration(void)
 {
@@ -19198,6 +19220,7 @@ int main(int argc, char **argv)
              test_colour_matrix_get);
     add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
              test_unmodelled_stage_disabled);
+    add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
     add_case("sn0/origin2000/kona-3d/convolution/2d-framed",
              test_convolution_2d_framed);
     add_case("sn0/origin2000/kona-3d/convolution/1d-framed",

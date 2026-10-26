@@ -407,6 +407,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0xef, 7 }, { 0xf0, 8 }, { 0xf2, 4 }, { 0xf3, 5 },
     { 0xf4, 3 }, { 0xf5, 9 }, { 0xf7, 3 }, { 0xf8, 3 }, { 0xf9, 6 },
     { 0x116, 4 },
+    /* glRenderMode. */
+    { 0x19, 1 },
     { 0x72, 2 }, { 0x73, 1 }, { 0x74, 1 }, { 0x75, 1 },
     /* Lighting. */
     { 0x7, 6 }, { 0x8, 6 }, { 0x9, 5 }, { 0xa, 5 }, { 0x97, 6 },

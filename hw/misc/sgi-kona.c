@@ -11566,6 +11566,23 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_LINE_DISTANCE:
         sgi_kona_gl_line_distance(s);
         return;
+    case SGI_KONA_CMD_GL_RENDER_MODE:
+        /*
+         * GL_RENDER is the mode the model always draws in. Feedback and
+         * selection return their records through the library's select
+         * feed, which the model does not produce: logged, and drawing
+         * goes on as in GL_RENDER.
+         */
+        if (args[0] == 0x1c01 || args[0] == 0x1c02) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: render mode 0x%" PRIx32
+                          " (feedback or selection) is not modelled\n",
+                          args[0]);
+        } else if (args[0] != 0x1c00) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: render mode 0x%"
+                          PRIx32 " is not a mode; ignored\n", args[0]);
+        }
+        trace_sgi_kona_gl_command(selector, i);
+        return;
     case SGI_KONA_CMD_GL_SINGLE_COMPONENT:
         qemu_log_mask(LOG_UNIMP, "sgi-kona: single-component query 0x%"
                       PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32

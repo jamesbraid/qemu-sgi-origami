@@ -162,6 +162,12 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_TEX_TABLE   0x17e
 #define SGI_KONA_CMD_GL_LINE_DISTANCE 0xee
 #define SGI_KONA_CMD_GL_LAZY_MODE   0x1ce
+/*
+ * glRenderMode: 0x19 and the mode, GL_RENDER 0x1c00, GL_FEEDBACK 0x1c01
+ * or GL_SELECT 0x1c02, sent for every valid mode before the library acts
+ * on it (established from the IRIX client library's sender).
+ */
+#define SGI_KONA_CMD_GL_RENDER_MODE 0x19
 #define SGI_KONA_CMD_GL_VIEWPORT    0xe3
 #define SGI_KONA_CMD_GL_SCISSOR     0xc
 #define SGI_KONA_CMD_GL_SET_ERROR   0xe4
