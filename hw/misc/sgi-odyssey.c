@@ -6265,7 +6265,12 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     SGIGLDrawState state = *d->state;
     SGIGLDraw draw = *d;
     SGIGLTexImage image = { 0 };
-    OdysseyTextureChain texture;
+    /*
+     * Some 7 KB that only a textured draw uses, and odyssey_texture_setup()
+     * clears before it fills any of it, so it is not cleared for every
+     * primitive as well.
+     */
+    QEMU_UNINITIALIZED OdysseyTextureChain texture;
     SGIGLDrawResult result;
 
     if ((d->state->texture_2d || d->state->texture_3d) &&
