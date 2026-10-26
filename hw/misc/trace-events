@@ -9,6 +9,7 @@ sgi_heart_irq(int64_t vtime, uint64_t pending, uint64_t mask0, uint64_t enabled,
 
 # sgi-mgras.c
 sgi_mgras_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
+sgi_mgras_work(const char *what, uint64_t offset, uint64_t value) "%s offset 0x%" PRIx64 " value %" PRIu64
 # Control accesses omit the high-volume context and scratch command ports.
 sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 
