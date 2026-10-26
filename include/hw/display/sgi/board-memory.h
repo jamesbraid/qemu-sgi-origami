@@ -36,6 +36,7 @@
 #define HW_DISPLAY_SGI_BOARD_MEMORY_H
 
 #include "migration/vmstate.h"
+#include "qemu/bswap.h"
 
 #define SGI_PLANE_NONE UINT32_MAX
 #define SGI_PLANES_MAX 32
@@ -155,6 +156,66 @@ void sgi_plane_store(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
  */
 void sgi_plane_merge(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
                      uint32_t src, uint8_t op, uint32_t mask);
+
+/*
+ * A run of pixels along one plane row, reached directly: n pixels from
+ * (x, y) onwards. sgi_plane_run() fills `run` and returns true when every
+ * pixel of the run is inside the plane and its bytes are one contiguous
+ * host range; otherwise it returns false and the caller takes the pixels
+ * one by one through sgi_plane_load() and sgi_plane_store(). Pixel i of a
+ * run loads and stores exactly what those would at (x + i, y). A run of a
+ * page-backed memory stays valid only while its page does, so it is for
+ * use under the lock the family resolves pages under, before any call
+ * that can change them.
+ */
+typedef struct SGIPlaneRun {
+    uint8_t *host;
+    unsigned bpp;
+    bool le;
+} SGIPlaneRun;
+
+bool sgi_plane_run(const SGIBoardMemory *m, const SGIPlane *p, int x, int y,
+                   int n, SGIPlaneRun *run);
+
+static inline uint32_t sgi_plane_run_load(const SGIPlaneRun *run, int i)
+{
+    const uint8_t *bytes = run->host + (size_t)i * run->bpp;
+
+    switch (run->bpp) {
+    case 1:
+        return bytes[0];
+    case 2:
+        return run->le ? lduw_le_p(bytes) : lduw_be_p(bytes);
+    default:
+        return run->le ? ldl_le_p(bytes) : ldl_be_p(bytes);
+    }
+}
+
+static inline void sgi_plane_run_store(const SGIPlaneRun *run, int i,
+                                       uint32_t word)
+{
+    uint8_t *bytes = run->host + (size_t)i * run->bpp;
+
+    switch (run->bpp) {
+    case 1:
+        bytes[0] = word;
+        break;
+    case 2:
+        if (run->le) {
+            stw_le_p(bytes, word);
+        } else {
+            stw_be_p(bytes, word);
+        }
+        break;
+    default:
+        if (run->le) {
+            stl_le_p(bytes, word);
+        } else {
+            stl_be_p(bytes, word);
+        }
+        break;
+    }
+}
 
 /* A plane word to and from its stored bytes, in the plane's packing. */
 uint32_t sgi_plane_decode(const SGIPlane *p, const uint8_t *bytes);
