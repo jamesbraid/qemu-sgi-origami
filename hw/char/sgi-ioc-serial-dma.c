@@ -310,29 +310,6 @@ static void sdma_update_high_water(SGIIOCSerialDMAPort *p)
 }
 
 /*
- * End of burst: a short group posts now rather than on timer expiry; the
- * interrupt still waits for the timer, the timing drivers observe.
- */
-static void sdma_flush(SGIIOCSerialDMAPort *p)
-{
-    uint32_t *produce = sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE);
-    uint32_t *consume = sdma_reg(p, SGI_IOC_SDMA_RX_CONSUME);
-    uint32_t mask = sdma_pointer_mask(p);
-
-    /* A looped-back character still on the line continues the burst. */
-    if (p->loop_due) {
-        sdma_update_high_water(p);
-        return;
-    }
-
-    if (p->packed) {
-        sdma_post(p, produce, consume, mask);
-    }
-
-    sdma_update_high_water(p);
-}
-
-/*
  * The receive timer starts at the first character received after it is
  * armed, as both Linux ring drivers' comment on the part says. A running
  * timer is not started again by later characters; whether the part restarts
@@ -401,6 +378,16 @@ static void sdma_receive(SGIIOCSerialDMAPort *p, int64_t since)
 
         if (p->armed && !timer_pending(p->rx_timer) && !p->rx_frozen_due) {
             sdma_rx_timer_start(p, since);
+        }
+
+        /*
+         * A fourth character completes the entry. Fewer stay in the packer
+         * until the timer runs out or a drain: both Linux ring drivers'
+         * comment on the part says held bytes are not written "until
+         * either there are 4 bytes available or the rx_timer expires".
+         */
+        if (p->packed == SGI_IOC_SDMA_ENTRY_CHARS) {
+            sdma_post(p, produce, consume, mask);
         }
     }
 }
@@ -545,7 +532,7 @@ static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since)
     sdma_transmit(p, since);
     sdma_receive(p, since);
     sdma_drain(p);
-    sdma_flush(p);
+    sdma_update_high_water(p);
     sdma_update_tx_empty(p);
 
     p->busy = false;

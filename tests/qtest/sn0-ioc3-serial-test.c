@@ -435,8 +435,22 @@ static void carry_on_the_line(QTestState *qts, unsigned int chars)
 }
 
 /*
+ * Post what the port's packer holds with a drain command, as both Linux
+ * ring drivers do when their ring looks empty. The timer is left alone.
+ */
+static void drain_port(QTestState *qts, unsigned int port)
+{
+    uint32_t control = qtest_readl(qts, sdma(port, SDMA_CONTROL));
+
+    qtest_writel(qts, sdma(port, SDMA_CONTROL), control | CTRL_RX_DRAIN);
+}
+
+/*
  * Collect n characters in order under data-valid flags; entry grouping is
  * the host's chunking, so nothing built on this flakes on segmentation.
+ * Fewer than four characters wait in the packer for the timer or a drain,
+ * so while short of n this drains the port, as both Linux ring drivers do
+ * when their ring looks empty. A drain leaves the timer alone.
  */
 static void collect_rx_chars(QTestState *qts, unsigned int port,
                              unsigned int n, uint8_t *data, uint8_t *status)
@@ -465,6 +479,7 @@ static void collect_rx_chars(QTestState *qts, unsigned int port,
         }
 
         if (got < n) {
+            drain_port(qts, port);
             if (g_test_timer_elapsed() >= IOC3_SERIAL_SOCKET_TIMEOUT_SECS) {
                 g_test_message("port %u's ring held %u of %u characters "
                                "after %d seconds", port, got, n,
@@ -1768,6 +1783,8 @@ static void test_a_modem_entry_reaches_the_modem_register(const void *data)
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
     carry_on_the_line(qts, 1);
 
+    /* One character waits in the packer until a drain posts it. */
+    drain_port(qts, 0);
     qtest_memread(qts, RING_RX(0), landed, sizeof(landed));
     g_assert_cmphex(landed[0], ==, 'x');
     g_assert_cmphex(landed[4] & RX_DATA_VALID, ==, RX_DATA_VALID);
@@ -2109,6 +2126,53 @@ static void test_the_receive_timer_starts_at_the_first_character(
     g_assert_cmpint(write(sock, &third, 1), ==, 1);
     collect_rx_chars(qts, 0, 3, got, status);
     qtest_clock_step(qts, 0xa1 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * Fewer than four characters stay in the packer, reported in the produce
+ * index, until the receive timer runs out: both Linux ring drivers' comment
+ * on the part says held bytes are not written "until either there are 4
+ * bytes available or the rx_timer expires".
+ */
+static void test_a_short_burst_waits_for_the_timer(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'w';
+    uint8_t entry[8];
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    g_test_timer_start();
+    while (((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7) == 0 &&
+           (qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8) == 0) {
+        g_assert_cmpfloat(g_test_timer_elapsed(), <,
+                          IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==,
+                    1u << 24);
+
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 8);
+    qtest_memread(qts, RING_RX(0), entry, sizeof(entry));
+    g_assert_cmphex(entry[0], ==, sent);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
                     ==, SOURCE(0, SRC_RX_TIMER));
 
@@ -2597,6 +2661,8 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
     configure_line(qts, 0);
     set_loopback(qts, 0);
     enable_dma(qts, 0);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
 
     /* A full four-character entry, so the packer has held four valid slots. */
     write_transmit_entry(qts, RING_TX(0), 0, full, full_ctrl);
@@ -2604,10 +2670,15 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
     carry_on_the_line(qts, sizeof(full));
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
 
-    /* Then a single character. Its entry is the ring's second. */
+    /*
+     * Then a single character, held until the timer the first character
+     * started runs out and posts it as the ring's second entry.
+     */
     write_transmit_entry(qts, RING_TX(0), 8, one, one_ctrl);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
     carry_on_the_line(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 16);
 
     qtest_memread(qts, RING_RX(0) + 8, landed, sizeof(landed));
@@ -3108,8 +3179,14 @@ static void test_loopback_arrives_a_character_time_later(
     g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
                     ==, 0xfff);
 
-    /* Arrived: posted, and the timer running from the arrival. */
+    /*
+     * Arrived: held in the packer, as one character is until the timer or
+     * a drain, and the timer running from the arrival.
+     */
     qtest_clock_step(qts, 1000);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7,
+                    ==, 1);
+    drain_port(qts, 0);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
     qtest_memread(qts, RING_RX(0), entry, sizeof(entry));
     g_assert_cmphex(entry[0], ==, 'x');
@@ -3141,7 +3218,8 @@ static void test_a_late_serviced_loopback_arrival_keeps_its_time(
 
     g_assert_cmphex((qtest_readl(qts, sdma(1, SDMA_RX_TIMER)) >> 16) & 0xfff,
                     ==, ticks_left(sent + IO8_CHAR_NS, sent + IO8_WAIT_NS));
-    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    g_assert_cmphex((qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)) >> 24) & 0x7,
+                    ==, 1);
 
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
 }
@@ -3182,7 +3260,8 @@ static void test_a_loopback_character_in_flight_survives_migration(
     g_assert_cmphex(qtest_readl(to, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 0);
     now = qtest_clock_step(to, sent + IO8_CHAR_NS + RX_TIMER_TICK_NS / 2 -
                                    now);
-    g_assert_cmphex(qtest_readl(to, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    g_assert_cmphex((qtest_readl(to, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7,
+                    ==, 1);
     g_assert_cmphex((qtest_readl(to, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
                     ==, ticks_left(sent + IO8_CHAR_NS, now));
 
@@ -3699,6 +3778,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-starts-at-first-char",
                         NULL,
                         test_the_receive_timer_starts_at_the_first_character);
+    qtest_add_data_func("sn0/ioc3-serial/short-burst-waits-for-timer", NULL,
+                        test_a_short_burst_waits_for_the_timer);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-expiry-spends-arm",
                         NULL, test_the_receive_timer_expiry_spends_the_arm);
     qtest_add_data_func("sn0/ioc3-serial/empty-ring-expiry-still-raises", NULL,
