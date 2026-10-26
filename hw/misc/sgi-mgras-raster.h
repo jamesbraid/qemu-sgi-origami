@@ -28,6 +28,19 @@ bool sgi_mgras_work_pending(SGIMgrasState *s);
 /* Finish it all now, for an access at addr that must see the result. */
 void sgi_mgras_work_drain(SGIMgrasState *s, hwaddr addr);
 void sgi_mgras_work_reset(SGIMgrasState *s);
+/* The HQ flag set and clear ports and the pending-source acknowledge. */
+typedef enum SGIMgrasFlagsOp {
+    MGRAS_FLAGS_SET,            /* 0x020010 */
+    MGRAS_FLAGS_CLEAR,          /* 0x020018 */
+    MGRAS_FLAGS_ACK,            /* 0x011028 */
+} SGIMgrasFlagsOp;
+
+/* Also queue such a write behind waiting work; false if there is none. */
+bool sgi_mgras_work_queue_flags(SGIMgrasState *s, SGIMgrasFlagsOp op,
+                                uint32_t bits);
+/* Such a write taking effect. */
+void sgi_mgras_flags_write(SGIMgrasState *s, SGIMgrasFlagsOp op,
+                           uint32_t bits);
 uint64_t sgi_mgras_dma_map_slot_base(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_count(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_width(SGIMgrasState *s, unsigned int slot);
