@@ -1823,21 +1823,18 @@ static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st);
 
 /*
  * The imaging stage bits (SGIKonaGLImaging.stages): histogram and minmax,
- * which the model does not apply, then the three colour tables.
+ * then the three colour tables and the texture colour table.
  */
-#define SGI_KONA_GL_STAGES_UNMODELLED 3u
 #define SGI_KONA_GL_STAGE_TABLE(n)    (1u << (2 + (n)))
 
 /*
- * Whether context i's image transfers are refused: for pixel state the
- * model does not keep, or while an imaging stage it does not apply is
- * enabled.
+ * Whether context i's image transfers are refused, for pixel state the
+ * model does not keep.
  */
 static bool sgi_kona_gl_transfer_refused(const SGIKonaState *s, int i)
 {
     return i != SGI_KONA_CONTEXT_NONE &&
-           (s->state[i]->pipe.pixel_transfer_unsupported ||
-            (s->state[i]->imaging.stages & SGI_KONA_GL_STAGES_UNMODELLED));
+           s->state[i]->pipe.pixel_transfer_unsupported;
 }
 static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im);
 static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t);
@@ -1848,10 +1845,15 @@ static bool sgi_kona_gl_matrix_stage(const uint32_t m[16],
 static bool sgi_kona_gl_post_matrix(const uint32_t m[16],
                                     const SGIKonaGLPixelTransfer *t,
                                     double rgba[4]);
-static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
+static bool sgi_kona_gl_imaging(SGIKonaGLState *st,
                                 double (**image)[4], uint32_t *width,
                                 uint32_t *height);
-static bool sgi_kona_gl_pixel_path(const SGIKonaGLState *st, double rgba[4]);
+static bool sgi_kona_gl_pixel_path(SGIKonaGLState *st, double rgba[4]);
+static bool sgi_kona_gl_histogram_sinks(const SGIKonaGLState *st);
+static bool sgi_kona_gl_histogram_active(const SGIKonaGLState *st);
+static unsigned sgi_kona_gl_histogram_slots(uint32_t format, unsigned c[4]);
+static void sgi_kona_gl_histogram_stage(SGIKonaGLState *st,
+                                        const double rgba[4]);
 static bool sgi_kona_gl_tables_active(const SGIKonaGLState *st);
 static void sgi_kona_gl_colour_table_word(SGIKonaState *s, uint32_t word);
 static const SGIKonaGLColourTable *
@@ -1868,6 +1870,8 @@ static void sgi_kona_gl_colour_table_get(SGIKonaState *s, int i,
 static void sgi_kona_gl_colour_table_get_parameter(SGIKonaState *s, int i,
                                                    const uint32_t *args);
 static uint32_t sgi_kona_gl_table_base(uint32_t format);
+static void sgi_kona_gl_histogram(SGIKonaState *s, int i, uint32_t selector,
+                                  const uint32_t *args);
 static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot);
 static void sgi_kona_texture_regs_switch(SGIKonaState *s, int slot);
 
@@ -6312,6 +6316,26 @@ static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i)
 
 /* Prepare complete native defaults before committing a logical generation. */
 /* No filter, none enabled, filter scale 1 and bias 0 (EXT_convolution). */
+/*
+ * No histogram and no minmax table. A minmax table starts, and resets, to
+ * a minimum of 1 and a maximum of 0. Approximated: EXT_histogram sets them
+ * to the largest and smallest values the table can hold; the pipe's are
+ * unknown, and the components it compares lie in [0, 1].
+ */
+static void sgi_kona_gl_minmax_reset(SGIKonaGLHistogram *h)
+{
+    for (unsigned c = 0; c < 4; c++) {
+        h->min[c] = 0x3f800000;
+        h->max[c] = 0;
+    }
+}
+
+static void sgi_kona_gl_histogram_init(SGIKonaGLHistogram *h)
+{
+    memset(h, 0, sizeof(*h));
+    sgi_kona_gl_minmax_reset(h);
+}
+
 /* No table, scale 1 and bias 0 (SGI_color_table). */
 static void sgi_kona_gl_tables_init(SGIKonaGLColourTables *tb)
 {
@@ -6376,6 +6400,7 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
     state->attrib_depth = 0;
     sgi_kona_gl_imaging_init(&state->imaging);
     sgi_kona_gl_tables_init(&state->tables);
+    sgi_kona_gl_histogram_init(&state->histogram);
     memset(state->imaging_enabled_attrib, 0,
            sizeof(state->imaging_enabled_attrib));
     sgi_gl_set_drawable(&state->gl, &drawable);
@@ -8432,6 +8457,13 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
      * returns then is unknown.
      */
     if (!depth && !stencil && format != 11 &&
+        sgi_kona_gl_histogram_sinks(s->state[i])) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels into a sinking"
+                      " histogram or minmax table is not modelled; %s\n",
+                      outcome);
+        return false;
+    }
+    if (!depth && !stencil && format != 11 &&
         sgi_kona_gl_filter_2d(&s->state[i]->imaging) >= 0) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels with a convolution"
                       " filter enabled is not modelled; %s\n", outcome);
@@ -8662,6 +8694,14 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
                d->descriptor[2] == total &&
                ((d->descriptor[3] == total && !d->descriptor[4]) ||
                 d->descriptor[3] == row);
+    }
+    if (selector == SGI_KONA_CMD_GL_GET_HISTOGRAM) {
+        /* h[0] bins of h[1] four-byte counts, in whole copies, one line. */
+        row = (uint64_t)h[0] * h[1] * 4;
+        return row && h[0] <= SGI_KONA_GL_HISTOGRAM_MAX && h[1] <= 4 &&
+               sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) &&
+               d->descriptor[2] % row == 0 &&
+               d->descriptor[3] == d->descriptor[2] && !d->descriptor[4];
     }
     if (selector == SGI_KONA_CMD_X_PIXEL_READ) {
         if ((h[4] != 1 && h[4] != 2 && h[4] != 4) || h[5] || h[6]) {
@@ -9937,7 +9977,7 @@ static void sgi_kona_texture_upload_word(SGIKonaState *s, uint32_t value)
  * header and its DMA image would apply to it. The client library sends
  * nothing between the two for one context.
  */
-static bool sgi_kona_gl_texture_stages(const SGIKonaGLState *st,
+static bool sgi_kona_gl_texture_stages(SGIKonaGLState *st,
                                        const SGIKonaGLPixelTransfer *t,
                                        const uint32_t *matrix, bool post_conv,
                                        double values[4])
@@ -9958,6 +9998,7 @@ static bool sgi_kona_gl_texture_stages(const SGIKonaGLState *st,
     }
     if (st) {
         sgi_kona_gl_table_stage(st, 2, values);
+        sgi_kona_gl_histogram_stage(st, values);
     }
     return true;
 }
@@ -9966,7 +10007,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
                                               SGIKonaTextureUpload *u)
 {
     int i = s->texture_upload_context;
-    const SGIKonaGLState *st = i >= 0 && i < SGI_KONA_CONTEXTS &&
+    SGIKonaGLState *st = i >= 0 && i < SGI_KONA_CONTEXTS &&
                                s->state[i] && u->transfer_captured ?
                                s->state[i] : NULL;
     uint32_t base = sgi_kona_texture_storage_base(u->header);
@@ -10028,7 +10069,9 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
                 sgi_kona_gl_rgba_transfer(t, values);
         }
         if (!converted ||
-            ((post_conv || (st && sgi_kona_gl_tables_active(st))) &&
+            ((post_conv ||
+              (st && (sgi_kona_gl_tables_active(st) ||
+                      sgi_kona_gl_histogram_active(st)))) &&
              !sgi_kona_gl_texture_stages(st, t, matrix, post_conv,
                                          values)) ||
             !sgi_kona_gl_pixel_pack_double(5, 1, values, false,
@@ -10673,6 +10716,9 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
          * how the library and the pipe place it is unknown.
          */
         reason = "convolution of texture images is not modelled";
+    } else if (sgi_kona_gl_histogram_sinks(s->state[i])) {
+        reason = "a sinking histogram or minmax on texture images is not"
+                 " modelled";
 
     } else if (!sgi_kona_texture_native_header(h)) {
         /*
@@ -11638,11 +11684,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         s->texture_bind_generation = 0;
     }
-    /*
-     * Histogram, minmax, the three colour tables and the texture colour
-     * table. The model does not apply the first two: image transfers are
-     * refused while one is enabled.
-     */
+    /* Histogram, minmax, the three colour tables and the texture one. */
     if (i != SGI_KONA_CONTEXT_NONE && !s->state[i]->gl.in_begin &&
         (selector == 0x24 || selector == 0x25)) {
         static const uint32_t caps[] = {
@@ -11818,6 +11860,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_COLOUR_TABLE:
         sgi_kona_gl_colour_table_open(s, i, args);
+        return;
+    case SGI_KONA_CMD_GL_HISTOGRAM:
+    case SGI_KONA_CMD_GL_RESET_HISTOGRAM:
+    case SGI_KONA_CMD_GL_GET_HISTOGRAM:
+    case SGI_KONA_CMD_GL_GET_HISTOGRAM_PARAMETER:
+    case SGI_KONA_CMD_GL_MINMAX:
+    case SGI_KONA_CMD_GL_RESET_MINMAX:
+    case SGI_KONA_CMD_GL_GET_MINMAX:
+    case SGI_KONA_CMD_GL_GET_MINMAX_PARAMETER:
+        sgi_kona_gl_histogram(s, i, selector, args);
         return;
     case SGI_KONA_CMD_GL_COLOUR_TABLE_PARAMETERS:
         sgi_kona_gl_colour_table_parameters(s, i, args);
@@ -12875,6 +12927,212 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
                                  uint8_t *buf, uint32_t len);
 
 /*
+ * EXT_histogram (established from the IRIX 6.5.30 client library, see the
+ * command grammar):
+ *
+ *   0x102  target, width, width - 1 as a float, internal format, sink:
+ *          GL_HISTOGRAM_EXT 0x8024 or its proxy 0x8025; width 0 when the
+ *          library could not place the bins
+ *   0x103  target: reset the histogram's counts
+ *   0x104  width: the counts, answered from byte 4 of the return page, or
+ *          into the buffer of a select-feed read DMA bracket
+ *   0x105  target, pname: answered with a word count at byte 4 and the
+ *          words from byte 8
+ *   0x107  internal format, sink: GL_MINMAX_EXT
+ *   0x108  target: reset the minmax table
+ *   0x109  one word: the format at byte 4, the values from byte 8
+ *   0x10a  pname: answered at byte 8
+ *
+ * Observed through the IRIX library on the model (a guest probe that
+ * answered with numbered words): the library reads the counts as copies
+ * of width bins of the format's components, 32-bit integers with no
+ * padding, four copies back to back here, and adds them up; and the
+ * minmax values as copies of eight floats, minimum R, G, B and A then
+ * maximum R, G, B and A, taking the least minimum and the greatest
+ * maximum. The number of copies comes from the library's board query.
+ * Approximated: the model answers with the whole counts in the first copy
+ * and zeros after it, and with the one minmax pair repeated, which every
+ * copy count reads correctly.
+ */
+static void sgi_kona_gl_histogram_counts(const SGIKonaGLHistogram *h,
+                                         uint8_t *out, uint32_t width,
+                                         unsigned n)
+{
+    for (uint32_t bin = 0; bin < width && bin < h->width; bin++) {
+        for (unsigned k = 0; k < n; k++) {
+            stl_be_p(out + (bin * n + k) * 4, h->counts[bin][k]);
+        }
+    }
+}
+
+static void sgi_kona_gl_histogram_get(SGIKonaState *s, int i,
+                                      const uint32_t *args)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    SGIKonaGLHistogram *h = &s->state[i]->histogram;
+    unsigned c[4], n = sgi_kona_gl_histogram_slots(h->format, c);
+    uint32_t width = args[0];
+    g_autofree uint8_t *data = NULL;
+    uint32_t header[7] = { width, n };
+
+    if (!h->width || !n || !width || width > SGI_KONA_GL_HISTOGRAM_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: histogram read of %"
+                      PRIu32 " bins with no histogram defined; no reply\n",
+                      width);
+        if (d->active) {
+            sgi_kona_gl_read_dma_refuse(s);
+        }
+        return;
+    }
+    if (d->active) {
+        if (d->refused || d->count || d->context != s->context_current ||
+            !sgi_kona_context_owner(s, d->context, d->generation) ||
+            !sgi_kona_gl_read_dma_layout(d, header,
+                                            SGI_KONA_CMD_GL_GET_HISTOGRAM)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: histogram read DMA"
+                          " refused\n");
+            sgi_kona_gl_read_dma_refuse(s);
+            return;
+        }
+        data = g_malloc0(d->descriptor[2]);
+        sgi_kona_gl_histogram_counts(h, data, width, n);
+        memcpy(d->header, header, sizeof(d->header));
+        d->selector = SGI_KONA_CMD_GL_GET_HISTOGRAM;
+        d->count = d->descriptor[2];
+        d->data = g_steal_pointer(&data);
+        return;
+    }
+    if ((uint64_t)width * n * 4 > SGI_KONA_RETURN_PAGE_BYTES - 4) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: histogram of %" PRIu32
+                      " bins does not fit the return page; no reply\n",
+                      width);
+        return;
+    }
+    data = g_malloc0(SGI_KONA_RETURN_PAGE_BYTES - 4);
+    sgi_kona_gl_histogram_counts(h, data, width, n);
+    sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_HISTOGRAM, 4, data,
+                         SGI_KONA_RETURN_PAGE_BYTES - 4);
+}
+
+/* 0x105's answer for pname: GL_HISTOGRAM_WIDTH_EXT to _SINK_EXT. */
+static uint32_t sgi_kona_gl_histogram_parameter(uint32_t format,
+                                                uint32_t width, bool sink,
+                                                uint32_t pname)
+{
+    uint32_t base = sgi_kona_gl_table_base(format);
+    bool has;
+
+    switch (pname) {
+    case 0x8026:
+        return width;
+    case 0x8027:
+        return format ? format : SGI_GL_RGBA;
+    case 0x802d:
+        return sink;
+    case 0x8028 ... 0x802a:     /* red, green, blue */
+        has = base == SGI_GL_RGB || base == SGI_GL_RGBA;
+        break;
+    case 0x802b:                /* alpha */
+        has = base == SGI_GL_ALPHA || base == SGI_GL_RGBA ||
+              base == SGI_GL_LUMINANCE_ALPHA;
+        break;
+    case 0x802c:                /* luminance */
+        has = base == SGI_GL_LUMINANCE || base == SGI_GL_LUMINANCE_ALPHA;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: histogram parameter 0x%"
+                      PRIx32 " is not known; answered 0\n", pname);
+        return 0;
+    }
+    /* Approximated: the counts are 32-bit words; the pipe's depth is not. */
+    return width && has ? 32 : 0;
+}
+
+static void sgi_kona_gl_histogram(SGIKonaState *s, int i, uint32_t selector,
+                                  const uint32_t *args)
+{
+    SGIKonaGLHistogram *h;
+    uint32_t words[3] = { 0 };
+    g_autofree uint8_t *data = NULL;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    h = &s->state[i]->histogram;
+    switch (selector) {
+    case SGI_KONA_CMD_GL_HISTOGRAM:
+        if (args[0] == 0x8025) {
+            h->proxy_width = args[1];
+            h->proxy_format = args[1] ? args[3] : 0;
+            return;
+        }
+        if (args[0] != 0x8024 || args[1] > SGI_KONA_GL_HISTOGRAM_MAX ||
+            (args[1] && !sgi_kona_gl_histogram_slots(args[3],
+                                                     (unsigned[4]) { 0 }))) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: histogram 0x%" PRIx32
+                          " of %" PRIu32 " bins and format 0x%" PRIx32
+                          " not kept\n", args[0], args[1], args[3]);
+            h->width = 0;
+            return;
+        }
+        memset(h->counts, 0, sizeof(h->counts));
+        h->width = args[1];
+        h->format = args[3];
+        h->sink = args[4] != 0;
+        return;
+    case SGI_KONA_CMD_GL_RESET_HISTOGRAM:
+        memset(h->counts, 0, sizeof(h->counts));
+        return;
+    case SGI_KONA_CMD_GL_GET_HISTOGRAM:
+        sgi_kona_gl_histogram_get(s, i, args);
+        return;
+    case SGI_KONA_CMD_GL_GET_HISTOGRAM_PARAMETER:
+        words[0] = cpu_to_be32(1);
+        words[1] = cpu_to_be32(args[0] == 0x8025 ?
+            sgi_kona_gl_histogram_parameter(h->proxy_format, h->proxy_width,
+                                            false, args[1]) :
+            sgi_kona_gl_histogram_parameter(h->format, h->width, h->sink,
+                                            args[1]));
+        sgi_kona_post_return(s, selector, 4, words, 8);
+        return;
+    case SGI_KONA_CMD_GL_MINMAX:
+        if (!sgi_kona_gl_histogram_slots(args[0], (unsigned[4]) { 0 })) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: minmax format 0x%"
+                          PRIx32 " not kept\n", args[0]);
+            h->minmax_format = 0;
+            return;
+        }
+        h->minmax_format = args[0];
+        h->minmax_sink = args[1] != 0;
+        sgi_kona_gl_minmax_reset(h);
+        return;
+    case SGI_KONA_CMD_GL_RESET_MINMAX:
+        sgi_kona_gl_minmax_reset(h);
+        return;
+    case SGI_KONA_CMD_GL_GET_MINMAX:
+        data = g_malloc0(SGI_KONA_RETURN_PAGE_BYTES - 4);
+        stl_be_p(data, h->minmax_format ? h->minmax_format : SGI_GL_RGBA);
+        for (uint32_t at = 4; at + 32 <= SGI_KONA_RETURN_PAGE_BYTES - 4;
+             at += 32) {
+            for (unsigned c = 0; c < 4; c++) {
+                stl_be_p(data + at + 4 * c, h->min[c]);
+                stl_be_p(data + at + 16 + 4 * c, h->max[c]);
+            }
+        }
+        sgi_kona_post_return(s, selector, 4, data,
+                             SGI_KONA_RETURN_PAGE_BYTES - 4);
+        return;
+    default:                    /* SGI_KONA_CMD_GL_GET_MINMAX_PARAMETER */
+        words[0] = cpu_to_be32(args[0] == 0x802f ?
+                               (h->minmax_format ? h->minmax_format :
+                                                   SGI_GL_RGBA) :
+                               args[0] == 0x8030 ? h->minmax_sink : 0);
+        sgi_kona_post_return(s, selector, 8, words, 4);
+        return;
+    }
+}
+
+/*
  * Whether a filter or colour table image is to come by DMA (see
  * sgi-kona-dma.c).
  */
@@ -13217,6 +13475,7 @@ static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st)
 {
     return sgi_kona_gl_filter_2d(&st->imaging) >= 0 ||
            sgi_kona_gl_tables_active(st) ||
+           sgi_kona_gl_histogram_active(st) ||
            !sgi_kona_gl_post_conv_default(&st->pipe.pixel_transfer) ||
            sgi_kona_gl_matrix_stage(st->imaging.colour_matrix,
                                     &st->pipe.pixel_transfer);
@@ -13369,12 +13628,100 @@ static bool sgi_kona_gl_tables_active(const SGIKonaGLState *st)
 }
 
 /*
+ * The RGBA components a histogram or minmax format holds, in its own
+ * order (luminance is red), or 0 for a format it cannot take.
+ */
+static unsigned sgi_kona_gl_histogram_slots(uint32_t format, unsigned c[4])
+{
+    switch (sgi_kona_gl_table_base(format)) {
+    case SGI_GL_ALPHA:
+        c[0] = 3;
+        return 1;
+    case SGI_GL_LUMINANCE:
+        c[0] = 0;
+        return 1;
+    case SGI_GL_LUMINANCE_ALPHA:
+        c[0] = 0;
+        c[1] = 3;
+        return 2;
+    case SGI_GL_RGB:
+        c[0] = 0;
+        c[1] = 1;
+        c[2] = 2;
+        return 3;
+    case SGI_GL_RGBA:
+        c[0] = 0;
+        c[1] = 1;
+        c[2] = 2;
+        c[3] = 3;
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+/* Whether an enabled histogram or minmax table takes pixel groups. */
+static bool sgi_kona_gl_histogram_active(const SGIKonaGLState *st)
+{
+    return ((st->imaging.stages & 1) && st->histogram.width) ||
+           ((st->imaging.stages & 2) && st->histogram.minmax_format);
+}
+
+/* Whether an enabled histogram or minmax table consumes the groups. */
+static bool sgi_kona_gl_histogram_sinks(const SGIKonaGLState *st)
+{
+    return ((st->imaging.stages & 1) && st->histogram.width &&
+            st->histogram.sink) ||
+           ((st->imaging.stages & 2) && st->histogram.minmax_format &&
+            st->histogram.minmax_sink);
+}
+
+/*
+ * The histogram, then minmax, after the post-colour-matrix table. Each
+ * component the format holds, luminance taken from red and clamped to
+ * [0, 1], counts once in bin round((width - 1) c), and moves the minimum
+ * and maximum (the "OpenGL on Silicon Graphics Systems" manual,
+ * EXT_histogram section). A count stops at its largest value.
+ */
+static void sgi_kona_gl_histogram_stage(SGIKonaGLState *st,
+                                        const double rgba[4])
+{
+    SGIKonaGLHistogram *h = &st->histogram;
+    unsigned c[4], n;
+
+    if ((st->imaging.stages & 1) && h->width) {
+        n = sgi_kona_gl_histogram_slots(h->format, c);
+        for (unsigned k = 0; k < n; k++) {
+            uint32_t bin = lround(CLAMP(rgba[c[k]], 0.0, 1.0) *
+                                  (h->width - 1));
+
+            if (h->counts[bin][k] != UINT32_MAX) {
+                h->counts[bin][k]++;
+            }
+        }
+    }
+    if ((st->imaging.stages & 2) && h->minmax_format) {
+        n = sgi_kona_gl_histogram_slots(h->minmax_format, c);
+        for (unsigned k = 0; k < n; k++) {
+            float v = rgba[c[k]];
+
+            if (v < sgi_kona_gl_float(h->min[c[k]])) {
+                memcpy(&h->min[c[k]], &v, sizeof(v));
+            }
+            if (v > sgi_kona_gl_float(h->max[c[k]])) {
+                memcpy(&h->max[c[k]], &v, sizeof(v));
+            }
+        }
+    }
+}
+
+/*
  * The per-pixel stages after convolution for context state st, with the
  * two colour tables in their places: post-convolution scale and bias, the
  * post-convolution table, the colour matrix stage and the post-colour-
  * matrix table (SGI_color_table names their order).
  */
-static bool sgi_kona_gl_after_convolution(const SGIKonaGLState *st,
+static bool sgi_kona_gl_after_convolution(SGIKonaGLState *st,
                                           bool convolved, double rgba[4])
 {
     const SGIKonaGLPixelTransfer *t = &st->pipe.pixel_transfer;
@@ -13390,6 +13737,7 @@ static bool sgi_kona_gl_after_convolution(const SGIKonaGLState *st,
         return false;
     }
     sgi_kona_gl_table_stage(st, 2, rgba);
+    sgi_kona_gl_histogram_stage(st, rgba);
     return true;
 }
 
@@ -13397,7 +13745,7 @@ static bool sgi_kona_gl_after_convolution(const SGIKonaGLState *st,
  * Every per-pixel imaging stage after the pixel maps for a transfer that
  * is not convolved: the colour table, then the stages after convolution.
  */
-static bool sgi_kona_gl_pixel_path(const SGIKonaGLState *st, double rgba[4])
+static bool sgi_kona_gl_pixel_path(SGIKonaGLState *st, double rgba[4])
 {
     sgi_kona_gl_table_stage(st, 0, rgba);
     return sgi_kona_gl_after_convolution(st, false, rgba);
@@ -13434,7 +13782,7 @@ static bool sgi_kona_gl_post_conv(const SGIKonaGLPixelTransfer *t,
  * origin, which is what an identity filter would give; what the pipe
  * returns for it is unknown.
  */
-static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
+static bool sgi_kona_gl_imaging(SGIKonaGLState *st,
                                 double (**image)[4], uint32_t *width,
                                 uint32_t *height)
 {
@@ -13499,12 +13847,17 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
         *image = g_steal_pointer(&out);
         *width = ow;
         *height = oh;
-        return true;
+        goto sink;
     }
     for (uint64_t k = 0; k < (uint64_t)w * h; k++) {
         if (!sgi_kona_gl_pixel_path(st, in[k])) {
             return false;
         }
+    }
+sink:
+    /* A sinking histogram or minmax table consumes the groups. */
+    if (sgi_kona_gl_histogram_sinks(st)) {
+        *width = *height = 0;
     }
     return true;
 }
@@ -22299,6 +22652,52 @@ static const VMStateDescription vmstate_sgi_kona_gl_tables = {
     },
 };
 
+/* Only once a context has defined a histogram or minmax table. */
+static bool sgi_kona_gl_histogram_needed(void *opaque)
+{
+    const SGIKonaGLState *st = opaque;
+    g_autofree SGIKonaGLHistogram *defaults = g_new(SGIKonaGLHistogram, 1);
+
+    sgi_kona_gl_histogram_init(defaults);
+    return memcmp(&st->histogram, defaults, sizeof(*defaults)) != 0;
+}
+
+static int sgi_kona_gl_histogram_post_load(void *opaque, int version_id)
+{
+    const SGIKonaGLHistogram *h = &((SGIKonaGLState *)opaque)->histogram;
+    unsigned c[4];
+
+    if (h->width > SGI_KONA_GL_HISTOGRAM_MAX ||
+        (h->width && !sgi_kona_gl_histogram_slots(h->format, c)) ||
+        (h->minmax_format &&
+         !sgi_kona_gl_histogram_slots(h->minmax_format, c))) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_histogram = {
+    .name = TYPE_SGI_KONA "/logical-state/histogram",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_histogram_needed,
+    .post_load = sgi_kona_gl_histogram_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(histogram.format, SGIKonaGLState),
+        VMSTATE_UINT32(histogram.width, SGIKonaGLState),
+        VMSTATE_BOOL(histogram.sink, SGIKonaGLState),
+        VMSTATE_UINT32(histogram.proxy_format, SGIKonaGLState),
+        VMSTATE_UINT32(histogram.proxy_width, SGIKonaGLState),
+        VMSTATE_UINT32_2DARRAY(histogram.counts, SGIKonaGLState,
+                               SGI_KONA_GL_HISTOGRAM_MAX, 4),
+        VMSTATE_UINT32(histogram.minmax_format, SGIKonaGLState),
+        VMSTATE_BOOL(histogram.minmax_sink, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(histogram.min, SGIKonaGLState, 4),
+        VMSTATE_UINT32_ARRAY(histogram.max, SGIKonaGLState, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_state = {
     .name = TYPE_SGI_KONA "/logical-state",
     .version_id = 1,
@@ -22352,6 +22751,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_state = {
         &vmstate_sgi_kona_gl_texture_regs,
         &vmstate_sgi_kona_gl_imaging,
         &vmstate_sgi_kona_gl_tables,
+        &vmstate_sgi_kona_gl_histogram,
         NULL
     },
 };

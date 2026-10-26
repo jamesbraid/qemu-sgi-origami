@@ -7524,8 +7524,8 @@ static void test_texture_refused_dma_completes(void)
 
 /*
  * A DrawPixels by DMA the model refuses still completes its source, as
- * GLperf's pixel cases need: refused here for the histogram stage the
- * model does not apply (mode 0), too large to stage (mode 1), and by a
+ * GLperf's pixel cases need: refused here for pixel transfer state the
+ * model does not keep (mode 0), too large to stage (mode 1), and by a
  * DMA packet that does not frame it (mode 2), migrated with the mark
  * set between the header and its packet (mode 3), and a raw bitmap by
  * DMA too wide to stage (mode 4). Before, IRIX logged
@@ -7544,7 +7544,7 @@ static void test_draw_pixels_refused_dma_completes(gconstpointer opaque)
     gl_window_cleared(s, 0, 0, 0);
     qtest_writel(s, KONA_REG(0x100000), 0x20000380);
     if (mode == 0) {
-        kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
+        kona_command(s, 0x30, (uint32_t[]) { 0x0d10, 0x3f800000 }, 2);
     } else if (mode == 1 || mode == 3) {
         h[0] = h[1] = 8192;
     }
@@ -7729,7 +7729,10 @@ static void test_draw_pixels(gconstpointer opaque)
     } else if (mode == 6) {
         kona_command(s, 0x30, (uint32_t[]) { 0x0d10, 0x3f800000 }, 2);
     } else if (mode == 7) {
-        /* GL_HISTOGRAM: an imaging stage the model does not apply. */
+        /* A sinking histogram consumes the image: nothing is drawn. */
+        kona_command(s, 0x102, (uint32_t[]) {
+            0x8024, 8, fbits(7), 0x1908, 1,
+        }, 5);
         kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
     } else if (mode == 8) {
         /* An identity colour matrix changes nothing. */
@@ -18784,25 +18787,211 @@ static void test_texture_colour_table(gconstpointer opaque)
 }
 
 /*
- * GLperf disables histogram, minmax and the colour tables before its
- * pixel cases: an imaging stage the model does not apply refuses image
- * transfers only while it is enabled.
+ * Enabling histogram, minmax or a colour table with none defined changes
+ * no image: GLperf disables all five before its pixel cases, and an
+ * enable alone must not stop a draw.
  */
-static void test_unmodelled_stage_disabled(void)
+static void test_undefined_stages_draw(void)
 {
     static const uint32_t caps[] = { 0x8024, 0x802e, 0x80d0, 0x80d1, 0x80d2 };
     QTestState *s = qtest_init(MACHINE_ARGS);
 
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 0);
-    kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
-    colour_matrix_draw(s);
-    convolution_expected(s, 0, 0);
     for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
-        kona_command(s, 0x25, &caps[k], 1);
+        kona_command(s, 0x24, &caps[k], 1);
     }
     colour_matrix_draw(s);
     convolution_expected(s, 0x400000, 0x008000);
+    qtest_quit(s);
+}
+
+/*
+ * EXT_histogram. 0x102 target width (width - 1) format sink defines the
+ * histogram, 0x104 width reads it from byte 4 of the return page: copies
+ * of width bins of the format's components, the first holding the counts
+ * (observed through the IRIX library on the model). colour_matrix_draw()'s
+ * pixels (0x40, 0, 0, 1) and (0, 0x80, 0, 1) fall in an RGBA histogram of
+ * 8 bins at round(7 c): red bins 2 and 0, green 0 and 4, blue 0 twice,
+ * alpha 7 twice.
+ */
+static void histogram_define(QTestState *s, uint32_t target, uint32_t width,
+                             uint32_t format, bool sink)
+{
+    kona_command(s, 0x102, (uint32_t[]) {
+        target, width, fbits(width - 1.0f), format, sink,
+    }, 5);
+}
+
+static void histogram_expected(uint32_t *want)
+{
+    memset(want, 0, 32 * sizeof(*want));
+    want[0 * 4 + 0] = 1;
+    want[0 * 4 + 1] = 1;
+    want[0 * 4 + 2] = 2;
+    want[2 * 4 + 0] = 1;
+    want[4 * 4 + 1] = 1;
+    want[7 * 4 + 3] = 2;
+}
+
+static void test_histogram(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS), *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+    uint32_t want[32];
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    histogram_define(s, 0x8024, 8, 0x1908, mode == 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
+    colour_matrix_draw(s);
+    /* A sinking histogram consumes the image. */
+    convolution_expected(s, mode == 1 ? 0 : 0x400000,
+                         mode == 1 ? 0 : 0x008000);
+    histogram_expected(want);
+    if (mode == 2) {
+        kona_command(s, 0x103, (uint32_t[]) { 0x8024 }, 1);
+        memset(want, 0, sizeof(want));
+    } else if (mode == 3) {
+        dir = g_dir_make_tmp("sn0-kona-histogram-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(s, uri);
+        qtest_quit(s);
+        s = to;
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0x104, (uint32_t[]) { 8 }, 1);
+    assert_reply_posted(s);
+    for (unsigned k = 0; k < 32; k++) {
+        g_assert_cmpuint(guest_word(s, RETURN_PAGE + 4 + 4 * k), ==, want[k]);
+    }
+    /* The other copies read zero, whatever their number. */
+    for (unsigned k = 32; k < 4 * 32; k++) {
+        g_assert_cmpuint(guest_word(s, RETURN_PAGE + 4 + 4 * k), ==, 0);
+    }
+    qtest_quit(s);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+/*
+ * A histogram too large for the return page is read through the kernel's
+ * select-feed bracket: 0x1f5 and a descriptor for the buffer, 0x104, then
+ * 0x1f6. Four copies of 8 RGBA bins fill the 512-byte buffer: the counts,
+ * then zeros. The completion is posted on the reason page.
+ */
+static void test_histogram_read_dma(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    const uint64_t reason = 0x300000;
+    uint32_t want[32];
+    uint8_t buffer[512];
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    histogram_define(s, 0x8024, 8, 0x1908, false);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
+    colour_matrix_draw(s);
+    kona_command_kicked(s, 0x1f1,
+        (uint32_t[]) { physical_page_word(reason),
+                       tagged_offset_word(reason), 0x4000 }, 3);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    read_dma_clear_notifications(s, reason);
+    qtest_memset(s, 0x380000, 0xa5, sizeof(buffer));
+    kona_command(s, 0x1f5, (uint32_t[]) { 0, 0x9000, 512, 512, 0, 0 }, 6);
+    kona_command(s, 0x104, (uint32_t[]) { 8 }, 1);
+    kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x1234 }, 2);
+    g_assert_cmphex(guest_word(s, reason), ==, 0x100);
+    qtest_memread(s, 0x380000, buffer, sizeof(buffer));
+    histogram_expected(want);
+    for (unsigned k = 0; k < 128; k++) {
+        g_assert_cmpuint(ldl_be_p(buffer + 4 * k), ==, k < 32 ? want[k] : 0);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * 0x107 format sink defines the minmax table; 0x109 reads the format at
+ * byte 4 and from byte 8 copies of the minimum R, G, B, A and the maximum
+ * R, G, B, A as floats (observed through the IRIX library on the model).
+ */
+static void test_minmax(gconstpointer opaque)
+{
+    bool sink = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    const uint32_t want[8] = {
+        0, 0, 0, F1,
+        fbits(0x40 / 255.0), fbits(0x80 / 255.0), 0, F1,
+    };
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x107, (uint32_t[]) { 0x1908, sink }, 2);
+    kona_command(s, 0x24, (uint32_t[]) { 0x802e }, 1);
+    colour_matrix_draw(s);
+    convolution_expected(s, sink ? 0 : 0x400000, sink ? 0 : 0x008000);
+    prepare_refused_reply(s);
+    kona_command(s, 0x109, (uint32_t[]) { 0 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0x1908);
+    for (unsigned copy = 0; copy < 4; copy++) {
+        for (unsigned k = 0; k < 8; k++) {
+            g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 32 * copy + 4 * k),
+                            ==, want[k]);
+        }
+    }
+    /* Reset puts the minimum at 1 and the maximum at 0. */
+    kona_command(s, 0x108, (uint32_t[]) { 0x802e }, 1);
+    prepare_refused_reply(s);
+    kona_command(s, 0x109, (uint32_t[]) { 0 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, F1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 24), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * 0x105 target pname answers a word count at byte 4 and the word at byte
+ * 8; a proxy records the width and format it was given. 0x10a pname
+ * answers at byte 8.
+ */
+static void test_histogram_parameters(void)
+{
+    static const uint32_t params[][3] = {
+        { 0x8024, 0x8026, 8 },
+        { 0x8024, 0x8027, 0x1909 },
+        { 0x8024, 0x802c, 32 },
+        { 0x8024, 0x8028, 0 },
+        { 0x8024, 0x802d, 1 },
+        { 0x8025, 0x8026, 64 },
+        { 0x8025, 0x8027, 0x1908 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    histogram_define(s, 0x8024, 8, 0x1909, true);
+    histogram_define(s, 0x8025, 64, 0x1908, false);
+    for (unsigned k = 0; k < ARRAY_SIZE(params); k++) {
+        prepare_refused_reply(s);
+        kona_command(s, 0x105, params[k], 2);
+        assert_reply_posted(s);
+        g_assert_cmpuint(guest_word(s, RETURN_PAGE + 4), ==, 1);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, params[k][2]);
+    }
+    kona_command(s, 0x107, (uint32_t[]) { 0x190a, 1 }, 2);
+    prepare_refused_reply(s);
+    kona_command(s, 0x10a, (uint32_t[]) { 0x802f }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x190a);
+    prepare_refused_reply(s);
+    kona_command(s, 0x10a, (uint32_t[]) { 0x8030 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 1);
     qtest_quit(s);
 }
 
@@ -19572,8 +19761,25 @@ int main(int argc, char **argv)
     add_data_case("sn0/origin2000/kona-3d/colour-table/"
                   "texture-table-after-scale",
                   GUINT_TO_POINTER(1), test_texture_colour_table);
-    add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
-             test_unmodelled_stage_disabled);
+    add_case("sn0/origin2000/kona-3d/imaging/undefined-stages-draw",
+             test_undefined_stages_draw);
+    for (unsigned mode = 0; mode < 4; mode++) {
+        static const char *const names[] = {
+            "draw-counts", "sink", "reset", "draw-migrates",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/histogram/%s", names[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode), test_histogram);
+    }
+    add_case("sn0/origin2000/kona-3d/histogram/read-dma",
+             test_histogram_read_dma);
+    add_case("sn0/origin2000/kona-3d/histogram/parameters",
+             test_histogram_parameters);
+    add_data_case("sn0/origin2000/kona-3d/histogram/minmax",
+                  GUINT_TO_POINTER(0), test_minmax);
+    add_data_case("sn0/origin2000/kona-3d/histogram/minmax-sink",
+                  GUINT_TO_POINTER(1), test_minmax);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
@@ -20442,7 +20648,7 @@ int main(int argc, char **argv)
     }
     static const char *draw_pixels_cases[] = {
         "pio", "pio-padded", "dma", "dma-padded", "partial-migrates",
-        "nonfinite-zoom-refused", "transfer-refused", "imaging-refused",
+        "nonfinite-zoom-refused", "transfer-refused", "histogram-sink",
         "colour-matrix-identity", "begin-refused", "split-refused",
         "scalar-refused", "dma-migrates", "nonfinite-zoom-migrates",
         "no-context", "incomplete-texture", "zoom-default-restored",

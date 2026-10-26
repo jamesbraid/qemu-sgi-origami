@@ -409,6 +409,9 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x116, 4 },
     /* The colour tables. */
     { 0xe8, 9 }, { 0xea, 4 }, { 0xeb, 6 }, { 0xec, 2 },
+    /* Histogram and minmax. */
+    { 0x102, 5 }, { 0x103, 1 }, { 0x104, 1 }, { 0x105, 2 },
+    { 0x107, 2 }, { 0x108, 1 }, { 0x109, 1 }, { 0x10a, 1 },
     /* glRenderMode. */
     { 0x19, 1 },
     { 0x72, 2 }, { 0x73, 1 }, { 0x74, 1 }, { 0x75, 1 },
