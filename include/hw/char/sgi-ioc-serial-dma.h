@@ -170,9 +170,6 @@ typedef struct SGIIOCSerialDMAPort {
     uint8_t packer[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t packed;
 
-    /* Delivery sources fire per burst, not per entry. */
-    bool delivered;
-
     /* The receive timer's arm, kept apart from the consume pointer. */
     bool armed;
 
