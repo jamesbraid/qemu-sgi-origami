@@ -253,7 +253,7 @@ static void test_ds1744_backed_reopen(void)
     wr(qts, 0x0800, 0xa5);
     wr(qts, 0x7ff7, 0x5a);
     wr(qts, 0x7ff8, 0x80);
-    wr(qts, 0x7ff9, 0x12);
+    wr(qts, 0x7ff9, 0x92);
     wr(qts, 0x7ffa, 0x23);
     wr(qts, 0x7ffb, 0x10);
     wr(qts, 0x7ffc, 0x02);
@@ -273,12 +273,17 @@ static void test_ds1744_backed_reopen(void)
     g_assert_cmphex(rd(qts, 0x0800), ==, 0xa5);
     g_assert_cmphex(rd(qts, 0x7ff7), ==, 0x5a);
     g_assert_cmphex(rd(qts, 0x7ff8), ==, 0x20);
-    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x12);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x92);
     g_assert_cmphex(rd(qts, 0x7ffa), ==, 0x23);
     g_assert_cmphex(rd(qts, 0x7ffb), ==, 0x10);
     g_assert_cmphex(rd(qts, 0x7ffd), ==, 0x25);
     g_assert_cmphex(rd(qts, 0x7ffe), ==, 0x09);
     g_assert_cmphex(rd(qts, 0x7fff), ==, 0x26);
+    wr(qts, 0x7ff8, 0xa0);
+    wr(qts, 0x7ff9, 0x12);
+    wr(qts, 0x7ff8, 0x20);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(rd(qts, 0x7ff9), ==, 0x13);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(image), ==, 0);
     g_assert_cmpint(g_unlink(reference), ==, 0);
