@@ -11023,6 +11023,9 @@ static void sgi_kona_gl_pop_lights_open(SGIKonaState *s, uint32_t n)
  * the word's low 16 bits, and s->gl_token_high its top half, the data of
  * a packed attribute form.
  */
+static void sgi_kona_gl_convolution_open(SGIKonaState *s, uint32_t selector,
+                                         const uint32_t *args);
+
 static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                                uint32_t selector, const uint32_t *args,
                                unsigned argc)
@@ -11162,6 +11165,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_POP_LIGHTS:
         sgi_kona_gl_pop_lights_open(s, args[0]);
+        return;
+    case SGI_KONA_CMD_GL_CONVOLUTION_1D:
+    case SGI_KONA_CMD_GL_CONVOLUTION_2D:
+        sgi_kona_gl_convolution_open(s, selector, args);
         return;
     /*
      * The library sends these ids from its texture cache: 0x1c4 when it
@@ -11530,6 +11537,45 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         trace_sgi_kona_command_unmodelled(selector, argc);
         return;
     }
+}
+
+/*
+ * A convolution filter's image (see SGI_KONA_CMD_GL_CONVOLUTION_2D): width
+ * (times height for 2D) pixels of the format and type codes the header
+ * carries, sent as the words that cover the image from its address's low
+ * two bits on. The library sends the image only when its size is not
+ * zero (established from the sender); that the words cover the image
+ * whole, with no row padding, is inferred from mirrors' 3 by 3 float
+ * luminance filter, nine words between the header and the closing 0x111.
+ * The model keeps the stream in step and does not apply the filter to
+ * pixel transfers: a known limitation, logged once.
+ */
+static void sgi_kona_gl_convolution_open(SGIKonaState *s, uint32_t selector,
+                                         const uint32_t *args)
+{
+    bool two = selector == SGI_KONA_CMD_GL_CONVOLUTION_2D;
+    uint64_t width = args[1];
+    uint64_t height = two ? args[2] : 1;
+    uint32_t format = args[two ? 3 : 2], type = args[two ? 4 : 3];
+    uint32_t offset = args[two ? 5 : 4] & 3;
+    uint32_t bytes = sgi_kona_gl_native_pixel_bytes(format, type);
+    uint64_t words = (offset + width * height * bytes + 3) / 4;
+
+    if (!s->convolution_logged) {
+        s->convolution_logged = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filters are taken"
+                      " but not applied to pixel transfers\n");
+    }
+    if (!width || !height) {
+        return;
+    }
+    if (!bytes || words > UINT32_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter of "
+                      "format %u type %u has no known size; its words will "
+                      "not frame\n", format, type);
+        return;
+    }
+    sgi_kona_gl_data_open(s, selector, words);
 }
 
 /* The end of a GL data run. */
@@ -17794,6 +17840,8 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_US &&
+          s->gl_data_token != SGI_KONA_CMD_GL_CONVOLUTION_1D &&
+          s->gl_data_token != SGI_KONA_CMD_GL_CONVOLUTION_2D &&
           s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK))) {
         return -EINVAL;
     }

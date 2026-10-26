@@ -1308,6 +1308,7 @@ struct SGIKonaState {
     Object *pi;
     uint32_t pi_held;
     bool pi_unlinked_logged;
+    bool convolution_logged;    /* host-only: the limitation was logged */
     Object *pi_class_node;
     struct SGIPIGfxClass *pi_class;
     /*
