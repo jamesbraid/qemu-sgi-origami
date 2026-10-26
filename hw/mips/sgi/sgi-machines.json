@@ -4812,6 +4812,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -4971,6 +4983,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -15376,6 +15400,12 @@
           "name": "nvram1-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -15601,6 +15631,12 @@
           "name": "nvram1-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -15826,6 +15862,12 @@
           "name": "nvram1-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -16051,6 +16093,12 @@
           "name": "nvram1-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -16225,6 +16273,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -16399,6 +16453,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -16921,6 +16981,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -17095,6 +17161,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -17269,6 +17341,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -17443,6 +17521,12 @@
           "name": "nvram0-clock",
           "read-only": false,
           "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "expansion-enclosure-flash",
+          "read-only": false,
+          "size": 16777216
         }
       ],
       "supported-guests": [
@@ -18852,6 +18936,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19015,6 +19111,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19173,6 +19281,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19336,6 +19456,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19499,6 +19631,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19657,6 +19801,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19820,6 +19976,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],
@@ -19978,6 +20146,18 @@
           "name": "node0-flash",
           "read-only": false,
           "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-data",
+          "read-only": false,
+          "size": 2048
+        },
+        {
+          "initial": "zero",
+          "name": "ds1742-io9-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [],

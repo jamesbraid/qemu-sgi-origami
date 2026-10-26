@@ -1092,6 +1092,36 @@ static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
     return true;
 }
 
+/*
+ * The expansion module's configuration storage bound as catalogue storage
+ * item @item, the block node @node: the same writable raw image the
+ * deprecated expansion-storage=<module>=<drive> binding names, given a
+ * BlockBackend of the machine's own for the module to attach.
+ */
+static bool sgi_machine_bind_expansion_storage_item(
+    SGIMachineState *s, const SGIModelIoAssembly *selected, const char *item,
+    const char *node, Error **errp)
+{
+    BlockDriverState *bs = bdrv_lookup_bs(node, node, errp);
+    BlockBackend *backend;
+
+    if (!bs) {
+        return false;
+    }
+    if (strcmp(bdrv_get_format_name(bs), "raw") || bdrv_is_read_only(bs)) {
+        error_setg(errp, "%s needs a writable raw block node", item);
+        return false;
+    }
+    backend = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
+    if (blk_insert_bs(backend, bs, errp) < 0) {
+        blk_unref(backend);
+        return false;
+    }
+    s->storage_assembly = selected;
+    s->storage_backend = backend;
+    return true;
+}
+
 static bool sgi_machine_validate_expansion_storage(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
@@ -1122,6 +1152,22 @@ static bool sgi_machine_validate_expansion_storage(SGIMachineState *s,
         }
         return true;
     }
+    modules = sgi_model_module_array(t->modules, &module_count);
+    if (selected->module_index < module_count) {
+        g_autofree char *item = g_strdup_printf(
+            "%s-flash", modules[selected->module_index]->id);
+        const char *node = sgi_storage_node(s->storage, item);
+
+        if (node && s->expansion_storage) {
+            error_setg(errp, "%s and expansion-storage both back the "
+                       "expansion configuration storage", item);
+            return false;
+        }
+        if (node) {
+            return sgi_machine_bind_expansion_storage_item(s, selected, item,
+                                                           node, errp);
+        }
+    }
     if (!s->expansion_storage) {
         error_setg(errp,
                    "configuration storage selection requires one image binding");
@@ -1140,7 +1186,6 @@ static bool sgi_machine_validate_expansion_storage(SGIMachineState *s,
         return false;
     }
     *backend_id++ = 0;
-    modules = sgi_model_module_array(t->modules, &module_count);
     if (selected->module_index >= module_count ||
         strcmp(modules[selected->module_index]->id, binding)) {
         error_setg(errp,
@@ -3399,6 +3444,58 @@ static bool sgi_machine_set_pic_widget_views(SGIMachineState *s,
     return true;
 }
 
+/*
+ * The DS1742 data and clock backings for IO9 board @board, as names the
+ * ds1742's drive properties take: its ds1742-<id>-data and ds1742-<id>-clock
+ * storage items, or the deprecated -drive if=none pair
+ * sgi-ds1742-data-<id> and sgi-ds1742-clock-<id>. Refuses a store backed
+ * both ways and a pair with a half missing.
+ */
+static bool sgi_machine_ds1742_backing(SGIMachineState *s,
+                                       const SGIModelIoBoard *board,
+                                       const char **data, const char **clock,
+                                       Error **errp)
+{
+    const char *product = MACHINE_GET_CLASS(s)->name;
+    g_autofree char *name = g_strdup_printf("ds1742-%s-data", board->id);
+    g_autofree char *clock_name = g_strdup_printf("ds1742-%s-clock",
+                                                  board->id);
+    g_autofree char *data_id = g_strdup_printf("sgi-ds1742-data-%s",
+                                               board->id);
+    g_autofree char *clock_id = g_strdup_printf("sgi-ds1742-clock-%s",
+                                                board->id);
+    const char *node = sgi_machine_storage_node(s, name);
+    const char *clock_node = sgi_machine_storage_node(s, clock_name);
+    BlockBackend *legacy = blk_by_name(data_id);
+    BlockBackend *legacy_clock = blk_by_name(clock_id);
+
+    if ((node || clock_node) && (legacy || legacy_clock)) {
+        error_setg(errp, "%s: %s and -drive id=%s both back IO9 board '%s''s "
+                   "DS1742", product, node ? name : clock_name,
+                   legacy ? data_id : clock_id, board->id);
+        return false;
+    }
+    if (node || clock_node) {
+        if (!node || !clock_node) {
+            error_setg(errp, "%s: IO9 board '%s' needs both %s and %s",
+                       product, board->id, name, clock_name);
+            return false;
+        }
+        *data = node;
+        *clock = clock_node;
+        return true;
+    }
+    if (!legacy || !legacy_clock) {
+        error_setg(errp, "%s: IO9 board '%s' needs its DS1742 stores %s and "
+                   "%s, or the deprecated -drive ids '%s' and '%s'", product,
+                   board->id, name, clock_name, data_id, clock_id);
+        return false;
+    }
+    *data = blk_name(legacy);
+    *clock = blk_name(legacy_clock);
+    return true;
+}
+
 static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                                       const SGIModelTopology *t,
                                       Error **errp)
@@ -3468,19 +3565,11 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             continue;
         }
         if (board->has_ds1742 && board->ds1742) {
-            g_autofree char *data_id = g_strdup_printf(
-                "sgi-ds1742-data-%s", board->id);
-            g_autofree char *clock_id = g_strdup_printf(
-                "sgi-ds1742-clock-%s", board->id);
-            BlockBackend *data = blk_by_name(data_id);
-            BlockBackend *clock = blk_by_name(clock_id);
             g_autofree char *child_name = g_strdup_printf(
                 "ds1742-%s", board->id);
+            const char *data, *clock;
 
-            if (!data || !clock) {
-                error_setg(errp, "IO9 board '%s' requires both DS1742 "
-                           "backends '%s' and '%s'", board->id, data_id,
-                           clock_id);
+            if (!sgi_machine_ds1742_backing(s, board, &data, &clock, errp)) {
                 return false;
             }
             rtc = qdev_new("ds1742");
@@ -3490,8 +3579,9 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                     OBJECT(rtc), "fresh-year-base",
                     board->has_ds1742_fresh_year_base ?
                     board->ds1742_fresh_year_base : 0, errp) ||
-                !qdev_prop_set_drive_err(rtc, "drive", data, errp) ||
-                !qdev_prop_set_drive_err(rtc, "clock-drive", clock, errp) ||
+                !object_property_set_str(OBJECT(rtc), "drive", data, errp) ||
+                !object_property_set_str(OBJECT(rtc), "clock-drive", clock,
+                                         errp) ||
                 !sysbus_realize(SYS_BUS_DEVICE(rtc), errp)) {
                 return false;
             }
@@ -6291,12 +6381,6 @@ static bool sgi_machine_preflight_io_descriptors(
             }
             owned_heads[key] = true;
             if (board->has_ds1742 && board->ds1742) {
-                g_autofree char *data_id = g_strdup_printf(
-                    "sgi-ds1742-data-%s", board->id);
-                g_autofree char *clock_id = g_strdup_printf(
-                    "sgi-ds1742-clock-%s", board->id);
-                BlockBackend *data = blk_by_name(data_id);
-                BlockBackend *clock = blk_by_name(clock_id);
                 const char *id;
                 const char *cursor;
 
@@ -6312,18 +6396,6 @@ static bool sgi_machine_preflight_io_descriptors(
                 if (board->id[0] < 'a' || board->id[0] > 'z') {
                     error_setg(errp, "IO9 board '%s' has an invalid DS1742 "
                                "owner ID", board->id);
-                    return false;
-                }
-                if (!data || !clock) {
-                    error_setg(errp, "IO9 board '%s' requires both DS1742 "
-                               "backends '%s' and '%s'", board->id, data_id,
-                               clock_id);
-                    return false;
-                }
-                if (blk_getlength(data) != 2048 ||
-                    blk_getlength(clock) < 16) {
-                    error_setg(errp, "IO9 board '%s' has invalid DS1742 "
-                               "backing pair sizes", board->id);
                     return false;
                 }
             }
@@ -8873,6 +8945,14 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
         (!*end || g_str_equal(end, "-clock"))) {
         return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB ||
                t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
+    }
+    /* An expansion module's configuration storage, named for the module. */
+    if (g_str_has_suffix(name, "-flash")) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
+    }
+    /* An IO9 board's DS1742 and its clock record, named for the board. */
+    if (g_str_has_prefix(name, "ds1742-")) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
     }
     return false;
 }

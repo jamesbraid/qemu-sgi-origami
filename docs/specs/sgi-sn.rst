@@ -36,10 +36,11 @@ read here. Each offering names the ``-M`` value that selects it
 (``machine-options``), every writable persistent store the machine has
 (``storage``: per-node boot flash ``node<N>-flash``, BASEIO or GIGAchannel
 PROM flash ``io<N>-flash``, Timekeeper NVRAM ``nvram<N>`` and its clock
-record ``nvram<N>-clock``, module system controller configuration NVRAM
-``module<N>-nvram``, each with its exact size and what a new machine's
-copy starts from) and the firmware images that initial content
-is built from (``init-inputs``).
+record ``nvram<N>-clock``, an IO9 board's DS1742 ``ds1742-<board>-data``
+and its clock record ``ds1742-<board>-clock``, module system controller
+configuration NVRAM ``module<N>-nvram``, each with its exact size and
+what a new machine's copy starts from) and the firmware images that
+initial content is built from (``init-inputs``).
 Four products stand on this base today:
 ``origin200``, ``origin2000`` and ``onyx2`` (SN0), and ``origin300``
 (SN1). ``onyx2`` is Origin 2000 silicon with graphics: the same IP27
@@ -888,6 +889,14 @@ The machines bind these items today:
   counting the boards that carry one. A clock record needs its NVRAM
   bound too; an NVRAM bound alone restores its calendar with no time
   added, as before.
+- ``ds1742-<board>-data`` and ``ds1742-<board>-clock`` on the IP53 products
+  (``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host``): the 2 KiB
+  image of the DS1742 linked to IO9 board ``<board>`` and the clock
+  record its model keeps beside it. Both are needed; a zeroed image
+  starts at the time of day.
+- ``<module>-flash`` on an ``origin300`` PCI expansion experiment: the
+  16 MiB configuration storage of expansion module ``<module>``, which
+  the experiment selects. A new machine's starts blank.
 - ``module<N>-nvram`` on ``origin200``, ``origin2000`` and ``onyx2``, the
   2048-byte configuration NVRAM of a module's system controller (see
   :ref:`sgi-elsc-nvram`), N counting the modules that have one: each
@@ -901,7 +910,11 @@ one store is refused: ``-drive if=pflash,unit=N`` for node N's flash;
 index) or ``id=sgi-gigachannel-flash<C>`` (C the cabinet) for a BASEIO
 PROM flash; and ``-drive if=mtd,index=I`` or ``-drive
 if=none,id=sgi-nvram<I>`` with its ``sgi-nvram<I>-clock`` partner for a
-Timekeeper, I the I/O board index on SN0 and the node on SN1.
+Timekeeper, I the I/O board index on SN0 and the node on SN1; and
+``-drive if=none,id=sgi-ds1742-data-<board>`` with
+``id=sgi-ds1742-clock-<board>`` for an IO9 board's DS1742; and
+``expansion-storage=<module>=<drive>`` for an expansion module's
+configuration storage.
 
 .. _sgi-sn-serial-order:
 

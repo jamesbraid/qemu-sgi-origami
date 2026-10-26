@@ -845,6 +845,110 @@ static void test_module_nvram_refusals(void)
     g_assert_cmpint(g_unlink(small), ==, 0);
 }
 
+/* An Onyx 350 IO9 board's DS1742 and the clock record beside it. */
+#define ONYX350 "onyx350,topology=onyx350-compat"
+#define ONYX350_SIZE "R16000", "-smp", "4", "-m", "8G"
+#define DS1742_SIZE 2048
+#define DS1742_CLOCK_SIZE 16
+
+/* Both catalogue items bind the DS1742 the IO9 board builds. */
+static void test_ds1742_bound(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *data = make_store("ds1742-data", DS1742_SIZE, 0);
+    g_autofree char *clock = make_store("ds1742-clock", DS1742_CLOCK_SIZE, 0);
+    g_autofree char *data_node = blockdev("rtc", data);
+    g_autofree char *clock_node = blockdev("rtc-clock", clock);
+    QTestState *qts = qtest_initf(
+        "-M " ONYX350 ",ds1742-io9-data=rtc,ds1742-io9-clock=rtc-clock "
+        "-cpu R16000 -smp 4 -m 8G -bios %s -display none -S "
+        "-blockdev %s -blockdev %s", prom, data_node, clock_node);
+
+    assert_attached_to(qts, "rtc", "/ds1742-io9");
+    assert_attached_to(qts, "rtc-clock", "/ds1742-io9");
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(data), ==, 0);
+    g_assert_cmpint(g_unlink(clock), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_ds1742_refusals(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *data = make_store("ds1742-data", DS1742_SIZE, 0);
+    g_autofree char *clock = make_store("ds1742-clock", DS1742_CLOCK_SIZE, 0);
+    g_autofree char *data_node = blockdev("rtc", data);
+    g_autofree char *legacy = g_strdup_printf(
+        "if=none,id=sgi-ds1742-data-io9,file=%s,format=raw", clock);
+    const char *half[] = {
+        qtest_qemu_binary(NULL), "-M", ONYX350 ",ds1742-io9-data=rtc",
+        "-cpu", ONYX350_SIZE, "-bios", prom, "-display", "none", "-S",
+        "-qmp", "stdio", "-blockdev", data_node, NULL,
+    };
+    const char *both[] = {
+        qtest_qemu_binary(NULL), "-M", ONYX350 ",ds1742-io9-data=rtc",
+        "-cpu", ONYX350_SIZE, "-bios", prom, "-display", "none", "-S",
+        "-qmp", "stdio", "-blockdev", data_node, "-drive", legacy, NULL,
+    };
+    const char *neither[] = {
+        qtest_qemu_binary(NULL), "-M", ONYX350, "-cpu", ONYX350_SIZE,
+        "-bios", prom, "-display", "none", "-S", "-qmp", "stdio", NULL,
+    };
+
+    assert_launch_rejected(half, "onyx350: IO9 board 'io9' needs both "
+                           "ds1742-io9-data and ds1742-io9-clock");
+    assert_launch_rejected(both, "onyx350: ds1742-io9-data and -drive "
+                           "id=sgi-ds1742-data-io9 both back IO9 board "
+                           "'io9''s DS1742");
+    assert_launch_rejected(neither, "onyx350: IO9 board 'io9' needs its "
+                           "DS1742 stores ds1742-io9-data and "
+                           "ds1742-io9-clock");
+    g_assert_cmpint(g_unlink(data), ==, 0);
+    g_assert_cmpint(g_unlink(clock), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/* An Origin 300 PCI expansion module's configuration storage. */
+#define EXPANSION "origin300,topology=origin300-pci-expansion-" \
+    "configuration-storage-experiment"
+
+static void test_expansion_flash_bound(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *store = make_store("expansion", SN1_FLASH_SIZE, 0);
+    g_autofree char *node = blockdev("config", store);
+    QTestState *qts = qtest_initf(
+        "-M " EXPANSION ",expansion-enclosure-flash=config "
+        SN1_MACHINE " -bios %s -display none -S -blockdev %s", prom, node);
+
+    g_assert_cmpuint(attached_count(qts, "config", ""), ==, 1);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(store), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_expansion_flash_refusals(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *store = make_store("expansion", SN1_FLASH_SIZE, 0);
+    g_autofree char *node = blockdev("config", store);
+    g_autofree char *legacy = g_strdup_printf(
+        "if=none,id=cfg,file=%s,format=raw", store);
+    const char *both[] = {
+        qtest_qemu_binary(NULL), "-M",
+        EXPANSION ",expansion-enclosure-flash=config,"
+        "expansion-storage.0=expansion-enclosure=cfg",
+        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-S", "-qmp", "stdio", "-blockdev", node, "-drive", legacy, NULL,
+    };
+
+    assert_launch_rejected(both, "expansion-enclosure-flash and "
+                           "expansion-storage both back the expansion "
+                           "configuration storage");
+    g_assert_cmpint(g_unlink(store), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -899,6 +1003,13 @@ int main(int argc, char **argv)
                    test_nvram_refusals);
     qtest_add_func("/sgi-machine-storage/nvram/short-of-a-sector-refused",
                    test_nvram_short_of_a_sector_refused);
+    qtest_add_func("/sgi-machine-storage/ds1742/bound", test_ds1742_bound);
+    qtest_add_func("/sgi-machine-storage/ds1742/refusals",
+                   test_ds1742_refusals);
+    qtest_add_func("/sgi-machine-storage/expansion-flash/bound",
+                   test_expansion_flash_bound);
+    qtest_add_func("/sgi-machine-storage/expansion-flash/refusals",
+                   test_expansion_flash_refusals);
     ret = g_test_run();
     g_assert_cmpint(g_rmdir(directory), ==, 0);
     g_free(directory);

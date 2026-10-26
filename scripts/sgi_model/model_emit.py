@@ -441,6 +441,7 @@ _SCSI_TARGETS = {
 # sgi_sn1_serial_line(): one `-serial chardev:l1` first).
 _DS1742_ARGUMENT = "-drive if=none,id=sgi-ds1742-data-BOARD"
 _DS1742_BYTES = 2048
+_DS1742_CLOCK_BYTES = 16
 _PFLASH_ARGUMENT = "-drive if=pflash,unit=N"
 
 # Each Timekeeper kind's NVRAM and the clock reference record its model
@@ -454,6 +455,8 @@ _TIMEKEEPER_BYTES = {
 # The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
 # that fit one.
 _IO_FLASH_BYTES = 0x100000
+# include/hw/misc/sgi-bedrock-flash.h's SGI_BEDROCK_FLASH_SIZE.
+_EXPANSION_FLASH_BYTES = 16 * 1024 * 1024
 _IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
 _BOOT_PROM_KINDS = {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}
 
@@ -747,13 +750,21 @@ def _module_has_controller_nvram(topology: dict, module: dict,
                for node in module["nodes"] if node in fitted)
 
 
+def _board_node(topology: dict, board: dict) -> int:
+    """The node board a PCI-hosted I/O board's host attaches to."""
+    host = topology["pci_host_bridges"][board["pci_host_index"]]
+    return topology["xio_attachments"][
+        host["xio_attachment_index"]]["node_index"]
+
+
 def _storage_for(topology: dict, harness: dict, product: dict,
                  fitted: list[int]) -> list[dict]:
     """Every writable persistent store a launch fitting the `fitted` node
     boards has, numbered as the machine numbers what it builds, in the
     order a launcher creates them: each node's boot flash, each BASEIO
-    PROM flash, each Timekeeper NVRAM with its clock record, then each
-    module system controller's configuration NVRAM. The
+    PROM flash, each Timekeeper NVRAM with its clock record, each IO9
+    DS1742 with its clock record, then each module system controller's
+    configuration NVRAM. The
     name is the file name, the block node name and the machine property
     a launcher binds the store through. `initial` names what a new
     machine's store starts from: an `init-inputs` image, the fresh IP27
@@ -789,6 +800,29 @@ def _storage_for(topology: dict, harness: dict, product: dict,
                         "read-only": False, "initial": initial})
         storage.append({"name": f"nvram{index}-clock", "size": clock_size,
                         "read-only": False, "initial": "zero"})
+    # An IO9 board's DS1742 keeps its 2 KiB image and a clock record beside
+    # it, as a Timekeeper does, named for the board that owns it
+    # (hw/rtc/ds1742.c). A fresh, zeroed image takes the time of day.
+    for board in boards:
+        if (board.get("ds1742") is not True or
+                _board_node(topology, board) not in fitted):
+            continue
+        storage.append({"name": f"ds1742-{board['id']}-data",
+                        "size": _DS1742_BYTES, "read-only": False,
+                        "initial": "zero"})
+        storage.append({"name": f"ds1742-{board['id']}-clock",
+                        "size": _DS1742_CLOCK_BYTES, "read-only": False,
+                        "initial": "zero"})
+    # An Origin 300 PCI expansion module's configuration storage, the
+    # 16 MiB two-position Bedrock flash its experiment selects, named for
+    # the module. A new machine's starts blank, as every caller-supplied
+    # image has.
+    for assembly in topology.get("io_assemblies", ()):
+        if assembly.get("configuration_storage"):
+            module = topology["modules"][assembly["module_index"]]
+            storage.append({"name": f"{module['id']}-flash",
+                            "size": _EXPANSION_FLASH_BYTES,
+                            "read-only": False, "initial": "zero"})
     modules = [module for module in topology["modules"]
                if _module_has_controller_nvram(topology, module, fitted)]
     for index, _ in enumerate(modules):
@@ -819,12 +853,8 @@ def _resources_for(topology: dict, harness: dict, product: dict,
     """
     resources = []
     def ds1742_board_survives(board: dict) -> bool:
-        if board.get("ds1742") is not True:
-            return False
-        host = topology["pci_host_bridges"][board["pci_host_index"]]
-        attachment = topology["xio_attachments"][
-            host["xio_attachment_index"]]
-        return attachment["node_index"] in population_nodes
+        return (board.get("ds1742") is True and
+                _board_node(topology, board) in population_nodes)
 
     ds1742_board_ids = sorted(
         board["id"] for board in topology["io_boards"]
