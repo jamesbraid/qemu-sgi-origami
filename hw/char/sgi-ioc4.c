@@ -409,20 +409,20 @@ static void ioc4_tx_run(SGIIOC4Port *p)
             uint8_t kind = status & 0xc0;
 
             /*
-             * An empty slot ends its entry wherever it sits; the slots
-             * behind it are not sent. The IOC3 board test's expected data
-             * says so of IOC3, and IOC4 takes it from its sibling.
+             * The type field and bit 5 decide what a slot does; the low
+             * five bits have no defined meaning and are logged, not obeyed.
+             * A slot of type none ends its entry wherever it sits, and the
+             * slots behind it are not sent: the IOC3 board test's expected
+             * data says so of IOC3, and IOC4 takes it from its sibling. It
+             * raises nothing even with bit 5 set, which no source settles.
              */
-            if (!status) {
-                break;
-            }
-            if (status != 0x40 && status != 0x60 && status != 0x80 &&
-                status != 0xa0 && status != 0xc0 && status != 0xe0) {
-                p->halted = true;
+            if (status & 0x1f) {
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-ioc4: unsupported TX status 0x%02x on port %u\n",
-                              status, p->index);
-                return;
+                              "sgi-ioc4: undefined TX control bits 0x%02x on "
+                              "port %u\n", status & 0x1f, p->index);
+            }
+            if (!kind) {
+                break;
             }
             if (kind == IOC4_TX_VALID) {
                 if (ioc4_dma_loopback(p)) {
@@ -458,12 +458,6 @@ static void ioc4_tx_run(SGIIOC4Port *p)
                               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                               p->tx_remaining_ns);
                 }
-            } else {
-                p->halted = true;
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-ioc4: unsupported TX status 0x%02x on port %u\n",
-                              status, p->index);
-                return;
             }
             if (status & IOC4_TX_EXPLICIT) {
                 if (kind == IOC4_TX_DELAY && p->tx_remaining_ns) {
