@@ -6447,27 +6447,34 @@ static SGIGLSink odyssey_gl_sink(SGIOdysseyState *s)
  */
 static void odyssey_gl_bind(SGIOdysseyState *s)
 {
-    SGIGLDrawable d = {
-        .bound = true,
-        .origin = { s->win_origin[0], s->win_origin[1] },
-        .front = 0,
-        .back = 1,
-    };
+    SGIGLDrawable *d = &s->gl_bind_drawable;
     unsigned buffers = odyssey_draw_buffers(s);
     uint32_t draw = (buffers & 1 ? SGI_GL_DRAW_FRONT : 0) |
                     (buffers & 2 ? SGI_GL_DRAW_BACK : 0);
-    unsigned int i;
+    unsigned int n = MAX(s->clip_kept, 1);
 
-    for (i = 0; i < s->clip_kept; i++) {
-        d.clip.r[i] = s->clip_rect[i];
-    }
-    d.clip.n = s->clip_kept;
-    if (!d.clip.n) {
+    /*
+     * This runs before every command, but the drawable changes only with
+     * the window registers, so it is built in place and handed over only
+     * when it differs from the shared context's. gl_bind_drawable's other
+     * fields keep their instance_init values, and its rectangles past the
+     * count stay zero, so it is the drawable a fresh build would make.
+     */
+    d->origin[0] = s->win_origin[0];
+    d->origin[1] = s->win_origin[1];
+    if (s->clip_kept) {
+        memcpy(d->clip.r, s->clip_rect, s->clip_kept * sizeof(d->clip.r[0]));
+    } else {
         /* An all-empty clip; SGIClipList.empty replaces this at rebase. */
-        d.clip.r[0] = (SGIClipRect) { 1, 1, 0, 0 };
-        d.clip.n = 1;
+        d->clip.r[0] = (SGIClipRect) { 1, 1, 0, 0 };
     }
-    sgi_gl_set_drawable(&s->gl_ctx, &d);
+    if (d->clip.n > n) {
+        memset(&d->clip.r[n], 0, (d->clip.n - n) * sizeof(d->clip.r[0]));
+    }
+    d->clip.n = n;
+    if (memcmp(d, &s->gl_ctx.cur.drawable, sizeof(*d))) {
+        sgi_gl_set_drawable(&s->gl_ctx, d);
+    }
     if (s->gl_ctx.cur.draw_buffers != draw) {
         SGIGLSink sink = odyssey_gl_sink(s);
         SGIGLCmd cmd = { .op = SGI_GL_OP_DRAW_BUFFERS, .nargs = 1,
@@ -12588,6 +12595,10 @@ static void odyssey_instance_init(Object *obj)
     memory_region_init_io(&s->regs, obj, &odyssey_ops, s, "sgi-odyssey.regs",
                           ODSY_APERTURE);
     s->obj_index = g_hash_table_new(g_direct_hash, g_direct_equal);
+    /* The fixed part of the drawable odyssey_gl_bind() hands over. */
+    s->gl_bind_drawable.bound = true;
+    s->gl_bind_drawable.front = 0;
+    s->gl_bind_drawable.back = 1;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
 
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
