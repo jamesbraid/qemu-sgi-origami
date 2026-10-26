@@ -408,9 +408,13 @@ static void ioc4_tx_run(SGIIOC4Port *p)
             uint8_t status = p->tx_status[p->tx_slot];
             uint8_t kind = status & 0xc0;
 
+            /*
+             * An empty slot ends its entry wherever it sits; the slots
+             * behind it are not sent. The IOC3 board test's expected data
+             * says so of IOC3, and IOC4 takes it from its sibling.
+             */
             if (!status) {
-                p->tx_slot++;
-                continue;
+                break;
             }
             if (status != 0x40 && status != 0x60 && status != 0x80 &&
                 status != 0xa0 && status != 0xc0 && status != 0xe0) {
