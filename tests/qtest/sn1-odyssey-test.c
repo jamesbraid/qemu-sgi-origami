@@ -11352,6 +11352,79 @@ static void test_scanout_overlay_planes(void)
 }
 
 /*
+ * A GL draw at the id-plane destination that the model refuses -- an index
+ * draw to the id byte, or any RGBA draw -- stores nothing and is reported
+ * once, however many draws follow. The report comes from the draw, before
+ * any pixel, so the store hooks only store.
+ */
+static char *gl_aux_refusal_log(bool index, uint32_t *did, uint32_t *colour)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-aux-refusal-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    aux_write(qts, 5, 0x07, 0x3, 256, 256, 384, 384);
+    probe_window(qts);
+    cmd_push(qts, 0x608);
+    cmd_push(qts, 0x80142000);
+    if (index) {
+        user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
+        user_cmd_push(qts, ODSY_GL_MODE_INDEX_B);
+    }
+    draw_mask(qts, 0x3);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x142000);
+    user_cmd_push(qts, 0x50);
+    user_cmd_push(qts, ODSY_DEST_ID_PLANES);
+    user_cmd_push(qts, 0);
+    for (unsigned i = 0; i < 2; i++) {
+        push_clear(qts, 0x42400000, ODSY_F_ZERO, ODSY_F_ZERO, 0x43000000,
+                   0x43000000);
+    }
+    *did = odsy_did(qts, 300, 300);
+    *colour = odsy_buffer_pixel(qts, 0, 300, 300);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    return log;
+}
+
+static void test_gl_aux_refusals_reported_once(void)
+{
+    uint32_t did, colour;
+    g_autofree char *index_log = gl_aux_refusal_log(true, &did, &colour);
+    g_autofree char *rgba_log = NULL;
+
+    g_assert_cmphex(did, ==, 5);
+    g_assert_cmphex(colour, ==, 0);
+    g_assert_cmpuint(count_substr(index_log, "a GL id-byte write to the "
+                                  "id-plane destination is not modeled"),
+                     ==, 1);
+    g_assert_cmpuint(count_substr(index_log, "an RGBA draw"), ==, 0);
+
+    rgba_log = gl_aux_refusal_log(false, &did, &colour);
+    g_assert_cmphex(did, ==, 5);
+    g_assert_cmphex(colour, ==, 0);
+    g_assert_cmpuint(count_substr(rgba_log, "an RGBA draw to the id-plane "
+                                  "destination is not modeled"), ==, 1);
+    g_assert_cmpuint(count_substr(rgba_log, "id-byte"), ==, 0);
+}
+
+/*
  * An id-plane write whose drawing mask selects neither the id byte (buffer
  * 0) nor the overlay byte (buffer 1) changes nothing and is reported once.
  */
@@ -21204,6 +21277,8 @@ int main(int argc, char **argv)
              test_scanout_overlay_planes);
     add_case("sn1/odyssey/scanout-overlay-unselected-mask",
              test_scanout_overlay_unselected_mask);
+    add_case("sn1/odyssey/gl-aux-refusals-reported-once",
+             test_gl_aux_refusals_reported_once);
     add_case("sn1/odyssey/scanout-overlay-menu", test_scanout_overlay_menu);
     add_case("sn1/odyssey/command-fifo-dest-select-flags",
              test_command_fifo_dest_select_flags);

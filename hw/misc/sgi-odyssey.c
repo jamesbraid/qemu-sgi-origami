@@ -4986,11 +4986,44 @@ static void odyssey_gl_aux_refused(SGIOdysseyState *s, const char *what)
 static void odyssey_gl_store_aux(SGIOdysseyState *s, SGIColourTarget target,
                                  int x, int y, uint32_t colour)
 {
-    if (target != ODSY_AUX_OVERLAY_BUFFER) {
-        odyssey_gl_aux_refused(s, "a GL id-byte write");
+    if (target == ODSY_AUX_OVERLAY_BUFFER) {
+        s->overlay[(uint64_t)y * SGI_ODYSSEY_WIDTH + x] = colour & 0xff;
+    }
+}
+
+/*
+ * What the colour hooks below decline, reported once, from the draw rather
+ * than from a pixel: the conditions are fixed for the whole draw, and the
+ * hooks then only store, so the shared rasterizer may call them for
+ * different pixels at once. colour says whether the draw writes colour at
+ * all. A draw whose every pixel is clipped away is reported too, where the
+ * hooks reported only once a pixel reached them.
+ */
+static void odyssey_gl_report_refusals(SGIOdysseyState *s, bool colour)
+{
+    uint32_t index_mask = s->gl_write_mask & ODSY_WRITE_INDEX_MASK;
+    uint32_t mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
+                    ODSY_WRITE_COLOUR_MASK;
+    unsigned buffers = odyssey_draw_buffers(s);
+
+    if (!colour) {
         return;
     }
-    s->overlay[(uint64_t)y * SGI_ODYSSEY_WIDTH + x] = colour & 0xff;
+    if (!odyssey_gl_index_mode(s)) {
+        if (buffers && odyssey_gl_to_aux(s)) {
+            odyssey_gl_aux_refused(s, "an RGBA draw");
+        }
+        return;
+    }
+    if (index_mask != ODSY_WRITE_INDEX_MASK && !s->gl_index_mask_logged) {
+        s->gl_index_mask_logged = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: index write mask 0x%03x is "
+                      "decoded but not applied\n", index_mask);
+    }
+    if (mask && (buffers & ~(1u << ODSY_AUX_OVERLAY_BUFFER)) &&
+        odyssey_gl_to_aux(s)) {
+        odyssey_gl_aux_refused(s, "a GL id-byte write");
+    }
 }
 
 static void odyssey_gl_store_colour(void *opaque, SGIColourTarget target,
@@ -4999,13 +5032,7 @@ static void odyssey_gl_store_colour(void *opaque, SGIColourTarget target,
     SGIOdysseyState *s = opaque;
     uint32_t mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
                     ODSY_WRITE_COLOUR_MASK;
-    uint32_t index_mask = s->gl_write_mask & ODSY_WRITE_INDEX_MASK;
 
-    if (index_mask != ODSY_WRITE_INDEX_MASK && !s->gl_index_mask_logged) {
-        s->gl_index_mask_logged = true;
-        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: index write mask 0x%03x is "
-                      "decoded but not applied\n", index_mask);
-    }
     if (!mask || target >= ODSY_BUFFERS || !odyssey_pixel_allowed(s, x, y)) {
         return;
     }
@@ -5024,11 +5051,7 @@ static void odyssey_gl_store_rgba(void *opaque, SGIColourTarget target,
     const uint32_t *c = colour->component;
     bool allowed = target < ODSY_BUFFERS && odyssey_pixel_allowed(s, x, y);
 
-    if (allowed && odyssey_gl_to_aux(s)) {
-        odyssey_gl_aux_refused(s, "an RGBA draw");
-        return;
-    }
-    if (allowed) {
+    if (allowed && !odyssey_gl_to_aux(s)) {
         odyssey_buffer_store(s, target, x, y,
                              (c[0] << 24) | (c[1] << 16) | (c[2] << 8) | c[3]);
     }
@@ -6297,6 +6320,7 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     state.fog_color[3] = (s->gl_fog[1] & 0xfff) / 4096.0f;
     state.fog_index = (s->gl_fog[0] >> 12) & 0xfff;
     draw.state = &state;
+    odyssey_gl_report_refusals(s, true);
     result = sgi_soft_draw(&rules, &t, &draw);
     trace_sgi_odyssey_gl_draw_path("scalar", result, true);
     sgi_scanout_invalidate_all(&s->scanout);
@@ -6411,6 +6435,9 @@ static void odyssey_gl_raster(void *opaque, const SGIRasterOp *op)
     SGIRasterTarget t = odyssey_gl_target(s);
     SGIRasterRules rules = odyssey_gl_operation_rules(s);
 
+    odyssey_gl_report_refusals(s, op->kind != SGI_RASTER_CLEAR ||
+                                  (op->clear_buffers &
+                                   SGI_GL_COLOR_BUFFER_BIT));
     sgi_soft_raster(&rules, &t, op);
     sgi_scanout_invalidate_all(&s->scanout);
 }
@@ -8017,6 +8044,9 @@ static void odyssey_gl_rect(SGIOdysseyState *s)
         return;
     }
     target = odyssey_gl_target(s);
+    odyssey_gl_report_refusals(s, op.kind != SGI_RASTER_CLEAR ||
+                                  (op.clear_buffers &
+                                   SGI_GL_COLOR_BUFFER_BIT));
     /*
      * Proposed shape-4 policy: the first corner anchors a repeating bitmap,
      * independent of corner order. Admit runs through the existing clear so
