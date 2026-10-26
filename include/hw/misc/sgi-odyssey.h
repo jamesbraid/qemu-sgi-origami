@@ -269,6 +269,12 @@ struct SGIOdysseyState {
     uint32_t obj_count;
     uint32_t obj_used;
     uint32_t obj_base[SGI_ODYSSEY_OBJECTS];
+    /*
+     * obj_base inverted, base to index + 1, for the per-draw lookups
+     * (odyssey_object_find()). Derived from obj_base and obj_count, so not
+     * migrated: post_load rebuilds it.
+     */
+    GHashTable *obj_index;
     uint32_t obj_width[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_offset[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_rows[SGI_ODYSSEY_OBJECTS];
