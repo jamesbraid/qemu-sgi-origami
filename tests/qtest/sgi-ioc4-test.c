@@ -1360,6 +1360,30 @@ static void test_dma_host_index_masks_its_pointer(void)
     g_assert_nonnull(strstr(contents, "outside the pointer field"));
 }
 
+/*
+ * The receive threshold source is a level: it follows whether the ring holds
+ * the mark's worth of entries, a write cannot clear it, and it falls when
+ * software consumes below the mark. The IOC3 model is measured against
+ * IRIX's ring console, which never acknowledges it.
+ */
+static void test_dma_threshold_is_a_level(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_THRESHOLD(1));
+    reg_write(qts, SDMA_RX_PRODUCE(0), 8);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_THRESHOLD(0), ==,
+                    RX_THRESHOLD(0));
+    reg_write(qts, 0x08, RX_THRESHOLD(0));
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_THRESHOLD(0), ==,
+                    RX_THRESHOLD(0));
+    reg_write(qts, SDMA_RX_CONSUME(0), 8);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_THRESHOLD(0), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2899,6 +2923,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-threshold-is-a-level",
+                   test_dma_threshold_is_a_level);
     qtest_add_func("/sgi-ioc4/dma-host-index-masks-its-pointer",
                    test_dma_host_index_masks_its_pointer);
     qtest_add_func("/sgi-ioc4/dma-engine-indices-take-writes",

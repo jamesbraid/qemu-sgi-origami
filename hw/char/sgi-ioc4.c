@@ -154,6 +154,8 @@ struct SGIIOC4State {
     uint32_t serial_enable;
     uint32_t other_enable;
     uint32_t uart_level;
+    /* The receive threshold sources, a level per port. */
+    uint32_t threshold_level;
     uint32_t clock_hz;
 };
 
@@ -216,6 +218,7 @@ static void ioc4_update_irq(SGIIOC4State *s)
     pci_set_irq(&s->parent_obj,
                 !!((s->serial_pending & s->serial_enable) |
                    (s->uart_level & s->serial_enable) |
+                   (s->threshold_level & s->serial_enable) |
                    (s->other_pending & s->other_enable)));
 }
 
@@ -283,15 +286,24 @@ static void ioc4_dma_error(SGIIOC4Port *p, uint64_t address, bool tx)
     ioc4_update_irq(s);
 }
 
+/*
+ * The receive threshold source is a level, recomputed wherever the waiting
+ * count moves, and a write to the status register cannot clear it: the
+ * IOC3 model is measured against IRIX's ring console, which never
+ * acknowledges it and storms on a latch.
+ */
 static void ioc4_update_rx_threshold(SGIIOC4Port *p)
 {
     SGIIOC4State *s = p->ioc4;
     unsigned threshold = p->control & IOC4_SSCR_THRESHOLD;
     unsigned entries = ((p->rx_produce - p->rx_consume) &
                         ioc4_ring_mask(s, p->index)) / 8;
+    uint32_t bit = 1u << (8 * p->index + 2);
 
     if (threshold && entries >= threshold) {
-        s->serial_pending |= 1u << (8 * p->index + 2);
+        s->threshold_level |= bit;
+    } else {
+        s->threshold_level &= ~bit;
     }
     ioc4_update_irq(s);
 }
@@ -643,6 +655,7 @@ static void ioc4_port_reset(SGIIOC4Port *p)
     p->halted = p->drain_pending = false;
     p->rx_remaining_ns = p->tx_remaining_ns = 0;
     s->serial_pending &= ~((uint32_t)0xff << (8 * p->index));
+    s->threshold_level &= ~(1u << (8 * p->index + 2));
     s->other_pending &= ~(1u << error_bit);
     qemu_chr_fe_accept_input(&s->uart[p->index].chr);
     ioc4_update_irq(s);
@@ -910,6 +923,7 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
         if (!p->rx_staged) {
             ioc4_tx_run(p);
         }
+        ioc4_update_rx_threshold(p);
         qemu_chr_fe_accept_input(&s->uart[n].chr);
         break;
     }
@@ -984,7 +998,7 @@ static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
     }
     switch (addr) {
     case 0x08:
-        return s->serial_pending | s->uart_level;
+        return s->serial_pending | s->uart_level | s->threshold_level;
     case 0x0c:
         return s->other_pending;
     case 0x10:
@@ -1032,16 +1046,6 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr) {
     case 0x08:
         s->serial_pending &= ~(uint32_t)val;
-        for (int i = 0; i < IOC4_PORTS; i++) {
-            unsigned threshold = s->dma[i].control & IOC4_SSCR_THRESHOLD;
-            unsigned count = ((s->dma[i].rx_produce - s->dma[i].rx_consume) &
-                              ioc4_ring_mask(s, i)) / 8;
-            uint32_t bit = 1u << (8 * i + 2);
-
-            if (threshold && count >= threshold) {
-                s->serial_pending |= bit;
-            }
-        }
         break;
     case 0x0c:
         s->other_pending &= ~(uint32_t)val;
@@ -1218,6 +1222,7 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->other_pending = 0;
     s->other_enable = 0;
     s->uart_level = 0;
+    s->threshold_level = 0;
     s->ata_readback = 0;
     if (s->pci_status_compat) {
         pci_set_word(s->parent_obj.config + PCI_STATUS,
@@ -1294,6 +1299,9 @@ static int ioc4_post_load(void *opaque, int version_id)
     SGIIOC4State *s = opaque;
     int i;
 
+    for (i = 0; i < IOC4_PORTS; i++) {
+        ioc4_update_rx_threshold(&s->dma[i]);
+    }
     for (i = 0; i < IOC4_PORTS; i++) {
         SGIIOC4Port *p = &s->dma[i];
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
