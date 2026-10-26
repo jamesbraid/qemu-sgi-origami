@@ -616,8 +616,12 @@ static void test_dma_tx_direct64_swap_off(void)
     int sv[2];
     QTestState *qts;
     const uint8_t data[4] = { 0x41, 0x42, 0x43, 0x44 };
-    const uint8_t control[4] = { TX_VALID, TX_VALID, 0, 0 };
-    const uint8_t expected[2] = { 0x42, 0x41 };
+    /*
+     * Every slot valid: uncorrected, each word's bytes arrive reversed, and
+     * an empty slot reversed to the front would end the entry at once.
+     */
+    const uint8_t control[4] = { TX_VALID, TX_VALID, TX_VALID, TX_VALID };
+    const uint8_t expected[4] = { 0x44, 0x43, 0x42, 0x41 };
     g_autofree char *contents = NULL;
 
     ioc4_socketpair(sv);
@@ -1382,6 +1386,35 @@ static void test_dma_threshold_is_a_level(void)
     reg_write(qts, SDMA_RX_CONSUME(0), 8);
     g_assert_cmphex(reg_read(qts, 0x08) & RX_THRESHOLD(0), ==, 0);
     qtest_quit(qts);
+}
+
+/*
+ * An empty transmit slot ends its entry wherever it sits: the slots behind
+ * it are not sent. The IOC3 board test's expected data says so of IOC3;
+ * IOC4 takes it from its sibling.
+ */
+static void test_dma_empty_slot_ends_the_entry(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t first[4] = { 'a', 'b', 'c', 'd' };
+    const uint8_t first_control[4] = { TX_VALID, 0, TX_VALID, TX_VALID };
+    const uint8_t second[4] = { 'e', 0, 0, 0 };
+    const uint8_t second_control[4] = { TX_VALID, 0, 0, 0 };
+    const uint8_t expected[2] = { 'a', 'e' };
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, first, first_control);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 8, second, second_control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 16);
+    ioc4_expect_bytes(qts, sv[0], expected, sizeof(expected));
+    qtest_quit(qts);
+    close(sv[0]);
 }
 
 static void test_dma_rx_timer_expiry_after_full_entry(void)
@@ -2923,6 +2956,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-empty-slot-ends-the-entry",
+                   test_dma_empty_slot_ends_the_entry);
     qtest_add_func("/sgi-ioc4/dma-threshold-is-a-level",
                    test_dma_threshold_is_a_level);
     qtest_add_func("/sgi-ioc4/dma-host-index-masks-its-pointer",
