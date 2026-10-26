@@ -231,6 +231,24 @@
               "type": "string",
               "minLength": 1
             },
+            "machine_properties": {
+              "type": "object",
+              "required": [
+                "properties",
+                "reason"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "properties": {
+                  "type": "array",
+                  "minItems": 1
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
             "slots": {
               "type": "array",
               "minItems": 1,

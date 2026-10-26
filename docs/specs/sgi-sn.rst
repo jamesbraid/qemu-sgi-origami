@@ -657,6 +657,16 @@ checks the rules below before it emits the records:
 * a slot exists from the node count its Crossbow port's node board needs,
   given as ``requires``.
 
+A topology whose own boards do not suit a pipe says so in
+``machine-properties``: the ``-M`` properties a launch that fits any pipe
+adds, and the reason. The Origin 2000 lists ``baseio-preset=io6g``. Its
+plain BaseIO has no keyboard or mouse port, so the X server finds no
+input device; the BaseIO-G, the Onyx2's board, has them on its MediaIO
+daughtercard. QEMU does not add these properties itself, because it
+builds the BaseIO card while the machine initializes, before any
+``-device`` exists, and a ``-device scsi-hd`` needs the card's SCSI bus
+by then. A launch with no pipe keeps the plain BaseIO.
+
 A refusal matches a requested pipe when its family matches, its product
 matches if it names one, and every setting it lists has the requested
 value. Every slot and setting is ``changeable: false`` until a machine's

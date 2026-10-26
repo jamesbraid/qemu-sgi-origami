@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "223d9a555665053f93df1703d4cb3598ef281c0b9a802726aa79cb810eae90ad"
+    "4a87841abf8798e13eb159c4059bc3716447f11bd0b7d817df81359ddcb14c91"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -737,8 +737,9 @@ class FuelTests(unittest.TestCase):
 
     def test_overrides_follow_what_each_machine_binds(self):
         """The Bedrock board values are listed only where a Bedrock, an L1
-        and an IO8 or Fuel board bind them; every machine takes mac=, and
-        the processor part's PRId is a -cpu property."""
+        and an IO8 or Fuel board bind them; every machine takes mac=, an
+        Origin 2000's plain BaseIO takes baseio-preset=, and the processor
+        part's PRId is a -cpu property."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         bedrock = ["bedrock-revision", "board-id-word", "ioc3-subsystem-id",
@@ -747,7 +748,7 @@ class FuelTests(unittest.TestCase):
             "fuel": (bedrock, ["r14000-prid"]),
             "origin300": (bedrock, ["r14000-prid"]),
             "origin200": (["mac"], ["r10000-prid"]),
-            "origin2000": (["mac"], ["r10000-prid"]),
+            "origin2000": (["baseio-preset", "mac"], ["r10000-prid"]),
             "octane": (["flash-select", "flash-strap", "mac"],
                        ["r10000-prid"]),
         }
@@ -766,6 +767,24 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(
                     [o["property"] for o in row["overrides"]
                      if o["target"] == "cpu"], cpu)
+
+    def test_origin2000_pipe_asks_for_the_baseio_g(self):
+        """An Origin 2000's plain BaseIO has no keyboard or mouse port, so
+        its graphics record asks a launch with a pipe for the BaseIO-G;
+        no other topology's record asks for anything."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for topology in catalogue["topologies"]:
+            graphics = topology.get("graphics") or {}
+            with self.subTest(topology=topology["name"]):
+                if topology["product"] == "origin2000":
+                    self.assertEqual(
+                        graphics["machine-properties"]["properties"],
+                        [{"name": "baseio-preset", "value": "io6g"}])
+                    self.assertFalse(graphics["machine-properties"]
+                                     ["reason"].endswith("."))
+                else:
+                    self.assertNotIn("machine-properties", graphics)
 
     def test_fuel_export_has_system_timekeeper(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[

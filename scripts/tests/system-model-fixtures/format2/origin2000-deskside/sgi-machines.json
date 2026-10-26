@@ -125,6 +125,10 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -352,6 +356,10 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -578,6 +586,10 @@
       ],
       "nodes": 4,
       "overrides": [
+        {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
         {
           "property": "mac",
           "target": "machine"
@@ -806,6 +818,10 @@
       "nodes": 4,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -1032,6 +1048,10 @@
       ],
       "nodes": 4,
       "overrides": [
+        {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
         {
           "property": "mac",
           "target": "machine"
@@ -1258,6 +1278,10 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -1477,6 +1501,10 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -1696,6 +1724,10 @@
       "nodes": 3,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -1914,6 +1946,10 @@
       ],
       "nodes": 3,
       "overrides": [
+        {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
         {
           "property": "mac",
           "target": "machine"
@@ -2132,6 +2168,10 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -2342,6 +2382,10 @@
       ],
       "nodes": 2,
       "overrides": [
+        {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
         {
           "property": "mac",
           "target": "machine"
@@ -2554,6 +2598,10 @@
       "nodes": 2,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -2763,6 +2811,10 @@
       "nodes": 1,
       "overrides": [
         {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
+        {
           "property": "mac",
           "target": "machine"
         },
@@ -2965,6 +3017,10 @@
       ],
       "nodes": 1,
       "overrides": [
+        {
+          "property": "baseio-preset",
+          "target": "machine"
+        },
         {
           "property": "mac",
           "target": "machine"
@@ -3179,6 +3235,15 @@
       "generation": "sn0",
       "graphics": {
         "headless": true,
+        "machine-properties": {
+          "properties": [
+            {
+              "name": "baseio-preset",
+              "value": "io6g"
+            }
+          ],
+          "reason": "the plain BaseIO has no keyboard or mouse port, so a graphics console needs the BaseIO-G that an Onyx2 ships with"
+        },
         "max-pipes": 1,
         "slots": [
           {

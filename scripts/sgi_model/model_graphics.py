@@ -36,7 +36,9 @@ _FAMILY_FIELDS = {"family", "device", "name", "products", "settings"}
 _PRODUCT_FIELDS = {"product", "name", "description"}
 _SETTING_FIELDS = {"name", "description", "values"}
 _VALUE_FIELDS = {"value", "description", "evidence"}
-_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused", "slots"}
+_SECTION_FIELDS = {"max_pipes", "headless", "headless_refused",
+                   "machine_properties", "slots"}
+_MACHINE_PROPERTIES_FIELDS = {"properties", "reason"}
 _SLOT_FIELDS = {"name", "names", "description", "placement", "default",
                 "families", "refusals"}
 _OFFER_FIELDS = {"family", "products"}
@@ -426,8 +428,28 @@ def resolve_graphics(product_id: str, section: Any,
     if not headless:
         record["headless_refused"] = _reason(section["headless_refused"],
                                              f"{label} headless_refused")
+    if "machine_properties" in section:
+        record["machine_properties"] = _machine_properties(
+            section["machine_properties"], f"{label} machine_properties")
     record["slots"] = slots
     return record
+
+
+def _machine_properties(raw: Any, label: str) -> dict:
+    """The -M properties a launch fitting any pipe sets, and why."""
+    if (not isinstance(raw, dict) or set(raw) != _MACHINE_PROPERTIES_FIELDS
+            or not isinstance(raw["properties"], dict)
+            or not raw["properties"]):
+        raise ResolutionError(f"{label} needs a non-empty properties mapping "
+                              "and a reason")
+    properties = _properties(raw["properties"], label)
+    for item in properties:
+        if not _NAME.match(item["name"]) or not item["value"] or any(
+                c in item["value"] for c in ",= "):
+            raise ResolutionError(f"{label} has an invalid property "
+                                  f"{item['name']}={item['value']!r}")
+    return {"properties": properties,
+            "reason": _reason(raw["reason"], f"{label} reason")}
 
 
 def _offers(topologies: list[dict]):
