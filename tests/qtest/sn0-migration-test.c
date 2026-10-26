@@ -494,7 +494,8 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
 
     /*
      * Loopback delivers the transmit entry to the same port's receive ring
-     * with no chardev in it; the armed timer is wound by delivery.
+     * with no chardev in it; the first character to arrive starts the armed
+     * timer.
      */
     qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
     qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
@@ -510,13 +511,14 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
 
     /*
      * The four characters take their time on the line; half a tick after
-     * the last arrives it is delivered and wound, one tick under reload.
+     * the last arrives the entry is posted, and the timer, started at the
+     * first arrival three character times earlier, has 0xf0 ticks left.
      */
     now = qtest_clock_step(from, 4 * IOC3_LINE_9600_CHAR_NS +
                                  IOC3_RX_TIMER_TICK_NS / 2);
     g_assert_cmphex(qtest_readl(from, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
     g_assert_cmphex((qtest_readl(from, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
-                    ==, 0x122);
+                    ==, 0xf0);
     g_assert_cmphex(qtest_readl(from, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, 0);
 
@@ -534,12 +536,12 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     }
     g_assert_cmphex(qtest_readl(to, IOC3_SDMA_A_RX_PRODUCE) & 0xff8, ==, 8);
     g_assert_cmphex((qtest_readl(to, IOC3_SDMA_A_RX_TIMER) >> 16) & 0xfff,
-                    ==, 0x122);
+                    ==, 0xf0);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, 0);
 
     /* And it still expires: the deadline crossed, not just the count. */
-    qtest_clock_step(to, (0x122 + 1) * IOC3_RX_TIMER_TICK_NS);
+    qtest_clock_step(to, (0xf0 + 1) * IOC3_RX_TIMER_TICK_NS);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, IOC3_SRC_A_RX_TIMER);
 

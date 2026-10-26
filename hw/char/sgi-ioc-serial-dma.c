@@ -159,12 +159,11 @@ static bool sdma_post(SGIIOCSerialDMAPort *p, uint32_t *produce,
     *produce = next;
     p->packed = 0;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
-    p->delivered = true;
     return true;
 }
 
 /*
- * The reload is receive idleness, in 16 kHz ticks from the last delivery,
+ * The reload counts 16 kHz ticks from the character that started the timer,
  * which `since` places: a loopback arrival serviced late still counts from
  * when it reached the receiver.
  */
@@ -197,8 +196,8 @@ static void sdma_rx_timer_expired(void *opaque)
     p->rx_idle_count = 0;
 
     /* A still-packed entry means the ring was full; retry now. */
-    if (p->packed && sdma_post(p, produce, consume, mask)) {
-        p->delivered = false;
+    if (p->packed) {
+        sdma_post(p, produce, consume, mask);
     }
 
     if (p->armed && ((*produce ^ *consume) & mask)) {
@@ -305,7 +304,7 @@ static void sdma_update_high_water(SGIIOCSerialDMAPort *p)
  * End of burst: a short group posts now rather than on timer expiry; the
  * interrupt still waits for the timer, the timing drivers observe.
  */
-static void sdma_flush(SGIIOCSerialDMAPort *p, int64_t since)
+static void sdma_flush(SGIIOCSerialDMAPort *p)
 {
     uint32_t *produce = sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE);
     uint32_t *consume = sdma_reg(p, SGI_IOC_SDMA_RX_CONSUME);
@@ -322,18 +321,15 @@ static void sdma_flush(SGIIOCSerialDMAPort *p, int64_t since)
     }
 
     sdma_update_high_water(p);
-
-    if (!p->delivered) {
-        return;
-    }
-    p->delivered = false;
-
-    if (p->armed) {
-        sdma_rx_timer_start(p, since);
-    }
 }
 
-static void sdma_receive(SGIIOCSerialDMAPort *p)
+/*
+ * The receive timer starts at the first character received after it is
+ * armed, as both Linux ring drivers' comment on the part says. A running
+ * timer is not started again by later characters; whether the part restarts
+ * it is not known.
+ */
+static void sdma_receive(SGIIOCSerialDMAPort *p, int64_t since)
 {
     uint32_t *produce = sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE);
     uint32_t *consume = sdma_reg(p, SGI_IOC_SDMA_RX_CONSUME);
@@ -393,6 +389,10 @@ static void sdma_receive(SGIIOCSerialDMAPort *p)
         p->packer[SGI_IOC_SDMA_ENTRY_CHARS + p->packed] = status;
 
         ++p->packed;
+
+        if (p->armed && !timer_pending(p->rx_timer) && !p->rx_frozen_due) {
+            sdma_rx_timer_start(p, since);
+        }
     }
 }
 
@@ -452,7 +452,7 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
                 loop = serial->mcr & UART_MCR_LOOP;
                 /* What has already arrived goes ahead of this one. */
                 if (loop) {
-                    sdma_receive(p);
+                    sdma_receive(p, since);
                 }
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
                 if (d->ops->transmitted) {
@@ -463,7 +463,7 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
                     timer_mod(p->loop_timer, p->loop_due);
                 }
                 /* Drain per character or loopback overruns the 16-byte FIFO. */
-                sdma_receive(p);
+                sdma_receive(p, since);
                 break;
             case SGI_IOC_SDMA_TX_MODEM:
                 serial_io_ops.write(serial, UART_MCR, entry[i], 1);
@@ -513,8 +513,8 @@ static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since)
     p->busy = true;
 
     sdma_transmit(p, since);
-    sdma_receive(p);
-    sdma_flush(p, since);
+    sdma_receive(p, since);
+    sdma_flush(p);
     sdma_update_tx_empty(p);
 
     p->busy = false;
@@ -547,7 +547,6 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
     p->armed = false;
     p->packed = 0;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
-    p->delivered = false;
     p->tx_slot = 0;
     p->tx_fetched = false;
     timer_del(p->tx_delay_timer);
@@ -747,7 +746,6 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
 
     case SGI_IOC_SDMA_RX_CONSUME: {
         uint32_t *consume = sdma_reg(p, offset);
-        uint32_t *produce;
 
         /*
          * Bit 31 sets the arm and a write with it clear leaves the arm
@@ -759,14 +757,8 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
         if (val & SGI_IOC_SDMA_ARM_RX_TIMER) {
             p->armed = true;
         }
+        /* Arming starts nothing: the next character received does. */
         sgi_ioc_sdma_kick(d, port);
-
-        /* Arming over a non-empty ring rewinds the timer. */
-        produce = sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE);
-        if ((val & SGI_IOC_SDMA_ARM_RX_TIMER) &&
-            ((*produce ^ *consume) & mask)) {
-            sdma_rx_timer_start(p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-        }
         return;
     }
 
@@ -890,7 +882,6 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         p->rx_frozen_due = 0;
         p->packed = 0;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
-        p->delivered = false;
         p->armed = false;
     }
 }

@@ -2042,6 +2042,57 @@ static void test_the_linux_receive_pattern_keeps_the_timer(const void *data)
 }
 
 /*
+ * The receive timer starts at the first character received after it is
+ * armed, as both Linux ring drivers' comment on the part says, and a later
+ * character does not start it again. Arming over characters already in the
+ * ring starts nothing. Whether a later character restarts a running timer
+ * is not known; not restarting is the model's choice.
+ */
+static void test_the_receive_timer_starts_at_the_first_character(
+    const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t first = 'f', second = 's', third = 't';
+    uint8_t got[3], status[3];
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    /* Unarmed, a character starts nothing, and arming over it neither. */
+    g_assert_cmpint(write(sock, &first, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, got, status);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    /* Armed, the next character starts it... */
+    g_assert_cmpint(write(sock, &second, 1), ==, 1);
+    collect_rx_chars(qts, 0, 2, got, status);
+    qtest_clock_step(qts, 0xa0 * RX_TIMER_TICK_NS);
+
+    /* ...and a third, half way through, does not start it over. */
+    g_assert_cmpint(write(sock, &third, 1), ==, 1);
+    collect_rx_chars(qts, 0, 3, got, status);
+    qtest_clock_step(qts, 0xa1 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * Pausing freezes a running receive timer where it stands, and resuming
  * lets it finish the time it had left. No source settles what the part
  * does; this is the rule the IOC4 model already follows, chosen for both.
@@ -2514,13 +2565,13 @@ static void test_a_system_reset_clears_the_held_packer_and_the_timer(
     hold_two_in_the_packer(qts, 16 | CONSUME_ARM_TIMER);
 
     /*
-     * The posted entry wound the armed timer, so it is counting: from the
-     * last arrival, which the line time leaves one tick behind the read.
-     * qtest time is exact, so a held timer, still at the 0x140 reload,
-     * fails this.
+     * The first arrival started the armed timer, so it is counting: five
+     * 9600-baud character times have passed since, 83 and a third ticks of
+     * 0x140. qtest time is exact, so a held timer, still at the 0x140
+     * reload, fails this.
      */
     g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
-                    ==, 0x13f);
+                    ==, 0xec);
 
     qtest_system_reset(qts);
     sn0_ioc3_attach(qts);
@@ -3532,6 +3583,9 @@ int main(int argc, char **argv)
                         test_the_receive_timer_raises_on_expiry);
     qtest_add_data_func("sn0/ioc3-serial/linux-receive-pattern-keeps-timer",
                         NULL, test_the_linux_receive_pattern_keeps_the_timer);
+    qtest_add_data_func("sn0/ioc3-serial/receive-timer-starts-at-first-char",
+                        NULL,
+                        test_the_receive_timer_starts_at_the_first_character);
     qtest_add_data_func("sn0/ioc3-serial/pause-freezes-receive-timer", NULL,
                         test_a_pause_freezes_the_receive_timer);
     qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",
