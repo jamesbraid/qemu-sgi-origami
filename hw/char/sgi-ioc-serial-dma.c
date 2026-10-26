@@ -135,7 +135,40 @@ static bool sdma_running(SGIIOCSerialDMAPort *p)
 {
     uint32_t control = sdma_control(p);
 
-    return (control & SGI_IOC_SDMA_ENABLE) && !(control & SGI_IOC_SDMA_PAUSE);
+    return !p->halted && (control & SGI_IOC_SDMA_ENABLE) &&
+           !(control & SGI_IOC_SDMA_PAUSE);
+}
+
+/* A transfer the fabric refused: the chip reports it, and may halt. */
+static void sdma_dma_failed(SGIIOCSerialDMAPort *p, bool rx, hwaddr addr)
+{
+    SGIIOCSerialDMA *d = p->engine;
+
+    if (d->params->halt_on_dma_error) {
+        p->halted = true;
+    }
+    if (d->ops->dma_error) {
+        d->ops->dma_error(d->opaque, p->index, rx, addr);
+    } else {
+        sdma_raise(p, SGI_IOC_SDMA_SRC_DMA_ERROR);
+    }
+}
+
+static MemTxResult sdma_dma_rw(SGIIOCSerialDMA *d, hwaddr addr, void *buf,
+                               dma_addr_t len, DMADirection dir)
+{
+    MemTxResult result;
+
+    d->in_flight++;
+    result = dma_memory_rw(d->dma_as, addr, buf, len, dir,
+                           MEMTXATTRS_UNSPECIFIED);
+    d->in_flight--;
+    return result;
+}
+
+bool sgi_ioc_sdma_idle(SGIIOCSerialDMA *d)
+{
+    return !d->in_flight;
 }
 
 /* Post the packer as one entry; unfilled slots carry no validity flags. */
@@ -152,10 +185,10 @@ static bool sdma_post(SGIIOCSerialDMAPort *p, uint32_t *produce,
     }
 
     /* A refused write must not advance the index past a missing entry. */
-    if (dma_memory_write(p->engine->dma_as, ring + (*produce & mask),
-                         p->packer, SGI_IOC_SDMA_ENTRY_SIZE,
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-        sdma_raise(p, SGI_IOC_SDMA_SRC_DMA_ERROR);
+    if (sdma_dma_rw(p->engine, ring + (*produce & mask), p->packer,
+                    SGI_IOC_SDMA_ENTRY_SIZE, DMA_DIRECTION_FROM_DEVICE) !=
+        MEMTX_OK) {
+        sdma_dma_failed(p, true, ring + (*produce & mask));
         return false;
     }
     *produce = next;
@@ -464,10 +497,10 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
          * refused fetch stops the walk: the buffer is not an entry.
          */
         if (!p->tx_fetched) {
-            if (dma_memory_read(d->dma_as, ring + (*consume & mask), entry,
-                                SGI_IOC_SDMA_ENTRY_SIZE,
-                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-                sdma_raise(p, SGI_IOC_SDMA_SRC_DMA_ERROR);
+            if (sdma_dma_rw(d, ring + (*consume & mask), entry,
+                            SGI_IOC_SDMA_ENTRY_SIZE,
+                            DMA_DIRECTION_TO_DEVICE) != MEMTX_OK) {
+                sdma_dma_failed(p, false, ring + (*consume & mask));
                 break;
             }
             p->tx_fetched = true;
@@ -596,10 +629,13 @@ void sgi_ioc_sdma_set_tx_ready(SGIIOCSerialDMA *d, unsigned port, bool level)
     }
 }
 
-/* Resets the four indices and nothing else; the settings survive. */
+/* Resets the indices and the work in progress; the settings survive. */
 static void sdma_reset_port(SGIIOCSerialDMAPort *p)
 {
     hwaddr reg;
+
+    /* Recovering a port after a failed transfer is what this is for. */
+    p->halted = false;
 
     for (reg = SGI_IOC_SDMA_TX_PRODUCE; reg <= SGI_IOC_SDMA_RX_CONSUME;
          reg += 4) {
@@ -712,7 +748,7 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
     }
 
     /* The produce index also reports the packer's held count. */
-    if (offset == SGI_IOC_SDMA_RX_PRODUCE) {
+    if (offset == SGI_IOC_SDMA_RX_PRODUCE && d->params->held_counts) {
         val |= (uint32_t)p->packed << SGI_IOC_SDMA_HELD_SHIFT;
     }
 
@@ -880,12 +916,14 @@ void sgi_ioc_sdma_base_write(SGIIOCSerialDMA *d, unsigned pair, bool high,
 }
 
 void sgi_ioc_sdma_init(SGIIOCSerialDMA *d, unsigned nports,
+                       const SGIIOCSerialDMAParams *params,
                        const SGIIOCSerialDMAOps *ops, void *opaque,
                        AddressSpace *dma_as)
 {
     unsigned i;
 
     assert(nports <= SGI_IOC_SDMA_MAX_PORTS);
+    d->params = params;
     d->ops = ops;
     d->opaque = opaque;
     d->dma_as = dma_as;
@@ -1043,6 +1081,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->armed = false;
         p->drain_pending = false;
+        p->halted = false;
     }
 }
 
@@ -1120,6 +1159,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_UINT16(rx_idle_count, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(armed, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(drain_pending, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(halted, SGIIOCSerialDMAPort),
         VMSTATE_INT64(tx_delay_due, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(tx_delay_irq, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(paused, SGIIOCSerialDMAPort),

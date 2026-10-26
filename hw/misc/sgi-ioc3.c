@@ -910,6 +910,12 @@ static void sgi_ioc3_sdma_transmitted(void *opaque, unsigned port, uint8_t ch)
     sgi_ioc3_serial_record(opaque, port, ch);
 }
 
+/* IOC3's header defines the held counts; an IOC3 halt is not known. */
+static const SGIIOCSerialDMAParams sgi_ioc3_sdma_params = {
+    .held_counts = true,
+    .halt_on_dma_error = false,
+};
+
 static const SGIIOCSerialDMAOps sgi_ioc3_sdma_engine_ops = {
     .raise = sgi_ioc3_sdma_raise,
     .set_level = sgi_ioc3_sdma_set_level,
@@ -1460,7 +1466,8 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
     }
 
     sgi_ioc_sdma_init(&s->sdma_engine, SGI_IOC3_SERIAL_PORTS,
-                      &sgi_ioc3_sdma_engine_ops, s, s->dma_as);
+                      &sgi_ioc3_sdma_params, &sgi_ioc3_sdma_engine_ops, s,
+                      s->dma_as);
 
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         s->sdma_alias_port[i].chip = s;
