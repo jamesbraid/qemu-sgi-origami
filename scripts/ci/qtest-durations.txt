@@ -35,6 +35,9 @@ qtest-mips64/readconfig-test 0
 qtest-mips64/sgi-bic-board-interface-test 4
 qtest-mips64/sgi-board-test 3
 qtest-mips64/sgi-bridge-bus-test 1
+# sgi-catalogue-launch-test is an estimate, not a measurement: it ran
+# 15 to 30 s in review runs (2026-10-26). The next refresh replaces it.
+qtest-mips64/sgi-catalogue-launch-test 22
 qtest-mips64/sgi-command-port-test 2
 qtest-mips64/sgi-crime-test 4
 qtest-mips64/sgi-debug-tools-test 3
