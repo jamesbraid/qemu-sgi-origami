@@ -7680,7 +7680,7 @@ static void test_draw_pixels(gconstpointer opaque)
     bool dma = mode == 2 || mode == 3 || mode == 12 || mode == 17 || mode == 19;
     bool padded = mode == 1 || mode == 3;
     bool migrate = mode == 4 || mode == 12 || mode == 13 || mode == 24;
-    bool refused = (mode >= 5 && mode < 18 && mode != 12 &&
+    bool refused = (mode >= 5 && mode < 18 && mode != 8 && mode != 12 &&
                     mode != 15 && mode != 16) || mode == 26;
     uint32_t h[] = { 2, 2, 5, 1, padded ? 3 : 0, dma, padded, 0 };
     static const uint32_t plain[] = {
@@ -7717,6 +7717,7 @@ static void test_draw_pixels(gconstpointer opaque)
         /* GL_HISTOGRAM: an imaging stage the model does not apply. */
         kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
     } else if (mode == 8) {
+        /* An identity colour matrix changes nothing. */
         kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
         kona_command(s, 0xd2, (uint32_t[]) { 0 }, 1);
     } else if (mode == 9) {
@@ -18390,6 +18391,149 @@ static void test_convolution_strip_query(void)
     assert_convolution_in_step(qts);
 }
 
+/*
+ * The colour matrix (glMatrixMode(GL_COLOR) and the matrix commands) and
+ * post-colour-matrix scale and bias apply to a DrawPixels: a matrix that
+ * swaps red and blue, then green scaled by 0.5 and blue biased by 0.25.
+ * The image is (0x40, 0, 0) and (0, 0x80, 0) at the window's centre.
+ */
+static void colour_matrix_swap(QTestState *s)
+{
+    float m[16] = { 0 };
+
+    m[8] = m[5] = m[2] = m[15] = 1;
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
+    kona_command_f(s, 0xd3, m, 16);
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1700 }, 1);
+}
+
+static void colour_matrix_draw(QTestState *s)
+{
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 5, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, 0x400000ff);
+    qtest_writel(s, REG_COMMAND, 0x008000ff);
+}
+
+static void test_colour_matrix_draw(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS), *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    colour_matrix_swap(s);
+    pixel_transfer_set(s, 0x80b5, 0.5);
+    pixel_transfer_set(s, 0x80ba, 0.25);
+    if (mode == 1) {
+        /* A pushed identity, popped: the swap is back. */
+        kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
+        kona_command(s, 0xd9, (uint32_t[]) { 0 }, 1);
+        kona_command(s, 0xd2, (uint32_t[]) { 0 }, 1);
+        kona_command(s, 0xd8, (uint32_t[]) { 0 }, 1);
+        kona_command(s, 0xd0, (uint32_t[]) { 0x1700 }, 1);
+    } else if (mode == 2) {
+        dir = g_dir_make_tmp("sn0-kona-colour-matrix-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(s, uri);
+        qtest_quit(s);
+        s = to;
+    }
+    colour_matrix_draw(s);
+    convolution_expected(s, 0x000080, 0x004040);
+    qtest_quit(s);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+/*
+ * Matrix commands in GL_COLOR mode leave the modelview alone: a translate
+ * there does not move the raster position the image is drawn at.
+ */
+static void test_colour_matrix_leaves_modelview(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
+    kona_command_f(s, 0xdf, (float[]) { 0.5, 0.5, 0 }, 3);
+    kona_command(s, 0xd2, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1700 }, 1);
+    colour_matrix_draw(s);
+    convolution_expected(s, 0x400000, 0x008000);
+    qtest_quit(s);
+}
+
+/*
+ * glGet answers the colour matrix (0x80b1), its stack depth (0x80b2), the
+ * post-matrix scale and bias (0x80b4 to 0x80bb) and the convolution
+ * enables (0x8010 to 0x8012), which the library asks the pipe for.
+ */
+static void test_colour_matrix_get(void)
+{
+    uint32_t swap[16] = { 0 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap[8] = swap[5] = swap[2] = swap[15] = F1;
+    gl_make_current(s);
+    colour_matrix_swap(s);
+    pixel_transfer_set(s, 0x80b5, 0.5);
+    pixel_transfer_set(s, 0x80ba, 0.25);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    assert_native_depth(s, 0x80b1, swap, 16);
+    assert_native_depth(s, 0x80b2, (uint32_t[]) { 1 }, 1);
+    assert_native_depth(s, 0x80b5, (uint32_t[]) { fbits(0.5) }, 1);
+    assert_native_depth(s, 0x80ba, (uint32_t[]) { fbits(0.25) }, 1);
+    assert_native_depth(s, 0x80b4, (uint32_t[]) { F1 }, 1);
+    assert_native_depth(s, 0x8011, (uint32_t[]) { 1 }, 1);
+    assert_native_depth(s, 0x8012, (uint32_t[]) { 0 }, 1);
+    qtest_quit(s);
+}
+
+/*
+ * GLperf disables histogram, minmax and the colour tables before its
+ * pixel cases: an imaging stage the model does not apply refuses image
+ * transfers only while it is enabled.
+ */
+static void test_unmodelled_stage_disabled(void)
+{
+    static const uint32_t caps[] = { 0x8024, 0x802e, 0x80d0, 0x80d1, 0x80d2 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
+    colour_matrix_draw(s);
+    convolution_expected(s, 0, 0);
+    for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
+        kona_command(s, 0x25, &caps[k], 1);
+    }
+    colour_matrix_draw(s);
+    convolution_expected(s, 0x400000, 0x008000);
+    qtest_quit(s);
+}
+
+/*
+ * A texture image takes the colour matrix stage too: the swap turns a
+ * red texel blue.
+ */
+static void test_colour_matrix_texture(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    colour_matrix_swap(s);
+    texture_upload_one(s, 17, 0xff0000ff);
+    assert_texture_pixel(s, 0, 0, 0x0000ffff);
+    qtest_quit(s);
+}
+
 /* The filter and its enable migrate with the context. */
 static void test_convolution_state_migration(void)
 {
@@ -19037,6 +19181,23 @@ int main(int argc, char **argv)
         add_data_case(path, GUINT_TO_POINTER(mode),
                       test_draw_pixels_refused_dma_completes);
     }
+    for (unsigned mode = 0; mode < 3; mode++) {
+        static const char *const names[] = {
+            "draw", "push-pop", "draw-migrates",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/colour-matrix/%s", names[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode), test_colour_matrix_draw);
+    }
+    add_case("sn0/origin2000/kona-3d/colour-matrix/leaves-modelview",
+             test_colour_matrix_leaves_modelview);
+    add_case("sn0/origin2000/kona-3d/colour-matrix/texture",
+             test_colour_matrix_texture);
+    add_case("sn0/origin2000/kona-3d/colour-matrix/get",
+             test_colour_matrix_get);
+    add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
+             test_unmodelled_stage_disabled);
     add_case("sn0/origin2000/kona-3d/convolution/2d-framed",
              test_convolution_2d_framed);
     add_case("sn0/origin2000/kona-3d/convolution/1d-framed",
@@ -19901,7 +20062,7 @@ int main(int argc, char **argv)
     static const char *draw_pixels_cases[] = {
         "pio", "pio-padded", "dma", "dma-padded", "partial-migrates",
         "nonfinite-zoom-refused", "transfer-refused", "imaging-refused",
-        "colour-matrix-refused", "begin-refused", "split-refused",
+        "colour-matrix-identity", "begin-refused", "split-refused",
         "scalar-refused", "dma-migrates", "nonfinite-zoom-migrates",
         "no-context", "incomplete-texture", "zoom-default-restored",
         "partial-context-aborted", "pio-contiguous-padded",

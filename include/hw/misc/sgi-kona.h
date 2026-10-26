@@ -394,6 +394,13 @@ typedef struct SGIKonaGLPixelTransfer {
      */
     uint32_t post_conv_scale[4];
     uint32_t post_conv_bias[4];
+    /*
+     * GL_POST_COLOR_MATRIX_{RED,GREEN,BLUE,ALPHA}_{SCALE,BIAS} (0x80b4
+     * to 0x80bb), float bits: applied after the colour matrix, then
+     * clamped.
+     */
+    uint32_t post_matrix_scale[4];
+    uint32_t post_matrix_bias[4];
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {
@@ -480,6 +487,8 @@ typedef struct SGIKonaTextureUpload {
     uint32_t dma_phase;
     bool bitmap_lsb;
     uint32_t bitmap_skip, bitmap_phase;
+    /* The colour matrix captured with transfer, float bits. */
+    uint32_t colour_matrix[16];
 } SGIKonaTextureUpload;
 
 /*
@@ -508,6 +517,8 @@ typedef struct SGIKonaTextureRegs {
  */
 #define SGI_KONA_GL_FILTER_MAX 7
 #define SGI_KONA_GL_FILTERS    3
+/* The colour matrix stack's depth: the shared context's for the others. */
+#define SGI_KONA_GL_COLOUR_STACK 32
 
 typedef struct SGIKonaGLFilter {
     /* The internal format code: alpha 0, RGB 1, RGBA 2, L 3, LA 4, I 5. */
@@ -531,6 +542,20 @@ typedef struct SGIKonaGLImaging {
      */
     uint32_t pending_token;
     uint32_t pending[9];
+    /*
+     * The colour matrix (SGI_color_matrix; glMatrixMode(GL_COLOR)), float
+     * bits in OpenGL's column order, and the ones glPushMatrix saved
+     * under it.
+     */
+    uint32_t colour_matrix[16];
+    uint32_t colour_stack[SGI_KONA_GL_COLOUR_STACK - 1][16];
+    uint32_t colour_depth;
+    /*
+     * Bit k: imaging stage k of histogram, minmax and the colour, post-
+     * convolution and post-colour-matrix tables is enabled; the model
+     * applies none of them.
+     */
+    uint32_t unmodelled;
 } SGIKonaGLImaging;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
