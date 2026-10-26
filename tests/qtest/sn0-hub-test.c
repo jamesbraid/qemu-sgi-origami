@@ -2028,6 +2028,81 @@ static void assert_cpu_stopped_while_peer_advances(QTestState *qts,
     g_assert_cmphex(cpu_heartbeat(qts, stopped_cpu), ==, stopped);
 }
 
+/*
+ * The heartbeat of the one processor on 'node' (one per node, so its
+ * index is the node's), read through that
+ * processor's own view: before firmware numbers the nodes, each Hub
+ * answers to node number zero itself, so the word is in its own node.
+ */
+static uint64_t node_heartbeat(QTestState *qts, unsigned int node)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, node, SN0_USER_MAILBOX, bytes,
+                                    sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static uint64_t wait_for_node_heartbeat(QTestState *qts, unsigned int node,
+                                        uint64_t previous)
+{
+    uint64_t heartbeat;
+    SgiWait w;
+
+    sgi_wait_start(&w, "node %u heartbeat", node);
+    do {
+        heartbeat = node_heartbeat(qts, node);
+        if (heartbeat != previous) {
+            return heartbeat;
+        }
+    } while (sgi_wait_continue(&w, 1000));
+
+    return heartbeat;
+}
+
+/*
+ * A Hub with one processor has no processor B, and its processor B enable
+ * reaches no processor: with one processor on each of two nodes, node 0's
+ * PROM disabling its absent B must leave node 1's processor running. The
+ * Hub once took its slice B for the vCPU after its own, which on this
+ * population is node 1's processor A, and halted it, so the stock PROM's
+ * discovery waited out every round for a peer that never answered.
+ */
+static void test_an_absent_processor_enable_reaches_no_processor(
+    const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint64_t running;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_cpu_enable_heartbeat_image(image);
+    path = sn0_image_write(image, "sn0-hub-absent-slice");
+    qts = qtest_initf(
+        "-M origin2000,topology=origin2000-deskside,nodes=2,population=1:1 "
+        "-smp 2 -m 128M -bios %s -accel tcg,thread=multi -S -no-shutdown",
+        path);
+    unlink(path);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_node_heartbeat(qts, 0, 0), !=, 0);
+    g_assert_cmphex(wait_for_node_heartbeat(qts, 1, 0), !=, 0);
+
+    qtest_writeq(qts, HUB_BY_NODE + PI_CPU_ENABLE_B, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + PI_CPU_ENABLE_B), ==, 0);
+    fence_cpu(qts, 1);
+    running = node_heartbeat(qts, 1);
+    g_assert_cmphex(wait_for_node_heartbeat(qts, 1, running), !=, running);
+    running = node_heartbeat(qts, 0);
+    g_assert_cmphex(wait_for_node_heartbeat(qts, 0, running), !=, running);
+    qtest_quit(qts);
+}
+
 static void test_cpu_enable_registers_control_matching_processors(
     const void *data)
 {
@@ -6511,6 +6586,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/cpu-enable-controls-matching-processors",
                         NULL,
                         test_cpu_enable_registers_control_matching_processors);
+    qtest_add_data_func("sn0/hub/absent-processor-enable-reaches-none",
+                        NULL,
+                        test_an_absent_processor_enable_reaches_no_processor);
     qtest_add_data_func("sn0/hub/loadvm-keeps-a-disabled-processor-halted",
                         NULL, test_loadvm_keeps_a_disabled_processor_halted);
     qtest_add_data_func("sn0/hub/matched-comparator-post-waits-for-partner",
