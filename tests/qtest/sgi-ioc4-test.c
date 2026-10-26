@@ -1322,6 +1322,24 @@ static void test_dma_control_stores_its_bits(void)
     qtest_quit(qts);
 }
 
+/*
+ * The two indices the engine advances still take a write of their pointer
+ * field: the IOC3 board test writes and reads back the transmit consume
+ * index, and IOC4 has the same register.
+ */
+static void test_dma_engine_indices_take_writes(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_TX_CONSUME(0), 0xffffffff);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0xff8);
+    reg_write(qts, SDMA_RX_PRODUCE(0), 0x18);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x18);
+    qtest_quit(qts);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2861,6 +2879,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-engine-indices-take-writes",
+                   test_dma_engine_indices_take_writes);
     qtest_add_func("/sgi-ioc4/dma-control-stores-its-bits",
                    test_dma_control_stores_its_bits);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-count-reads-back",
