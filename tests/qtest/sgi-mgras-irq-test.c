@@ -461,7 +461,16 @@ static void test_widget_error_interrupt_vector(void)
 #define CREDIT_MAILBOX        0x50000u
 #define CREDIT_ENTRY          0x800
 
-static void credit_build_store_server(SN0Image *p)
+/* A processor's own Hub's slot number register, and the slot field. */
+#define CREDIT_LOCAL_SLOT_ID  UINT64_C(0x9200000001220048)
+#define CREDIT_SLOT_ID_MASK   0x7
+
+/*
+ * With 'one_node' set, a processor whose Hub reads a slot number other
+ * than the one the mailbox holds at +16 parks too, so that on two nodes
+ * only node 0's processor 0 serves.
+ */
+static void credit_build_store_server(SN0Image *p, bool one_node)
 {
     unsigned int at, loop, store;
 
@@ -480,6 +489,14 @@ static void credit_build_store_server(SN0Image *p)
     at = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
     sn0_patch_branch(p, at, SN0_VEC_GENERAL);
     sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(CREDIT_MAILBOX));
+    if (one_node) {
+        sn0_emit_li64(p, SN0_R_T0, CREDIT_LOCAL_SLOT_ID);
+        sn0_emit_i(p, SN0_OPC_LD, SN0_R_T0, SN0_R_T1, 0);
+        sn0_emit_i(p, SN0_OPC_ANDI, SN0_R_T1, SN0_R_T1, CREDIT_SLOT_ID_MASK);
+        sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T2, 16);
+        at = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T1, SN0_R_T2);
+        sn0_patch_branch(p, at, SN0_VEC_GENERAL);
+    }
 
     loop = p->pos;
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T1, 0);        /* count */
@@ -506,7 +523,7 @@ static QTestState *credit_start(void)
     g_autofree char *path = NULL;
     QTestState *s;
 
-    credit_build_store_server(image);
+    credit_build_store_server(image, false);
     path = sn0_image_write(image, "sn0-mgras-credit");
     s = qtest_initf("%s -accel tcg,thread=multi -no-reboot -no-shutdown -S "
                     "-bios %s", MACHINE_ARGS, path);
@@ -617,6 +634,55 @@ static void test_credit_uncounted_store_returns_nothing(void)
     g_assert_cmpuint(credit_count(s, 1), ==, 0);
     qtest_quit(s);
 }
+
+/*
+ * Two Hubs on one Crossbow, the board's "pi" link on node 0's Hub. An
+ * Origin 2000 module shares a Crossbow only between nodes 1 and 3, so the
+ * harness is the two-node Onyx2 deskside, with SI Viz in IO3 (widget
+ * 0xe). IRIX maps a graphics widget through its hardware-graph master and
+ * writes only that Hub's map; here the master is node 1, numbered 1, and
+ * node 0's processor stores through node 1's window. The credit is a write
+ * response, so it goes back to node 1's Hub, which routes it to node 0's
+ * slot A. Returning it to the link's Hub instead found no map entry and
+ * dropped it.
+ */
+#define CREDIT_TWO_NODE_ARGS \
+    "-M onyx2,topology=onyx2-deskside,nodes=2,population=1:1," \
+    "x-uncatalogued-graphics=on -smp 2 -m 128M -cpu R10000 " \
+    "-device sgi-mgras,slot=io3,product=si"
+#define CREDIT_NODE1(reg)     (CREDIT_HUB(reg) + NODE_STRIDE)
+#define CREDIT_DESKSIDE_WIDGET 0xe
+#define CREDIT_NODE1_PAGE     (UINT64_C(1) << 32 | \
+                               (uint64_t)CREDIT_DESKSIDE_WIDGET << 24 | \
+                               0x120000)
+#define CREDIT_NODE1_STORE    (UINT64_C(0x9200000100000000) | \
+                               (uint64_t)CREDIT_DESKSIDE_WIDGET << 24 | \
+                               0x120400)
+
+static void test_credit_returns_through_the_storing_hub(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *s;
+
+    credit_build_store_server(image, true);
+    path = sn0_image_write(image, "sn0-mgras-credit-two-node");
+    s = qtest_initf("%s -accel tcg,thread=multi -no-reboot -no-shutdown -S "
+                    "-bios %s", CREDIT_TWO_NODE_ARGS, path);
+    unlink(path);
+    sn0_program_nasid(s, 1);
+    qtest_writeq(s, CREDIT_MAILBOX + 16,
+                 qtest_readq(s, CREDIT_HUB(0x220048)) & CREDIT_SLOT_ID_MASK);
+    qtest_writeq(s, CREDIT_PAGE(0), CREDIT_PAGE_ENABLE | CREDIT_NODE1_PAGE);
+    qtest_writeq(s, CREDIT_COUNT(0), CREDIT_TOTAL);
+    qtest_writeq(s, CREDIT_NODE1(0x400140),
+                 CREDIT_ROUTE(0, CREDIT_DESKSIDE_WIDGET));
+    credit_run(s);
+    credit_stores(s, CREDIT_NODE1_STORE, 5);
+    g_assert_cmpuint(credit_count(s, 0), ==, CREDIT_TOTAL);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -686,6 +752,9 @@ int main(int argc, char **argv)
             "sn0/origin2000/mgras/"
             "credit-uncounted-store-returns-nothing",
             test_credit_uncounted_store_returns_nothing, false);
+        mgras_qtest_add_func(
+            "sn0/onyx2/mgras/credit-returns-through-the-storing-hub",
+            test_credit_returns_through_the_storing_hub, false);
     }
 
     ret = g_test_run();
