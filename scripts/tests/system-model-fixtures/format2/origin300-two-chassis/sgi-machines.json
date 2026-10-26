@@ -1054,6 +1054,16 @@
         "machine-type": 1
       },
       "junk-uart": -1,
+      "l1-peer-links": [
+        {
+          "source-controller-index": 0,
+          "target-controller-index": 1
+        },
+        {
+          "source-controller-index": 1,
+          "target-controller-index": 0
+        }
+      ],
       "modules": [
         {
           "controller-index": 0,

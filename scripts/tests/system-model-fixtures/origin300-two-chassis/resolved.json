@@ -2587,6 +2587,18 @@
       ]
     }
   ],
+  "links": [
+    {
+      "kind": "l1-peer",
+      "source": "master-l1",
+      "target": "slave-l1"
+    },
+    {
+      "kind": "l1-peer",
+      "source": "slave-l1",
+      "target": "master-l1"
+    }
+  ],
   "machine": {
     "architecture_ip": "IP35",
     "board_ip": "IP45",

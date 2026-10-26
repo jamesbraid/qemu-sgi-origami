@@ -4166,5 +4166,72 @@ class Origin300RoutedContractTests(unittest.TestCase):
             validate_connector_population(model)
 
 
+class L1PeerLinkTests(unittest.TestCase):
+    @staticmethod
+    def pair_links():
+        return [{"kind": "l1-peer", "source": "master-l1",
+                 "target": "slave-l1"},
+                {"kind": "l1-peer", "source": "slave-l1",
+                 "target": "master-l1"}]
+
+    def test_pair_compiles_and_emits_explicit_peers(self):
+        from sgi_model.model_emit import _render_topology
+        model = _resolved("origin300-two-chassis")
+        model["links"] = self.pair_links()
+        entry = compile_model(model)
+        self.assertEqual(entry.get("l1_peer_links"), [
+            {"source_controller_index": 0, "target_controller_index": 1},
+            {"source_controller_index": 1, "target_controller_index": 0}])
+        emitted = _render_topology(entry, "origin300")
+        self.assertEqual(emitted.get("l1-peer-links"), [
+            {"source-controller-index": 0, "target-controller-index": 1},
+            {"source-controller-index": 1, "target-controller-index": 0}])
+        model["components"].reverse()
+        self.assertEqual(compile_model(model)["l1_peer_links"],
+                         entry["l1_peer_links"])
+
+    def test_peer_kinds_and_degrees_are_checked_by_composition(self):
+        from sgi_model.model_composition import validate_object_links
+        from sgi_model.exceptions import ResolutionError
+        components = [{"id": ident, "kind": "system-controller",
+                       "system_controller": {"kind": "l1"}}
+                      for ident in ("a", "b", "c")]
+        links = [{"kind": "l1-peer", "source": "a", "target": "b"},
+                 {"kind": "l1-peer", "source": "b", "target": "a"}]
+        model = {"components": components, "links": links}
+        self.assertEqual(validate_object_links(model), set())
+        links.append({"kind": "l1-peer", "source": "a", "target": "c"})
+        with self.assertRaisesRegex(ResolutionError, "competing"):
+            validate_object_links(model)
+        links.pop()
+        components[1]["system_controller"]["kind"] = "msc"
+        with self.assertRaisesRegex(ResolutionError, "must be an L1"):
+            validate_object_links(model)
+        components[1]["system_controller"]["kind"] = "l1"
+        links[0]["extra"] = True
+        with self.assertRaisesRegex(ResolutionError, "only kind"):
+            validate_object_links(model)
+
+    def test_missing_links_do_not_follow_fabric(self):
+        model = _resolved("origin300-two-chassis")
+        model.pop("links", None)
+        self.assertNotIn("l1_peer_links", compile_model(model))
+
+    def test_invalid_peer_links_are_rejected(self):
+        for change, message in [
+            (lambda links: links.pop(), "reciprocal"),
+            (lambda links: links.append(copy.deepcopy(links[0])), "duplicate"),
+            (lambda links: links[0].update(target="master-l1"), "itself"),
+            (lambda links: links[0].update(target="missing"), "dangling"),
+            (lambda links: links[0].update(kind="unknown"), "unsupported kind"),
+        ]:
+            model = _resolved("origin300-two-chassis")
+            model["links"] = self.pair_links()
+            change(model["links"])
+            with self.subTest(message=message), self.assertRaisesRegex(
+                    CompileError, message):
+                compile_model(model)
+
+
 if __name__ == "__main__":
     unittest.main()

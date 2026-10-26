@@ -101,6 +101,54 @@ def validate_component_ids(model: dict[str, Any]) -> None:
         seen.add(cid)
 
 
+def validate_object_links(model: dict[str, Any]) -> set[str]:
+    """Validate typed links without deriving them from fabric connectivity."""
+    links = model.get("links", [])
+    if not isinstance(links, list):
+        raise ResolutionError("links must be a list")
+    components = {item["id"]: item for item in model.get("components", [])}
+    peers: dict[str, str] = {}
+    clocks = []
+    for index, link in enumerate(links):
+        label = f"link {index}"
+        if (not isinstance(link, dict) or
+                set(link) != {"kind", "source", "target"}):
+            raise ResolutionError(
+                f"{label} must contain only kind, source, and target")
+        if link["kind"] == "ioc4-clock":
+            clocks.append(link)
+            continue
+        if link["kind"] != "l1-peer":
+            raise ResolutionError(
+                f"{label} has unsupported kind '{link['kind']}'")
+        source, target = link["source"], link["target"]
+        for ident in (source, target):
+            if not isinstance(ident, str) or not ident:
+                raise ResolutionError(
+                    f"{label} requires non-empty source and target ids")
+            if ident not in components:
+                raise ResolutionError(
+                    f"{label} has dangling endpoint '{ident}'")
+            component = components[ident]
+            controller = component.get("system_controller")
+            if (component.get("kind") != "system-controller" or
+                    not isinstance(controller, dict) or
+                    controller.get("kind") != "l1"):
+                raise ResolutionError(
+                    f"{label} endpoint '{ident}' must be an L1 controller")
+        if source == target:
+            raise ResolutionError(f"L1 peer '{source}' cannot link to itself")
+        if source in peers:
+            raise ResolutionError(
+                f"duplicate or competing L1 peer for '{source}'")
+        peers[source] = target
+    for source, target in peers.items():
+        if peers.get(target) != source:
+            raise ResolutionError(
+                f"L1 peer '{source}' requires a reciprocal link")
+    return validate_io9_clock_links({**model, "links": clocks})
+
+
 def validate_io9_clock_links(model: dict[str, Any]) -> set[str]:
     """Validate typed timekeeper-to-IOC4 links and return their \
 IO9 board IDs."""
@@ -471,7 +519,7 @@ def validate_emulation_profile(model: dict[str, Any]) -> None:
 
 
 def validate_direct_model_references(model: dict[str, Any]) -> None:
-    validate_io9_clock_links(model)
+    validate_object_links(model)
     components = {
         component["id"]: component
         for component in model.get("components", [])

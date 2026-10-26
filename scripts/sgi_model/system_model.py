@@ -1082,7 +1082,8 @@ def resolve_system_model(
     if composition.get("configuration_version") != 1:
         raise ResolutionError(f"composition '{path}' has no supported configuration_version")
     unknown = sorted(set(composition) - {
-        "configuration_version", "layers", "module_instances", "connector_population",
+        "configuration_version", "layers", "module_instances",
+        "connector_population", "links",
     })
     if unknown:
         raise ResolutionError(f"composition '{path}' has unsupported field '{unknown[0]}'")
@@ -1144,6 +1145,11 @@ def resolve_system_model(
     module_instances = _merge_module_instances(
         path, composition, resolved, selected,
         population if check_population else None)
+    if "links" in composition:
+        if not isinstance(composition["links"], list):
+            raise ResolutionError("configuration links must be a list")
+        resolved.setdefault("links", []).extend(
+            copy.deepcopy(composition["links"]))
     if routed and any("module_role" in item for item in module_instances):
         raise ResolutionError("routed target must not assign firmware graph module roles")
     exclusions = model_composition.component_exclusions([
