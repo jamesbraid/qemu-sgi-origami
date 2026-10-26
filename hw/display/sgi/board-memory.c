@@ -375,6 +375,30 @@ void sgi_plane_store(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
     sgi_board_memory_import(m, at, bpp, bytes);
 }
 
+bool sgi_plane_run(const SGIBoardMemory *m, const SGIPlane *p, int x, int y,
+                   int n, SGIPlaneRun *run)
+{
+    unsigned bpp;
+    uint8_t *host;
+
+    if (n <= 0 || !sgi_plane_contains(p, x, y) ||
+        !sgi_plane_contains(p, x + n - 1, y)) {
+        return false;
+    }
+    bpp = sgi_plane_bpp(p->format);
+    host = sgi_board_memory_host(m, sgi_plane_offset(p, x, y, bpp),
+                                 (uint64_t)n * bpp);
+    if (!host) {
+        return false;
+    }
+    *run = (SGIPlaneRun) {
+        .host = host,
+        .bpp = bpp,
+        .le = sgi_plane_is_le(p),
+    };
+    return true;
+}
+
 void sgi_plane_merge(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
                      uint32_t src, uint8_t op, uint32_t mask)
 {

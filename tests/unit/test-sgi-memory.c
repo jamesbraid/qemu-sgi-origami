@@ -229,6 +229,81 @@ static void test_page_backed(void)
     sgi_board_memory_cleanup(&m);
 }
 
+/*
+ * A run reaches the bytes sgi_plane_load() and sgi_plane_store() reach,
+ * pixel for pixel, in every pixel size and byte order; it is refused for a
+ * run leaving the plane, and for one a page boundary splits.
+ */
+static void test_plane_run(void)
+{
+    static const struct {
+        SGIPlaneFormat format;
+        SGIPacking packing;
+    } kinds[] = {
+        { SGI_PLANE_CI8, SGI_PACK_BE_RED_LOW },
+        { SGI_PLANE_RGB12, SGI_PACK_BE_RED_LOW },
+        { SGI_PLANE_RGB12, SGI_PACK_LE_RED_LOW },
+        { SGI_PLANE_RAW, SGI_PACK_BE_RED_HIGH },
+        { SGI_PLANE_RAW, SGI_PACK_LE_RED_HIGH },
+    };
+    SGIBoardMemory pages;
+    uint8_t host[4][16];
+    SGIPlane paged = plane(0, 5, 3, 20, SGI_PLANE_RAW, SGI_PACK_BE_RED_LOW);
+    const SGIPlane *pp;
+    SGIPlaneRun run;
+
+    for (unsigned k = 0; k < ARRAY_SIZE(kinds); k++) {
+        SGIBoardMemory m;
+        SGIPlane p = plane(8, 6, 3, 32, kinds[k].format, kinds[k].packing);
+        const SGIPlane *rp;
+
+        sgi_board_memory_init(&m, 128);
+        rp = sgi_board_memory_plane(&m,
+                                    sgi_board_memory_add_plane(&m, &p,
+                                                               &error_abort));
+        for (unsigned i = 0; i < 6; i++) {
+            sgi_plane_store(&m, rp, i, 1, 0x89abcdefu * (i + 1));
+        }
+        g_assert_true(sgi_plane_run(&m, rp, 1, 1, 5, &run));
+        for (unsigned i = 0; i < 5; i++) {
+            g_assert_cmphex(sgi_plane_run_load(&run, i), ==,
+                            sgi_plane_load(&m, rp, 1 + i, 1));
+            sgi_plane_run_store(&run, i, 0x10305070u + i);
+        }
+        for (unsigned i = 0; i < 5; i++) {
+            uint8_t want[4];
+
+            sgi_plane_encode(rp, 0x10305070u + i, want);
+            g_assert_cmpmem(m.bytes + 8 + 32 + (1 + i) * run.bpp, run.bpp,
+                            want, run.bpp);
+        }
+        /* The whole row is a run; one pixel more, or a row out, is not. */
+        g_assert_true(sgi_plane_run(&m, rp, 0, 2, 6, &run));
+        g_assert_false(sgi_plane_run(&m, rp, 1, 2, 6, &run));
+        g_assert_false(sgi_plane_run(&m, rp, -1, 0, 2, &run));
+        g_assert_false(sgi_plane_run(&m, rp, 0, 3, 1, &run));
+        g_assert_false(sgi_plane_run(&m, rp, 0, 0, 0, &run));
+        sgi_board_memory_cleanup(&m);
+    }
+
+    /* 20-byte rows over 16-byte pages: row 1 starts in page 1, ends in 2. */
+    memset(host, 0, sizeof(host));
+    sgi_board_memory_init_pages(&pages, 4, 16);
+    for (unsigned i = 0; i < 4; i++) {
+        sgi_board_memory_set_page(&pages, i, 0x10000 * (i + 1), host[i]);
+    }
+    pp = sgi_board_memory_plane(&pages,
+                                sgi_board_memory_add_plane(&pages, &paged,
+                                                           &error_abort));
+    g_assert_true(sgi_plane_run(&pages, pp, 0, 1, 3, &run));
+    sgi_plane_run_store(&run, 2, 0xa1a2a3a4);
+    g_assert_cmphex(sgi_plane_load(&pages, pp, 2, 1), ==, 0xa1a2a3a4);
+    g_assert_false(sgi_plane_run(&pages, pp, 0, 1, 4, &run));
+    sgi_board_memory_set_page(&pages, 1, 0x20000, NULL);
+    g_assert_false(sgi_plane_run(&pages, pp, 0, 1, 1, &run));
+    sgi_board_memory_cleanup(&pages);
+}
+
 static void test_logic_ops(void)
 {
     /* OpenGL's table for s = 1100 and d = 1010, in GL_CLEAR + op order. */
@@ -416,6 +491,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-memory/packing", test_packing);
     g_test_add_func("/sgi-memory/out-of-plane", test_out_of_plane);
     g_test_add_func("/sgi-memory/page-backed", test_page_backed);
+    g_test_add_func("/sgi-memory/plane-run", test_plane_run);
     g_test_add_func("/sgi-memory/logic-ops", test_logic_ops);
     g_test_add_func("/sgi-memory/merge-mask", test_merge_mask);
     g_test_add_func("/sgi-memory/clip", test_clip);
