@@ -9,29 +9,6 @@
 #include "hw/core/cpu.h"
 #include "hw/display/sgi/head-work.h"
 
-/* Register accesses and slices this thread is inside, across all heads. */
-static __thread unsigned int sgi_head_work_depth;
-
-bool sgi_head_work_enter(void)
-{
-    if (sgi_head_work_depth) {
-        return false;
-    }
-    sgi_head_work_depth++;
-    return true;
-}
-
-void sgi_head_work_enter_work(void)
-{
-    sgi_head_work_depth++;
-}
-
-void sgi_head_work_leave(void)
-{
-    g_assert(sgi_head_work_depth);
-    sgi_head_work_depth--;
-}
-
 SGIHeadWorkBudget sgi_head_work_budget(SGIHeadWork *w, bool timed)
 {
     return (SGIHeadWorkBudget) {
