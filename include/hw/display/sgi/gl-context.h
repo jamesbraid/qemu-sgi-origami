@@ -1101,6 +1101,16 @@ bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
  * The colour targets the draw state's draw buffers select, in bit order
  * and each once, into out; returns how many.
  */
+/*
+ * The pixels glClear reaches (OpenGL 1.2.1, 4.2.3): the drawable's
+ * rectangles into op's clip list and bounding rectangle, narrowed to the
+ * scissor box while the test is enabled. False when no pixel is left: no
+ * bound window, one others wholly cover, or a scissor box off it. A
+ * family reaching a buffer the shared context does not hold, such as the
+ * accumulation buffer, uses it for the same area.
+ */
+bool sgi_gl_clear_area(const SGIGLContext *c, SGIRasterOp *op);
+
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
                              SGIColourTarget out[SGI_GL_MAX_TARGETS]);
 /*
