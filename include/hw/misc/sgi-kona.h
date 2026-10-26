@@ -557,8 +557,7 @@ typedef struct SGIKonaGLImaging {
     /*
      * Bit k: imaging stage k of histogram, minmax, the colour, post-
      * convolution and post-colour-matrix tables and the texture colour
-     * table is enabled. The model applies the tables
-     * (SGIKonaGLColourTables), not the first two.
+     * table is enabled (SGIKonaGLColourTables, SGIKonaGLHistogram).
      */
     uint32_t stages;
 } SGIKonaGLImaging;
@@ -596,6 +595,25 @@ typedef struct SGIKonaGLColourTables {
     uint32_t staged[SGI_KONA_GL_TABLE_WORDS];
 } SGIKonaGLColourTables;
 
+/*
+ * EXT_histogram's histogram and minmax table (see sgi_kona_gl_histogram()).
+ * The client library sizes the histogram's pipe memory for at most 4096
+ * bins.
+ */
+#define SGI_KONA_GL_HISTOGRAM_MAX 4096
+
+typedef struct SGIKonaGLHistogram {
+    uint32_t format;            /* the internal format token; 0: none */
+    uint32_t width;
+    bool sink;
+    uint32_t proxy_format, proxy_width;
+    /* Bin k's counts, in the order of the format's components. */
+    uint32_t counts[SGI_KONA_GL_HISTOGRAM_MAX][4];
+    uint32_t minmax_format;     /* 0: none */
+    bool minmax_sink;
+    uint32_t min[4], max[4];    /* R, G, B and A, float bits */
+} SGIKonaGLHistogram;
+
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
 typedef struct SGIKonaGLState {
@@ -621,6 +639,7 @@ typedef struct SGIKonaGLState {
     SGIKonaGLImaging imaging;
     uint32_t imaging_enabled_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLColourTables tables;
+    SGIKonaGLHistogram histogram;
 } SGIKonaGLState;
 
 typedef struct SGIKonaPendingSwap {

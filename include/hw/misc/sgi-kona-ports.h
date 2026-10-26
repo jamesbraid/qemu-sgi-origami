@@ -437,6 +437,18 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_COLOUR_TABLE_PARAMETERS 0xeb
 #define SGI_KONA_CMD_GL_GET_COLOUR_TABLE_PARAMETER 0xec
 /*
+ * EXT_histogram's commands (established from the IRIX client library; the
+ * layouts are in sgi-kona.c, before sgi_kona_gl_histogram()).
+ */
+#define SGI_KONA_CMD_GL_HISTOGRAM            0x102
+#define SGI_KONA_CMD_GL_RESET_HISTOGRAM      0x103
+#define SGI_KONA_CMD_GL_GET_HISTOGRAM        0x104
+#define SGI_KONA_CMD_GL_GET_HISTOGRAM_PARAMETER 0x105
+#define SGI_KONA_CMD_GL_MINMAX               0x107
+#define SGI_KONA_CMD_GL_RESET_MINMAX         0x108
+#define SGI_KONA_CMD_GL_GET_MINMAX           0x109
+#define SGI_KONA_CMD_GL_GET_MINMAX_PARAMETER 0x10a
+/*
  * 0x116 a b c d: the client library's one-word pipe query, which it sends
  * before splitting a convolved DrawPixels or CopyPixels into strips and
  * then waits for on the return page (see sgi_kona_gl_line_distance()).
