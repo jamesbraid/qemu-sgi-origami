@@ -88,6 +88,16 @@ layer:
   graphics:
     max_pipes: 1
     headless: true
+    # The Origin 2000's plain BaseIO has no keyboard or mouse port; the
+    # Onyx2's BaseIO-G adds them through its MediaIO daughtercard
+    # (HMQ-380-C, "IO6G Cabling and Pin Assignments" and "Mouse and
+    # Keyboard Port Pin Assignments"; 007-3439-002 Figure 2-27). The X
+    # server needs a keyboard, so a launch that fits a pipe asks for the
+    # BaseIO-G, as owners who put an IMPACT board in an Origin 2000 did.
+    # A launch without one keeps the plain board.
+    machine_properties:
+      properties: {baseio-preset: io6g}
+      reason: "the plain BaseIO has no keyboard or mouse port, so a graphics console needs the BaseIO-G that an Onyx2 ships with"
     slots:
       - names: [io2, io3, io4, io5, io6, io7, io8, io9, io10, io11, io12]
         description: "XIO slot {number}"

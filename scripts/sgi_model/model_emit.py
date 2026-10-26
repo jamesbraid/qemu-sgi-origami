@@ -954,6 +954,12 @@ def _overrides(topology: dict, part: str) -> list[dict]:
     if any(board["board_kind"] in ("IO8", "FUEL") and board.get("populated")
            for board in topology["io_boards"]):
         machine += ["ioc3-subsystem-id"]
+    # The Origin 2000's plain BaseIO card may be built as the BaseIO-G
+    # instead (baseio-preset); a topology whose own record is the BaseIO-G
+    # builds that whatever the property says, so it is not offered there.
+    if any(board["board_kind"] == "BASEIO" and board.get("populated", True)
+           for board in topology["io_boards"]):
+        machine += ["baseio-preset"]
     if topology["generation"] == "IP30":
         machine += ["flash-select", "flash-strap"]
     return ([{"property": name, "target": "machine"}

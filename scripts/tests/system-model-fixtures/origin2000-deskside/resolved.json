@@ -3577,6 +3577,15 @@
     "generation": "SN0",
     "graphics": {
       "headless": true,
+      "machine_properties": {
+        "properties": [
+          {
+            "name": "baseio-preset",
+            "value": "io6g"
+          }
+        ],
+        "reason": "the plain BaseIO has no keyboard or mouse port, so a graphics console needs the BaseIO-G that an Onyx2 ships with"
+      },
       "max_pipes": 1,
       "slots": [
         {

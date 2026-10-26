@@ -1465,11 +1465,11 @@
 ##
 # @SGIModelGraphicsProperty:
 #
-# One `-device` property and its value.
+# One `-device` or `-M` property and its value.
 #
 # @name: the property
 #
-# @value: its value, spelled as `-device` takes it
+# @value: its value, spelled as the option takes it
 #
 # Since: 11.2
 ##
@@ -1672,6 +1672,22 @@
             '*refusals': ['SGIModelGraphicsRefusal'] } }
 
 ##
+# @SGIModelGraphicsMachineProperties:
+#
+# Machine properties a launch sets whenever it fits a graphics pipe,
+# because the topology's own default for them does not suit one.
+#
+# @properties: each `-M` property and its value
+#
+# @reason: why, a phrase without a final full stop
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelGraphicsMachineProperties',
+  'data': { 'properties': ['SGIModelGraphicsProperty'],
+            'reason': 'str' } }
+
+##
 # @SGIModelGraphics:
 #
 # The graphics pipes a topology takes.  Each pipe is a `-device` of
@@ -1687,6 +1703,11 @@
 # @headless-refused: why a launcher does not offer it, present
 #     exactly when @headless is false
 #
+# @machine-properties: the machine properties a launch that fits any
+#     pipe adds to `-M`; absent when a pipe needs none.  QEMU does not
+#     add them itself: the machine's boards exist before any `-device`
+#     does.
+#
 # @slots: every slot QEMU can put a pipe in
 #
 # Since: 11.2
@@ -1695,6 +1716,7 @@
   'data': { 'max-pipes': 'uint32',
             'headless': 'bool',
             '*headless-refused': 'str',
+            '*machine-properties': 'SGIModelGraphicsMachineProperties',
             'slots': ['SGIModelGraphicsSlot'] } }
 
 ##
