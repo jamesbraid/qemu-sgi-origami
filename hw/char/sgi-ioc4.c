@@ -864,15 +864,18 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
         ioc4_control_write(p, value);
         break;
     }
+    /*
+     * A host-owned index keeps its pointer field; anything outside it is
+     * logged and dropped, and the port carries on. What the part does with
+     * such a write is not known.
+     */
     case 1:
-        if ((value & 7) || value > mask) {
-            p->halted = true;
+        if (value & ~mask) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: invalid TX producer 0x%08x on port %u\n",
-                          value, n);
-            break;
+                          "sgi-ioc4: TX producer 0x%08x on port %u has bits "
+                          "outside the pointer field\n", value, n);
         }
-        p->tx_produce = value;
+        p->tx_produce = value & mask;
         ioc4_tx_run(p);
         break;
     /*
@@ -889,14 +892,12 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
         ioc4_update_rx_threshold(p);
         break;
     case 4: {
-        uint32_t pointer = value & ~IOC4_SRCIR_TIMER_ARM;
+        uint32_t pointer = value & mask;
 
-        if ((pointer & 7) || pointer > mask) {
-            p->halted = true;
+        if (value & ~(mask | IOC4_SRCIR_TIMER_ARM)) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: invalid RX consumer 0x%08x on port %u\n",
-                          value, n);
-            break;
+                          "sgi-ioc4: RX consumer 0x%08x on port %u has bits "
+                          "outside the pointer field\n", value, n);
         }
         p->rx_consume = pointer;
         timer_del(p->rx_timer);
