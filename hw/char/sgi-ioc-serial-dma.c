@@ -181,6 +181,29 @@ static void sdma_rx_timer_expired(void *opaque)
     }
 }
 
+/* A transmit delay has run out; the walk goes on from when it ended. */
+static void sdma_tx_delay_ended(SGIIOCSerialDMAPort *p)
+{
+    int64_t when = p->tx_delay_due;
+
+    p->tx_delay_due = 0;
+    timer_del(p->tx_delay_timer);
+    if (p->tx_delay_irq) {
+        p->tx_delay_irq = false;
+        sdma_raise(p, SGI_IOC_SDMA_SRC_TX_EXPLICIT);
+    }
+    sgi_ioc_sdma_run_from(p, when);
+}
+
+static void sdma_tx_delay_expired(void *opaque)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (p->tx_delay_due) {
+        sdma_tx_delay_ended(p);
+    }
+}
+
 /* A looped-back character reaches the receiver; the walk goes on from then. */
 static void sdma_loop_arrived(SGIIOCSerialDMAPort *p)
 {
@@ -215,6 +238,10 @@ void sgi_ioc_sdma_catch_up(SGIIOCSerialDMA *d)
 
     for (i = 0; i < d->nports; i++) {
         SGIIOCSerialDMAPort *p = &d->port[i];
+
+        if (p->tx_delay_due && p->tx_delay_due <= now) {
+            sdma_tx_delay_ended(p);
+        }
 
         /* Each arrival can send the next character; the ring bounds it. */
         while (p->loop_due && p->loop_due <= now) {
@@ -358,6 +385,11 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
     uint64_t ring = sdma_ring(p, SGI_IOC_SDMA_RING_TX);
     bool walked = false;
 
+    /* A delay in progress holds every slot behind it. */
+    if (p->tx_delay_due) {
+        return;
+    }
+
     while (sdma_running(p) && (*consume & mask) != (*produce & mask)) {
         uint8_t *entry = p->tx_entry;
         unsigned i;
@@ -413,6 +445,17 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
                 serial_io_ops.write(serial, UART_MCR, entry[i], 1);
                 break;
             case SGI_IOC_SDMA_TX_DELAY:
+                /*
+                 * The data byte is milliseconds of quiet; an explicit
+                 * interrupt asked of it comes when it ends.
+                 */
+                if (entry[i]) {
+                    p->tx_slot = i + 1;
+                    p->tx_delay_due = since + entry[i] * SCALE_MS;
+                    p->tx_delay_irq = control & SGI_IOC_SDMA_TX_INTERRUPT;
+                    timer_mod(p->tx_delay_timer, p->tx_delay_due);
+                    return;
+                }
                 break;
             }
 
@@ -488,6 +531,9 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
     p->delivered = false;
     p->tx_slot = 0;
     p->tx_fetched = false;
+    timer_del(p->tx_delay_timer);
+    p->tx_delay_due = 0;
+    p->tx_delay_irq = false;
 
     timer_del(p->rx_timer);
     p->rx_idle_count = 0;
@@ -569,6 +615,9 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
 
     if (offset == SGI_IOC_SDMA_CONTROL && (val & SGI_IOC_SDMA_PAUSE)) {
         val |= SGI_IOC_SDMA_PAUSED;
+    }
+    if (offset == SGI_IOC_SDMA_CONTROL && p->tx_delay_due) {
+        val |= SGI_IOC_SDMA_TX_TIMER_RUN;
     }
 
     /* The consume index reports the arm, which a write can only set. */
@@ -719,6 +768,8 @@ void sgi_ioc_sdma_init(SGIIOCSerialDMA *d, unsigned nports,
         p->rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdma_rx_timer_expired,
                                    p);
         p->loop_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sdma_loop_expired, p);
+        p->tx_delay_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                         sdma_tx_delay_expired, p);
     }
 }
 
@@ -735,8 +786,10 @@ void sgi_ioc_sdma_finalize(SGIIOCSerialDMA *d)
     for (i = 0; i < d->nports; i++) {
         timer_free(d->port[i].rx_timer);
         timer_free(d->port[i].loop_timer);
+        timer_free(d->port[i].tx_delay_timer);
         d->port[i].rx_timer = NULL;
         d->port[i].loop_timer = NULL;
+        d->port[i].tx_delay_timer = NULL;
     }
 }
 
@@ -757,6 +810,9 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         p->loop_due = 0;
         p->tx_slot = 0;
         p->tx_fetched = false;
+        timer_del(p->tx_delay_timer);
+        p->tx_delay_due = 0;
+        p->tx_delay_irq = false;
         p->packed = 0;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->delivered = false;
@@ -770,6 +826,19 @@ static int sdma_port_pre_load(void *opaque)
 
     /* A stream without the loopback subsection has nothing on the line. */
     p->loop_due = 0;
+    return 0;
+}
+
+/* The due time is the state; the timer is only its wake-up. */
+static int sdma_port_post_load(void *opaque, int version_id)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (p->tx_delay_due) {
+        timer_mod(p->tx_delay_timer, p->tx_delay_due);
+    } else {
+        timer_del(p->tx_delay_timer);
+    }
     return 0;
 }
 
@@ -810,6 +879,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
     .version_id = 1,
     .minimum_version_id = 1,
     .pre_load = sdma_port_pre_load,
+    .post_load = sdma_port_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIIOCSerialDMAPort, SGI_IOC_SDMA_PORT_REGS),
         VMSTATE_UINT8(tx_slot, SGIIOCSerialDMAPort),
@@ -822,6 +892,8 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_TIMER_PTR(rx_timer, SGIIOCSerialDMAPort),
         VMSTATE_UINT16(rx_idle_count, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(armed, SGIIOCSerialDMAPort),
+        VMSTATE_INT64(tx_delay_due, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(tx_delay_irq, SGIIOCSerialDMAPort),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

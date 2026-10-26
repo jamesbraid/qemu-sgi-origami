@@ -1623,6 +1623,52 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 }
 
 /*
+ * A delay-typed byte holds the slots behind it for that many milliseconds,
+ * with the control register's transmit-timer bit set while it runs; an
+ * explicit interrupt asked of the delay comes when it ends. Both Linux
+ * headers define the delay, and the IOC4 one says the explicit source
+ * fires on a transmit, modem-control or delay completing.
+ */
+#define CTRL_TX_TIMER_RUN (1u << 16)
+
+static void test_a_delay_entry_holds_the_line(const void *data)
+{
+    const uint8_t out[4] = { 5, 'd', 0, 0 };
+    const uint8_t control[4] = {
+        TX_DELAY | TX_INTERRUPT, TX_CHARACTER, TX_EMPTY, TX_EMPTY,
+    };
+    uint8_t got, status;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+
+    /* Five milliseconds to go: busy, nothing sent, nothing raised. */
+    qtest_clock_step(qts, 4 * 1000 * 1000);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_CONTROL)) &
+                    CTRL_TX_TIMER_RUN, ==, CTRL_TX_TIMER_RUN);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, 0);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 0);
+
+    /* Then the delay ends, raises its source, and the character goes. */
+    qtest_clock_step(qts, 1000 * 1000);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_CONTROL)) &
+                    CTRL_TX_TIMER_RUN, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, SOURCE(0, SRC_TX_DONE));
+    carry_on_the_line(qts, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex(got, ==, 'd');
+}
+
+/*
  * A modem-typed byte reaches the modem control register, not the wire.
  * Mistyped, it is a stray console character and a line that never moves.
  */
@@ -3370,6 +3416,8 @@ int main(int argc, char **argv)
                         test_a_pause_is_acknowledged_and_stops_the_walk);
     qtest_add_data_func("sn0/ioc3-serial/reset-returns-to-the-start", NULL,
                         test_a_reset_returns_the_channels_to_the_start);
+    qtest_add_data_func("sn0/ioc3-serial/delay-entry-holds-the-line", NULL,
+                        test_a_delay_entry_holds_the_line);
     qtest_add_data_func("sn0/ioc3-serial/modem-entry-reaches-modem-register",
                         NULL, test_a_modem_entry_reaches_the_modem_register);
     qtest_add_data_func("sn0/ioc3-serial/empty-slot-ends-the-entry-mid-way",
