@@ -1129,7 +1129,7 @@ static void test_decoded_triangle_native_commit(void)
         .subpixel_bits = 8, .color_bits = 12,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_SMOOTH,
@@ -1479,7 +1479,7 @@ static void test_decoded_triangle_viewport_fill(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -1588,7 +1588,7 @@ static void test_decoded_triangle_viewport_limit(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -1711,7 +1711,7 @@ static void test_decoded_triangle_clip_union(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -1918,7 +1918,7 @@ static void test_triangle_resource_row_origin(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_SMOOTH,
@@ -2087,7 +2087,7 @@ static void test_flat_triangle_alpha_blend(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -2289,7 +2289,7 @@ static void test_blend_without_native_alpha(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -2513,7 +2513,7 @@ static void test_typed_texture_triangle(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -2856,7 +2856,7 @@ static void test_typed_texture_multi_texel(void)
         .subpixel_bits = 8, .color_bits = 8,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
-        .arith = SGI_ARITH_DOUBLE, .evidence = "synthetic",
+        .arith = SGI_ARITH_DOUBLE,
     };
     SGIGLDrawState state = {
         .shade_model = SGI_GL_FLAT,
@@ -3251,7 +3251,7 @@ static void test_decoded_clear_native_commit(void)
     };
     /* Stored alpha matches the rules' alpha precision, as the gate requires. */
     SGIRasterRules rules = {
-        .color_bits = 12, .alpha_bits = 12, .evidence = "synthetic",
+        .color_bits = 12, .alpha_bits = 12,
     };
     SGIRasterOp op = {
         .kind = SGI_RASTER_CLEAR,
@@ -3464,7 +3464,7 @@ static void test_decoded_clear_full_screen_commit(void)
         .opaque = &f, .resources = &resource, .resource_count = 1,
         .resource_ops = &ops,
     };
-    SGIRasterRules rules = { .color_bits = 12, .evidence = "synthetic" };
+    SGIRasterRules rules = { .color_bits = 12 };
     SGIRasterOp op = {
         .kind = SGI_RASTER_CLEAR, .targets = { 7 }, .ntargets = 1,
         .x0 = 0, .y0 = 0, .x1 = 3, .y1 = 3,
@@ -3631,7 +3631,6 @@ static void test_decoded_clear_depth_stencil(void)
     };
     SGIRasterRules rules = {
         .color_bits = 12, .depth_bits = 24, .stencil_bits = 8,
-        .evidence = "synthetic",
     };
     SGIRasterOp op = {
         .kind = SGI_RASTER_CLEAR, .targets = { 7 }, .ntargets = 1,
@@ -4110,7 +4109,6 @@ static void prim_rules(const PrimCase *p, SGIRasterRules *rules)
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
         .smooth_primitives = p->smooth_rules,
-        .evidence = "synthetic",
     };
 }
 

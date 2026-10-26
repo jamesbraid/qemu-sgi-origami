@@ -188,7 +188,6 @@ static uint32_t draw(SGIKonaTextureState *s, SGIGLContext *c)
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "unit test",
     };
     SGIRasterTarget target = {
         .store_colour = store_colour, .opaque = &colour,
@@ -931,7 +930,6 @@ static void test_native_negative_lod(void)
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "unit test",
     };
     SGIRasterTarget target = {
         .store_colour = store_colour, .opaque = &colour,
@@ -1474,7 +1472,6 @@ static void native_volume_r_derivatives(SGIKonaTextureState *s,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "unit test",
     };
     float vertices[2][SGI_GL_VERTEX_FLOATS] = { 0 };
     VolumeLinePixels pixels;

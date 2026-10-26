@@ -13,19 +13,11 @@
 
 #define SGI_KONA_GL_MAX_ARGS 22
 
-typedef enum SGIKonaGLLayoutEvidence {
-    /* The selector table records this layout as established. */
-    SGI_KONA_GL_LAYOUT_ESTABLISHED,
-    /* Counted from computed stores; one word per store unless shown wider. */
-    SGI_KONA_GL_LAYOUT_INFERRED,
-    /* The argument count is not settled; the decoder will not frame it. */
-    SGI_KONA_GL_LAYOUT_UNRESOLVED,
-} SGIKonaGLLayoutEvidence;
-
 typedef struct SGIKonaGLSelectorInfo {
     uint32_t selector;
     const char *call;
-    SGIKonaGLLayoutEvidence evidence;
+    /* The argument count is not settled; the decoder will not frame it. */
+    bool unresolved;
     unsigned argc;
     /* Zero when argument 0 is computed; else the only values seen for it. */
     unsigned num_arg0_values;
@@ -36,7 +28,7 @@ typedef enum SGIKonaGLDecodeResult {
     SGI_KONA_GL_DECODE_OK,
     /* The first word is not a selector in the table. */
     SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR,
-    /* A known selector whose argument count the evidence does not settle. */
+    /* A known selector whose argument count is not settled. */
     SGI_KONA_GL_DECODE_UNRESOLVED_LAYOUT,
     /* Fewer words are available than the packet needs. */
     SGI_KONA_GL_DECODE_TRUNCATED,

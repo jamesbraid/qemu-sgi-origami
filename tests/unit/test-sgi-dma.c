@@ -223,7 +223,6 @@ static void plane_setup(SGIBoardMemory *m, SGIPlaneFormat format)
         .base = 0, .width = 64, .height = 16,
         .stride = 64 * sgi_plane_bytes_per_pixel(format),
         .format = format, .packing = SGI_PACK_BE_RED_LOW,
-        .evidence = "unit test",
     };
 
     p.len = p.stride * p.height;

@@ -3572,10 +3572,6 @@ static const SGIRasterRules mgras_gl_raster_rules = {
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .smooth_primitives = true,
     .smooth_rule = SGI_SMOOTH_TWO_PIXEL_FILTER,
-    .evidence = "MGRAS: 8 subpixel and 24 depth bits from the Octane "
-                "Technical Report 4.2.3, the two-pixel smoothing filter "
-                "from 4.4.3 and 4.4.4; the rest the model's choices, "
-                "tested",
 };
 
 /* Resource coordinates count rows up, while the bank arrays count down. */

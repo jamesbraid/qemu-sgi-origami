@@ -140,7 +140,6 @@ static const SGIRasterRules rules_rgba = {
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .alpha_test_bits = 12,
     .smooth_primitives = true,
-    .evidence = "benchmark",
 };
 
 static const SGIRasterRules rules_colour = {
@@ -151,7 +150,6 @@ static const SGIRasterRules rules_colour = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .evidence = "benchmark",
 };
 
 static SGIRasterTarget bench_target(Bench *b, bool rgba)
@@ -178,7 +176,7 @@ static void bench_add_plane(Bench *b, uint64_t base, SGIPlaneFormat format,
         .base = base, .len = (uint64_t)W * H * 4,
         .width = W, .height = H, .stride = W * 4,
         .format = format, .packing = SGI_PACK_BE_RED_HIGH,
-        .bottom_origin = true, .evidence = "benchmark",
+        .bottom_origin = true,
     };
     uint32_t id = sgi_board_memory_add_plane(&b->mem, &plane, &error_abort);
 
@@ -940,7 +938,6 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         .arith = SGI_ARITH_DOUBLE,
         .line_rule = SGI_LINE_COVERAGE_DOUBLE,
         .smooth_primitives = true,
-        .evidence = "corpus",
     };
     GRand *rand = g_rand_new_with_seed(0x5ba45 + index);
     g_autofree Corpus *c = g_new0(Corpus, 1);

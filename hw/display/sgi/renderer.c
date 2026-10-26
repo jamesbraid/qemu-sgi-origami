@@ -956,7 +956,6 @@ static SGIRenderResult sgi_render_line_probe(SGIRenderer *renderer,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "shared line probe",
     };
     const SGIRasterRules *rules = &probe_rules;
     static const float probes[][5] = {
@@ -1122,7 +1121,6 @@ static SGIRenderResult sgi_render_window_probe(SGIRenderer *renderer,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "shared smooth triangle probe",
     };
     /*
      * Window x, y, clip w, normalized device z, then colour, for each

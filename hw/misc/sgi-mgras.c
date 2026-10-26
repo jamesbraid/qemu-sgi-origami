@@ -1840,7 +1840,6 @@ static bool mgras_realize_banks(SGIMgrasState *s, Error **errp)
             .format = SGI_PLANE_RAW,
             .packing = HOST_BIG_ENDIAN ? SGI_PACK_BE_RED_HIGH :
                                          SGI_PACK_LE_RED_HIGH,
-            .evidence = "model layout: MGRAS's own bank arrays",
         };
 
         s->bank_plane[bank] = sgi_board_memory_add_plane(&s->mem, &plane,

@@ -3,8 +3,8 @@
  * InfiniteReality (KONA) OpenGL doorbell command decoder.
  *
  * The doorbell takes selector-first packets. The table lists the decoded
- * subset and marks each layout established, inferred, or unresolved. The
- * caller splits 64-bit stores into big-endian words before decoding.
+ * subset and marks the layouts it leaves unresolved. The caller splits
+ * 64-bit stores into big-endian words before decoding.
  *
  * No doorbell kick or length register is modeled. The declared length is
  * available for transports that provide one.
@@ -66,7 +66,7 @@ SGIKonaGLDecodeResult sgi_kona_gl_decode(const uint32_t *words, size_t nwords,
     if (!info) {
         return SGI_KONA_GL_DECODE_UNKNOWN_SELECTOR;
     }
-    if (info->evidence == SGI_KONA_GL_LAYOUT_UNRESOLVED) {
+    if (info->unresolved) {
         return SGI_KONA_GL_DECODE_UNRESOLVED_LAYOUT;
     }
 

@@ -4875,6 +4875,7 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
  * do not change which pixels take the colour, and there is no depth or line
  * work). Odyssey's own subpixel grid and interpolated-colour depth are
  * unmeasured; an Odyssey rule set of its own waits on a hardware capture.
+ * The floating-point depth rule is inferred, not measured.
  */
 static const SGIRasterRules odyssey_gl_rules = {
     .subpixel_bits = 8,
@@ -4889,9 +4890,6 @@ static const SGIRasterRules odyssey_gl_rules = {
     .smooth_primitives = true,
     /* The board's own depth format; odyssey_gl_load_combined(). */
     .depth_float = true,
-    .evidence = "chosen, pending capture: borrowed from MGRAS (Octane RE4); "
-                "Odyssey's subpixel grid and GL colour depth are unmeasured "
-                "(odyssey-gl-family-side.md); the depth rule is inferred",
 };
 
 /* Whether a GL fragment's colour is an index (ODSY_PROG_COLOUR_MODE). */
@@ -12261,10 +12259,6 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
             .len = (uint64_t)SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT *
                    sizeof(uint32_t),
             .bottom_origin = false,
-            .evidence = "red-high RGBA8 approximation; the real board's "
-                        "framebuffer base, stride and per-depth channel "
-                        "packing are unlocated (odyssey-display-backend-"
-                        "survey-20260922.md)",
         };
 
         s->colour_plane = sgi_board_memory_add_plane(&s->mem, &plane,
@@ -12275,9 +12269,6 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
          * contract; they do not claim the board's two-buffer layout.
          */
         sgi_board_memory_init(&s->buffer1_mem, plane.len);
-        plane.evidence = "second colour buffer, model storage; the board's "
-                         "front/back placement and packing are unknown "
-                         "(odyssey.md, buffer-selection contract)";
         s->buffer1_plane = sgi_board_memory_add_plane(&s->buffer1_mem, &plane,
                                                       &error_abort);
     }
@@ -12312,9 +12303,6 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
             .len = (uint64_t)SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT *
                    sizeof(uint32_t),
             .bottom_origin = false,
-            .evidence = "model plane; the board's depth-buffer placement and "
-                        "layout are unknown (odyssey-gl-shading-depth-"
-                        "lighting.md)",
         };
 
         s->depth_plane = sgi_board_memory_add_plane(&s->depth_mem, &depth,
@@ -12338,8 +12326,6 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
             .base = 0,
             .len = (uint64_t)SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT,
             .bottom_origin = false,
-            .evidence = "model plane; the board's stencil placement and "
-                        "layout are unknown",
         };
 
         s->stencil_plane = sgi_board_memory_add_plane(&s->stencil_mem,
