@@ -186,10 +186,15 @@ static uint32_t bits(float f)
     return b;
 }
 
-/* Planes, and which thread stored each colour, for band-parallel draws. */
+/*
+ * Planes, for band-parallel draws: which thread stored each colour, and
+ * how many times, so a pixel two bands both drew shows even where the
+ * second store wrote the same value.
+ */
 typedef struct BandPlanes {
     Planes p;
     GThread *owner[W * H];
+    unsigned stores[W * H];
 } BandPlanes;
 
 static void band_store_colour(void *opaque, SGIColourTarget target, int x,
@@ -199,6 +204,7 @@ static void band_store_colour(void *opaque, SGIColourTarget target, int x,
 
     planes_store_colour(&b->p, target, x, y, colour);
     b->owner[planes_index(x, y)] = g_thread_self();
+    b->stores[planes_index(x, y)]++;
 }
 
 static uint32_t band_load_colour(void *opaque, SGIColourTarget target, int x,
@@ -231,8 +237,12 @@ static void band_store_stencil(void *opaque, int x, int y, uint32_t value)
  * A target whose callbacks allow concurrent pixels draws in bands of rows
  * on several threads, and leaves the planes one thread would: random
  * smooth, depth-tested and stencilled triangles, blended over what is
- * there, and a clear of part of the window, each drawn with four bands
- * and no pixel threshold and again on one thread.
+ * there, then the same triangles again with the depth test off, and a
+ * clear of part of the window, each drawn with four bands and no pixel
+ * threshold and again on one thread. Every pixel must also be stored as
+ * many times: the second pass draws over the first, so bands that shared
+ * rows would store some pixels more often, even where the depth test
+ * would have hidden it.
  */
 static void test_band_parallel_draw(void)
 {
@@ -299,11 +309,15 @@ static void test_band_parallel_draw(void)
         }
         d.state = &c.cur;
         sgi_soft_draw(&rules, &t, &d);
+        c.cur.depth_test = 0;
+        sgi_soft_draw(&rules, &t, &d);
         sgi_soft_raster(&rules, &t, &clear);
         sgi_gl_cleanup(&c);
     }
     sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
     g_assert(memcmp(&banded.p, &serial.p, sizeof(banded.p)) == 0);
+    g_assert(memcmp(banded.stores, serial.stores,
+                    sizeof(banded.stores)) == 0);
     for (unsigned i = 0; i < W * H; i++) {
         if (banded.owner[i]) {
             g_hash_table_add(threads, banded.owner[i]);
