@@ -152,12 +152,17 @@ static void test_launch(const void *opaque)
     /*
      * A processor that lists required properties is an opt-in experiment:
      * the catalogue names the -cpu properties a launch must choose but
-     * gives no values, so QEMU must refuse a launch made without them.
+     * gives no values, so QEMU must refuse a launch made without them,
+     * asking for the experiment's opt-in.
      */
     bool opt_in = qdict_haskey(qdict_get_qdict(o, "processor"),
                                "required-properties");
-    /* The Origin 2000 asks for the BaseIO-G, with the MediaIO keyboard. */
-    bool mediaio = l->pipe && machine_properties &&
+    /*
+     * An Origin 2000 with a pipe needs a keyboard for its X server, which
+     * only the BaseIO-G's MediaIO carries: the catalogue launch must
+     * build it, whatever the catalogue's record says.
+     */
+    bool mediaio = l->pipe &&
                    g_str_equal(qdict_get_str(o, "product"), "origin2000");
     g_autofree char *tag = g_strdup_printf(
         "%s-%" PRId64 "-%s", topology, nodes, l->pipe ? "pipe" : "bare");
@@ -220,6 +225,7 @@ static void test_launch(const void *opaque)
     }
     if (opt_in) {
         g_assert_cmpint(status, !=, 0);
+        g_assert_nonnull(strstr(err, "requires ip53-experimental=on"));
         return;
     }
     if (status) {
@@ -228,6 +234,10 @@ static void test_launch(const void *opaque)
     g_assert_cmpint(status, ==, 0);
     /* The qom-get answers with the controller's type, not an error. */
     if (mediaio) {
+        if (strstr(out, "\"error\"")) {
+            g_test_message("%s has no MediaIO keyboard controller: %s",
+                           machine->str, out);
+        }
         g_assert_null(strstr(out, "\"error\""));
     }
 }
