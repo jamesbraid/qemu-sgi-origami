@@ -156,6 +156,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-byte-colour-float-and-replay
 gl /mips64/sn1/odyssey/command-fifo-gl-float-colour-integer-vertices
 gl /mips64/sn1/odyssey/scanout-overlay-planes
 gl /mips64/sn1/odyssey/scanout-overlay-unselected-mask
+gl /mips64/sn1/odyssey/gl-aux-refusals-reported-once
 gl /mips64/sn1/odyssey/scanout-overlay-menu
 gl /mips64/sn1/odyssey/command-fifo-dest-select-flags
 gl /mips64/sn1/odyssey/command-fifo-gl-colour-index
