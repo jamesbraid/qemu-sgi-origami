@@ -121,6 +121,22 @@ typedef enum SGIIOCSerialDMASource {
     SGI_IOC_SDMA_SRC_DMA_ERROR = 8,
 } SGIIOCSerialDMASource;
 
+/* What differs between the chips, fixed per chip. */
+typedef struct SGIIOCSerialDMAParams {
+    /*
+     * The produce index reports the packer's held count in bits 24-26.
+     * IOC3's header defines the field; IOC4's does not, so whether IOC4
+     * has it is not known.
+     */
+    bool held_counts;
+    /*
+     * A failed transfer stops the port until a channel reset: IOC4's header
+     * calls its error sources "serial halted by mem err". Whether an IOC3
+     * port halts is not known.
+     */
+    bool halt_on_dma_error;
+} SGIIOCSerialDMAParams;
+
 /* How the engine reaches the chip around it. */
 typedef struct SGIIOCSerialDMAOps {
     /* Latch a source; the chip's write-one-to-clear acknowledges it. */
@@ -132,6 +148,11 @@ typedef struct SGIIOCSerialDMAOps {
     bool (*reachable)(void *opaque, unsigned port);
     /* A character went to the UART for transmission. Optional. */
     void (*transmitted)(void *opaque, unsigned port, uint8_t ch);
+    /*
+     * A transfer failed at addr, receive or transmit. Optional: without it
+     * the engine raises the port's DMA error source.
+     */
+    void (*dma_error)(void *opaque, unsigned port, bool rx, hwaddr addr);
 } SGIIOCSerialDMAOps;
 
 typedef struct SGIIOCSerialDMA SGIIOCSerialDMA;
@@ -152,6 +173,9 @@ typedef struct SGIIOCSerialDMAPort {
 
     /* Re-entry guard for loopback walks; only true inside a call. */
     bool busy;
+
+    /* Stopped by a failed transfer, until a channel reset. */
+    bool halted;
 
     /* The UART's holding-register level, and the entry being sent. */
     bool tx_ready;
@@ -200,10 +224,14 @@ typedef struct SGIIOCSerialDMAPort {
 } SGIIOCSerialDMAPort;
 
 struct SGIIOCSerialDMA {
+    const SGIIOCSerialDMAParams *params;
     const SGIIOCSerialDMAOps *ops;
     void *opaque;
     AddressSpace *dma_as;
     uint32_t nports;
+
+    /* Transfers under way, for the chip's idle status; only inside a call. */
+    unsigned in_flight;
 
     /* Per pair of ports: ring base high and low words, as written. */
     uint32_t base_hi[SGI_IOC_SDMA_MAX_PAIRS];
@@ -213,6 +241,7 @@ struct SGIIOCSerialDMA {
 };
 
 void sgi_ioc_sdma_init(SGIIOCSerialDMA *d, unsigned nports,
+                       const SGIIOCSerialDMAParams *params,
                        const SGIIOCSerialDMAOps *ops, void *opaque,
                        AddressSpace *dma_as);
 void sgi_ioc_sdma_attach_uart(SGIIOCSerialDMA *d, unsigned port,
@@ -235,6 +264,9 @@ void sgi_ioc_sdma_kick(SGIIOCSerialDMA *d, unsigned port);
 void sgi_ioc_sdma_set_tx_ready(SGIIOCSerialDMA *d, unsigned port, bool level);
 /* Apply loopback arrivals and timer expiries already due. */
 void sgi_ioc_sdma_catch_up(SGIIOCSerialDMA *d);
+
+/* No transfer is under way: what a chip's DMA idle status reports. */
+bool sgi_ioc_sdma_idle(SGIIOCSerialDMA *d);
 
 /* Clear-to-send as the port reports it, which flow control can force. */
 bool sgi_ioc_sdma_flow_cts(SGIIOCSerialDMA *d, unsigned port);
