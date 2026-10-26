@@ -328,27 +328,27 @@ static void test_band_parallel_draw(void)
     g_hash_table_destroy(threads);
 }
 
-#ifdef SGI_GL_SYSCONF_WRAP
+#ifdef SGI_GL_PROCESSORS_WRAP
 static unsigned processor_queries;
 
-typedef long SysconfFn(int name);
-SysconfFn __real_sysconf, __wrap_sysconf;
+typedef guint ProcessorsFn(void);
+ProcessorsFn __real_g_get_num_processors, __wrap_g_get_num_processors;
 
-long __wrap_sysconf(int name)
+guint __wrap_g_get_num_processors(void)
 {
-    if (name == _SC_NPROCESSORS_ONLN) {
-        qatomic_inc(&processor_queries);
-    }
-    return __real_sysconf(name);
+    qatomic_inc(&processor_queries);
+    return __real_g_get_num_processors();
 }
 #endif
 
 /*
  * Choosing whether to draw in bands must not ask the host how many
- * processors it has: glibc reads that from sysfs, three system calls, and
- * a guest drawing small strips makes tens of thousands of draws a second.
- * Small draws and clears, into targets that do and do not allow bands,
- * and a draw large enough to run in bands, with the default bands.
+ * processors it has each time: on Linux the answer comes from sysfs,
+ * system calls, and a guest drawing small strips makes tens of thousands
+ * of draws a second. The count is read once, by whichever draw or clear in
+ * the process comes first. Small draws and clears, into targets that do
+ * and do not allow bands, and a draw large enough to run in bands, with
+ * the default bands.
  */
 static void test_band_choice_asks_no_host(void)
 {
@@ -365,8 +365,8 @@ static void test_band_choice_asks_no_host(void)
     SGIRasterRules rules = rules_supported;
     SGIGLContext c;
 
-#ifndef SGI_GL_SYSCONF_WRAP
-    g_test_skip("linker does not support sysconf wrapping");
+#ifndef SGI_GL_PROCESSORS_WRAP
+    g_test_skip("linker does not support processor-count wrapping");
     return;
 #endif
     for (unsigned i = 0; i < G_N_ELEMENTS(verts); i++) {
@@ -377,7 +377,6 @@ static void test_band_choice_asks_no_host(void)
     }
     sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
     context_init(&c);
-    processor_queries = 0;
     for (unsigned concurrent = 0; concurrent < 2; concurrent++) {
         SGIRasterTarget t = {
             .store_colour = band_store_colour,
@@ -417,7 +416,7 @@ static void test_band_choice_asks_no_host(void)
                         SGI_GL_DRAW_OK);
     }
     sgi_gl_cleanup(&c);
-    g_assert_cmpuint(processor_queries, ==, 0);
+    g_assert_cmpuint(processor_queries, <=, 1);
 }
 
 #define NVERTS 9

@@ -119,9 +119,10 @@ typedef struct SGISoftFrag {
 static unsigned sgi_soft_bands_wanted;
 static uint64_t sgi_soft_bands_min_pixels = SGI_RASTER_PARALLEL_MIN_PIXELS;
 /*
- * The host's processors, read once: glibc reads them from sysfs, which
- * costs three system calls, and every draw and clear chooses its bands.
- * A later change to the host's online processors is not seen.
+ * The host's processors, read once (sgi_soft_pool_init()): on Linux the
+ * count comes from sysfs, which costs system calls, and every draw and
+ * clear chooses its bands. A later change to the host's processors is not
+ * seen.
  */
 static unsigned sgi_soft_host_processors = 1;
 
@@ -141,27 +142,25 @@ static struct {
     unsigned bands, pending;
 } sgi_soft_pool;
 
-static void sgi_soft_pool_reset(void)
-{
-    qemu_mutex_init(&sgi_soft_pool.run);
-    qemu_mutex_init(&sgi_soft_pool.lock);
-    qemu_cond_init(&sgi_soft_pool.start);
-    qemu_cond_init(&sgi_soft_pool.done);
-    sgi_soft_pool.threads = 0;
-    sgi_soft_pool.pending = 0;
-}
-
 /*
- * Count the host's processors. A forked child has none of its parent's
- * workers: start its own.
+ * Count the host's processors and ready the pool, once, on the first draw
+ * or clear that chooses its bands. Workers start only when a draw first
+ * runs in bands, so a process that forks before then, as -daemonize does,
+ * gives its child a usable pool; a process that has drawn in bands must
+ * not fork and then draw.
  */
-static void __attribute__((constructor)) sgi_soft_pool_init(void)
+static void sgi_soft_pool_init(void)
 {
-    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    static gsize ready;
 
-    sgi_soft_host_processors = MAX(cpus, 1);
-    sgi_soft_pool_reset();
-    pthread_atfork(NULL, NULL, sgi_soft_pool_reset);
+    if (g_once_init_enter(&ready)) {
+        sgi_soft_host_processors = MAX(g_get_num_processors(), 1);
+        qemu_mutex_init(&sgi_soft_pool.run);
+        qemu_mutex_init(&sgi_soft_pool.lock);
+        qemu_cond_init(&sgi_soft_pool.start);
+        qemu_cond_init(&sgi_soft_pool.done);
+        g_once_init_leave(&ready, 1);
+    }
 }
 
 static void *sgi_soft_band_worker(void *opaque)
@@ -197,7 +196,10 @@ static void *sgi_soft_band_worker(void *opaque)
 
 static unsigned sgi_soft_bands(void)
 {
-    unsigned bands = qatomic_read(&sgi_soft_bands_wanted);
+    unsigned bands;
+
+    sgi_soft_pool_init();
+    bands = qatomic_read(&sgi_soft_bands_wanted);
 
     if (!bands) {
         bands = MIN(SGI_RASTER_PARALLEL_DEFAULT_BANDS,
@@ -220,6 +222,7 @@ void sgi_raster_set_parallel(unsigned bands, uint64_t min_pixels)
 static bool sgi_soft_bands_run(SGISoftBandFn *fn, void *opaque,
                                unsigned bands)
 {
+    sgi_soft_pool_init();
     if (qemu_mutex_trylock(&sgi_soft_pool.run)) {
         return false;
     }
