@@ -400,19 +400,30 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_GL_DRAW_PIXELS 0x3a
 /*
- * The EXT_convolution filters, each sent between 0x111 0x10 0x40000000
- * and 0x111 0x10 0 (established from the IRIX client library): 0xef, a
- * 1D filter, with a check word, the width, the format and type codes,
- * the image address's low two bits and two more parsed words; 0xf0, a
- * 2D filter, with the height after the width; then the image's words.
- * 0xf2 and 0xf3 copy a 1D or 2D filter from the framebuffer, with four
- * and five words. The separable filter, 0xf5, and the readback, 0xf4,
- * are not framed: the layout of 0xf5's two headers is not decoded.
+ * The EXT_convolution commands (established from the IRIX client library;
+ * the layouts are in sgi-kona.c, before sgi_kona_gl_filter_header()).
+ * The filters, each sent between 0x111 0x10 0x40000000 and 0x111 0x10 0:
+ * 0xef 1D, 0xf0 2D and 0xf5 separable, twice, each followed by its
+ * image's words unless the image comes by DMA; 0xf2 and 0xf3 copy a 1D
+ * or 2D filter from the framebuffer. 0xf4 and 0xf7 read a filter back on
+ * the return page; 0xf8 and 0xf9 set a filter's integer and four-float
+ * parameters.
  */
 #define SGI_KONA_CMD_GL_CONVOLUTION_1D       0xef
 #define SGI_KONA_CMD_GL_CONVOLUTION_2D       0xf0
 #define SGI_KONA_CMD_GL_COPY_CONVOLUTION_1D  0xf2
 #define SGI_KONA_CMD_GL_COPY_CONVOLUTION_2D  0xf3
+#define SGI_KONA_CMD_GL_GET_CONVOLUTION      0xf4
+#define SGI_KONA_CMD_GL_SEPARABLE            0xf5
+#define SGI_KONA_CMD_GL_GET_SEPARABLE        0xf7
+#define SGI_KONA_CMD_GL_CONVOLUTION_PARAMETER  0xf8
+#define SGI_KONA_CMD_GL_CONVOLUTION_PARAMETERS 0xf9
+/*
+ * 0x116 a b c d: the client library's one-word pipe query, which it sends
+ * before splitting a convolved DrawPixels or CopyPixels into strips and
+ * then waits for on the return page (see sgi_kona_gl_line_distance()).
+ */
+#define SGI_KONA_CMD_GL_SINGLE_COMPONENT 0x116
 #define SGI_KONA_CMD_GL_READ_PIXELS 0x39
 #define SGI_KONA_CMD_GL_COPY_PIXELS 0x38
 #define SGI_KONA_CMD_GL_COPY_OVERLAP 0x110

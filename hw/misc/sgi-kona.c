@@ -1810,6 +1810,14 @@ static void sgi_kona_gl_image_clear(SGIKonaState *s);
 static unsigned sgi_kona_gl_run_uploads(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
+static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st);
+static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im);
+static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t);
+static bool sgi_kona_gl_post_conv(const SGIKonaGLPixelTransfer *t,
+                                  double rgba[4]);
+static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
+                                double (**image)[4], uint32_t *width,
+                                uint32_t *height);
 static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot);
 static void sgi_kona_texture_regs_switch(SGIKonaState *s, int slot);
 
@@ -4074,6 +4082,9 @@ static void sgi_kona_cursor_word(SGIKonaState *s, uint32_t word)
     }
 }
 
+/* The widest or highest image the model takes: its bound, not a pipe's. */
+#define SGI_KONA_GL_IMAGE_MAX 8192
+
 /*
  * The GL client's 0xee 0 (get line-mode distance, paraphrasing the pipe's
  * command name): the IRIX client library's special-query routine waits
@@ -4083,9 +4094,17 @@ static void sgi_kona_cursor_word(SGIKonaState *s, uint32_t word)
  * pixel-transfer code reads later (established from the reader). The answer
  * goes on the current context's return page.
  *
- * Approximated: what the 32 words mean is unknown, and zeros are the
- * model's choice. The guest check is the minimal GLX program's probe
- * going on from 0xee to its viewport 0xe3 and scissor 0xc.
+ * Words 0 and 1 of record k are image widths for a convolution filter k
+ * pixels wide (established from the readers): a convolved DrawPixels no
+ * wider than word 1 is sent whole; a wider one is first put to the pipe
+ * with 0x116, whose answer picks word 0 or word 1 as the widest strip,
+ * and the image is then sent in overlapping strips. Approximated: the
+ * pipe's own widths are unknown; the model answers its own image bound,
+ * SGI_KONA_GL_IMAGE_MAX, for both, so it convolves any image it takes in
+ * one piece. What words 2 and 3 mean is unknown, and zeros are the
+ * model's choice. The guest checks are the minimal GLX program's probe
+ * going on from 0xee to its viewport 0xe3 and scissor 0xc, and a
+ * convolved DrawPixels drawing without 0x116.
  */
 #define SGI_KONA_GL_LINE_DISTANCE_WORDS 32
 
@@ -4093,8 +4112,26 @@ static void sgi_kona_gl_line_distance(SGIKonaState *s)
 {
     uint8_t words[SGI_KONA_GL_LINE_DISTANCE_WORDS * 4] = { 0 };
 
+    for (unsigned k = 0; k < SGI_KONA_GL_LINE_DISTANCE_WORDS / 4; k++) {
+        stl_be_p(words + k * 16, SGI_KONA_GL_IMAGE_MAX);
+        stl_be_p(words + k * 16 + 4, SGI_KONA_GL_IMAGE_MAX);
+    }
     sgi_kona_post_return(s, SGI_KONA_CMD_GL_LINE_DISTANCE, 8, words,
                          sizeof(words));
+}
+
+/*
+ * 0x116 (see SGI_KONA_CMD_GL_SINGLE_COMPONENT): the library reads one
+ * word at byte 8 of the return page. Approximated: what the four words
+ * ask and what the pipe answers are unknown; the model answers 0, which
+ * makes the library take word 1 of 0xee's record as its strip width.
+ */
+static void sgi_kona_gl_single_component(SGIKonaState *s)
+{
+    uint8_t word[4] = { 0 };
+
+    sgi_kona_post_return(s, SGI_KONA_CMD_GL_SINGLE_COMPONENT, 8, word,
+                         sizeof(word));
 }
 
 /* OpenGL 1.2.1 ordinary errors and TABLE_TOO_LARGE. Zero is no error. */
@@ -6181,6 +6218,17 @@ static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i)
 }
 
 /* Prepare complete native defaults before committing a logical generation. */
+/* No filter, none enabled, filter scale 1 and bias 0 (EXT_convolution). */
+static void sgi_kona_gl_imaging_init(SGIKonaGLImaging *im)
+{
+    memset(im, 0, sizeof(*im));
+    for (unsigned f = 0; f < SGI_KONA_GL_FILTERS; f++) {
+        for (unsigned c = 0; c < 4; c++) {
+            im->filters[f].scale[c] = 0x3f800000;
+        }
+    }
+}
+
 static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
                                     unsigned slot)
 {
@@ -6205,6 +6253,8 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
         .pixel_transfer.scale = { 0x3f800000, 0x3f800000,
                                   0x3f800000, 0x3f800000 },
         .pixel_transfer.depth_scale = 0x3f800000,
+        .pixel_transfer.post_conv_scale = { 0x3f800000, 0x3f800000,
+                                            0x3f800000, 0x3f800000 },
         .unpack_alignment = 4,
         .pack_alignment = 4,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
@@ -6215,6 +6265,9 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
     };
     state->iris = (SGIKonaGLIrisRule) { 0 };
     state->attrib_depth = 0;
+    sgi_kona_gl_imaging_init(&state->imaging);
+    memset(state->imaging_enabled_attrib, 0,
+           sizeof(state->imaging_enabled_attrib));
     sgi_gl_set_drawable(&state->gl, &drawable);
 }
 
@@ -7877,7 +7930,8 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
         !width || !height ||
         (uint64_t)width * height > SGI_KONA_TEXTURE_BYTES /
                                 (depth ? sizeof(double) :
-                                 !stencil && p->pixel_transfer.map_colour ?
+                                 !stencil && (p->pixel_transfer.map_colour ||
+                                 sgi_kona_gl_imaging_active(s->state[i])) ?
                                  4 * sizeof(double) : sizeof(uint32_t))) {
         return false;
     }
@@ -8059,10 +8113,12 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         }
         goto refused;
     }
-    if (p->pixel_transfer.map_colour) {
+    if (p->pixel_transfer.map_colour ||
+        sgi_kona_gl_imaging_active(s->state[i])) {
         uint64_t count = (uint64_t)a[2] * a[3];
         g_autofree double (*pixels)[4] = g_try_malloc_n(count, sizeof(*pixels));
         const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
+        uint32_t width = a[2], height = a[3];
 
         if (!pixels) {
             sgi_kona_gl_set_error(s, 0x505);
@@ -8085,8 +8141,13 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
                 }
             }
         }
-        if (sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
-                                                a[2], a[3],
+        if (sgi_kona_gl_imaging_active(s->state[i]) &&
+            !sgi_kona_gl_imaging(s->state[i], &pixels, &width, &height)) {
+            goto refused;
+        }
+        if (!width || !height ||
+            sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                                width, height,
                                                 pixels, zoom_x, zoom_y,
                                                 &identity)) {
             return;
@@ -8161,7 +8222,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     int bank;
     bool depth = format == 13, stencil = format == 12;
     bool bitmap = (stencil || format == 11) && type == 7;
-    bool indexed_visual;
+    bool indexed_visual, post_conv;
     uint32_t index;
     float depth_scale, depth_bias;
     g_autofree uint8_t *data = NULL;
@@ -8180,6 +8241,18 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     if (s->state[i]->gl.in_begin || p->pixel_transfer_unsupported) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
                       " unsupported; %s\n", outcome);
+        return false;
+    }
+    /*
+     * A convolved read returns an image smaller than the read, and the
+     * library's read path sizes its copy from the read alone (it reads
+     * no convolution state; see the command grammar): what the pipe
+     * returns then is unknown.
+     */
+    if (!depth && !stencil && format != 11 &&
+        sgi_kona_gl_filter_2d(&s->state[i]->imaging) >= 0) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels with a convolution"
+                      " filter enabled is not modelled; %s\n", outcome);
         return false;
     }
     if ((depth && p->draw_config_received && !p->draw_config[6]) ||
@@ -8272,6 +8345,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                       PRIu32 " answered %" PRIu64 " pixels of another kind"
                       " with zero\n", w, h, foreign);
     }
+    post_conv = !sgi_kona_gl_post_conv_default(&p->pixel_transfer);
     data = g_malloc0(len);
     for (uint32_t r = 0; r < h; r++) {
         for (uint32_t c = 0; c < cols; c++) {
@@ -8338,6 +8412,9 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                     }
                 } else if (!sgi_kona_gl_index_rgba(&p->pixel_transfer,
                                                     raw, values) ||
+                           (post_conv &&
+                            !sgi_kona_gl_post_conv(&p->pixel_transfer,
+                                                   values)) ||
                            !sgi_kona_gl_pixel_pack_double(format, type, values,
                                    p->pack_swap_bytes, out, pixel_bytes)) {
                     return false;
@@ -8355,6 +8432,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
             uint8_t *out = data + r * row + c * pixel_bytes;
 
             if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer, source) ||
+                (post_conv &&
+                 !sgi_kona_gl_post_conv(&p->pixel_transfer, source)) ||
                 !sgi_kona_gl_pixel_pack_double(format, type, source,
                                                   p->pack_swap_bytes,
                                          out, pixel_bytes)) {
@@ -8921,6 +9000,8 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
             };
         s->state[i]->transfer_attrib[*depth] =
             s->state[i]->pipe.pixel_transfer;
+        s->state[i]->imaging_enabled_attrib[*depth] =
+            s->state[i]->imaging.enabled;
         s->state[i]->attrib_mask[*depth] = mask;
         ++*depth;
     } else {
@@ -9140,6 +9221,11 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
     if (s->state[i]->attrib_mask[k] & 0x4000) {
         s->state[i]->pipe.returns.draw_buffer =
             s->state[i]->return_attrib[k].draw_buffer;
+    }
+    /* The convolution enables are both enable and pixel-mode state. */
+    if (s->state[i]->attrib_mask[k] & (0x2000 | 0x20)) {
+        s->state[i]->imaging.enabled =
+            s->state[i]->imaging_enabled_attrib[k];
     }
     if (s->state[i]->attrib_mask[k] & 0x20) {
         memcpy(s->state[i]->pipe.pixel_zoom,
@@ -9641,9 +9727,12 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
     const SGIKonaGLPixelTransfer identity = {
         .scale = { 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000 },
         .depth_scale = 0x3f800000,
+        .post_conv_scale = { 0x3f800000, 0x3f800000,
+                             0x3f800000, 0x3f800000 },
     };
     const SGIKonaGLPixelTransfer *t = u->transfer_captured ?
                                      &u->transfer : &identity;
+    bool post_conv = !sgi_kona_gl_post_conv_default(t);
 
     if (sgi_kona_texture_copy(u->header)) {
         /* The copy's words are already the model's texels. */
@@ -9683,6 +9772,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
                 sgi_kona_gl_rgba_transfer(t, values);
         }
         if (!converted ||
+            (post_conv && !sgi_kona_gl_post_conv(t, values)) ||
             !sgi_kona_gl_pixel_pack_double(5, 1, values, false,
                                             bytes, sizeof(bytes))) {
             qemu_log_mask(LOG_UNIMP,
@@ -10076,9 +10166,8 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
  * Legacy public-enum headers keep their reviewed row framing: words 1/2
  * give dimensions, 3/4 format/type, 5 the source address low bits, and
  * nonzero 6 DMA ingress. Each row starts at those low bits only with a
- * whole-word unpack stride. IMAGE_MAX is a model bound, not a pipe limit.
+ * whole-word unpack stride. SGI_KONA_GL_IMAGE_MAX bounds them.
  */
-#define SGI_KONA_GL_IMAGE_MAX 8192
 
 /* Destination layout is shared by ingress and migration validation. */
 static bool sgi_kona_texture_native_header(const uint32_t *h)
@@ -10313,6 +10402,14 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     pixels = (uint64_t)h[1] * h[2];
     if (p->pixel_transfer_unsupported) {
         reason = "native texture pixel transfer unsupported";
+    } else if (sgi_kona_gl_filter_2d(&s->state[i]->imaging) >= 0 ||
+               ((s->state[i]->imaging.enabled & 1) &&
+                s->state[i]->imaging.filters[0].width)) {
+        /*
+         * A convolved texture image is smaller than its header's, and
+         * how the library and the pipe place it is unknown.
+         */
+        reason = "convolution of texture images is not modelled";
     } else if (!sgi_kona_texture_native_header(h)) {
         /*
          * A DMA source whose stride is shorter than its rows never gets
@@ -10401,7 +10498,9 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
         count > SGI_KONA_TEXTURE_BYTES /
-                (a[3] == 1 && !p->pixel_transfer.map_colour ?
+                (a[3] == 1 && !p->pixel_transfer.map_colour &&
+                 (i == SGI_KONA_CONTEXT_NONE ||
+                  !sgi_kona_gl_imaging_active(s->state[i])) ?
                  sizeof(uint32_t) : 4 * sizeof(double))) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels capacity exceeded; %s\n",
                       a[5] ? "DMA not staged" : "draining framed words");
@@ -10458,7 +10557,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     bool stencil_image = u->header[2] == 12;
     bool indexed_image = u->header[2] == 11;
     bool index_destination;
-    bool scalar, mapped, rendered = false;
+    bool scalar, mapped, imaged, rendered = false;
     uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
@@ -10471,8 +10570,10 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
         goto out;
     }
     index_destination = indexed_image && s->state[i]->gl.cur.index_bits;
+    imaged = !depth_image && !stencil_image && !index_destination &&
+             sgi_kona_gl_imaging_active(s->state[i]);
     mapped = !depth_image && !stencil_image && !indexed_image &&
-             p->pixel_transfer.map_colour;
+             (p->pixel_transfer.map_colour || imaged);
     scalar = u->header[3] != 1 || indexed_image || mapped;
     count = (uint64_t)layout.width * layout.height;
     if (depth_image) {
@@ -10587,12 +10688,19 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     }
     if (indexed_image || mapped) {
         const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
+        uint32_t width = layout.width, height = layout.height;
 
-        sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
-                                           layout.width,
-            layout.height, rgba_double,
-            sgi_kona_gl_float(p->pixel_zoom[0]),
-            sgi_kona_gl_float(p->pixel_zoom[1]), &identity);
+        if (imaged &&
+            !sgi_kona_gl_imaging(s->state[i], &rgba_double, &width,
+                                 &height)) {
+            goto out;
+        }
+        if (width && height) {
+            sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                               width, height, rgba_double,
+                sgi_kona_gl_float(p->pixel_zoom[0]),
+                sgi_kona_gl_float(p->pixel_zoom[1]), &identity);
+        }
         rendered = true;
         goto out;
     }
@@ -10647,6 +10755,38 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
     SGIGLPixelTransfer transfer;
 
     if (u->count && u->draw_pixels && s->context_current == i &&
+        !s->state[i]->pipe.pixel_zoom_unsupported &&
+        !s->state[i]->pipe.pixel_transfer_unsupported &&
+        sgi_kona_gl_imaging_active(s->state[i])) {
+        const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
+        const SGIKonaGLPipe *p = &s->state[i]->pipe;
+        uint32_t width = u->header[1], height = u->header[2];
+        g_autofree double (*pixels)[4] =
+            g_try_malloc_n((uint64_t)width * height, sizeof(*pixels));
+
+        for (uint64_t at = 0; pixels && at < (uint64_t)width * height;
+             at++) {
+            for (unsigned k = 0; k < 4; k++) {
+                pixels[at][k] = ((u->pixels[at] >> (24 - k * 8)) & 255) /
+                                255.0;
+            }
+            if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer, pixels[at])) {
+                g_clear_pointer(&pixels, g_free);
+            }
+        }
+        if (pixels &&
+            sgi_kona_gl_imaging(s->state[i], &pixels, &width, &height) &&
+            width && height) {
+            sgi_kona_gl_sink(s, &sink);
+            sgi_gl_draw_pixels_double_transfer(&s->state[i]->gl, &sink,
+                                               width, height, pixels,
+                                               sgi_kona_gl_float(
+                                                   p->pixel_zoom[0]),
+                                               sgi_kona_gl_float(
+                                                   p->pixel_zoom[1]),
+                                               &identity);
+        }
+    } else if (u->count && u->draw_pixels && s->context_current == i &&
         !s->state[i]->pipe.pixel_zoom_unsupported &&
         !s->state[i]->pipe.pixel_transfer_unsupported) {
         for (unsigned channel = 0; channel < 4; channel++) {
@@ -11138,6 +11278,12 @@ static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
     case 0x0d10:                /* GL_MAP_COLOR */
         p->pixel_transfer.map_colour = sgi_kona_gl_float(value) != 0;
         return;
+    case 0x801c ... 0x801f:     /* GL_POST_CONVOLUTION_c_SCALE */
+        destination = &p->pixel_transfer.post_conv_scale[pname - 0x801c];
+        break;
+    case 0x8020 ... 0x8023:     /* GL_POST_CONVOLUTION_c_BIAS */
+        destination = &p->pixel_transfer.post_conv_bias[pname - 0x8020];
+        break;
     default:
         p->pixel_transfer_unsupported = true;
         qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported pixel transfer 0x%x;"
@@ -11171,8 +11317,18 @@ static void sgi_kona_gl_pop_lights_open(SGIKonaState *s, uint32_t n)
  * the word's low 16 bits, and s->gl_token_high its top half, the data of
  * a packed attribute form.
  */
-static void sgi_kona_gl_convolution_open(SGIKonaState *s, uint32_t selector,
+static void sgi_kona_gl_convolution_open(SGIKonaState *s, int i,
+                                         uint32_t selector,
                                          const uint32_t *args);
+static void sgi_kona_gl_convolution_copy(SGIKonaState *s, int i,
+                                         uint32_t selector,
+                                         const uint32_t *args);
+static void sgi_kona_gl_convolution_parameter(SGIKonaState *s, int i,
+                                              uint32_t selector,
+                                              const uint32_t *args);
+static void sgi_kona_gl_convolution_get(SGIKonaState *s, int i,
+                                        uint32_t selector,
+                                        const uint32_t *args);
 
 static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                                uint32_t selector, const uint32_t *args,
@@ -11208,13 +11364,30 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         ((s->state[i]->gl.matrix_mode == 0x1800 && selector >= 0xcf &&
           selector <= 0xdf && selector != SGI_KONA_CMD_GL_MATRIX_MODE) ||
          ((selector == 0x24 || selector == 0x25) &&
-          (args[0] == 0x8010 || args[0] == 0x8011 || args[0] == 0x8012 ||
-           args[0] == 0x8024 || args[0] == 0x802e || args[0] == 0x80d0 ||
+          (args[0] == 0x8024 || args[0] == 0x802e || args[0] == 0x80d0 ||
            args[0] == 0x80d1 || args[0] == 0x80d2)))) {
         s->state[i]->pipe.pixel_transfer_unsupported = true;
     }
     if (i != SGI_KONA_CONTEXT_NONE &&
         sgi_kona_gl_multisample(s, i, selector, args)) {
+        return;
+    }
+    /*
+     * The convolution enables are ordinary 0x24 and 0x25 caps, and the
+     * library sends no other sign of them: the pipe convolves image
+     * transfers from this state (inferred, see the command grammar).
+     */
+    if (i != SGI_KONA_CONTEXT_NONE && (selector == 0x24 || selector == 0x25) &&
+        args[0] >= 0x8010 && args[0] <= 0x8012 &&
+        !s->state[i]->gl.in_begin) {
+        uint32_t bit = 1u << (args[0] - 0x8010);
+
+        if (selector == 0x24) {
+            s->state[i]->imaging.enabled |= bit;
+        } else {
+            s->state[i]->imaging.enabled &= ~bit;
+        }
+        trace_sgi_kona_gl_command(selector, i);
         return;
     }
     switch (selector) {
@@ -11241,6 +11414,12 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_LINE_DISTANCE:
         sgi_kona_gl_line_distance(s);
+        return;
+    case SGI_KONA_CMD_GL_SINGLE_COMPONENT:
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: single-component query 0x%"
+                      PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32
+                      " answered 0\n", args[0], args[1], args[2], args[3]);
+        sgi_kona_gl_single_component(s);
         return;
     case SGI_KONA_CMD_GL_SET_ERROR:
         sgi_kona_gl_set_error(s, args[0]);
@@ -11316,7 +11495,20 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_CONVOLUTION_1D:
     case SGI_KONA_CMD_GL_CONVOLUTION_2D:
-        sgi_kona_gl_convolution_open(s, selector, args);
+    case SGI_KONA_CMD_GL_SEPARABLE:
+        sgi_kona_gl_convolution_open(s, i, selector, args);
+        return;
+    case SGI_KONA_CMD_GL_COPY_CONVOLUTION_1D:
+    case SGI_KONA_CMD_GL_COPY_CONVOLUTION_2D:
+        sgi_kona_gl_convolution_copy(s, i, selector, args);
+        return;
+    case SGI_KONA_CMD_GL_CONVOLUTION_PARAMETER:
+    case SGI_KONA_CMD_GL_CONVOLUTION_PARAMETERS:
+        sgi_kona_gl_convolution_parameter(s, i, selector, args);
+        return;
+    case SGI_KONA_CMD_GL_GET_CONVOLUTION:
+    case SGI_KONA_CMD_GL_GET_SEPARABLE:
+        sgi_kona_gl_convolution_get(s, i, selector, args);
         return;
     /*
      * The library sends these ids from its texture cache: 0x1c4 when it
@@ -11691,42 +11883,706 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
 }
 
 /*
- * A convolution filter's image (see SGI_KONA_CMD_GL_CONVOLUTION_2D): width
- * (times height for 2D) pixels of the format and type codes the header
- * carries, sent as the words that cover the image from its address's low
- * two bits on. The library sends the image only when its size is not
- * zero (established from the sender); that the words cover the image
- * whole, with no row padding, is inferred from mirrors' 3 by 3 float
- * luminance filter, nine words between the header and the closing 0x111.
- * The model keeps the stream in step and does not apply the filter to
- * pixel transfers: a known limitation, logged once.
+ * EXT_convolution (established from the IRIX 6.5.30 client library, see
+ * the command grammar). Each filter command is sent between 0x111 0x10
+ * 0x40000000 and 0x111 0x10 0:
+ *
+ *   0xef  1D:  format, width, f, t, low, dma, rows
+ *   0xf0  2D:  format, width, height, f, t, low, dma, rows
+ *   0xf5  separable, twice: format, width, height, f, t, low, which, dma,
+ *         rows; `which` 1 carries the row filter's `width` pixels, 2 the
+ *         column filter's `height`
+ *
+ * `format` is the filter's internal format code (alpha 0, RGB 1, RGBA 2,
+ * luminance 3, luminance-alpha 4, intensity 5); f and t are the native
+ * format and type codes DrawPixels uses; `low` is the image address's low
+ * two bits; dma 1 sends the image by kernel DMA, not FIFO words; rows 1
+ * sends it row by row, each row's words on their own. The image's words
+ * are framed as DrawPixels frames its own under the context's unpack
+ * state (the library's own rule, and the same row test). The target is
+ * implied by the token.
+ *
+ * The image is unpacked and expanded to RGBA as DrawPixels would, with no
+ * pixel transfer, then scaled and biased by the filter's own parameters
+ * (0xf9) and kept as its internal format keeps it (the OpenGL reference
+ * pages for glConvolutionFilter2D and glSeparableFilter2D).
  */
-static void sgi_kona_gl_convolution_open(SGIKonaState *s, uint32_t selector,
+static void sgi_kona_gl_filter_header(uint32_t token, const uint32_t *a,
+                                      unsigned *filter, uint32_t h[8])
+{
+    memset(h, 0, 8 * sizeof(*h));
+    if (token == SGI_KONA_CMD_GL_CONVOLUTION_1D) {
+        *filter = 0;
+        h[0] = a[1];
+        h[1] = 1;
+        memcpy(h + 2, a + 2, 5 * sizeof(*h));
+    } else if (token == SGI_KONA_CMD_GL_CONVOLUTION_2D) {
+        *filter = 1;
+        memcpy(h, a + 1, 7 * sizeof(*h));
+    } else {
+        *filter = 2;
+        h[0] = a[6] == 1 ? a[1] : a[2];
+        h[1] = 1;
+        memcpy(h + 2, a + 3, 3 * sizeof(*h));
+        h[5] = a[7];
+        h[6] = a[8];
+    }
+}
+
+static const SGIKonaGLPipe sgi_kona_gl_unpack_defaults = {
+    .unpack_alignment = 4,
+};
+
+static const SGIKonaGLPipe *sgi_kona_gl_unpack(SGIKonaState *s, int i)
+{
+    return i == SGI_KONA_CONTEXT_NONE ? &sgi_kona_gl_unpack_defaults :
+                                        &s->state[i]->pipe;
+}
+
+/* The filter's kernel for component c at entry k, or false if c passes. */
+static bool sgi_kona_gl_filter_kernel(const SGIKonaGLFilter *f, unsigned k,
+                                      unsigned c, double *value)
+{
+    unsigned from;
+
+    switch (f->format) {
+    case 0:                     /* alpha */
+        from = c == 3 ? 3 : 4;
+        break;
+    case 1:                     /* RGB */
+        from = c < 3 ? c : 4;
+        break;
+    case 2:                     /* RGBA */
+        from = c;
+        break;
+    case 3:                     /* luminance */
+        from = c < 3 ? 0 : 4;
+        break;
+    case 4:                     /* luminance-alpha */
+        from = c < 3 ? 0 : 3;
+        break;
+    default:                    /* intensity */
+        from = 0;
+        break;
+    }
+    if (from == 4) {
+        return false;
+    }
+    *value = sgi_kona_gl_float(f->values[k][from]);
+    return true;
+}
+
+/*
+ * A filter's stored components as glGetConvolutionFilter returns them
+ * before packing: luminance and intensity as red, the internal format's
+ * other components as themselves, and the components it lacks as zero
+ * (the OpenGL reference page for glGetConvolutionFilter).
+ */
+static void sgi_kona_gl_filter_rgba(const SGIKonaGLFilter *f, unsigned k,
+                                    double rgba[4])
+{
+    double v[4];
+
+    for (unsigned c = 0; c < 4; c++) {
+        v[c] = sgi_kona_gl_float(f->values[k][c]);
+    }
+    rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0;
+    switch (f->format) {
+    case 0:
+        rgba[3] = v[3];
+        break;
+    case 1:
+    case 2:
+        memcpy(rgba, v, (f->format == 2 ? 4 : 3) * sizeof(*v));
+        break;
+    case 4:
+        rgba[3] = v[3];
+        /* fall through */
+    default:
+        rgba[0] = v[0];
+        break;
+    }
+}
+
+/* Store one filter entry: its RGBA after the filter's scale and bias. */
+static bool sgi_kona_gl_filter_store(SGIKonaGLFilter *f, unsigned k,
+                                     const double rgba[4])
+{
+    for (unsigned c = 0; c < 4; c++) {
+        float value = rgba[c] * sgi_kona_gl_float(f->scale[c]) +
+                      sgi_kona_gl_float(f->bias[c]);
+
+        if (!isfinite(value)) {
+            return false;
+        }
+        memcpy(&f->values[k][c], &value, sizeof(value));
+    }
+    return true;
+}
+
+/*
+ * The pending filter's image from `words`, framed as the PIO staging of
+ * sgi_kona_gl_pixels_pio_layout() orders it. Returns false, logged, when
+ * the image cannot be read; the filter is then left undefined.
+ */
+static void sgi_kona_gl_filter_load(SGIKonaState *s, int i,
+                                    const uint32_t *words, size_t nwords)
+{
+    SGIKonaGLImaging *im = &s->state[i]->imaging;
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    SGIKonaGLFilter *f;
+    SGIKonaGLPixelLayout layout;
+    uint32_t h[8], which = 0;
+    unsigned filter, base = 0;
+
+    sgi_kona_gl_filter_header(im->pending_token, im->pending, &filter, h);
+    f = &im->filters[filter];
+    if (im->pending_token == SGI_KONA_CMD_GL_SEPARABLE) {
+        which = im->pending[6];
+        base = which == 2 ? SGI_KONA_GL_FILTER_MAX : 0;
+    }
+    h[5] = 0;
+    if (!sgi_kona_gl_pixels_pio_layout(h, p->unpack_row_length,
+                                        p->unpack_skip_rows,
+                                        p->unpack_skip_pixels,
+                                        p->unpack_alignment, &layout) ||
+        !layout.pixel_bytes || h[2] > 10 ||
+        layout.payload_words > nwords) {
+        goto refused;
+    }
+    for (uint32_t row = 0; row < h[1]; row++) {
+        for (uint32_t x = 0; x < h[0]; x++) {
+            uint32_t source[4] = { 0 };
+            double rgba[4];
+
+            for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
+                uint8_t byte;
+
+                if (!sgi_kona_gl_pixels_pio_byte(&layout, words, nwords, row,
+                        (uint64_t)x * layout.pixel_bytes + k, &byte)) {
+                    goto refused;
+                }
+                source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
+            }
+            if (!sgi_kona_gl_pixel_rgba_double(h[2], h[3], source,
+                                                p->unpack_swap_bytes, rgba) ||
+                !sgi_kona_gl_filter_store(f, base + x + row * h[0], rgba)) {
+                goto refused;
+            }
+        }
+    }
+    f->format = im->pending[0];
+    if (filter == 2) {
+        f->width = im->pending[1];
+        f->height = im->pending[2];
+    } else {
+        f->width = h[0];
+        f->height = h[1];
+    }
+    trace_sgi_kona_gl_filter(im->pending_token, f->format, f->width,
+                             f->height, which);
+    im->pending_token = 0;
+    return;
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter image of format"
+                  " %" PRIu32 " type %" PRIu32 " could not be read; filter"
+                  " left undefined\n", h[2], h[3]);
+    f->width = f->height = 0;
+    im->pending_token = 0;
+}
+
+static void sgi_kona_gl_convolution_open(SGIKonaState *s, int i,
+                                         uint32_t selector,
                                          const uint32_t *args)
 {
-    bool two = selector == SGI_KONA_CMD_GL_CONVOLUTION_2D;
-    uint64_t width = args[1];
-    uint64_t height = two ? args[2] : 1;
-    uint32_t format = args[two ? 3 : 2], type = args[two ? 4 : 3];
-    uint32_t offset = args[two ? 5 : 4] & 3;
-    uint32_t bytes = sgi_kona_gl_native_pixel_bytes(format, type);
-    uint64_t words = (offset + width * height * bytes + 3) / 4;
+    const SGIKonaGLPipe *p = sgi_kona_gl_unpack(s, i);
+    uint32_t h[8];
+    SGIKonaGLPixelLayout layout;
+    unsigned filter, argc;
+    uint64_t words = 0;
+    bool framed;
 
-    if (!s->convolution_logged) {
-        s->convolution_logged = true;
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filters are taken"
-                      " but not applied to pixel transfers\n");
+    argc = selector == SGI_KONA_CMD_GL_CONVOLUTION_1D ? 7 :
+           selector == SGI_KONA_CMD_GL_CONVOLUTION_2D ? 8 : 9;
+    sgi_kona_gl_filter_header(selector, args, &filter, h);
+    if (h[5] > 1 || h[6] > 1 ||
+        (selector == SGI_KONA_CMD_GL_SEPARABLE &&
+         args[6] != 1 && args[6] != 2)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter header"
+                      " 0x%" PRIx32 " has unknown flags; its image will not"
+                      " frame\n", selector);
+        return;
     }
+    if (i != SGI_KONA_CONTEXT_NONE) {
+        SGIKonaGLFilter *f = &s->state[i]->imaging.filters[filter];
+
+        /* A size of zero defines an empty filter, and no image follows. */
+        if (!h[0] || !h[1] ||
+            (selector == SGI_KONA_CMD_GL_SEPARABLE && (!args[1] || !args[2]))) {
+            f->width = f->height = 0;
+        }
+    }
+    if (!h[0] || !h[1]) {
+        return;
+    }
+    framed = !h[5] &&
+             sgi_kona_gl_pixels_pio_layout(h, p->unpack_row_length,
+                                           p->unpack_skip_rows,
+                                           p->unpack_skip_pixels,
+                                           p->unpack_alignment, &layout);
+    if (framed) {
+        words = layout.payload_words;
+    } else if (!h[5]) {
+        /*
+         * The unpack state the model holds does not give the library's row
+         * test the same answer: frame the image as one span from its low
+         * bits on, which is what the library sends when its rows are
+         * contiguous.
+         */
+        uint32_t bytes = sgi_kona_gl_native_pixel_bytes(h[2], h[3]);
+
+        if (!bytes) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter of"
+                          " format %u type %u has no known size; its words"
+                          " will not frame\n", h[2], h[3]);
+            return;
+        }
+        words = (h[4] + (uint64_t)h[0] * h[1] * bytes + 3) / 4;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter rows do not"
+                      " match the unpack state; framed as one span\n");
+    }
+    if (i != SGI_KONA_CONTEXT_NONE && (h[5] || framed) &&
+        h[0] <= SGI_KONA_GL_FILTER_MAX && h[1] <= SGI_KONA_GL_FILTER_MAX &&
+        args[0] <= 5) {
+        SGIKonaGLImaging *im = &s->state[i]->imaging;
+
+        im->pending_token = selector;
+        memset(im->pending, 0, sizeof(im->pending));
+        memcpy(im->pending, args, argc * sizeof(*args));
+    } else if (i != SGI_KONA_CONTEXT_NONE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter %" PRIu32
+                      " by %" PRIu32 " of format code %" PRIu32 " not kept\n",
+                      h[0], h[1], args[0]);
+        s->state[i]->imaging.filters[filter].width = 0;
+        s->state[i]->imaging.filters[filter].height = 0;
+    }
+    if (words > UINT32_MAX) {
+        return;
+    }
+    if (words) {
+        sgi_kona_gl_data_open(s, selector, words);
+    }
+}
+
+/* The FIFO words of a filter image, at the end of its data run. */
+static void sgi_kona_gl_convolution_done(SGIKonaState *s)
+{
+    int i = s->context_current;
+
+    if (i == SGI_KONA_CONTEXT_NONE ||
+        s->state[i]->imaging.pending_token != s->gl_data_token) {
+        return;
+    }
+    if (s->gl_data_have > SGI_KONA_GL_DATA_MAX) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter image of %"
+                      PRIu32 " words exceeds the model's staging\n",
+                      s->gl_data_have);
+        s->state[i]->imaging.pending_token = 0;
+        return;
+    }
+    sgi_kona_gl_filter_load(s, i, s->gl_data, s->gl_data_have);
+}
+
+static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
+                                 uint8_t *buf, uint32_t len);
+
+/* Whether a filter image is to come by DMA (see sgi-kona-dma.c). */
+bool sgi_kona_filter_dma_waiting(SGIKonaState *s)
+{
+    int i = s->context_current;
+    const SGIKonaGLImaging *im;
+    uint32_t h[8];
+    unsigned filter;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return false;
+    }
+    im = &s->state[i]->imaging;
+    if (!im->pending_token) {
+        return false;
+    }
+    sgi_kona_gl_filter_header(im->pending_token, im->pending, &filter, h);
+    return h[5] == 1;
+}
+
+/*
+ * The DMA packet that carries a filter image: read as DrawPixels' DMA is
+ * (sgi_kona_pixels_image_dma()), into PIO order, then kept. The transfer
+ * completes whether or not the image is kept, as a refused image's does
+ * (the kernel kills the pipe when a DMA it started never completes).
+ */
+void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                               uint32_t per_line, uint64_t pitch)
+{
+    int i = s->context_current;
+    SGIKonaGLImaging *im = &s->state[i]->imaging;
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    SGIKonaGLPixelDMALayout d;
+    g_autofree uint32_t *words = NULL;
+    uint8_t chunk[256];
+    uint32_t h[8];
+    unsigned filter;
+
+    sgi_kona_gl_filter_header(im->pending_token, im->pending, &filter, h);
+    if (!sgi_kona_gl_pixels_dma_layout(h, p->unpack_row_length,
+                                       p->unpack_skip_rows,
+                                       p->unpack_skip_pixels,
+                                       p->unpack_alignment, &d) ||
+        (io & 3) != d.source_phase || lines != d.lines ||
+        per_line != d.line_bytes || pitch != d.pitch ||
+        d.span > UINT64_MAX - io ||
+        d.pixels.payload_words > SGI_KONA_GL_DATA_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter DMA"
+                      " source framing mismatch; completed unread, filter"
+                      " left undefined\n");
+        im->filters[filter].width = im->filters[filter].height = 0;
+        im->pending_token = 0;
+        return;
+    }
+    words = g_new0(uint32_t, d.pixels.payload_words);
+    for (uint32_t line = 0; line < lines; line++) {
+        for (uint32_t offset = 0; offset < per_line;) {
+            uint32_t n = MIN(sizeof(chunk), per_line - offset);
+
+            if (!sgi_kona_device_read(s, io + line * pitch + offset,
+                                       chunk, n)) {
+                im->filters[filter].width = im->filters[filter].height = 0;
+                im->pending_token = 0;
+                return;
+            }
+            for (uint32_t k = 0; k < n; k++) {
+                uint32_t row = d.pixels.strided ? line :
+                               (offset + k) / d.pixels.stride;
+                uint32_t col = d.pixels.strided ? offset + k :
+                               (offset + k) % d.pixels.stride;
+                uint64_t at;
+
+                if (col < d.pixels.row_bytes &&
+                    sgi_kona_gl_pixels_pio_offset(&d.pixels, row, col, &at) &&
+                    at / 4 < d.pixels.payload_words) {
+                    words[at / 4] |= (uint32_t)chunk[k] << (24 - 8 * (at % 4));
+                }
+            }
+            offset += n;
+        }
+    }
+    sgi_kona_gl_filter_load(s, i, words, d.pixels.payload_words);
+}
+
+/*
+ * 0xf2 (1D) and 0xf3 (2D) copy a filter from the framebuffer: the format
+ * code, then x, y, width and, for 2D, height, window-relative as
+ * CopyPixels' source (established from the client library). The pixels
+ * are read as CopyPixels reads them, with no pixel transfer, then kept as
+ * a filter image is.
+ */
+static void sgi_kona_gl_convolution_copy(SGIKonaState *s, int i,
+                                         uint32_t selector,
+                                         const uint32_t *args)
+{
+    bool two = selector == SGI_KONA_CMD_GL_COPY_CONVOLUTION_2D;
+    SGIKonaGLFilter *f;
+    SGIKonaGLCopySource source;
+    uint32_t width = args[3], height = two ? args[4] : 1;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    f = &s->state[i]->imaging.filters[two ? 1 : 0];
+    f->width = f->height = 0;
     if (!width || !height) {
         return;
     }
-    if (!bytes || words > UINT32_MAX) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter of "
-                      "format %u type %u has no known size; its words will "
-                      "not frame\n", format, type);
+    if (args[0] > 5 || width > SGI_KONA_GL_FILTER_MAX ||
+        height > SGI_KONA_GL_FILTER_MAX ||
+        !sgi_kona_gl_copy_source_ready(s, i, args[1], args[2], width, height,
+                                        0x1800, &source)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter copy of %"
+                      PRIu32 " by %" PRIu32 " refused; filter left"
+                      " undefined\n", width, height);
         return;
     }
-    sgi_kona_gl_data_open(s, selector, words);
+    for (uint32_t row = 0; row < height; row++) {
+        for (uint32_t col = 0; col < width; col++) {
+            uint32_t rgba;
+            double values[4];
+
+            if (!sgi_kona_gl_copy_read(&source, args[1] + col,
+                                        args[2] + row, &rgba)) {
+                return;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                values[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
+            }
+            if (!sgi_kona_gl_filter_store(f, col + row * width, values)) {
+                return;
+            }
+        }
+    }
+    f->format = args[0];
+    f->width = width;
+    f->height = height;
+    trace_sgi_kona_gl_filter(selector, f->format, width, height, 0);
+}
+
+/*
+ * 0xf8 target pname value and 0xf9 target pname r g b a, the filter
+ * parameters (established from the client library). 0xf8 carries
+ * GL_CONVOLUTION_BORDER_MODE 0x8013, whose only value the library lets
+ * through is GL_REDUCE 0x8016, the border the model applies; 0xf9 the
+ * filter scale (0x8014) and bias (0x8015), applied to filter images taken
+ * after it. The same tokens carry GL_PIXEL_TRANSFORM_2D_EXT's parameters,
+ * which the model does not keep.
+ */
+static void sgi_kona_gl_convolution_parameter(SGIKonaState *s, int i,
+                                              uint32_t selector,
+                                              const uint32_t *args)
+{
+    SGIKonaGLFilter *f;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    if (args[0] < 0x8010 || args[0] > 0x8012) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: parameter 0x%" PRIx32 " of"
+                      " target 0x%" PRIx32 " is not modelled\n", args[1],
+                      args[0]);
+        return;
+    }
+    f = &s->state[i]->imaging.filters[args[0] - 0x8010];
+    if (selector == SGI_KONA_CMD_GL_CONVOLUTION_PARAMETER) {
+        if (args[1] != 0x8013 || args[2] != 0x8016) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution border"
+                          " parameter 0x%" PRIx32 " 0x%" PRIx32 " is not"
+                          " GL_REDUCE; ignored\n", args[1], args[2]);
+        }
+        return;
+    }
+    if (args[1] != 0x8014 && args[1] != 0x8015) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution parameter"
+                      " 0x%" PRIx32 " is not a filter scale or bias;"
+                      " ignored\n", args[1]);
+        return;
+    }
+    memcpy(args[1] == 0x8014 ? f->scale : f->bias, args + 2,
+           4 * sizeof(*args));
+}
+
+/*
+ * 0xf4 target f t and 0xf7 0x8012 f t, glGetConvolutionFilter and
+ * glGetSeparableFilter (established from the client library): the pipe
+ * answers on the return page at offset 8, rows of exactly width pixels
+ * in the native format and type codes, bottom row first; the separable
+ * reply's column follows its row at 5 pixels for filters up to 5 wide or
+ * high, else 7. The components are packed as ReadPixels packs them, from
+ * the filter's own (OpenGL 1.2.1, table 6.1), with no pixel transfer.
+ */
+static void sgi_kona_gl_convolution_get(SGIKonaState *s, int i,
+                                        uint32_t selector,
+                                        const uint32_t *args)
+{
+    const SGIKonaGLFilter *f;
+    const SGIKonaGLPipe *p;
+    uint32_t bpp = sgi_kona_gl_native_pixel_bytes(args[1], args[2]);
+    uint32_t len, column = 0;
+    g_autofree uint8_t *data = NULL;
+
+    if (i == SGI_KONA_CONTEXT_NONE || args[0] < 0x8010 || args[0] > 0x8012 ||
+        (selector == SGI_KONA_CMD_GL_GET_SEPARABLE) != (args[0] == 0x8012) ||
+        !bpp || args[1] > 10) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: convolution filter read of"
+                      " target 0x%" PRIx32 " format %" PRIu32 " type %"
+                      PRIu32 " refused; no reply\n", args[0], args[1],
+                      args[2]);
+        return;
+    }
+    p = &s->state[i]->pipe;
+    f = &s->state[i]->imaging.filters[args[0] - 0x8010];
+    if (args[0] == 0x8012) {
+        column = MAX(f->width, f->height) <= 5 ? 5 : 7;
+        len = (column + f->height) * bpp;
+    } else {
+        len = f->width * f->height * bpp;
+    }
+    data = g_malloc0(MAX(len, 1));
+    for (uint32_t k = 0; args[0] != 0x8012 && k < f->width * f->height;
+         k++) {
+        double rgba[4];
+
+        sgi_kona_gl_filter_rgba(f, k, rgba);
+        sgi_kona_gl_pixel_pack_double(args[1], args[2], rgba,
+                                      p->pack_swap_bytes, data + k * bpp,
+                                      bpp);
+    }
+    for (uint32_t k = 0; args[0] == 0x8012 && k < f->width; k++) {
+        double rgba[4];
+
+        sgi_kona_gl_filter_rgba(f, k, rgba);
+        sgi_kona_gl_pixel_pack_double(args[1], args[2], rgba,
+                                      p->pack_swap_bytes, data + k * bpp,
+                                      bpp);
+    }
+    for (uint32_t k = 0; args[0] == 0x8012 && k < f->height; k++) {
+        double rgba[4];
+
+        sgi_kona_gl_filter_rgba(f, SGI_KONA_GL_FILTER_MAX + k, rgba);
+        sgi_kona_gl_pixel_pack_double(args[1], args[2], rgba,
+                                      p->pack_swap_bytes,
+                                      data + (column + k) * bpp, bpp);
+    }
+    trace_sgi_kona_gl_reply(selector, args[0], len);
+    sgi_kona_post_return(s, selector, 8, data, len);
+}
+
+/*
+ * The 2D filter a 2D image transfer applies: the 2D filter when
+ * GL_CONVOLUTION_2D is enabled, else the separable one when
+ * GL_SEPARABLE_2D is (OpenGL 1.2.1's imaging subset; inferred for this
+ * pipe), or -1. A filter not yet defined applies none.
+ */
+static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im)
+{
+    if ((im->enabled & 2) && im->filters[1].width) {
+        return 1;
+    }
+    if (!(im->enabled & 2) && (im->enabled & 4) && im->filters[2].width) {
+        return 2;
+    }
+    return -1;
+}
+
+static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t)
+{
+    for (unsigned c = 0; c < 4; c++) {
+        if (t->post_conv_scale[c] != 0x3f800000 || t->post_conv_bias[c]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Whether colour image transfers have a stage after the pixel maps: a 2D
+ * filter, or post-convolution scale and bias other than 1 and 0. With
+ * neither, the transfer is exactly what it was without the imaging
+ * subset.
+ */
+static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st)
+{
+    return sgi_kona_gl_filter_2d(&st->imaging) >= 0 ||
+           !sgi_kona_gl_post_conv_default(&st->pipe.pixel_transfer);
+}
+
+/* Post-convolution scale and bias, then the clamp to [0, 1]. */
+static bool sgi_kona_gl_post_conv(const SGIKonaGLPixelTransfer *t,
+                                  double rgba[4])
+{
+    for (unsigned c = 0; c < 4; c++) {
+        double scale = sgi_kona_gl_float(t->post_conv_scale[c]);
+        double bias = sgi_kona_gl_float(t->post_conv_bias[c]);
+        double value = rgba[c] * scale + bias;
+
+        if (!isfinite(value)) {
+            return false;
+        }
+        rgba[c] = CLAMP(value, 0.0, 1.0);
+    }
+    return true;
+}
+
+/*
+ * The imaging stages after the pixel maps for a colour image of `*width`
+ * by `*height` pixels, bottom row first: the 2D or separable filter with
+ * the REDUCE border, which leaves an image smaller by the filter's size
+ * less one in each direction (EXT_convolution, as the "OpenGL on Silicon
+ * Graphics Systems" manual's equations give it), then post-convolution
+ * scale and bias with the clamp (the OpenGL reference page for
+ * glPixelTransfer).
+ *
+ * A component the filter's internal format does not have is not filtered.
+ * Approximated: it takes the source pixel's value at the filter window's
+ * origin, which is what an identity filter would give; what the pipe
+ * returns for it is unknown.
+ */
+static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
+                                double (**image)[4], uint32_t *width,
+                                uint32_t *height)
+{
+    const SGIKonaGLPixelTransfer *t = &st->pipe.pixel_transfer;
+    int filter = sgi_kona_gl_filter_2d(&st->imaging);
+    double (*in)[4] = *image;
+    g_autofree double (*out)[4] = NULL;
+    uint32_t w = *width, h = *height;
+
+    if (filter >= 0) {
+        const SGIKonaGLFilter *f = &st->imaging.filters[filter];
+        bool separable = filter == 2;
+        uint32_t ow = w >= f->width ? w - f->width + 1 : 0;
+        uint32_t oh = h >= f->height ? h - f->height + 1 : 0;
+
+        out = g_try_malloc_n(MAX((uint64_t)ow * oh, 1), sizeof(*out));
+        if (!out) {
+            return false;
+        }
+        for (uint32_t y = 0; y < oh; y++) {
+            for (uint32_t x = 0; x < ow; x++) {
+                double *d = out[(uint64_t)y * ow + x];
+
+                for (unsigned c = 0; c < 4; c++) {
+                    double sum = 0, kernel, column;
+                    bool filtered = true;
+
+                    for (uint32_t n = 0; filtered && n < f->height; n++) {
+                        if (separable &&
+                            !sgi_kona_gl_filter_kernel(f,
+                                SGI_KONA_GL_FILTER_MAX + n, c, &column)) {
+                            filtered = false;
+                            break;
+                        }
+                        for (uint32_t m = 0; m < f->width; m++) {
+                            unsigned k = separable ? m : m + n * f->width;
+
+                            if (!sgi_kona_gl_filter_kernel(f, k, c,
+                                                            &kernel)) {
+                                filtered = false;
+                                break;
+                            }
+                            if (separable) {
+                                kernel *= column;
+                            }
+                            sum += kernel *
+                                   in[(uint64_t)(y + n) * w + x + m][c];
+                        }
+                    }
+                    d[c] = filtered ? sum : in[(uint64_t)y * w + x][c];
+                }
+                if (!sgi_kona_gl_post_conv(t, d)) {
+                    return false;
+                }
+            }
+        }
+        g_free(*image);
+        *image = g_steal_pointer(&out);
+        *width = ow;
+        *height = oh;
+        return true;
+    }
+    for (uint64_t k = 0; k < (uint64_t)w * h; k++) {
+        if (!sgi_kona_gl_post_conv(t, in[k])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* The end of a GL data run. */
@@ -11764,6 +12620,11 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
         s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_UI ||
         s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_US) {
         sgi_kona_gl_pixel_map_done(s);
+    }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_CONVOLUTION_1D ||
+        s->gl_data_token == SGI_KONA_CMD_GL_CONVOLUTION_2D ||
+        s->gl_data_token == SGI_KONA_CMD_GL_SEPARABLE) {
+        sgi_kona_gl_convolution_done(s);
     }
     if (s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK) {
         trace_sgi_kona_command_unmodelled(s->gl_data_token,
@@ -17989,6 +18850,7 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
           s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_US &&
           s->gl_data_token != SGI_KONA_CMD_GL_CONVOLUTION_1D &&
           s->gl_data_token != SGI_KONA_CMD_GL_CONVOLUTION_2D &&
+          s->gl_data_token != SGI_KONA_CMD_GL_SEPARABLE &&
           s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK))) {
         return -EINVAL;
     }
@@ -19316,8 +20178,8 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
     .name = TYPE_SGI_KONA "/gl-transfer",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = sgi_kona_gl_transfer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(scale, SGIKonaGLPixelTransfer, 4),
@@ -19340,6 +20202,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
         VMSTATE_STRUCT_ARRAY(colour_rgba, SGIKonaGLPixelTransfer, 4, 0,
                              vmstate_sgi_kona_gl_pixel_map_table,
                              SGIKonaGLPixelMap),
+        VMSTATE_UINT32_ARRAY(post_conv_scale, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_UINT32_ARRAY(post_conv_bias, SGIKonaGLPixelTransfer, 4),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -19933,6 +20797,94 @@ static const VMStateDescription vmstate_sgi_kona_gl_texture_regs = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_gl_filter = {
+    .name = TYPE_SGI_KONA "/logical-state/imaging/filter",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(format, SGIKonaGLFilter),
+        VMSTATE_UINT32(width, SGIKonaGLFilter),
+        VMSTATE_UINT32(height, SGIKonaGLFilter),
+        VMSTATE_UINT32_2DARRAY(values, SGIKonaGLFilter,
+                               SGI_KONA_GL_FILTER_MAX * SGI_KONA_GL_FILTER_MAX,
+                               4),
+        VMSTATE_UINT32_ARRAY(scale, SGIKonaGLFilter, 4),
+        VMSTATE_UINT32_ARRAY(bias, SGIKonaGLFilter, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Only once a context has used the imaging subset. */
+static bool sgi_kona_gl_imaging_needed(void *opaque)
+{
+    const SGIKonaGLState *st = opaque;
+    SGIKonaGLImaging defaults;
+
+    sgi_kona_gl_imaging_init(&defaults);
+    if (memcmp(&st->imaging, &defaults, sizeof(defaults))) {
+        return true;
+    }
+    for (unsigned k = 0; k < SGI_KONA_GL_ATTRIB_DEPTH; k++) {
+        if (st->imaging_enabled_attrib[k]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int sgi_kona_gl_imaging_post_load(void *opaque, int version_id)
+{
+    const SGIKonaGLImaging *im = &((SGIKonaGLState *)opaque)->imaging;
+    uint32_t token = im->pending_token;
+
+    for (unsigned f = 0; f < SGI_KONA_GL_FILTERS; f++) {
+        const SGIKonaGLFilter *filter = &im->filters[f];
+
+        if (filter->format > 5 || filter->width > SGI_KONA_GL_FILTER_MAX ||
+            filter->height > SGI_KONA_GL_FILTER_MAX ||
+            (f == 0 && filter->height > 1) ||
+            !filter->width != !filter->height) {
+            return -EINVAL;
+        }
+    }
+    if (token && token != SGI_KONA_CMD_GL_CONVOLUTION_1D &&
+        token != SGI_KONA_CMD_GL_CONVOLUTION_2D &&
+        token != SGI_KONA_CMD_GL_SEPARABLE) {
+        return -EINVAL;
+    }
+    if (token) {
+        uint32_t h[8];
+        unsigned filter;
+
+        sgi_kona_gl_filter_header(token, im->pending, &filter, h);
+        if (!h[0] || !h[1] || h[0] > SGI_KONA_GL_FILTER_MAX ||
+            h[1] > SGI_KONA_GL_FILTER_MAX || im->pending[0] > 5 ||
+            h[5] > 1 || h[6] > 1) {
+            return -EINVAL;
+        }
+    }
+    return im->enabled > 7 ? -EINVAL : 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_imaging = {
+    .name = TYPE_SGI_KONA "/logical-state/imaging",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_imaging_needed,
+    .post_load = sgi_kona_gl_imaging_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(imaging.filters, SGIKonaGLState,
+                             SGI_KONA_GL_FILTERS, 0,
+                             vmstate_sgi_kona_gl_filter, SGIKonaGLFilter),
+        VMSTATE_UINT32(imaging.enabled, SGIKonaGLState),
+        VMSTATE_UINT32(imaging.pending_token, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(imaging.pending, SGIKonaGLState, 9),
+        VMSTATE_UINT32_ARRAY(imaging_enabled_attrib, SGIKonaGLState,
+                             SGI_KONA_GL_ATTRIB_DEPTH),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_state = {
     .name = TYPE_SGI_KONA "/logical-state",
     .version_id = 1,
@@ -19984,6 +20936,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_state = {
         &vmstate_sgi_kona_gl_iris,
         &vmstate_sgi_kona_gl_parked_upload,
         &vmstate_sgi_kona_gl_texture_regs,
+        &vmstate_sgi_kona_gl_imaging,
         NULL
     },
 };
@@ -20445,6 +21398,10 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_be32(f, u->bitmap_phase);
     qemu_put_be32(f, u->transfer.depth_scale);
     qemu_put_be32(f, u->transfer.depth_bias);
+    for (unsigned k = 0; k < 4; k++) {
+        qemu_put_be32(f, u->transfer.post_conv_scale[k]);
+        qemu_put_be32(f, u->transfer.post_conv_bias[k]);
+    }
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
@@ -20523,6 +21480,10 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     tmp.bitmap_phase = qemu_get_be32(f);
     tmp.transfer.depth_scale = qemu_get_be32(f);
     tmp.transfer.depth_bias = qemu_get_be32(f);
+    for (unsigned k = 0; k < 4; k++) {
+        tmp.transfer.post_conv_scale[k] = qemu_get_be32(f);
+        tmp.transfer.post_conv_bias[k] = qemu_get_be32(f);
+    }
     tmp.complete = complete;
     tmp.swap_bytes = swap;
     if (complete > 1 || swap > 1 || draw > 1 || transfer > 1 || pio > 1 ||

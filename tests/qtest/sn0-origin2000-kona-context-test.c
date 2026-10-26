@@ -2785,16 +2785,18 @@ static void test_migration_rejects_context_stream(void)
 
 /*
  * The 0xee answer with one context: its return page, filled with 0x5a,
- * gets 32 zero words at bytes 8 to 0x87 and then a non-zero word 0, with
- * word 1 and the bytes past 0x87 untouched. The trace shows the 32 words
- * written before word 0, so they are present when the client's wait ends.
+ * gets 32 words at bytes 8 to 0x87, eight records each of the model's
+ * image bound (8192) twice and two zeros, and then a non-zero word 0,
+ * with word 1 and the bytes past 0x87 untouched. The trace shows the 32
+ * words written before word 0, so they are present when the client's
+ * wait ends.
  */
 static void test_line_distance_answer(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
     g_autofree char *data = NULL, *ready = NULL;
-    uint8_t words[0x80], zeros[0x80] = { 0 };
+    uint8_t words[0x80], expected[0x80] = { 0 };
     const char *data_write, *ready_write;
     QTestState *s = kona_init_logged(&log);
 
@@ -2806,8 +2808,12 @@ static void test_line_distance_answer(void)
     kona_command(s, 0xee, (uint32_t[]){ 0 }, 1);
     g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
     g_assert_cmphex(guest_word(s, RETURN_A + 4), ==, 0x5a5a5a5a);
+    for (unsigned k = 0; k < 8; k++) {
+        stl_be_p(expected + k * 16, 8192);
+        stl_be_p(expected + k * 16 + 4, 8192);
+    }
     qtest_memread(s, RETURN_A + 8, words, sizeof(words));
-    g_assert_cmpmem(words, sizeof(words), zeros, sizeof(zeros));
+    g_assert_cmpmem(words, sizeof(words), expected, sizeof(expected));
     g_assert_cmphex(guest_word(s, RETURN_A + 0x88), ==, 0x5a5a5a5a);
     assert_textport_in_step(s);
     qtest_quit(s);
@@ -2831,7 +2837,7 @@ static void test_line_distance_answer(void)
  */
 static void test_line_distance_on_current_context(void)
 {
-    uint8_t words[0x80], zeros[0x80] = { 0 };
+    uint8_t words[0x80];
     QTestState *s = qtest_init(MACHINE_ARGS);
 
     for (unsigned i = 0; i < 0x100; i += 4) {
@@ -2850,7 +2856,8 @@ static void test_line_distance_on_current_context(void)
 
     g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
     qtest_memread(s, RETURN_A + 8, words, sizeof(words));
-    g_assert_cmpmem(words, sizeof(words), zeros, sizeof(zeros));
+    g_assert_cmphex(ldl_be_p(words + 4), ==, 8192);
+    g_assert_cmphex(ldl_be_p(words + 8), ==, 0);
     g_assert_cmphex(guest_word(s, RETURN_B), ==, 0);
     g_assert_cmphex(guest_word(s, RETURN_B + 8), ==, 0x5a5a5a5a);
     qtest_quit(s);

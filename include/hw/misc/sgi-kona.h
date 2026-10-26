@@ -388,6 +388,12 @@ typedef struct SGIKonaGLPixelTransfer {
     SGIKonaGLPixelMap index_map;
     SGIKonaGLPixelMap index_rgba[4];
     SGIKonaGLPixelMap colour_rgba[4];
+    /*
+     * GL_POST_CONVOLUTION_{RED,GREEN,BLUE,ALPHA}_{SCALE,BIAS} (0x801c to
+     * 0x8023), float bits: applied after a convolution, then clamped.
+     */
+    uint32_t post_conv_scale[4];
+    uint32_t post_conv_bias[4];
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {
@@ -495,6 +501,38 @@ typedef struct SGIKonaTextureRegs {
     uint8_t associate_slot;
 } SGIKonaTextureRegs;
 
+/*
+ * EXT_convolution's filters (see sgi_kona_gl_convolution_open()): 1D,
+ * 2D and separable, the order of their targets 0x8010 to 0x8012. The
+ * client library refuses a width or height of 8 or more.
+ */
+#define SGI_KONA_GL_FILTER_MAX 7
+#define SGI_KONA_GL_FILTERS    3
+
+typedef struct SGIKonaGLFilter {
+    /* The internal format code: alpha 0, RGB 1, RGBA 2, L 3, LA 4, I 5. */
+    uint32_t format;
+    uint32_t width, height;     /* 0 by 0 until a filter is defined */
+    /*
+     * The filter's R, G, B and A after its scale and bias, float bits,
+     * at i + j * width; a separable filter's row from entry 0 and its
+     * column from entry SGI_KONA_GL_FILTER_MAX.
+     */
+    uint32_t values[SGI_KONA_GL_FILTER_MAX * SGI_KONA_GL_FILTER_MAX][4];
+    uint32_t scale[4], bias[4]; /* CONVOLUTION_FILTER_SCALE and _BIAS */
+} SGIKonaGLFilter;
+
+typedef struct SGIKonaGLImaging {
+    SGIKonaGLFilter filters[SGI_KONA_GL_FILTERS];
+    uint32_t enabled;           /* bit n: the filter of target 0x8010 + n */
+    /*
+     * The filter command whose image is still to come, by FIFO words or
+     * by DMA: its token and header words, or a token of 0.
+     */
+    uint32_t pending_token;
+    uint32_t pending[9];
+} SGIKonaGLImaging;
+
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
 typedef struct SGIKonaGLState {
@@ -517,6 +555,8 @@ typedef struct SGIKonaGLState {
     /* This context's texture binding words while another is current. */
     SGIKonaTextureRegs texture_regs;
     bool texture_regs_saved;
+    SGIKonaGLImaging imaging;
+    uint32_t imaging_enabled_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
 } SGIKonaGLState;
 
 typedef struct SGIKonaPendingSwap {
@@ -527,10 +567,11 @@ typedef struct SGIKonaPendingSwap {
 } SGIKonaPendingSwap;
 
 /*
- * The most words of a GL data run the model keeps: twelve for each of
- * the eight lights glPopAttrib can return, more than the 32 stipple rows.
+ * The most words of a GL data run the model keeps: a 7 by 7 convolution
+ * filter of four floats a pixel sent row by row, each row word-aligned
+ * (at most 203 words), more than the 96 of glPopAttrib's eight lights.
  */
-#define SGI_KONA_GL_DATA_MAX 96
+#define SGI_KONA_GL_DATA_MAX 256
 
 /*
  * The mailbox reply-word register: readable while a queued reply
@@ -1336,7 +1377,6 @@ struct SGIKonaState {
     Object *pi;
     uint32_t pi_held;
     bool pi_unlinked_logged;
-    bool convolution_logged;    /* host-only: the limitation was logged */
     Object *pi_class_node;
     struct SGIPIGfxClass *pi_class;
     /*
@@ -1774,6 +1814,10 @@ struct SGIKonaState {
 uint32_t sgi_kona_fb_read(SGIKonaState *s, int x, int y);
 
 bool sgi_kona_pixels_dma_waiting(SGIKonaState *s);
+/* A convolution filter image to come by DMA, and its packet's bytes. */
+bool sgi_kona_filter_dma_waiting(SGIKonaState *s);
+void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                               uint32_t per_line, uint64_t pitch);
 bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                 uint32_t per_line, uint64_t pitch);
 bool sgi_kona_bitmap_dma_waiting(SGIKonaState *s);
