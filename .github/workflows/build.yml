@@ -4,7 +4,8 @@
 # request, in parallel with the full run, so it must stay cheap: it builds,
 # runs the script and model suites, the unit tests, the quick generated-ROM
 # functional tests and only the qtests whose own test files the change edits
-# (none for a change to model code), up to a time budget. It runs no Linux,
+# (none for a change to model code), up to a time budget, and cross-compiles
+# the Windows release programs with MinGW. It runs no Linux,
 # PROM or IRIX boot and not the ROM suite. The full run, which the merge
 # queue dispatches before every land, adds every register test, those boots,
 # the SMP machine cases and the
@@ -121,6 +122,11 @@ jobs:
         run: |
           echo "configure and build QEMU" > "$CI_STEP"
           bash scripts/ci/runner-setup build
+
+      - name: cross-compile QEMU for Windows
+        run: |
+          echo "cross-compile QEMU for Windows" > "$CI_STEP"
+          bash scripts/ci/runner-setup windows
 
       - name: edited qtests and unit tests
         env:
