@@ -1845,7 +1845,8 @@ static void expansion_test_class_init(ObjectClass *oc, const void *data)
     mc->default_cpus = sgi_machine_topology_default_cpus(compute);
     mc->min_cpus = mc->default_cpus;
     mc->max_cpus = sgi_machine_product_max_cpus("origin300");
-    mc->default_ram_size = sgi_machine_topology_default_ram(compute);
+    sgi_machine_class_set_default_ram(
+        mc, sgi_machine_topology_default_ram(compute));
     mc->default_ram_id = "sn-builder-expansion-test.ram";
     object_class_property_add_bool(oc, "activate", NULL,
                                    expansion_test_set_activate);

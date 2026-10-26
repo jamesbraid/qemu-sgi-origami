@@ -1490,9 +1490,10 @@ static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
 }
 
 /*
- * -smp and -m default to the product's default topology and its most
- * node boards, whatever nodes= says: the machine cannot tell a default
- * from an explicit value. A refusal says so when nodes= asked for fewer.
+ * -smp defaults to the product's default topology and its most node
+ * boards, whatever nodes= says: the machine cannot tell a default from an
+ * explicit value. (-m can: see sgi_machine_settle_default_ram().) A
+ * refusal says so when nodes= asked for fewer.
  */
 static const char *sgi_machine_nodes_hint(MachineState *machine)
 {
@@ -1505,8 +1506,75 @@ static const char *sgi_machine_nodes_hint(MachineState *machine)
         s->nodes_requested == QAPI_LIST_LENGTH(largest->nodes)) {
         return "";
     }
-    return "; -smp and -m default to the most node boards, so give both "
-           "with nodes=";
+    return "; -smp defaults to the most node boards, so give it with nodes=";
+}
+
+/*
+ * A marker, not a size: what default_ram_size holds so that an absent -m
+ * can be told from every explicit one. It is the largest value QEMU's 8 KiB
+ * rounding of -m leaves unchanged, so no sensible -m reaches it. The one
+ * collision left is an explicit -m of exactly this many bytes (16 EiB less
+ * 8 KiB), which reads as absent where the parent refused it. Until the
+ * machine settles it before RAM is sized, -preconfig's qom-get of memory,
+ * and the -numa memdev size check that runs first, show this value.
+ */
+#define SGI_RAM_UNSET (UINT64_MAX & ~(UINT64_C(8192) - 1))
+
+static uint64_t sgi_machine_nodes_ram(const SGIModelTopology *t);
+
+void sgi_machine_class_set_default_ram(MachineClass *mc, uint64_t bytes)
+{
+    SGI_MACHINE_CLASS(mc)->fallback_ram_size = bytes;
+    mc->default_ram_size = SGI_RAM_UNSET;
+}
+
+/*
+ * Without -m, fit every node board the selected topology and nodes= build
+ * with the memory its catalogue gives each, not the product's default
+ * topology's total. A class's default_ram_size is SGI_RAM_UNSET (see
+ * sgi_machine_class_set_default_ram()), so QEMU leaves that in ram_size
+ * when -m is absent. This runs before QEMU sizes the default RAM backend
+ * from ram_size. The boards have no memory hotplug, so -m maxmem= and
+ * slots= are refused here; with no size beside them QEMU's own check
+ * refuses them first, against the marker.
+ */
+static bool sgi_machine_settle_default_ram(MachineState *machine,
+                                           Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
+    const SGIModelTopology *t;
+
+    /*
+     * A memory backend replaces ram_size but leaves maxram_size at the
+     * marker QEMU copied from default_ram_size: no maxmem was given.
+     */
+    if (machine->maxram_size == SGI_RAM_UNSET) {
+        machine->maxram_size = machine->ram_size;
+    }
+    if (machine->ram_slots || machine->maxram_size != machine->ram_size) {
+        error_setg(errp, "%s: the memory has no hotplug, so -m maxmem= and "
+                   "slots= are not supported",
+                   MACHINE_GET_CLASS(machine)->name);
+        return false;
+    }
+    if (machine->ram_size != SGI_RAM_UNSET) {
+        return true;
+    }
+    t = sgi_machine_topology(machine);
+    machine->ram_size = t ? sgi_machine_nodes_ram(t) : smc->fallback_ram_size;
+    machine->maxram_size = machine->ram_size;
+    return true;
+}
+
+static bool sgi_machine_create_default_memdev(MachineState *machine,
+                                              const char *path, Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
+
+    if (!sgi_machine_settle_default_ram(machine, errp)) {
+        return false;
+    }
+    return smc->parent_create_default_memdev(machine, path, errp);
 }
 
 /* The one row a machine's own built topology holds. */
@@ -1634,10 +1702,9 @@ static const SGIModelModule *sgi_machine_node_module(const SGIModelTopology *t,
     return NULL;
 }
 
-uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *chassis)
+/* The memory every node of @t fits, summed over its banks. */
+static uint64_t sgi_machine_nodes_ram(const SGIModelTopology *t)
 {
-    const SGIModelTopology *t = sgi_model_population_view(
-        chassis, sgi_model_default_population(chassis), &error_abort);
     g_autofree const SGIModelNode **nodes = NULL;
     uint64_t total_mib = 0;
     size_t node_count, i;
@@ -1653,6 +1720,12 @@ uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *chassis)
         }
     }
     return total_mib * MiB;
+}
+
+uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *chassis)
+{
+    return sgi_machine_nodes_ram(sgi_model_population_view(
+        chassis, sgi_model_default_population(chassis), &error_abort));
 }
 
 unsigned int sgi_machine_topology_default_cpus(
@@ -6858,7 +6931,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     Error *local_err = NULL;
-    const SGIModelTopology *t = sgi_machine_resolve(machine, &local_err);
+    const SGIModelTopology *t;
     const SN0ModelMemory *node_memory =
         smc->node_memory ? smc->node_memory : &sn0_hub_memory;
     g_autofree unsigned int *requested = NULL;
@@ -6879,6 +6952,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     bool allow_ip53_experiment = false;
     bool allow_ip53_fixture = smc->test_topology && qtest_enabled();
 
+    if (!sgi_machine_settle_default_ram(machine, errp)) {
+        return false;
+    }
+    t = sgi_machine_resolve(machine, &local_err);
     if (!t && sgi_machine_chassis(machine)) {
         error_propagate_prepend(errp, local_err, "%s: ", mc->name);
         return false;
@@ -9104,6 +9181,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     SGIXioSlotsClass *xc = SGI_XIO_SLOTS_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
     HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
 
     xc->claim = sgi_machine_claim_xio_slot;
@@ -9112,6 +9190,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     hc->pre_plug = sgi_machine_pre_plug;
     hc->plug = sgi_machine_plug;
 
+    smc->parent_create_default_memdev = mc->create_default_memdev;
+    mc->create_default_memdev = sgi_machine_create_default_memdev;
     mc->init = sgi_machine_init;
     mc->reset = sgi_machine_reset;
     mc->possible_cpu_arch_ids = sgi_machine_possible_cpu_arch_ids;
@@ -9365,7 +9445,8 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->get_default_cpu_type = origin200_get_default_cpu_type;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->max_cpus = sgi_machine_product_max_cpus("origin200");
-    mc->default_ram_size = sgi_machine_topology_default_ram(t);
+    sgi_machine_class_set_default_ram(
+        mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn0.node0.ram";
     sgi_machine_class_add_storage(oc);
 }
@@ -9384,7 +9465,8 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->max_cpus = sgi_machine_product_max_cpus("origin2000");
-    mc->default_ram_size = sgi_machine_topology_default_ram(t);
+    sgi_machine_class_set_default_ram(
+        mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn0.ram";
 
     object_class_property_add_str(oc, "baseio-preset",
@@ -9417,7 +9499,8 @@ static void onyx2_class_init(ObjectClass *oc, const void *data)
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->max_cpus = sgi_machine_product_max_cpus("onyx2");
-    mc->default_ram_size = sgi_machine_topology_default_ram(t);
+    sgi_machine_class_set_default_ram(
+        mc, sgi_machine_topology_default_ram(t));
     mc->default_ram_id = "sn0.ram";
     sgi_machine_class_add_storage(oc);
 }

@@ -1171,10 +1171,10 @@ static void test_origin200_accepts_its_memory_populations(const void *data)
 static void test_origin200_dual_accepts_its_populations(const void *data)
 {
     /*
- * default_ram_size is origin200's own shipped total (one node), so -m must
- * be named explicitly here: left out, it would divide across this topology's
- * two real nodes and fail, not fall back to a value this topology accepts.
- */
+     * -m names the total to divide over this topology's two nodes, so each
+     * per-node size under test is chosen here. Left out, the machine fits
+     * the topology's own default per node.
+     */
     static const unsigned int mib_per_node[] = { 1664, 512, 256, 192, 128, 64 };
     unsigned int i;
 
@@ -1279,13 +1279,9 @@ static void test_origin2000_rack_accepts_its_populations(const void *data)
 static void test_origin2000_one_node_accepts_its_populations(const void *data)
 {
     /*
- * default_ram_size is origin2000's own shipped default (the four-node
- * module's total), so -m must be named explicitly here the same way
- * test_origin200_dual_accepts_its_populations names it for origin200's own
- * two-node topology: left out, it would try this one node against the
- * four-node module's default total and fail, not fall back to a value
- * origin2000-deskside itself accepts.
- */
+     * -m names the one node's memory: the 64 MiB DIMM pair under test. Left
+     * out, the machine fits this topology's own 256 MiB per node.
+     */
     QTestState *qts = qtest_init(
         "-M origin2000,topology=origin2000-deskside,nodes=1 -smp 2 -m 64M "
         "-display none");
@@ -1299,9 +1295,9 @@ static void test_origin2000_one_node_accepts_its_populations(const void *data)
  * Onyx2 product guide 1073, printed page 3), so a chassis left without -m
  * fits 256 MiB on every node. The 64 MiB DIMM pair from the memory
  * specification (007-3439-002, printed page 35) stays selectable. The
- * machine's default total is the four-node rack's, so a smaller chassis
- * names -m itself; the catalogue's per-node default is checked by
- * test_sgi_model_generator.py.
+ * default total follows the topology and nodes= selected, not the
+ * product's four-node rack, and an explicit -m is never replaced, even by
+ * the rack's own total.
  */
 static void test_ip27_chassis_default_to_256_mib_per_node(const void *data)
 {
@@ -1312,6 +1308,9 @@ static void test_ip27_chassis_default_to_256_mib_per_node(const void *data)
         { "-M origin2000,topology=origin2000-rack -smp 8", 4 },
         { "-M origin2000,topology=origin2000-deskside -smp 8", 4 },
         { "-M onyx2,topology=onyx2-rack -smp 8", 4 },
+        { "-M onyx2,topology=onyx2-deskside -smp 4", 2 },
+        { "-M onyx2,topology=onyx2-deskside,nodes=1 -smp 2", 1 },
+        { "-M origin2000,topology=origin2000-rack,nodes=2 -smp 4", 2 },
     };
     size_t i;
 
@@ -1329,6 +1328,49 @@ static void test_ip27_chassis_default_to_256_mib_per_node(const void *data)
                           64 * cases[i].nodes);
         qtest_quit(qts);
     }
+
+    /* 1 GiB is the rack's default total, and here two nodes' 512 MiB each. */
+    {
+        QTestState *qts = qtest_init("-M onyx2,topology=onyx2-deskside "
+                                     "-smp 4 -m 1G -display none");
+        g_autoptr(QDict) memory = qtest_qmp(qts,
+            "{'execute':'query-memory-size-summary'}");
+
+        g_assert_cmpuint(qdict_get_uint(qdict_get_qdict(memory, "return"),
+                                        "base-memory"), ==, UINT64_C(1) << 30);
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * The boards have no memory hotplug, so maxmem and slots are refused by
+ * name when a size accompanies them. With no size, QEMU's own maxmem check
+ * runs first, against the machine's absent-size marker, so only the refusal
+ * is asserted. A size the machine refuses, 16 GiB here, is still refused
+ * and is never read as an absent -m. A memory backend without -m is not
+ * maxmem and must still boot.
+ */
+static void test_ip27_memory_has_no_hotplug(const void *data)
+{
+    const char *with_size[] = {
+        qtest_qemu_binary(NULL), "-M", "onyx2,topology=onyx2-deskside",
+        "-smp", "4", "-m", "512M,maxmem=2G,slots=1", "-display", "none", NULL
+    };
+    const char *without_size[] = {
+        qtest_qemu_binary(NULL), "-M", "onyx2,topology=onyx2-deskside",
+        "-smp", "4", "-m", "maxmem=2G,slots=1", "-display", "none", NULL
+    };
+    const char *huge[] = {
+        qtest_qemu_binary(NULL), "-M", "onyx2,topology=onyx2-deskside",
+        "-smp", "4", "-m", "16G", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(with_size, "the memory has no hotplug");
+    assert_qemu_rejects(without_size, "invalid value of maxmem");
+    assert_qemu_rejects(huge, "does not accept 8192 MiB per node");
+    qtest_quit(qtest_init("-M onyx2,topology=onyx2-deskside,memory-backend=m0 "
+                          "-smp 4 -object memory-backend-ram,id=m0,size=512M "
+                          "-display none"));
 }
 
 /*
@@ -9769,6 +9811,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-deskside-has-two-cpus-on-node-zero", NULL,
         test_origin2000_one_node_has_two_cpus_on_node_zero);
+    qtest_add_data_func("sn/builder/ip27-memory-has-no-hotplug", NULL,
+                        test_ip27_memory_has_no_hotplug);
     qtest_add_data_func("sn/builder/onyx2-accepts-256-mib-per-node", NULL,
                         test_onyx2_accepts_256_mib_per_node);
     qtest_add_data_func("sn/builder/ip27-chassis-default-to-256-mib-per-node",
