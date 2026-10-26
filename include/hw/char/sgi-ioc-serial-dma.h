@@ -151,6 +151,14 @@ typedef struct SGIIOCSerialDMAPort {
     uint8_t tx_entry[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t tx_slot;
 
+    /*
+     * A transmit delay in progress: when it ends, or 0 with none, and
+     * whether it owes an explicit interrupt then.
+     */
+    int64_t tx_delay_due;
+    bool tx_delay_irq;
+    QEMUTimer *tx_delay_timer;
+
     /* A ring entry under construction, and its held count. */
     uint8_t packer[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t packed;
