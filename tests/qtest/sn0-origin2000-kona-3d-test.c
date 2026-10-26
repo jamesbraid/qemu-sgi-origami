@@ -7823,6 +7823,24 @@ static void test_draw_pixels(gconstpointer opaque)
     }
     kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
     draw_pixels_expected(s, !refused);
+    if (mode == 7) {
+        /*
+         * The sinking histogram counted the image it consumed: red, green,
+         * blue and white, each component in bin 0 or bin 7.
+         */
+        uint32_t want[32] = { 0 };
+
+        want[0] = want[1] = want[2] = 2;
+        want[28] = want[29] = want[30] = 2;
+        want[31] = 4;
+        prepare_refused_reply(s);
+        kona_command(s, 0x104, (uint32_t[]) { 8 }, 1);
+        assert_reply_posted(s);
+        for (unsigned k = 0; k < 32; k++) {
+            g_assert_cmpuint(guest_word(s, RETURN_PAGE + 4 + 4 * k), ==,
+                             want[k]);
+        }
+    }
     if (to) {
         qtest_quit(to);
     }
