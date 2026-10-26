@@ -459,6 +459,9 @@ typedef struct Corpus {
     uint32_t stencil[CW * CH];
     uint64_t calls;
     uint32_t texels[CTEX_LEVELS][(1u << CTEX_LOG2) * (1u << CTEX_LOG2)];
+    /* Raw-component reads: each slot's width, and texels out of range. */
+    uint8_t bits[4];
+    bool overflow;
     SGIGLTexLevel levels[CTEX_LEVELS];
     SGIGLTexPyramid pyramid;
     SGIGLTexImage image;
@@ -601,7 +604,33 @@ static bool corpus_read_texel(void *opaque, uint32_t level, uint32_t x,
     return true;
 }
 
-static void corpus_texture(Corpus *c, GRand *rand)
+static bool corpus_chance(GRand *rand, unsigned percent)
+{
+    return g_rand_int_range(rand, 0, 100) < percent;
+}
+
+/*
+ * A texel's components at the slot widths, from its packed word; with
+ * overflow set, about one texel in 61 holds a value too wide for its slot.
+ */
+static bool corpus_read_texel_components(void *opaque, uint32_t level,
+                                         uint32_t x, uint32_t y,
+                                         uint16_t component[4])
+{
+    Corpus *c = opaque;
+    uint32_t size = MAX(1, (1u << CTEX_LOG2) >> level);
+    uint32_t word = c->texels[level][y * size + x];
+
+    for (unsigned k = 0; k < 4; k++) {
+        component[k] = (word >> (8 * k)) & ((1u << c->bits[k]) - 1);
+    }
+    if (c->overflow && word % 61 == 0) {
+        component[0] = 1u << c->bits[0];
+    }
+    return true;
+}
+
+static void corpus_texels(Corpus *c, GRand *rand)
 {
     for (unsigned l = 0; l < CTEX_LEVELS; l++) {
         uint32_t size = MAX(1, (1u << CTEX_LOG2) >> l);
@@ -609,11 +638,40 @@ static void corpus_texture(Corpus *c, GRand *rand)
         for (uint32_t i = 0; i < size * size; i++) {
             c->texels[l][i] = g_rand_int(rand);
         }
+    }
+}
+
+static void corpus_texture(Corpus *c, GRand *rand)
+{
+    static const uint32_t formats[] = {
+        SGI_GL_RGBA, SGI_GL_RGB, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE_ALPHA,
+        SGI_GL_ALPHA, SGI_GL_INTENSITY,
+    };
+    static const uint32_t wraps[] = {
+        SGI_GL_REPEAT, SGI_GL_REPEAT, SGI_GL_CLAMP, SGI_GL_CLAMP_TO_EDGE,
+        SGI_GL_CLAMP_TO_BORDER,
+    };
+    uint32_t format = formats[g_rand_int_range(rand, 0, ARRAY_SIZE(formats))];
+    bool raw = g_rand_boolean(rand);
+
+    for (unsigned k = 0; k < 4; k++) {
+        c->bits[k] = g_rand_int_range(rand, 1, 13);
+    }
+    c->overflow = corpus_chance(rand, 10);
+    corpus_texels(c, rand);
+    for (unsigned l = 0; l < CTEX_LEVELS; l++) {
+        uint32_t size = MAX(1, (1u << CTEX_LOG2) >> l);
+
         c->levels[l] = (SGIGLTexLevel) {
             .level = l, .width = size, .height = size, .depth = 1,
-            .base_format = SGI_GL_RGBA, .internal_format = SGI_GL_RGBA,
+            .base_format = format, .internal_format = format,
             .read_texel = corpus_read_texel, .opaque = c,
         };
+        if (raw) {
+            memcpy(c->levels[l].component_bits, c->bits, sizeof(c->bits));
+            c->levels[l].read_texel_components =
+                corpus_read_texel_components;
+        }
     }
     c->pyramid = (SGIGLTexPyramid) {
         .levels = c->levels, .count = CTEX_LEVELS,
@@ -622,12 +680,14 @@ static void corpus_texture(Corpus *c, GRand *rand)
     };
     c->image = (SGIGLTexImage) {
         .width = 1u << CTEX_LOG2, .height = 1u << CTEX_LOG2, .depth = 1,
-        .base_format = SGI_GL_RGBA,
+        .base_format = format,
         .min_filter = g_rand_boolean(rand) ? SGI_GL_LINEAR :
                       SGI_GL_LINEAR_MIPMAP_LINEAR,
         .mag_filter = g_rand_boolean(rand) ? SGI_GL_LINEAR : SGI_GL_NEAREST,
-        .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .wrap_s = wraps[g_rand_int_range(rand, 0, ARRAY_SIZE(wraps))],
+        .wrap_t = wraps[g_rand_int_range(rand, 0, ARRAY_SIZE(wraps))],
         .wrap_r = SGI_GL_REPEAT,
+        .border_color = { 0.25, 0.5, 0.75, 1 },
         .pyramid = &c->pyramid,
         .opaque = c,
     };
@@ -646,11 +706,6 @@ static uint64_t corpus_planes(const Corpus *c)
         }
     }
     return h;
-}
-
-static bool corpus_chance(GRand *rand, unsigned percent)
-{
-    return g_rand_int_range(rand, 0, 100) < percent;
 }
 
 /*
@@ -930,7 +985,7 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         ctx.cur.index_mask = corpus_chance(rand, 70) ? 0xff : g_rand_int(rand);
         ctx.cur.index_logic_op = corpus_chance(rand, 10);
     }
-    if (corpus_chance(rand, 20)) {
+    if (corpus_chance(rand, 35)) {
         ctx.cur.texture_2d = 1;
         ctx.cur.texture_env_mode = g_rand_boolean(rand) ? SGI_GL_MODULATE :
                                    SGI_GL_DECAL;
@@ -1008,6 +1063,14 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         .opaque = c,
     };
     sgi_soft_draw(&rules, &t, &d);
+    if (t.texture && corpus_chance(rand, 30)) {
+        /*
+         * New texel contents between two draws of one image: whatever a
+         * draw remembers of the first must not reach the second.
+         */
+        corpus_texels(c, rand);
+        sgi_soft_draw(&rules, &t, &d);
+    }
     *planes = corpus_planes(c);
     *calls = c->calls;
     sgi_gl_cleanup(&ctx);
