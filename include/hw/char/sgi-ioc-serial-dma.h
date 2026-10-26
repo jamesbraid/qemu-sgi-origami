@@ -145,8 +145,10 @@ typedef struct SGIIOCSerialDMAPort {
     /* Re-entry guard for loopback walks; only true inside a call. */
     bool busy;
 
-    /* The UART's holding-register level and the retained entry slot. */
+    /* The UART's holding-register level, and the entry being sent. */
     bool tx_ready;
+    bool tx_fetched;
+    uint8_t tx_entry[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t tx_slot;
 
     /* A ring entry under construction, and its held count. */

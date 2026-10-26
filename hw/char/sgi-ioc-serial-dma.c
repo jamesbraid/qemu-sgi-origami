@@ -359,16 +359,23 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
     bool walked = false;
 
     while (sdma_running(p) && (*consume & mask) != (*produce & mask)) {
-        uint8_t entry[SGI_IOC_SDMA_ENTRY_SIZE];
+        uint8_t *entry = p->tx_entry;
         unsigned i;
         bool loop;
 
-        /* A refused fetch stops the walk: the stack bytes are not an entry. */
-        if (dma_memory_read(d->dma_as, ring + (*consume & mask), entry,
-                            sizeof(entry), MEMTXATTRS_UNSPECIFIED) !=
-            MEMTX_OK) {
-            sdma_raise(p, SGI_IOC_SDMA_SRC_DMA_ERROR);
-            break;
+        /*
+         * An entry once fetched stays with the engine until its last slot
+         * goes, as the unpacker count in the consume index implies. A
+         * refused fetch stops the walk: the buffer is not an entry.
+         */
+        if (!p->tx_fetched) {
+            if (dma_memory_read(d->dma_as, ring + (*consume & mask), entry,
+                                SGI_IOC_SDMA_ENTRY_SIZE,
+                                MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+                sdma_raise(p, SGI_IOC_SDMA_SRC_DMA_ERROR);
+                break;
+            }
+            p->tx_fetched = true;
         }
 
         for (i = p->tx_slot; i < SGI_IOC_SDMA_ENTRY_CHARS; i++) {
@@ -417,6 +424,7 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
         }
 
         p->tx_slot = 0;
+        p->tx_fetched = false;
         *consume = (*consume + SGI_IOC_SDMA_ENTRY_SIZE) & mask;
         walked = true;
     }
@@ -479,6 +487,7 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
     p->delivered = false;
     p->tx_slot = 0;
+    p->tx_fetched = false;
 
     timer_del(p->rx_timer);
     p->rx_idle_count = 0;
@@ -747,6 +756,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         timer_del(p->loop_timer);
         p->loop_due = 0;
         p->tx_slot = 0;
+        p->tx_fetched = false;
         p->packed = 0;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->delivered = false;
@@ -803,6 +813,9 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(reg, SGIIOCSerialDMAPort, SGI_IOC_SDMA_PORT_REGS),
         VMSTATE_UINT8(tx_slot, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(tx_fetched, SGIIOCSerialDMAPort),
+        VMSTATE_UINT8_ARRAY(tx_entry, SGIIOCSerialDMAPort,
+                            SGI_IOC_SDMA_ENTRY_SIZE),
         VMSTATE_UINT8_ARRAY(packer, SGIIOCSerialDMAPort,
                             SGI_IOC_SDMA_ENTRY_SIZE),
         VMSTATE_UINT8(packed, SGIIOCSerialDMAPort),
