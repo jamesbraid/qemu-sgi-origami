@@ -1822,6 +1822,13 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s);
 static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st);
 
 /*
+ * The imaging stage bits (SGIKonaGLImaging.stages): histogram and minmax,
+ * which the model does not apply, then the three colour tables.
+ */
+#define SGI_KONA_GL_STAGES_UNMODELLED 3u
+#define SGI_KONA_GL_STAGE_TABLE(n)    (1u << (2 + (n)))
+
+/*
  * Whether context i's image transfers are refused: for pixel state the
  * model does not keep, or while an imaging stage it does not apply is
  * enabled.
@@ -1830,7 +1837,7 @@ static bool sgi_kona_gl_transfer_refused(const SGIKonaState *s, int i)
 {
     return i != SGI_KONA_CONTEXT_NONE &&
            (s->state[i]->pipe.pixel_transfer_unsupported ||
-            s->state[i]->imaging.unmodelled);
+            (s->state[i]->imaging.stages & SGI_KONA_GL_STAGES_UNMODELLED));
 }
 static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im);
 static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t);
@@ -1844,6 +1851,18 @@ static bool sgi_kona_gl_pixel_stages(const SGIKonaGLPixelTransfer *t,
 static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
                                 double (**image)[4], uint32_t *width,
                                 uint32_t *height);
+static bool sgi_kona_gl_pixel_path(const SGIKonaGLState *st, double rgba[4]);
+static bool sgi_kona_gl_tables_active(const SGIKonaGLState *st);
+static void sgi_kona_gl_colour_table_word(SGIKonaState *s, uint32_t word);
+static void sgi_kona_gl_colour_table_open(SGIKonaState *s, int i,
+                                          const uint32_t *args);
+static void sgi_kona_gl_colour_table_parameters(SGIKonaState *s, int i,
+                                                const uint32_t *args);
+static void sgi_kona_gl_colour_table_get(SGIKonaState *s, int i,
+                                         const uint32_t *args);
+static void sgi_kona_gl_colour_table_get_parameter(SGIKonaState *s, int i,
+                                                   const uint32_t *args);
+static uint32_t sgi_kona_gl_table_base(uint32_t format);
 static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot);
 static void sgi_kona_texture_regs_switch(SGIKonaState *s, int slot);
 
@@ -6284,6 +6303,17 @@ static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i)
 
 /* Prepare complete native defaults before committing a logical generation. */
 /* No filter, none enabled, filter scale 1 and bias 0 (EXT_convolution). */
+/* No table, scale 1 and bias 0 (SGI_color_table). */
+static void sgi_kona_gl_tables_init(SGIKonaGLColourTables *tb)
+{
+    memset(tb, 0, sizeof(*tb));
+    for (unsigned n = 0; n < SGI_KONA_GL_TABLES; n++) {
+        for (unsigned c = 0; c < 4; c++) {
+            tb->table[n].scale[c] = 0x3f800000;
+        }
+    }
+}
+
 static void sgi_kona_gl_imaging_init(SGIKonaGLImaging *im)
 {
     memset(im, 0, sizeof(*im));
@@ -6336,6 +6366,7 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
     state->iris = (SGIKonaGLIrisRule) { 0 };
     state->attrib_depth = 0;
     sgi_kona_gl_imaging_init(&state->imaging);
+    sgi_kona_gl_tables_init(&state->tables);
     memset(state->imaging_enabled_attrib, 0,
            sizeof(state->imaging_enabled_attrib));
     sgi_gl_set_drawable(&state->gl, &drawable);
@@ -8555,9 +8586,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                 } else if (!sgi_kona_gl_index_rgba(&p->pixel_transfer,
                                                     raw, values) ||
                            (post_conv &&
-                            !sgi_kona_gl_pixel_stages(&p->pixel_transfer,
-                                s->state[i]->imaging.colour_matrix, false,
-                                values)) ||
+                            !sgi_kona_gl_pixel_path(s->state[i], values)) ||
                            !sgi_kona_gl_pixel_pack_double(format, type, values,
                                    p->pack_swap_bytes, out, pixel_bytes)) {
                     return false;
@@ -8576,8 +8605,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
 
             if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer, source) ||
                 (post_conv &&
-                 !sgi_kona_gl_pixel_stages(&p->pixel_transfer,
-                     s->state[i]->imaging.colour_matrix, false, source)) ||
+                 !sgi_kona_gl_pixel_path(s->state[i], source)) ||
                 !sgi_kona_gl_pixel_pack_double(format, type, source,
                                                   p->pack_swap_bytes,
                                          out, pixel_bytes)) {
@@ -9163,10 +9191,10 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
             };
         s->state[i]->transfer_attrib[*depth] =
             s->state[i]->pipe.pixel_transfer;
-        /* The imaging enables: convolution low, the unmodelled above. */
+        /* The imaging enables: convolution low, the other stages above. */
         s->state[i]->imaging_enabled_attrib[*depth] =
             s->state[i]->imaging.enabled |
-            s->state[i]->imaging.unmodelled << 3;
+            s->state[i]->imaging.stages << 3;
         s->state[i]->attrib_mask[*depth] = mask;
         ++*depth;
     } else {
@@ -9391,7 +9419,7 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
     if (s->state[i]->attrib_mask[k] & (0x2000 | 0x20)) {
         s->state[i]->imaging.enabled =
             s->state[i]->imaging_enabled_attrib[k] & 7;
-        s->state[i]->imaging.unmodelled =
+        s->state[i]->imaging.stages =
             s->state[i]->imaging_enabled_attrib[k] >> 3;
     }
     if (s->state[i]->attrib_mask[k] & 0x20) {
@@ -10280,6 +10308,9 @@ static void sgi_kona_gl_data_word(SGIKonaState *s, uint32_t word)
         s->gl_data_have < SGI_KONA_GL_PIXEL_MAP_MAX) {
         s->gl_map_upload.values[s->gl_data_have] = word;
     }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_COLOUR_TABLE) {
+        sgi_kona_gl_colour_table_word(s, word);
+    }
     s->gl_data_have++;
     if (--s->gl_data_remaining == 0) {
         sgi_kona_gl_data_done(s);
@@ -10589,6 +10620,9 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
          * how the library and the pipe place it is unknown.
          */
         reason = "convolution of texture images is not modelled";
+    } else if (sgi_kona_gl_tables_active(s->state[i])) {
+        /* Taken whole, the texture upload has no place for the tables. */
+        reason = "colour tables on texture images are not modelled";
     } else if (!sgi_kona_texture_native_header(h)) {
         /*
          * A DMA source whose stride is shorter than its rows never gets
@@ -11554,8 +11588,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_bind_generation = 0;
     }
     /*
-     * Histogram, minmax and the three colour tables, imaging stages the
-     * model does not apply: image transfers are refused while one is
+     * Histogram, minmax and the three colour tables. The model does not
+     * apply the first two: image transfers are refused while one is
      * enabled.
      */
     if (i != SGI_KONA_CONTEXT_NONE && !s->state[i]->gl.in_begin &&
@@ -11566,9 +11600,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
 
         for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
             if (args[0] == caps[k] && selector == 0x24) {
-                s->state[i]->imaging.unmodelled |= 1u << k;
+                s->state[i]->imaging.stages |= 1u << k;
             } else if (args[0] == caps[k]) {
-                s->state[i]->imaging.unmodelled &= ~(1u << k);
+                s->state[i]->imaging.stages &= ~(1u << k);
             }
         }
     }
@@ -11730,6 +11764,18 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_GET_CONVOLUTION:
     case SGI_KONA_CMD_GL_GET_SEPARABLE:
         sgi_kona_gl_convolution_get(s, i, selector, args);
+        return;
+    case SGI_KONA_CMD_GL_COLOUR_TABLE:
+        sgi_kona_gl_colour_table_open(s, i, args);
+        return;
+    case SGI_KONA_CMD_GL_COLOUR_TABLE_PARAMETERS:
+        sgi_kona_gl_colour_table_parameters(s, i, args);
+        return;
+    case SGI_KONA_CMD_GL_GET_COLOUR_TABLE:
+        sgi_kona_gl_colour_table_get(s, i, args);
+        return;
+    case SGI_KONA_CMD_GL_GET_COLOUR_TABLE_PARAMETER:
+        sgi_kona_gl_colour_table_get_parameter(s, i, args);
         return;
     /*
      * The library sends these ids from its texture cache: 0x1c4 when it
@@ -12414,10 +12460,373 @@ static void sgi_kona_gl_convolution_done(SGIKonaState *s)
     sgi_kona_gl_filter_load(s, i, s->gl_data, s->gl_data_have);
 }
 
+/*
+ * SGI_color_table (established from the IRIX 6.5.30 client library, see
+ * the command grammar). A table's image is sent between 0x111 8
+ * 0x40000000 and 0x111 8 0:
+ *
+ *   0xe8  target, internal format, width, width - 1 as a float, f, t,
+ *         low, dma, rows
+ *
+ * The targets are 0x80d0 to 0x80d2, their proxies 0x80d3 to 0x80d5, and
+ * the texture colour table 0x80bc with its proxy 0x80bd. f, t, low, dma
+ * and rows are DrawPixels' own, as in the convolution filter commands; the
+ * image is one row of `width` pixels. A proxy's image is never sent, and
+ * neither is a table the library finds it cannot hold: it sends width 0.
+ *
+ *   0xeb  target, pname, r, g, b, a (floats): COLOR_TABLE_SCALE_SGI 0x80d6
+ *         or COLOR_TABLE_BIAS_SGI 0x80d7
+ *   0xea  target, format, first entry, count of at most 512: answered on
+ *         the return page at byte 8 with `count` entries of four floats,
+ *         R, G, B and A, which the library packs itself
+ *   0xec  target, pname: answered at byte 8 with four floats for the scale
+ *         and bias, one word for anything else
+ *
+ * The image is unpacked and expanded to RGBA as DrawPixels would, with no
+ * pixel transfer, scaled and biased by the table's parameters, clamped
+ * to [0, 1] and kept as its internal format keeps it (SGI_color_table).
+ */
+static int sgi_kona_gl_table_index(uint32_t target, bool *proxy)
+{
+    *proxy = (target >= 0x80d3 && target <= 0x80d5) || target == 0x80bd;
+    switch (target) {
+    case 0x80d0 ... 0x80d2:
+        return target - 0x80d0;
+    case 0x80d3 ... 0x80d5:
+        return target - 0x80d3;
+    case 0x80bc:
+    case 0x80bd:
+        return 3;
+    default:
+        return -1;
+    }
+}
+
+/* A 0xe8 header as DrawPixels' layout takes it: one row of width pixels. */
+static void sgi_kona_gl_table_header(const uint32_t *a, uint32_t h[8])
+{
+    memset(h, 0, 8 * sizeof(*h));
+    h[0] = a[2];
+    h[1] = 1;
+    memcpy(h + 2, a + 4, 5 * sizeof(*h));
+}
+
+static void sgi_kona_gl_table_refuse(SGIKonaGLColourTables *tb,
+                                     const char *why)
+{
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: colour table 0x%" PRIx32 " of"
+                  " format 0x%" PRIx32 " and width %" PRIu32 " %s; table"
+                  " left empty\n", tb->pending[0], tb->pending[1],
+                  tb->pending[2], why);
+    tb->pending[0] = 0;
+    tb->staged_have = 0;
+}
+
+/* The pending table's image from `words`, in PIO order. */
+static void sgi_kona_gl_table_load(SGIKonaState *s, int i,
+                                   const uint32_t *words, size_t nwords)
+{
+    SGIKonaGLColourTables *tb = &s->state[i]->tables;
+    const SGIKonaGLPipe *p = &s->state[i]->pipe;
+    SGIKonaGLPixelLayout layout;
+    SGIKonaGLColourTable *t;
+    uint32_t h[8];
+    bool proxy;
+    int n = sgi_kona_gl_table_index(tb->pending[0], &proxy);
+
+    t = &tb->table[n];
+    sgi_kona_gl_table_header(tb->pending, h);
+    h[5] = 0;
+    t->width = 0;
+    if (!sgi_kona_gl_pixels_pio_layout(h, p->unpack_row_length,
+                                        p->unpack_skip_rows,
+                                        p->unpack_skip_pixels,
+                                        p->unpack_alignment, &layout) ||
+        !layout.pixel_bytes || h[2] > 10 || layout.payload_words > nwords) {
+        sgi_kona_gl_table_refuse(tb, "could not be read");
+        return;
+    }
+    for (uint32_t x = 0; x < h[0]; x++) {
+        uint32_t source[4] = { 0 };
+        double rgba[4];
+
+        for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
+            uint8_t byte;
+
+            if (!sgi_kona_gl_pixels_pio_byte(&layout, words, nwords, 0,
+                    (uint64_t)x * layout.pixel_bytes + k, &byte)) {
+                sgi_kona_gl_table_refuse(tb, "could not be read");
+                return;
+            }
+            source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
+        }
+        if (!sgi_kona_gl_pixel_rgba_double(h[2], h[3], source,
+                                            p->unpack_swap_bytes, rgba)) {
+            sgi_kona_gl_table_refuse(tb, "could not be read");
+            return;
+        }
+        for (unsigned c = 0; c < 4; c++) {
+            double value = rgba[c] * sgi_kona_gl_float(t->scale[c]) +
+                           sgi_kona_gl_float(t->bias[c]);
+            float stored;
+
+            if (!isfinite(value)) {
+                sgi_kona_gl_table_refuse(tb, "scales to a non-finite value");
+                return;
+            }
+            stored = CLAMP(value, 0.0, 1.0);
+            memcpy(&t->values[x][c], &stored, sizeof(stored));
+        }
+    }
+    t->format = tb->pending[1];
+    t->width = h[0];
+    trace_sgi_kona_gl_colour_table(tb->pending[0], t->format, t->width);
+    tb->pending[0] = 0;
+    tb->staged_have = 0;
+}
+
+static void sgi_kona_gl_colour_table_open(SGIKonaState *s, int i,
+                                          const uint32_t *args)
+{
+    const SGIKonaGLPipe *p = sgi_kona_gl_unpack(s, i);
+    SGIKonaGLPixelLayout layout;
+    SGIKonaGLColourTables *tb = NULL;
+    uint32_t h[8];
+    uint64_t words = 0;
+    bool proxy, framed;
+    int n = sgi_kona_gl_table_index(args[0], &proxy);
+
+    sgi_kona_gl_table_header(args, h);
+    if (n < 0 || h[5] > 1 || h[6] > 1) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: colour table header for"
+                      " target 0x%" PRIx32 " has unknown fields; its image"
+                      " will not frame\n", args[0]);
+        return;
+    }
+    if (i != SGI_KONA_CONTEXT_NONE) {
+        tb = &s->state[i]->tables;
+        tb->pending[0] = 0;
+        tb->staged_have = 0;
+    }
+    if (proxy) {
+        /* A proxy only records what a table so defined would be. */
+        if (tb) {
+            tb->proxy_format[n] = args[2] ? args[1] : 0;
+            tb->proxy_width[n] = args[2];
+        }
+        return;
+    }
+    if (tb && !args[2]) {
+        tb->table[n].width = 0;
+        tb->table[n].format = args[1];
+    }
+    if (!args[2]) {
+        return;
+    }
+    framed = !h[5] &&
+             sgi_kona_gl_pixels_pio_layout(h, p->unpack_row_length,
+                                           p->unpack_skip_rows,
+                                           p->unpack_skip_pixels,
+                                           p->unpack_alignment, &layout);
+    if (framed) {
+        words = layout.payload_words;
+    } else if (!h[5]) {
+        uint32_t bytes = sgi_kona_gl_native_pixel_bytes(h[2], h[3]);
+
+        if (!bytes) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: colour table of"
+                          " format %u type %u has no known size; its words"
+                          " will not frame\n", h[2], h[3]);
+            return;
+        }
+        words = (h[4] + (uint64_t)h[0] * bytes + 3) / 4;
+    }
+    if (tb) {
+        memcpy(tb->pending, args, sizeof(tb->pending));
+        if (args[2] > SGI_KONA_GL_TABLE_MAX ||
+            !sgi_kona_gl_table_base(args[1])) {
+            sgi_kona_gl_table_refuse(tb, "is not supported");
+            tb->table[n].width = 0;
+        } else if (!h[5] && (!framed || words > SGI_KONA_GL_TABLE_WORDS)) {
+            sgi_kona_gl_table_refuse(tb, "does not match the unpack state");
+            tb->table[n].width = 0;
+        }
+    }
+    if (words && words <= UINT32_MAX) {
+        sgi_kona_gl_data_open(s, SGI_KONA_CMD_GL_COLOUR_TABLE, words);
+    }
+}
+
+/* One FIFO word of a table's image. */
+static void sgi_kona_gl_colour_table_word(SGIKonaState *s, uint32_t word)
+{
+    int i = s->context_current;
+    SGIKonaGLColourTables *tb;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    tb = &s->state[i]->tables;
+    if (tb->pending[0] && tb->staged_have < SGI_KONA_GL_TABLE_WORDS) {
+        tb->staged[tb->staged_have++] = word;
+    }
+}
+
+/* The FIFO words of a table's image, at the end of its data run. */
+static void sgi_kona_gl_colour_table_done(SGIKonaState *s)
+{
+    int i = s->context_current;
+    SGIKonaGLColourTables *tb;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    tb = &s->state[i]->tables;
+    if (tb->pending[0]) {
+        sgi_kona_gl_table_load(s, i, tb->staged, tb->staged_have);
+    }
+}
+
+/* 0xeb target pname r g b a: a table's scale or bias. */
+static void sgi_kona_gl_colour_table_parameters(SGIKonaState *s, int i,
+                                                const uint32_t *args)
+{
+    bool proxy;
+    int n = sgi_kona_gl_table_index(args[0], &proxy);
+    SGIKonaGLColourTable *t;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        return;
+    }
+    if (n < 0 || proxy || (args[1] != 0x80d6 && args[1] != 0x80d7)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: colour table parameter"
+                      " 0x%" PRIx32 " of target 0x%" PRIx32 " ignored\n",
+                      args[1], args[0]);
+        return;
+    }
+    t = &s->state[i]->tables.table[n];
+    memcpy(args[1] == 0x80d6 ? t->scale : t->bias, args + 2,
+           4 * sizeof(*args));
+}
+
+/*
+ * 0xea target format first count: entries first to first + count - 1 as
+ * four floats each, R, G, B and A, with luminance and intensity as red
+ * and the components the table lacks as zero (SGI_color_table's query
+ * rule); the library reads them as RGBA floats and packs them itself.
+ */
+static void sgi_kona_gl_colour_table_get(SGIKonaState *s, int i,
+                                         const uint32_t *args)
+{
+    const SGIKonaGLColourTable *t;
+    uint32_t base, first = args[2], count = args[3];
+    g_autofree uint8_t *data = NULL;
+    bool proxy;
+    int n = sgi_kona_gl_table_index(args[0], &proxy);
+
+    if (i == SGI_KONA_CONTEXT_NONE || n < 0 || proxy || count > 512 ||
+        first > SGI_KONA_GL_TABLE_MAX ||
+        count > SGI_KONA_GL_TABLE_MAX - first) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: colour table read of target"
+                      " 0x%" PRIx32 " entries %" PRIu32 "+%" PRIu32
+                      " refused; no reply\n", args[0], first, count);
+        return;
+    }
+    t = &s->state[i]->tables.table[n];
+    base = sgi_kona_gl_table_base(t->format);
+    data = g_malloc0(MAX(count * 16, 1));
+    for (uint32_t k = 0; k < count && first + k < t->width; k++) {
+        for (unsigned c = 0; c < 4; c++) {
+            bool has = base == SGI_GL_RGBA ||
+                       (base == SGI_GL_RGB && c < 3) ||
+                       (c == 3 && (base == SGI_GL_ALPHA ||
+                                   base == SGI_GL_LUMINANCE_ALPHA)) ||
+                       (c == 0 && base != SGI_GL_ALPHA);
+
+            if (has) {
+                stl_be_p(data + k * 16 + c * 4, t->values[first + k][c]);
+            }
+        }
+    }
+    trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_GET_COLOUR_TABLE, args[0],
+                            count * 16);
+    sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_COLOUR_TABLE, 8, data,
+                         count * 16);
+}
+
+/*
+ * 0xec target pname. Each component of the internal format reads 12 bits
+ * deep, the others 0. Approximated: the "OpenGL on Silicon Graphics
+ * Systems" manual gives InfiniteReality's texture colour table 12-bit
+ * entries; what the pipe answers for the other tables is unknown.
+ */
+static void sgi_kona_gl_colour_table_get_parameter(SGIKonaState *s, int i,
+                                                   const uint32_t *args)
+{
+    const SGIKonaGLColourTables *tb;
+    uint32_t format, width, base, word = 0;
+    uint8_t data[16] = { 0 };
+    bool proxy;
+    int n = sgi_kona_gl_table_index(args[0], &proxy);
+
+    if (i == SGI_KONA_CONTEXT_NONE || n < 0) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: colour table parameter read of"
+                      " target 0x%" PRIx32 " refused; no reply\n", args[0]);
+        return;
+    }
+    tb = &s->state[i]->tables;
+    format = proxy ? tb->proxy_format[n] : tb->table[n].format;
+    width = proxy ? tb->proxy_width[n] : tb->table[n].width;
+    base = sgi_kona_gl_table_base(format);
+    if (args[1] == 0x80d6 || args[1] == 0x80d7) {
+        const uint32_t *v = args[1] == 0x80d6 ? tb->table[n].scale :
+                                                tb->table[n].bias;
+
+        for (unsigned c = 0; c < 4; c++) {
+            stl_be_p(data + 4 * c, proxy ? 0 : v[c]);
+        }
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_COLOUR_TABLE_PARAMETER,
+                             8, data, sizeof(data));
+        return;
+    }
+    switch (args[1]) {
+    case 0x80d8:                /* COLOR_TABLE_FORMAT_SGI */
+        word = format ? format : SGI_GL_RGBA;
+        break;
+    case 0x80d9:                /* COLOR_TABLE_WIDTH_SGI */
+        word = width;
+        break;
+    case 0x80da ... 0x80dc:     /* red, green, blue */
+        word = width && (base == SGI_GL_RGB || base == SGI_GL_RGBA) ? 12 : 0;
+        break;
+    case 0x80dd:                /* alpha */
+        word = width && (base == SGI_GL_ALPHA || base == SGI_GL_RGBA ||
+                         base == SGI_GL_LUMINANCE_ALPHA) ? 12 : 0;
+        break;
+    case 0x80de:                /* luminance */
+        word = width && (base == SGI_GL_LUMINANCE ||
+                         base == SGI_GL_LUMINANCE_ALPHA) ? 12 : 0;
+        break;
+    case 0x80df:                /* intensity */
+        word = width && base == SGI_GL_INTENSITY ? 12 : 0;
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: colour table parameter"
+                      " 0x%" PRIx32 " is not known; answered 0\n", args[1]);
+        break;
+    }
+    stl_be_p(data, word);
+    sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_COLOUR_TABLE_PARAMETER, 8,
+                         data, 4);
+}
+
 static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
                                  uint8_t *buf, uint32_t len);
 
-/* Whether a filter image is to come by DMA (see sgi-kona-dma.c). */
+/*
+ * Whether a filter or colour table image is to come by DMA (see
+ * sgi-kona-dma.c).
+ */
 bool sgi_kona_filter_dma_waiting(SGIKonaState *s)
 {
     int i = s->context_current;
@@ -12428,6 +12837,9 @@ bool sgi_kona_filter_dma_waiting(SGIKonaState *s)
     if (i == SGI_KONA_CONTEXT_NONE) {
         return false;
     }
+    if (s->state[i]->tables.pending[0]) {
+        return s->state[i]->tables.pending[7] == 1;
+    }
     im = &s->state[i]->imaging;
     if (!im->pending_token) {
         return false;
@@ -12437,38 +12849,33 @@ bool sgi_kona_filter_dma_waiting(SGIKonaState *s)
 }
 
 /*
- * The DMA packet that carries a filter image: read as DrawPixels' DMA is
- * (sgi_kona_pixels_image_dma()), into PIO order, then kept. The transfer
- * completes whether or not the image is kept, as a refused image's does
- * (the kernel kills the pipe when a DMA it started never completes).
+ * An image of header h that a DMA packet carries, read as DrawPixels' DMA
+ * is (sgi_kona_pixels_image_dma()) into PIO order: no more than max_words
+ * words, or NULL, logged with `what`, when the source does not frame.
  */
-void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
-                               uint32_t per_line, uint64_t pitch)
+static uint32_t *sgi_kona_gl_image_dma_words(SGIKonaState *s, int i,
+                                             const uint32_t h[8], uint64_t io,
+                                             uint32_t lines,
+                                             uint32_t per_line, uint64_t pitch,
+                                             uint32_t max_words,
+                                             const char *what,
+                                             uint32_t *nwords)
 {
-    int i = s->context_current;
-    SGIKonaGLImaging *im = &s->state[i]->imaging;
     const SGIKonaGLPipe *p = &s->state[i]->pipe;
     SGIKonaGLPixelDMALayout d;
     g_autofree uint32_t *words = NULL;
     uint8_t chunk[256];
-    uint32_t h[8];
-    unsigned filter;
 
-    sgi_kona_gl_filter_header(im->pending_token, im->pending, &filter, h);
     if (!sgi_kona_gl_pixels_dma_layout(h, p->unpack_row_length,
                                        p->unpack_skip_rows,
                                        p->unpack_skip_pixels,
                                        p->unpack_alignment, &d) ||
         (io & 3) != d.source_phase || lines != d.lines ||
         per_line != d.line_bytes || pitch != d.pitch ||
-        d.span > UINT64_MAX - io ||
-        d.pixels.payload_words > SGI_KONA_GL_DATA_MAX) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: convolution filter DMA"
-                      " source framing mismatch; completed unread, filter"
-                      " left undefined\n");
-        im->filters[filter].width = im->filters[filter].height = 0;
-        im->pending_token = 0;
-        return;
+        d.span > UINT64_MAX - io || d.pixels.payload_words > max_words) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: %s DMA source framing"
+                      " mismatch; completed unread\n", what);
+        return NULL;
     }
     words = g_new0(uint32_t, d.pixels.payload_words);
     for (uint32_t line = 0; line < lines; line++) {
@@ -12477,9 +12884,7 @@ void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 
             if (!sgi_kona_device_read(s, io + line * pitch + offset,
                                        chunk, n)) {
-                im->filters[filter].width = im->filters[filter].height = 0;
-                im->pending_token = 0;
-                return;
+                return NULL;
             }
             for (uint32_t k = 0; k < n; k++) {
                 uint32_t row = d.pixels.strided ? line :
@@ -12497,7 +12902,48 @@ void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
             offset += n;
         }
     }
-    sgi_kona_gl_filter_load(s, i, words, d.pixels.payload_words);
+    *nwords = d.pixels.payload_words;
+    return g_steal_pointer(&words);
+}
+
+/*
+ * The DMA packet that carries a filter or colour table image, then kept.
+ * The transfer completes whether or not the image is kept, as a refused
+ * image's does (the kernel kills the pipe when a DMA it started never
+ * completes).
+ */
+void sgi_kona_filter_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                               uint32_t per_line, uint64_t pitch)
+{
+    int i = s->context_current;
+    SGIKonaGLImaging *im = &s->state[i]->imaging;
+    SGIKonaGLColourTables *tb = &s->state[i]->tables;
+    g_autofree uint32_t *words = NULL;
+    uint32_t h[8], nwords;
+    unsigned filter;
+
+    if (tb->pending[0]) {
+        sgi_kona_gl_table_header(tb->pending, h);
+        words = sgi_kona_gl_image_dma_words(s, i, h, io, lines, per_line,
+                                            pitch, SGI_KONA_GL_TABLE_WORDS,
+                                            "colour table", &nwords);
+        if (!words) {
+            sgi_kona_gl_table_refuse(tb, "did not arrive");
+            return;
+        }
+        sgi_kona_gl_table_load(s, i, words, nwords);
+        return;
+    }
+    sgi_kona_gl_filter_header(im->pending_token, im->pending, &filter, h);
+    words = sgi_kona_gl_image_dma_words(s, i, h, io, lines, per_line, pitch,
+                                        SGI_KONA_GL_DATA_MAX,
+                                        "convolution filter", &nwords);
+    if (!words) {
+        im->filters[filter].width = im->filters[filter].height = 0;
+        im->pending_token = 0;
+        return;
+    }
+    sgi_kona_gl_filter_load(s, i, words, nwords);
 }
 
 /*
@@ -12711,13 +13157,15 @@ static bool sgi_kona_gl_matrix_stage(const uint32_t m[16],
 
 /*
  * Whether colour image transfers have a stage after the pixel maps: a 2D
- * filter, post-convolution scale and bias other than 1 and 0, or a colour
- * matrix or post-matrix scale and bias other than identity. With none,
+ * filter, an enabled colour table that is not empty, post-convolution
+ * scale and bias other than 1 and 0, or a colour matrix or post-matrix
+ * scale and bias other than identity. With none,
  * the transfer is exactly what it was without the imaging subset.
  */
 static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st)
 {
     return sgi_kona_gl_filter_2d(&st->imaging) >= 0 ||
+           sgi_kona_gl_tables_active(st) ||
            !sgi_kona_gl_post_conv_default(&st->pipe.pixel_transfer) ||
            sgi_kona_gl_matrix_stage(st->imaging.colour_matrix,
                                     &st->pipe.pixel_transfer);
@@ -12749,6 +13197,142 @@ static bool sgi_kona_gl_post_matrix(const uint32_t m[16],
         rgba[r] = CLAMP(value, 0.0, 1.0);
     }
     return true;
+}
+
+/*
+ * A colour table's base internal format (EXT_texture's mapping, which
+ * SGI_color_table uses), or 0 for a token it does not name.
+ */
+static uint32_t sgi_kona_gl_table_base(uint32_t format)
+{
+    switch (format) {
+    case SGI_GL_ALPHA:
+    case SGI_GL_ALPHA4 ... SGI_GL_ALPHA16:
+        return SGI_GL_ALPHA;
+    case 1:
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_LUMINANCE4 ... SGI_GL_LUMINANCE16:
+        return SGI_GL_LUMINANCE;
+    case 2:
+    case SGI_GL_LUMINANCE_ALPHA:
+    case SGI_GL_LUMINANCE4_ALPHA4 ... SGI_GL_LUMINANCE16_ALPHA16:
+        return SGI_GL_LUMINANCE_ALPHA;
+    case SGI_GL_INTENSITY:
+    case SGI_GL_INTENSITY4 ... SGI_GL_INTENSITY16:
+        return SGI_GL_INTENSITY;
+    case 3:
+    case SGI_GL_RGB:
+    case SGI_GL_R3_G3_B2:
+    case SGI_GL_RGB4 ... SGI_GL_RGB16:
+        return SGI_GL_RGB;
+    case 4:
+    case SGI_GL_RGBA:
+    case SGI_GL_RGBA2 ... SGI_GL_RGBA16:
+        return SGI_GL_RGBA;
+    default:
+        return 0;
+    }
+}
+
+/*
+ * The table slot a component of the base format takes its value from, or
+ * -1 when the table leaves it alone (SGI_color_table, table E14.2). A
+ * luminance or intensity table keeps its value in the red slot.
+ */
+static int sgi_kona_gl_table_slot(uint32_t base, unsigned c)
+{
+    switch (base) {
+    case SGI_GL_ALPHA:
+        return c == 3 ? 3 : -1;
+    case SGI_GL_LUMINANCE:
+        return c < 3 ? 0 : -1;
+    case SGI_GL_LUMINANCE_ALPHA:
+        return c < 3 ? 0 : 3;
+    case SGI_GL_INTENSITY:
+        return 0;
+    case SGI_GL_RGB:
+        return c < 3 ? (int)c : -1;
+    case SGI_GL_RGBA:
+        return c;
+    default:
+        return -1;
+    }
+}
+
+/*
+ * Colour table n's lookup when it is enabled and not empty: each component
+ * the table replaces is clamped to [0, 1], scaled by one less than the
+ * width, rounded to an index, and replaced by the table's value there
+ * (SGI_color_table, "Color Table Lookup").
+ */
+static void sgi_kona_gl_table_stage(const SGIKonaGLState *st, unsigned n,
+                                    double rgba[4])
+{
+    const SGIKonaGLColourTable *t = &st->tables.table[n];
+    uint32_t base = sgi_kona_gl_table_base(t->format);
+    double in[4];
+
+    if (!(st->imaging.stages & SGI_KONA_GL_STAGE_TABLE(n)) || !t->width) {
+        return;
+    }
+    memcpy(in, rgba, sizeof(in));
+    for (unsigned c = 0; c < 4; c++) {
+        int slot = sgi_kona_gl_table_slot(base, c);
+        uint32_t index;
+
+        if (slot < 0) {
+            continue;
+        }
+        index = lround(CLAMP(in[c], 0.0, 1.0) * (t->width - 1));
+        rgba[c] = sgi_kona_gl_float(t->values[index][slot]);
+    }
+}
+
+/* Whether an enabled colour table changes colour image transfers. */
+static bool sgi_kona_gl_tables_active(const SGIKonaGLState *st)
+{
+    for (unsigned n = 0; n < 3; n++) {
+        if ((st->imaging.stages & SGI_KONA_GL_STAGE_TABLE(n)) &&
+            st->tables.table[n].width) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The per-pixel stages after convolution for context state st, with the
+ * two colour tables in their places: post-convolution scale and bias, the
+ * post-convolution table, the colour matrix stage and the post-colour-
+ * matrix table (SGI_color_table names their order).
+ */
+static bool sgi_kona_gl_after_convolution(const SGIKonaGLState *st,
+                                          bool convolved, double rgba[4])
+{
+    const SGIKonaGLPixelTransfer *t = &st->pipe.pixel_transfer;
+    const uint32_t *m = st->imaging.colour_matrix;
+
+    if ((convolved || !sgi_kona_gl_post_conv_default(t)) &&
+        !sgi_kona_gl_post_conv(t, rgba)) {
+        return false;
+    }
+    sgi_kona_gl_table_stage(st, 1, rgba);
+    if (sgi_kona_gl_matrix_stage(m, t) &&
+        !sgi_kona_gl_post_matrix(m, t, rgba)) {
+        return false;
+    }
+    sgi_kona_gl_table_stage(st, 2, rgba);
+    return true;
+}
+
+/*
+ * Every per-pixel imaging stage after the pixel maps for a transfer that
+ * is not convolved: the colour table, then the stages after convolution.
+ */
+static bool sgi_kona_gl_pixel_path(const SGIKonaGLState *st, double rgba[4])
+{
+    sgi_kona_gl_table_stage(st, 0, rgba);
+    return sgi_kona_gl_after_convolution(st, false, rgba);
 }
 
 /*
@@ -12803,7 +13387,6 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
                                 double (**image)[4], uint32_t *width,
                                 uint32_t *height)
 {
-    const SGIKonaGLPixelTransfer *t = &st->pipe.pixel_transfer;
     int filter = sgi_kona_gl_filter_2d(&st->imaging);
     double (*in)[4] = *image;
     g_autofree double (*out)[4] = NULL;
@@ -12811,6 +13394,11 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
 
     if (filter >= 0) {
         const SGIKonaGLFilter *f = &st->imaging.filters[filter];
+
+        /* The colour table comes before the filter. */
+        for (uint64_t k = 0; k < (uint64_t)w * h; k++) {
+            sgi_kona_gl_table_stage(st, 0, in[k]);
+        }
         bool separable = filter == 2;
         uint32_t ow = w >= f->width ? w - f->width + 1 : 0;
         uint32_t oh = h >= f->height ? h - f->height + 1 : 0;
@@ -12851,8 +13439,7 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
                     }
                     d[c] = filtered ? sum : in[(uint64_t)y * w + x][c];
                 }
-                if (!sgi_kona_gl_pixel_stages(t, st->imaging.colour_matrix,
-                                              true, d)) {
+                if (!sgi_kona_gl_after_convolution(st, true, d)) {
                     return false;
                 }
             }
@@ -12864,8 +13451,7 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
         return true;
     }
     for (uint64_t k = 0; k < (uint64_t)w * h; k++) {
-        if (!sgi_kona_gl_pixel_stages(t, st->imaging.colour_matrix, false,
-                                      in[k])) {
+        if (!sgi_kona_gl_pixel_path(st, in[k])) {
             return false;
         }
     }
@@ -12912,6 +13498,9 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
         s->gl_data_token == SGI_KONA_CMD_GL_CONVOLUTION_2D ||
         s->gl_data_token == SGI_KONA_CMD_GL_SEPARABLE) {
         sgi_kona_gl_convolution_done(s);
+    }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_COLOUR_TABLE) {
+        sgi_kona_gl_colour_table_done(s);
     }
     if (s->gl_data_token != SGI_KONA_CMD_GL_ARRAY_BULK) {
         trace_sgi_kona_command_unmodelled(s->gl_data_token,
@@ -21559,7 +22148,7 @@ static int sgi_kona_gl_imaging_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
-    return im->enabled > 7 || im->unmodelled > 0x1f ||
+    return im->enabled > 7 || im->stages > 0x1f ||
            im->colour_depth > SGI_KONA_GL_COLOUR_STACK - 1 ? -EINVAL : 0;
 }
 
@@ -21580,9 +22169,81 @@ static const VMStateDescription vmstate_sgi_kona_gl_imaging = {
         VMSTATE_UINT32_2DARRAY(imaging.colour_stack, SGIKonaGLState,
                                SGI_KONA_GL_COLOUR_STACK - 1, 16),
         VMSTATE_UINT32(imaging.colour_depth, SGIKonaGLState),
-        VMSTATE_UINT32(imaging.unmodelled, SGIKonaGLState),
+        VMSTATE_UINT32(imaging.stages, SGIKonaGLState),
         VMSTATE_UINT32_ARRAY(imaging_enabled_attrib, SGIKonaGLState,
                              SGI_KONA_GL_ATTRIB_DEPTH),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_gl_colour_table = {
+    .name = TYPE_SGI_KONA "/colour-table",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(format, SGIKonaGLColourTable),
+        VMSTATE_UINT32(width, SGIKonaGLColourTable),
+        VMSTATE_UINT32_ARRAY(scale, SGIKonaGLColourTable, 4),
+        VMSTATE_UINT32_ARRAY(bias, SGIKonaGLColourTable, 4),
+        VMSTATE_UINT32_2DARRAY(values, SGIKonaGLColourTable,
+                               SGI_KONA_GL_TABLE_MAX, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Only once a context has used SGI_color_table. */
+static bool sgi_kona_gl_tables_needed(void *opaque)
+{
+    const SGIKonaGLState *st = opaque;
+    g_autofree SGIKonaGLColourTables *defaults =
+        g_new(SGIKonaGLColourTables, 1);
+
+    sgi_kona_gl_tables_init(defaults);
+    return memcmp(&st->tables, defaults, sizeof(*defaults)) != 0;
+}
+
+static int sgi_kona_gl_tables_post_load(void *opaque, int version_id)
+{
+    const SGIKonaGLColourTables *tb = &((SGIKonaGLState *)opaque)->tables;
+    bool proxy;
+
+    for (unsigned n = 0; n < SGI_KONA_GL_TABLES; n++) {
+        if (tb->table[n].width > SGI_KONA_GL_TABLE_MAX ||
+            (tb->table[n].width &&
+             !sgi_kona_gl_table_base(tb->table[n].format))) {
+            return -EINVAL;
+        }
+    }
+    if (tb->staged_have > SGI_KONA_GL_TABLE_WORDS) {
+        return -EINVAL;
+    }
+    if (tb->pending[0] &&
+        (sgi_kona_gl_table_index(tb->pending[0], &proxy) < 0 || proxy ||
+         !tb->pending[2] || tb->pending[2] > SGI_KONA_GL_TABLE_MAX ||
+         tb->pending[7] > 1 || tb->pending[8] > 1)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_tables = {
+    .name = TYPE_SGI_KONA "/logical-state/colour-tables",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_tables_needed,
+    .post_load = sgi_kona_gl_tables_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(tables.table, SGIKonaGLState, SGI_KONA_GL_TABLES,
+                             0, vmstate_sgi_kona_gl_colour_table,
+                             SGIKonaGLColourTable),
+        VMSTATE_UINT32_ARRAY(tables.proxy_format, SGIKonaGLState,
+                             SGI_KONA_GL_TABLES),
+        VMSTATE_UINT32_ARRAY(tables.proxy_width, SGIKonaGLState,
+                             SGI_KONA_GL_TABLES),
+        VMSTATE_UINT32_ARRAY(tables.pending, SGIKonaGLState, 9),
+        VMSTATE_UINT32(tables.staged_have, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(tables.staged, SGIKonaGLState,
+                             SGI_KONA_GL_TABLE_WORDS),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -21639,6 +22300,7 @@ static const VMStateDescription vmstate_sgi_kona_gl_state = {
         &vmstate_sgi_kona_gl_parked_upload,
         &vmstate_sgi_kona_gl_texture_regs,
         &vmstate_sgi_kona_gl_imaging,
+        &vmstate_sgi_kona_gl_tables,
         NULL
     },
 };
