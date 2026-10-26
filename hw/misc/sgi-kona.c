@@ -10362,6 +10362,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         h[5] > 3 || i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused:"
                       " payload length unknown, stream recovery unsafe\n");
+        s->texture_dma_discard = h[6] == 1;
         return 0;
     }
     p = &s->state[i]->pipe;
@@ -10385,7 +10386,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
                                             p->unpack_skip_pixels,
                                             p->unpack_alignment, &dma)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture DMA framing"
-                          " unsupported; source length unknown\n");
+                          " unsupported; source completed unread\n");
+            s->texture_dma_discard = true;
             return 0;
         }
         layout = dma.pixels;
@@ -10413,8 +10415,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     } else if (!sgi_kona_texture_native_header(h)) {
         /*
          * A DMA source whose stride is shorter than its rows never gets
-         * here: sgi_kona_gl_pixels_dma_layout() refuses it above, and no
-         * DMA completes for it.
+         * here: sgi_kona_gl_pixels_dma_layout() refuses it above, and its
+         * DMA completes unread.
          */
         reason = "unsupported native destination layout";
     } else if (words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
@@ -10493,6 +10495,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels source framing"
                       " unsupported; source length unknown,"
                       " stream recovery unsafe\n");
+        s->image_dma_discard = a[5] == 1;
         return 0;
     }
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
@@ -10503,7 +10506,8 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
                   !sgi_kona_gl_imaging_active(s->state[i])) ?
                  sizeof(uint32_t) : 4 * sizeof(double))) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels capacity exceeded; %s\n",
-                      a[5] ? "DMA not staged" : "draining framed words");
+                      a[5] ? "DMA completed unread" : "draining framed words");
+        s->image_dma_discard = a[5];
         return a[5] ? 0 : layout.payload_words;
     }
     if (a[2] == 12 && i != SGI_KONA_CONTEXT_NONE &&
@@ -10538,6 +10542,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     u->words = g_try_new0(uint32_t, u->count);
     if (!u->words) {
         sgi_kona_gl_image_clear(s);
+        s->image_dma_discard = a[5];
     }
     return a[5] ? 0 : layout.payload_words;
 }
@@ -10950,12 +10955,14 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
         layout.payload_words > UINT32_MAX) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap framing unsupported;"
                       " source length unknown, stream recovery unsafe\n");
+        s->image_dma_discard = a[3] == 1;
         return 0;
     }
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: oversized raw bitmap; %s\n",
-                      a[3] ? "DMA not staged" : "draining framed words");
+                      a[3] ? "DMA completed unread" : "draining framed words");
+        s->image_dma_discard = a[3];
         return a[3] ? 0 : layout.payload_words;
     }
     if (a[3]) {
@@ -10975,6 +10982,7 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     u->words = g_try_new0(uint32_t, u->count);
     if (!u->words) {
         sgi_kona_gl_image_clear(s);
+        s->image_dma_discard = a[3];
     }
     return a[3] ? 0 : layout.payload_words;
 }
@@ -14629,6 +14637,7 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
                           "sgi-kona: DMA read at device address 0x%" PRIx64
                           " through map RAM entry 0x%08x, which maps"
                           " nothing\n", device, entry);
+            s->dma_read_fault = true;
             return false;
         }
         host = ((uint64_t)(entry & SGI_KONA_PAGE_WORD_FRAME) << 12) +
@@ -14640,6 +14649,7 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-kona: DMA read of %u bytes at host 0x%" PRIx64
                           " failed\n", chunk, host);
+            s->dma_read_fault = true;
             return false;
         }
         if (trace_event_get_state_backends(TRACE_SGI_KONA_DMA_CHUNK)) {
@@ -14839,6 +14849,20 @@ bool sgi_kona_texture_dma_discard(SGIKonaState *s)
     bool due = s->texture_dma_discard;
 
     s->texture_dma_discard = false;
+    return due;
+}
+
+/*
+ * The DMA packet that carries a DrawPixels or bitmap image the model does
+ * not stage (too large, unframed or unallocated): true, once, as for a
+ * refused texture load's source (sgi_kona_texture_dma_discard()), so the
+ * packet completes unread.
+ */
+bool sgi_kona_image_dma_discard(SGIKonaState *s)
+{
+    bool due = s->image_dma_discard;
+
+    s->image_dma_discard = false;
     return due;
 }
 
@@ -18248,6 +18272,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
     s->texture_retire_pending = false;
+    s->image_dma_discard = false;
     sgi_kona_renderer_stop(s);
     s->renderer_failed = false;
     s->mesa_failed = false;
@@ -18542,6 +18567,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     s->texture_associate_generation = 0;
     s->texture_associate_slot = 0;
     s->texture_retire_pending = false;
+    s->image_dma_discard = false;
     memset(s->x_write_mem.bytes, 0, s->x_write_mem.bytes_len);
     sgi_kona_x_write_clear(s);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
@@ -21665,6 +21691,22 @@ static bool sgi_kona_texture_discard_needed(void *opaque)
     return ((SGIKonaState *)opaque)->texture_dma_discard;
 }
 
+static bool sgi_kona_image_discard_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->image_dma_discard;
+}
+
+static const VMStateDescription vmstate_sgi_kona_image_discard = {
+    .name = TYPE_SGI_KONA "/image-dma-discard",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_image_discard_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(image_dma_discard, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_texture_discard = {
     .name = TYPE_SGI_KONA "/textures/dma-discard",
     .version_id = 1,
@@ -22028,6 +22070,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,
         &vmstate_sgi_kona_textures,
+        &vmstate_sgi_kona_image_discard,
         &vmstate_sgi_kona_gl_bitmap,
         &vmstate_sgi_kona_gl_pixel_map,
         &vmstate_sgi_kona_gl_raw_bitmap,

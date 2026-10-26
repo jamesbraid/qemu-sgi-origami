@@ -1441,6 +1441,16 @@ struct SGIKonaState {
      * completes (see sgi_kona_texture_dma_discard()).
      */
     bool texture_dma_discard;
+    /*
+     * The same for a DrawPixels or bitmap image that names a DMA source
+     * the model does not stage (see sgi_kona_image_dma_discard()).
+     */
+    bool image_dma_discard;
+    /*
+     * Host-only, within one DMA packet: a source read through the map
+     * RAM hit an entry that maps nothing or a failed host read.
+     */
+    bool dma_read_fault;
     /* The context whose texture load texture_upload holds, or NONE. */
     int32_t texture_upload_context;
     /* The context whose binding words texture_bind and the rest hold. */
@@ -1827,6 +1837,7 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 /* A native texture upload staged from exact mapped source bytes. */
 bool sgi_kona_texture_dma_waiting(SGIKonaState *s);
 bool sgi_kona_texture_dma_discard(SGIKonaState *s);
+bool sgi_kona_image_dma_discard(SGIKonaState *s);
 bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                  uint32_t per_line, uint64_t pitch);
 
