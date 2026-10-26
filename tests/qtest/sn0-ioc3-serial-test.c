@@ -1984,8 +1984,8 @@ static void test_port_b_read_catches_the_receive_timer_up(const void *data)
 }
 
 /*
- * Waiting characters count as published entries times four; the timer stays
- * unarmed, so anything raised came from the mark.
+ * The mark counts published entries, as both Linux ring drivers program it;
+ * the timer stays unarmed, so anything raised came from the mark.
  */
 static void test_crossing_the_high_water_mark_raises_its_source(
     const void *data)
@@ -2006,15 +2006,15 @@ static void test_crossing_the_high_water_mark_raises_its_source(
     qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
     qtest_writel(qts, sdma(0, SDMA_CONTROL),
-                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
+                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(2));
 
-    /* One character is one entry: four waiting, below a mark of eight. */
+    /* One character is one entry, below a mark of two. */
     g_assert_cmpint(write(sock, &first, 1), ==, 1);
     collect_rx_chars(qts, 0, 1, got, status);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
                     ==, 0);
 
-    /* Four more push the waiting count to the mark or past it. */
+    /* Four more make a second entry at least: the mark is reached. */
     g_assert_cmpint(write(sock, rest, sizeof(rest)), ==, (int)sizeof(rest));
     collect_rx_chars(qts, 0, 5, got, status);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
@@ -2051,15 +2051,15 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
     qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
     qtest_writel(qts, sdma(0, SDMA_CONTROL),
-                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
+                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(2));
 
-    /* Eight characters reach the mark of eight however the host chunks. */
+    /* Eight characters make two entries or more however the host chunks. */
     g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
     collect_rx_chars(qts, 0, sizeof(sent), got, status);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
                     ==, SOURCE(0, SRC_RX_HIGH_WATER));
 
-    /* One entry left is four waiting or fewer: below the mark, unaided. */
+    /* One entry left is below the mark of two, unaided. */
     produce = qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8;
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), produce - 8);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),

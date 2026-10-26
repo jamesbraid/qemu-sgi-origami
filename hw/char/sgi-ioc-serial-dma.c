@@ -231,7 +231,10 @@ void sgi_ioc_sdma_catch_up(SGIIOCSerialDMA *d)
 
 /*
  * A level, recomputed wherever the waiting count moves: a latched raise
- * storms IRIX's ring console. The mark counts characters, not entries.
+ * storms IRIX's ring console. The mark counts ring entries: both Linux ring
+ * drivers set it to three quarters of a ring's entries and compare it, shifted
+ * to a byte offset, with the distance between the indices, and IRIX's ring
+ * console programs 384 against 4 KiB rings of 512 entries.
  */
 static void sdma_update_high_water(SGIIOCSerialDMAPort *p)
 {
@@ -240,7 +243,7 @@ static void sdma_update_high_water(SGIIOCSerialDMAPort *p)
     uint32_t mask = sdma_pointer_mask(p);
     uint32_t high_water = sdma_control(p) & SGI_IOC_SDMA_HIGH_WATER;
     uint32_t waiting = ((*produce - *consume) & mask) /
-                       SGI_IOC_SDMA_ENTRY_SIZE * SGI_IOC_SDMA_ENTRY_CHARS;
+                       SGI_IOC_SDMA_ENTRY_SIZE;
 
     sdma_set_level(p, SGI_IOC_SDMA_SRC_RX_HIGH,
                    high_water && waiting >= high_water);
