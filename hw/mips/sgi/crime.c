@@ -357,6 +357,7 @@ typedef struct CrimeRenderRegister {
     unsigned offset;
     unsigned size;
     bool readable;
+    bool native_only;
 } CrimeRenderRegister;
 
 static const CrimeRenderRegister crime_render_registers[] = {
@@ -372,6 +373,30 @@ static const CrimeRenderRegister crime_render_registers[] = {
     { 0x0c0, 4, true }, { 0x0c4, 4, true },
     { 0x0d0, 4, false }, { 0x0d8, 4, true },
     { 0x1b0, 4, true }, { 0x1b8, 4, true },
+    /* Parameter retention does not admit additional START commands. */
+    { 0x080, 4, false, true }, { 0x084, 4, false, true },
+    { 0x088, 4, false, true }, { 0x08c, 4, false, true },
+    { 0x090, 4, false, true }, { 0x094, 4, false, true },
+    { 0x0e0, 4, false, true }, { 0x0e4, 4, false, true },
+    { 0x0e8, 4, false, true }, { 0x0ec, 4, false, true },
+    { 0x0f0, 4, false, true }, { 0x0f4, 4, false, true },
+    { 0x0f8, 4, false, true }, { 0x0fc, 4, false, true },
+    { 0x100, 4, false, true }, { 0x104, 4, false, true },
+    { 0x108, 4, false, true }, { 0x10c, 4, false, true },
+    { 0x110, 4, true, true }, { 0x118, 8, true, true },
+    { 0x120, 8, false, true }, { 0x128, 8, false, true },
+    { 0x130, 4, false, true }, { 0x138, 8, false, true },
+    { 0x140, 8, false, true }, { 0x148, 8, false, true },
+    { 0x150, 8, false, true }, { 0x158, 4, false, true },
+    { 0x15c, 4, false, true }, { 0x160, 4, true, true },
+    { 0x168, 4, true, true }, { 0x170, 4, true, true },
+    { 0x178, 4, false, true }, { 0x180, 4, false, true },
+    { 0x188, 4, false, true }, { 0x190, 4, false, true },
+    { 0x194, 4, false, true }, { 0x198, 4, true, true },
+    { 0x1a0, 4, true, true }, { 0x1a8, 4, true, true },
+    { 0x1c0, 4, true, true }, { 0x1c8, 8, false, true },
+    { 0x1d0, 8, false, true }, { 0x1d8, 8, false, true },
+    { 0x1e0, 4, true, true }, { 0x1e8, 4, true, true },
 };
 
 static const CrimeRenderRegister *crime_render_register(unsigned offset)
@@ -386,7 +411,7 @@ static const CrimeRenderRegister *crime_render_register(unsigned offset)
 
 static bool crime_render_state_access(hwaddr offset, unsigned size)
 {
-    if (crime_renderer_touches(offset, size, 0x1001000, 0x600)) {
+    if (crime_renderer_touches(offset, size, 0x1001000, 0x800)) {
         return true;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(crime_render_registers); i++) {
@@ -1146,14 +1171,32 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
     return crime_render_execute(offset, pixels, enabled, 1, copy, 3, false);
 }
 
+static uint64_t *crime_render_translation_word(SGICrimeState *s,
+                                                 hwaddr offset)
+{
+    if (offset < 0x1001000 || offset >= 0x1001800) {
+        return NULL;
+    }
+    if (offset < 0x1001600) {
+        return &s->render.tlb[(offset - 0x1001000) / 8];
+    }
+    if (offset < 0x10016e0) {
+        return &s->render.texture[(offset - 0x1001600) / 8];
+    }
+    if (offset < CRIME_LINEAR_TLB) {
+        return &s->transfer.clip[(offset - CRIME_CLIP_TLB) / 8];
+    }
+    return &s->transfer.tlb[(offset - CRIME_LINEAR_TLB) / 8];
+}
+
 static MemTxResult crime_render_state_read(SGICrimeState *s, hwaddr offset,
                                             uint64_t *value, unsigned size)
 {
     const CrimeRenderRegister *reg;
+    uint64_t *word = crime_render_translation_word(s, offset);
 
-    if (offset >= 0x1001000 && offset < 0x1001600 &&
-        size == 8 && !(offset & 7)) {
-        *value = s->render.tlb[(offset - 0x1001000) / 8];
+    if (word && size == 8 && !(offset & 7)) {
+        *value = *word;
         return MEMTX_OK;
     }
     reg = crime_render_register(offset - 0x1002000);
@@ -1168,10 +1211,10 @@ static MemTxResult crime_render_state_write(SGICrimeState *s, hwaddr offset,
                                              uint64_t value, unsigned size)
 {
     const CrimeRenderRegister *reg;
+    uint64_t *word = crime_render_translation_word(s, offset);
 
-    if (offset >= 0x1001000 && offset < 0x1001600 &&
-        size == 8 && !(offset & 7)) {
-        s->render.tlb[(offset - 0x1001000) / 8] = value;
+    if (word && size == 8 && !(offset & 7)) {
+        *word = value;
         return MEMTX_OK;
     }
     reg = crime_render_register(offset - 0x1002000);
@@ -1303,11 +1346,6 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         const CrimeRenderRegister *reg =
             crime_render_register(offset - 0x1002800);
 
-        if (offset >= CRIME_CLIP_TLB && offset < CRIME_CLIP_TLB + 32 &&
-            size == 8 && !(offset & 7)) {
-            s->transfer.clip[(offset - CRIME_CLIP_TLB) / 8] = value;
-            return MEMTX_OK;
-        }
         if (offset == 0x1000400 && size == 4) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-crime: opaque empty interface-buffer control "
@@ -1331,7 +1369,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
         if (crime_render_state_access(offset, size)) {
             return crime_render_state_write(s, offset, value, size);
         }
-        if (reg) {
+        if (reg && !reg->native_only) {
             bool paired = size == 8 &&
                 (reg->offset == 0x070 || reg->offset == 0x0a8 ||
                  reg->offset == 0x0c0);
@@ -2100,6 +2138,11 @@ static int crime_render_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    for (unsigned i = 0; i < ARRAY_SIZE(incoming->texture); i++) {
+        if (!active && incoming->texture[i]) {
+            return -EINVAL;
+        }
+    }
     for (unsigned i = 0; i < ARRAY_SIZE(incoming->parameter); i++) {
         const CrimeRenderRegister *reg = crime_render_register(i * 4);
         uint64_t value = incoming->parameter[i];
@@ -2122,6 +2165,7 @@ static const VMStateDescription vmstate_crime_render = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64_ARRAY(incoming_render.tlb, SGICrimeState, 192),
         VMSTATE_UINT64_ARRAY(incoming_render.parameter, SGICrimeState, 128),
+        VMSTATE_UINT64_ARRAY(incoming_render.texture, SGICrimeState, 28),
         VMSTATE_END_OF_LIST()
     },
 };

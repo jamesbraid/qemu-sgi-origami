@@ -110,3 +110,10 @@ ordinary-lifecycle /mips64/sgi/crime/render/ordinary/lifecycle
 ordinary-copies /mips64/sgi/crime/render/ordinary/copies
 ordinary-copy-faults /mips64/sgi/crime/render/ordinary/copy-faults
 ordinary-copy-banks /mips64/sgi/crime/render/ordinary/copy-banks
+
+native /mips64/sgi/crime/render/native/translations
+native /mips64/sgi/crime/render/native/parameters
+native /mips64/sgi/crime/render/native/isolation
+native /mips64/sgi/crime/render/native/migration
+native /mips64/sgi/crime/render/native/clear-sources
+native /mips64/sgi/crime/render/native/profiles

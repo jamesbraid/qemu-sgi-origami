@@ -37,6 +37,7 @@ typedef struct CrimeTransferState {
 typedef struct CrimeRenderState {
     uint64_t tlb[192];
     uint64_t parameter[128];
+    uint64_t texture[28];
 } CrimeRenderState;
 
 struct SGICrimeState {
