@@ -25,6 +25,7 @@
 #include <math.h>
 #include "qemu/log.h"
 #include "qemu/host-utils.h"
+#include "qemu/thread.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/x-gc.h"
 
@@ -70,6 +71,8 @@ typedef struct SGISoftDraw {
     bool *rgba_reported;
     /* Texels already read in this draw, or NULL (sgi_soft_texel_cache). */
     struct SGISoftTexelCache *texels;
+    /* Of bands > 1, the rows this pass draws (sgi_soft_row_in_band()). */
+    unsigned band, bands;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -98,6 +101,152 @@ typedef struct SGISoftFrag {
     double index;
     double fog;           /* the fog coordinate (3.10) */
 } SGISoftFrag;
+
+/*
+ * Band-parallel drawing. A draw large enough, into a target whose
+ * callbacks may run concurrently for different pixels
+ * (SGIRasterTarget.concurrent_pixels), is drawn by several threads at
+ * once, each pass taking every primitive in order but only its own band
+ * of rows: every pixel sees the same fragments in the same order as from
+ * one pass, so the planes come out the same, and the call still returns
+ * only when all are drawn. The caller draws band 0 itself; the other
+ * bands go to worker threads started on first use. Per-primitive work is
+ * repeated in each band, so small draws stay on one thread.
+ */
+#define SGI_SOFT_BAND_ROWS_SHIFT 3      /* rows interleave in runs of 8 */
+
+static unsigned sgi_soft_bands_wanted;
+static uint64_t sgi_soft_bands_min_pixels = SGI_RASTER_PARALLEL_MIN_PIXELS;
+
+/* A band other than the first repeats the primitive work: say it once. */
+static __thread bool sgi_soft_band_quiet;
+
+typedef void SGISoftBandFn(void *opaque, unsigned band, unsigned bands);
+
+static struct {
+    QemuMutex run;              /* one band-parallel call at a time */
+    QemuMutex lock;
+    QemuCond start, done;
+    unsigned threads;
+    uint64_t generation;
+    SGISoftBandFn *fn;
+    void *opaque;
+    unsigned bands, pending;
+} sgi_soft_pool;
+
+static void sgi_soft_pool_reset(void)
+{
+    qemu_mutex_init(&sgi_soft_pool.run);
+    qemu_mutex_init(&sgi_soft_pool.lock);
+    qemu_cond_init(&sgi_soft_pool.start);
+    qemu_cond_init(&sgi_soft_pool.done);
+    sgi_soft_pool.threads = 0;
+    sgi_soft_pool.pending = 0;
+}
+
+/* A forked child has none of its parent's workers: start its own. */
+static void __attribute__((constructor)) sgi_soft_pool_init(void)
+{
+    sgi_soft_pool_reset();
+    pthread_atfork(NULL, NULL, sgi_soft_pool_reset);
+}
+
+static void *sgi_soft_band_worker(void *opaque)
+{
+    unsigned band = (uintptr_t)opaque;
+    uint64_t seen = 0;
+
+    qemu_mutex_lock(&sgi_soft_pool.lock);
+    for (;;) {
+        SGISoftBandFn *fn;
+        void *job;
+        unsigned bands;
+
+        while (sgi_soft_pool.generation == seen) {
+            qemu_cond_wait(&sgi_soft_pool.start, &sgi_soft_pool.lock);
+        }
+        seen = sgi_soft_pool.generation;
+        if (band >= sgi_soft_pool.bands) {
+            continue;
+        }
+        fn = sgi_soft_pool.fn;
+        job = sgi_soft_pool.opaque;
+        bands = sgi_soft_pool.bands;
+        qemu_mutex_unlock(&sgi_soft_pool.lock);
+        fn(job, band, bands);
+        qemu_mutex_lock(&sgi_soft_pool.lock);
+        if (--sgi_soft_pool.pending == 0) {
+            qemu_cond_signal(&sgi_soft_pool.done);
+        }
+    }
+    return NULL;
+}
+
+static unsigned sgi_soft_bands(void)
+{
+    unsigned bands = qatomic_read(&sgi_soft_bands_wanted);
+
+    if (!bands) {
+        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+        bands = MIN(SGI_RASTER_PARALLEL_DEFAULT_BANDS, MAX(cpus, 1));
+    }
+    return MIN(bands, SGI_RASTER_PARALLEL_MAX_BANDS);
+}
+
+void sgi_raster_set_parallel(unsigned bands, uint64_t min_pixels)
+{
+    qatomic_set(&sgi_soft_bands_wanted, bands);
+    qatomic_set(&sgi_soft_bands_min_pixels, min_pixels);
+}
+
+/*
+ * fn(opaque, band, bands) for each band, band 0 on this thread, the rest
+ * on workers, returning when all have; false, having run none, when
+ * another thread is using the workers.
+ */
+static bool sgi_soft_bands_run(SGISoftBandFn *fn, void *opaque,
+                               unsigned bands)
+{
+    if (qemu_mutex_trylock(&sgi_soft_pool.run)) {
+        return false;
+    }
+    qemu_mutex_lock(&sgi_soft_pool.lock);
+    while (sgi_soft_pool.threads < bands - 1) {
+        QemuThread thread;
+        char name[32];
+
+        snprintf(name, sizeof(name), "sgi-raster/%u",
+                 sgi_soft_pool.threads + 1);
+        qemu_thread_create(&thread, name, sgi_soft_band_worker,
+                           (void *)(uintptr_t)(sgi_soft_pool.threads + 1),
+                           QEMU_THREAD_DETACHED);
+        sgi_soft_pool.threads++;
+    }
+    sgi_soft_pool.fn = fn;
+    sgi_soft_pool.opaque = opaque;
+    sgi_soft_pool.bands = bands;
+    sgi_soft_pool.pending = bands - 1;
+    sgi_soft_pool.generation++;
+    qemu_cond_broadcast(&sgi_soft_pool.start);
+    qemu_mutex_unlock(&sgi_soft_pool.lock);
+
+    fn(opaque, 0, bands);
+
+    qemu_mutex_lock(&sgi_soft_pool.lock);
+    while (sgi_soft_pool.pending) {
+        qemu_cond_wait(&sgi_soft_pool.done, &sgi_soft_pool.lock);
+    }
+    qemu_mutex_unlock(&sgi_soft_pool.lock);
+    qemu_mutex_unlock(&sgi_soft_pool.run);
+    return true;
+}
+
+static inline bool sgi_soft_row_in_band(const SGISoftDraw *r, int py)
+{
+    return r->bands <= 1 ||
+           ((uint32_t)py >> SGI_SOFT_BAND_ROWS_SHIFT) % r->bands == r->band;
+}
 
 static bool sgi_soft_window(const SGIGLDrawState *st, SGISoftWindow *win)
 {
@@ -307,10 +456,10 @@ static bool sgi_soft_rgba_load(const SGIRasterRules *r,
             valid = !bits || dest[i].component[k] < (1u << bits);
         }
         if (!valid) {
-            if (!*reported) {
+            /* Bands of one draw share the flag (sgi_soft_bands_run()). */
+            if (!qatomic_xchg(reported, true)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-gl: RGBA destination read "
                               "failed; pixel writes dropped\n");
-                *reported = true;
             }
             return false;
         }
@@ -806,9 +955,9 @@ static bool sgi_soft_setup_ops(SGISoftDraw *r)
 static void sgi_soft_texture_report(const SGISoftDraw *r, unsigned reason,
                                     const char *message)
 {
-    if (!(*r->texture_reports & reason)) {
+    /* Bands of one draw share the reports (sgi_soft_bands_run()). */
+    if (!(qatomic_fetch_or(r->texture_reports, reason) & reason)) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: texture %s\n", message);
-        *r->texture_reports |= reason;
     }
 }
 
@@ -2702,16 +2851,20 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
         return false;
     }
     if (!(clip[3] > 0)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: clipped vertex at w %g has no "
-                      "window position, primitive dropped\n", clip[3]);
+        if (!sgi_soft_band_quiet) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: clipped vertex at w %g has no "
+                          "window position, primitive dropped\n", clip[3]);
+        }
         return false;
     }
     sgi_gl_clip_to_window(st, clip, win);
     xw = win[0];
     yw = win[1];
     if (!(fabs(xw) < 65536.0 && fabs(yw) < 65536.0)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex outside the rasterizer's "
-                      "range, primitive dropped\n");
+        if (!sgi_soft_band_quiet) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex outside the "
+                          "rasterizer's range, primitive dropped\n");
+        }
         return false;
     }
     for (int k = 0; k < 4; k++) {
@@ -3216,15 +3369,18 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     step1 = -(v[0].y - v[2].y) * (1 << sub);
     step2 = -(v[1].y - v[0].y) * (1 << sub);
     for (int py = py0; py <= py1; py++) {
-        int64_t cy = ((int64_t)py * (1 << sub)) +
-                     (1 << (sub - 1));
-        int64_t cx = ((int64_t)px0 * (1 << sub)) +
-                     (1 << (sub - 1));
-        int64_t e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
-        int64_t e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
-        int64_t e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
-        int64_t lo = 0, hi = (int64_t)px1 - px0;
+        int64_t cy, cx, e0, e1, e2, lo, hi;
 
+        if (!sgi_soft_row_in_band(r, py)) {
+            continue;
+        }
+        cy = ((int64_t)py * (1 << sub)) + (1 << (sub - 1));
+        cx = ((int64_t)px0 * (1 << sub)) + (1 << (sub - 1));
+        e0 = sgi_soft_edge(&v[1], &v[2], cx, cy);
+        e1 = sgi_soft_edge(&v[2], &v[0], cx, cy);
+        e2 = sgi_soft_edge(&v[0], &v[1], cx, cy);
+        lo = 0;
+        hi = (int64_t)px1 - px0;
         sgi_soft_owned_run(&v[1], &v[2], e0, step0, &lo, &hi);
         sgi_soft_owned_run(&v[2], &v[0], e1, step1, &lo, &hi);
         sgi_soft_owned_run(&v[0], &v[1], e2, step2, &lo, &hi);
@@ -5035,6 +5191,166 @@ static SGIGLDrawResult sgi_soft_polygon_modes(const SGISoftDraw *r,
  * test is gl-quad-splits-from-its-first-vertex.
  */
 
+/* The filled primitives of a draw, from SGI_GL_TRIANGLES on, in order. */
+static void sgi_soft_draw_triangles(const SGISoftDraw *r, const SGIGLDraw *d)
+{
+    uint32_t n = d->count;
+
+#define V(i) (&d->vertices[(size_t)(i) * SGI_GL_VERTEX_FLOATS])
+    switch (d->mode) {
+    case SGI_GL_TRIANGLES:
+        for (uint32_t i = 0; i + 2 < n; i += 3) {
+            sgi_soft_triangle(r, V(i), V(i + 1), V(i + 2), V(i + 2));
+        }
+        break;
+    case SGI_GL_TRIANGLE_STRIP:
+        for (uint32_t i = 0; i + 2 < n; i++) {
+            if (i & 1) {
+                sgi_soft_triangle(r, V(i + 1), V(i), V(i + 2), V(i + 2));
+            } else {
+                sgi_soft_triangle(r, V(i), V(i + 1), V(i + 2), V(i + 2));
+            }
+        }
+        break;
+    case SGI_GL_TRIANGLE_FAN:
+    case SGI_GL_POLYGON:
+        if (r->texture && d->mode == SGI_GL_POLYGON && !d->fill_by_triangle) {
+            for (uint32_t i = 0; i + 2 < n; i++) {
+                if (!sgi_soft_texture_triangle_valid(r, V(0), V(i + 1),
+                                                      V(i + 2))) {
+                    return;
+                }
+            }
+        }
+        for (uint32_t i = 0; i + 2 < n; i++) {
+            sgi_soft_triangle(r, V(0), V(i + 1), V(i + 2),
+                              d->mode == SGI_GL_POLYGON ? V(0) : V(i + 2));
+        }
+        break;
+    case SGI_GL_QUADS:
+        for (uint32_t i = 0; i + 3 < n; i += 4) {
+            if (r->texture &&
+                (!sgi_soft_texture_triangle_valid(r, V(i), V(i + 1),
+                                                   V(i + 2)) ||
+                 !sgi_soft_texture_triangle_valid(r, V(i), V(i + 2),
+                                                   V(i + 3)))) {
+                continue;
+            }
+            sgi_soft_triangle(r, V(i), V(i + 1), V(i + 2), V(i + 3));
+            sgi_soft_triangle(r, V(i), V(i + 2), V(i + 3), V(i + 3));
+        }
+        break;
+    case SGI_GL_QUAD_STRIP:
+        /* Vertices 2i - 1, 2i, 2i + 2 and 2i + 1 in order (2.6.1). */
+        for (uint32_t i = 0; i + 3 < n; i += 2) {
+            if (r->texture &&
+                (!sgi_soft_texture_triangle_valid(r, V(i), V(i + 1),
+                                                   V(i + 3)) ||
+                 !sgi_soft_texture_triangle_valid(r, V(i), V(i + 3),
+                                                   V(i + 2)))) {
+                continue;
+            }
+            sgi_soft_triangle(r, V(i), V(i + 1), V(i + 3), V(i + 3));
+            sgi_soft_triangle(r, V(i), V(i + 3), V(i + 2), V(i + 3));
+        }
+        break;
+    default:
+        g_assert_not_reached();
+    }
+#undef V
+}
+
+/*
+ * About how many pixels a draw's filled primitives cover: the area of
+ * each one with its vertices moved into the pixels the window owns,
+ * summed until it reaches limit. A vertex with no window position counts
+ * as reaching it. A bounding box would take a long thin triangle across
+ * the window for a large one.
+ */
+static uint64_t sgi_soft_draw_pixels(const SGISoftDraw *r, const SGIGLDraw *d,
+                                     uint64_t limit)
+{
+    uint32_t n = d->count, step, size;
+    g_autofree double *xy = NULL;
+    uint64_t sum = 0;
+    int x0, y0, x1, y1;
+
+    if (!sgi_soft_bounds(r, &x0, &y0, &x1, &y1) || n < 3) {
+        return 0;
+    }
+    xy = g_new(double, 2 * (size_t)n);
+    for (uint32_t i = 0; i < n; i++) {
+        SGIVolumeVertex cv;
+        double win[3];
+
+        sgi_volume_from_draw_vertex(r->st,
+            &d->vertices[(size_t)i * SGI_GL_VERTEX_FLOATS], &cv);
+        if (!(cv.clip[3] > 0)) {
+            return limit;
+        }
+        sgi_gl_clip_to_window(r->st, cv.clip, win);
+        xy[2 * i] = win[0];
+        xy[2 * i + 1] = win[1];
+    }
+    /* Each primitive's own vertices; a fan's first is left out. */
+    step = d->mode == SGI_GL_TRIANGLES ? 3 : d->mode == SGI_GL_QUADS ? 4 :
+           d->mode == SGI_GL_QUAD_STRIP ? 2 : 1;
+    size = d->mode == SGI_GL_QUADS || d->mode == SGI_GL_QUAD_STRIP ? 4 : 3;
+    for (uint32_t i = 0; i + size <= n && sum < limit; i += step) {
+        double px[4], py[4], twice = 0;
+
+        for (uint32_t k = 0; k < size; k++) {
+            px[k] = MIN(MAX(xy[2 * (i + k)], x0), x1 + 1);
+            py[k] = MIN(MAX(xy[2 * (i + k) + 1], y0), y1 + 1);
+        }
+        for (uint32_t k = 0; k < size; k++) {
+            uint32_t next = (k + 1) % size;
+
+            twice += px[k] * py[next] - px[next] * py[k];
+        }
+        sum += (uint64_t)(fabs(twice) / 2);
+    }
+    return sum;
+}
+
+typedef struct SGISoftBandDraw {
+    const SGISoftDraw *r;
+    const SGIGLDraw *d;
+} SGISoftBandDraw;
+
+static void sgi_soft_band_draw(void *opaque, unsigned band, unsigned bands)
+{
+    SGISoftBandDraw *job = opaque;
+    SGISoftDraw r = *job->r;
+
+    r.band = band;
+    r.bands = bands;
+    if (r.texture) {
+        r.texels = sgi_soft_texel_cache_begin(r.texture);
+    }
+    sgi_soft_band_quiet = band > 0;
+    sgi_soft_draw_triangles(&r, job->d);
+    sgi_soft_band_quiet = false;
+}
+
+/*
+ * Draw the filled primitives in bands when the target allows it and they
+ * cover enough pixels to pay for repeating each primitive's setup in
+ * every band; false, having drawn nothing, otherwise.
+ */
+static bool sgi_soft_draw_parallel(const SGISoftDraw *r, const SGIGLDraw *d)
+{
+    unsigned bands = sgi_soft_bands();
+    uint64_t min_pixels = qatomic_read(&sgi_soft_bands_min_pixels);
+    SGISoftBandDraw job = { .r = r, .d = d };
+
+    if (!r->t->concurrent_pixels || bands < 2 ||
+        sgi_soft_draw_pixels(r, d, min_pixels) < min_pixels) {
+        return false;
+    }
+    return sgi_soft_bands_run(sgi_soft_band_draw, &job, bands);
+}
+
 SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
                              const SGIRasterTarget *t, const SGIGLDraw *d)
 {
@@ -5156,59 +5472,13 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
         }
         return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLES:
-        for (uint32_t i = 0; i + 2 < n; i += 3) {
-            sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
-        }
-        return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLE_STRIP:
-        for (uint32_t i = 0; i + 2 < n; i++) {
-            if (i & 1) {
-                sgi_soft_triangle(&r, V(i + 1), V(i), V(i + 2), V(i + 2));
-            } else {
-                sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 2));
-            }
-        }
-        return SGI_GL_DRAW_OK;
     case SGI_GL_TRIANGLE_FAN:
     case SGI_GL_POLYGON:
-        if (r.texture && d->mode == SGI_GL_POLYGON && !d->fill_by_triangle) {
-            for (uint32_t i = 0; i + 2 < n; i++) {
-                if (!sgi_soft_texture_triangle_valid(&r, V(0), V(i + 1),
-                                                      V(i + 2))) {
-                    return SGI_GL_DRAW_OK;
-                }
-            }
-        }
-        for (uint32_t i = 0; i + 2 < n; i++) {
-            sgi_soft_triangle(&r, V(0), V(i + 1), V(i + 2),
-                              d->mode == SGI_GL_POLYGON ? V(0) : V(i + 2));
-        }
-        return SGI_GL_DRAW_OK;
     case SGI_GL_QUADS:
-        for (uint32_t i = 0; i + 3 < n; i += 4) {
-            if (r.texture &&
-                (!sgi_soft_texture_triangle_valid(&r, V(i), V(i + 1),
-                                                   V(i + 2)) ||
-                 !sgi_soft_texture_triangle_valid(&r, V(i), V(i + 2),
-                                                   V(i + 3)))) {
-                continue;
-            }
-            sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 2), V(i + 3));
-            sgi_soft_triangle(&r, V(i), V(i + 2), V(i + 3), V(i + 3));
-        }
-        return SGI_GL_DRAW_OK;
     case SGI_GL_QUAD_STRIP:
-        /* Vertices 2i - 1, 2i, 2i + 2 and 2i + 1 in order (2.6.1). */
-        for (uint32_t i = 0; i + 3 < n; i += 2) {
-            if (r.texture &&
-                (!sgi_soft_texture_triangle_valid(&r, V(i), V(i + 1),
-                                                   V(i + 3)) ||
-                 !sgi_soft_texture_triangle_valid(&r, V(i), V(i + 3),
-                                                   V(i + 2)))) {
-                continue;
-            }
-            sgi_soft_triangle(&r, V(i), V(i + 1), V(i + 3), V(i + 3));
-            sgi_soft_triangle(&r, V(i), V(i + 3), V(i + 2), V(i + 3));
+        if (!sgi_soft_draw_parallel(&r, d)) {
+            sgi_soft_draw_triangles(&r, d);
         }
         return SGI_GL_DRAW_OK;
     default:
@@ -5402,6 +5672,85 @@ static bool sgi_soft_clip_covers_row(const SGIClipList *clip, int x0, int x1,
     return false;
 }
 
+/* A clear's decided values, which every row of it stores. */
+typedef struct SGISoftClear {
+    const SGIRasterRules *rules;
+    const SGIRasterTarget *t;
+    const SGIRasterOp *op;
+    bool colour, depth, stencil, rgba, rgba_read;
+    uint32_t rgb, smax, mask, rgba_mask, ntargets, depth_value;
+    SGIRasterColour clear;
+    bool *rgba_reported;
+} SGISoftClear;
+
+/* The rows of a clear that are band's of bands (sgi_soft_row_in_band()). */
+static void sgi_soft_clear_rows(void *opaque, unsigned band, unsigned bands)
+{
+    const SGISoftClear *c = opaque;
+    const SGIRasterRules *rules = c->rules;
+    const SGIRasterTarget *t = c->t;
+    const SGIRasterOp *op = c->op;
+    const SGISoftDraw rows = { .band = band, .bands = bands };
+    /* Only a read fills it, and only a read's targets are read back. */
+    SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
+
+    for (int y = op->y0; y <= op->y1; y++) {
+        bool whole_row;
+
+        if (!sgi_soft_row_in_band(&rows, y)) {
+            continue;
+        }
+        whole_row = op->clip.n <= 1 ||
+                    sgi_soft_clip_covers_row(&op->clip, op->x0, op->x1, y);
+        for (int x = op->x0; x <= op->x1; x++) {
+            if (!whole_row && !sgi_clip_contains(&op->clip, x, y)) {
+                continue;
+            }
+
+            if (c->rgba && c->rgba_read) {
+                memset(dest, 0, sizeof(dest));
+                if (!sgi_soft_rgba_load(rules, t, op->targets, c->ntargets,
+                                        x, y, dest, c->rgba_reported)) {
+                    continue;
+                }
+            }
+            if (c->depth) {
+                t->store_depth(t->opaque, x, y, c->depth_value);
+            }
+            if (c->stencil) {
+                uint32_t smask = op->stencil_mask & c->smax;
+
+                t->store_stencil(t->opaque, x, y,
+                                 (t->load_stencil(t->opaque, x, y) &
+                                  ~smask & c->smax) |
+                                 (op->clear_stencil & smask));
+            }
+            for (uint32_t i = 0; c->colour && i < c->ntargets; i++) {
+                if (op->index_bits) {
+                    t->store_index(t->opaque, op->targets[i], x, y,
+                                   op->clear_index, op->index_mask);
+                } else if (c->rgba) {
+                    SGIRasterColour out = c->clear;
+
+                    for (unsigned k = 0; k < 4; k++) {
+                        if (!(c->rgba_mask & (1u << k))) {
+                            out.component[k] = dest[i].component[k];
+                        }
+                    }
+                    t->store_rgba(t->opaque, op->targets[i], x, y, &out);
+                } else if (c->mask == sgi_soft_colour_bits(rules)) {
+                    t->store_colour(t->opaque, op->targets[i], x, y, c->rgb);
+                } else {
+                    t->store_colour(t->opaque, op->targets[i], x, y,
+                                    (c->rgb & c->mask) |
+                                    (t->load_colour(t->opaque, op->targets[i],
+                                                    x, y) & ~c->mask));
+                }
+            }
+        }
+    }
+}
+
 /*
  * CLEAR writes the clear colour under the colour mask, or in colour-index
  * mode the clear index under the index mask, to the op's targets, the
@@ -5417,7 +5766,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     bool colour = op->clear_buffers & SGI_GL_COLOR_BUFFER_BIT;
     bool depth = op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT;
     bool stencil = op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT;
-    uint32_t rgb = 0, smax, mask = sgi_soft_colour_bits(rules);
+    uint32_t rgb = 0, smax = 0, mask = sgi_soft_colour_bits(rules);
     uint32_t rgba_mask = sgi_soft_rgba_mask(rules, op->clear_colour_mask);
     bool rgba = !op->index_bits && t->store_rgba;
     bool rgba_read = colour && op->ntargets && rgba_mask &&
@@ -5426,9 +5775,9 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     uint32_t ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     bool rgba_reported = false;
     SGIRasterColour clear = { 0 };
-    /* Only a read fills it, and only a read's targets are read back. */
-    SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
     uint32_t depth_value;
+    SGISoftClear rows;
+    unsigned bands;
 
     if (!sgi_soft_check_rules(rules)) {
         return;
@@ -5477,57 +5826,21 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         /* Clears remain undithered: no dither state is submitted. */
         clear = sgi_soft_rgba_value(rules, rgb, op->clear_rgba[3]);
     }
-    for (int y = op->y0; y <= op->y1; y++) {
-        bool whole_row = op->clip.n <= 1 ||
-                         sgi_soft_clip_covers_row(&op->clip, op->x0, op->x1,
-                                                  y);
-
-        for (int x = op->x0; x <= op->x1; x++) {
-            if (!whole_row && !sgi_clip_contains(&op->clip, x, y)) {
-                continue;
-            }
-
-            if (rgba && rgba_read) {
-                memset(dest, 0, sizeof(dest));
-                if (!sgi_soft_rgba_load(rules, t, op->targets, ntargets,
-                                        x, y, dest, &rgba_reported)) {
-                    continue;
-                }
-            }
-            if (depth) {
-                t->store_depth(t->opaque, x, y, depth_value);
-            }
-            if (stencil) {
-                uint32_t smask = op->stencil_mask & smax;
-
-                t->store_stencil(t->opaque, x, y,
-                                 (t->load_stencil(t->opaque, x, y) &
-                                  ~smask & smax) |
-                                 (op->clear_stencil & smask));
-            }
-            for (uint32_t i = 0; colour && i < ntargets; i++) {
-                if (op->index_bits) {
-                    t->store_index(t->opaque, op->targets[i], x, y,
-                                   op->clear_index, op->index_mask);
-                } else if (rgba) {
-                    SGIRasterColour out = clear;
-
-                    for (unsigned k = 0; k < 4; k++) {
-                        if (!(rgba_mask & (1u << k))) {
-                            out.component[k] = dest[i].component[k];
-                        }
-                    }
-                    t->store_rgba(t->opaque, op->targets[i], x, y, &out);
-                } else if (mask == sgi_soft_colour_bits(rules)) {
-                    t->store_colour(t->opaque, op->targets[i], x, y, rgb);
-                } else {
-                    t->store_colour(t->opaque, op->targets[i], x, y,
-                                    (rgb & mask) |
-                                    (t->load_colour(t->opaque, op->targets[i],
-                                                    x, y) & ~mask));
-                }
-            }
-        }
+    rows = (SGISoftClear) {
+        .rules = rules, .t = t, .op = op,
+        .colour = colour, .depth = depth, .stencil = stencil,
+        .rgba = rgba, .rgba_read = rgba_read,
+        .rgb = rgb, .smax = smax, .mask = mask, .rgba_mask = rgba_mask,
+        .ntargets = ntargets, .depth_value = depth_value, .clear = clear,
+        .rgba_reported = &rgba_reported,
+    };
+    bands = sgi_soft_bands();
+    if (!t->concurrent_pixels || bands < 2 || op->y1 < op->y0 ||
+        op->x1 < op->x0 ||
+        (uint64_t)(op->x1 - op->x0 + 1) * (op->y1 - op->y0 + 1) <
+        qatomic_read(&sgi_soft_bands_min_pixels) ||
+        !sgi_soft_bands_run(sgi_soft_clear_rows, &rows, bands)) {
+        sgi_soft_clear_rows(&rows, 0, 1);
     }
 }
 

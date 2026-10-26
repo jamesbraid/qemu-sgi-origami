@@ -186,6 +186,135 @@ static uint32_t bits(float f)
     return b;
 }
 
+/* Planes, and which thread stored each colour, for band-parallel draws. */
+typedef struct BandPlanes {
+    Planes p;
+    GThread *owner[W * H];
+} BandPlanes;
+
+static void band_store_colour(void *opaque, SGIColourTarget target, int x,
+                              int y, uint32_t colour)
+{
+    BandPlanes *b = opaque;
+
+    planes_store_colour(&b->p, target, x, y, colour);
+    b->owner[planes_index(x, y)] = g_thread_self();
+}
+
+static uint32_t band_load_colour(void *opaque, SGIColourTarget target, int x,
+                                 int y)
+{
+    return planes_load_colour(&((BandPlanes *)opaque)->p, target, x, y);
+}
+
+static uint32_t band_load_depth(void *opaque, int x, int y)
+{
+    return planes_load_depth(&((BandPlanes *)opaque)->p, x, y);
+}
+
+static void band_store_depth(void *opaque, int x, int y, uint32_t depth)
+{
+    planes_store_depth(&((BandPlanes *)opaque)->p, x, y, depth);
+}
+
+static uint32_t band_load_stencil(void *opaque, int x, int y)
+{
+    return planes_load_stencil(&((BandPlanes *)opaque)->p, x, y);
+}
+
+static void band_store_stencil(void *opaque, int x, int y, uint32_t value)
+{
+    planes_store_stencil(&((BandPlanes *)opaque)->p, x, y, value);
+}
+
+/*
+ * A target whose callbacks allow concurrent pixels draws in bands of rows
+ * on several threads, and leaves the planes one thread would: random
+ * smooth, depth-tested and stencilled triangles, blended over what is
+ * there, and a clear of part of the window, each drawn with four bands
+ * and no pixel threshold and again on one thread.
+ */
+static void test_band_parallel_draw(void)
+{
+    static BandPlanes banded, serial;
+    BandPlanes *runs[2] = { &banded, &serial };
+    float verts[60][SGI_GL_VERTEX_FLOATS] = { 0 };
+    GRand *rand = g_rand_new_with_seed(0xba4d5);
+    SGIRasterRules rules = rules_supported;
+    GHashTable *threads = g_hash_table_new(NULL, NULL);
+
+    rules.stencil_bits = 8;
+    for (unsigned i = 0; i < G_N_ELEMENTS(verts); i++) {
+        verts[i][SGI_GL_V_POSITION + 0] = g_rand_double_range(rand, -1.2, 1.2);
+        verts[i][SGI_GL_V_POSITION + 1] = g_rand_double_range(rand, -1.2, 1.2);
+        verts[i][SGI_GL_V_POSITION + 2] = g_rand_double_range(rand, -0.9, 0.9);
+        verts[i][SGI_GL_V_POSITION + 3] = 1;
+        for (unsigned k = 0; k < 4; k++) {
+            verts[i][SGI_GL_V_COLOR + k] = g_rand_double(rand);
+        }
+    }
+    g_rand_free(rand);
+    for (unsigned run = 0; run < 2; run++) {
+        BandPlanes *b = runs[run];
+        SGIRasterTarget t = {
+            .store_colour = band_store_colour,
+            .load_colour = band_load_colour,
+            .load_depth = band_load_depth,
+            .store_depth = band_store_depth,
+            .load_stencil = band_load_stencil,
+            .store_stencil = band_store_stencil,
+            .opaque = b,
+            .concurrent_pixels = true,
+        };
+        SGIGLDraw d = {
+            .context = 0x1234, .mode = SGI_GL_TRIANGLES,
+            .count = G_N_ELEMENTS(verts), .vertices = &verts[0][0],
+        };
+        SGIRasterOp clear = {
+            .kind = SGI_RASTER_CLEAR, .ntargets = 1,
+            .x0 = 5, .y0 = 3, .x1 = 50, .y1 = 60,
+            .clip = { .n = 1, .r = { { 0, 0, W - 1, H - 1 } } },
+            .clear_buffers = SGI_GL_COLOR_BUFFER_BIT |
+                             SGI_GL_STENCIL_BUFFER_BIT,
+            .clear_rgba = { 0.25, 0.5, 0.75, 1 },
+            .clear_colour_mask = SGI_GL_COLOUR_MASK_ALL,
+            .clear_stencil = 0x5a, .stencil_mask = 0xf0,
+        };
+        SGIGLContext c;
+
+        memset(b, 0, sizeof(*b));
+        sgi_raster_set_parallel(run ? 1 : 4, 0);
+        context_init(&c);
+        c.cur.depth_test = 1;
+        c.cur.depth_func = SGI_GL_LESS;
+        c.cur.stencil_test = 1;
+        c.cur.stencil_func = SGI_GL_ALWAYS;
+        c.cur.stencil_op[2] = SGI_GL_INCR;
+        c.cur.blend = 1;
+        c.cur.blend_src = SGI_GL_SRC_ALPHA;
+        c.cur.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+        c.cur.blend_equation = SGI_GL_FUNC_ADD;
+        for (unsigned i = 0; i < W * H; i++) {
+            b->p.depth[i] = 0xffffff;
+        }
+        d.state = &c.cur;
+        sgi_soft_draw(&rules, &t, &d);
+        sgi_soft_raster(&rules, &t, &clear);
+        sgi_gl_cleanup(&c);
+    }
+    sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
+    g_assert(memcmp(&banded.p, &serial.p, sizeof(banded.p)) == 0);
+    for (unsigned i = 0; i < W * H; i++) {
+        if (banded.owner[i]) {
+            g_hash_table_add(threads, banded.owner[i]);
+        }
+        g_assert(!serial.owner[i] || serial.owner[i] == g_thread_self());
+    }
+    /* Four bands of eight-row runs over 64 rows: four threads drew. */
+    g_assert_cmpuint(g_hash_table_size(threads), ==, 4);
+    g_hash_table_destroy(threads);
+}
+
 #define NVERTS 9
 
 /*
@@ -14148,6 +14277,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/batch-matches-pieces", test_batch_matches_pieces);
     g_test_add_func("/sgi-gl/triangle-coverage-exact",
                     test_triangle_coverage_exact);
+    g_test_add_func("/sgi-gl/band-parallel-draw", test_band_parallel_draw);
     g_test_add_func("/sgi-gl/finish-is-a-fence", test_finish_is_a_fence);
     g_test_add_func("/sgi-gl/clear-op", test_clear_op);
     g_test_add_func("/sgi-gl/rounding", test_rounding);

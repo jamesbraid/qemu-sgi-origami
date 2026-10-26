@@ -575,7 +575,33 @@ typedef struct SGIRasterTarget {
     const SGIRenderResource *resources;
     size_t resource_count;
     const SGIRenderResourceOps *resource_ops;
+    /*
+     * Whether the callbacks above may run on several threads at once for
+     * different pixels, while the thread that called the rasterizer waits
+     * for them, holding whatever locks it holds (the BQL, for a device).
+     * A large draw into such a target is drawn in bands of rows in
+     * parallel (sgi_raster_set_parallel()); every pixel still sees the
+     * same calls in the same order, but calls for different pixels
+     * interleave. Off, the default, keeps every call on the caller's
+     * thread.
+     */
+    bool concurrent_pixels;
 } SGIRasterTarget;
+
+/*
+ * Band-parallel drawing's limits: at most this many bands, by default
+ * this many or the host's processor count if fewer, and only for draws of
+ * filled primitives whose bounding boxes cover at least this many pixels.
+ */
+#define SGI_RASTER_PARALLEL_MAX_BANDS 16
+#define SGI_RASTER_PARALLEL_DEFAULT_BANDS 4
+#define SGI_RASTER_PARALLEL_MIN_PIXELS 2048
+
+/*
+ * Set the bands (0 for the default; 1 draws on one thread) and the pixel
+ * threshold for every later draw, for tests and measurements.
+ */
+void sgi_raster_set_parallel(unsigned bands, uint64_t min_pixels);
 
 SGIRenderResult sgi_render_resource_snapshot(const SGIRasterTarget *target,
                                               const SGIRenderResource *resource,
