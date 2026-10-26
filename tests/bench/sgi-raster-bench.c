@@ -366,6 +366,7 @@ typedef enum Scene {
     SCENE_BLEND,
     SCENE_COLOUR,
     SCENE_SLIVER,
+    SCENE_PERSPECTIVE,
     SCENE_COUNT,
 } Scene;
 
@@ -377,6 +378,7 @@ static const char *const scene_names[SCENE_COUNT] = {
     [SCENE_BLEND] = "blend",
     [SCENE_COLOUR] = "colour",
     [SCENE_SLIVER] = "sliver",
+    [SCENE_PERSPECTIVE] = "perspective",
 };
 
 static void scene_run(Scene scene, unsigned repeat)
@@ -396,6 +398,21 @@ static void scene_run(Scene scene, unsigned repeat)
     };
     int64_t start, end;
 
+    if (scene == SCENE_PERSPECTIVE) {
+        /*
+         * Texture coordinates as a client gives them, Q 1, so Q/W varies
+         * across each triangle as 1/W does: the mipmap scene's triangles
+         * have Q = W, which leaves Q/W flat.
+         */
+        for (unsigned i = 0; i < TRIANGLES * 3; i++) {
+            float *p = &verts[(size_t)i * SGI_GL_VERTEX_FLOATS];
+            float w = p[SGI_GL_V_POSITION + 3];
+
+            p[SGI_GL_V_TEXCOORD + 0] /= w;
+            p[SGI_GL_V_TEXCOORD + 1] /= w;
+            p[SGI_GL_V_TEXCOORD + 3] = 1;
+        }
+    }
     bench_init(b);
     t = bench_target(b, rgba);
     context_init(b, &c);
@@ -409,6 +426,7 @@ static void scene_run(Scene scene, unsigned repeat)
         c.cur.depth_test = 1;
         break;
     case SCENE_MIPMAP:
+    case SCENE_PERSPECTIVE:
         b->image.min_filter = SGI_GL_LINEAR_MIPMAP_LINEAR;
         /* fall through */
     case SCENE_TEXTURE:
@@ -812,7 +830,9 @@ static void corpus_vertex(GRand *rand, float *v, const int vp[4],
     }
     v[SGI_GL_V_TEXCOORD + 0] = g_rand_double_range(rand, -2, 3) * w;
     v[SGI_GL_V_TEXCOORD + 1] = g_rand_double_range(rand, -2, 3) * w;
-    v[SGI_GL_V_TEXCOORD + 3] = w;
+    /* Q varies across a primitive in two vertices in five. */
+    v[SGI_GL_V_TEXCOORD + 3] = w * (corpus_chance(rand, 40) ?
+                                    g_rand_double_range(rand, 0.5, 2) : 1);
     v[SGI_GL_V_FOG] = g_rand_double_range(rand, 0, 4);
     v[SGI_GL_V_EDGE] = 1;
     v[SGI_GL_V_INDEX] = g_rand_int_range(rand, 0, 256);
@@ -1063,6 +1083,33 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         .opaque = c,
     };
     sgi_soft_draw(&rules, &t, &d);
+    if (corpus_chance(rand, 15)) {
+        /* A glBitmap run, textured from the raster position. */
+        uint8_t bytes[24 * 16 / 8];
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_BITMAP, .ntargets = 1,
+            .bitmap = {
+                .state = &ctx.cur,
+                .x = g_rand_int_range(rand, -8, CW),
+                .y = g_rand_int_range(rand, -8, CH),
+                .width = g_rand_int_range(rand, 1, 25),
+                .height = g_rand_int_range(rand, 1, 17),
+                .bytes = bytes,
+                .z = g_rand_double(rand),
+                .rgba = { g_rand_double(rand), g_rand_double(rand),
+                          g_rand_double(rand), 1 },
+                .index = g_rand_int_range(rand, 0, 256),
+                .texcoord = { g_rand_double_range(rand, -2, 3),
+                              g_rand_double_range(rand, -2, 3), 0, 1 },
+            },
+        };
+
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            bytes[i] = g_rand_int(rand);
+        }
+        op.bitmap.count = (op.bitmap.width + 7) / 8 * op.bitmap.height;
+        sgi_soft_raster(&rules, &t, &op);
+    }
     if (t.texture && corpus_chance(rand, 30)) {
         /*
          * New texel contents between two draws of one image: whatever a
