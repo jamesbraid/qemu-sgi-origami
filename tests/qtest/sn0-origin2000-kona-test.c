@@ -1470,9 +1470,10 @@ static void test_onewire_board_part_configures_geometry_record(void)
 /*
  * A configured pipe's records carry the boards' real names and revisions,
  * which hinv prints and the kernel driver's attach routine searches for
- * "GE16-": true-wombat's GE16-4 rev E and KTOWN rev F for an
- * InfiniteReality3, and whole-tetra's GE14-4 030-1129-002 rev F for an
- * InfiniteReality2, whatever board-part the board was given.
+ * "GE16-": GE16-4 rev E and KTOWN rev F, as a real Onyx2 rack's
+ * InfiniteReality3 reports them, and GE14-4 030-1129-002 rev F, as a real
+ * Onyx2 deskside's InfiniteReality2 does, whatever board-part the board
+ * was given.
  */
 static void test_onewire_product_names_records(void)
 {

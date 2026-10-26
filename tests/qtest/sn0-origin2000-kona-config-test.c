@@ -5,15 +5,16 @@
  *
  * Each configuration's 0x1e9 answer is compared byte for byte with a block
  * this file builds from the capture's own values, at the offsets gfxinit's
- * report reads them from: true-wombat's InfiniteReality3 (one RM with 256
- * MB, DG5-2 base 030-1242-001 with its GVO), whole-tetra's deskside
- * GE14-4 with two RM7 boards and an eight-channel 030-1087-001,
- * fancy-akita's two-GE GE14 board, and an InfiniteReality2E built from
- * true-wombat's GE16-4 and RM9 with 64 MB texture boards. The two words the
- * driver's attach classes the pipe by are checked through the indirect
- * port, and every configuration no source grounds is refused at realize
- * with its reason. The fixture attaches the pipe as
- * sn0-origin2000-kona-bringup-test.c does.
+ * report reads them from. The captures are hinv, gfxinfo and board lists
+ * from real systems: an Onyx2 rack's InfiniteReality3 (one RM with 256 MB,
+ * DG5-2 base 030-1242-001 with its GVO; web:nekonomicon-16285), an Onyx2
+ * deskside's GE14-4 with two RM7 boards and an eight-channel 030-1087-001
+ * (web:irixnet-post-32192), and an owner's board list and gfxinfo for a
+ * two-GE GE14 board. An InfiniteReality2E is built from the rack's GE16-4
+ * and RM9 with 64 MB texture boards. The two words the driver's attach
+ * classes the pipe by are checked through the indirect port, and every
+ * configuration no source grounds is refused at realize with its reason.
+ * The fixture attaches the pipe as sn0-origin2000-kona-bringup-test.c does.
  */
 
 #include "qemu/osdep.h"
@@ -75,13 +76,13 @@ typedef struct Expected {
 } Expected;
 
 /*
- * true-wombat: GE16-4 030-1398-001 rev E, an RM9 030-1402-001 rev E that
+ * The rack capture: GE16-4 030-1398-001 rev E, an RM9 030-1402-001 rev E that
  * gfxinfo calls RM10, TM 030-1588-001 with 256 MB, the DG5-2 base
  * 030-1242-001 rev D with its GVO 030-1184-002 rev B, two channels;
  * gfxinfo's brd line "80f61806 3041606/-/-/- f9311002" and "GVO option
  * detected", display=dg5-2-gvo.
  */
-static const Expected true_wombat = {
+static const Expected ir3_rack = {
     .board_set = 5, .engines = 4, .occupancy = 0xf, .rms = 1,
     .texture_code = 4, .texture_mb = 256, .channels = 2, .gamma = 0,
     .option = 6, .board_word = 0x80f61806, .rm_word = 0x3041606,
@@ -93,12 +94,12 @@ static const Expected true_wombat = {
 };
 
 /*
- * whole-tetra: GE14-4 030-1129-002, two RM7 030-1054-001 and TM
+ * The deskside capture: GE14-4 030-1129-002, two RM7 030-1054-001 and TM
  * 030-1053-001 with 64 MB each, DG 030-1087-001 reporting eight channels
  * and 64K of external gamma; brd "80160a04 3020c06/3020c06/-/- 51bf1002".
- * Names and revisions of the RM and TM from fancy-akita's owner list.
+ * Names and revisions of the RM and TM from the two-GE owner's list.
  */
-static const Expected whole_tetra = {
+static const Expected ir2_deskside = {
     .board_set = 1, .engines = 4, .occupancy = 0xf, .rms = 2,
     .texture_code = 2, .texture_mb = 64, .channels = 8, .gamma = 1,
     .option = 0, .board_word = 0x80160a04, .rm_word = 0x3020c06,
@@ -264,15 +265,15 @@ static uint32_t class_word(QTestState *s, uint32_t selector)
     return qtest_readl(s, REG_INDIRECT_DATA);
 }
 
-static void test_ir3_true_wombat(void)
+static void test_ir3_gvo(void)
 {
-    assert_config(RACK_PIPE ",product=ir3,display=dg5-2-gvo", &true_wombat);
+    assert_config(RACK_PIPE ",product=ir3,display=dg5-2-gvo", &ir3_rack);
 }
 
-/* Four RMs, each with true-wombat's boards. */
+/* Four RMs, each with the rack capture's boards. */
 static void test_ir3_four_rms_gvo(void)
 {
-    Expected e = true_wombat;
+    Expected e = ir3_rack;
 
     e.rms = 4;
     assert_config(RACK_PIPE ",product=ir3,rm-count=4,display=dg5-2-gvo", &e);
@@ -280,12 +281,12 @@ static void test_ir3_four_rms_gvo(void)
 
 /*
  * A rack pipe that names no display board has a plain DG5-2,
- * fancy-akita's 030-1055-001, and no option record: no capture shows a
- * plain DG5-2 in a rack.
+ * 030-1055-001 from the two-GE owner's list, and no option record: no
+ * capture shows a plain DG5-2 in a rack.
  */
 static void test_ir3_plain_dg5_2(void)
 {
-    Expected e = true_wombat;
+    Expected e = ir3_rack;
 
     e.option = 0;
     e.dg = (Board){ "DG5-2", "030-1055-001", "" };
@@ -293,20 +294,20 @@ static void test_ir3_plain_dg5_2(void)
     assert_config(RACK_PIPE ",product=ir3", &e);
 }
 
-static void test_ir2_whole_tetra(void)
+static void test_ir2_ge14_4(void)
 {
     assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\",\"rm-count\":2"),
-                  &whole_tetra);
+                  &ir2_deskside);
 }
 
 /*
- * whole-tetra as captured: Medium pixel depth, which gfxinfo prints from
+ * The deskside as captured: Medium pixel depth, which gfxinfo prints from
  * +0x8c and the X server picks its visual table by. Two RM7s hold Medium
  * at 1280x1024, and so does one.
  */
-static void test_ir2_whole_tetra_medium(void)
+static void test_ir2_ge14_4_medium(void)
 {
-    Expected e = whole_tetra;
+    Expected e = ir2_deskside;
 
     e.pixel_depth = 1;
     assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\",\"rm-count\":2,"
@@ -314,19 +315,19 @@ static void test_ir2_whole_tetra_medium(void)
     e.rms = 1;
     assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\","
                                 "\"pixel-depth\":\"medium\""), &e);
-    e = whole_tetra;
+    e = ir2_deskside;
     assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\",\"rm-count\":2,"
                                 "\"pixel-depth\":\"small\""), &e);
 }
 
 /*
- * fancy-akita: "2 GEs (of 2), occmask = 0x03", two RM7 boards, two
- * channels; its owner list names the GE14-2 030-1051-002 and the DG5-2
- * 030-1055-001. Its board words are whole-tetra's.
+ * The two-GE owner's gfxinfo: "2 GEs (of 2), occmask = 0x03", two RM7
+ * boards, two channels; the owner's list names the GE14-2 030-1051-002 and
+ * the DG5-2 030-1055-001. Its board words are the deskside capture's.
  */
-static void test_ir2_fancy_akita(void)
+static void test_ir2_ge14_2(void)
 {
-    Expected e = whole_tetra;
+    Expected e = ir2_deskside;
 
     e.engines = 2;
     e.occupancy = 0x3;
@@ -340,18 +341,18 @@ static void test_ir2_fancy_akita(void)
 }
 
 /*
- * InfiniteReality2E: true-wombat's GE16-4 and RM9 with 64 MB TM7 boards,
+ * InfiniteReality2E: the rack capture's GE16-4 and RM9 with 64 MB TM7 boards,
  * board set 4, which gfxinfo names RM9 by the RM record's name.
  */
 static void test_ir2e(void)
 {
-    Expected e = true_wombat;
+    Expected e = ir3_rack;
 
     e.board_set = 4;
     e.rms = 2;
     e.texture_code = 2;
     e.texture_mb = 64;
-    e.tm = whole_tetra.tm;
+    e.tm = ir2_deskside.tm;
     e.option = 0;
     e.dg = (Board){ "DG5-2", "030-1055-001", "" };
     e.dgopt = (Board){ 0 };
@@ -459,18 +460,15 @@ static void test_refused(const void *data)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("sn0/origin2000/kona-config/ir3-true-wombat",
-                   test_ir3_true_wombat);
+    qtest_add_func("sn0/origin2000/kona-config/ir3-gvo", test_ir3_gvo);
     qtest_add_func("sn0/origin2000/kona-config/ir3-four-rms-gvo",
                    test_ir3_four_rms_gvo);
     qtest_add_func("sn0/origin2000/kona-config/ir3-plain-dg5-2",
                    test_ir3_plain_dg5_2);
-    qtest_add_func("sn0/origin2000/kona-config/ir2-whole-tetra",
-                   test_ir2_whole_tetra);
-    qtest_add_func("sn0/origin2000/kona-config/ir2-whole-tetra-medium",
-                   test_ir2_whole_tetra_medium);
-    qtest_add_func("sn0/origin2000/kona-config/ir2-fancy-akita",
-                   test_ir2_fancy_akita);
+    qtest_add_func("sn0/origin2000/kona-config/ir2-ge14-4", test_ir2_ge14_4);
+    qtest_add_func("sn0/origin2000/kona-config/ir2-ge14-4-medium",
+                   test_ir2_ge14_4_medium);
+    qtest_add_func("sn0/origin2000/kona-config/ir2-ge14-2", test_ir2_ge14_2);
     qtest_add_func("sn0/origin2000/kona-config/ir2e", test_ir2e);
     qtest_add_func("sn0/origin2000/kona-config/class-words",
                    test_class_words);
