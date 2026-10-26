@@ -290,7 +290,7 @@ static void x_initialise(QTestState *s, uint32_t width)
 }
 
 /*
- * A texture table as bindTexTable and __glkon_datavn send it: 0x17e and
+ * A texture table as the IRIX client library sends it: 0x17e and
  * the slot word, then the 33 table words as sixteen doubleword stores and
  * one word store.
  */

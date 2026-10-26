@@ -611,9 +611,9 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
 }
 
 /*
- * 0x167 dest src bytes 0: __glSdramPushIn's copy of a list block from the
- * pool into pipe memory, as a pixel transfer into the list plane. What
- * its fourth word does is unknown; the one sender sends 0.
+ * 0x167 dest src bytes 0: the IRIX client library's copy of a list block
+ * from the pool into pipe memory, as a pixel transfer into the list
+ * plane. What its fourth word does is unknown; the one sender sends 0.
  */
 static void sgi_kona_dma_pull(SGIKonaState *s, const uint32_t *args)
 {
@@ -636,7 +636,7 @@ static void sgi_kona_dma_pull(SGIKonaState *s, const uint32_t *args)
 }
 
 /*
- * 0x16f dest src length: __glSdramMemmove, the pipe-memory block
+ * 0x16f dest src length: the IRIX client library's pipe-memory block
  * allocator's move, within the list plane. That the length counts bytes
  * is inferred from its caller's other sizes; overlapping ranges move as
  * memmove() does.

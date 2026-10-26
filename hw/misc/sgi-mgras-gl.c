@@ -98,28 +98,27 @@
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
 /*
- * glScissor: the scissor routine (0xd97c260 in the IRIX 6.5.30 IP27GR532
- * libGLcore.so, SHA-256 626d6d94...) rejects a negative width or height
- * and writes 0x3910 and x, width - 1, y, height - 1 (0xd97c2a0-0xd97c2d8).
- * glEnable and glDisable of GL_SCISSOR_TEST write 0x6e04 and 1 or 0
- * (the enable routine 0xd97e110 for capability 0xc11, the disable routine
- * 0xd97fec4). Established from the listing. That the board discards
+ * glScissor: the scissor routine in the IRIX 6.5.30 IP27GR532 libGLcore.so
+ * (SHA-256 626d6d94...) rejects a negative width or height and writes
+ * 0x3910 and x, width - 1, y, height - 1. glEnable and glDisable of
+ * GL_SCISSOR_TEST write 0x6e04 and 1 or 0 (the enable routine for
+ * capability 0xc11, and the disable routine). Established from the
+ * listing. That the board discards
  * fragments outside the box as OpenGL 1.2.1, 4.1.2 says is inferred; the
  * discriminating test is gl-scissor-bounds-draws-and-clears.
  */
 #define MGRAS_GL_SCISSOR         0x00003910
 #define MGRAS_GL_SCISSOR_TEST    0x00006e04
 /*
- * glAlphaFunc: the alpha-function routine (0xd95ea40) accepts a function from
+ * glAlphaFunc: the alpha-function routine accepts a function from
  * GL_NEVER to GL_ALWAYS and writes 0x3e08, the function minus GL_NEVER,
- * and the reference clamped to [0, 1], times 4095.0, plus 0.5 and
- * truncated (the float at file offset 0x1d9414 is 4095.0 and the double
- * at 0x1d96a0 0.5), as a 16-bit signed value (0xd95eaa4-0xd95eae4): the
- * reference as a 12-bit fraction. glEnable and glDisable of
- * GL_ALPHA_TEST write 0x6404 and 1 or 0 (the enable routine 0xd97dea4 for
- * capability 0xbc0; the disable routine 0xd97fcb4). Established from the
- * listing; that the board tests fragments as OpenGL 1.2.1, 4.1.4 says is
- * inferred. The discriminating test is gl-alpha-test-discards.
+ * and the reference clamped to [0, 1], times the float 4095.0, plus the
+ * double 0.5 and truncated, as a 16-bit signed value: the reference as a
+ * 12-bit fraction. glEnable and glDisable of GL_ALPHA_TEST write 0x6404
+ * and 1 or 0 (the enable routine for capability 0xbc0, and the disable
+ * routine). Established from the listing; that the board tests fragments
+ * as OpenGL 1.2.1, 4.1.4 says is inferred. The discriminating test is
+ * gl-alpha-test-discards.
  */
 #define MGRAS_GL_ALPHA_FUNC      0x00003e08
 #define MGRAS_GL_ALPHA_TEST      0x00006404
@@ -128,21 +127,18 @@
  * The stencil test, from the IRIX 6.5.30 IP27GR532 libGLcore.so's
  * emitters, established from the listing:
  *
- * - glStencilFunc (the stencil-function routine 0xd95eec0): 0x410c, the
- *   function less GL_NEVER, the reference clamped to [0, 255] and the mask as
- *   the application passed it.
- * - glStencilOp (the stencil-operation routine 0xd95ef80): 0x420c and the three
- *   operations as small numbers, GL_KEEP 0, GL_ZERO 1, GL_REPLACE 2,
- *   GL_INCR 3, GL_DECR 4 and GL_INVERT 5 (0xd95f074-0xd95f1b4); the
- *   glGet decoding maps them back the same way (the glGet routine
- *   0xd993294-0xd9932e4).
- * - glStencilMask (0xd95e880): 0x3a04 and the mask.
- * - glClearStencil (0xd980c40): 0xbe04 and the value masked to the
- *   visual's stencil bits.
- * - glClear with GL_STENCIL_BUFFER_BIT (the clear routine 0xd9e3670): 0x4c00
- *   alone, only when the visual has a stencil buffer.
- * - glEnable and glDisable of GL_STENCIL_TEST (0xd97e58c for capability
- *   0xb90, 0xd980354): 0x6f04 and 1 or 0.
+ * - glStencilFunc: 0x410c, the function less GL_NEVER, the reference
+ *   clamped to [0, 255] and the mask as the application passed it.
+ * - glStencilOp: 0x420c and the three operations as small numbers,
+ *   GL_KEEP 0, GL_ZERO 1, GL_REPLACE 2, GL_INCR 3, GL_DECR 4 and
+ *   GL_INVERT 5; the glGet routine's decoding maps them back the same way.
+ * - glStencilMask: 0x3a04 and the mask.
+ * - glClearStencil: 0xbe04 and the value masked to the visual's stencil
+ *   bits.
+ * - glClear with GL_STENCIL_BUFFER_BIT: 0x4c00 alone, only when the visual
+ *   has a stencil buffer.
+ * - glEnable and glDisable of GL_STENCIL_TEST (capability 0xb90): 0x6f04
+ *   and 1 or 0.
  *
  * Every visual the X server offers with a depth buffer has 24 depth bits
  * and 8 stencil bits (glxinfo on the model, in a captured run), so the board
@@ -165,14 +161,13 @@
 #define MGRAS_GL_DEPTH_MASK_24   0x00ffffffu
 
 /*
- * Blending, established from the listing: glBlendFunc (the blend-function
- * routine 0xd95ebd0) validates both factors and writes 0x3f08 and the two
- * enumerants unchanged (0xd95ecf8-0xd95ed08); glBlendEquationEXT
- * (0xd95eb20) accepts GL_LOGIC_OP, GL_FUNC_ADD, GL_MIN, GL_MAX,
+ * Blending, established from the listing: glBlendFunc validates both
+ * factors and writes 0x3f08 and the two enumerants unchanged;
+ * glBlendEquationEXT accepts GL_LOGIC_OP, GL_FUNC_ADD, GL_MIN, GL_MAX,
  * GL_FUNC_SUBTRACT and GL_FUNC_REVERSE_SUBTRACT and writes 0x6004 and the
- * enumerant; glBlendColorEXT (0xd960600) writes 0xd910 and four floats as
- * the application passed them; glEnable and glDisable of GL_BLEND write
- * 0x6504 and 1 or 0 (0xd97dd00 for capability 0xbe2, 0xd97fa8c). Every
+ * enumerant; glBlendColorEXT writes 0xd910 and four floats as the
+ * application passed them; glEnable and glDisable of GL_BLEND (capability
+ * 0xbe2) write 0x6504 and 1 or 0. Every
  * context setup sends 0x3f08 with 1 and 0 and 0x6004 with 0x8006,
  * OpenGL's initial GL_ONE, GL_ZERO and GL_FUNC_ADD. That the board blends
  * as OpenGL 1.2.1, 4.1.6 says, with the stored colour at the eight bits a
@@ -184,16 +179,14 @@
 #define MGRAS_GL_BLEND_COLOR     0x0000d910
 #define MGRAS_GL_BLEND           0x00006504
 /*
- * The logical operation, established from the listing: glLogicOp
- * (the logic-operation routine 0xd95ee20) accepts GL_CLEAR to GL_SET and writes
- * 0x4004 and the operation less GL_CLEAR. glEnable of GL_COLOR_LOGIC_OP
- * writes 0x6b04 and 1 when the context byte at 0xc94 is set
- * (the enable routine 0xd97e4e8-0xd97e50c, capability 0xbf2), and of
- * GL_INDEX_LOGIC_OP when it is clear (0xd97e814-0xd97e83c, capability
- * 0xbf1), so one token enables the operation for the context's own
- * colour form, the byte marking an RGBA context (inferred from which
- * capability each path serves); glDisable writes 0x6b04 and 0
- * (0xd980274). The model applies the token to GL_INDEX_LOGIC_OP in a
+ * The logical operation, established from the listing: glLogicOp accepts
+ * GL_CLEAR to GL_SET and writes 0x4004 and the operation less GL_CLEAR.
+ * glEnable of GL_COLOR_LOGIC_OP (capability 0xbf2) writes 0x6b04 and 1
+ * when the context byte at 0xc94 is set, and of GL_INDEX_LOGIC_OP
+ * (capability 0xbf1) when it is clear, so one token enables the operation
+ * for the context's own colour form, the byte marking an RGBA context
+ * (inferred from which capability each path serves); glDisable writes
+ * 0x6b04 and 0. The model applies the token to GL_INDEX_LOGIC_OP in a
  * colour-index context and GL_COLOR_LOGIC_OP otherwise. That the board
  * combines fragments as OpenGL 1.2.1, 4.1.8 says is inferred; the
  * discriminating test is gl-logic-op-combines-with-the-window.
@@ -201,24 +194,24 @@
 #define MGRAS_GL_LOGIC_OP        0x00004004
 #define MGRAS_GL_LOGIC_OP_ENABLE 0x00006b04
 /*
- * glColorMask: the colour-mask routine (0xd95e8e0) writes 0x3b04 and one word
- * with bit 0 set for red, 1 green, 2 blue and 3 alpha (0xd95e900-
- * 0xd95e940), the bits the GL_COLOR_WRITEMASK query decodes. Established
+ * glColorMask: the colour-mask routine writes 0x3b04 and one word with
+ * bit 0 set for red, 1 green, 2 blue and 3 alpha, the bits the
+ * GL_COLOR_WRITEMASK query decodes. Established
  * from the listing; that the board keeps a masked channel's stored bits
  * (OpenGL 1.2.1, 4.2.2) is inferred. The discriminating test is
  * gl-colour-mask-keeps-channels.
  */
 #define MGRAS_GL_COLOR_MASK      0x00003b04
 /*
- * Fog, established from the listing: glFogfv (the fog routine 0xd9614c0;
- * glFogf and glFogi call it) writes, by parameter, GL_FOG_COLOR as 0xb410
+ * Fog, established from the listing: glFogfv (glFogf and glFogi call its
+ * routine) writes, by parameter, GL_FOG_COLOR as 0xb410
  * and the four floats as the application passed them, GL_FOG_START as
  * 0xb504, GL_FOG_END as 0xb604 and GL_FOG_DENSITY as 0xb704 and a float,
  * a negative density being the client's own GL_INVALID_VALUE, and
  * GL_FOG_INDEX as 0xb804 and GL_FOG_MODE as 0xb904 and the value
  * truncated to an integer, the mode only when it is GL_EXP, GL_EXP2 or
- * GL_LINEAR. glEnable and glDisable of GL_FOG write 0x6804 and 1 or 0
- * (0xd97e238 for capability 0xb60, 0xd9802f4). That the board fogs
+ * GL_LINEAR. glEnable and glDisable of GL_FOG (capability 0xb60) write
+ * 0x6804 and 1 or 0. That the board fogs
  * fragments as OpenGL 1.2.1, 3.10 says is inferred; the discriminating
  * test is gl-fog-blends-toward-the-fog-colour.
  */
@@ -231,13 +224,11 @@
 #define MGRAS_GL_FOG             0x00006804
 /*
  * Polygon offset, established from the listing: glPolygonOffsetEXT
- * (0xd9619a0) writes 0xe70c, the factor, the bias and the float 1.0 (file
- * offset 0x1d93f4); glPolygonOffset (0xd961a10) writes 0xe70c, the
- * factor, the units and the float 1.1 (0x1d9418). glEnable and glDisable
- * write 0xe804 and the context's word of three enables, bit 0 for
- * GL_POLYGON_OFFSET_FILL (capability 0x8037, 0xd97dd70), bit 1 for
- * _LINE (0x2a02, 0xd97dc68) and bit 2 for _POINT (0x2a01, 0xd97e3c8);
- * glDisable clears its bit (0xd97faf8, 0xd97f9e8, 0xd980114).
+ * writes 0xe70c, the factor, the bias and the float 1.0; glPolygonOffset
+ * writes 0xe70c, the factor, the units and the float 1.1. glEnable and
+ * glDisable write 0xe804 and the context's word of three enables, bit 0
+ * for GL_POLYGON_OFFSET_FILL (capability 0x8037), bit 1 for _LINE
+ * (0x2a02) and bit 2 for _POINT (0x2a01); glDisable clears its bit.
  *
  * The third word is all that tells the two commands apart, and what the
  * board does with its value is unknown. The model reads 1.0 as the EXT
@@ -254,13 +245,11 @@
 #define MGRAS_GL_OFFSET_EXT      0x3f800000u
 #define MGRAS_GL_OFFSET_CORE     0x3f8ccccdu
 /*
- * Client clip planes, established from the listing: glClipPlane
- * (the clip-plane routine 0xd97c310) accepts a plane below the context's
- * count and writes 0xa514, the plane's enumerant and its four
- * coefficients converted from double to float, untransformed
- * (0xd97c364-0xd97c3a0). glEnable and glDisable of GL_CLIP_PLANEi write
- * 0xa604 and 0xa704 and the enumerant (the enable routine 0xd97de34,
- * the disable routine 0xd97fbfc). Every context setup sends all six planes
+ * Client clip planes, established from the listing: glClipPlane accepts a
+ * plane below the context's count and writes 0xa514, the plane's
+ * enumerant and its four coefficients converted from double to float,
+ * untransformed. glEnable and glDisable of GL_CLIP_PLANEi write 0xa604
+ * and 0xa704 and the enumerant. Every context setup sends all six planes
  * as zeros through two unnamed routines and perfly disables all six each
  * frame. The client does not transform the plane, so the board does, by
  * the inverse of the modelview current when it arrives (OpenGL 1.2.1,
@@ -274,20 +263,18 @@
  * Rasterization state the model keeps and answers but does not draw
  * with, established from the listing:
  *
- * - glLineWidth (0xd9601f0) and glPointSize (0xd9603f0) reject a value
- *   not above 0 with the client's own GL_INVALID_VALUE and write 0x4504
- *   or 0x4d04 and the float.
- * - glLineStipple (0xd960010) writes 0x4608, the repeat clamped to [1,
- *   256] less 1, and the pattern with its 16 bits reversed
- *   (0xd960050-0xd9600d8); the queries undo both (0xc46's low 16 bits
- *   reversed, 0xc47's answer plus 1).
- * - glPolygonMode (0xd95f310) writes 0xa808 and the face and mode
- *   enumerants unchanged.
+ * - glLineWidth and glPointSize reject a value not above 0 with the
+ *   client's own GL_INVALID_VALUE and write 0x4504 or 0x4d04 and the
+ *   float.
+ * - glLineStipple writes 0x4608, the repeat clamped to [1, 256] less 1,
+ *   and the pattern with its 16 bits reversed; the queries undo both
+ *   (0xc46's low 16 bits reversed, 0xc47's answer plus 1).
+ * - glPolygonMode writes 0xa808 and the face and mode enumerants
+ *   unchanged.
  * - glEnable and glDisable write 1 or 0 after 0x6904 for GL_LINE_SMOOTH
- *   (0xd97df0c, capability 0xb20), 0x6a04 for GL_LINE_STIPPLE (0xd97dd28,
- *   0xb24), 0x6c04 for GL_POINT_SMOOTH (0xd97e294, 0xb10) and 0x6d04 for
- *   GL_POLYGON_STIPPLE (0xd97e7e4, 0xb42). GL_POLYGON_SMOOTH sends no
- *   token (0xd97e120-0xd97e164), so the model cannot follow it.
+ *   (capability 0xb20), 0x6a04 for GL_LINE_STIPPLE (0xb24), 0x6c04 for
+ *   GL_POINT_SMOOTH (0xb10) and 0x6d04 for GL_POLYGON_STIPPLE (0xb42).
+ *   GL_POLYGON_SMOOTH sends no token, so the model cannot follow it.
  *
  * The rasterizer follows point size, line width and polygon mode.
  * Line stipple follows the reviewed shared phase policy. Smoothing remains
@@ -308,15 +295,14 @@
     ((MGRAS_GL_POLYGON_STIPPLE_UPLOAD >> 8) & 0xff)
 
 /*
- * Consumed and named, not modelled: glMapGrid1f (0xd990410) writes 0xae10,
- * the count, u1, u2 and the step; glMapGrid2f (0xd9905d0) 0xaf20 and the
- * same for u then v; glClearAccum (0xd980a40) 0xbb10 and the four clamped
- * components. Established from the listing. The client evaluates and
- * accumulates on the host: glClear's accumulation bit calls a routine
- * through the context (the clear routine 0xd9e3638) and writes no port
- * token, so the board has no accumulation buffer for these words to
- * reach (inferred). What the GE does with the grids is unknown; the model
- * draws nothing for them, logged.
+ * Consumed and named, not modelled: glMapGrid1f writes 0xae10, the count,
+ * u1, u2 and the step; glMapGrid2f 0xaf20 and the same for u then v;
+ * glClearAccum 0xbb10 and the four clamped components. Established from
+ * the listing. The client evaluates and accumulates on the host:
+ * glClear's accumulation bit calls a routine through the context and
+ * writes no port token, so the board has no accumulation buffer for these
+ * words to reach (inferred). What the GE does with the grids is unknown;
+ * the model draws nothing for them, logged.
  */
 #define MGRAS_GL_MAP_GRID1       0x0000ae10
 #define MGRAS_GL_MAP_GRID2       0x0000af20
@@ -338,15 +324,15 @@ static const uint16_t mgras_gl_stencil_ops[] = {
     SGI_GL_KEEP, 0, SGI_GL_REPLACE, SGI_GL_INCR, SGI_GL_DECR, SGI_GL_INVERT,
 };
 /*
- * glDepthRange: the depth-range routine (0xd960590 in the IRIX 6.5.30
- * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
- * far converted to single floats, unclamped, outside glBegin/glEnd.
+ * glDepthRange: the depth-range routine in the IRIX 6.5.30 IP27GR532
+ * libGLcore.so (SHA-256 626d6d94...) writes 0x4808 and near and far
+ * converted to single floats, unclamped, outside glBegin/glEnd.
  */
 #define MGRAS_GL_DEPTH_RANGE     0x00004808
 /*
- * glEnable and glDisable of GL_DITHER: the enable routine writes 0x6704 and
- * 3 (0xd97d534, 0xd97e51c) and the disable routine 0x6704 and 0 (0xd97f160
- * for pname 0xbd0, 0xd98028c), so a nonzero word enables (established).
+ * glEnable and glDisable of GL_DITHER (pname 0xbd0): the enable routine
+ * writes 0x6704 and 3 and the disable routine 0x6704 and 0, so a nonzero
+ * word enables (established).
  * Every context setup sends it with 3.
  */
 #define MGRAS_GL_DITHER          0x00006704
@@ -354,22 +340,18 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * Polygon culling, from the IRIX 6.5.30 IP27GR532 libGLcore.so (SHA-256
  * 626d6d94...), established from the listing:
  *
- * - glCullFace: the cull-face routine (0xd95f260) accepts a mode from
- *   0x404 to 0x408 and writes 0x7404 and the mode unchanged (0xd95f2a8,
- *   0xd95f2ac); the display-list compiler's cull-face routine (0xd958c00)
- *   compiles the same pair into a display list.
- * - glFrontFace: the front-face routine (0xd9544b0) accepts 0x900 (GL_CW)
- *   or 0x901 (GL_CCW) and writes 0x5604 and the direction unchanged
- *   (0xd95450c, 0xd954510); the display-list compiler's front-face routine
- *   (0xd956450) compiles it.
+ * - glCullFace: the cull-face routine accepts a mode from 0x404 to 0x408
+ *   and writes 0x7404 and the mode unchanged; the display-list compiler's
+ *   cull-face routine compiles the same pair into a display list.
+ * - glFrontFace: the front-face routine accepts 0x900 (GL_CW) or 0x901
+ *   (GL_CCW) and writes 0x5604 and the direction unchanged; the
+ *   display-list compiler's front-face routine compiles it.
  * - glEnable(GL_CULL_FACE): the enable routine, for capability 0xb44,
  *   writes 0x7200 alone and sets bit 0x1000 of the context word at
- *   +0x700 (0xd97e300-0xd97e324). glDisable writes 0x7300 alone and
- *   clears the bit, only while it is set (the disable routine,
- *   0xd980360-0xd980394).
- * - the GE11 cull-state restore routine (0xd9e39a0) writes 0x7200 or 0x7300
- *   from that bit, and the host-culling glDrawArrays path
- *   (the host-culled draw-arrays routine, 0xd9e3bc0) writes 0x7300 before
+ *   +0x700. glDisable writes 0x7300 alone and clears the bit, only while
+ *   it is set (the disable routine).
+ * - the GE11 cull-state restore routine writes 0x7200 or 0x7300 from that
+ *   bit, and the host-culling glDrawArrays path writes 0x7300 before
  *   drawing, so a client that culls on the host turns the board's
  *   culling off first and restores it after.
  *
@@ -387,7 +369,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
 /*
  * The context setup's texture-only defaults, consumed without a log line
  * while they carry the default: 0xec10 from the texture-memory initialization
- * routine (0xd999454 in the IRIX 6.5.30 IP27GR532 libGLcore.so), 32 per context
+ * routine in the IRIX 6.5.30 IP27GR532 libGLcore.so, 32 per context
  * setup, loading the detail-texture function table glDetailTexFuncSGIS sets.
  * Its words are two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u
  * table, the raster register 0x194 and one table value; the setup's values are
@@ -462,12 +444,12 @@ enum {
  * IP27GR532 libGLcore.so (SHA-256 626d6d94...), each the components as the
  * application passed them, established from the listing:
  *
- * - glNormal3d (0xdac8040) and 3dv: 0x12000718 and three doubles, each
- *   one 64-bit store, so its high word first.
- * - glNormal3i (0xdac80cc) and 3iv: 0x1c00070c and three ints.
- * - glNormal3s (0xdac8114) and 3sv: 0x1d000706, then x in bits 31:16 and
- *   y in 15:0 of one word, and z in bits 31:16 of a second.
- * - glNormal3b (0xdac7fd0) and 3bv: 0x1c800703, then x, y and z in bits
+ * - glNormal3d and 3dv: 0x12000718 and three doubles, each one 64-bit
+ *   store, so its high word first.
+ * - glNormal3i and 3iv: 0x1c00070c and three ints.
+ * - glNormal3s and 3sv: 0x1d000706, then x in bits 31:16 and y in 15:0 of
+ *   one word, and z in bits 31:16 of a second.
+ * - glNormal3b and 3bv: 0x1c800703, then x, y and z in bits
  *   31:24, 23:16 and 15:8 of one word.
  *
  * The short and byte headers are matched with their lengths rounded up
@@ -489,12 +471,12 @@ enum {
  * 626d6d94...), each the header and then the components as the
  * application passed them, established from the listing:
  *
- * - glVertex3i (0xdac8ac0) and 3iv (0xdac8ae0): 0x3800000c, x, y, z.
- * - glRasterPos3i (0xdac82fc) and 3iv: 0x3800380c, x, y, z.
- * - glTexCoord3i (0xdac874c) and 3iv: 0x3800080c, s, t, r.
- * - glTexCoord2f (0xdac85fc) and 2fv (0xdac8618): 0x40000808, s, t as
- *   floats; 2fv stores the pair with one 64-bit store, s first.
- * - glTexCoord4f (0xdac8844) and 4fv: 0x00000810, s, t, r, q as floats.
+ * - glVertex3i and 3iv: 0x3800000c, x, y, z.
+ * - glRasterPos3i and 3iv: 0x3800380c, x, y, z.
+ * - glTexCoord3i and 3iv: 0x3800080c, s, t, r.
+ * - glTexCoord2f and 2fv: 0x40000808, s, t as floats; 2fv stores the pair
+ *   with one 64-bit store, s first.
+ * - glTexCoord4f and 4fv: 0x00000810, s, t, r, q as floats.
  *
  * The client converts nothing, so the board does; that it takes an
  * integer coordinate unscaled, as OpenGL 1.2.1 does (2.7), is inferred.
@@ -517,11 +499,11 @@ enum {
 /*
  * Colour-index mode, from the IRIX 6.5.30 IP27GR532 libGLcore.so's own
  * code (SHA-256 626d6d94...). The context setup calls
- * the colour-index initializer (0xd94e830) for each colour buffer when the
+ * the colour-index initializer for each colour buffer when the
  * visual is a colour-index one and another initializer otherwise; the
  * colour-index initializer writes 0x0a04 and a word of the visual's
  * configuration, from which it also forms the index mask (1 << n) - 1, and the
- * RGB initializer (0xd973620) writes 0x0900 and nothing more. So 0x0a04's word
+ * RGB initializer writes 0x0900 and nothing more. So 0x0a04's word
  * is the number of bits a colour index holds, 8 in gr_osview's context setup
  * and in glxinfo's, 12 in showmap's and interp's on the server's 12-plane
  * PseudoColor visuals, and 0x0900 marks an RGBA context. That the
@@ -534,10 +516,10 @@ enum {
 /*
  * glIndexs, glIndexi and glIndexf: headers 0x19000202, 0x18000204 and
  * 0x00000204, the colour register 0x02 under the attribute classes for a
- * short, an integer and a float (the short-index routine 0xdac7f90,
- * the integer-index routine 0xdac7f5c, the float-index routine 0xdac7f30).
- * glIndexs sends the short's 16 bits in bits 31:16 of its one word and zeros in
- * 15:0 (andi 0xffff, dsll 16); gr_osview's words 0x20000 and 0x30000 are
+ * short, an integer and a float, from the client's short-index,
+ * integer-index and float-index routines. glIndexs sends the short's 16
+ * bits in bits 31:16 of its one word and zeros in 15:0 (andi 0xffff,
+ * dsll 16); gr_osview's words 0x20000 and 0x30000 are
  * indices 2 and 3. The short is read signed, as the class's short type
  * reads for a vertex (inferred from the attribute table); glIndexs's
  * header is matched with its length rounded up to the word it takes.
@@ -546,31 +528,31 @@ enum {
 #define MGRAS_GL_INDEXI          0x18000204
 #define MGRAS_GL_INDEXF          0x00000204
 /*
- * glIndexMask (the index-mask routine 0xd95e9d0): 0x3d04 and the mask ANDed
- * with the context's index mask. glClearIndex (the clear-index routine
- * 0xd980ba0): 0xbd04 and a float, trunc(c * 16.0) ANDed with (index mask
- * << 4) | 0xf and scaled by 0.0625, the constants the lit4 words at file
- * offsets 0x1d940c and 0x1d9410 hold: the index with four fraction bits.
+ * glIndexMask: 0x3d04 and the mask ANDed with the context's index mask.
+ * glClearIndex: 0xbd04 and a float, trunc(c * 16.0) ANDed with (index
+ * mask << 4) | 0xf and scaled by 0.0625, both constants held as
+ * single-precision literals in the library: the index with four fraction
+ * bits.
  */
 #define MGRAS_GL_INDEX_MASK      0x00003d04
 #define MGRAS_GL_CLEAR_INDEX     0x0000bd04
 
 /*
- * glBitmap (the bitmap routine 0xd9c1b70, and the bitmap render routine
- * 0xd9c1e70 for a display list). In render mode, with glPixelStore's unpack
+ * glBitmap (the bitmap routine, and the bitmap render routine for a
+ * display list). In render mode, with glPixelStore's unpack
  * state at its defaults but an alignment of one, and an image of at most 512
  * words, the client writes 0x9420 and eight words: a flags word, the width
  * and height as integers, xorig, yorig, xmove and ymove as floats, and the
  * image's length in words, ceil(ceil(width / 8) * height / 4). An inline
  * data block follows, 0x80000000 | length * 4, whose words
- * the pixel push routine (0xdac61a0) copies from the application's image in
+ * the pixel push routine copies from the application's image in
  * memory order; a 64-bit store is two stream words, high first. When
  * the image is not word aligned the client sets bits 23:22 of the block
  * header to the image's byte offset in its first word and sends one word
  * more, from the word holding the first byte. A zero word follows when
  * the number of words sent is odd: when the length is odd for an aligned
- * image, and when it is even for one with an offset (0xd9c1e3c-0xd9c1e50
- * and 0xd9c1d00-0xd9c1d14). gr_osview's 94 bitmaps in the survey run are all
+ * image, and when it is even for one with an offset. gr_osview's 94
+ * bitmaps in the survey run are all
  * this form: flags 0x1800f, width 16, height 1 or 2, one data word and the
  * zero word. The other paths, for a larger image or other unpack state
  * (0x9114, 0x9008 with raster register records, then 0x9208 with xmove and
@@ -595,22 +577,22 @@ enum {
 #define MGRAS_GL_BITMAP_WORDS    8
 #define MGRAS_GL_BITMAP_LSB_FIRST 0x00020000
 /*
- * The raster-position update routine (0xd9c9040) writes 0xd608 and two floats;
+ * The raster-position update routine writes 0xd608 and two floats;
  * the client's glBitmap calls it with xmove and ymove for an empty image, so
  * it moves a valid raster position by them (inferred, 3.7).
  */
 #define MGRAS_GL_MOVE_RASTER     0x0000d608
 /*
- * The raster-position routine (0xdac81e8) writes 0x58003808 and the two
+ * The raster-position routine writes 0x58003808 and the two
  * integers; OpenGL takes them as glRasterPos4f(x, y, 0, 1) (2.12).
  */
 #define MGRAS_GL_RASTER_POS2I    0x58003808
 /*
  * The words each pixel transfer brackets its GE program with:
- * The RSS save routine (0xd9c8da0) writes 0xd214 and five words and
- * the RSS restore routine 0xd300, the texture-mode save routine (0xd9a17c0)
- * 0xe910 and four words and the texture-mode restore routine 0xea00, and
- * the raster-position load routine (0xd9c9030) 0xd700 alone. The model draws
+ * The RSS save routine writes 0xd214 and five words and the RSS restore
+ * routine 0xd300, the texture-mode save routine 0xe910 and four words and
+ * the texture-mode restore routine 0xea00, and the raster-position load
+ * routine 0xd700 alone. The model draws
  * the image without raster registers or texturing, so it consumes them;
  * that they change nothing a later draw sees is inferred from their
  * names and pairing.
@@ -799,21 +781,20 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * shared context, which transforms positions and spot directions by the
  * modelview when they arrive, and answers from it.
  *
- * The enables, from the enable routine (0xd97d970) and the disable routine
- * (0xd97f710), established from the listing:
+ * The enables, from the enable routine and the disable routine,
+ * established from the listing:
  *
  * - glEnable(GL_LIGHTING) sets bit 0x40 of the context's flags word and
- *   calls the lighting enable routine (0xd9543a0), which writes 0x0d00 alone
- *   while that bit is set; the probe's lighting-only case captured
- *   0x0d00 and nothing else. glDisable(GL_LIGHTING) writes 0x0e00 through
- *   the lighting disable routine (0xd9543d0), and the soft hardware-state
- *   routine (0xd9dfbfc) writes it as a header too. The other 0x0e00 words in
- *   the listing are payloads of 0x000c0004 descriptor headers.
+ *   calls the lighting enable routine, which writes 0x0d00 alone while
+ *   that bit is set; the probe's lighting-only case captured 0x0d00 and
+ *   nothing else. glDisable(GL_LIGHTING) writes 0x0e00 through the
+ *   lighting disable routine, and the soft hardware-state routine writes
+ *   it as a header too. The other 0x0e00 words in the listing are
+ *   payloads of 0x000c0004 descriptor headers.
  * - glEnable(GL_LIGHTi) writes 0x7104 and i, the capability less
- *   GL_LIGHT0 (0xd97de60, the light-source enable routine 0xd97d950), and
- *   glDisable 0xa004 and i (0xd97fc28, 0xd97f6f0).
- * - glEnable(GL_NORMALIZE) writes 0xa304 and 1 (0xd97e1cc, the 1 held in
- *   $a3 from 0xd97d980), glDisable 0xa304 and 0 (0xd97ff54).
+ *   GL_LIGHT0 (through the light-source enable routine), and glDisable
+ *   0xa004 and i.
+ * - glEnable(GL_NORMALIZE) writes 0xa304 and 1, glDisable 0xa304 and 0.
  *   GL_RESCALE_NORMAL is GL_INVALID_ENUM to this client, which sends
  *   nothing for it.
  *
@@ -858,12 +839,12 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
  * appendix B, "Color/normal flag"). The IRIX 6.5.30 IP27GR532
  * libGLcore.so (SHA-256 626d6d94...) leaves it to the board. Its
- * glIglooInterfaceSGIX (0xd9e3860), established from the listing:
+ * glIglooInterfaceSGIX, established from the listing:
  *
  * - GL_IGLOO_COLORNORMAL_SGIX (0x81a1) with a nonzero parameter sets
  *   context flag bit 1 and writes 0x00010200 when bit 0 is set; with 0 it
- *   clears bit 1 and writes 0x0000df00 (0xd9e38d4-0xd9e3998).
- * - GL_IGLOO_LMC_COLOR_SGIX (0x81a3) calls 0xd9e3740 with the parameter.
+ *   clears bit 1 and writes 0x0000df00.
+ * - GL_IGLOO_LMC_COLOR_SGIX (0x81a3) calls a helper with the parameter.
  *   With 1 that sets bit 0 and writes 0x0000dd00, then 0x00010200 when
  *   bit 1 is set and 0x0000df00 when it is not. With anything else it
  *   clears bit 0 and writes 0x0000de00 or 0x0000df00, by a flag the
@@ -893,12 +874,11 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  */
 /*
  * Texture coordinate generation, from the IRIX 6.5.30 IP27GR532
- * libGLcore.so's glTexGenfv (__glMgrim_TexGenfv, 0xd960670), established
- * from the listing:
+ * libGLcore.so's glTexGenfv, established from the listing:
  *
  * - GL_TEXTURE_GEN_MODE writes 0x5a0c, the coordinate (GL_S to GL_Q,
  *   0x2000 to 0x2003), 0x2500 and the mode's enumerant as an integer;
- *   GL_SPHERE_MAP for R or Q is refused there (0xd9607a4).
+ *   GL_SPHERE_MAP for R or Q is refused there.
  * - GL_OBJECT_PLANE and GL_EYE_PLANE write 0x5b08, the coordinate and the
  *   parameter (0x2501 or 0x2502), then 0x5c10 and the plane's four
  *   floats in order; glTexGeniv's integers come under 0x18005c10. The
@@ -1278,7 +1258,7 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
 /*
  * The overlay planes as a colour target, a bit beside the bank and slot
  * bits. The IRIX 6.5.30 IP27GR532 libGLcore.so's draw-buffer routine
- * (__glMgrasDrawBuffer, 0xd95f810) sends 0x48 as the triple's first word
+ * sends 0x48 as the triple's first word
  * for GL_FRONT, and for GL_BACK on a shallow visual (a deep visual's
  * GL_BACK sends 4 first), and 0x43 for GL_FRONT_AND_BACK, when a flag in
  * its context (offset 0xce4) is set, and 1 to 0xf otherwise; established
@@ -2004,10 +1984,10 @@ typedef enum MgrasGLQueryPacking {
  *
  * - GL_MODELVIEW_MATRIX and GL_PROJECTION_MATRIX: 16 queries with a1 0,
  *   index 0x3a + i and 0x4a + i, each word stored as a float into
- *   element i of the result (the loop at 0xd992d28 advances its output
- *   one float per query), which glGet returns column-major.
+ *   element i of the result (the client's loop advances its output one
+ *   float per query), which glGet returns column-major.
  * - GL_TEXTURE_MATRIX: 0x6a + i with a1 0 (table offset 0x164), read the
- *   same way (0xd994030).
+ *   same way.
  * - GL_MATRIX_MODE: index 0x29, a1 0; the client returns the word plus
  *   0x1701, so the word is the mode's enumerant less GL_PROJECTION.
  * - GL_VIEWPORT: 0xc1d to 0xc20, stored as integers x, y, width, height.
@@ -2035,12 +2015,12 @@ typedef enum MgrasGLQueryPacking {
  *   GL_COLOR_MATERIAL_FACE 0x56c, as the enumerant.
  * - GL_SCISSOR_BOX at 0xc24 to 0xc27 as the integers x, y, x + width - 1
  *   and y + height - 1: the client returns the first two and the last two
- *   less the first two plus 1 (0xd994f1c-0xd994f5c). GL_SCISSOR_TEST at
+ *   less the first two plus 1. GL_SCISSOR_TEST at
  *   0xc28, the whole word the boolean.
  * - GL_INDEX_CLEAR_VALUE at 0xc13, a float, and GL_STENCIL_CLEAR_VALUE at
  *   0xc14, an integer. GL_DEPTH_CLEAR_VALUE at 0xc12 the client divides
- *   by 16777215.0 (the float at file offset 0x1d9450, 0xd992ab4), so the
- *   answer is the clear depth in the 24-bit units 0xbc04 sends it in.
+ *   by the float 16777215.0, so the answer is the clear depth in the
+ *   24-bit units 0xbc04 sends it in.
  * - GL_BLEND at 0xc4a, the whole word the boolean, and GL_BLEND_SRC,
  *   GL_BLEND_DST and GL_BLEND_EQUATION at 0xc4b to 0xc4d, integers.
  * - GL_FOG_MODE at 0xbce, an integer; GL_FOG_DENSITY, _START and _END at
@@ -2171,9 +2151,8 @@ static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
  * queries index 0x83 (table offset 0x1f4, a1 0) and 0x922 (0x1f8, a1 1)
  * and returns ((answer - base) >> 4) + 1, the base the symbol-table word
  * at offset 0x1e4 for the modelview stack and 0x1e8 for the projection
- * stack (0xd99427c-0xd9942a8 and 0xd993678-0xd9936a4 in the IRIX 6.5.30
- * IP27GR532 libGLcore.so). Those words, at file offsets 0x210 and 0x214
- * of /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
+ * stack (from the IRIX 6.5.30 IP27GR532 libGLcore.so). Those words, at
+ * file offsets 0x210 and 0x214 of /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
  * a696e9772a876ed02378111e80a01270161cb4ad8fc39355f40fe96d1fcdb062), are
  * 0x925 and 0xb25; the index words at 0x220 and 0x224 are 0x83 and
  * 0x922, as the query notes give them. So the answer is an address in
@@ -2184,7 +2163,7 @@ static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
  * the model gives both stacks.
  *
  * GL_TEXTURE_STACK_DEPTH is index 0x923 (table offset 0x1fc) with its
- * base at table offset 0x1ec (0xd994db8-0xd994de4); the file words at
+ * base at table offset 0x1ec; the file words at
  * 0x228 and 0x218 are 0x923 and 0xb45. The texture base lies two
  * matrices above the projection base, so the board's projection stack
  * holds two (inferred), where the model's holds 32 like its others. The
@@ -2234,8 +2213,7 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
  * - 0x2c8, setup 0xffff: the stencil value mask in bits 7:0 and the write
  *   mask in bits 15:8;
  * - 0x2ca, setup 0x0ffffff1: the depth function less GL_NEVER in bits 2:0,
- *   the depth write mask true when bits 27:4 are all set
- *   (0xd9949bc-0xd9949d4);
+ *   the depth write mask true when bits 27:4 are all set;
  * - 0x2cc, setup 7: the alpha function less GL_NEVER in bits 2:0, the
  *   reference as the 12-bit fraction glAlphaFunc sends in bits 14:3.
  *
@@ -2319,14 +2297,13 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
 /*
  * GL_COLOR_WRITEMASK and GL_INDEX_WRITEMASK are both query 0x32b. For the
  * colour mask the client tests the answer's bits 0 to 3 in turn as red, green,
- * blue and alpha (0xd992858-0xd9928e0); for the index mask it returns the
- * answer ANDed with (1 << n) - 1, n the context word at 0xcb4, the index's
- * bits (0xd9959f4-0xd995a30). Established from the IRIX 6.5.30 IP27GR532
- * libGLcore.so. That the board keeps one write-mask word for both is inferred
- * from the shared index. In colour-index mode the model answers glIndexMask's
- * mask, and in RGBA mode glColorMask's channels in the bits 0x3b04 sends them
- * in. 0x32c is glGetError's index, not a mask, and its zero answer stays
- * right.
+ * blue and alpha; for the index mask it returns the answer ANDed with
+ * (1 << n) - 1, n the context word at 0xcb4, the index's bits. Established
+ * from the IRIX 6.5.30 IP27GR532 libGLcore.so. That the board keeps one
+ * write-mask word for both is inferred from the shared index. In
+ * colour-index mode the model answers glIndexMask's mask, and in RGBA mode
+ * glColorMask's channels in the bits 0x3b04 sends them in. 0x32c is
+ * glGetError's index, not a mask, and its zero answer stays right.
  */
 #define MGRAS_GL_QUERY_WRITEMASK 0x32b
 
@@ -4498,18 +4475,18 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
 /*
  * Pixel image transfers: glDrawPixels, and IRIS GL's lrectwrite and
  * rectwrite, which the IRIX 6.5.30 IGLOO libgl.so sends the same way.
- * The client (the pixel send routine, 0xd9665c0 in IP27GR532 libGLcore.so,
- * SHA-256 626d6d94...) does not send the image's format to the board.
+ * The client (the pixel send routine in IP27GR532 libGLcore.so, SHA-256
+ * 626d6d94...) does not send the image's format to the board.
  * It builds a program for the GE out of routines, loads each routine's
  * parameters into GE memory with 0x80 and 0xcd packets, sends 0x8d20 and
  * eight words, and then the image: either inline, one block a row
- * (0xd9670bc-0xd96716c, through the pixel push routine), or through one
+ * (through the pixel push routine), or through one
  * host-memory DMA transfer (the DMA setup routine, kick byte
  * (slot << 1) | 0xa1). The GE runs the program over the pixels and draws
  * them.
  *
- * The loads. The CRAM pixel-state initializer (0xd9bf030) and
- * the ERAM pixel-state initializer (0xd9bf260) collect two lists of words and
+ * The loads. The CRAM pixel-state initializer and
+ * the ERAM pixel-state initializer collect two lists of words and
  * send them as one packet, header 0x8000 or 0xcd00 with the byte length
  * 0x20 + 4 * (a + b) in bits 7:0, or, from 0x100 bytes up, that header
  * with no length and an inline block giving it. The payload is seven
@@ -4530,7 +4507,7 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  *
  * The program. The client puts it at 0x13b as (routine, parameters)
  * pairs ending with routine 0x352d, and puts the destination rectangle at
- * 0xe34 (the host-to-RSS initializer, 0xd9641b0): x0, y0, x1, y1, then
+ * 0xe34 (the host-to-RSS initializer): x0, y0, x1, y1, then
  * height << 16 | width, then 1. The rectangle is the image's own, its
  * tiles' offsets from the raster position: mandel's 293 rows all come at
  * 0, 0 to 99, 0 while its glRasterPos2i moves up the window, and ipaste's
@@ -4553,7 +4530,7 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * without drawing: its rows, or its DMA transfer, which moves nothing.
  * Of the four-byte form the client marks GL_ABGR_EXT with bit 7 of the
  * HQ pixel-format word (0x000c0004 before 0x8d20, value 0xe8d in ipaste;
- * set when the format is 0x8000, 0xd966a38-0xd966ad0); without it the
+ * set when the format is 0x8000); without it the
  * model reads GL_RGBA (inferred: no capture has it).
  *
  * The rows. A block is a row of the waiting draw only when it follows
@@ -4840,14 +4817,13 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
 
 /*
  * A pixel-texture draw's GE box: the client draws one pass per RE, and
- * __glMgrInitPixelTexture (libGLcore.so 0xd964aa0) appends, after the
+ * the IRIX client library's pixel-texture setup appends, after the
  * corners, a size word with the pass's row count in its high half, 1, an
  * x and a y direction of +1 or -1, and the pass number. Each pass's
  * corners are the whole image's, the top one at y0 + n * rows for n REs;
- * pass k carries source rows k, k + n, ... (__glMgrFastSendPixels). The
- * client takes this path only with pixel texgen on, which it brackets
- * with MDDMA_CNTRL bit 0, and with a 3-D or 4-D texture bound
- * (__glMgrim_DrawPixels 0xd969fa8).
+ * pass k carries source rows k, k + n, ... The client's glDrawPixels
+ * takes this path only with pixel texgen on, which it brackets with
+ * MDDMA_CNTRL bit 0, and with a 3-D or 4-D texture bound.
  */
 static bool mgras_gl_pixels_texture_box(SGIMgrasState *s, uint32_t *rows,
                                         uint32_t *pass)
@@ -5139,7 +5115,7 @@ static int32_t mgras_gl_pixels_place(int32_t offset, float pos)
 /*
  * 0x8d20's last word: 0x99 for every draw captured whose image came by
  * DMA and 0x18 for every one sent inline. The listing sets bit 7 only on
- * its DMA path (0xd966ca0-0xd966cbc, under two flags of the context), so
+ * its DMA path (under two flags of the context), so
  * a draw with it set takes no inline rows; one without it takes either.
  */
 #define MGRAS_GL_PIXELS_BY_DMA   0x80
@@ -5427,8 +5403,8 @@ static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
                       (unsigned int)DIV_ROUND_UP(bytes, sizeof(uint32_t)));
     }
     /*
-     * The row's length counts the offset's word (0xd967118-0xd967140):
-     * the words sent, not the bytes after the offset.
+     * The row's length counts the offset's word: the words sent, not the
+     * bytes after the offset.
      */
     s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
     s->cmd_token_reg = MGRAS_GL_PIXELS_OP;

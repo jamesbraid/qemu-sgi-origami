@@ -1379,8 +1379,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * glTexCoord1i to 4i: the word, then each coordinate as a signed 32-bit
  * integer (the short forms sign-extend into the same words). ESTABLISHED
- * from the IRIX 6.5.30 IP30 n32 libGLcore's __glOdyim_TexCoord1i to 4i and
- * 1s to 4s. That the board takes them as the integer's value, unscaled, as
+ * from the IRIX 6.5.30 IP30 n32 libGLcore's glTexCoord1i to 4i and 1s to
+ * 4s. That the board takes them as the integer's value, unscaled, as
  * OpenGL specifies for texture coordinates, is INFERRED. The kernel's
  * context restore replays the current coordinate as 0xc380c41e, and the
  * current-value query answers the word and its integers as sent, as it

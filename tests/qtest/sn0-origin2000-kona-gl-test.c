@@ -1146,7 +1146,7 @@ static void test_migration_of_gl_state(void)
 
 /*
  * A context on an overlay visual draws into the overlay planes. The IRIX
- * 6.5.30 n32 libGLcore.so's buffer configuration (0xd949e50) sends the
+ * 6.5.30 n32 libGLcore.so's buffer configuration sends the
  * visual's level, context word 0xce4, as its first word, and
  * SceneViewer's logo context sent 1 1 0 8 0 0 0 0 0 0 0, level 1 and
  * eight index bits, before its window came with display ID 0x44 (run
