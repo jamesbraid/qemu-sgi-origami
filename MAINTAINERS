@@ -1579,6 +1579,7 @@ F: tests/qtest/sn0-*
 F: tests/qtest/sn-builder-test.c
 F: tests/qtest/sn-node-population-test.c
 F: tests/qtest/sgi-machine-storage-test.c
+F: tests/qtest/sgi-catalogue-launch-test.c
 F: tests/qtest/sgi-heads-test.c
 F: tests/qtest/sgi-machine-init-test.c
 F: tests/qtest/sgi-synthetic-serial-test.c
