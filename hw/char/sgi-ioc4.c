@@ -621,10 +621,16 @@ static bool ioc4_port_quiescent(SGIIOC4Port *p)
            !p->rx_count && !p->timer_armed && !p->drain_pending;
 }
 
-static void ioc4_port_reset(SGIIOC4Port *p)
+/*
+ * The channel reset command returns the indices and the engine's work in
+ * progress to the start and leaves the settings: control, the timer reload,
+ * the shadow's outputs, pending sources and the error capture. That is the
+ * IOC3 rule, carried here; what the part clears is not known. It also
+ * clears a halt, which is what the command is for after a DMA fault.
+ */
+static void ioc4_channel_reset(SGIIOC4Port *p)
 {
     SGIIOC4State *s = p->ioc4;
-    unsigned error_bit = p->index + IOC4_DMA_OTHER_SHIFT;
 
     if (p->rx_timer) {
         timer_del(p->rx_timer);
@@ -636,12 +642,9 @@ static void ioc4_port_reset(SGIIOC4Port *p)
         g_source_remove(p->tx_watch);
         p->tx_watch = 0;
     }
-    p->control = 0;
     p->tx_produce = p->tx_consume = 0;
     p->rx_produce = p->rx_consume = 0;
-    p->rx_timer_reload = 0;
     p->rx_idle_count = 0;
-    p->shadow &= ~IOC4_DMA_SHADOW_OUTPUTS;
     memset(p->rx_data, 0, sizeof(p->rx_data));
     memset(p->rx_status, 0, sizeof(p->rx_status));
     memset(p->tx_data, 0, sizeof(p->tx_data));
@@ -652,10 +655,22 @@ static void ioc4_port_reset(SGIIOC4Port *p)
     p->tx_completion_pending = false;
     p->halted = p->drain_pending = false;
     p->rx_remaining_ns = p->tx_remaining_ns = 0;
+    qemu_chr_fe_accept_input(&s->uart[p->index].chr);
+}
+
+/* A device reset clears the settings and the port's sources as well. */
+static void ioc4_port_reset(SGIIOC4Port *p)
+{
+    SGIIOC4State *s = p->ioc4;
+    unsigned error_bit = p->index + IOC4_DMA_OTHER_SHIFT;
+
+    ioc4_channel_reset(p);
+    p->control = 0;
+    p->rx_timer_reload = 0;
+    p->shadow &= ~IOC4_DMA_SHADOW_OUTPUTS;
     s->serial_pending &= ~((uint32_t)0xff << (8 * p->index));
     s->threshold_level &= ~(1u << (8 * p->index + 2));
     s->other_pending &= ~(1u << error_bit);
-    qemu_chr_fe_accept_input(&s->uart[p->index].chr);
     ioc4_update_irq(s);
 }
 
@@ -673,7 +688,9 @@ static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
     bool want_pause = value & IOC4_SSCR_PAUSE;
 
     if (value & IOC4_SSCR_RESET) {
-        ioc4_port_reset(p);
+        ioc4_channel_reset(p);
+        p->control = value & ~unstored;
+        ioc4_update_rx_threshold(p);
         return;
     }
     if (value & ~supported) {
