@@ -68,6 +68,8 @@ typedef struct SGISoftDraw {
     uint32_t rgba_mask;
     bool rgba_read;
     bool *rgba_reported;
+    /* Texels already read in this draw, or NULL (sgi_soft_texel_cache). */
+    struct SGISoftTexelCache *texels;
 } SGISoftDraw;
 
 /* A vertex after transformation, ready to rasterize. */
@@ -1321,6 +1323,63 @@ static void __attribute__((constructor)) sgi_soft_unorm8_init(void)
     }
 }
 
+/*
+ * The texels one draw has read, by level and interior index, after
+ * conversion to components in [0, 1]. A family's image stays unchanged
+ * through a synchronous draw (SGIGLTexImage), so a texel read twice in one
+ * draw reads the same both times: a bilinear tap reads four, and adjacent
+ * fragments mostly the same four. Each thread draws through its own
+ * cache; a draw starts by taking a new serial, which empties it without
+ * clearing it. Only the draw's own image is cached: a detail texture is
+ * sampled through a copy of it whose wrap differs. Border texels, depth
+ * texels, whose value depends on the comparison reference, and failed
+ * reads always go to the family.
+ */
+#define SGI_SOFT_TEXEL_CACHE_SIZE 4096
+
+typedef struct SGISoftTexelEntry {
+    uint64_t serial;
+    const SGIGLTexLevel *level;
+    uint32_t x, y, z;
+    double out[4];
+} SGISoftTexelEntry;
+
+typedef struct SGISoftTexelCache {
+    uint64_t serial;
+    const SGIGLTexImage *image;
+    /*
+     * Set for a fragment that minifies by more than two texels a pixel
+     * without mipmaps: its neighbours read other texels, and filling the
+     * cache would only cost.
+     */
+    bool bypass;
+    SGISoftTexelEntry entry[SGI_SOFT_TEXEL_CACHE_SIZE];
+} SGISoftTexelCache;
+
+static __thread SGISoftTexelCache sgi_soft_texel_cache;
+
+static SGISoftTexelCache *sgi_soft_texel_cache_begin(
+    const SGIGLTexImage *image)
+{
+    SGISoftTexelCache *c = &sgi_soft_texel_cache;
+
+    c->serial++;
+    c->image = image;
+    c->bypass = false;
+    return c;
+}
+
+static SGISoftTexelEntry *sgi_soft_texel_slot(SGISoftTexelCache *c,
+                                              const SGIGLTexLevel *level,
+                                              uint32_t x, uint32_t y,
+                                              uint32_t z)
+{
+    uint32_t hash = x * 0x9e3779b1u ^ y * 0x85ebca77u ^ z * 0xc2b2ae3du ^
+                    (uint32_t)((uintptr_t)level >> 4) * 0x27d4eb2fu;
+
+    return &c->entry[(hash ^ hash >> 15) & (SGI_SOFT_TEXEL_CACHE_SIZE - 1)];
+}
+
 static bool sgi_soft_texture_tap(const SGISoftDraw *r,
                                   const SGIGLTexLevel *level,
                                   int64_t x, int64_t y, int64_t z,
@@ -1335,6 +1394,7 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     uint32_t rgba;
     uint16_t component[4];
     bool raw_components = false;
+    SGISoftTexelEntry *slot = NULL;
 
     if (im->wrap_s == SGI_GL_REPEAT) {
         x = sgi_soft_texture_repeat(x, width);
@@ -1403,6 +1463,15 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     } else {
         bool read;
 
+        if (r->texels && r->texels->image == im && !r->texels->bypass &&
+            format != SGI_GL_DEPTH_COMPONENT) {
+            slot = sgi_soft_texel_slot(r->texels, level, x, y, z);
+            if (slot->serial == r->texels->serial && slot->level == level &&
+                slot->x == x && slot->y == y && slot->z == z) {
+                memcpy(out, slot->out, sizeof(slot->out));
+                return true;
+            }
+        }
         if (im->volume) {
             raw_components = level ? !!level->read_texel_3d_components :
                                     !!im->read_texel_3d_components;
@@ -1467,6 +1536,13 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         }
     }
     sgi_soft_texture_components(format, out);
+    if (slot) {
+        *slot = (SGISoftTexelEntry) {
+            .serial = r->texels->serial, .level = level,
+            .x = x, .y = y, .z = z,
+        };
+        memcpy(slot->out, out, sizeof(slot->out));
+    }
     return true;
 
 read_failure:
@@ -1829,6 +1905,10 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
             return false;
         }
         level = sgi_soft_texture_level(im->pyramid, selected.first);
+        if (r->texels) {
+            r->texels->bypass = selected.lambda > 1 &&
+                                !sgi_soft_texture_mipmap(im->min_filter);
+        }
         if (sgi_soft_texture_sharpen(selected.filter)) {
             if (!sgi_soft_texture_sharpen_sample(r, selected.filter,
                                                   selected.lambda,
@@ -4928,6 +5008,9 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     }
     if (!sgi_soft_texture_setup(&r, true)) {
         return SGI_GL_DRAW_OK;
+    }
+    if (r.texture) {
+        r.texels = sgi_soft_texel_cache_begin(r.texture);
     }
     if (!sgi_soft_setup_ops(&r)) {
         return SGI_GL_DRAW_OK;
