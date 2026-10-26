@@ -555,9 +555,10 @@ typedef struct SGIKonaGLImaging {
     uint32_t colour_stack[SGI_KONA_GL_COLOUR_STACK - 1][16];
     uint32_t colour_depth;
     /*
-     * Bit k: imaging stage k of histogram, minmax and the colour, post-
-     * convolution and post-colour-matrix tables is enabled. The model
-     * applies the tables (SGIKonaGLColourTables), not the first two.
+     * Bit k: imaging stage k of histogram, minmax, the colour, post-
+     * convolution and post-colour-matrix tables and the texture colour
+     * table is enabled. The model applies the tables
+     * (SGIKonaGLColourTables), not the first two.
      */
     uint32_t stages;
 } SGIKonaGLImaging;
@@ -565,8 +566,8 @@ typedef struct SGIKonaGLImaging {
 /*
  * SGI_color_table's tables (see sgi_kona_gl_colour_table_open()): the
  * colour, post-convolution and post-colour-matrix tables, then the texture
- * colour table, which the model keeps but does not apply. The client
- * library refuses a table wider than 4096.
+ * colour table (SGI_texture_color_table), applied to filtered texels.
+ * The client library refuses a table wider than 4096.
  */
 #define SGI_KONA_GL_TABLES     4
 #define SGI_KONA_GL_TABLE_MAX  4096

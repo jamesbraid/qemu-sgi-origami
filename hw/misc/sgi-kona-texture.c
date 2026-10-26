@@ -1187,6 +1187,12 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
     return count;
 }
 
+/*
+ * Post-texture scale, bias and clamp, then the texture colour table: the
+ * "OpenGL on Silicon Graphics Systems" manual (007-2392-003, the
+ * SGIX_texture_scale_bias section) puts the first three directly before
+ * the texture colour table lookup.
+ */
 static void texture_post_filter(void *opaque, double rgba[4])
 {
     const SGIKonaTextureObject *o = opaque;
@@ -1194,6 +1200,9 @@ static void texture_post_filter(void *opaque, double rgba[4])
     for (unsigned k = 0; k < 4; k++) {
         rgba[k] = CLAMP(rgba[k] * o->params.post_scale[k] +
                         o->params.post_bias[k], 0.0, 1.0);
+    }
+    if (o->colour_lookup) {
+        o->colour_lookup(o->colour_table, rgba);
     }
 }
 
@@ -1297,6 +1306,8 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .min_lod = o->params.min_lod, .max_lod = o->params.max_lod,
     };
     o->filter_curve = sgi_kona_texture_curve(s, o->params.filter_curve_slot);
+    o->colour_lookup = s->colour_lookup;
+    o->colour_table = s->colour_table;
     o->image = (SGIGLTexImage) {
         .min_filter = o->params.min_filter, .mag_filter = o->params.mag_filter,
         .wrap_s = o->params.wrap_s, .wrap_t = o->params.wrap_t,

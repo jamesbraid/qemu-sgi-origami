@@ -18719,6 +18719,71 @@ static void test_colour_table_queries(void)
 }
 
 /*
+ * SGI_color_table applies its tables to texture images as to DrawPixels:
+ * the colour table maps the texel (0x80, 0x40, 0) through entry 1 of
+ * colour_table_rgb for red and green.
+ */
+static void test_colour_table_texture_image(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    colour_table_load(s, COLOUR_TABLE, 0x1907, colour_table_rgb, 3);
+    kona_command(s, 0x24, (uint32_t[]) { COLOUR_TABLE }, 1);
+    texture_upload_one(s, 17, 0x804000ff);
+    assert_texture_pixel(s, 0, 0, 0x112200ff);
+    qtest_quit(s);
+}
+
+/*
+ * SGI_texture_color_table (0x80bc) maps the filtered texel before the
+ * texture environment: the red texel, modulated by white, draws (0x40,
+ * 0x80, 0) through a two-entry RGB table, and draws red with the table
+ * disabled. Post-texture scale and bias come first (the "OpenGL on
+ * Silicon Graphics Systems" manual, SGIX_texture_scale_bias): red scaled
+ * to (0.5, 0, 0.5) indexes entries 1, 0 and 1 of a three-entry table.
+ */
+static void test_texture_colour_table(gconstpointer opaque)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    static const uint32_t two[2] = { 0x008000ff, 0x400000ff };
+    static const uint32_t three[3] = {
+        0x000000ff, 0x204060ff, 0xffffffff,
+    };
+    bool scaled = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    texture_native_bind(s, 0);
+    kona_command(s, 0x174, texture_header, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    colour_table_load(s, 0x80bc, 0x1907, scaled ? three : two,
+                      scaled ? 3 : 2);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+    kona_command(s, 0x24, (uint32_t[]) { 0x80bc }, 1);
+    if (scaled) {
+        kona_command(s, 0xed,
+                     (uint32_t[]) { 0, 10, 0x80ffffff, 0x00008000 }, 4);
+    }
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, scaled ? 0x200060 : 0x408000);
+    kona_command(s, 0x25, (uint32_t[]) { 0x80bc }, 1);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, scaled ? 0x800080 : 0xff0000);
+    qtest_quit(s);
+}
+
+/*
  * GLperf disables histogram, minmax and the colour tables before its
  * pixel cases: an imaging stage the model does not apply refuses image
  * transfers only while it is enabled.
@@ -19500,6 +19565,13 @@ int main(int argc, char **argv)
     }
     add_case("sn0/origin2000/kona-3d/colour-table/queries",
              test_colour_table_queries);
+    add_case("sn0/origin2000/kona-3d/colour-table/texture-image",
+             test_colour_table_texture_image);
+    add_data_case("sn0/origin2000/kona-3d/colour-table/texture-table",
+                  GUINT_TO_POINTER(0), test_texture_colour_table);
+    add_data_case("sn0/origin2000/kona-3d/colour-table/"
+                  "texture-table-after-scale",
+                  GUINT_TO_POINTER(1), test_texture_colour_table);
     add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
              test_unmodelled_stage_disabled);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
