@@ -2093,6 +2093,52 @@ static void test_the_receive_timer_starts_at_the_first_character(
 }
 
 /*
+ * Expiry spends the arm: the consume index reads it clear, and the next
+ * character starts nothing until software arms the timer again. Both Linux
+ * ring drivers re-arm as each read starts, and their comment's account of
+ * characters left in the packer only holds if the arm is gone once the
+ * timer has run.
+ */
+static void test_the_receive_timer_expiry_spends_the_arm(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t first = '1', second = '2';
+    uint8_t got[2], status[2];
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    g_assert_cmpint(write(sock, &first, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, got, status);
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_CONSUME)) &
+                    CONSUME_ARM_TIMER, ==, 0);
+
+    /* Acknowledged and not re-armed: another character raises nothing. */
+    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_RX_TIMER));
+    g_assert_cmpint(write(sock, &second, 1), ==, 1);
+    collect_rx_chars(qts, 0, 2, got, status);
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * Pausing freezes a running receive timer where it stands, and resuming
  * lets it finish the time it had left. No source settles what the part
  * does; this is the rule the IOC4 model already follows, chosen for both.
@@ -3586,6 +3632,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-starts-at-first-char",
                         NULL,
                         test_the_receive_timer_starts_at_the_first_character);
+    qtest_add_data_func("sn0/ioc3-serial/receive-timer-expiry-spends-arm",
+                        NULL, test_the_receive_timer_expiry_spends_the_arm);
     qtest_add_data_func("sn0/ioc3-serial/pause-freezes-receive-timer", NULL,
                         test_a_pause_freezes_the_receive_timer);
     qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",

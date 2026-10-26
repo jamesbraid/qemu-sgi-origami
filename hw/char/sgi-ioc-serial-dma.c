@@ -185,7 +185,13 @@ static void sdma_rx_timer_start(SGIIOCSerialDMAPort *p, int64_t since)
               since + (int64_t)reload * SGI_IOC_SDMA_TIMER_TICK_NS);
 }
 
-/* A drained ring expires into silence. */
+/*
+ * Expiry posts what the packer holds and spends the arm: both Linux ring
+ * drivers re-arm as each read starts, and their comment's account of
+ * characters left in the packer only holds if the arm is gone once the
+ * timer has run. A drained ring expires into silence; whether the part
+ * raises the source then is not known.
+ */
 static void sdma_rx_timer_expired(void *opaque)
 {
     SGIIOCSerialDMAPort *p = opaque;
@@ -203,6 +209,7 @@ static void sdma_rx_timer_expired(void *opaque)
     if (p->armed && ((*produce ^ *consume) & mask)) {
         sdma_raise(p, SGI_IOC_SDMA_SRC_RX_TIMER);
     }
+    p->armed = false;
 }
 
 /* A transmit delay has run out; the walk goes on from when it ended. */
