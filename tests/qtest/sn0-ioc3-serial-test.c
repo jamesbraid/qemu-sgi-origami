@@ -3294,6 +3294,48 @@ static void test_a_loopback_character_in_flight_survives_migration(
     qtest_quit(from);
 }
 
+/*
+ * An arm with no timer running yet is state of its own, kept apart from the
+ * consume pointer: after migration the next character must still start the
+ * timer on the far side.
+ */
+static void test_an_idle_arm_survives_migration(const void *data)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t now;
+
+    tmpfs = g_dir_make_tmp("sn0-ioc3-arm-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init("-M origin200");
+    loopback_like_the_board_test(from, 0);
+    /* Armed, then a consume write with bit 31 clear: still armed. */
+    qtest_writel(from, sdma(0, SDMA_RX_CONSUME), 0);
+    now = qtest_clock_step(from, 1);
+
+    dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    qtest_clock_set(to, now);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, sdma(0, SDMA_RX_CONSUME)), ==,
+                    CONSUME_ARM_TIMER);
+    qtest_writel(to, sdma(0, SDMA_TX_PRODUCE), 8);
+    qtest_clock_step(to, IO8_CHAR_NS + 0x1000 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 static void test_the_scratch_predivider_reaches_the_backends_baud_rate(
     const void *data)
 {
@@ -3821,6 +3863,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/late-loopback-arrival-keeps-its-time",
                         NULL,
                         test_a_late_serviced_loopback_arrival_keeps_its_time);
+    qtest_add_data_func("sn0/ioc3-serial/idle-arm-survives-migration", NULL,
+                        test_an_idle_arm_survives_migration);
     qtest_add_data_func("sn0/ioc3-serial/loopback-in-flight-survives-migration",
                         NULL,
                         test_a_loopback_character_in_flight_survives_migration);
