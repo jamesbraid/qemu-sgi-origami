@@ -554,7 +554,7 @@ static uint32_t tex_re_count(QTestState *t)
  * rows image rows, on a board with res REs: the GE box the client loads
  * (corners 0,0 to 1, the pass's rows times res; its rows and width; 1;
  * +1, +1; the pass), the draw, and a DMA of the source rows the pass
- * carries, pass, pass + res, ... (docs/datasheets/mgras-mxi.md).
+ * carries: pass, pass + res, and so on.
  */
 static uint32_t tex_pixel_texture_pass_rows(uint32_t res, uint32_t pass,
                                             uint32_t rows)

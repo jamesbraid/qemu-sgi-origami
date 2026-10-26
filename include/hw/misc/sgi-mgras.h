@@ -987,7 +987,7 @@ struct SGIMgrasState {
  * deep bank: on a board with two REs, whose second RE's slots hold the
  * deep visual's pixels. SSI's captured reads ground the rule; MXI, EMXI
  * and ESSI run the same client branch, which picks the pair from the
- * visual's fields, not the board (docs/datasheets/mgras-dual-re.md).
+ * visual's fields, not the board.
  */
 static inline bool sgi_mgras_deep_reads(const SGIMgrasState *s)
 {

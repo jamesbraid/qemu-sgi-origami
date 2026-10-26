@@ -438,8 +438,7 @@ enum {
 #define MGRAS_GL_VERTEX2I        0x58000008
 /*
  * glVertex2d, 3d and 4d: the doubles' class 0x12 with the component-count
- * bits, as the GL commands contract lists them from the client
- * (docs/datasheets/mgras-gl-commands.md). The Octane SI Icon Catalog's
+ * bits, as the client sends them. The Octane SI Icon Catalog's
  * pane sends glVertex2d for every filled icon polygon: a model run logged
  * 122 of them as unimplemented headers, where the Origin 2000's X server
  * draws the same icons' fills as stippled spans.
@@ -907,10 +906,9 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  *   it by the modelview's inverse (inferred: the client multiplies
  *   nothing, and OpenGL 1.2.1, 2.10.4 defines the eye plane that way).
  * - glEnable and glDisable of GL_TEXTURE_GEN_S to Q write 0x7504 or 0x7604
- *   and the capability, on a board with texture (the client's notes in
- *   Origami's docs/analysis; 0x7604 with 0x0c60 to 0x0c63 traced from
- *   pfCity on SI with texture). Other capabilities under these two words
- *   are logged.
+ *   and the capability, on a board with texture (from the client; 0x7604
+ *   with 0x0c60 to 0x0c63 traced from pfCity on SI with texture). Other
+ *   capabilities under these two words are logged.
  *
  * The model keeps the generation state in the shared context, which
  * generates as OpenGL 1.2.1, 2.10.4 gives (approximated: the geometry
@@ -4849,7 +4847,7 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
  * pass k carries source rows k, k + n, ... (__glMgrFastSendPixels). The
  * client takes this path only with pixel texgen on, which it brackets
  * with MDDMA_CNTRL bit 0, and with a 3-D or 4-D texture bound
- * (__glMgrim_DrawPixels 0xd969fa8). docs/datasheets/mgras-mxi.md.
+ * (__glMgrim_DrawPixels 0xd969fa8).
  */
 static bool mgras_gl_pixels_texture_box(SGIMgrasState *s, uint32_t *rows,
                                         uint32_t *pass)
@@ -5244,7 +5242,7 @@ static void mgras_gl_pixels_put(SGIMgrasState *s,
  * The window row of the current image row: in order, or, for one RE's
  * pixel-texture pass, every row_step-th row from the pass's own. Which
  * rows an RE owns is the dual-RE row split; that pass k's row i lands on
- * row k + n * i is inferred from it (docs/datasheets/mgras-mxi.md).
+ * row k + n * i is inferred from it.
  */
 static int32_t mgras_gl_pixels_y(const SGIMgrasGLPixels *px)
 {

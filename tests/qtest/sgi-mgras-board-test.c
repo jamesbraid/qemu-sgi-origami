@@ -1349,8 +1349,7 @@ static void test_board_inventory_registers(void)
 /*
  * Expected identity values for each model variant: version bytes,
  * revisions, counts, and the name returned by hinv. MXI, EMXI and ESSI
- * are the gfxinfo output owners published
- * (docs/datasheets/mgras-board-identity.md).
+ * are the gfxinfo output owners published.
  */
 typedef struct MgrasBoardExpect {
     const char *board;
