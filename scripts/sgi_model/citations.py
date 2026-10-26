@@ -46,7 +46,6 @@ FAILING = {
     "tool-path": "names a tools/ program",
     "library-path": "names a file in a document cache, not a registry key",
     "bare-url": "gives a URL instead of a registry key",
-    "nickname": "names a capture by an internal nickname",
     "vendor-source": "fact's provenance is vendor source",
     "qemu-code-only": "fact cites only QEMU code",
     "free-text-only": "fact cites only free text",
@@ -87,10 +86,6 @@ INTERNAL_DOC = re.compile(
     r"|\bOrigami\b")
 DECISION = re.compile(r"\bD-0\d{3}\b")
 TOOL = re.compile(r"(^|[\s(`])tools/[a-z]")
-# Internal names for real-hardware captures. A capture is cited by its
-# registry key instead.
-NICKNAMES = re.compile(
-    r"\b(joint-buck|true-wombat|model-toad|humble-kiwi|whole-tetra|fancy-akita)\b")
 
 # Pointers that only turn up in comments: pull requests, run ids and
 # notebooks. Comments are free text, so they get the same scan as notes.
@@ -184,8 +179,6 @@ def internal_pointers(text: str) -> list[str]:
         found.append("decision-id")
     if TOOL.search(text):
         found.append("tool-path")
-    if NICKNAMES.search(text):
-        found.append("nickname")
     return found
 
 

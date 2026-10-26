@@ -1598,7 +1598,7 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
  * gives to node 3. On the two-node deskside node 2 sits on Crossbow 1, as
  * in the four-node module, and brings IO7 to IO12 with it, IO8 included,
  * a node-4 position there; IO4 stays with node 1, as the two-node Origin
- * 2200 inventory model-toad shows an MSCSI working in it.
+ * 2200 inventory from a real system shows an MSCSI working in it.
  */
 static void test_origin2000_deskside_slots(const void *data)
 {
