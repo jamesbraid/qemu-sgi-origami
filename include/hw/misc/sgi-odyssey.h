@@ -316,7 +316,11 @@ struct SGIOdysseyState {
     /*
      * The object store word offset and row length of each volume slice the
      * current draw samples, resolved once by texture setup so the texel
-     * readers look nothing up. Scratch for one draw, not migrated.
+     * readers look nothing up. Scratch for one draw, not migrated. A
+     * volume whose levels need more slices than the table holds fails
+     * setup as unsupported; that cannot happen, since slices at distinct
+     * bases need distinct objects and the store holds at most
+     * SGI_ODYSSEY_OBJECTS of them.
      */
     uint32_t tex_slice_offset[SGI_ODYSSEY_OBJECTS + 2];
     uint32_t tex_slice_width[SGI_ODYSSEY_OBJECTS + 2];
