@@ -574,6 +574,30 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 }
 
 /*
+ * The drain is a command that reads back set until it has done its work,
+ * and it can only do that with ring DMA on: both Linux ring drivers enable
+ * DMA first ("DMA must be enabled for this to work") and poll the bit
+ * until it clears.
+ */
+static void test_a_drain_waits_for_ring_dma(const void *data)
+{
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_RX_DRAIN);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_CONTROL)) & CTRL_RX_DRAIN,
+                    ==, CTRL_RX_DRAIN);
+
+    /* With DMA on and nothing held, it completes at once. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_CONTROL)) & CTRL_RX_DRAIN,
+                    ==, 0);
+}
+
+/*
  * The arm is a latch, not the stored bit: a consume write with bit 31 clear
  * leaves it set, and the register reports it. Both Linux ring drivers arm
  * as a read starts and end the read with bit 31 clear, under a comment that
@@ -3541,6 +3565,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-consume-keeps-arming-bit",
                         NULL,
                         test_the_receive_consume_keeps_its_arming_bit);
+    qtest_add_data_func("sn0/ioc3-serial/drain-waits-for-ring-dma", NULL,
+                        test_a_drain_waits_for_ring_dma);
     qtest_add_data_func("sn0/ioc3-serial/consume-without-arm-keeps-it", NULL,
                         test_a_consume_without_the_arm_keeps_it);
     qtest_add_data_func("sn0/ioc3-serial/reload-write-loads-idle-count", NULL,

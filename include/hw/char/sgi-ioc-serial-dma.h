@@ -173,6 +173,9 @@ typedef struct SGIIOCSerialDMAPort {
     /* The receive timer's arm, kept apart from the consume pointer. */
     bool armed;
 
+    /* A drain command written and not yet done. */
+    bool drain_pending;
+
     QEMUTimer *rx_timer;
     /* The receive timer's count while it is not running. */
     uint16_t rx_idle_count;

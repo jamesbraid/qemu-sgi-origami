@@ -503,6 +503,27 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
     }
 }
 
+/*
+ * The drain posts whatever the packer holds and reads back set until it
+ * has: both Linux ring drivers poll it to clear, enable ring DMA first
+ * because "DMA must be enabled for this to work", and skip the wait without
+ * ring room because "otherwise the DRAIN will never complete". So it waits
+ * while ring DMA is off or paused and while the ring is full.
+ */
+static void sdma_drain(SGIIOCSerialDMAPort *p)
+{
+    if (!p->drain_pending || !sdma_running(p)) {
+        return;
+    }
+    if (p->packed &&
+        !sdma_post(p, sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE),
+                   sdma_reg(p, SGI_IOC_SDMA_RX_CONSUME),
+                   sdma_pointer_mask(p))) {
+        return;
+    }
+    p->drain_pending = false;
+}
+
 /* `since` is when the walk starts: now, or when a loopback arrival was due. */
 static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since)
 {
@@ -521,6 +542,7 @@ static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since)
 
     sdma_transmit(p, since);
     sdma_receive(p, since);
+    sdma_drain(p);
     sdma_flush(p);
     sdma_update_tx_empty(p);
 
@@ -552,6 +574,7 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
     }
 
     p->armed = false;
+    p->drain_pending = false;
     p->packed = 0;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
     p->tx_slot = 0;
@@ -645,6 +668,9 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
     if (offset == SGI_IOC_SDMA_CONTROL && p->tx_delay_due) {
         val |= SGI_IOC_SDMA_TX_TIMER_RUN;
     }
+    if (offset == SGI_IOC_SDMA_CONTROL && p->drain_pending) {
+        val |= SGI_IOC_SDMA_RX_TO_MEMORY;
+    }
 
     /* The consume index reports the arm, which a write can only set. */
     if (offset == SGI_IOC_SDMA_RX_CONSUME && p->armed) {
@@ -729,6 +755,9 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
         if (val & SGI_IOC_SDMA_RESET) {
             sdma_reset_port(p);
         }
+        if (val & SGI_IOC_SDMA_RX_TO_MEMORY) {
+            p->drain_pending = true;
+        }
         if ((val & SGI_IOC_SDMA_PAUSE) && !p->paused_at) {
             sdma_freeze(p, now);
         } else if (!(val & SGI_IOC_SDMA_PAUSE) && p->paused_at) {
@@ -738,10 +767,7 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
             timer_del(p->rx_timer);
             p->rx_frozen_due = 0;
         }
-        /*
-         * The drain bit is a command IRIX polls to zero, and enabling is a
-         * start: the firmware hands the ring over before enabling.
-         */
+        /* Enabling is a start: the firmware hands the ring over first. */
         sgi_ioc_sdma_kick(d, port);
         return;
     }
@@ -890,6 +916,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         p->packed = 0;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->armed = false;
+        p->drain_pending = false;
     }
 }
 
@@ -965,6 +992,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_TIMER_PTR(rx_timer, SGIIOCSerialDMAPort),
         VMSTATE_UINT16(rx_idle_count, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(armed, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(drain_pending, SGIIOCSerialDMAPort),
         VMSTATE_INT64(tx_delay_due, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(tx_delay_irq, SGIIOCSerialDMAPort),
         VMSTATE_INT64(paused_at, SGIIOCSerialDMAPort),
