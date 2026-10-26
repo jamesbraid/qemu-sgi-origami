@@ -6,7 +6,9 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "sgi-migrate.h"
+#include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "qobject/qlist.h"
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -123,17 +125,15 @@ static QTestState *ioc4_start(unsigned clock_hz)
     return ioc4_start_full(clock_hz, false, false);
 }
 
-static QTestState *ioc4_start_ps2(bool ports_present, bool incoming,
-                                  const char *log)
+static QTestState *ioc4_start_ps2(bool incoming, const char *log)
 {
     QTestState *qts = qtest_initf(
         "-M none -cpu R10000 -d unimp,guest_errors,invalid_mem -D %s "
         "-device sgi-xio-test-target,id=fabric "
         "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
         "fabric=/machine/peripheral/fabric/fabric.ram[0] %s"
-        "-device sgi-ioc4,bus=head-e.0,addr=0,ps2-input=%s",
-        log, incoming ? "-incoming defer " : "",
-        ports_present ? "on" : "off");
+        "-device sgi-ioc4,id=ioc4,bus=head-e.0,addr=0",
+        log, incoming ? "-incoming defer " : "");
 
     qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
     ioc4_map(qts);
@@ -158,7 +158,7 @@ static void test_ps2_adapter(void)
 {
     g_autofree char *log = ioc4_log_file_new();
     g_autofree char *contents = NULL;
-    QTestState *qts = ioc4_start_ps2(true, false, log);
+    QTestState *qts = ioc4_start_ps2(false, log);
 
     qtest_irq_intercept_out_named(qts, CHIP, "head-e-pci-intx");
     g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0);
@@ -247,21 +247,35 @@ static void test_ps2_adapter(void)
     g_assert_nonnull(strstr(contents, "unsupported KBC write width 2"));
 }
 
-static void test_ps2_unplugged_registers(void)
+/*
+ * The keyboard and mouse ports are always there: every IO9 brings them
+ * out, and the device has no switch to leave them unplugged.
+ */
+static void test_ps2_ports_present(void)
 {
     g_autofree char *log = ioc4_log_file_new();
-    QTestState *qts = ioc4_start_ps2(false, false, log);
+    QTestState *qts = ioc4_start_ps2(false, log);
+    QDict *reply;
+    const QListEntry *e;
 
-    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0);
-    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
-    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
-    reg_write(qts, KBC_CONTROL, UINT32_MAX);
-    g_assert_cmphex(reg_read(qts, KBC_CONTROL), ==, 0x00fcfffc);
-    reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
-    reg_write(qts, KBC_AUX_TRANSMIT, 0xff);
-    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
-    g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
-    g_assert_cmphex(reg_read(qts, 0x0c), ==, 0);
+    reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                      "{'path':'/machine/peripheral/ioc4/kbc/kbd',"
+                      "'property':'type'}}");
+    g_assert_cmpstr(qdict_get_try_str(reply, "return"), ==, "ps2-kbd");
+    qobject_unref(reply);
+    reply = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                      "{'path':'/machine/peripheral/ioc4/kbc/mouse',"
+                      "'property':'type'}}");
+    g_assert_cmpstr(qdict_get_try_str(reply, "return"), ==, "ps2-mouse");
+    qobject_unref(reply);
+    reply = qtest_qmp(qts, "{'execute':'device-list-properties',"
+                      "'arguments':{'typename':'sgi-ioc4'}}");
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(reply, "return"), e) {
+        QDict *prop = qobject_to(QDict, qlist_entry_obj(e));
+
+        g_assert_cmpstr(qdict_get_str(prop, "name"), !=, "ps2-input");
+    }
+    qobject_unref(reply);
     qtest_quit(qts);
     g_free(ioc4_log_file_take(log));
 }
@@ -2562,8 +2576,8 @@ static void test_ps2_migration(void)
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from = ioc4_start_ps2(true, false, from_log);
-    to = ioc4_start_ps2(true, true, to_log);
+    from = ioc4_start_ps2(false, from_log);
+    to = ioc4_start_ps2(true, to_log);
     qtest_irq_intercept_out_named(to, CHIP, "head-e-pci-intx");
     ioc4_send_ps2_key(from, "a");
     reg_write(from, 0x14, KBC_OTHER_IRQ);
@@ -2579,39 +2593,6 @@ static void test_ps2_migration(void)
     g_assert_true(qtest_get_irq(to, 0));
     reg_write(to, 0x0c, KBC_OTHER_IRQ);
     g_assert_false(qtest_get_irq(to, 0));
-
-    qtest_quit(from);
-    qtest_quit(to);
-    from_contents = ioc4_log_file_take(from_log);
-    to_contents = ioc4_log_file_take(to_log);
-    g_assert_nonnull(from_contents);
-    g_assert_nonnull(to_contents);
-    unlink(socket);
-    g_assert_cmpint(rmdir(dir), ==, 0);
-}
-
-static void test_ps2_migration_mode_mismatch(void)
-{
-    GError *error = NULL;
-    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ps2-profile-XXXXXX",
-                                         &error);
-    g_autofree char *socket = NULL, *uri = NULL;
-    g_autofree char *from_log = ioc4_log_file_new();
-    g_autofree char *to_log = ioc4_log_file_new();
-    g_autofree char *from_contents = NULL, *to_contents = NULL;
-    QTestState *from, *to;
-
-    g_assert_no_error(error);
-    socket = g_build_filename(dir, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    from = ioc4_start_ps2(true, false, from_log);
-    to = ioc4_start_ps2(false, true, to_log);
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s,"
-        "'exit-on-error':false}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    ioc4_wait_migration_failed(to);
 
     qtest_quit(from);
     qtest_quit(to);
@@ -2763,11 +2744,8 @@ int main(int argc, char **argv)
                    test_ata_readback_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/ps2-adapter", test_ps2_adapter);
-    qtest_add_func("/sgi-ioc4/ps2-unplugged-registers",
-                   test_ps2_unplugged_registers);
+    qtest_add_func("/sgi-ioc4/ps2-ports-present", test_ps2_ports_present);
     qtest_add_func("/sgi-ioc4/ps2-migration", test_ps2_migration);
-    qtest_add_func("/sgi-ioc4/ps2-migration-mode-mismatch",
-                   test_ps2_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/interrupts", test_interrupts);
     qtest_add_func("/sgi-ioc4/pio-fifo", test_pio_fifo);
     qtest_add_func("/sgi-ioc4/dma-chardev-reconnect",
