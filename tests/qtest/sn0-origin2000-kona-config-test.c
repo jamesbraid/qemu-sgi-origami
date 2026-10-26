@@ -70,6 +70,7 @@ typedef struct Expected {
     uint32_t board_word;
     uint32_t rm_word;
     uint32_t trailing_word;
+    uint32_t pixel_depth;       /* 0 Small, 1 Medium */
     Board rm, tm, dg, dgopt;
 } Expected;
 
@@ -173,6 +174,7 @@ static void expected_block(const Expected *e, uint8_t *b)
     stl_be_p(b + 0x5c, e->occupancy);
     stl_be_p(b + 0x84, 1280);
     stl_be_p(b + 0x88, 1024);
+    stl_be_p(b + 0x8c, e->pixel_depth);
     for (unsigned c = 0; c < 4; c++) {
         for (unsigned w = 0; w < 7; w++) {
             stl_be_p(b + 0x90 + 0x1c * c + 4 * w, pools[c][w]);
@@ -298,6 +300,26 @@ static void test_ir2_whole_tetra(void)
 }
 
 /*
+ * whole-tetra as captured: Medium pixel depth, which gfxinfo prints from
+ * +0x8c and the X server picks its visual table by. Two RM7s hold Medium
+ * at 1280x1024, and so does one.
+ */
+static void test_ir2_whole_tetra_medium(void)
+{
+    Expected e = whole_tetra;
+
+    e.pixel_depth = 1;
+    assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\",\"rm-count\":2,"
+                                "\"pixel-depth\":\"medium\""), &e);
+    e.rms = 1;
+    assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\","
+                                "\"pixel-depth\":\"medium\""), &e);
+    e = whole_tetra;
+    assert_config(DESKSIDE_PIPE(",\"product\":\"ir2\",\"rm-count\":2,"
+                                "\"pixel-depth\":\"small\""), &e);
+}
+
+/*
  * fancy-akita: "2 GEs (of 2), occmask = 0x03", two RM7 boards, two
  * channels; its owner list names the GE14-2 030-1051-002 and the DG5-2
  * 030-1055-001. Its board words are whole-tetra's.
@@ -414,6 +436,11 @@ static const struct {
       "*display 'dg5-2-dplex' is not a display board the model presents*" },
     { "display-part", RACK_PIPE ",product=ir3,display=030-1055-001",
       "*display '030-1055-001' is not a display board the model presents*" },
+    { "pixel-depth-large", RACK_PIPE ",product=ir3,pixel-depth=large",
+      "*pixel-depth 'large' is not modelled; the model presents small or "
+      "medium*" },
+    { "pixel-depth-without-product", RACK_PIPE ",pixel-depth=medium",
+      "*set product to configure the pipe*" },
 };
 
 static void test_refused(const void *data)
@@ -440,6 +467,8 @@ int main(int argc, char **argv)
                    test_ir3_plain_dg5_2);
     qtest_add_func("sn0/origin2000/kona-config/ir2-whole-tetra",
                    test_ir2_whole_tetra);
+    qtest_add_func("sn0/origin2000/kona-config/ir2-whole-tetra-medium",
+                   test_ir2_whole_tetra_medium);
     qtest_add_func("sn0/origin2000/kona-config/ir2-fancy-akita",
                    test_ir2_fancy_akita);
     qtest_add_func("sn0/origin2000/kona-config/ir2e", test_ir2e);

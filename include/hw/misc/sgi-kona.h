@@ -46,6 +46,7 @@ typedef struct SGIKonaConfig {
     const struct SGIKonaOption *option;
     uint32_t rm_count;
     uint32_t channels;          /* the display generator's channel count */
+    uint32_t pixel_depth;       /* 0 Small, 1 Medium */
 } SGIKonaConfig;
 OBJECT_DECLARE_SIMPLE_TYPE(SGIKonaState, SGI_KONA)
 typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
@@ -1638,6 +1639,7 @@ struct SGIKonaState {
      * it in) and what realize resolved them to; see sgi_kona_configure()
      * in sgi-kona.c.
      */
+    char *pixel_depth;
     char *product;
     char *geometry;
     char *rm_type;

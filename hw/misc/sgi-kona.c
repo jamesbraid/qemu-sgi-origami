@@ -2350,6 +2350,53 @@ static bool sgi_kona_unset(const char *value)
 }
 
 /*
+ * The pixel depth a configured pipe reports at configuration block +0x8c:
+ * gfxinfo prints it ("Small" or "Medium pixel depth") and the X server picks
+ * its visual table from it, the Medium table adding 12-bit RGB multisample
+ * visuals and double-buffered visuals with multisampling, an accumulation
+ * buffer and a depth buffer together. On a real pipe the depth comes with
+ * the video format combination loaded; the X server accepts a depth for a
+ * combination only when the raster managers' pixel memory covers it, at
+ * raster managers x 20,971,520 / (height x width rounded up to 160) of at
+ * least 8 for Small and 16 for Medium (established from the IRIX X server's
+ * check). The model's one managed area, 1280x1024, meets Medium with any
+ * raster-manager count, so the property needs only the count to hold.
+ * Large and Extra-Large are refused: their visual tables add buffer
+ * configurations the model has not been checked against.
+ */
+static bool sgi_kona_pixel_depth(SGIKonaState *s, SGIKonaConfig *c,
+                                 Error **errp)
+{
+    static const char *const names[] = { "small", "medium" };
+    static const uint32_t budget[] = { 8, 16 };
+    uint64_t area = (uint64_t)SGI_KONA_FB_HEIGHT *
+                    QEMU_ALIGN_UP(SGI_KONA_FB_WIDTH, 160);
+
+    c->pixel_depth = 0;
+    if (sgi_kona_unset(s->pixel_depth)) {
+        return true;
+    }
+    for (c->pixel_depth = 0; c->pixel_depth < ARRAY_SIZE(names);
+         c->pixel_depth++) {
+        if (g_str_equal(s->pixel_depth, names[c->pixel_depth])) {
+            break;
+        }
+    }
+    if (c->pixel_depth == ARRAY_SIZE(names)) {
+        error_setg(errp, "sgi-kona: pixel-depth '%s' is not modelled; the "
+                   "model presents small or medium", s->pixel_depth);
+        return false;
+    }
+    if ((uint64_t)c->rm_count * 20971520 / area < budget[c->pixel_depth]) {
+        error_setg(errp, "sgi-kona: pixel-depth %s needs more pixel memory "
+                   "than %u raster managers hold at %ux%u", s->pixel_depth,
+                   c->rm_count, SGI_KONA_FB_WIDTH, SGI_KONA_FB_HEIGHT);
+        return false;
+    }
+    return true;
+}
+
+/*
  * Check the configuration properties and resolve them into s->config.
  * Every value a product does not offer is refused with the reason, so a
  * configuration whose fields have no source is never presented.
@@ -2365,7 +2412,7 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
     if (sgi_kona_unset(s->product)) {
         if (!sgi_kona_unset(s->geometry) || !sgi_kona_unset(s->rm_type) ||
             s->rm_count || s->texture_mb || s->channels ||
-            !sgi_kona_unset(s->display)) {
+            !sgi_kona_unset(s->display) || !sgi_kona_unset(s->pixel_depth)) {
             error_setg(errp, "sgi-kona: set product to configure the pipe");
             return false;
         }
@@ -2461,6 +2508,10 @@ static bool sgi_kona_configure(SGIKonaState *s, Error **errp)
         error_setg(errp, "sgi-kona: channels %u: display generator %s "
                    "reports %u", s->channels, dg_part,
                    c->display->channels);
+        goto refused;
+    }
+
+    if (!sgi_kona_pixel_depth(s, c, errp)) {
         goto refused;
     }
 
@@ -2595,8 +2646,8 @@ static const struct {
  * request section for the readers. Fields no reader is known for stay
  * zero, as do the geometry board's and Ktown's identity records, which
  * the driver keeps from its own one-wire reading whatever the pipe sends.
- * The pixel depth stays small (0) and the size 1280x1024: they follow the
- * video format combination, and the model draws only that one.
+ * The size stays 1280x1024, the one combination the model draws; the pixel
+ * depth is Small unless "pixel-depth" asks for Medium (sgi_kona_pixel_depth()).
  *
  * The display generator's channel count goes both at +0x14, which gfxinfo
  * prints, and at +0x44, which the combination checker in setmon, ircombine
@@ -2623,6 +2674,7 @@ static const struct {
 #define SGI_KONA_CFG_OCCUPANCY      0x5c
 #define SGI_KONA_CFG_WIDTH          0x84
 #define SGI_KONA_CFG_HEIGHT         0x88
+#define SGI_KONA_CFG_PIXEL_DEPTH    0x8c
 #define SGI_KONA_CFG_BOARD_WORD     0x100
 #define SGI_KONA_CFG_GE_WORDS       0x104
 #define SGI_KONA_CFG_RM_CHIPS(i)    (0x114 + 0x8c * (i))
@@ -2708,6 +2760,7 @@ static void sgi_kona_config_block(const SGIKonaConfig *c, uint8_t *block)
     stl_be_p(block + SGI_KONA_CFG_OCCUPANCY, c->geometry->occupancy);
     stl_be_p(block + SGI_KONA_CFG_WIDTH, SGI_KONA_FB_WIDTH);
     stl_be_p(block + SGI_KONA_CFG_HEIGHT, SGI_KONA_FB_HEIGHT);
+    stl_be_p(block + SGI_KONA_CFG_PIXEL_DEPTH, c->pixel_depth);
 
     stl_be_p(block + SGI_KONA_CFG_BOARD_WORD, c->geometry->board_word);
     for (unsigned i = 0; i < ARRAY_SIZE(ge_words); i++) {
@@ -17103,6 +17156,7 @@ static const Property sgi_kona_properties[] = {
     DEFINE_PROP_UINT32("texture-mb", SGIKonaState, texture_mb, 0),
     DEFINE_PROP_UINT32("channels", SGIKonaState, channels, 0),
     DEFINE_PROP_STRING("display", SGIKonaState, display),
+    DEFINE_PROP_STRING("pixel-depth", SGIKonaState, pixel_depth),
 };
 
 static int sgi_kona_pre_save(void *opaque)
