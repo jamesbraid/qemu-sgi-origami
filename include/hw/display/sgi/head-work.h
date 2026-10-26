@@ -87,7 +87,8 @@ bool sgi_head_work_overdue(SGIHeadWork *w, int64_t ns);
 
 /*
  * Whether a draw on this thread may let go of the big lock: inside a slice
- * on the head's thread. A family brackets such a draw with
+ * on the head's own thread, which every other thread that decodes the
+ * work waits out. A family brackets such a draw with
  * sgi_head_work_unlock() and sgi_head_work_relock(), and must arrange
  * that nothing else touches what the draw reads or writes meanwhile.
  */
