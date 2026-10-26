@@ -1452,6 +1452,33 @@ static void test_dma_tx_control_decodes_type_and_bit5(void)
     g_assert_nonnull(strstr(contents, "undefined TX control bits"));
 }
 
+/*
+ * Control bit 16, "TX timer in progress" in both Linux headers, reads set
+ * while a transmit delay entry is running and clear once it has ended.
+ */
+static void test_dma_tx_delay_sets_the_busy_bit(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t data[4] = { 3, 0, 0, 0 };
+    const uint8_t control[4] = { TX_DELAY, 0, 0, 0 };
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, data, control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & (1u << 16), ==,
+                    1u << 16);
+    qtest_clock_step(qts, 3 * 1000000);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & (1u << 16), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2991,6 +3018,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-tx-delay-sets-the-busy-bit",
+                   test_dma_tx_delay_sets_the_busy_bit);
     qtest_add_func("/sgi-ioc4/dma-tx-control-decodes-type-and-bit5",
                    test_dma_tx_control_decodes_type_and_bit5);
     qtest_add_func("/sgi-ioc4/dma-empty-slot-ends-the-entry",
