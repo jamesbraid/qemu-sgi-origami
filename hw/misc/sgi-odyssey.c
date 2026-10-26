@@ -4122,18 +4122,49 @@ static uint32_t odyssey_float_to_u32(uint32_t bits)
     return (uint32_t)f;
 }
 
-/* The index of the object at board base base, or -1. */
+/*
+ * The index of the object at board base base, or -1. A base names at most
+ * one live object (odyssey_object_select()), so the index's entry is the
+ * one a search of obj_base would find.
+ */
 static int odyssey_object_find(SGIOdysseyState *s, uint32_t base)
 {
+    gpointer slot;
+
     if (!base) {
         return -1;
     }
-    for (unsigned int i = 0; i < s->obj_count; i++) {
-        if (s->obj_base[i] == base) {
-            return i;
+    slot = g_hash_table_lookup(s->obj_index, GUINT_TO_POINTER(base));
+    return slot ? GPOINTER_TO_UINT(slot) - 1 : -1;
+}
+
+/* Give object i the base base, keeping obj_index in step. */
+static void odyssey_object_set_base(SGIOdysseyState *s, int i, uint32_t base)
+{
+    if (s->obj_base[i]) {
+        g_hash_table_remove(s->obj_index, GUINT_TO_POINTER(s->obj_base[i]));
+    }
+    s->obj_base[i] = base;
+    if (base) {
+        g_hash_table_insert(s->obj_index, GUINT_TO_POINTER(base),
+                            GUINT_TO_POINTER(i + 1));
+    }
+}
+
+/*
+ * Rebuild obj_index from obj_base, after a load. Where a loaded table names
+ * one base twice, the lower index wins, as a search would find it.
+ */
+static void odyssey_object_index_rebuild(SGIOdysseyState *s)
+{
+    g_hash_table_remove_all(s->obj_index);
+    for (unsigned int i = MIN(s->obj_count, SGI_ODYSSEY_OBJECTS); i-- > 0;) {
+        if (s->obj_base[i]) {
+            g_hash_table_insert(s->obj_index,
+                                GUINT_TO_POINTER(s->obj_base[i]),
+                                GUINT_TO_POINTER(i + 1));
         }
     }
-    return -1;
 }
 
 /*
@@ -4219,7 +4250,7 @@ static void odyssey_object_touch(SGIOdysseyState *s, int i)
 /* Forget object i: its slot stays, with base 0, for a later object. */
 static void odyssey_object_forget(SGIOdysseyState *s, int i)
 {
-    s->obj_base[i] = 0;
+    odyssey_object_set_base(s, i, 0);
     s->obj_width[i] = 0;
     s->obj_rows[i] = 0;
     s->obj_offset[i] = 0;
@@ -4330,7 +4361,7 @@ static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
         if (i < 0) {
             i = s->obj_count++;
         }
-        s->obj_base[i] = base;
+        odyssey_object_set_base(s, i, base);
         s->obj_width[i] = width;
         s->obj_offset[i] = 0;
         s->obj_rows[i] = 0;
@@ -11846,6 +11877,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->obj_count = 0;
     s->obj_used = 0;
     memset(s->obj_base, 0, sizeof(s->obj_base));
+    g_hash_table_remove_all(s->obj_index);
     memset(s->obj_width, 0, sizeof(s->obj_width));
     memset(s->obj_offset, 0, sizeof(s->obj_offset));
     memset(s->obj_rows, 0, sizeof(s->obj_rows));
@@ -12550,6 +12582,7 @@ static void odyssey_instance_init(Object *obj)
 
     memory_region_init_io(&s->regs, obj, &odyssey_ops, s, "sgi-odyssey.regs",
                           ODSY_APERTURE);
+    s->obj_index = g_hash_table_new(g_direct_hash, g_direct_equal);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
 
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
@@ -12946,6 +12979,7 @@ static int odyssey_post_load(void *opaque, int version_id)
     }
 
     odyssey_clip_update(s);
+    odyssey_object_index_rebuild(s);
     {
         SGIGLSink sink = odyssey_gl_sink(s);
 
@@ -13195,6 +13229,13 @@ static void odyssey_class_init(ObjectClass *oc, const void *data)
     bc->build_widget = odyssey_build_widget;
 }
 
+static void odyssey_instance_finalize(Object *obj)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+
+    g_hash_table_destroy(s->obj_index);
+}
+
 static const TypeInfo odyssey_types[] = {
     {
         .name = TYPE_SGI_ODYSSEY,
@@ -13202,6 +13243,7 @@ static const TypeInfo odyssey_types[] = {
         .instance_size = sizeof(SGIOdysseyState),
         .class_size = sizeof(SGIOdysseyClass),
         .instance_init = odyssey_instance_init,
+        .instance_finalize = odyssey_instance_finalize,
         .class_init = odyssey_class_init,
     },
 };
