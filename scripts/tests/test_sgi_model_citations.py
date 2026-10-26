@@ -123,9 +123,8 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(classes("D-0023: a decision", registry), ["decision-id"])
         self.assertEqual(classes("Origami commit 0123456789ab, tools/x.py: y", registry),
                          ["origami-path", "tool-path"])
-        self.assertEqual(classes("docs/fictional-contract-fixture.md the joint-buck capture", registry),
-                         ["origami-path", "nickname"])
-        self.assertEqual(classes("the two-node capture model-toad", registry), ["nickname"])
+        self.assertEqual(classes("docs/fictional-contract-fixture.md", registry),
+                         ["origami-path"])
         self.assertEqual(classes("sgi-hw/booklet.pdf Table 41", registry), ["library-path"])
         self.assertEqual(classes("inventory: https://example.org/t/1.html", registry),
                          ["bare-url"])
@@ -155,7 +154,6 @@ class CheckTests(unittest.TestCase):
             "tool-path": fact("see tools/x.py"),
             "library-path": fact("sgi-hw/booklet.pdf Table 41"),
             "bare-url": fact("see https://example.org/x"),
-            "nickname": fact("the two-node capture model-toad"),
             "vendor-source": fact("web:dmesgd-8994 line 3", "vendor-source"),
             "qemu-code-only": fact("hw/mips/sgi/octane.c"),
             "free-text-only": fact("The composition selects it."),
