@@ -781,6 +781,8 @@ static void test_dma_rx_drain_and_threshold(void)
     close(sv[1]);
     ioc4_set_pair_base_default(qts, 0, 0x1000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
+    /* A long reload, so the drain and not the timer posts the entry. */
+    reg_write(qts, SDMA_RX_TIMER(0), 0xfff);
     reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
     g_assert_cmpint(write(sv[0], input, sizeof(input)), ==,
                     (ssize_t)sizeof(input));
@@ -1565,6 +1567,31 @@ static void test_dma_consume_without_arm_keeps_it(void)
     qtest_clock_step(qts, 125001);
     ioc4_wait_reg(qts, 0x08, RX_TIMER_EXPIRED(0), RX_TIMER_EXPIRED(0));
     g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A zero reload expires as soon as the timer starts, as the IOC3 model
+ * has it; no source says what the part does, and Linux never writes zero.
+ */
+static void test_dma_zero_reload_expires_at_once(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input = 0x7a;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_TIMER(0), 0);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], &input, 1), ==, 1);
+    ioc4_wait_reg(qts, 0x08, RX_TIMER_EXPIRED(0), RX_TIMER_EXPIRED(0));
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 8);
     qtest_quit(qts);
     close(sv[0]);
 }
@@ -3115,6 +3142,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-zero-reload-expires-at-once",
+                   test_dma_zero_reload_expires_at_once);
     qtest_add_func("/sgi-ioc4/dma-consume-without-arm-keeps-it",
                    test_dma_consume_without_arm_keeps_it);
     qtest_add_func("/sgi-ioc4/dma-tx-empty-follows-the-ring",

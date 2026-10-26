@@ -358,16 +358,17 @@ static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value,
     p->rx_status[p->rx_count] = IOC4_RX_VALID |
         (loopback ? IOC4_RX_MODEM_VALID : 0);
     p->rx_count++;
-    if (p->timer_armed && !p->rx_remaining_ns &&
-        (p->rx_timer_reload & 0xfff)) {
+    /*
+     * The first character accepted while armed starts the timer; a zero
+     * reload starts it already expired, as the IOC3 model has it.
+     */
+    if (p->timer_armed && !p->rx_timer_running) {
         /* Once it runs, the count a reload write loaded is spent. */
         p->rx_idle_count = 0;
         p->rx_remaining_ns = (int64_t)(p->rx_timer_reload & 0xfff) * 62500;
-        if (p->rx_remaining_ns) {
-            p->rx_timer_running = true;
-            timer_mod(p->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      p->rx_remaining_ns);
-        }
+        p->rx_timer_running = true;
+        timer_mod(p->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  p->rx_remaining_ns);
     }
     if (p->rx_count == 4) {
         p->rx_staged = !ioc4_rx_publish(p);
