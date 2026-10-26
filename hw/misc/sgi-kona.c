@@ -12609,7 +12609,7 @@ static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
 }
 
 /* Bitmap source colour fields retain their separately reviewed extraction. */
-static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
+static bool sgi_kona_x_write_decode_words(SGIKonaState *s, SGIXGC *gc)
 {
     uint32_t raw[SGI_KONA_X_GC_WORDS];
     const uint32_t *setup = s->x_write_setup;
@@ -12714,6 +12714,29 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
     }
     return sgi_x_gc_decode_main_index(raw, gc) == SGI_X_GC_OK &&
            !gc->opaque_or_tiled;
+}
+
+/*
+ * The decode depends on the two snapshots alone, so a repeat returns what
+ * the last one gave, the GC it filled in included.
+ */
+static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
+{
+    if (!s->x_write_decoded_valid ||
+        memcmp(s->x_write_decoded_gc, s->x_write_gc,
+               sizeof(s->x_write_gc)) ||
+        memcmp(s->x_write_decoded_setup, s->x_write_setup,
+               sizeof(s->x_write_setup))) {
+        memset(&s->x_write_decoded, 0, sizeof(s->x_write_decoded));
+        s->x_write_decoded_ok = sgi_kona_x_write_decode_words(
+            s, &s->x_write_decoded);
+        memcpy(s->x_write_decoded_gc, s->x_write_gc, sizeof(s->x_write_gc));
+        memcpy(s->x_write_decoded_setup, s->x_write_setup,
+               sizeof(s->x_write_setup));
+        s->x_write_decoded_valid = true;
+    }
+    *gc = s->x_write_decoded;
+    return s->x_write_decoded_ok;
 }
 
 static bool sgi_kona_x_write_contains(SGIKonaState *s, int64_t x, int64_t y)

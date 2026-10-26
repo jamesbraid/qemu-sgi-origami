@@ -19,6 +19,7 @@
 #include "hw/display/sgi/gl-context.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
+#include "hw/display/sgi/x-gc.h"
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-dma.h"
 #include "hw/misc/sgi-kona-ports.h"
@@ -1536,6 +1537,17 @@ struct SGIKonaState {
     int64_t x_write_stipple_x;
     int64_t x_write_stipple_y;
     uint32_t x_write_stipple_rows[SGI_KONA_X_STIPPLE_MAX];
+    /*
+     * The last decode of x_write_gc under x_write_setup, and the words it
+     * was made from: each data word of a pixel write decodes them again,
+     * and they change only between writes. Derived, so not migrated; a
+     * mismatch in either key decodes afresh.
+     */
+    bool x_write_decoded_valid;
+    bool x_write_decoded_ok;
+    SGIXGC x_write_decoded;
+    uint32_t x_write_decoded_gc[SGI_KONA_X_GC_WORDS];
+    uint32_t x_write_decoded_setup[SGI_KONA_X_PIXEL_SETUP_WORDS];
 
     /*
      * Stage 4: the kernel FIFO's framebuffer DMA engine. See
