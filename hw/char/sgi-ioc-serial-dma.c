@@ -186,11 +186,13 @@ static void sdma_rx_timer_start(SGIIOCSerialDMAPort *p, int64_t since)
 }
 
 /*
- * Expiry posts what the packer holds and spends the arm: both Linux ring
- * drivers re-arm as each read starts, and their comment's account of
- * characters left in the packer only holds if the arm is gone once the
- * timer has run. A drained ring expires into silence; whether the part
- * raises the source then is not known.
+ * Expiry posts what the packer holds, raises its source and spends the arm:
+ * both Linux ring drivers re-arm as each read starts, and their comment's
+ * account of characters left in the packer only holds if the arm is gone
+ * once the timer has run, "after the interrupt was generated". It raises
+ * even when software has already drained the ring: spending the arm with no
+ * interrupt leaves later characters waiting with no timer and no reader,
+ * and IRIX 6.5.30's ring console stalls on exactly that.
  */
 static void sdma_rx_timer_expired(void *opaque)
 {
@@ -206,7 +208,7 @@ static void sdma_rx_timer_expired(void *opaque)
         sdma_post(p, produce, consume, mask);
     }
 
-    if (p->armed && ((*produce ^ *consume) & mask)) {
+    if (p->armed) {
         sdma_raise(p, SGI_IOC_SDMA_SRC_RX_TIMER);
     }
     p->armed = false;

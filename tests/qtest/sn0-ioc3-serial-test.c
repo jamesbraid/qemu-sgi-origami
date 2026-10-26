@@ -2163,6 +2163,47 @@ static void test_the_receive_timer_expiry_spends_the_arm(const void *data)
 }
 
 /*
+ * An expiry that spends the arm raises its source even when software has
+ * already drained and consumed everything: otherwise the arm goes with no
+ * interrupt, and characters that follow wait in the packer with no timer
+ * until something else wakes the reader. IRIX 6.5.30's ring console stalls
+ * on that, and both Linux ring drivers' comment speaks of characters that
+ * arrive "after the interrupt was generated" by the timer.
+ */
+static void test_an_expiry_over_an_empty_ring_still_raises(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'e';
+    uint8_t got, status;
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    /* The character starts the timer; the reader drains and consumes it. */
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER | 8);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 8);
+
+    qtest_clock_step(qts, 0x141 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * Pausing freezes a running receive timer where it stands, and resuming
  * lets it finish the time it had left. No source settles what the part
  * does; this is the rule the IOC4 model already follows, chosen for both.
@@ -3660,6 +3701,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_starts_at_the_first_character);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-expiry-spends-arm",
                         NULL, test_the_receive_timer_expiry_spends_the_arm);
+    qtest_add_data_func("sn0/ioc3-serial/empty-ring-expiry-still-raises", NULL,
+                        test_an_expiry_over_an_empty_ring_still_raises);
     qtest_add_data_func("sn0/ioc3-serial/pause-freezes-receive-timer", NULL,
                         test_a_pause_freezes_the_receive_timer);
     qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",
