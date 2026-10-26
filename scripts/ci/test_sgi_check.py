@@ -709,5 +709,41 @@ class FailingStepReported(unittest.TestCase):
         self.assertEqual(self.status({'message': 'not found'}), 2)
 
 
+class WindowsMode(unittest.TestCase):
+    """windows configures the MinGW build once, then builds the programs."""
+
+    def calls(self, configured):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sgi_check, 'run') as run:
+            build = Path(tmp) / 'build-windows'
+            if configured:
+                build.mkdir()
+                (build / 'build.ninja').touch()
+            sgi_check.main(['windows', '--dir', str(build)])
+            return build, [call.args[0] for call in run.call_args_list]
+
+    def test_fresh_directory_is_configured_then_built(self):
+        build, calls = self.calls(configured=False)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], [sgi_check.SOURCE / 'configure',
+                                    *sgi_check.WINDOWS_CONFIGURE_ARGS])
+        self.assertIn('--cross-prefix=x86_64-w64-mingw32-', calls[0])
+        self.assertEqual(calls[1], [build / 'pyvenv/bin/meson', 'configure',
+                                    *sgi_check.WINDOWS_MESON_OPTIONS, build])
+        self.assertEqual(calls[2], ['ninja', '-C', build,
+                                    'qemu-system-mips64.exe', 'qemu-img.exe'])
+
+    def test_configured_directory_is_only_built(self):
+        build, calls = self.calls(configured=True)
+        self.assertEqual(calls, [['ninja', '-C', build,
+                                  'qemu-system-mips64.exe', 'qemu-img.exe']])
+
+    def test_default_directory_is_build_windows(self):
+        with mock.patch.object(sgi_check, 'windows') as windows:
+            sgi_check.main(['windows'])
+        self.assertEqual(windows.call_args.args[0].dir,
+                         sgi_check.SOURCE / 'build-windows')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -173,6 +173,18 @@ case "${1-}" in
       echo "no merge base between $PR_BASE_SHA and $head; the smoke check will fail"
     fi
     ;;
+  windows)
+    # Cross-compile the Windows release programs in QEMU's MinGW image,
+    # which the release build uses, so code that builds only on POSIX
+    # hosts fails here rather than when a release is cut.
+    : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
+    windows_image=$(docker build -q \
+        -f tests/docker/dockerfiles/fedora-win64-cross.docker \
+        tests/docker/dockerfiles)
+    test -n "$windows_image"
+    IMAGE_ID=$windows_image bash "$0" run -v "$WORKSPACE_VOLUME:/src" \
+        -w /src "$windows_image" python3 scripts/ci/sgi-check windows
+    ;;
   volume)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"
     reap_orphans
@@ -307,7 +319,7 @@ case "${1-}" in
     fi
     ;;
   *)
-    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|build|check [tap]|report-failure|nudge-queue' >&2
+    echo 'usage: runner-setup docker|describe|fetch-base|image|volume|assets|build|windows|check [tap]|report-failure|nudge-queue' >&2
     echo '       runner-setup run|run-tests [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 """Build QEMU for the SGI machines and run the SGI checks CI runs.
 
-CI runs every mode inside the image built from
+CI runs every mode but windows inside the image built from
 tests/docker/dockerfiles/debian-sgi.docker, with the checkout at /src.
 A developer can run the same modes in that image against any build
 directory, for example:
@@ -41,6 +41,24 @@ CONFIGURE_ARGS = [
     # The image's gdb, so gdbstub functional cases run rather than skip.
     '--gdb=/usr/bin/gdb-multiarch',
 ]
+
+# The Windows release is cross-compiled with MinGW in the image built from
+# tests/docker/dockerfiles/fedora-win64-cross.docker. These are the
+# release's configure arguments and the Meson options it sets after
+# configure; keep them in step with the product build's.
+WINDOWS_CONFIGURE_ARGS = [
+    '--cross-prefix=x86_64-w64-mingw32-', '--target-list=mips64-softmmu',
+    '--disable-docs', '--disable-gtk', '--disable-cocoa', '--enable-sdl',
+    '--enable-vnc', '--enable-slirp',
+]
+WINDOWS_MESON_OPTIONS = [
+    '-Dc_args=-DBUILDING_LIBSLIRP', '-Dcurl=disabled', '-Dgnutls=disabled',
+    '-Dgcrypt=disabled', '-Dbzip2=disabled', '-Dlibssh=disabled',
+    '-Dlibnfs=disabled', '-Dlibiscsi=disabled', '-Drbd=disabled',
+    '-Dvde=disabled', '-Dspice=disabled', '-Dopengl=disabled',
+    '-Dvirglrenderer=disabled',
+]
+WINDOWS_TARGETS = ['qemu-system-mips64.exe', 'qemu-img.exe']
 
 # The sgi_model contract suites. They need PyYAML and jsonschema, which
 # pythondeps.toml lists as the sgi-model group, but no QEMU binary.
@@ -249,6 +267,16 @@ def build(args):
         ensure.append('--online')
     run(ensure + [SOURCE / 'pythondeps.toml', 'sgi-model'])
     run(['ninja', '-C', path])
+
+
+def windows(args):
+    path = args.dir
+    path.mkdir(parents=True, exist_ok=True)
+    if not (path / 'build.ninja').exists():
+        run([SOURCE / 'configure', *WINDOWS_CONFIGURE_ARGS], cwd=path)
+        run([path / 'pyvenv/bin/meson', 'configure', *WINDOWS_MESON_OPTIONS,
+             path])
+    run(['ninja', '-C', path, *WINDOWS_TARGETS])
 
 
 def rom_expected(build, logbase):
@@ -849,6 +877,14 @@ def main(argv=None):
     mode.add_argument('--online', action='store_true',
                       help='let mkvenv fetch the sgi-model group from PyPI')
     mode.set_defaults(func=build)
+
+    mode = modes.add_parser(
+        'windows', help='cross-compile the Windows release programs with '
+                        'MinGW, in the fedora-win64-cross image')
+    mode.add_argument('--dir', type=Path, default=SOURCE / 'build-windows',
+                      help='build directory (default: build-windows in the '
+                           'source tree)')
+    mode.set_defaults(func=windows)
 
     mode = modes.add_parser('model', help='run the sgi_model contract suites')
     mode.add_argument('--python', type=Path,
