@@ -12,6 +12,14 @@
 #include "qemu/log.h"
 #include "hw/mips/sgi/pi-gfx.h"
 
+/* The counter above the bias re-arms the slot's graphics interrupt. */
+static void sgi_pi_gfx_rearm(SGIPIGfx *g, unsigned int slot)
+{
+    if (g->credit[slot] > g->bias[slot]) {
+        g->starved[slot] = false;
+    }
+}
+
 void sgi_pi_gfx_reset(SGIPIGfx *g)
 {
     memset(g, 0, sizeof(*g));
@@ -47,6 +55,7 @@ void sgi_pi_gfx_write(SGIPIGfx *g, unsigned int n, uint64_t value)
         break;
     case SGI_PI_GFX_CREDIT:
         g->credit[slot] = value & SGI_PI_GFX_CREDIT_MASK;
+        sgi_pi_gfx_rearm(g, slot);
         break;
     case SGI_PI_GFX_BIAS:
         g->bias[slot] = value & SGI_PI_GFX_BIAS_MASK;
@@ -84,16 +93,36 @@ bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
     }
     g->credit[slot] = (g->credit[slot] - 1) & SGI_PI_GFX_CREDIT_MASK;
 
-    /*
-     * Below the bias the processor interface holds the processor's writes
-     * and, by some trigger no source settles, raises the graphics
-     * interrupt. Neither is modelled; say so once per slot.
-     */
-    if (g->credit[slot] < g->bias[slot] && !g->stall_logged[slot]) {
+    return true;
+}
+
+/*
+ * Below the bias the processor interface holds the processor's writes,
+ * sends the graphics interrupt, then lets the writes go on: the SN1
+ * header's credit-counter comment, inferred for SN0. Whether the edge is
+ * below the bias or at it is unknown; the model takes below, the stall
+ * comment's reading. The stall is zero length here: a vCPU held inside a
+ * store takes no timer interrupt, and IRIX's handler puts the storing
+ * thread to sleep instead. The interrupt counter and compare, which on
+ * the chip delay the interrupt by an unknown clock, are not modelled.
+ * The interrupt is raised as the store is counted, before the head the
+ * store reaches can return its credit within the same store; that only
+ * matters when the counter sits exactly at the bias.
+ */
+bool sgi_pi_gfx_take_starved(SGIPIGfx *g, unsigned int slot,
+                             const char *who)
+{
+    g_assert(slot < SGI_PI_GFX_SLOTS);
+    if (g->starved[slot] || g->credit[slot] >= g->bias[slot]) {
+        return false;
+    }
+    g->starved[slot] = true;
+    if (!g->stall_logged[slot]) {
         g->stall_logged[slot] = true;
         qemu_log_mask(LOG_UNIMP, "%s: graphics credit counter %c fell below "
-                      "its bias; the write stall and graphics interrupt "
-                      "are not modelled\n", who, 'A' + slot);
+                      "its bias; interrupt raised at once, the write stall "
+                      "and the interrupt counter are not modelled\n", who,
+                      'A' + slot);
     }
     return true;
 }
@@ -154,6 +183,7 @@ void sgi_pi_gfx_add_credits(SGIPIGfx *g, unsigned int slot, uint32_t credits,
                       SGI_PI_GFX_CREDIT_MASK);
     }
     g->credit[slot] = sum & SGI_PI_GFX_CREDIT_MASK;
+    sgi_pi_gfx_rearm(g, slot);
 }
 
 /*

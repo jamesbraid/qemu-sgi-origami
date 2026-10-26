@@ -411,11 +411,13 @@ static void test_map_matching(void)
 }
 
 /*
- * The counter wraps both ways (the model's choice); falling below the bias
- * raises no graphics interrupt; the credit mode is kept and changes no
- * count.
+ * The counter wraps both ways (the model's choice); the credit mode is
+ * kept and changes no count; and a store that takes the counter below the
+ * bias raises the processor's graphics interrupt, pending bit 1 + slot
+ * (the SN1 header's flow-control comment; whether the edge is below the
+ * bias or at it is unknown, and the model takes below).
  */
-static void test_wrap_mode_and_no_interrupt(void)
+static void test_wrap_mode_and_interrupt(void)
 {
     QTestState *qts = start(ONE_NODE);
 
@@ -432,11 +434,14 @@ static void test_wrap_mode_and_no_interrupt(void)
     head_returns(qts, 2);
     g_assert_cmphex(credit(qts, 0, 0, 0), ==, 1);
 
-    qtest_writeq(qts, reg(0, 0, PI_GFX_CREDIT(0)), 3);
-    qtest_writeq(qts, reg(0, 0, PI_GFX_BIAS(0)), 5);
-    stores(qts, 0, SLOT_A, STORE_IO, 2);
-    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 1);
     g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 0);
+    qtest_writeq(qts, reg(0, 0, PI_GFX_CREDIT(0)), 6);
+    qtest_writeq(qts, reg(0, 0, PI_GFX_BIAS(0)), 5);
+    stores(qts, 0, SLOT_A, STORE_IO, 1);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 0);
+    stores(qts, 0, SLOT_A, STORE_IO, 1);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 4);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 2);
     qtest_quit(qts);
 }
 
@@ -592,8 +597,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/pi-gfx/uncovered-stores-not-counted",
                    test_uncovered_stores_are_not_counted);
     qtest_add_func("sn1/pi-gfx/map-matching", test_map_matching);
-    qtest_add_func("sn1/pi-gfx/wrap-mode-and-no-interrupt",
-                   test_wrap_mode_and_no_interrupt);
+    qtest_add_func("sn1/pi-gfx/wrap-mode-and-interrupt",
+                   test_wrap_mode_and_interrupt);
     qtest_add_func("sn1/pi-gfx/cross-node", test_cross_node);
     qtest_add_func("sn1/pi-gfx/head-returns-only-counted-stores",
                    test_head_returns_only_counted_stores);

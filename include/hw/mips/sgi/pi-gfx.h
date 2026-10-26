@@ -57,7 +57,12 @@ typedef struct SGIPIGfx {
     uint32_t bias[SGI_PI_GFX_SLOTS];
     uint32_t int_count[SGI_PI_GFX_SLOTS];
     uint32_t int_compare[SGI_PI_GFX_SLOTS];
-    /* Host-only: the unmodelled stall has been logged for this slot. */
+    /*
+     * The slot's graphics interrupt has been raised for the counter falling
+     * below the bias, and not yet re-armed by the counter rising above it.
+     */
+    bool starved[SGI_PI_GFX_SLOTS];
+    /* Host-only: the zero-length stall has been logged for this slot. */
     bool stall_logged[SGI_PI_GFX_SLOTS];
 } SGIPIGfx;
 
@@ -80,6 +85,17 @@ void sgi_pi_gfx_write(SGIPIGfx *g, unsigned int n, uint64_t value);
  */
 bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
                             const char *who);
+
+/*
+ * After a counted store: whether the slot's graphics interrupt (first-bank
+ * pending bit 1 + slot) must be raised now. True once when the counter has
+ * fallen below the bias; the counter rising above the bias again, by
+ * returned credits or a write, re-arms it. The processor interface raises
+ * the bit. The stall that accompanies it on the chip is modelled as zero
+ * length, and the interrupt counter and compare are not modelled.
+ */
+bool sgi_pi_gfx_take_starved(SGIPIGfx *g, unsigned int slot,
+                             const char *who);
 
 /*
  * Whether the processor store now being forwarded was counted. A processor

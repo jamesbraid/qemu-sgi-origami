@@ -4748,6 +4748,11 @@ static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
      */
     counted = sgi_pi_gfx_count_store(&s->pi_gfx, path->slice, addr,
                                      "sgi-hub");
+    /* Below the bias: the slice's graphics interrupt, pending bit 1 + slot. */
+    if (counted && sgi_pi_gfx_take_starved(&s->pi_gfx, path->slice,
+                                           "sgi-hub")) {
+        sgi_hub_int_modify(s, PI_INT_MODIFY_SET | (1 + path->slice));
+    }
     stq_be_p(bytes, data);
     previous = sgi_pi_gfx_mark_store(counted);
     previous_source = sgi_pi_gfx_mark_source(sgi_hub_pio_sender(s, addr));
