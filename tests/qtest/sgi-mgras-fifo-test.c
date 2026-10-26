@@ -3196,6 +3196,58 @@ static void test_glyph_row_honours_clip_rectangle(void)
 }
 
 /*
+ * The X server draws overlay text as glyph rows in the overlay form with
+ * the colour mask at 0: the overlay index is written wherever a glyph bit
+ * is set, and the colour planes are left alone. Only the colour write is
+ * gated by the colour mask; the overlay write follows the glyph bits and
+ * the box. Rows 300 and 301 of a 16-column glyph at x 400, index 0x3.
+ */
+static void test_overlay_glyph_row_under_zero_colour_mask(void)
+{
+    static const uint32_t rows[2] = { 0xa5000000, 0x0f000000 };
+
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0x3000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (415u << 16) | 301u));
+    for (int i = 0; i < ARRAY_SIZE(rows); i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_CHAR_H, rows[i]));
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* Row 300 is 1010 0101: set bits take the index, clear ones stay 0. */
+    g_assert_cmphex(mgras_test_overlay(qts, 400, 300), ==, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 401, 300), ==, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 402, 300), ==, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 405, 300), ==, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 407, 300), ==, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 408, 300), ==, 0);
+    /* Row 301 is 0000 1111. */
+    g_assert_cmphex(mgras_test_overlay(qts, 403, 301), ==, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 404, 301), ==, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 407, 301), ==, 0x3);
+    /* The zero colour mask leaves the colour planes untouched. */
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 300), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 404, 301), ==, 0);
+}
+
+/*
  * The box is in screen coordinates: a line placed by XYWIN is clipped
  * where it lands, not where its raw coordinates point. The desktop session
  * this came from drew 3,617 clipped window-relative lines that meet their
@@ -4036,6 +4088,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/glyph-row-honours-clip-rectangle",
         test_glyph_row_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/overlay-glyph-row-under-zero-colour-mask",
+        test_overlay_glyph_row_under_zero_colour_mask, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/re-line-clip-follows-xywin-origin",
         test_re_line_clip_follows_xywin_origin, true);
