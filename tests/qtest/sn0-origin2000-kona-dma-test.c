@@ -1004,6 +1004,7 @@ static void test_list_nested_and_poolless_refused(void)
 #define LIST_SLICE_WORDS 4
 #define REG_CREDIT       KONA_REG(0x800208)
 #define REG_ACTIVITY     KONA_REG(0x8003a8)
+#define REG_WIDGET_CONTROL KONA_REG(0x24)
 #define ACTIVITY_BUS     0x4u
 #define SYNC_ANSWER      0x1234abcdu
 
@@ -1085,10 +1086,16 @@ static void test_list_runs_in_slices(void)
     kona_list_check_finished();
 }
 
-/* Any other read finishes the work first. */
+/*
+ * The credit register reads as a full FIFO while work waits, without
+ * waiting for it; any other read finishes the work first.
+ */
 static void test_list_read_waits_for_slices(void)
 {
     kona_list_invoke_then_probe();
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0x7fe);
+    g_assert_true(kona_work_pending(qts));
+    qtest_readl(qts, REG_WIDGET_CONTROL);
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
     kona_list_check_finished();
 }

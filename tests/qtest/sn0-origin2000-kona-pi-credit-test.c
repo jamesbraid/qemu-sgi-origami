@@ -504,6 +504,118 @@ static void test_settled_credits_return_through_the_storing_hub(void)
     qtest_quit(qts);
 }
 
+/*
+ * A store that waits behind display-list work keeps its credit until the
+ * work takes it, as the board frees a FIFO slot only then: the driver's
+ * credits bound the backlog. Meanwhile the credit register reads as a full
+ * FIFO without waiting for the work, so the driver's flow-control handler
+ * puts the storing thread to sleep rather than spinning; and once the work
+ * is done, the low-watermark cause the handler enabled is raised, which
+ * wakes the thread. The list loads one colour-map entry 600 times, one
+ * word a slice, then answers the sync probe.
+ */
+#define LONG_LIST_LOADS 600
+#define REG_DESKSIDE(o) (SPACE_IO + NODE_STRIDE + \
+                         (uint64_t)DESKSIDE_WIDGET * SMALL_WINDOW_SIZE + (o))
+
+static void queued_stores(bool parked)
+{
+    g_autofree uint32_t *list = g_new(uint32_t, LONG_LIST_LOADS * 6);
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    SgiWait w;
+
+    for (unsigned i = 0; i < LONG_LIST_LOADS; i++) {
+        memcpy(list + 6 * i, (uint32_t[]) {
+            1, 0x3, 5, 0x11 << 2, 0x22 << 2, 0x33 << 2,
+        }, 6 * sizeof(uint32_t));
+    }
+    build_store_server(image, true);
+    path = sn0_image_write(image, "sn0-kona-pi-credit-queued");
+    qts = qtest_initf("%s-bios %s", DESKSIDE_ARGS, path);
+    unlink(path);
+
+    sn0_program_nasid(qts, 1);
+    qtest_writeq(qts, MAILBOX + 32,
+                 qtest_readq(qts, HUB_SLOT_ID) & SLOT_ID_MASK);
+    qtest_writeq(qts, HUB + PI_GFX_PAGE(0),
+                 PI_GFX_PAGE_ENABLE | DESKSIDE_PAGE);
+    qtest_writeq(qts, HUB + PI_GFX_CREDIT(0), TOTAL);
+    qtest_writeq(qts, NODE1_HUB + IO_GFX_INIT(0),
+                 MAP(0, 0, DESKSIDE_WIDGET));
+    for (unsigned i = 0; i < LONG_LIST_LOADS * 6; i++) {
+        uint8_t bytes[4];
+
+        stl_be_p(bytes, list[i]);
+        qtest_memwrite(qts, POOL_BASE + 4 * i, bytes, sizeof(bytes));
+    }
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': 1}}", DESKSIDE_QOM_PATH);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    store(qts, DESKSIDE_KONA_IO(0x100000 + 4 * (POOL_BASE >> 14)),
+          0x20000000 | (uint32_t)(POOL_BASE >> 12), 4);
+    store(qts, DESKSIDE_KONA_IO(0x800230), 2, 4);
+    store(qts, DESKSIDE_COMMAND_IO, DMA_POOL, 4);
+    store(qts, DESKSIDE_COMMAND_IO, (uint32_t)(POOL_BASE >> 12), 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0x9000 | (uint32_t)(POOL_BASE & 0xfff), 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0x4000, 4);
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+
+    if (parked) {
+        store(qts, DESKSIDE_KONA_IO(0x7c), 1, 4);
+    }
+    store(qts, DESKSIDE_COMMAND_IO, LIST_CALL_POOL, 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0, 4);
+    store(qts, DESKSIDE_COMMAND_IO, LONG_LIST_LOADS * 6, 4);
+    store(qts, DESKSIDE_COMMAND_IO, 1, 4);
+    store(qts, DESKSIDE_COMMAND_IO, 9, 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0, 4);
+    g_assert_true(kona_work_pending(qts));
+    /*
+     * The probe's three stores wait with their credits; parked, the list
+     * call's three, which the pipe took, are held too.
+     */
+    g_assert_cmpuint(credit(qts), ==, TOTAL - (parked ? 6 : 3));
+    g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800208)), ==, 0x7fe);
+    g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800238)) & 2, ==, 0);
+
+    sgi_wait_start(&w, "display list work");
+    while (kona_work_pending(qts)) {
+        sgi_wait_pause(&w, 1000);
+    }
+    if (parked) {
+        /* Freed while parked: held until the target is restored. */
+        g_assert_cmpuint(credit(qts), ==, TOTAL - 6);
+        store(qts, DESKSIDE_KONA_IO(0x7c), 0x22, 4);
+    }
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800208)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800238)) & 0x12, ==,
+                    0x12);
+    g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800240)), ==, 0x1234abcd);
+    qtest_quit(qts);
+}
+
+static void test_queued_stores_hold_their_credits(void)
+{
+    queued_stores(false);
+}
+
+/*
+ * The driver parks the pipe's credit target (+0x7c, 1) before it detaches
+ * a thread's flow and restores it (0x22) after attaching again. Credits
+ * the work frees in between come back once it is restored, after the
+ * counter the driver saved: dropping them left IRIX's count short of its
+ * total, and it killed the pipe (death reason 25).
+ */
+static void test_parked_target_holds_credits(void)
+{
+    queued_stores(true);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -525,6 +637,10 @@ int main(int argc, char **argv)
                    test_straddling_stores_return_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/owed-credits-migrate",
                    test_owed_credits_migrate);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/queued-stores-hold-credits",
+                   test_queued_stores_hold_their_credits);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/parked-target-holds-credits",
+                   test_parked_target_holds_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/settle-storing-hub",
                    test_settled_credits_return_through_the_storing_hub);
     qtest_add_func("sn0/origin2000/kona-pi-credit/storing-hub",
