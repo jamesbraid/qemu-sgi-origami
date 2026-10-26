@@ -457,6 +457,44 @@ typedef struct SGIKonaGLIrisRule {
     bool colour_last;
 } SGIKonaGLIrisRule;
 
+typedef struct SGIKonaTextureUpload {
+    uint32_t header[20];
+    bool draw_pixels;
+    uint32_t draw_context;
+    uint32_t count;
+    uint32_t source_stride;
+    uint32_t *pixels;
+    bool complete;
+    bool swap_bytes; /* captured when the native header arrives */
+    bool transfer_captured;
+    SGIKonaGLPixelTransfer transfer;
+    bool pio_layout;
+    uint32_t pio_phase;
+    bool dma_layout;
+    uint32_t dma_phase;
+    bool bitmap_lsb;
+    uint32_t bitmap_skip, bitmap_phase;
+} SGIKonaTextureUpload;
+
+/*
+ * A context's texture binding words as the pipe last held them for it: the
+ * bind (0x106/0x1d5, or 0x178's handle), its record (0x179 and the volume
+ * forms) and the texture transform. See sgi_kona_texture_regs_switch().
+ */
+typedef struct SGIKonaTextureRegs {
+    uint32_t bind[5];
+    uint32_t record[22];
+    uint32_t record_token;
+    uint32_t transform[8];
+    bool bind_valid;
+    bool record_valid;
+    /* A bind still waiting for its record (texture_bind_context). */
+    bool bind_pending;
+    /* An association that record would commit (texture_associate_*). */
+    bool associate_pending;
+    uint8_t associate_slot;
+} SGIKonaTextureRegs;
+
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
 typedef struct SGIKonaGLState {
@@ -470,6 +508,15 @@ typedef struct SGIKonaGLState {
     SGIKonaGLPixelZoom zoom_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLPixelTransfer transfer_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t attrib_mask[SGI_KONA_GL_ATTRIB_DEPTH];
+    /*
+     * A texture load this context made but has not yet published with
+     * 0x176, set aside while another context is current (see
+     * sgi_kona_texture_upload_switch()).
+     */
+    SGIKonaTextureUpload parked_upload;
+    /* This context's texture binding words while another is current. */
+    SGIKonaTextureRegs texture_regs;
+    bool texture_regs_saved;
 } SGIKonaGLState;
 
 typedef struct SGIKonaPendingSwap {
@@ -907,25 +954,6 @@ typedef struct SGIKonaChannelHook {
  */
 #define SGI_KONA_LIST_DEFAULT    (15 * MiB)
 #define SGI_KONA_LIST_MAX        (64 * MiB)
-
-typedef struct SGIKonaTextureUpload {
-    uint32_t header[20];
-    bool draw_pixels;
-    uint32_t draw_context;
-    uint32_t count;
-    uint32_t source_stride;
-    uint32_t *pixels;
-    bool complete;
-    bool swap_bytes; /* captured when the native header arrives */
-    bool transfer_captured;
-    SGIKonaGLPixelTransfer transfer;
-    bool pio_layout;
-    uint32_t pio_phase;
-    bool dma_layout;
-    uint32_t dma_phase;
-    bool bitmap_lsb;
-    uint32_t bitmap_skip, bitmap_phase;
-} SGIKonaTextureUpload;
 
 typedef struct SGIKonaGLImageUpload {
     uint32_t header[9];
@@ -1373,6 +1401,10 @@ struct SGIKonaState {
      * completes (see sgi_kona_texture_dma_discard()).
      */
     bool texture_dma_discard;
+    /* The context whose texture load texture_upload holds, or NONE. */
+    int32_t texture_upload_context;
+    /* The context whose binding words texture_bind and the rest hold. */
+    int32_t texture_regs_context;
     uint32_t texture_retire_handle;
     /*
      * A video command (SGI_KONA_CMD_VIDEO) still collecting its data words

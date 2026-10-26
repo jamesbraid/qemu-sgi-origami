@@ -67,6 +67,7 @@ typedef struct SGIKonaTextureNativeImage {
 
 typedef struct SGIKonaTextureObject {
     uint32_t handle, count;
+    uint32_t owner;             /* the context whose handle this is */
     SGIKonaTextureParams params;
     SGIKonaTextureLevel levels[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexLevel view[SGI_GL_TEX_LEVELS_MAX];
@@ -98,11 +99,23 @@ typedef struct SGIKonaTextureObject {
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
 } SGIKonaTextureObject;
 
+/*
+ * Texture handles are a context's own: the client library numbers its
+ * textures from 0 in each context, and places them in that context's own
+ * texture-memory region. Objects are therefore kept per owner, the
+ * context sgi_kona_texture_set_owner() last named (0 for none, k + 1 for
+ * context table entry k), and each owner keeps its own binding.
+ */
+#define SGI_KONA_TEXTURE_OWNERS 66
+
 typedef struct SGIKonaTextureState {
     /* SGI_KONA_TEXTURE_BUDGET of the pipe's texture memory; not migrated. */
     uint64_t budget;
     bool bound;
     uint32_t bound_handle;
+    uint32_t owner;
+    bool owner_bound[SGI_KONA_TEXTURE_OWNERS];
+    uint32_t owner_bound_handle[SGI_KONA_TEXTURE_OWNERS];
     uint64_t bytes;
     GHashTable *objects;
     GHashTable *filter_curves;
@@ -115,6 +128,13 @@ void sgi_kona_texture_init(SGIKonaTextureState *s);
 void sgi_kona_texture_set_memory(SGIKonaTextureState *s, uint64_t memory);
 void sgi_kona_texture_reset(SGIKonaTextureState *s);
 void sgi_kona_texture_cleanup(SGIKonaTextureState *s);
+/* Make `owner` the context whose handles and binding the calls below use. */
+void sgi_kona_texture_set_owner(SGIKonaTextureState *s, uint32_t owner);
+/* Drop every object `owner` holds, as when its context entry is reused. */
+void sgi_kona_texture_drop_owner(SGIKonaTextureState *s, uint32_t owner);
+/* `owner`'s object for `handle`, or NULL. */
+SGIKonaTextureObject *sgi_kona_texture_lookup(SGIKonaTextureState *s,
+                                              uint32_t owner, uint32_t handle);
 void sgi_kona_texture_defaults(SGIKonaTextureParams *p);
 /*
  * A complete normalized image replaces one level transactionally.
