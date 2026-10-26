@@ -47,6 +47,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 /* The logical MSC endpoint. */
 #define SGI_O2000_MSC_ADDRESS       0x08
 
+/* The module's UST control port, the address the stock PROM uses. */
+#define SGI_O2000_UST_CONTROL_ADDR  0x20
+
 struct SN0ModuleManagementState {
     DeviceState parent_obj;
 

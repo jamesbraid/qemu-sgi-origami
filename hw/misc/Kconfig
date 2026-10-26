@@ -292,6 +292,7 @@ config SGI_ELSC
 config SGI_O2000_MODULE_MGMT
     bool
     select SGI_ELSC_NVRAM
+    select PCF8574
     select PCF8584
     select SGI_BOARD_RECORD
     select SGI_ELSC
