@@ -94,7 +94,11 @@ static void test_wrap(void)
     g_assert_cmphex(g.credit[1], ==, 1);
 }
 
-static void test_stall_logged_once(void)
+/*
+ * Below the bias the slot's graphics interrupt is due once; the counter
+ * rising above the bias re-arms it. The zero-length stall is logged once.
+ */
+static void test_starved_once(void)
 {
     SGIPIGfx g;
 
@@ -104,10 +108,23 @@ static void test_stall_logged_once(void)
     sgi_pi_gfx_write(&g, REG(0, SGI_PI_GFX_CREDIT), 3);
     sgi_pi_gfx_write(&g, REG(0, SGI_PI_GFX_BIAS), 2);
     g_assert_true(sgi_pi_gfx_count_store(&g, 0, PAGE, "test"));
-    g_assert_false(g.stall_logged[0]);
+    g_assert_false(sgi_pi_gfx_take_starved(&g, 0, "test"));
     g_assert_true(sgi_pi_gfx_count_store(&g, 0, PAGE, "test"));
+    g_assert_true(sgi_pi_gfx_take_starved(&g, 0, "test"));
     g_assert_true(g.stall_logged[0]);
+    g_assert_false(sgi_pi_gfx_take_starved(&g, 0, "test"));
     g_assert_false(g.stall_logged[1]);
+    /* Back to the bias is not above it. */
+    sgi_pi_gfx_add_credits(&g, 0, 1, "test");
+    g_assert_true(sgi_pi_gfx_count_store(&g, 0, PAGE, "test"));
+    g_assert_false(sgi_pi_gfx_take_starved(&g, 0, "test"));
+    sgi_pi_gfx_add_credits(&g, 0, 2, "test");
+    g_assert_true(sgi_pi_gfx_count_store(&g, 0, PAGE, "test"));
+    g_assert_true(sgi_pi_gfx_count_store(&g, 0, PAGE, "test"));
+    g_assert_true(sgi_pi_gfx_take_starved(&g, 0, "test"));
+    /* A written count above the bias re-arms it too. */
+    sgi_pi_gfx_write(&g, REG(0, SGI_PI_GFX_CREDIT), 9);
+    g_assert_false(g.starved[0]);
     sgi_pi_gfx_reset(&g);
     g_assert_false(g.stall_logged[0]);
 }
@@ -192,7 +209,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-pi-gfx/widths", test_widths);
     g_test_add_func("/sgi-pi-gfx/count-and-return", test_count_and_return);
     g_test_add_func("/sgi-pi-gfx/wrap", test_wrap);
-    g_test_add_func("/sgi-pi-gfx/stall-logged-once", test_stall_logged_once);
+    g_test_add_func("/sgi-pi-gfx/starved-once", test_starved_once);
     g_test_add_func("/sgi-pi-gfx/store-mark", test_store_mark);
     g_test_add_func("/sgi-pi-gfx/store-mark-is-one-shot",
                     test_store_mark_is_one_shot);

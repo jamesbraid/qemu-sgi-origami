@@ -27,6 +27,7 @@
 #define PI_GFX_BIAS(s)      (0x310 + 0x28 * (s))
 #define IO_GFX_INIT(n)      (0x400140 + 8 * (n))
 #define PI_GFX_PAGE_ENABLE  (1ULL << 40)
+#define PI_INT_MODIFY       0x000090
 
 /* The local Hub's I/O-interface scratch 0, through the uncached I/O space. */
 #define STORE_IO            UINT64_C(0x9200000001400150)
@@ -280,10 +281,14 @@ static void test_map_matching(const void *d)
 }
 
 /*
- * The counter wraps both ways (the model's choice), and falling below the
- * bias raises no graphics interrupt: the trigger is unknown and unmodelled.
+ * The counter wraps both ways (the model's choice). A store that takes the
+ * counter below the bias raises the slot's graphics interrupt, first-bank
+ * pending bit 1 + slot (inferred for SN0 from the SN1 header; the edge,
+ * below or at the bias, is unknown, and the model takes below). It is
+ * raised once: further stores below the bias leave it to the kernel's
+ * handler, and the counter must rise above the bias to re-arm it.
  */
-static void test_wrap_and_no_interrupt(const void *d)
+static void test_wrap_and_interrupt_below_bias(const void *d)
 {
     QTestState *qts = start(ONE_NODE);
 
@@ -295,12 +300,26 @@ static void test_wrap_and_no_interrupt(const void *d)
     g_assert_cmphex(credit(qts, 0, 0), ==, 0xfff);
     head_returns(qts, 2);
     g_assert_cmphex(credit(qts, 0, 0), ==, 1);
-
-    qtest_writeq(qts, hub(0, PI_GFX_CREDIT(0)), 3);
-    qtest_writeq(qts, hub(0, PI_GFX_BIAS(0)), 5);
-    stores(qts, 0, 0, STORE_IO, 2);
-    g_assert_cmpuint(credit(qts, 0, 0), ==, 1);
     g_assert_cmphex(qtest_readq(qts, hub(0, PI_INT_PEND0)) & 6, ==, 0);
+
+    qtest_writeq(qts, hub(0, PI_GFX_CREDIT(0)), 6);
+    qtest_writeq(qts, hub(0, PI_GFX_BIAS(0)), 5);
+    stores(qts, 0, 0, STORE_IO, 1);
+    g_assert_cmphex(qtest_readq(qts, hub(0, PI_INT_PEND0)) & 6, ==, 0);
+    stores(qts, 0, 0, STORE_IO, 1);
+    g_assert_cmpuint(credit(qts, 0, 0), ==, 4);
+    g_assert_cmphex(qtest_readq(qts, hub(0, PI_INT_PEND0)) & 6, ==, 2);
+
+    /* Cleared by software; more stores below the bias do not raise it. */
+    qtest_writeq(qts, hub(0, PI_INT_MODIFY), 1);
+    stores(qts, 0, 0, STORE_IO, 1);
+    g_assert_cmphex(qtest_readq(qts, hub(0, PI_INT_PEND0)) & 6, ==, 0);
+
+    /* Back above the bias and below it again: raised again. */
+    head_returns(qts, 3);
+    g_assert_cmpuint(credit(qts, 0, 0), ==, 6);
+    stores(qts, 0, 0, STORE_IO, 2);
+    g_assert_cmphex(qtest_readq(qts, hub(0, PI_INT_PEND0)) & 6, ==, 2);
     qtest_quit(qts);
 }
 
@@ -410,8 +429,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/pi-gfx/uncovered-stores-not-counted", NULL,
                         test_uncovered_stores_are_not_counted);
     qtest_add_data_func("sn0/pi-gfx/map-matching", NULL, test_map_matching);
-    qtest_add_data_func("sn0/pi-gfx/wrap-and-no-interrupt", NULL,
-                        test_wrap_and_no_interrupt);
+    qtest_add_data_func("sn0/pi-gfx/wrap-and-interrupt-below-bias", NULL,
+                        test_wrap_and_interrupt_below_bias);
     qtest_add_data_func("sn0/pi-gfx/cross-node", NULL, test_cross_node);
     qtest_add_data_func("sn0/pi-gfx/head-returns-only-counted-stores", NULL,
                         test_head_returns_only_counted_stores);

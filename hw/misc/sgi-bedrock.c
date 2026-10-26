@@ -1173,6 +1173,14 @@ static MemTxResult bedrock_pi_io_write(void *opaque, hwaddr addr,
     counted = sgi_pi_gfx_count_store(
         &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
         path->slot % SGI_BEDROCK_PI_PROCESSORS, addr, "sgi-bedrock");
+    /* Below the bias: the processor's graphics interrupt, bit 1 + slot. */
+    if (counted && sgi_pi_gfx_take_starved(
+            &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
+            path->slot % SGI_BEDROCK_PI_PROCESSORS, "sgi-bedrock")) {
+        sgi_bedrock_pi_set_pending(
+            &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS], 0,
+            1 + path->slot % SGI_BEDROCK_PI_PROCESSORS);
+    }
     stq_be_p(bytes, data);
     /* Marked, so a head returns credit only for a counted store. */
     previous = sgi_pi_gfx_mark_store(counted);

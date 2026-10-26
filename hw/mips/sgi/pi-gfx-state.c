@@ -22,6 +22,30 @@ static int sgi_pi_gfx_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool sgi_pi_gfx_starved_needed(void *opaque)
+{
+    const SGIPIGfx *g = opaque;
+
+    for (unsigned int i = 0; i < SGI_PI_GFX_SLOTS; i++) {
+        if (g->starved[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Only while a slot's graphics interrupt waits to be re-armed. */
+static const VMStateDescription vmstate_sgi_pi_gfx_starved = {
+    .name = "sgi-pi-gfx/starved",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_pi_gfx_starved_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_ARRAY(starved, SGIPIGfx, SGI_PI_GFX_SLOTS),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* The stall log flag is host-only and starts clear on the destination. */
 const VMStateDescription vmstate_sgi_pi_gfx = {
     .name = "sgi-pi-gfx",
@@ -35,6 +59,10 @@ const VMStateDescription vmstate_sgi_pi_gfx = {
         VMSTATE_UINT32_ARRAY(int_count, SGIPIGfx, SGI_PI_GFX_SLOTS),
         VMSTATE_UINT32_ARRAY(int_compare, SGIPIGfx, SGI_PI_GFX_SLOTS),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_pi_gfx_starved,
+        NULL
     },
 };
 
