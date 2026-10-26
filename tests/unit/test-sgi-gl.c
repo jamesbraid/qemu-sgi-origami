@@ -105,7 +105,6 @@ static const SGIRasterRules rules_supported = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .evidence = "test",
 };
 
 /* A context drawing into the whole of plane 0, smooth shaded. */
@@ -4300,7 +4299,6 @@ static const SGIRasterRules rules_stencil = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .evidence = "test",
 };
 
 /*
@@ -7700,7 +7698,6 @@ static const SGIRasterRules rules_dither = {
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .dither = SGI_DITHER_BAYER4_TOP_ROWS,
     .dither_anchor = SGI_DITHER_SCREEN,
-    .evidence = "test",
 };
 
 /* The 4x4 Bayer thresholds, in sixteenths, the top row first. */

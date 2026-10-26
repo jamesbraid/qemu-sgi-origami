@@ -345,7 +345,6 @@ static const SGIRasterRules native_rules = {
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-    .evidence = "model",
 };
 
 static void test_native_mesa_clip_scissor(void)
@@ -645,7 +644,6 @@ static void native_rows_compare(const SGIGLDrawState *in,
         .rounding = SGI_ROUND_HALF_AWAY,
         .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
         .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
-        .evidence = "synthetic",
     };
     SGIGLDrawState state = *in;
     float vertices[3][SGI_GL_VERTEX_FLOATS];

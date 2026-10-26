@@ -2,75 +2,65 @@
 /*
  * InfiniteReality OpenGL doorbell selector table.
  * Maintain these entries alongside tests/unit/test-sgi-kona-gl-decode.c,
- * which checks layout status, argument counts, and known literal values.
+ * which checks unresolved layouts, argument counts, and known literal
+ * values.
  */
 
 static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
         .selector = 0x72,
         .call = "glIndexd",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 2,
     },
     {
         .selector = 0x73,
         .call = "glIndexf",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
     },
     {
         .selector = 0x74,
         .call = "glIndexi",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
     },
     {
         /* The short and unsigned-byte senders share this framing. */
         .selector = 0x75,
         .call = "glIndexs or glIndexub",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
     },
     {
         .selector = 0x34,
         .call = "float pixel map header",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
         .selector = 0x35,
         .call = "unsigned integer pixel map header",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
         .selector = 0x36,
         .call = "unsigned short pixel map header",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
         .selector = 0x17b,
         .call = "volume mipmap binding",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 14,
     },
     {
         .selector = 0x17c,
         .call = "volume image binding",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
         .selector = 0x179,
         .call = "texture sampler record",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 22,
     },
     {
         .selector = 0x17d,
         .call = "texture detail binding",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 6,
     },
     {
@@ -82,7 +72,7 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x0,
         .call = "glBegin",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
+        .unresolved = true,
         .argc = 0,
     },
     {
@@ -91,7 +81,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1a,
         .call = "glClear",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 1,
     },
     {
@@ -100,7 +89,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1b,
         .call = "glClearAccum",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 4,
     },
     {
@@ -109,7 +97,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1c,
         .call = "glClearIndex",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 1,
     },
     {
@@ -118,7 +105,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1d,
         .call = "glClearColor",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 4,
     },
     {
@@ -127,7 +113,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1e,
         .call = "glClearStencil",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 1,
     },
     {
@@ -138,19 +123,17 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1f,
         .call = "glClearDepth",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
+        .unresolved = true,
         .argc = 0,
     },
     {
         .selector = 0x38,
         .call = "glCopyPixels",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 7,
     },
     {
         .selector = 0x39,
         .call = "glReadPixels",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 7,
     },
     {
@@ -160,7 +143,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x71,
         .call = "glEnd",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
         .num_arg0_values = 1,
         .arg0_values = { 0x0 },
@@ -172,7 +154,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x8c,
         .call = "glVertex2f",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 2,
     },
     {
@@ -182,7 +163,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x90,
         .call = "glVertex3f",
-        .evidence = SGI_KONA_GL_LAYOUT_INFERRED,
         .argc = 3,
     },
     {
@@ -192,7 +172,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0xc6,
         .call = "glFinish, glXSwapBuffers",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
         .num_arg0_values = 2,
         .arg0_values = { 0x0, 0x1 },
@@ -204,7 +183,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0xc7,
         .call = "glFlush",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
         .num_arg0_values = 1,
         .arg0_values = { 0x0 },
@@ -212,13 +190,11 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
         .selector = 0x110,
         .call = "pixel copy overlap query",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
         .selector = 0x115,
         .call = "pixel copy convolution query",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
@@ -227,7 +203,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x116,
         .call = "glReadPixels readback",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 4,
     },
     {
@@ -238,7 +213,7 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x119,
         .call = "context resolve",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
+        .unresolved = true,
         .argc = 0,
     },
     {
@@ -248,7 +223,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1ca,
         .call = "context resolve",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
         .num_arg0_values = 1,
         .arg0_values = { 0x0 },
@@ -260,7 +234,6 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1cc,
         .call = "glFlushRasterSGIX",
-        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
         .argc = 1,
         .num_arg0_values = 1,
         .arg0_values = { 0x0 },
@@ -273,7 +246,7 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x1d6,
         .call = "context resolve",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
+        .unresolved = true,
         .argc = 0,
     },
     {
@@ -284,7 +257,7 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
          */
         .selector = 0x500,
         .call = "glBegin",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
+        .unresolved = true,
         .argc = 0,
     },
 };

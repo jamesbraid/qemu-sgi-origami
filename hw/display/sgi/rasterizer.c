@@ -309,9 +309,8 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
 static bool sgi_soft_check_rules(const SGIRasterRules *r)
 {
     if (!sgi_raster_rules_supported(r)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: raster rules (%s) are not "
-                      "implemented; nothing drawn\n",
-                      r->evidence ? r->evidence : "unlabelled");
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: raster rules are not "
+                      "implemented; nothing drawn\n");
         return false;
     }
     return true;

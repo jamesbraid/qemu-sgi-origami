@@ -49,7 +49,6 @@ static uint32_t add_plane(Fixture *f, uint64_t *base, SGIPlaneFormat format,
         .format = format,
         .packing = packing,
         .bottom_origin = true,
-        .evidence = "unit fixture",
     };
     uint32_t id = sgi_board_memory_add_plane(&f->memory, &plane,
                                               &error_abort);

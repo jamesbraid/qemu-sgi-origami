@@ -11,8 +11,8 @@
 
 /*
  * The rules a head's rasterizer follows where OpenGL leaves a choice or a
- * head departs from it. Each head gives one set, every value labelled
- * with its evidence; the rasterizer holds no head's name.
+ * head departs from it. Each head gives one set; the rasterizer holds no
+ * head's name.
  */
 
 /* How a window coordinate or depth is rounded to its grid. */
@@ -135,8 +135,6 @@ typedef struct SGIRasterRules {
     uint8_t line_rule;          /* SGILineRule */
     uint8_t dither;             /* SGIDither */
     uint8_t dither_anchor;      /* SGIDitherAnchor */
-    /* Where the values come from, for logs and reports. */
-    const char *evidence;
     uint8_t alpha_bits;         /* stored A width, zero means no alpha */
     uint8_t alpha_test_bits; /* Zero derives precision from color/alpha bits. */
     /*

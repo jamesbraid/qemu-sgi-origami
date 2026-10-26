@@ -10,45 +10,45 @@
 
 typedef struct Expected {
     uint32_t selector;
-    SGIKonaGLLayoutEvidence evidence;
+    bool unresolved;
     unsigned argc;
     uint32_t arg0;      /* a value the decoder must accept for argument 0 */
 } Expected;
 
 static const Expected subset[] = {
-    { 0x72, SGI_KONA_GL_LAYOUT_ESTABLISHED, 2, 0x40723c00 },
-    { 0x73, SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0x4391e000 },
-    { 0x74, SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 291 },
-    { 0x75, SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0x12000000 },
-    { 0x34, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
-    { 0x35, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
-    { 0x36, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
-    { 0x17b, SGI_KONA_GL_LAYOUT_ESTABLISHED, 14, 0 },
-    { 0x17c, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },
-    { 0x179, SGI_KONA_GL_LAYOUT_ESTABLISHED, 22, 0 },
-    { 0x17d, SGI_KONA_GL_LAYOUT_ESTABLISHED, 6, 0 },
-    { 0x0,   SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glBegin */
-    { 0x1a,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0x4100 }, /* glClear */
-    { 0x1b,  SGI_KONA_GL_LAYOUT_INFERRED,    4, 0 },     /* glClearAccum */
-    { 0x1c,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0 },     /* glClearIndex */
-    { 0x1d,  SGI_KONA_GL_LAYOUT_INFERRED,    4, 0x3f800000 },
-    { 0x1e,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0 },     /* glClearStencil */
-    { 0x1f,  SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glClearDepth */
-    { 0x38,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 7, 0 },     /* glCopyPixels */
-    { 0x39,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 7, 0 },     /* glReadPixels */
-    { 0x71,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0 },     /* glEnd */
-    { 0x8c,  SGI_KONA_GL_LAYOUT_INFERRED,    2, 0 },     /* glVertex2f */
-    { 0x90,  SGI_KONA_GL_LAYOUT_INFERRED,    3, 0 },     /* glVertex3f */
-    { 0x110, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },
-    { 0x115, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },
-    { 0x116, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },     /* readback */
-    { 0x119, SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },
-    { 0x1ca, SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0 },
-    { 0x1cc, SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0 },     /* FlushRaster */
-    { 0x1d6, SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },
-    { 0x500, SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },
-    { 0xc6,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 1 },     /* glFinish */
-    { 0xc7,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0 },     /* glFlush */
+    { 0x72, false, 2, 0x40723c00 },
+    { 0x73, false, 1, 0x4391e000 },
+    { 0x74, false, 1, 291 },
+    { 0x75, false, 1, 0x12000000 },
+    { 0x34, false, 4, 0xc71 },
+    { 0x35, false, 4, 0xc71 },
+    { 0x36, false, 4, 0xc71 },
+    { 0x17b, false, 14, 0 },
+    { 0x17c, false, 4, 0 },
+    { 0x179, false, 22, 0 },
+    { 0x17d, false, 6, 0 },
+    { 0x0,   true,  0, 0 },     /* glBegin */
+    { 0x1a,  false, 1, 0x4100 }, /* glClear */
+    { 0x1b,  false, 4, 0 },     /* glClearAccum */
+    { 0x1c,  false, 1, 0 },     /* glClearIndex */
+    { 0x1d,  false, 4, 0x3f800000 },
+    { 0x1e,  false, 1, 0 },     /* glClearStencil */
+    { 0x1f,  true,  0, 0 },     /* glClearDepth */
+    { 0x38,  false, 7, 0 },     /* glCopyPixels */
+    { 0x39,  false, 7, 0 },     /* glReadPixels */
+    { 0x71,  false, 1, 0 },     /* glEnd */
+    { 0x8c,  false, 2, 0 },     /* glVertex2f */
+    { 0x90,  false, 3, 0 },     /* glVertex3f */
+    { 0x110, false, 4, 0 },
+    { 0x115, false, 4, 0 },
+    { 0x116, false, 4, 0 },     /* readback */
+    { 0x119, true,  0, 0 },
+    { 0x1ca, false, 1, 0 },
+    { 0x1cc, false, 1, 0 },     /* FlushRaster */
+    { 0x1d6, true,  0, 0 },
+    { 0x500, true,  0, 0 },
+    { 0xc6,  false, 1, 1 },     /* glFinish */
+    { 0xc7,  false, 1, 0 },     /* glFlush */
 };
 
 static void test_table_is_the_subset(void)
@@ -71,7 +71,7 @@ static void test_table_is_the_subset(void)
             subset[i].selector);
 
         g_assert_nonnull(info);
-        g_assert_cmpint(info->evidence, ==, subset[i].evidence);
+        g_assert_cmpint(info->unresolved, ==, subset[i].unresolved);
         g_assert_cmpuint(info->argc, ==, subset[i].argc);
     }
 }
@@ -95,7 +95,7 @@ static void test_each_subset_selector(void)
                                SGI_KONA_GL_LENGTH_UNDECLARED, &cmd);
         g_assert_cmphex(cmd.selector, ==, e->selector);
         g_assert_nonnull(cmd.info);
-        if (e->evidence == SGI_KONA_GL_LAYOUT_UNRESOLVED) {
+        if (e->unresolved) {
             g_assert_cmpint(r, ==, SGI_KONA_GL_DECODE_UNRESOLVED_LAYOUT);
             g_assert_cmpuint(cmd.length, ==, 1);
             continue;

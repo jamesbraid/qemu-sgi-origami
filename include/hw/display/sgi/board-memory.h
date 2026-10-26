@@ -68,7 +68,6 @@ typedef struct SGIPlane {
     SGIPlaneFormat format;
     SGIPacking packing;         /* what the model writes, labelled */
     bool bottom_origin;         /* plane row 0 is the bottom display line */
-    const char *evidence;       /* where the layout comes from */
 } SGIPlane;
 
 typedef struct SGIBoardPage {

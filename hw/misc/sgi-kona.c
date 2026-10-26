@@ -4287,9 +4287,6 @@ static const SGIRasterRules sgi_kona_gl_rules = {
     .dither_anchor = SGI_DITHER_SCREEN,
     .smooth_primitives = true,
     .smooth_rule = SGI_SMOOTH_AREA,
-    .evidence = "chosen, pending capture: the shared rasterizer's first "
-                "implemented set, eight bits a channel for the model's "
-                "planes, no dither, area coverage for smoothing",
 };
 
 /*
@@ -7610,7 +7607,6 @@ static bool sgi_kona_accum_ready(SGIKonaState *s)
             .stride = SGI_KONA_FB_WIDTH * 4,
             .format = SGI_PLANE_RAW,
             .packing = SGI_PACK_BE_RED_LOW,
-            .evidence = "model: accumulation component as float bits",
         };
 
         if (sgi_board_memory_add_plane(m, &p, NULL) == SGI_PLANE_NONE) {
@@ -17390,9 +17386,6 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
         .format = SGI_PLANE_RGB24,
         .packing = SGI_PACK_LE_RED_HIGH,
         .bottom_origin = true,
-        .evidence = "model's choice: the one mode it presents, "
-                    "little-endian x8r8g8b8; no capture of the pipe's "
-                    "pixel layout",
     };
     const SGIPlane tag = {
         .len = pixels,
@@ -17402,8 +17395,6 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
         .format = SGI_PLANE_TAG,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
-        .evidence = "model's choice: colour-map index or direct RGB per "
-                    "pixel",
     };
     const SGIPlane list = {
         .len = s->list_memory_size,
@@ -17412,8 +17403,6 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
         .stride = SGI_KONA_LIST_ROW_BYTES,
         .format = SGI_PLANE_RAW,
         .packing = SGI_PACK_BE_RED_LOW,
-        .evidence = "model's choice: words of resident display lists; "
-                    "size not held from any capture",
     };
     /*
      * One depth buffer for the screen, as GL gives a window one shared by
@@ -17428,8 +17417,6 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
         .format = SGI_PLANE_Z24,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
-        .evidence = "model's choice: one 24-bit depth word a pixel; no "
-                    "capture of the pipe's depth layout",
     };
     SGIPlane p;
     uint64_t base = 0;
@@ -17471,7 +17458,6 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
         .format = SGI_PLANE_S8,
         .packing = SGI_PACK_LE_RED_LOW,
         .bottom_origin = true,
-        .evidence = "model choice: one internal screen-sized stencil plane",
     };
     s->plane_stencil = sgi_board_memory_add_plane(&s->mem, &p, &error_abort);
 }
@@ -17552,7 +17538,6 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
             .format = SGI_PLANE_RAW,
             .packing = SGI_PACK_LE_RED_LOW,
             .bottom_origin = true,
-            .evidence = "model representation: logical desktop plane",
         };
 
         sgi_board_memory_add_plane(&s->desktop_mem, &plane, &error_abort);
@@ -17570,7 +17555,6 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
             .stride = SGI_KONA_FB_WIDTH * bytes,
             .format = i == 1 ? SGI_PLANE_TAG : SGI_PLANE_RAW,
             .packing = SGI_PACK_LE_RED_LOW,
-            .evidence = "model representation: pending X pixel transform",
         };
 
         sgi_board_memory_add_plane(&s->x_write_mem, &plane, &error_abort);

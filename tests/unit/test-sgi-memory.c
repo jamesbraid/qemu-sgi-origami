@@ -23,7 +23,6 @@ static SGIPlane plane(uint64_t base, uint32_t w, uint32_t h, uint32_t stride,
         .stride = stride,
         .format = format,
         .packing = packing,
-        .evidence = "unit test",
     };
 }
 
