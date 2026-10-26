@@ -37,6 +37,7 @@
 
 #define INT_CAUSE_MAILBOX   0x10
 #define INT_CAUSE_VIDEO     0x8
+#define INT_CAUSE_GE        0x20
 
 #define REG_RETRACE_TAG     KONA_REG(0x800248)
 #define REG_INT_DEST_UPPER  KONA_REG(0x000034)
@@ -221,6 +222,17 @@ static void kona_register_reason_page(QTestState *s, uint64_t page)
     kona_command_kicked(s, 0x1f1,
                         (uint32_t[]){ physical_page_word(page),
                                       tagged_offset_word(page), 0x4000 }, 3);
+}
+
+/*
+ * What the driver's geometry-engine handler does with a reason: read word 0,
+ * write it back ORed with 0xbad00000 and clear the cause bit. The board
+ * posts a further reason only once word 0 has been rewritten.
+ */
+static void reason_acknowledge(QTestState *s)
+{
+    guest_fill_word(s, REASON_PAGE, guest_word(s, REASON_PAGE) | 0xbad00000);
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_GE);
 }
 
 /*
@@ -2336,6 +2348,7 @@ static void test_context_retirement_retains_records(void)
     context_deactivate(s, 1);
     context_first_physical(s, SAVE_B, RETURN_B);
     kona_command(s, 0xe3, (uint32_t[]){ 13, 17, 19, 23 }, 4);
+    reason_acknowledge(s);
     kona_command_kicked(s, 0x1f8, (uint32_t[]){ 0x103 }, 1);
     g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x103);
     context_deactivate(s, 2);
@@ -3585,6 +3598,238 @@ static void test_video_delivery_migrates(void)
     g_rmdir(dir);
 }
 
+/*
+ * The kernel's pipe-memory swaps. A swap-out, 0x1e3, names a texture
+ * region (class 3, offset, size in granules, granule bytes, copies) and a
+ * host buffer by device address, and waits for reason 0x102 on the reason
+ * page; a swap-in, 0x1e2, reads the buffer back by DMA or carries it
+ * inline after 0xffffffff, and completes with mailbox 0x102; a suspend,
+ * 0x1df 0x104, is answered on the reason page with 0x104 and a count.
+ */
+#define SWAP_BUFFER         UINT64_C(0x600000)
+#define SWAP_DEVICE_ENTRY   8
+#define SWAP_DEVICE         ((uint64_t)SWAP_DEVICE_ENTRY * 0x4000)
+#define SWAP_GRANULES       2
+#define SWAP_BYTES          (SWAP_GRANULES * 0x400)
+
+static void swap_setup(QTestState *s)
+{
+    for (unsigned i = 0; i < SWAP_BYTES / 4 + 4; i++) {
+        guest_fill_word(s, SWAP_BUFFER + 4 * i, 0xa5a5a5a5);
+    }
+    guest_fill_word(s, REASON_PAGE, 0);
+    kona_register_reason_page(s, REASON_PAGE);
+    qtest_writel(s, REG_MAPRAM(SWAP_DEVICE_ENTRY),
+                 0x20000000 | (uint32_t)(SWAP_BUFFER >> 12));
+}
+
+static void swap_out(QTestState *s, uint32_t offset)
+{
+    kona_command_kicked(s, 0x1e3,
+                        (uint32_t[]){ 3, offset, SWAP_GRANULES, 0x400, 1,
+                                      SWAP_DEVICE >> 12, 0x9000, 0x102 }, 8);
+}
+
+static void test_swap_out_completes(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    swap_out(s, 0x740);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_GE, ==,
+                    INT_CAUSE_GE);
+    /* The whole region's bytes are written; the buffer past it is not. */
+    for (unsigned i = 0; i < SWAP_BYTES / 4; i++) {
+        g_assert_cmphex(guest_word(s, SWAP_BUFFER + 4 * i), ==, 0);
+    }
+    g_assert_cmphex(guest_word(s, SWAP_BUFFER + SWAP_BYTES), ==, 0xa5a5a5a5);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
+/* Without a mapped buffer the swap-out writes nothing and posts nothing. */
+static void test_swap_out_unmapped_refused(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    swap_setup(s);
+    qtest_writel(s, REG_MAPRAM(SWAP_DEVICE_ENTRY), 0);
+    swap_out(s, 0);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0);
+    g_assert_cmphex(guest_word(s, SWAP_BUFFER), ==, 0xa5a5a5a5);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "swap-out of class 3"));
+}
+
+/*
+ * Each swap-out is completed by its own 0x102, and one reason must not
+ * overwrite another the driver has not read: a second swap-out and a
+ * mop-up reason wait until the driver has rewritten word 0.
+ */
+static void test_reasons_wait_their_turn(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    swap_out(s, 0);
+    swap_out(s, 2);
+    kona_command_kicked(s, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    reason_acknowledge(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_GE, ==,
+                    INT_CAUSE_GE);
+    reason_acknowledge(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x103);
+    reason_acknowledge(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0xbad00103);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_GE, ==, 0);
+    qtest_quit(s);
+}
+
+/* A reason still waiting is posted by the timer once the page is read. */
+static void test_reasons_wait_for_timer(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    swap_out(s, 0);
+    swap_out(s, 2);
+    guest_fill_word(s, REASON_PAGE, 0xbad00102);
+    qtest_clock_step(s, 2 * 1000 * 1000);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    qtest_quit(s);
+}
+
+static void swap_in_header(QTestState *s)
+{
+    qtest_writel(s, REG_KICK, 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1e2);
+    qtest_writel(s, REG_KICK, 0x10000);
+    for (unsigned i = 0; i < 6; i++) {
+        static const uint32_t words[6] = {
+            3, 0x740, SWAP_GRANULES, 0x400, 1, SWAP_DEVICE >> 12,
+        };
+
+        qtest_writel(s, REG_COMMAND, words[i]);
+    }
+}
+
+static void assert_swap_in_completed(QTestState *s)
+{
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==,
+                    INT_CAUSE_MAILBOX);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x102);
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_MAILBOX);
+}
+
+/* The DMA form: the tagged offset, then 0x102. */
+static void test_swap_in_dma(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    swap_in_header(s);
+    qtest_writel(s, REG_COMMAND, 0x9000);
+    qtest_writel(s, REG_COMMAND, 0x102);
+    qtest_writel(s, REG_KICK, 0);
+    assert_swap_in_completed(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
+/*
+ * The inline form: its data words are the buffer's, whatever they hold;
+ * tokens among them open nothing.
+ */
+static void test_swap_in_inline(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    swap_in_header(s);
+    qtest_writel(s, REG_COMMAND, 0xffffffff);
+    for (unsigned i = 0; i < SWAP_BYTES / 4; i++) {
+        qtest_writel(s, REG_COMMAND, i & 1 ? 0x103 : 0x1f8);
+    }
+    qtest_writel(s, REG_COMMAND, 0x102);
+    qtest_writel(s, REG_KICK, 0);
+    assert_swap_in_completed(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
+/* A suspend is answered with 0x104 and a count of 0: nothing to resume. */
+static void test_suspend_replies(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    swap_setup(s);
+    guest_fill_word(s, REASON_PAGE + 4, 0xa5a5a5a5);
+    qtest_writel(s, REG_KICK, 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1df);
+    qtest_writel(s, REG_KICK, 0x10000);
+    qtest_writel(s, REG_COMMAND, 0x104);
+    qtest_writel(s, REG_COMMAND, 0x1e3);
+    qtest_writel(s, REG_KICK, 0x10000);
+    for (unsigned i = 0; i < 8; i++) {
+        static const uint32_t words[8] = {
+            3, 0, SWAP_GRANULES, 0x400, 1, SWAP_DEVICE >> 12, 0x9000, 0x102,
+        };
+
+        qtest_writel(s, REG_COMMAND, words[i]);
+    }
+    qtest_writel(s, REG_KICK, 0);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x104);
+    g_assert_cmphex(guest_word(s, REASON_PAGE + 4), ==, 0);
+    reason_acknowledge(s);
+    g_assert_cmphex(guest_word(s, REASON_PAGE), ==, 0x102);
+    qtest_quit(s);
+}
+
+/* A swap-in part-way through its inline words, and a waiting reason. */
+static void test_swap_migration(void)
+{
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-swap-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+
+    swap_setup(from);
+    swap_out(from, 0);
+    kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    swap_in_header(from);
+    qtest_writel(from, REG_COMMAND, 0xffffffff);
+    for (unsigned i = 0; i < SWAP_BYTES / 8; i++) {
+        qtest_writel(from, REG_COMMAND, 0x1f8);
+    }
+    sgi_migrate_stopped(from, uri);
+    for (unsigned i = SWAP_BYTES / 8; i < SWAP_BYTES / 4; i++) {
+        qtest_writel(to, REG_COMMAND, 0x1f8);
+    }
+    qtest_writel(to, REG_COMMAND, 0x102);
+    qtest_writel(to, REG_KICK, 0);
+    assert_swap_in_completed(to);
+    g_assert_cmphex(guest_word(to, REASON_PAGE), ==, 0x102);
+    reason_acknowledge(to);
+    g_assert_cmphex(guest_word(to, REASON_PAGE), ==, 0x103);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3757,6 +4002,22 @@ int main(int argc, char **argv)
                    test_fresh_context_discards_saved_command);
     qtest_add_func("sn0/origin2000/kona-context/migration-rejects-saved-input",
                    test_migration_rejects_saved_input);
+    qtest_add_func("sn0/origin2000/kona-context/swap/out-completes",
+                   test_swap_out_completes);
+    qtest_add_func("sn0/origin2000/kona-context/swap/out-unmapped-refused",
+                   test_swap_out_unmapped_refused);
+    qtest_add_func("sn0/origin2000/kona-context/swap/reasons-wait-their-turn",
+                   test_reasons_wait_their_turn);
+    qtest_add_func("sn0/origin2000/kona-context/swap/reasons-wait-for-timer",
+                   test_reasons_wait_for_timer);
+    qtest_add_func("sn0/origin2000/kona-context/swap/in-dma",
+                   test_swap_in_dma);
+    qtest_add_func("sn0/origin2000/kona-context/swap/in-inline",
+                   test_swap_in_inline);
+    qtest_add_func("sn0/origin2000/kona-context/swap/suspend-replies",
+                   test_suspend_replies);
+    qtest_add_func("sn0/origin2000/kona-context/swap/migration",
+                   test_swap_migration);
     qtest_add_func("sn0/origin2000/kona-context/reply-after-deactivation",
                    test_reply_after_deactivation);
     return g_test_run();

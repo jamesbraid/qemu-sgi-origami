@@ -753,6 +753,11 @@ static void test_reason_posting(void)
     g_assert_true(hub_pending(s, GE_VECTOR));
     g_assert_false(hub_pending(s, GENERAL_VECTOR));
 
+    /*
+     * The driver's handler writes word 0 back ORed with 0xbad00000 and
+     * clears the cause bit; only then may the next reason replace it.
+     */
+    guest_fill_word(s, REASON_PAGE, 0xbad00103);
     qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_GE);
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
     g_assert_true(hub_pending(s, GE_VECTOR));
@@ -896,6 +901,8 @@ static void test_context_deactivate_argument_framed(void)
     kona_register_page(qts, REASON_PAGE);
 
     kona_context_deactivate(qts, 1);
+    /* As the driver's handler does: rewrite word 0, clear the cause. */
+    guest_fill_word(qts, REASON_PAGE, 0xbad00101);
     qtest_writel(qts, REG_INT_CAUSE, INT_CAUSE_GE);
     kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
     g_assert_cmphex(guest_word(qts, REASON_PAGE), ==, 0x103);

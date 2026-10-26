@@ -34,6 +34,7 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/x-gc.h"
 #include "hw/mips/sgi/pi-gfx.h"
+#include "qemu/timer.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
@@ -1638,6 +1639,7 @@ static void sgi_kona_register_reason_page(SGIKonaState *s, uint32_t page,
     if (sgi_kona_command_page(s, "reason", page, offset, &s->reason_page,
                               &mapped)) {
         s->reason_page_valid = true;
+        s->reason_unread = false;
         trace_sgi_kona_reason_page(s->reason_page, mapped);
     }
 }
@@ -2032,33 +2034,132 @@ static bool sgi_kona_host_write(SGIKonaState *s, uint64_t addr,
 }
 
 /*
- * 0x1f8 R and 0x1dd R, and 0x1fc with its fixed reason 0x101: write R
- * big-endian to word 0 of the reason page, set the geometry-engine cause
- * bit and raise its interrupt, which is what the driver's geometry-engine
- * interrupt handler reads and dispatches on. Approximated: hardware is
- * inferred to post only once its queued work is done, and the model has no
- * queued work, so it posts at once. With no page registered it logs, traces
- * and posts nothing.
+ * Completion reasons on the reason page. 0x1f8 R and 0x1dd R post R, 0x1fc
+ * its fixed 0x101, a select feed 0x100 with its words, a swap-out 0x102
+ * and a suspend 0x104 with its reply words: written big-endian from word 0
+ * of the page, then the geometry-engine cause bit set and its interrupt
+ * raised, which is what the driver's geometry-engine interrupt handler
+ * reads and dispatches on. The handler reads word 0 once an interrupt and
+ * writes it back ORed with 0xbad00000 (established from the IRIX kernel
+ * driver), so a second reason written before that read would replace the
+ * first, and a swap-out the kernel counts one completion at a time for
+ * would time out. The model therefore posts one reason at a time: a
+ * reason that finds the last one's word 0 still on the page waits in a
+ * queue, and goes out once the page shows the driver's rewrite, looked for
+ * when the cause register is accessed and every millisecond of virtual
+ * time while reasons wait.
+ *
+ * Approximated: hardware is inferred to post only once its queued work is
+ * done, and the model has no queued work, so a reason with nothing ahead
+ * of it posts at once; how a real pipe orders and paces several reasons
+ * is unknown. With no page registered it logs, traces and posts nothing.
  */
-static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
-                                 uint32_t reason)
+#define SGI_KONA_REASON_POLL_NS (1000 * 1000)
+
+static void sgi_kona_reason_write(SGIKonaState *s, uint32_t token,
+                                  const uint32_t *words, unsigned count)
+{
+    uint8_t bytes[SGI_KONA_REASON_WORDS * 4];
+
+    for (unsigned k = 0; k < count; k++) {
+        stl_be_p(bytes + 4 * k, words[k]);
+    }
+    if (!sgi_kona_host_write(s, s->reason_page, bytes, 4 * count)) {
+        return;
+    }
+    trace_sgi_kona_reason_post(token, words[0], s->reason_page);
+    s->reason_unread = true;
+    s->reason_posted = words[0];
+    s->int_cause |= SGI_KONA_INT_CAUSE_GE;
+    sgi_kona_raise_vector(s, false);
+}
+
+/*
+ * Whether the last reason's word 0 is still on the page unread. A page
+ * that cannot be read back cannot hold the next reason back.
+ */
+static bool sgi_kona_reason_unread(SGIKonaState *s)
 {
     uint8_t bytes[4];
+    hwaddr where;
 
+    if (!s->reason_unread) {
+        return false;
+    }
+    if (!s->reason_page_valid ||
+        !sgi_kona_fabric_compose(s, s->fabric_hub_widget, s->reason_page,
+                                 &where) ||
+        dma_memory_read(&s->fabric_as, where, bytes, sizeof(bytes),
+                        MEMTXATTRS_UNSPECIFIED) != MEMTX_OK ||
+        ldl_be_p(bytes) != s->reason_posted) {
+        s->reason_unread = false;
+    }
+    return s->reason_unread;
+}
+
+/* Post queued reasons while the page is free; look again later if not. */
+static void sgi_kona_reason_drain(SGIKonaState *s)
+{
+    while (s->reason_queue_len && !sgi_kona_reason_unread(s)) {
+        uint32_t token = s->reason_queue_token[0];
+        uint32_t count = s->reason_queue_words[0];
+        uint32_t words[SGI_KONA_REASON_WORDS];
+
+        memcpy(words, s->reason_queue[0], sizeof(words));
+        s->reason_queue_len--;
+        memmove(s->reason_queue, s->reason_queue + 1,
+                s->reason_queue_len * sizeof(s->reason_queue[0]));
+        memmove(s->reason_queue_token, s->reason_queue_token + 1,
+                s->reason_queue_len * sizeof(s->reason_queue_token[0]));
+        memmove(s->reason_queue_words, s->reason_queue_words + 1,
+                s->reason_queue_len * sizeof(s->reason_queue_words[0]));
+        sgi_kona_reason_write(s, token, words, count);
+    }
+    if (s->reason_queue_len && s->reason_timer) {
+        timer_mod(s->reason_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  SGI_KONA_REASON_POLL_NS);
+    }
+}
+
+static void sgi_kona_reason_timer(void *opaque)
+{
+    sgi_kona_reason_drain(opaque);
+}
+
+static void sgi_kona_post_reason_words(SGIKonaState *s, uint32_t token,
+                                       const uint32_t *words, unsigned count)
+{
+    uint32_t n = s->reason_queue_len;
+
+    assert(count && count <= SGI_KONA_REASON_WORDS);
     if (!s->reason_page_valid) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: token 0x%x reason 0x%x with no reason page"
-                      " registered; nothing posted\n", token, reason);
-        trace_sgi_kona_reason_no_page(token, reason);
+                      " registered; nothing posted\n", token, words[0]);
+        trace_sgi_kona_reason_no_page(token, words[0]);
         return;
     }
-    stl_be_p(bytes, reason);
-    if (!sgi_kona_host_write(s, s->reason_page, bytes, sizeof(bytes))) {
+    if (!n && !sgi_kona_reason_unread(s)) {
+        sgi_kona_reason_write(s, token, words, count);
         return;
     }
-    trace_sgi_kona_reason_post(token, reason, s->reason_page);
-    s->int_cause |= SGI_KONA_INT_CAUSE_GE;
-    sgi_kona_raise_vector(s, false);
+    if (n == SGI_KONA_REASON_QUEUE) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: %u completion reasons"
+                      " wait unread; reason 0x%x lost\n", n, words[0]);
+        return;
+    }
+    memset(s->reason_queue[n], 0, sizeof(s->reason_queue[n]));
+    memcpy(s->reason_queue[n], words, count * sizeof(*words));
+    s->reason_queue_token[n] = token;
+    s->reason_queue_words[n] = count;
+    s->reason_queue_len = n + 1;
+    sgi_kona_reason_drain(s);
+}
+
+static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
+                                 uint32_t reason)
+{
+    sgi_kona_post_reason_words(s, token, &reason, 1);
 }
 
 /*
@@ -8501,7 +8602,6 @@ static void sgi_kona_gl_read_dma_finish(SGIKonaState *s, const uint32_t *a)
     SGIKonaGLReadDMA *d = &s->gl_read_dma;
     uint64_t io, pitch;
     uint32_t lines;
-    uint8_t reason[16];
 
     if (!d->active || d->refused || !d->count || a[0] != 0x100 ||
         d->context != s->context_current ||
@@ -8525,17 +8625,8 @@ static void sgi_kona_gl_read_dma_finish(SGIKonaState *s, const uint32_t *a)
             goto refused;
         }
     }
-    stl_be_p(reason, 0x100);
-    stl_be_p(reason + 4, a[1]);
-    stl_be_p(reason + 8, 0);
-    stl_be_p(reason + 12, 0);
-    if (!sgi_kona_host_write(s, s->reason_page, reason, sizeof(reason))) {
-        goto refused;
-    }
-    trace_sgi_kona_reason_post(SGI_KONA_CMD_SELECT_FEED_FINISH, 0x100,
-                               s->reason_page);
-    s->int_cause |= SGI_KONA_INT_CAUSE_GE;
-    sgi_kona_raise_vector(s, false);
+    sgi_kona_post_reason_words(s, SGI_KONA_CMD_SELECT_FEED_FINISH,
+                               (uint32_t[]){ 0x100, a[1], 0, 0 }, 4);
     sgi_kona_gl_read_dma_clear(s);
     return;
 
@@ -14162,6 +14253,148 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
 }
 
 /*
+ * The kernel's pipe-memory swaps (established from the IRIX kernel driver's
+ * pool code). When a pool lacks room, it evicts other contexts' regions
+ * with 0x1e3: class, offset and size in granules, the granule in bytes,
+ * the copy count, the host buffer's device address as page >> 12 and
+ * (address & 0xfff) | 0x9000, and the completion reason 0x102. It does not
+ * wait: it queues the region and arms a timer of 120 half-second ticks,
+ * and one reason-page 0x102 completes the oldest swap-out still queued; a
+ * timer that runs out logs "mem_swapout timeout" and kills the pipe with
+ * death reason 16. Swap-in, 0x1e2, carries the same six words and then
+ * either the tagged offset, for the pipe to read the buffer back by DMA,
+ * or 0xffffffff and the buffer's words inline, then 0x102; it completes
+ * through the mailbox with 0x102, one per swap-in, in order, or the pipe
+ * dies with reason 15. An allocation under pressure may first send 0x1df
+ * 0x104, a suspend whose reply on the reason page is 0x104, a count n and
+ * n words for the kernel's later 0x1de resume.
+ *
+ * The kernel keeps the swapped-out buffer untouched and only hands it back
+ * on swap-in, so the bytes are the pipe's own. Approximated: the model
+ * keeps every texture and list it draws in its own storage, keyed by
+ * object, whatever the pool placement, so a swap moves none of it. A
+ * swap-out writes zeros of the full length into the buffer, a swap-in
+ * reads the buffer and discards it, and both complete at once. A suspend
+ * replies n = 0, so no resume follows; what a real pipe saves is unknown.
+ * A pool-pressure qtest checks the completions as stated; the guest check
+ * is two texture programs sharing a 64 MB pipe.
+ */
+#define SGI_KONA_SWAP_MAX_BYTES (256 * MiB)
+
+static uint64_t sgi_kona_swap_bytes(const uint32_t *a)
+{
+    return (uint64_t)a[2] * a[3] * a[4];
+}
+
+static uint64_t sgi_kona_swap_device(uint32_t page, uint32_t offset)
+{
+    return ((uint64_t)page << 12) | (offset & 0xfff);
+}
+
+static void sgi_kona_mem_swap_out(SGIKonaState *s, const uint32_t *a)
+{
+    static const uint8_t zeros[4096];
+    uint64_t bytes = sgi_kona_swap_bytes(a);
+    uint64_t device = sgi_kona_swap_device(a[5], a[6]);
+    bool ok = (a[6] & ~0xfffu) == 0x9000 &&
+              a[7] == SGI_KONA_REASON_SWAP && bytes <= SGI_KONA_SWAP_MAX_BYTES;
+
+    for (int pass = 0; ok && pass < 2; pass++) {
+        for (uint64_t done = 0; ok && done < bytes; done += sizeof(zeros)) {
+            ok = sgi_kona_device_write(s, device + done, pass ? zeros : NULL,
+                                       MIN(sizeof(zeros), bytes - done),
+                                       !pass);
+        }
+    }
+    if (!ok) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: swap-out of class %u "
+                      "offset 0x%x size 0x%x to 0x%08x 0x%08x reason 0x%x "
+                      "not completed\n", a[0], a[1], a[2], a[5], a[6], a[7]);
+        return;
+    }
+    sgi_kona_post_reason(s, SGI_KONA_CMD_MEM_SWAP_OUT, SGI_KONA_REASON_SWAP);
+}
+
+static void sgi_kona_mem_swap_in_done(SGIKonaState *s)
+{
+    uint64_t bytes = sgi_kona_swap_bytes(s->swapin_header);
+    uint8_t chunk[4096];
+    bool ok = bytes <= SGI_KONA_SWAP_MAX_BYTES;
+
+    if (s->swapin_mode != UINT32_MAX) {
+        uint64_t device = sgi_kona_swap_device(s->swapin_header[5],
+                                               s->swapin_mode);
+
+        for (uint64_t done = 0; ok && done < bytes; done += sizeof(chunk)) {
+            ok = sgi_kona_device_read(s, device + done, chunk,
+                                      MIN(sizeof(chunk), bytes - done));
+        }
+    }
+    if (!ok) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: swap-in of class %u "
+                      "offset 0x%x size 0x%x not completed\n",
+                      s->swapin_header[0], s->swapin_header[1],
+                      s->swapin_header[2]);
+        return;
+    }
+    sgi_kona_mailbox_post(s, SGI_KONA_REASON_SWAP);
+    sgi_kona_raise_vector(s, true);
+}
+
+/*
+ * A word after a swap-in's six. Returns false for a word that does not
+ * belong to it, which ends the swap-in, logged, and is taken afresh.
+ */
+enum {
+    SGI_KONA_SWAPIN_IDLE,
+    SGI_KONA_SWAPIN_MODE,
+    SGI_KONA_SWAPIN_DATA,
+    SGI_KONA_SWAPIN_REASON,
+};
+
+static bool sgi_kona_mem_swap_in_word(SGIKonaState *s, uint32_t word)
+{
+    switch (s->swapin_stage) {
+    case SGI_KONA_SWAPIN_MODE:
+        if (word == UINT32_MAX) {
+            uint64_t bytes = sgi_kona_swap_bytes(s->swapin_header);
+
+            s->swapin_mode = word;
+            if (bytes % 4 || bytes > SGI_KONA_SWAP_MAX_BYTES) {
+                break;
+            }
+            s->swapin_data_left = bytes / 4;
+            s->swapin_stage = s->swapin_data_left ? SGI_KONA_SWAPIN_DATA :
+                                                    SGI_KONA_SWAPIN_REASON;
+            return true;
+        }
+        if ((word & ~0xfffu) != 0x9000) {
+            break;
+        }
+        s->swapin_mode = word;
+        s->swapin_stage = SGI_KONA_SWAPIN_REASON;
+        return true;
+    case SGI_KONA_SWAPIN_DATA:
+        if (!--s->swapin_data_left) {
+            s->swapin_stage = SGI_KONA_SWAPIN_REASON;
+        }
+        return true;
+    case SGI_KONA_SWAPIN_REASON:
+        s->swapin_stage = SGI_KONA_SWAPIN_IDLE;
+        if (word != SGI_KONA_REASON_SWAP) {
+            break;
+        }
+        sgi_kona_mem_swap_in_done(s);
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: swap-in of class %u ended "
+                  "by word 0x%" PRIx32 "; not completed\n",
+                  s->swapin_header[0], word);
+    s->swapin_stage = SGI_KONA_SWAPIN_IDLE;
+    return false;
+}
+
+/*
  * 0x1e7 tag: the kernel's retrace activation request, sent for a swap after
  * its display-table rewrite and for any other retrace wait. It becomes a
  * swap record on the shared scanout, which honours one per retrace in order
@@ -14458,23 +14691,35 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
          */
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
+    case SGI_KONA_CMD_MEM_SWAP_OUT:
+        sgi_kona_mem_swap_out(s, args);
+        break;
+    case SGI_KONA_CMD_MEM_SWAP_IN:
+        memcpy(s->swapin_header, args, sizeof(s->swapin_header));
+        s->swapin_stage = SGI_KONA_SWAPIN_MODE;
+        break;
+    case SGI_KONA_CMD_MEM_SUSPEND:
+        if (args[0] != SGI_KONA_REASON_SUSPEND) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: suspend with reason"
+                          " 0x%" PRIx32 "; answered as 0x104\n", args[0]);
+        }
+        sgi_kona_post_reason_words(s, selector,
+                                   (uint32_t[]){ SGI_KONA_REASON_SUSPEND, 0 },
+                                   2);
+        break;
     case SGI_KONA_CMD_MEM_REGION:
         trace_sgi_kona_kernel_mem_region(args[0], args[1], args[2], args[3]);
         sgi_kona_dma_list_region(s, args);
         /* fall through */
     case SGI_KONA_CMD_MEM_COPY_DOWN:
-    case SGI_KONA_CMD_MEM_SWAP_OUT:
     case SGI_KONA_CMD_RESOURCE_SYNC:
         /*
          * The kernel's pool packets, consumed whole so the stream stays in
          * step. A display-list region's placement relocates the context's
          * list addresses (sgi_kona_dma_list_region()); no other placement
-         * changes anything the model draws, and a copy-down or swap-out
-         * moves no data. A swap-out
-         * names completion reason 0x102, which the model does not post;
-         * how the kernel waits for it is unknown, and only a full pool
-         * sends one. The guest test is the minimal GLX program's trace
-         * showing 0x1e4 2 9 0 1 and 0x172 0 with no word dropped.
+         * changes anything the model draws, and a copy-down moves no data.
+         * The guest test is the minimal GLX program's trace showing
+         * 0x1e4 2 9 0 1 and 0x172 0 with no word dropped.
          */
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
@@ -15144,6 +15389,9 @@ static void sgi_kona_user_input(SGIKonaState *s)
  */
 static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 {
+    if (s->swapin_stage && sgi_kona_mem_swap_in_word(s, word)) {
+        return;
+    }
     if (s->kernel_input) {
         if (s->kernel_port.framing || sgi_kona_kernel_token_known(s, word)) {
             sgi_kona_kernel_port_word(s, word);
@@ -15647,6 +15895,9 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         value = 0;
         break;
     case SGI_KONA_INT_CAUSE:
+        if (s->reason_queue_len) {
+            sgi_kona_reason_drain(s);
+        }
         value = s->int_cause;
         break;
     case SGI_KONA_RETRACE_TAG:
@@ -15778,6 +16029,9 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
     case SGI_KONA_INT_CAUSE:
         /* Write-1-to-clear, SGI_KONA_INT_CAUSE_GE included. */
         s->int_cause &= ~(uint32_t)value;
+        if (s->reason_queue_len) {
+            sgi_kona_reason_drain(s);
+        }
         if (value & SGI_KONA_INT_CAUSE_VIDEO) {
             s->video_delivered = false;
         }
@@ -16010,6 +16264,8 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
     memory_region_init_io(&s->regs, OBJECT(s), &sgi_kona_ops, s,
                           "sgi-kona.regs",
                           SGI_KONA_APERTURE_SIZE);
+    s->reason_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_kona_reason_timer,
+                                   s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
     return true;
@@ -16883,6 +17139,10 @@ static void sgi_kona_instance_finalize(Object *obj)
     sgi_board_memory_cleanup(&s->desktop_mem);
     sgi_board_memory_cleanup(&s->x_write_mem);
     sgi_board_memory_cleanup(&s->accum_mem);
+    if (s->reason_timer) {
+        timer_free(s->reason_timer);
+        s->reason_timer = NULL;
+    }
     g_free(s->bitmap_payload);
     g_free(s->map_ram);
     g_free(s->arm_high);
@@ -16992,6 +17252,14 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     memset(&s->kernel_port_suspended, 0, sizeof(s->kernel_port_suspended));
     s->reason_page_valid = false;
     s->reason_page = 0;
+    s->reason_queue_len = 0;
+    s->reason_unread = false;
+    s->reason_posted = 0;
+    if (s->reason_timer) {
+        timer_del(s->reason_timer);
+    }
+    s->swapin_stage = SGI_KONA_SWAPIN_IDLE;
+    s->swapin_data_left = 0;
     s->return_page_valid = false;
     s->return_page = 0;
     s->credit_config = 0;
@@ -17790,6 +18058,59 @@ static const VMStateDescription vmstate_sgi_kona_accum = {
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(accum_mem, SGIKonaState, 0, vmstate_sgi_board_memory,
                        SGIBoardMemory),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Reasons waiting for the reason page, and a swap-in still taking words. */
+static bool sgi_kona_pool_swap_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->reason_queue_len || s->reason_unread || s->swapin_stage;
+}
+
+static int sgi_kona_pool_swap_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (s->reason_queue_len > SGI_KONA_REASON_QUEUE ||
+        s->swapin_stage > SGI_KONA_SWAPIN_REASON) {
+        return -EINVAL;
+    }
+    for (uint32_t i = 0; i < s->reason_queue_len; i++) {
+        if (!s->reason_queue_words[i] ||
+            s->reason_queue_words[i] > SGI_KONA_REASON_WORDS) {
+            return -EINVAL;
+        }
+    }
+    if (s->reason_queue_len) {
+        timer_mod(s->reason_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  SGI_KONA_REASON_POLL_NS);
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_pool_swap = {
+    .name = TYPE_SGI_KONA "/pool-swap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_pool_swap_needed,
+    .post_load = sgi_kona_pool_swap_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_2DARRAY(reason_queue, SGIKonaState,
+                               SGI_KONA_REASON_QUEUE, SGI_KONA_REASON_WORDS),
+        VMSTATE_UINT32_ARRAY(reason_queue_token, SGIKonaState,
+                             SGI_KONA_REASON_QUEUE),
+        VMSTATE_UINT32_ARRAY(reason_queue_words, SGIKonaState,
+                             SGI_KONA_REASON_QUEUE),
+        VMSTATE_UINT32(reason_queue_len, SGIKonaState),
+        VMSTATE_BOOL(reason_unread, SGIKonaState),
+        VMSTATE_UINT32(reason_posted, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(swapin_header, SGIKonaState, 6),
+        VMSTATE_UINT32(swapin_mode, SGIKonaState),
+        VMSTATE_UINT32(swapin_stage, SGIKonaState),
+        VMSTATE_UINT32(swapin_data_left, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -20445,6 +20766,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_channels,
         &vmstate_sgi_kona_video_data,
         &vmstate_sgi_kona_accum,
+        &vmstate_sgi_kona_pool_swap,
         NULL
     },
 };

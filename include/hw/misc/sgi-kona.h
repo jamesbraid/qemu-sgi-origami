@@ -1255,6 +1255,30 @@ struct SGIKonaState {
     uint32_t gl_token_high;
     bool reason_page_valid;
     uint64_t reason_page;
+    /*
+     * Completion reasons waiting for the reason page: one is posted at a
+     * time, and the next only once the driver has rewritten word 0 of the
+     * last (sgi_kona_post_reason_words()). reason_unread says the last
+     * posted word 0, reason_posted, may not have been read yet. The timer
+     * looks again while reasons wait.
+     */
+#define SGI_KONA_REASON_QUEUE 16
+#define SGI_KONA_REASON_WORDS 4
+    uint32_t reason_queue[SGI_KONA_REASON_QUEUE][SGI_KONA_REASON_WORDS];
+    uint32_t reason_queue_token[SGI_KONA_REASON_QUEUE];
+    uint32_t reason_queue_words[SGI_KONA_REASON_QUEUE];
+    uint32_t reason_queue_len;
+    bool reason_unread;
+    uint32_t reason_posted;
+    struct QEMUTimer *reason_timer;
+    /*
+     * A swap-in (0x1e2) still taking the words after its six: the mode
+     * word, inline data words, then its completion reason 0x102.
+     */
+    uint32_t swapin_header[6];
+    uint32_t swapin_mode;
+    uint32_t swapin_stage;
+    uint32_t swapin_data_left;
     bool return_page_valid;
     uint64_t return_page;
 

@@ -10976,6 +10976,11 @@ static void test_read_pixels_dma(gconstpointer opaque)
         read_dma_migrate(from, &s, &to, &dir);
     } else if (mode == 19) {
         return_context_deactivate(s);
+        /*
+         * The driver reads each reason and rewrites word 0 before the
+         * next context switch; the board posts the next only after that.
+         */
+        read_dma_clear_notifications(s, reason_page);
         attrib_context_fresh(s, SAVE_AREA + 0x20000);
         return_context_deactivate(s);
         return_context_restore(s, SAVE_AREA);

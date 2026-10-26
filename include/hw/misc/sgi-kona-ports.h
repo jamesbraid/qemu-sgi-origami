@@ -86,6 +86,11 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_MEM_REGION     0x1e4
 #define SGI_KONA_CMD_MEM_COPY_DOWN  0x1e1
 #define SGI_KONA_CMD_MEM_SWAP_OUT   0x1e3
+#define SGI_KONA_CMD_MEM_SWAP_IN    0x1e2
+#define SGI_KONA_CMD_MEM_SUSPEND    0x1df
+/* The completion reasons of a swap and of a suspend. */
+#define SGI_KONA_REASON_SWAP        0x102
+#define SGI_KONA_REASON_SUSPEND     0x104
 #define SGI_KONA_CMD_RESOURCE_SYNC  0x172
 /*
  * The rest of a context swap. The kernel driver's context swap restores a
