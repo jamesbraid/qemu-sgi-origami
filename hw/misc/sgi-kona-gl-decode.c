@@ -627,12 +627,13 @@ bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
     }
     next.wrap_r = SGI_GL_REPEAT;
     /*
-     * The fifth word is the texture's +0x2c0. Only the comparison setup
-     * at 0x21aa2c0 writes it: one, or zero with a comparison code in the
-     * third word's bits ten and eleven. pfCity (IRIX 6.5.30) binds its
-     * volume with zero and no comparison code, which neither branch
-     * writes, so that setup cannot have run for it. With no comparison
-     * code, zero is taken as one; that the pipe reads it so is inferred.
+     * The fifth word is a field of the client library's texture object.
+     * Only the library's comparison setup writes it: one, or zero with a
+     * comparison code in the third word's bits ten and eleven. pfCity
+     * (IRIX 6.5.30) binds its volume with zero and no comparison code,
+     * which neither branch writes, so that setup cannot have run for it.
+     * With no comparison code, zero is taken as one; that the pipe reads
+     * it so is inferred.
      */
     memcpy(volume_bind, bind, sizeof(volume_bind));
     if (!volume_bind[4] && !((bind[2] >> 10) & 3)) {

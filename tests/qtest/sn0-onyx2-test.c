@@ -347,10 +347,10 @@ static void test_deskside_places_kona_at_io4(void)
 
 /*
  * Each chassis's default pipe presents its catalogue configuration. The
- * rack's is true-wombat's InfiniteReality3: the class word kona_attach
- * reads after selector 0x8800 is 1, and its 0x1e9 answer names board set
- * 5 and one RM. The deskside's is whole-tetra's InfiniteReality2: class
- * word 0, board set 1 and two RMs.
+ * rack's is true-wombat's InfiniteReality3: the class word the kernel
+ * driver's attach routine reads after selector 0x8800 is 1, and its 0x1e9
+ * answer names board set 5 and one RM. The deskside's is whole-tetra's
+ * InfiniteReality2: class word 0, board set 1 and two RMs.
  */
 static void assert_kona_configuration(const char *args, unsigned int widget,
                                       uint32_t product, uint32_t board_set,

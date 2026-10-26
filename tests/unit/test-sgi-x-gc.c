@@ -189,7 +189,7 @@ static void test_classes(void)
     g_assert_cmpint(sgi_x_gc_decode(words, &gc), ==, SGI_X_GC_BAD_FIELDS);
 }
 
-/* kon_parseGC's 30-bit packing: each 10-bit component to c << 2 | c >> 8. */
+/* The X server's 30-bit packing: each 10-bit component to c << 2 | c >> 8. */
 static void rgb30_words(uint32_t pixel, uint32_t *high, uint32_t *low)
 {
     uint64_t colour = 0x1ffe;
@@ -341,10 +341,10 @@ static void test_reserved(void)
 }
 
 /*
- * konClearLayer's overlay clear, as the X server sent it when
- * SceneViewer's overlay window closed: cfg 0x28 with buffer selector 3,
- * index 0 under all ones, repeated in both bytes. The two bytes must
- * repeat one index. The same plane set with selector 1, and kon_parseGC's
+ * The X server's overlay layer clear, as it sent it when SceneViewer's
+ * overlay window closed: cfg 0x28 with buffer selector 3, index 0 under
+ * all ones, repeated in both bytes. The two bytes must repeat one index.
+ * The same plane set with selector 1, and the X server's GC builder's
  * 15-bit overlay form 0x1828 (the 15-bit row of the command grammar's GC
  * table), stay deferred.
  */

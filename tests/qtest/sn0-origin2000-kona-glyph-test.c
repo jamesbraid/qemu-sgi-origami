@@ -259,9 +259,9 @@ static void load_entries(QTestState *s)
 }
 
 /*
- * X load GC as kon_loadGC sends it for a solid fill of colour index
- * `index`: fg_h = index << 12 at depth 8, fg_l 0x1ffe, and the cfg and op
- * the greeter's fills carried.
+ * X load GC as the X server's GC loader sends it for a solid fill of colour
+ * index `index`: fg_h = index << 12 at depth 8, fg_l 0x1ffe, and the cfg
+ * and op the greeter's fills carried.
  */
 static void load_fill_gc(QTestState *s, uint32_t index)
 {
@@ -446,17 +446,17 @@ static void fill_rgb_box(QTestState *s, uint32_t rgb, int x1, int y1,
 
 /*
  * Packing 4 into a 24-bit TrueColor window, as the Icon Catalog draws its
- * labels: kon_parseGC packs the foreground as word 0 = 0xfff0 with blue's
- * top four widened bits, word 1 = blue's low eight, green, red, twelve
- * bits each, and the setup's destination packing is 2. Each set bit of the
- * "H" paints the foreground 0x2468ac as a direct-colour pixel and each
- * clear bit leaves the grey box. A model that took packing 4 only for
+ * labels: the X server's GC builder packs the foreground as word 0 = 0xfff0
+ * with blue's top four widened bits, word 1 = blue's low eight, green, red,
+ * twelve bits each, and the setup's destination packing is 2. Each set bit
+ * of the "H" paints the foreground 0x2468ac as a direct-colour pixel and
+ * each clear bit leaves the grey box. A model that took packing 4 only for
  * colour-index windows refused the write and drew no label.
  */
 static void test_packing4_truecolor_glyph(gconstpointer opaque)
 {
     /*
-     * With the window's second buffer selector 2, kon_parseGC sends cfg
+     * With the window's second buffer selector 2, the GC builder sends cfg
      * 0x3804 and op 0xa0001, or 0xa0002 with the first selector 2 too,
      * as the file manager's labels came after oglsnoop ran over it; the
      * glyph draws as the fills with those selectors do.
@@ -487,15 +487,15 @@ static void test_packing4_truecolor_glyph(gconstpointer opaque)
     assert_in_step(qts);
 }
 
-/* A 10-bit component widened to twelve bits, as kon_parseGC does. */
+/* A 10-bit component widened to twelve bits, as the X server does. */
 static uint32_t widen10(uint32_t c)
 {
     return c << 2 | c >> 8;
 }
 
 /*
- * A 30-bit TrueColor window, as nedit's windows draw: konal.so's
- * kon_parseGC gives cfg 0 for every builder, ifmt 9 and op 0x64001 for
+ * A 30-bit TrueColor window, as nedit's windows draw: konal.so's GC
+ * builder gives cfg 0 for every builder, ifmt 9 and op 0x64001 for
  * fills and ifmt 0, op 1 for the geometry builder, with each 10-bit
  * component widened as c << 2 | c >> 8. A box fills with the colour's top
  * eight bits a component, and a glyph in the 30-bit glyph form, op
@@ -540,10 +540,10 @@ static void test_rgb30_box_and_glyph(void)
 
 /*
  * A 24-bit TrueColor window whose format has bit 0x80000, as gsview's
- * windows draw: kon_parseGC repeats op's buffer selector in bits 3:2, so
- * fills carry op 0x60005 and the geometry builder op 5. The model reads a
- * repeated selector as the same selection and fills the box. A model that
- * deferred op bit 2 left gsview's windows black.
+ * windows draw: the X server's GC builder repeats op's buffer selector in
+ * bits 3:2, so fills carry op 0x60005 and the geometry builder op 5. The
+ * model reads a repeated selector as the same selection and fills the box.
+ * A model that deferred op bit 2 left gsview's windows black.
  */
 static void test_mirrored_selector_fill(void)
 {
@@ -569,11 +569,12 @@ static void test_mirrored_selector_fill(void)
 }
 
 /*
- * Packing 4 under kon_loadNfbBitmapGC's GC, konDrawMonoImage's: the glyph
- * form's words 0 and 1 (0xfff0 and index 0x23 packed) with the geometry
- * configuration, cfg 0xc, op 1 and ifmt 0, as the desktop's small mono
- * images carried it. Set bits paint index 0x23 and clear bits leave the
- * grey box. A model that took packing 4 only with cfg 0x180c refused it.
+ * Packing 4 under the GC of the X server's bitmap GC loader, as its mono
+ * image draw uses it: the glyph form's words 0 and 1 (0xfff0 and index 0x23
+ * packed) with the geometry configuration, cfg 0xc, op 1 and ifmt 0, as the
+ * desktop's small mono images carried it. Set bits paint index 0x23 and
+ * clear bits leave the grey box. A model that took packing 4 only with cfg
+ * 0x180c refused it.
  */
 static void test_packing4_mono_image_geometry_gc(void)
 {
@@ -1498,12 +1499,12 @@ static void test_spans_grammar_row(void)
 }
 
 /*
- * A triangle in the place of the run's on-screen arrow, sent the way
- * konFillSpansSolid sends spans: six, then two, then one, widths 9 down
- * to 1 from (305, 143), one line each, each span one column in from the
- * last. Sent as plain words, every
- * count word, 1 for the last token among them, must be taken as the
- * token's count and not as the textport's sync word opening a packet.
+ * A triangle in the place of the run's on-screen arrow, sent the way the X
+ * server's solid span fill sends spans: six, then two, then one, widths 9
+ * down to 1 from (305, 143), one line each, each span one column in from
+ * the last. Sent as plain words, every count word, 1 for the last token
+ * among them, must be taken as the token's count and not as the textport's
+ * sync word opening a packet.
  */
 static void test_spans_arrow_plain_words(void)
 {

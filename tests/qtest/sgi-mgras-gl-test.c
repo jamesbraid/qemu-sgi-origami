@@ -1148,8 +1148,8 @@ static void test_gl_packet_split_by_a_context_switch(void)
 
 /*
  * Image word 1 is 0xc0000000 or more only on the first delivery of a new
- * context. The IRIX 6.5.30 kernel's context allocator (0xc0000000003f38c8
- * in unix.IP27) zeroes the context, sets image word 0 to -1 and ORs
+ * context. The IRIX 6.5.30 kernel's context allocator (in unix.IP27)
+ * zeroes the context, sets image word 0 to -1 and ORs
  * 0xc0000000 into word 1. Once the context-switch routine has written the image
  * it clears bit 27 of word 1 for every context, and bits 31, 30, 29 and 26 for
  * every context but the default. In a captured run every

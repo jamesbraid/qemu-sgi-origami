@@ -694,8 +694,8 @@ static void kona_assert_offset_not_unimplemented(const char *found,
 }
 
 /*
- * The kernel driver's own KONAinitialize, reached through the kernel
- * operations table ahead of kona_mapram_init(): strobes REG_RESET_STROBE
+ * The kernel driver's own initialisation, reached through the kernel
+ * operations table ahead of its map RAM probe: strobes REG_RESET_STROBE
  * (write 1, read, write 0, read), then writes 0x100 to REG_INT_ENABLE and
  * 0x8000 to REG_RESET_ARG. Each write must be accepted without an
  * unimplemented-offset log.
@@ -873,20 +873,18 @@ static void test_textport_screen_size_is_traced_only(void)
 }
 
 /*
- * Bitmap/glyph blit (0xa): six header words -- width, height, x origin,
- * y origin, x advance, y advance -- then a packed 1-bpp payload, one bit
- * per pixel, MSB-first, row-major -- hw/misc/sgi-kona.c's own
- * sgi_kona_bitmap_blit(). All six header fields are established (see
- * that function's own comment, from the IO6 PROM's kona_tp_bitmap).
- * Placement is
- * relative to the textport's own raster position (command 4), not
- * absolute: pixel (c, r) of the payload lands at
- * (raster_x - xorigin + c, raster_y - yorigin + r), and a completed
- * blit advances the raster position by (xadvance, yadvance) -- the
- * "position once, then a run of blits that each advance it" shape
- * gui_draw_string's own entry documents for a text label. A 4x2 bitmap
- * needs one payload word; only its top byte (0xa5 = 1010 0101) is
- * meaningful; second row is (0,1,0,1).
+ * Bitmap/glyph blit (0xa): six header words -- width, height, x origin, y
+ * origin, x advance, y advance -- then a packed 1-bpp payload, one bit per
+ * pixel, MSB-first, row-major -- hw/misc/sgi-kona.c's own
+ * sgi_kona_bitmap_blit(). All six header fields are established (see that
+ * function's own comment, from the IO6 PROM's textport bitmap routine).
+ * Placement is relative to the textport's own raster position (command 4),
+ * not absolute: pixel (c, r) of the payload lands at (raster_x - xorigin +
+ * c, raster_y - yorigin + r), and a completed blit advances the raster
+ * position by (xadvance, yadvance) -- the "position once, then a run of
+ * blits that each advance it" shape the firmware's string drawing uses for
+ * a text label. A 4x2 bitmap needs one payload word; only its top byte
+ * (0xa5 = 1010 0101) is meaningful; second row is (0,1,0,1).
  */
 static void test_textport_bitmap_blit_renders_payload(void)
 {
@@ -1036,7 +1034,7 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
 }
 
 /*
- * The XG map RAM: kona_mapram_init()'s own per-entry probe -- write
+ * The XG map RAM: the kernel driver's own per-entry map RAM probe -- write
  * 0x10000000|i, read back, expect an exact match -- run over a
  * representative sample plus the table's own first and last entry
  * (test_mapram_full_window_sweep() below replays this over every
@@ -1064,8 +1062,8 @@ static void test_mapram_stride_sample(void)
 
 /*
  * Every one of the 32 bits an entry holds round-trips, not only the
- * low bits kona_mapram_init()'s own 0x10000000|i pattern exercises:
- * kona_mapram_map()'s own ordinary-mapping encoding (established) sets
+ * low bits the driver's map RAM probe's own 0x10000000|i pattern exercises:
+ * the driver's page mapper's own ordinary-mapping encoding (established) sets
  * bit 28 in neither operand, so a second write with it set, plus
  * every other bit up to bit 27, proves the model stores the whole word
  * rather than truncating to whatever subset the init loop alone needs.
@@ -1164,7 +1162,7 @@ static void test_mapram_size_code_limits_entry_count(void)
 }
 
 /*
- * kona_mapram_map()'s own ordinary-mapping encoding: 0x20000000 |
+ * The driver's page mapper's own ordinary-mapping encoding: 0x20000000 |
  * ((paddr >> 14) << 2), with a page-size code in bits [30:29]
  * (established formula, inferred field names). The model does
  * not interpret this value; it is plain storage exactly like the init
@@ -1182,11 +1180,11 @@ static void test_mapram_ordinary_mapping_write_read_back(void)
 }
 
 /*
- * kona_mapram_init()'s own attach-time probe, replayed over the whole
+ * The driver's own attach-time map RAM probe, replayed over the whole
  * table instead of a sample: write 0x10000000|i to every entry, then
  * read every entry back and expect an exact match throughout -- the
  * actual discriminator the driver's init loop applies before it ever
- * logs "IR: Bad XG MAPRAM entry found during kona_mapram_init!"
+ * logs its bad-map-RAM-entry message
  * (established).
  *
  * A plain qtest_writel()/qtest_readl() loop over all
@@ -1471,10 +1469,10 @@ static void test_onewire_board_part_configures_geometry_record(void)
 
 /*
  * A configured pipe's records carry the boards' real names and revisions,
- * which hinv prints and kona_attach searches for "GE16-": true-wombat's
- * GE16-4 rev E and KTOWN rev F for an InfiniteReality3, and whole-tetra's
- * GE14-4 030-1129-002 rev F for an InfiniteReality2, whatever board-part
- * the board was given.
+ * which hinv prints and the kernel driver's attach routine searches for
+ * "GE16-": true-wombat's GE16-4 rev E and KTOWN rev F for an
+ * InfiniteReality3, and whole-tetra's GE14-4 030-1129-002 rev F for an
+ * InfiniteReality2, whatever board-part the board was given.
  */
 static void test_onewire_product_names_records(void)
 {
@@ -1529,16 +1527,14 @@ static void test_board_part_invalid_is_rejected(void)
 
 /*
  * REG_NIC (+0x9c) is the kernel driver's own offset onto the identical
- * one-wire chain REG_ONEWIRE (+0x98) carries, established by
- * kona_attach()'s call into nic_xg_vertex_info() and on into nic.o's
- * generic one-wire NIC driver -- not a second,
- * independent chain. The most direct proof is register-level: a slot
- * issued through one offset must read back through the other with no
+ * one-wire chain REG_ONEWIRE (+0x98) carries, established by the driver's
+ * attach routine's call into nic.o's generic one-wire NIC driver -- not a
+ * second, independent chain. The most direct proof is register-level: a
+ * slot issued through one offset must read back through the other with no
  * further pulse, since both drive and observe the identical onewire_reg
- * field (SGI_KONA_NIC's own header comment, include/hw/misc/sgi-kona.h,
- * has the established/inferred evidence and the discriminating test that
- * would tell a shared register apart from two chains sharing one
- * protocol).
+ * field (SGI_KONA_NIC's own header comment, include/hw/misc/sgi-kona.h, has
+ * the established/inferred evidence and the discriminating test that would
+ * tell a shared register apart from two chains sharing one protocol).
  */
 static void test_nic_register_mirrors_onewire_register_state(void)
 {

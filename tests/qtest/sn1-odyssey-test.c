@@ -296,8 +296,8 @@
 
 /*
  * Reset values the stock IP35 BaseIO PROM's graphics diagnostic expects of a
- * healthy Tezro board (via odyssey-fuel-identity-spike-20260925.md). The Buzz
- * registers carry no established reference and reset to zero.
+ * healthy Tezro board. The Buzz registers carry no established reference and
+ * reset to zero.
  */
 #define XT_REQ_TIMEOUT_RESET 0x000fffff
 #define FLCTL_CONFIG_RESET 0x0001c000
@@ -363,8 +363,8 @@
 
 /*
  * Crosstalk part 0xc013, manufacturer 0x023, revision nibble 0xa -- the
- * value a live V12 board (030-1611-001 rev C) answers
- * (odyssey-octane2-v12-registers-20260926.md), and the model's default.
+ * value a live V12 board (030-1611-001 rev C) answers, and the model's
+ * default.
  */
 #define IDENTITY_DEFAULT 0xac013047
 
@@ -955,10 +955,9 @@ static void test_identity_carries_part_and_revision(void)
 
 /*
  * A live V12 board reads back the same value at a configuration-block
- * register's base (the upper half) as at base+4 (the low half) across the
- * whole block, not only on the identity register
- * (odyssey-octane2-v12-registers-20260926.md). Pin that on identity and on
- * a second, unrelated register so the behavior is block-wide rather than
+ * register's base (the upper half) as at base+4 (the low half) across the whole
+ * block, not only on the identity register. Pin that on identity and on a
+ * second, unrelated register so the behavior is block-wide rather than
  * hardcoded to one offset.
  */
 static void test_configuration_block_mirrors_both_halves(void)
@@ -1491,7 +1490,7 @@ static void test_lowater_not_raised_while_disabled(void)
  * (odsy status0, 0x1064). This model's command FIFO drains synchronously, so
  * it always reports enabled, empty and below the low-water mark. Reading a
  * clear low-water or enabled bit here — as the unmodeled default did,
- * answering zero — makes the driver log "odsy board 0: Graphics error" and
+ * answering zero — makes the driver log a graphics error for board 0 and
  * take its board-reset recovery path.
  */
 static void test_board_status_reports_fifo_ready(void)
@@ -7061,7 +7060,7 @@ static void test_command_fifo_gl_depth_only_clear(void)
 }
 
 /*
- * Lighting (section 1, and odyssey-gl-geometry-program.md, section 7).
+ * Lighting (section 1).
  * light.c's words: the front material, the light-model ambient and light 0's
  * colours (class 0x32) and geometry (class 0x31, a directional light down
  * +z), loaded under the 0x19a stream entry as the library does, then its
@@ -7102,7 +7101,7 @@ static const uint32_t odsy_lit_triangle[] = {
     ODSY_CMD_GL_END,
 };
 
-/* Constant memory: select index i, store a, as ValidateProgram writes it. */
+/* Constant memory: select index i, store a, as the GL library writes it. */
 static void push_constants(QTestState *qts, const uint32_t *a, unsigned n)
 {
     unsigned i;

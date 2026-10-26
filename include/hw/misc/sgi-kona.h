@@ -104,7 +104,7 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
  * The generic crosstalk interrupt destination, as hw/misc/sgi-mgras.c's
  * SGI_MGRAS_INT_DEST_UPPER/LOWER read it: the upper word carries the
  * target widget in bits [19:16] and address bits [47:32] in [15:0], the
- * lower word address bits [31:0]. The driver's kona_reset_adaptor writes
+ * lower word address bits [31:0]. The driver's adaptor reset writes
  * both (established); the field layout is the generic widget convention
  * taken from the MGRAS model and inferred for this pipe. A guest run
  * whose geometry-engine interrupts reach the node's Hub at widget 9 is
@@ -116,7 +116,7 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_INT_DEST_WIDGET_MASK  0xfu
 
 /*
- * The three interrupt vectors, established from kona_reset_adaptor:
+ * The three interrupt vectors, established from the driver's adaptor reset:
  * 0x20000 | (xg vector << 18) | (geometry-engine vector << 9) | general
  * vector, each eight bits. A captured run wrote 0x3e2210 (0xf, 0x11,
  * 0x10). Only the geometry-engine vector drives anything in the model;
@@ -162,19 +162,19 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 /*
  * Plain stored field, written 0 as the first step of the firmware's
  * recovery sequence on a failed sync probe. The kernel driver's own
- * KONAinitialize writes 0x8000 here instead, from a softc shadow at
- * +0x93c, right before calling kona_mapram_init(). This model interprets
+ * initialisation writes 0x8000 here instead, from a shadow in its
+ * per-device state, right before its map RAM probe. This model interprets
  * neither writer's value nor its readback.
  */
 #define SGI_KONA_RESET_ARG 0x800220
 
 /*
- * The kernel driver's own KONAinitialize writes 0x100 here, from a softc
- * shadow at +0x940, between its SGI_KONA_RESET_STROBE and SGI_KONA_RESET_ARG
- * writes. No driver read of this offset is established, so reading zero is
- * an approximation. This model accepts and stores the write, but always
- * answers a plain 0 on read -- unlike this window's other plain-storage
- * registers, which echo back what was written.
+ * The kernel driver's own initialisation writes 0x100 here, from a shadow in
+ * its per-device state, between its SGI_KONA_RESET_STROBE and
+ * SGI_KONA_RESET_ARG writes. No driver read of this offset is established, so
+ * reading zero is an approximation. This model accepts and stores the write,
+ * but always answers a plain 0 on read -- unlike this window's other
+ * plain-storage registers, which echo back what was written.
  */
 #define SGI_KONA_INT_ENABLE 0x800230
 
@@ -188,38 +188,38 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_INT_CAUSE_MAILBOX (1u << 4)
 
 /*
- * The geometry-engine cause bit: kona_ge_intr_handler writes it back to
- * acknowledge. The model sets it when it posts a completion reason (see
- * sgi_kona_post_reason()) and the write-1-to-clear above clears it; that
- * the write clears it is inferred from the handler's write.
+ * The geometry-engine cause bit: the driver's geometry-engine interrupt handler
+ * writes it back to acknowledge. The model sets it when it posts a completion
+ * reason (see sgi_kona_post_reason()) and the write-1-to-clear above clears it;
+ * that the write clears it is inferred from the handler's write.
  */
 #define SGI_KONA_INT_CAUSE_GE (1u << 5)
 
 /*
  * The general handler's video bit and one of its fatal bits, from the
- * driver's cause-bit dispatch: 0x8 calls kona_video_intr, 0x100 kona_die.
+ * driver's cause-bit dispatch: 0x8 calls its video interrupt handler,
+ * 0x100 its fatal-error path.
  */
 #define SGI_KONA_INT_CAUSE_VIDEO (1u << 3)
 #define SGI_KONA_INT_CAUSE_FATAL (1u << 8)
 
 /*
  * The general status vector, bits [7:0] of SGI_KONA_INT_VECTORS
- * (kona_reset_adaptor, established; 0x10 in the captured run), which
+ * (the driver's adaptor reset, established; 0x10 in the captured run), which
  * delivers the cause bits above to the driver's general handler.
  */
 #define SGI_KONA_INT_VECTORS_GENERAL_MASK 0xffu
 
 /*
- * The retrace tag register. On each video interrupt kona_video_intr reads
- * it and completes, in order, every queued retrace callback whose tag is
- * at most the value read (established from the driver). A swap's
- * callback is
- * kona_swap_complete, which wakes the client waiting on its swap. The
- * model sets it to the tag of the last retrace request (0x1e7) a retrace
- * honoured, and sets SGI_KONA_INT_CAUSE_VIDEO at that retrace: inferred
- * from the handler, as is the one request honoured per retrace, which
- * follows the shared scanout's swap queue. Whether the bit also rises at
- * retraces with nothing honoured is unknown; the model raises it only
+ * The retrace tag register. On each video interrupt the driver's video
+ * interrupt handler reads it and completes, in order, every queued retrace
+ * callback whose tag is at most the value read (established from the driver). A
+ * swap's callback is the driver's swap completion, which wakes the client
+ * waiting on its swap. The model sets it to the tag of the last retrace request
+ * (0x1e7) a retrace honoured, and sets SGI_KONA_INT_CAUSE_VIDEO at that
+ * retrace: inferred from the handler, as is the one request honoured per
+ * retrace, which follows the shared scanout's swap queue. Whether the bit also
+ * rises at retraces with nothing honoured is unknown; the model raises it only
  * when a tag completes. No write is established.
  */
 #define SGI_KONA_RETRACE_TAG 0x800248
@@ -239,9 +239,10 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
     ((int)(((cookie) >> 32) & 0xff) - 1)
 
 /*
- * The reason kona_ge_intr takes as the end of a context deactivate: it
- * wakes the swap sleeping in KONApcxswap and cancels that swap's 90 s
- * deactivate timeout (established from the kernel).
+ * The reason the driver's geometry-engine interrupt takes as the end of a
+ * context deactivate: it wakes the swap sleeping in the driver's context
+ * swap and cancels that swap's 90 s deactivate timeout (established from
+ * the kernel).
  */
 #define SGI_KONA_REASON_CONTEXT_DEACTIVATED 0x101
 
@@ -252,14 +253,13 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
 #define SGI_KONA_CONTEXT_NONE (-1)
 
 /*
- * The words the model leaves in a context's save area when 0x1fc switches
- * it out. KONApcxswap reads word 0 back as 0x1f9's first argument and
- * sends word 2 as the token of kona_act_pcx's last packet, which carries
- * one 0; no driver code reads any other word. What the pipe writes there
- * is unknown. Word 0 is the model's own marker, ASCII "KONA", not a value
- * from any hardware. Word 2 is 0x172, a guess: every kernel sender of
- * 0x172 follows it with one 0, and the pipe's command-name table calls it
- * a no-op.
+ * The words the model leaves in a context's save area when 0x1fc switches it
+ * out. The driver's context swap reads word 0 back as 0x1f9's first argument
+ * and sends word 2 as the token of its context activation's last packet, which
+ * carries one 0; no driver code reads any other word. What the pipe writes
+ * there is unknown. Word 0 is the model's own marker, ASCII "KONA", not a value
+ * from any hardware. Word 2 is 0x172, a guess: every kernel sender of 0x172
+ * follows it with one 0, and the pipe's command-name table calls it a no-op.
  */
 #define SGI_KONA_SAVE_AREA_MARKER 0x4b4f4e41
 #define SGI_KONA_SAVE_AREA_TOKEN  0x172
@@ -276,23 +276,21 @@ typedef struct SGIKonaContext {
 /*
  * Where a context table entry's GL context draws, beside the entry.
  *
- * The window comes from the restore packets kona_act_pcx sends with a
- * context it has marked stale: 0x1f3 with eleven words and 0x1ee with
- * three. The traced run placed a 128x128 window at X position 256, 256
- * on the 1280x1024 screen and saw 0x1f3 0x100 0x280 0x05670080
- * 0x05670080 0x100 0x280 0x80 0x80 0 0xd 0 and 0x1ee 0x100 0x280 0.
- * Inferred: 0x1f3's words 0 and 1 are the window's left column and its
- * lower edge counted up from the bottom line, which is where a colour
- * plane's rows count from, and words 6 and 7 its width and height. The X
- * server filled the same window's background from (256, 256) to (384,
- * 384) with rows counted down, and 1024 - 384 is 640, 0x280. The other
- * reading, 0x100 the row counted down and 0x280 half the screen's width,
- * fits that one window equally, since both its coordinates are 256; a
- * run with the window at two different coordinates would tell them
- * apart. 0x1ee's first two words repeat the corner and set it alone.
- * Words 2 to 5 and 8 of 0x1f3 and the last word of 0x1ee are unknown and
- * unused. placed is 0 until the first 0x1f3, and the context then draws
- * nothing.
+ * The window comes from the restore packets the driver's context activation
+ * sends with a context it has marked stale: 0x1f3 with eleven words and 0x1ee
+ * with three. The traced run placed a 128x128 window at X position 256, 256 on
+ * the 1280x1024 screen and saw 0x1f3 0x100 0x280 0x05670080 0x05670080 0x100
+ * 0x280 0x80 0x80 0 0xd 0 and 0x1ee 0x100 0x280 0. Inferred: 0x1f3's words 0
+ * and 1 are the window's left column and its lower edge counted up from the
+ * bottom line, which is where a colour plane's rows count from, and words 6 and
+ * 7 its width and height. The X server filled the same window's background from
+ * (256, 256) to (384, 384) with rows counted down, and 1024 - 384 is 640,
+ * 0x280. The other reading, 0x100 the row counted down and 0x280 half the
+ * screen's width, fits that one window equally, since both its coordinates are
+ * 256; a run with the window at two different coordinates would tell them
+ * apart. 0x1ee's first two words repeat the corner and set it alone. Words 2 to
+ * 5 and 8 of 0x1f3 and the last word of 0x1ee are unknown and unused. placed is
+ * 0 until the first 0x1f3, and the context then draws nothing.
  *
  * display_id and partial are 0x1f3's words 9 and 10. In the runs the
  * kernel's word 9 is the display ID the X server paints into the
@@ -479,7 +477,7 @@ typedef struct SGIKonaPendingSwap {
 /*
  * Plain stored field, reused by both the firmware's recovery sequence
  * (values 3, 2), its EEPROM-check sequence (values 1, 0), and the
- * kernel driver's own KONAinitialize, which writes 1 then 0 here,
+ * kernel driver's own initialisation, which writes 1 then 0 here,
  * reading back after each, before its SGI_KONA_INT_ENABLE and
  * SGI_KONA_RESET_ARG writes. This model interprets none of these
  * writers' values.
@@ -585,19 +583,20 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_LOAD_SECTIONS_MAX 32
 
 /*
- * The watchdog activity register. While a driver timeout is pending,
- * kona_callout reads it every 500 ms, treats bit 0x4 as transaction-bus
- * or ARM activity, and writes 4 back (established). The model sets bit
- * 0x4 whenever it consumes a command-port or load word, and a write with
- * bit 0x4 set clears it: both inferred from the "no TBUS or ARM activity"
- * message, not from a hardware description. The value does not affect
- * bring-up while the driver's kona_full_timeouts keeps its default of 1.
- * Other written bits (kona_die writes 8, kona_video_intr 1) have no
- * modeled meaning and stay on the unimplemented-write log. The
- * activity-latch qtest checks the model's rule; what would check it
- * against the driver is a guest run with kona_full_timeouts set to 0,
- * which must not log "Pipe hung", and against hardware a read of a real
- * pipe's register after it has been idle.
+ * The watchdog activity register. While a driver timeout is pending, the
+ * driver's periodic timeout check reads it every 500 ms, treats bit 0x4
+ * as transaction-bus or ARM activity, and writes 4 back (established).
+ * The model sets bit 0x4 whenever it consumes a command-port or load
+ * word, and a write with bit 0x4 set clears it: both inferred from the
+ * driver's no-activity message, not from a hardware description. The
+ * value does not affect bring-up while the driver's full-timeouts tunable
+ * keeps its default of 1. Other written bits (the fatal-error path writes
+ * 8, the video interrupt handler 1) have no modeled meaning and stay on
+ * the unimplemented-write log. The activity-latch qtest checks the
+ * model's rule; what would check it against the driver is a guest run
+ * with that tunable set to 0, which must not log the driver's pipe-hang
+ * message, and against hardware a read of a real pipe's register after it
+ * has been idle.
  */
 #define SGI_KONA_ACTIVITY 0x8003a8
 #define SGI_KONA_ACTIVITY_BUS (1u << 2)
@@ -613,14 +612,13 @@ typedef struct SGIKonaPendingSwap {
 #define SGI_KONA_LOADER_328 0x800328
 
 /*
- * The XG map RAM: a per-entry mapping table kona_mapram_init() probes at
- * attach and kona_mapram_map() later fills for ordinary page mappings.
- * This model backs the whole
- * widget +0x100000-+0x1fffff window with SGI_KONA_MAPRAM_ENTRIES 32-bit
- * words that store and return all 32 bits, cleared at reset, so every
- * entry count SGI_KONA_PROBE's bits [5:3] could select stays inside it.
- * The model does not interpret entry contents: no DMA path here reads
- * them yet.
+ * The XG map RAM: a per-entry mapping table the driver's map RAM probe checks
+ * at attach and its page mapper later fills for ordinary page mappings. This
+ * model backs the whole widget +0x100000-+0x1fffff window with
+ * SGI_KONA_MAPRAM_ENTRIES 32-bit words that store and return all 32 bits,
+ * cleared at reset, so every entry count SGI_KONA_PROBE's bits [5:3] could
+ * select stays inside it. The model does not interpret entry contents: no DMA
+ * path here reads them yet.
  *
  * Two parts of that policy are approximations, not hardware facts. An
  * entry's physical width is unknown: the driver's own test values use
@@ -666,13 +664,14 @@ typedef struct SGIKonaPendingSwap {
 /*
  * Bit 28 of a command's page word marks a host physical page; without it
  * the page word is a device address translated through the XG map RAM.
- * Inferred from the driver's two uses (kona_alloc_bdata and KONApcxswap).
+ * Inferred from the driver's two uses (its buffer allocation and its
+ * context swap).
  */
 #define SGI_KONA_PAGE_WORD_PHYSICAL (1u << 28)
 #define SGI_KONA_PAGE_WORD_FRAME    0x0fffffffu
 
 /*
- * An XG map RAM entry as the 6.5.30 driver's kona_mapram_map() writes
+ * An XG map RAM entry as the 6.5.30 driver's page mapper writes
  * it: bits [31:28] = 0x2 (a 16 KiB page), bits [27:0] the 4 KiB frame
  * number of that page. The model translates only this encoding.
  */
@@ -772,14 +771,14 @@ typedef enum SGIKonaBitmapState {
  * and a longer list is logged and leaves drawing clipped to the screen.
  *
  * This list diverges from the shared SGIClipList (hw/display/sgi/
- * board-memory.h, section 2 of the graphics low-level design): that holds
- * up to 16 inclusive rectangles in plane coordinates, and this one keeps
- * the X server's words as sent, up to 64 boxes with an exclusive far
- * corner in X coordinates, y counting down. konPolyFillRectSolid sends
- * the list only with fewer than 13 rectangles, but the other callers of
- * kon_loadClipRects were not read for a bound, so the model leaves more
- * room than 16. Adopting the shared type would refuse lists of 17 to 64
- * that the model now applies, and convert every rectangle at load.
+ * board-memory.h, section 2 of the graphics low-level design): that holds up to
+ * 16 inclusive rectangles in plane coordinates, and this one keeps the X
+ * server's words as sent, up to 64 boxes with an exclusive far corner in X
+ * coordinates, y counting down. The X server's solid rectangle fill sends the
+ * list only with fewer than 13 rectangles, but the other callers of its
+ * clip-rectangle loader were not read for a bound, so the model leaves more
+ * room than 16. Adopting the shared type would refuse lists of 17 to 64 that
+ * the model now applies, and convert every rectangle at load.
  */
 #define SGI_KONA_X_CLIP_MAX_RECTS  64
 #define SGI_KONA_X_CLIP_LIST_WORDS (1 + 4 * SGI_KONA_X_CLIP_MAX_RECTS)
@@ -1176,7 +1175,7 @@ struct SGIKonaState {
      * Host-only trace bookkeeping, not guest state: counts every access
      * this window sees so sgi_kona_mapram_trace_access() can trace only
      * the first access and each power-of-two milestone after it, instead
-     * of one line per entry -- kona_mapram_init()'s own attach-time sweep
+     * of one line per entry -- the driver's own attach-time map RAM probe
      * alone touches up to SGI_KONA_MAPRAM_ENTRIES entries twice. Not
      * migrated, like test_pixel_x/test_pixel_y below: a live trace's own
      * milestone count restarting after a migration is harmless.
@@ -1556,9 +1555,9 @@ struct SGIKonaState {
 
     /*
      * The textport's raster position: established from the IO6 PROM's
-     * kona_tp_raster_pos routine as command 4's own two arguments (x, y),
-     * set once before a run of
-     * bitmap blits and read back by none of the firmware's own code --
+     * textport raster-position routine as command 4's own two arguments
+     * (x, y), set once before a run of bitmap blits and read back by none
+     * of the firmware's own code --
      * only this model's bitmap placement consumes it. Command 4 stores
      * these and draws nothing; a completed bitmap blit advances them by
      * its own header's advance fields. Persists across bitmap_reset()

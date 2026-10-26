@@ -52,7 +52,7 @@
 #define INT_CAUSE_KONASTART_DIES 0x100
 
 /*
- * What the IRIX 6.5.30 driver's kona_reset_adaptor wrote in a captured
+ * What the IRIX 6.5.30 driver's adaptor reset wrote in a captured
  * run: vectors 0xf (xg), 0x11 (geometry engine) and 0x10 (general), and
  * node 0's Hub interrupt-modify register at widget 9 as the destination.
  */
@@ -209,7 +209,7 @@ static void kona_command(QTestState *s, uint32_t token, const uint32_t *args,
     }
 }
 
-/* KONAstart's framing of the same command: kick 0x30000, token, 0x10000. */
+/* The driver's pipe-start framing: kick 0x30000, token, 0x10000. */
 static void kona_command_kicked(QTestState *s, uint32_t token,
                                 const uint32_t *args, unsigned argc)
 {
@@ -261,7 +261,7 @@ static bool hub_pending(QTestState *s, unsigned int vector)
     return hub_read(s, PI_INT_PEND0) & (UINT64_C(1) << vector);
 }
 
-/* Program the interrupt registers as kona_reset_adaptor does. */
+/* Program the interrupt registers as the driver's adaptor reset does. */
 static void kona_program_interrupts(QTestState *s)
 {
     qtest_writel(s, REG_INT_DEST_UPPER, KERNEL_INT_DEST_UPPER);
@@ -287,7 +287,7 @@ static void guest_fill_word(QTestState *s, uint64_t addr, uint32_t value)
     qtest_memwrite(s, addr, bytes, sizeof(bytes));
 }
 
-/* KONAstart's 0x1f1 for a host physical page. */
+/* The driver's pipe-start 0x1f1 for a host physical page. */
 static void kona_register_page(QTestState *s, uint64_t page)
 {
     kona_command_kicked(s, 0x1f1,
@@ -619,7 +619,7 @@ static void test_kernel_command_framing(void)
     kona_command_kicked(s, 0x1fd, (uint32_t[]){ 1, 9, 0 }, 3);
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==, 0);
     assert_textport_in_step(s);
-    /* kona_checkpipe's variant with only a 0x10000 kick before 0x1dd. */
+    /* The driver's pipe-check variant: only a 0x10000 kick before 0x1dd. */
     qtest_writel(s, REG_KICK, 0x10000);
     kona_command(s, 0x1dd, (uint32_t[]){ 0x105 }, 1);
     qtest_writel(s, REG_KICK, 0);
@@ -639,7 +639,7 @@ static void test_kernel_command_framing(void)
 }
 
 /*
- * The kernel's pool packets. kona_mem_alloc's first
+ * The kernel's pool packets. The kernel's pipe-memory allocator's first
  * allocation for the minimal GLX program sends 0x1e4 2 9 0 1 inside the
  * +0xc00108 bracket, then 0x172 0 with none; a free sends 0x1e4 with
  * offset and size 0. Pool pressure adds copy-down, 0x1e1 and four words,
@@ -693,10 +693,10 @@ static void test_kernel_pool_packets(void)
 }
 
 /*
- * 0x1f1 registers the reason page: physical when bit 28 of the page word
- * is set (KONAstart's form), otherwise through the map RAM entry for the
- * device address's 16 KiB page. An unmapped device address registers
- * nothing and says so.
+ * 0x1f1 registers the reason page: physical when bit 28 of the page word is
+ * set (the driver's pipe-start form), otherwise through the map RAM entry
+ * for the device address's 16 KiB page. An unmapped device address
+ * registers nothing and says so.
  */
 static void test_reason_page_registration(void)
 {
@@ -710,7 +710,7 @@ static void test_reason_page_registration(void)
     /* Device page 1 (0x4000-0x7fff) maps the 16 KiB page at 0x123c000. */
     qtest_writel(s, REG_MAPRAM(1), 0x20000000 | ((0x123c000 >> 14) << 2));
     kona_command(s, 0x1f1, (uint32_t[]){ 4, 0x9010, 0x4000 }, 3);
-    /* kona_mapram_init()'s test pattern is not a mapping. */
+    /* The driver's map RAM probe pattern is not a mapping. */
     qtest_writel(s, REG_MAPRAM(2), 0x10000002);
     kona_command(s, 0x1f1, (uint32_t[]){ 8, 0x9000, 0x4000 }, 3);
     qtest_quit(s);
@@ -725,12 +725,13 @@ static void test_reason_page_registration(void)
 }
 
 /*
- * Reason posting: with KONAstart's page registered, KONAdestroyddrn's
- * 0x1f8 0x103 writes 0x103 big-endian to word 0 of the page, sets cause
- * bit 0x20 and sends exactly one interrupt, on the geometry-engine vector
- * 0x11; the handler's write of 0x20 clears the bit and sends nothing
- * more. Discriminates a model that posts to the page and the GE vector
- * from one that replies through the mailbox or the general vector.
+ * Reason posting: with the pipe-start page registered, the driver's
+ * rendering-node teardown's 0x1f8 0x103 writes 0x103 big-endian to word 0
+ * of the page, sets cause bit 0x20 and sends exactly one interrupt, on the
+ * geometry-engine vector 0x11; the handler's write of 0x20 clears the bit
+ * and sends nothing more. Discriminates a model that posts to the page and
+ * the GE vector from one that replies through the mailbox or the general
+ * vector.
  */
 static void test_reason_posting(void)
 {
@@ -756,7 +757,7 @@ static void test_reason_posting(void)
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
     g_assert_true(hub_pending(s, GE_VECTOR));
 
-    /* kona_checkpipe's 0x1dd posts its reason through the same page. */
+    /* The driver's pipe-check 0x1dd posts its reason through the same page. */
     hub_write(s, PI_INT_MODIFY, GE_VECTOR);
     qtest_writel(s, REG_KICK, 0x10000);
     kona_command(s, 0x1dd, (uint32_t[]){ 0x105 }, 1);
@@ -804,9 +805,10 @@ static void test_no_reason_page_no_post(void)
 }
 
 /*
- * The X server process's 0x1f2 0 0x9000 0x4000 and 0x1e9 0 between
- * KONAstart and the teardown leave the stream in step: 0x1e9 answers on
- * 0x1f2's page and 0x1f8 0x103 still posts to the page 0x1f1 registered.
+ * The X server process's 0x1f2 0 0x9000 0x4000 and 0x1e9 0 between the
+ * driver's pipe start and the teardown leave the stream in step: 0x1e9
+ * answers on 0x1f2's page and 0x1f8 0x103 still posts to the page 0x1f1
+ * registered.
  */
 static void test_process_commands_then_post(void)
 {
@@ -829,7 +831,7 @@ static void test_process_commands_then_post(void)
 }
 
 /*
- * KONApcxswap's context deactivate, as a run traced it: kick 0x30000,
+ * The driver's context-swap deactivate, as a run traced it: kick 0x30000,
  * 0x1fc, kick 0x10000, the outgoing context's index, and no closing kick
  * before the driver sleeps.
  */
@@ -843,10 +845,11 @@ static void kona_context_deactivate(QTestState *s, uint32_t index)
 
 /*
  * The deactivate's completion: reason 0x101 in word 0 of the reason page,
- * the geometry-engine cause bit and one interrupt on its vector, which
- * kona_ge_intr takes as the wakeup for the sleeping swap. The handler's
- * write of 0x20 clears the bit. Discriminates a model that answers 0x1fc
- * from one that drops it, which leaves the swap to its 90 s timeout.
+ * the geometry-engine cause bit and one interrupt on its vector, which the
+ * driver's geometry-engine interrupt takes as the wakeup for the sleeping
+ * swap. The handler's write of 0x20 clears the bit. Discriminates a model
+ * that answers 0x1fc from one that drops it, which leaves the swap to its
+ * 90 s timeout.
  */
 static void test_context_deactivate_posts(void)
 {
@@ -902,10 +905,10 @@ static void test_context_deactivate_argument_framed(void)
 }
 
 /*
- * KONAstart kills the pipe if +0x800238 shows bit 0x100, so the cause must
- * come out of reset without it; and reset forgets the reason page and the
- * interrupt registers, so a post afterwards writes nothing. A guard: the
- * model before this change also read zero here.
+ * The driver's pipe start kills the pipe if +0x800238 shows bit 0x100, so
+ * the cause must come out of reset without it; and reset forgets the reason
+ * page and the interrupt registers, so a post afterwards writes nothing. A
+ * guard: the model before this change also read zero here.
  */
 static void test_reset_clears_cause_and_reason_page(void)
 {
@@ -930,10 +933,11 @@ static void test_reset_clears_cause_and_reason_page(void)
 }
 
 /*
- * The activity latch: kona_callout's read-then-write-4 round sees bit 0x4
- * only when a command-port, DMA FIFO or load word arrived since the
- * previous round. kona_die's write of 8 neither sets nor clears it and
- * stays on the unimplemented-write log.
+ * The activity latch: the driver's periodic timeout check's
+ * read-then-write-4 round sees bit 0x4 only when a command-port, DMA FIFO
+ * or load word arrived since the previous round. The fatal-error path's
+ * write of 8 neither sets nor clears it and stays on the
+ * unimplemented-write log.
  */
 static void test_activity_latch(void)
 {
@@ -1068,9 +1072,9 @@ static void test_config_pool_descriptors(void)
 }
 
 /*
- * KONApcxswap's physical form of 0x1f2: bit 28 of the page word set, the
- * page frame below it and the byte offset in the second word. A second
- * 0x1f2 replaces the first: the model keeps one return page.
+ * The driver's context-swap physical form of 0x1f2: bit 28 of the page word
+ * set, the page frame below it and the byte offset in the second word. A
+ * second 0x1f2 replaces the first: the model keeps one return page.
  */
 static void test_return_page_physical(void)
 {
@@ -1230,9 +1234,10 @@ static void test_display_tokens_consumed(void)
 }
 
 /*
- * Address decode: W at +0xc1250c, then H and D at +0xc1000c, frame
- * as 0x128 W H D, observed through the X initialise echo. kon_InitHW's
- * write-gather flush at +0xc13fec frames as 0x1ff 0xdeadbeef.
+ * Address decode: W at +0xc1250c, then H and D at +0xc1000c, frame as 0x128
+ * W H D, observed through the X initialise echo. The X server's hardware
+ * initialisation's write-gather flush at +0xc13fec frames as 0x1ff
+ * 0xdeadbeef.
  */
 static void test_address_decode(void)
 {

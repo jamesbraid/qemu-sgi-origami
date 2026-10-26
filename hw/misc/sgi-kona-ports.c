@@ -5,24 +5,25 @@
 
 const SGICommandPortSelector sgi_kona_fifo_selectors[] = {
     /*
-     * KONAsetdisplaymode: selector, then 0, then the mode/timing argument,
-     * then the fault-byte argument, the one entry in this table whose
-     * selector-first word order is confirmed, not inferred.
+     * The kernel driver's display-mode set: selector, then 0, then the
+     * mode/timing argument, then the fault-byte argument, the one entry
+     * in this table whose selector-first word order is confirmed, not
+     * inferred.
      */
     { 0x1e6, 3 },
-    { 0x1f5, 0 }, /* kona_start_selectfeed: bare */
-    { 0x1f6, 0 }, /* kona_finish_selectfeed: bare */
+    { 0x1f5, 0 }, /* the kernel's select-feed start: bare */
+    { 0x1f6, 0 }, /* the kernel's select-feed finish: bare */
 };
 const unsigned sgi_kona_fifo_num_selectors =
     ARRAY_SIZE(sgi_kona_fifo_selectors);
 
 const SGICommandPortSelector sgi_kona_textport_selectors[] = {
     { 0x1, 1 },
-    { 0x2, 1 }, /* same shape as kona_setcolor */
+    { 0x2, 1 }, /* same shape as the textport's colour set */
     { 0x3, 4 },
     { 0x4, 2 },
     { 0x5, 4 },
-    { 0x6, 2 }, /* same shape as kona_point */
+    { 0x6, 2 }, /* same shape as the textport's point */
     { 0x7, 2 },
     { 0x8, 2 }, /* cached screen size */
     { 0x9, 1 }, /* sync probe, magic 0x1234abcd */
@@ -36,7 +37,7 @@ const SGICommandPortSelector sgi_kona_doorbell_selectors[] = {
     { 0xc7,  1 }, /* glFlush */
     { 0xc6,  1 }, /* glFinish / glXSwapBuffers */
     { 0x1cc, 1 }, /* glFlushRasterSGIX */
-    { 0x116, 4 }, /* GetSingleCompFromPipe */
+    { 0x116, 4 }, /* the library's single-component readback */
     { 0x1d6, 1 }, /* context resolution */
     { 0x1ca, 1 }, /* context resolution */
 };
@@ -45,18 +46,19 @@ const unsigned sgi_kona_doorbell_num_selectors =
 
 /*
  * Each command is framed on its own token, never on the +0xc00108 kick
- * values: kona_checkpipe can send 0x1dd after only a 0x10000 kick, and a
- * graphics process's own commands carry no kicks at all.
+ * values: the kernel driver's pipe check can send 0x1dd after only a
+ * 0x10000 kick, and a graphics process's own commands carry no kicks at
+ * all.
  *
  * 0x1f1, 0x1f2 and 0x1fd take a page word, a tagged offset word and a
- * length, as the driver's KONAstart and context activation send them and
- * a traced run shows. 0x1f8 and 0x1dd take one reason word, from
- * KONAdestroyddrn and kona_checkpipe. 0x1fc takes the outgoing
- * context's index, the one word KONApcxswap sends after it before it
- * sleeps. 0x1e9's one word is observed only:
+ * length, as the driver's pipe start and context activation send them and
+ * a traced run shows. 0x1f8 and 0x1dd take one reason word, from the
+ * driver's rendering-node teardown and its pipe check. 0x1fc takes the
+ * outgoing context's index, the one word the driver's context swap sends
+ * after it before it sleeps. 0x1e9's one word is observed only:
  * gfxinit writes nothing after it, so a longer command cannot be ruled
- * out. 0x1e6 takes a word, a table index and a byte, as
- * KONAsetdisplaymode and the swap paths send it.
+ * out. 0x1e6 takes a word, a table index and a byte, as the driver's
+ * display-mode set and the swap paths send it.
  *
  * The X server's own tokens count the first argument, which travels
  * in the token's slot, and the data words after it. Counts come from
@@ -80,18 +82,18 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_DISPLAY_MODE, 3 },
     { SGI_KONA_CMD_CONTEXT_DEACTIVATE, 1 },
     /*
-     * The rest of a context swap, from KONApcxswap, kona_act_pcx,
-     * KONAvalidateclip and kona_dmapool_update_pipe: each count holds at
-     * every sender read. kona_act_pcx's last packet takes its
-     * token from word 2 of the incoming context's save area and carries
-     * one 0; sgi-kona.c leaves 0x172 there, framed above.
+     * The rest of a context swap, from the kernel driver's context swap,
+     * context activation, clip validation and DMA pool update: each count
+     * holds at every sender read. The context activation's last packet
+     * takes its token from word 2 of the incoming context's save area and
+     * carries one 0; sgi-kona.c leaves 0x172 there, framed above.
      */
     { SGI_KONA_CMD_CONTEXT_RESTORE, 4 },
     { SGI_KONA_CMD_CONTEXT_RECORDS, 11 },
     { SGI_KONA_CMD_CONTEXT_WORDS, 3 },
     { SGI_KONA_CMD_SWAP_PAIR, 2 },
     { SGI_KONA_CMD_DMA_POOL, 3 },
-    /* kona_idma's packet and kona_dmawrite's list-write record. */
+    /* The kernel's DMA packet and its list-write record. */
     { SGI_KONA_CMD_DMA_PACKET, 6 },
     { SGI_KONA_CMD_DMA_LIST_WRITE, 2 },
     /* Read-DMA brackets carry the descriptor and completion arguments. */
@@ -107,10 +109,10 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_LIST_CALLS_POOL, 1 },
     { SGI_KONA_CMD_LIST_PULL, 4 },
     { SGI_KONA_CMD_LIST_MOVE, 3 },
-    /* KONAschedswapbuf and kona_retrace_activate: the retrace tag. */
+    /* The kernel's swap scheduling and retrace activation: the retrace tag. */
     { SGI_KONA_CMD_RETRACE, 1 },
     /*
-     * The pool packets, from the kernel's kona_mem routines. A region is
+     * The pool packets, from the kernel's pipe-memory routines. A region is
      * class, key, offset and size, both in granules; a copy-down class, old
      * offset, new offset and size; a swap-out class, offset, size, granule,
      * copy count, host address >> 12, (address & 0xfff) | 0x9000 and the
@@ -124,15 +126,16 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_MEM_SWAP_OUT, 8 },
     { SGI_KONA_CMD_RESOURCE_SYNC, 1 },
     { SGI_KONA_CMD_X_INIT, 3 },        /* width, height, depth code */
-    /* kon_loadGC, from the GC private */
+    /* The X server's GC load, from its per-GC state */
     { SGI_KONA_CMD_X_GC, SGI_KONA_X_GC_WORDS },
     { SGI_KONA_CMD_X_POSITION, SGI_KONA_X_POSITION_WORDS },
     /*
-     * kon_loadClipRects: a rectangle count, then the rectangles. With one
-     * rectangle 0x12b carries all five words. With more, X bdata4 carries
-     * the count and the first rectangle's x1, y1, x2, then each further
-     * rectangle's y2 and the next rectangle's x1, y1, x2, and 0x12b the
-     * last y2 and the last rectangle. sgi-kona.c joins them.
+     * The X server's clip-rectangle load: a rectangle count, then the
+     * rectangles. With one rectangle 0x12b carries all five words. With
+     * more, X bdata4 carries the count and the first rectangle's x1, y1,
+     * x2, then each further rectangle's y2 and the next rectangle's x1,
+     * y1, x2, and 0x12b the last y2 and the last rectangle. sgi-kona.c
+     * joins them.
      */
     { SGI_KONA_CMD_X_BDATA4, SGI_KONA_X_BDATA4_WORDS },
     { SGI_KONA_CMD_X_CLIP, SGI_KONA_X_CLIP_WORDS },
@@ -143,8 +146,8 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_SCISSOR, SGI_KONA_X_SCISSOR_WORDS },
     /*
      * Start index and count n only. The n entries follow, framed by
-     * sgi-kona.c: konInstallColormap sends 2 + n words, and kon_InitHW's
-     * three-word load is n = 1.
+     * sgi-kona.c: the X server's colour-map install sends 2 + n words, and
+     * its hardware initialisation's three-word load is n = 1.
      */
     { SGI_KONA_CMD_X_COLOR_MAP, 2 },
     /*
@@ -160,7 +163,7 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_CURSOR, 1 },
     { 0x131, 1 },
     { SGI_KONA_CMD_X_DID_MAP, 2 },     /* entry index, packed entry */
-    { SGI_KONA_CMD_X_DID_CONFIG, 1 },  /* 1, or 0 from konDestroyWindow */
+    { SGI_KONA_CMD_X_DID_CONFIG, 1 },  /* 1, or 0 at window destroy */
     { SGI_KONA_CMD_X_PIXEL_SETUP, SGI_KONA_X_PIXEL_SETUP_WORDS },
     /* Absolute source x and y; the reply uses the context return page. */
     { SGI_KONA_CMD_X_PIXEL_READ, 2 },
@@ -170,7 +173,7 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
      */
     { SGI_KONA_CMD_X_PIXEL_WRITE, 2 },
     { SGI_KONA_CMD_X_PIXEL_FINISH, 1 },
-    /* Source x and y, then destination x and y (konCopyRect). */
+    /* Source x and y, then destination x and y (the X server's copy). */
     { SGI_KONA_CMD_X_PIXEL_COPY, 4 },
     /*
      * The stipple tokens: load takes a cache entry, or
@@ -221,20 +224,20 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_BOX, 2 },
     { SGI_KONA_CMD_X_BOX6, 12 },
     /*
-     * konPolyFillRectSolid's rectangles, two words each, relative to the
-     * X load position: X rect6 carries six, X rect the last of a run,
-     * after a data token carrying the ones before it.
+     * The X server's solid rectangle fill: rectangles, two words each,
+     * relative to the X load position: X rect6 carries six, X rect the
+     * last of a run, after a data token carrying the ones before it.
      */
     { SGI_KONA_CMD_X_RECT, 2 },
     { SGI_KONA_CMD_X_RECT6, 12 },
     /*
-     * konFillSpansSolid's spans: a count of 1, 2 or 6, then that many
+     * The X server's solid span fill: a count of 1, 2 or 6, then that many
      * points and that many widths.
      */
     { SGI_KONA_CMD_X_SPANS, 3 },
     { SGI_KONA_CMD_X_SPANS2, 5 },
     { SGI_KONA_CMD_X_SPANS6, 13 },
-    { SGI_KONA_CMD_WG_FLUSH, 1 },      /* 0xdeadbeef from kon_InitHW */
+    { SGI_KONA_CMD_WG_FLUSH, 1 },      /* 0xdeadbeef from the X init */
     /*
      * The video command's number only. Its data words and checksum
      * follow, framed by sgi-kona.c from sgi_kona_video_commands[] below.

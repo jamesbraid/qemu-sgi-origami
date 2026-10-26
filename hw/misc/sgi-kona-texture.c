@@ -847,7 +847,7 @@ static uint32_t texture_native_object_mode(const SGIKonaTextureObject *o)
 
 /*
  * The physical T exponent's floor, the tile minimum of the object's
- * layout mode (0x21ad180): two in modes zero and one, one in mode two.
+ * layout mode: two in modes zero and one, one in mode two.
  */
 static int texture_native_t_minimum(const SGIKonaTextureObject *o)
 {
@@ -1001,9 +1001,9 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
 
             if (volume && o->native_volume_single) {
                 /*
-                 * Mode one stores one level at the table's first pair
-                 * (0x21ae764). Its bit three is the bank state, as in
-                 * mode zero, so it does not choose among levels.
+                 * Mode one stores one level at the table's first pair.
+                 * Its bit three is the bank state, as in mode zero, so
+                 * it does not choose among levels.
                  */
                 matches = h[0] == SGI_GL_TEXTURE_3D && !level &&
                     (h[17] & 0x60) == 0x20 &&

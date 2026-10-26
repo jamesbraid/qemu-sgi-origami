@@ -1762,9 +1762,10 @@ static void test_graphics_flow_control_registers_mask_wide_writes(
 
 /*
  * Seed bias at zero, write the credit value, program the page and II
- * routing word, then raise bias to the value MgrasResume compares against.
- * Other writes leave the counter unchanged, so the driver's "credit >=
- * bias" check succeeds without the model inventing a value.
+ * routing word, then raise bias to the value the MGRAS kernel driver's
+ * resume routine compares against. Other writes leave the counter
+ * unchanged, so the driver's "credit >= bias" check succeeds without the
+ * model inventing a value.
  */
 static void test_graphics_flow_control_replays_the_attach_sequence(
     const void *data)

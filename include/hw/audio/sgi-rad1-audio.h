@@ -20,11 +20,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_DEVICE_ID 0x0005
 
 /*
- * PCI revision 0x70. The driver reads the class/revision dword in
- * rad_create_subsys and keeps the revision byte's two nibbles as the board
- * mode (high nibble) and a sub-revision (low nibble). Mode 7 selects the
- * MediaIO paths (rad_vl_write_MUX_SEL_MIO and the mode-7 branches of
- * rad_start_subsys and rad_halt), 0xd the RADICAL card's, 0xc a third
+ * PCI revision 0x70. The driver reads the class/revision dword when it
+ * creates its subsystem and keeps the revision byte's two nibbles as the
+ * board mode (high nibble) and a sub-revision (low nibble). Mode 7 selects
+ * the MediaIO paths (the MediaIO mux-select write and the mode-7 branches of
+ * the subsystem start and halt routines), 0xd the RADICAL card's, 0xc a third
  * board's; a revision of 0 leaves the driver on none of them. hinv on a real
  * BaseIO-G prints the two nibbles as "RAD revision 7.0".
  *
@@ -37,13 +37,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_CLASS_ID PCI_CLASS_MULTIMEDIA_AUDIO
 
 /*
- * BAR0: the register file, 0x2000 bytes. rad_attach maps exactly one PCI
- * window, pciio_piotrans_addr(conn, 0, space 8, offset 0, size 0x2000), and
- * the Bridge driver reads spaces 8..13 as BARs 0..5; rad_create_subsys stores
- * the result at the per-device struct's 0x228 slot every later register
- * access goes through. The Bridge refuses a direct translation whose request
- * runs past the BAR, so a smaller BAR0 leaves that slot NULL and IRIX panics
- * in rad_start_subsys's first register write. rad_attach's other
+ * BAR0: the register file, 0x2000 bytes. The driver's attach routine maps
+ * exactly one PCI window, pciio_piotrans_addr(conn, 0, space 8, offset 0,
+ * size 0x2000), and the Bridge driver reads spaces 8..13 as BARs 0..5; the
+ * driver keeps the result as the base every later register access goes
+ * through. The Bridge refuses a direct translation whose request runs past
+ * the BAR, so a smaller BAR0 leaves that base NULL and IRIX panics in the
+ * subsystem start's first register write. The attach routine's other
  * pciio_piotrans_addr asks for space 7, size 0x20: that is PCI configuration
  * space, not a second BAR. Most of the window past the highest documented
  * offset remains unestablished.
@@ -51,7 +51,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_BAR0_SIZE 0x2000
 
 /*
- * The BAR0 register offsets, named for rad_start_subsys's bring-up writes.
+ * The BAR0 register offsets, named for the driver's bring-up writes.
  * None has an independently confirmed reset value or read behavior: this
  * model stores whatever the guest last wrote and returns it on read, an
  * approximation flagged in hw/audio/sgi-rad1-audio.c rather than a verified
@@ -59,7 +59,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  */
 /*
  * Sample-position bank: a read-only 32-bit register per channel, at BAR0 0x04
- * through 0x2c step 4. rad_start_dma reads one of these as the media stream
+ * through 0x2c step 4. The channel start reads one of these as the media stream
  * counter's hardware term. Each channel type reads a pair, A and B, named by
  * a per-type table in the driver. The model backs each register with a stored
  * value that starts at zero and changes only while a channel's DMA engine
@@ -118,13 +118,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 /*
  * Free-running UST (unadjusted system time) counter at BAR0 0x30, read-only.
- * rad_set_ust_offset reads it twice a fixed delay apart and warns "RAD UST
- * not incrementing" if it advanced by fewer than three ticks between the two
- * reads. A real board's counter runs off a clock, so the model derives it
+ * The driver's UST offset routine reads it twice a fixed delay apart and warns
+ * that the UST is stalled if it advanced by fewer than three ticks between the
+ * two reads. A real board's counter runs off a clock, so the model derives it
  * from the emulated monotonic virtual clock rather than storing a value: one
  * tick per UST_NS_PER_TICK nanoseconds of virtual time (about 1.25 MHz), fast
- * enough that the driver's threshold is met by a wide margin. Board mode 7
- * runs it from reset with no enable write.
+ * enough that the driver's threshold is met by a wide margin. Board mode 7 runs
+ * it from reset with no enable write.
  */
 #define SGI_RAD1_AUDIO_REG_UST_COUNTER      0x30
 #define SGI_RAD1_AUDIO_UST_NS_PER_TICK      800
@@ -170,9 +170,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * contiguous bank the driver programs by computed offset, so a plain
  * store-backed array over the whole span models it. A write anywhere in
  * range is a known register access, not the unimplemented-log default.
- * rad_start_status_dma programs the status-ring base low/high into
+ * The driver's status-DMA start programs the status-ring base low/high into
  * STATUS_BASE_LO/HI and a wrap/limit into STATUS_LIMIT, with a second
- * identical set at STATUS_BASE2_*; rad_start_dma writes the main-DMA
+ * identical set at STATUS_BASE2_*; its channel start writes the main-DMA
  * per-channel address/length registers elsewhere in the bank.
  */
 #define SGI_RAD1_AUDIO_REG_DMA_BANK_FIRST   0x400
@@ -189,11 +189,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_STATUS_BASE_HI   0x528
 
 /*
- * Main audio-data DMA for the analog channels. rad_start_dma writes the
- * ring's PCI address and a control word into two identical register sets,
- * then sets bit 0 of the channel's enable register: 0x4c for the input,
- * channel type 0, and 0x58 for the output, type 1. The control word is (tag
- * << 3) | (-count << 7), count in 128-byte units; the tag is the channel
+ * Main audio-data DMA for the analog channels. The driver's channel start
+ * writes the ring's PCI address and a control word into two identical register
+ * sets, then sets bit 0 of the channel's enable register: 0x4c for the input,
+ * channel type 0, and 0x58 for the output, type 1. The control word is
+ * (tag << 3) | (-count << 7), count in 128-byte units; the tag is the channel
  * type. See the per-type table in the deferred bring-up sequence and its
  * main-DMA streaming contract.
  */
@@ -282,10 +282,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 /*
  * Status-DMA control values written to 0x5c, after masking off the interval
- * field with CTRL_MASK (below). rad_start_status_dma starts the continuous
- * ring engine with STATUS_START (the ring bit 0x2 set); rad_one_shot_status
- * starts a single transfer with ONESHOT_START (ring bit clear);
- * rad_stop_status_dma stops with STATUS_STOP. The individual bit meanings
+ * field with CTRL_MASK (below). The driver's status-DMA start starts the
+ * continuous ring engine with STATUS_START (the ring bit 0x2 set), its one-shot
+ * status routine starts a single transfer with ONESHOT_START (ring bit clear),
+ * and its status-DMA stop stops with STATUS_STOP. The individual bit meanings
  * beyond start/stop and ring/one-shot are not decoded.
  */
 #define SGI_RAD1_AUDIO_STATUS_START         0x40003u
@@ -293,10 +293,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_STATUS_STOP          0x1fffcu
 
 /*
- * Descriptor-ring slot geometry, from rad_start_status_dma: slots are 0x80
- * bytes apart, at most 0x80 of them; the engine marks each processed slot
- * done by setting bit 31 of its +0x7c word and the completion bits in its
- * +0x78 word. rad_start_status_dma encodes the slot count in the limit
+ * Descriptor-ring slot geometry, from the driver's status-DMA start: slots
+ * are 0x80 bytes apart, at most 0x80 of them; the engine marks each processed
+ * slot done by setting bit 31 of its +0x7c word and the completion bits in its
+ * +0x78 word. The status-DMA start encodes the slot count in the limit
  * register as LIMIT = 0x78 - count * 0x80.
  */
 #define SGI_RAD1_AUDIO_SLOT_STRIDE          0x80
@@ -311,7 +311,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * and its status-slot flag bits:
  *
  * - bytes +0x44..+0x74 mirror registers 0x04..0x34 (slot byte = register
- *   offset + 0x40), the copy rad_update_dev works from;
+ *   offset + 0x40), the copy the driver's per-device update works from;
  * - the even words of +0x00..+0x38 hold each active channel's current DMA
  *   address, low 32 bits: +0x00 type 4, +0x08 type 2, +0x10 type 0, +0x18
  *   type 7, +0x20 type 6, +0x28 type 5, +0x30 type 3, +0x38 type 1;
@@ -449,13 +449,13 @@ typedef enum SGIRad1AudioGenlock {
 
 /*
  * Continuous status-DMA engine. The one-shot start (0x40001) fills a single
- * slot and rad_one_shot_status busy-polls it. rad_start_status_dma instead
- * starts a ring engine (0x40003, the ring bit set) that keeps completing
- * slots around the ring on its own; rad_update_subsys walks the ring,
- * clearing each done bit as it consumes, and copies the last completed slot
- * for rad_update_dev, which takes each channel's DMA pointer and position
- * registers from it. The model runs a timer that fills the next ring slot at
- * each completion.
+ * slot and the driver's one-shot status routine busy-polls it. Its status-DMA
+ * start instead starts a ring engine (0x40003, the ring bit set) that keeps
+ * completing slots around the ring on its own; the driver's subsystem update
+ * walks the ring, clearing each done bit as it consumes, and copies the last
+ * completed slot for its per-device update, which takes each channel's DMA
+ * pointer and position registers from it. The model runs a timer that fills the
+ * next ring slot at each completion.
  *
  * CTRL_MASK strips the interval field ([16:2]) before the start words are
  * compared; the ring bit (0x2) distinguishes the continuous start from the
@@ -464,13 +464,14 @@ typedef enum SGIRad1AudioGenlock {
 #define SGI_RAD1_AUDIO_STATUS_CTRL_MASK     0x40003u /* interval masked out */
 
 /*
- * Completion interval. rad_start_status_dma writes ((subsystem[0x234] * 33 +
- * 1) & 0x7fff) << 2 into bits [16:2], 8251 on IRIX 6.5.30. The available
- * register description suggests the field counts 33 MHz PCI clocks, about 250
- * us; both the unit and that it is an interval at all are inferred, so the
- * period is an approximation. It matters: the kernel mixer refills the output
- * ring only about 0xcc words ahead of the pointer it last saw in a slot, and
- * at 250 us the pointer moves about 22 words per completion.
+ * Completion interval. The driver's status-DMA start writes
+ * ((p * 33 + 1) & 0x7fff) << 2 into bits [16:2], where p is a per-subsystem
+ * setting; the field is 8251 on IRIX 6.5.30. The available register description
+ * suggests the field counts 33 MHz PCI clocks, about 250 us; both the unit and
+ * that it is an interval at all are inferred, so the period is an
+ * approximation. It matters: the kernel mixer refills the output ring only
+ * about 0xcc words ahead of the pointer it last saw in a slot, and at 250 us
+ * the pointer moves about 22 words per completion.
  *
  * Completions run on an absolute schedule, deadline k at start + k * interval
  * clocks, so a late callback does not push later completions back. A callback

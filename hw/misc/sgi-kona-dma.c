@@ -280,10 +280,10 @@ static void sgi_kona_dma_to_list(SGIKonaState *s, const SGIDMAPageList *pl,
 
 /*
  * The list end of a packet: its bytes, one line of them, at the pending
- * record's pipe-memory address. kona_dmawrite's one sender sends the
- * record's count as the packet's total and per-line count with no gap, so
- * the model refuses anything else rather than guess how a pipe joins
- * lines or reconciles counts.
+ * record's pipe-memory address. The kernel's one DMA-write sender sends
+ * the record's count as the packet's total and per-line count with no
+ * gap, so the model refuses anything else rather than guess how a pipe
+ * joins lines or reconciles counts.
  */
 static void sgi_kona_dma_list(SGIKonaState *s, const SGIDMAPageList *pl,
                               uint32_t in_page, uint32_t lines,
@@ -439,10 +439,10 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
 }
 
 /*
- * 0x1ed page tagged-offset length: the DMA pool kona_dmapool pinned, which
+ * 0x1ed page tagged-offset length: the DMA pool the kernel pinned, which
  * list invocations 0x16e and 0x171 and the pull 0x167 read by byte offset.
- * kona_dmapool requires base and length to be multiples of
- * SGI_KONA_DMA_POOL_PAGE, and kona_dmapool_update_pipe sends a length of
+ * The kernel's pool setup requires base and length to be multiples of
+ * SGI_KONA_DMA_POOL_PAGE, and its pool update sends a length of
  * 1 for a context with no pool (seen in a traced guest run), so a
  * range that is not whole pages leaves no pool registered, traced, not
  * logged. A word 2 without the 0x9000 tag, or a pool longer than the
@@ -717,11 +717,11 @@ static void sgi_kona_dma_calls_open_n(SGIKonaState *s, uint32_t token,
 
 /*
  * 0x1e4 class key offset size: the kernel's placement of one of the
- * current context's pipe-memory regions, offset and size in granules
- * (kona_mem_reserve_func). It sends one for every region the context
- * holds when it restores the context, and again when one is allocated or
- * freed (size 0). The library's display-list offsets, in 0x16d, 0x170,
- * 0x167, 0x16f and kona_dmawrite's 0x1c8, count from the start of its
+ * current context's pipe-memory regions, offset and size in granules.
+ * It sends one for every region the context holds when it restores the
+ * context, and again when one is allocated or freed (size 0). The
+ * library's display-list offsets, in 0x16d, 0x170, 0x167, 0x16f and the
+ * kernel DMA write's 0x1c8, count from the start of its
  * display-list allocation, class 1 key 0 (the grammar datasheet's
  * display-list section), so two contexts each using offset 0 must not
  * meet in pipe memory. The model therefore adds the class 1, key 0
@@ -810,8 +810,8 @@ static void sgi_kona_dma_packet(void *opaque, unsigned port_id,
     default:
         /*
          * The kernel FIFO table's selectors (sgi_kona_fifo_selectors[])
-         * belong to other mechanisms (KONAsetdisplaymode, select-feed):
-         * framed so the port stays in step, not modelled.
+         * belong to other mechanisms (the kernel's display-mode set,
+         * select-feed): framed so the port stays in step, not modelled.
          */
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: dma fifo selector 0x%03x (argc %u) framed, "

@@ -1014,12 +1014,12 @@ static void sgi_kona_saved_input_clear(SGIKonaSavedInput *v)
  * textport's own raster position, one bit per pixel, MSB-first,
  * row-major. The header's field order -- width, height, x origin, y
  * origin, x advance, y advance -- is established from the IO6 PROM's
- * kona_tp_bitmap routine, which sends six header words from halfwords
- * +0x8..+0x12 of the caller's descriptor in that order. The PROM also
+ * textport bitmap routine, which sends six header words from consecutive
+ * halfwords of the caller's descriptor in that order. The PROM also
  * places every bitmap relative to the raster position (command 4): every
  * bitmap it sends is preceded by one (icons) or starts a run of glyphs
- * that advance from it (labels). The PROM's font_glyph_draw shows the
- * origin fields are a glyph's signed x/y offsets negated into the
+ * that advance from it (labels). The PROM's glyph drawing routine shows
+ * the origin fields are a glyph's signed x/y offsets negated into the
  * descriptor, i.e. subtracted back out here.
  *
  * Placement itself -- pixel (c, r) of the payload landing at (raster_x -
@@ -1096,12 +1096,12 @@ static void sgi_kona_bitmap_blit(SGIKonaState *s)
 }
 
 /*
- * kona_attach()'s own entry-count formula: N == 0 selects 8, otherwise N,
- * then shifted left 15 (established). At this model's default
- * probe-value (0), N is 0, so the count is SGI_KONA_MAPRAM_ENTRIES, the
- * maximum the fixed-size backing array below holds; a nonzero
- * probe-value can only shrink it, as SGI_KONA_PROBE's header comment
- * says.
+ * The kernel driver's attach routine's own entry-count formula: N == 0
+ * selects 8, otherwise N, then shifted left 15 (established). At this
+ * model's default probe-value (0), N is 0, so the count is
+ * SGI_KONA_MAPRAM_ENTRIES, the maximum the fixed-size backing array below
+ * holds; a nonzero probe-value can only shrink it, as SGI_KONA_PROBE's
+ * header comment says.
  */
 static uint32_t sgi_kona_mapram_entry_count(SGIKonaState *s)
 {
@@ -1129,9 +1129,9 @@ static void sgi_kona_mailbox_enqueue(SGIKonaState *s, const uint32_t *words,
 }
 
 /*
- * One unsolicited mailbox word, after any reply words still unread, the
- * way kona_arm_intr takes them one at a time. A queue with no room left
- * is logged and the word is lost.
+ * One unsolicited mailbox word, after any reply words still unread, the way
+ * the driver's interrupt routine takes them one at a time. A queue with no
+ * room left is logged and the word is lost.
  */
 static void sgi_kona_mailbox_post(SGIKonaState *s, uint32_t word)
 {
@@ -1241,9 +1241,9 @@ static void sgi_kona_retrace(void *opaque)
  *   nothing: its words came from memory, not the port.
  *   WRITTEN sets the cause bit its cookie names and posts the cookie's
  *   mailbox word, which for a DMA packet whose word 6 is 0x100 is 0x100
- *   under cause bit 0x10: kona_arm_intr reads +0x800240 and posts the
- *   semaphore kona_dmawrite sleeps on. A cookie naming the video bit
- *   0x8 sets it with no mailbox word.
+ *   under cause bit 0x10: the driver's interrupt routine reads +0x800240
+ *   and posts the semaphore its DMA write sleeps on. A cookie naming the
+ *   video bit 0x8 sets it with no mailbox word.
  *   FAILED for an item whose sender waits sets the fatal cause bit 0x100.
  *   Approximated: what the pipe does when a transfer fails is unknown;
  *   the model makes the failure visible to the driver's handler, which
@@ -1288,7 +1288,7 @@ void sgi_kona_publish(void *opaque, const SGICompletion *c)
          * The kernel's DMA write waits for the mailbox's 0x100 in the
          * general vector's handler, which reads the cause register and
          * the mailbox only when that vector arrives (established from
-         * kona_intr_handler and kona_arm_intr); nothing polls them.
+         * the driver's interrupt handlers); nothing polls them.
          */
         if (cause & SGI_KONA_INT_CAUSE_MAILBOX) {
             sgi_kona_raise_vector(s, true);
@@ -1356,7 +1356,7 @@ static bool sgi_kona_store_counted(void)
  * The graphics credits of the processor stores the board takes. The
  * driver's flow control charges one credit in the storing processor's
  * interface for each uncached store into the page it enabled for the
- * pipe, and kona_flow_await_returned_credits waits for the count to come
+ * pipe, and the driver's credit wait waits for the count to come
  * back to the total it wrote before it lets the next process attach,
  * killing the pipe (death reason 25) when it does not. The board returns
  * one credit for each charged store once the words the store carried
@@ -1495,8 +1495,8 @@ static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
         break;
     case 0x4:
         /*
-         * Raster position: established from the IO6 PROM's
-         * kona_tp_raster_pos routine as the position every subsequent
+         * Raster position: established from the IO6 PROM's textport
+         * raster-position routine as the position every subsequent
          * bitmap blit (command 0xa) places
          * relative to -- see sgi_kona_bitmap_blit()'s own comment. Draws
          * nothing itself; a completed blit is what advances it.
@@ -1646,12 +1646,12 @@ static bool sgi_kona_x_read_current(const SGIKonaState *s)
 }
 
 /*
- * 0x1f2 a b len: remember the return-data page, where the pipe answers
- * a process's requests and the process polls word 0. KONApcxswap sends
- * 0x1f2 straight after a context's first-activation 0x1fd and never on a
- * restore, so that page becomes the context's own, restored with it by
- * 0x1f9 (see sgi_kona_context_activate()). That the pipe keeps a return
- * page per context is inferred from those two paths. A 0x1f2 with no
+ * 0x1f2 a b len: remember the return-data page, where the pipe answers a
+ * process's requests and the process polls word 0. The kernel's context
+ * switch sends 0x1f2 straight after a context's first-activation 0x1fd and
+ * never on a restore, so that page becomes the context's own, restored with
+ * it by 0x1f9 (see sgi_kona_context_activate()). That the pipe keeps a
+ * return page per context is inferred from those two paths. A 0x1f2 with no
  * first activation waiting, as gfxinit and the X server send one, only
  * replaces the page the pipe answers on. A page that does not translate
  * leaves any earlier registration in place, except for a context waiting
@@ -1949,7 +1949,7 @@ static bool sgi_kona_fabric_compose(SGIKonaState *s, unsigned int widget,
  * shows the pipe sending a deassert. The geometry-engine vector
  * (SGI_KONA_INT_VECTORS bits [16:9]) carries a posted reason; the general
  * vector (bits [7:0]) the cause bits. That both go to the one destination
- * the driver programs is inferred: kona_reset_adaptor writes one
+ * the driver programs is inferred: the driver's adaptor reset writes one
  * destination and three vectors. Only video delivery uses the mask;
  * mailbox and geometry-engine delivery retain their existing rules.
  */
@@ -2020,11 +2020,11 @@ static bool sgi_kona_host_write(SGIKonaState *s, uint64_t addr,
 /*
  * 0x1f8 R and 0x1dd R, and 0x1fc with its fixed reason 0x101: write R
  * big-endian to word 0 of the reason page, set the geometry-engine cause
- * bit and raise its interrupt, which is what kona_ge_intr reads and
- * dispatches on. Approximated: hardware is
- * inferred to post only once its queued work is done, and the model has
- * no queued work, so it posts at once. With no page registered it logs,
- * traces and posts nothing.
+ * bit and raise its interrupt, which is what the driver's geometry-engine
+ * interrupt handler reads and dispatches on. Approximated: hardware is
+ * inferred to post only once its queued work is done, and the model has no
+ * queued work, so it posts at once. With no page registered it logs, traces
+ * and posts nothing.
  */
 static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
                                  uint32_t reason)
@@ -2048,10 +2048,11 @@ static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
 }
 
 /*
- * 0x1fc index: switch the current context out. KONApcxswap then sleeps
- * until the pipe posts reason 0x101, and kona_ge_intr wakes it and
- * cancels its 90 s deactivate timeout. When the context is restored
- * later, KONApcxswap reads words 0 and 2 of its save area back (see
+ * 0x1fc index: switch the current context out. The kernel's context
+ * switch then sleeps until the pipe posts reason 0x101, and the driver's
+ * geometry-engine interrupt handler wakes it and cancels its 90 s
+ * deactivate timeout. When the context is restored later, the context
+ * switch reads words 0 and 2 of its save area back (see
  * SGI_KONA_SAVE_AREA_MARKER), so they are written before the post. The
  * index names the context's entry in the kernel's table, not the save
  * area, so the save area is the one the last 0x1fd or 0x1f9 named.
@@ -2129,7 +2130,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
  * which matches no real configuration (see sgi_kona_answer_config()).
  *
  * The products are named as IRIX's hinv names an Onyx2 pipe. The driver's
- * attach (kona_attach in the 6.5.30 IP27 kona.a) reads two words through
+ * attach routine (in the 6.5.30 IP27 kona.a) reads two words through
  * the indirect port at +0x8003c0/+0x8003d0: after selecting 0x8800, a low
  * two bits of 1 makes the pipe an InfiniteReality3 (board set 5) and 2 an
  * InfiniteReality4 (board set 6); after selecting 0xb00, bit 10 makes it a
@@ -2301,7 +2302,7 @@ static const SGIKonaProduct sgi_kona_products[] = {
       "boards are unknown" },
 };
 
-/* The indirect-port selectors kona_attach reads its class from. */
+/* The indirect-port selectors the driver's attach reads its class from. */
 #define SGI_KONA_SELECT_PRODUCT 0x8800
 #define SGI_KONA_SELECT_REDUCED 0xb00
 
@@ -2506,8 +2507,8 @@ static void sgi_kona_identity_record(SGIXioBoardState *board,
 
 /*
  * The four pipe-memory pool descriptors at block offset 0x90 + 0x1c *
- * class. kona_mem_init points class i's pool at them
- * and kona_mem_alloc checks every request against them; nothing in the
+ * class. The driver's pipe-memory setup points class i's pool at them
+ * and its allocator checks every request against them; nothing in the
  * driver writes them afterwards. The classes are the co-processor, the
  * shared display lists, the geometry engines and texture.
  *
@@ -2575,7 +2576,7 @@ static const struct {
 
 /*
  * A configured pipe's answer, every field at the offset gfxinit's report
- * (kona_info and the routines it calls, 6.5.30 gfxinit) reads it from;
+ * (6.5.30 gfxinit's board report and the routines it calls) reads it from;
  * see the InfiniteReality command grammar datasheet's configuration
  * request section for the readers. Fields no reader is known for stay
  * zero, as do the geometry board's and Ktown's identity records, which
@@ -2584,15 +2585,14 @@ static const struct {
  * video format combination, and the model draws only that one.
  *
  * The display generator's channel count goes both at +0x14, which gfxinfo
- * prints, and at +0x44, which the combination checker in setmon,
- * ircombine and the X server (vfmtActualHWToKonaTarget, setmon
- * 0x100195a0, reading the GFX_GETBOARDINFO copy 0x28 bytes in) compares
- * a combination's enabled channels against; with 0 there every
- * combination is refused as "too many channels". That +0x44 is the
- * display generator's own count, and +0x48 to +0x50, which the checker
- * also reads and the model leaves zero, its revision and an option
- * board's channel type and revision, is inferred from that use. Every
- * channel is driven: see "Display channels" above.
+ * prints, and at +0x44, which the combination checker in setmon, ircombine
+ * and the X server, reading the kernel's board-information copy, compares a
+ * combination's enabled channels against; with 0 there every combination is
+ * refused as "too many channels". That +0x44 is the display generator's own
+ * count, and +0x48 to +0x50, which the checker also reads and the model
+ * leaves zero, its revision and an option board's channel type and
+ * revision, is inferred from that use. Every channel is driven: see
+ * "Display channels" above.
  */
 #define SGI_KONA_CFG_BOARD_SET      0x00
 #define SGI_KONA_CFG_ENGINES        0x04
@@ -2637,11 +2637,11 @@ static void sgi_kona_put_text(uint8_t *field, size_t width, const char *text)
 }
 
 /*
- * One 0x4c-byte identity record in the layout kona_extract_nic_info
- * builds and gfxinit's nic_report prints: flags (0, both pages present),
- * the six-byte one-wire number, family 0x0b, a good CRC, page format 1,
- * then serial, part, revision, the three flag bytes and the name. The
- * serial and number are the model's marked synthetic ones; the flag
+ * One 0x4c-byte identity record in the layout the driver's one-wire reader
+ * builds and gfxinit's one-wire report prints: flags (0, both pages
+ * present), the six-byte one-wire number, family 0x0b, a good CRC, page
+ * format 1, then serial, part, revision, the three flag bytes and the name.
+ * The serial and number are the model's marked synthetic ones; the flag
  * bytes are unprogrammed, like the model's one-wire records.
  */
 static void sgi_kona_put_record(uint8_t *rec, const SGIKonaBoardSpec *b,
@@ -3126,13 +3126,13 @@ static bool sgi_kona_flash_op_valid(const SGIKonaFlashOp *f)
 
 /*
  * 0x128 W H D, X initialise: write W, H and D to words 2, 3 and 4 of the
- * return page, then word 0 = 1. kon_InitHW waits for word 0, then
- * compares words 2 to 4 with the width, height and depth code it sent
- * and logs a mismatch. Approximated: the model echoes the
- * request, so it can never report a mode other than the one asked for,
- * where a real pipe presumably reports the mode it set up. The guest
- * check is an X server log with no "arm says" mismatch and no pipe
- * health-check message from kon_InitHW.
+ * return page, then word 0 = 1. The X server's hardware initialisation
+ * waits for word 0, then compares words 2 to 4 with the width, height and
+ * depth code it sent and logs a mismatch. Approximated: the model echoes
+ * the request, so it can never report a mode other than the one asked for,
+ * where a real pipe presumably reports the mode it set up. The guest check
+ * is an X server log with no "arm says" mismatch and no pipe health-check
+ * message from the X server's hardware initialisation.
  */
 static void sgi_kona_x_initialise(SGIKonaState *s, const uint32_t *args)
 {
@@ -3156,7 +3156,7 @@ static void sgi_kona_x_initialise(SGIKonaState *s, const uint32_t *args)
  * next word as the checksum; a checksum that does not match is traced and
  * the command still acts, because what the pipe does with a bad checksum is
  * unknown. Falling back to the checksum search on a mismatch would cover the
- * pass-through sender at 0x4b808c, which can send other lengths; the model
+ * X server's pass-through sender, which can send other lengths; the model
  * does not, as its own choice, so a pass-through command of another length
  * misframes the words after it. Where the table gives no count (a "tables
  * only" row, or a number past the table), the model frames by that search,
@@ -3226,7 +3226,7 @@ static bool sgi_kona_video_names_channel(uint32_t command)
 /*
  * The data words of a Get's reply, from the channels' state; every word
  * not set here is zero. The layouts are those the 6.5.30 X server's video
- * initialiser (konal.so 0x4f4490) and its channel routines read, from the
+ * initialiser in konal.so and its channel routines read, from the
  * command grammar datasheet's display channel section:
  *
  * - GetBoardConfig: version 1, the board mask (bit n: physical channel n
@@ -3337,11 +3337,11 @@ static void sgi_kona_video_reply(SGIKonaState *s,
 }
 
 /*
- * TempBlankAllChannels, video command 0x3c: one data word, nonzero to
- * blank the display and 0 to show it again. The IRIX 6.5.30 X server's
- * screen saver is the sender (konBlankScreen in konal.so passes its blank
- * flag, 1 or 0, as the word); a traced desktop session sends 1 when the
- * saver fires and 0 at the next pointer motion or key press.
+ * TempBlankAllChannels, video command 0x3c: one data word, nonzero to blank
+ * the display and 0 to show it again. The IRIX 6.5.30 X server's screen
+ * saver is the sender (its screen-blank routine in konal.so passes its
+ * blank flag, 1 or 0, as the word); a traced desktop session sends 1 when
+ * the saver fires and 0 at the next pointer motion or key press.
  *
  * Inferred from the command's name in the server's video command table:
  * a blanked display shows every pixel black, and the framebuffer, colour
@@ -3359,11 +3359,10 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
 }
 
 /*
- * The channel setters, as the 6.5.30 X server's combination load
- * (konLdCombination, konal.so 0x503e00) and its channel requests send
- * them; the command grammar datasheet's display channel section gives
- * each word's source. Word 0 of every one is the physical channel, the
- * board mask's bit number.
+ * The channel setters, as the 6.5.30 X server's combination load in
+ * konal.so and its channel requests send them; the command grammar
+ * datasheet's display channel section gives each word's source. Word 0 of
+ * every one is the physical channel, the board mask's bit number.
  *
  * - DisableChannel [channel]: the channel stops; its console shows no
  *   mode, and it holds no format until the next LoadFormat.
@@ -3582,9 +3581,9 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
 
 /*
  * 0x12e, X load colour map: a start address, a count n, then n entries
- * (established from konInstallColormap and konStoreColors). The command
- * port frames the first two words; entry i lands at start + i in
- * the X colour map. An entry past the table is counted and logged, not
+ * (established from the X server's colour-map install and store routines).
+ * The command port frames the first two words; entry i lands at start + i
+ * in the X colour map. An entry past the table is counted and logged, not
  * stored.
  *
  * Approximated: no maximum count is known, so a wrong count misframes
@@ -4081,8 +4080,7 @@ static const SGIRasterRules sgi_kona_gl_rules = {
  * of 2, 4 or 8 bits, single-buffered, nothing else.
  *
  * Established: the IRIX 6.5.30 n32 libGLcore.so's configuration routine
- * sends the context's level, its word 0xce4 (the
- * library's GLDEBUG print names it "lvl"), as the first word, and
+ * sends the context's level as the first word, and
  * SceneViewer's logo context sent 1 0 8 0 0 0 0 0 0 0 (run
  * irix-20261023T111222-0467d9), whose window the kernel then placed with
  * display ID 0x44, an overlay ID. Inferred: that level 1 draws into the
@@ -6033,8 +6031,9 @@ static uint64_t sgi_kona_next_place_serial(SGIKonaState *s)
 
 /*
  * 0x1f3 and 0x1ee: the current context's window, as SGIKonaGLWindow
- * reads their words. The context keeps it until the next one, since
- * kona_act_pcx sends neither on a restore it does not mark stale.
+ * reads their words. The context keeps it until the next one, since the
+ * kernel's context activation sends neither on a restore it does not mark
+ * stale.
  */
 static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
                                const uint32_t *args)
@@ -9073,7 +9072,7 @@ static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
 /*
  * glDrawArrays' vertices (see SGI_KONA_CMD_GL_ARRAY_STATE). The state
  * word holds one field for each enabled array, zero for a disabled one
- * (libGLcore's context words +0x1518 and +0x151c, which the
+ * (state the client library keeps per context, which the
  * gl*PointerEXT calls and glEnable set): the
  * position's size and type in bits 0 to 7, the normal's type in 8 to 11,
  * the colour's type and size in 12 to 19, the texture coordinate's type
@@ -10847,11 +10846,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         sgi_kona_gl_image_clear(s);
         /*
          * One 0x176 finishes a texture level however many loads make it
-         * up: the library's level producer (0x21ae0f0) sends it once,
-         * after a volume's slice loop (0x2197404-0x21974dc) or the copies
-         * that fill a small level's tile (0x21ae5f4-0x21ae714) have each
-         * sent a load. A complete load of the same texture followed by
-         * the next load is kept, not dropped.
+         * up: the library's level producer sends it once, after a
+         * volume's slice loop or the copies that fill a small level's
+         * tile have each sent a load. A complete load of the same texture
+         * followed by the next load is kept, not dropped.
          */
         if (s->texture_upload.complete && !s->texture_upload.draw_pixels &&
             s->texture_upload.header[10] == args[10]) {
@@ -11047,10 +11045,10 @@ static const SGICommandPortOps sgi_kona_gl_ops = {
 };
 
 /*
- * fg_h in the one-bit form kon_loadBitmapGC sends: kon_parseGC sets it to
- * this constant in the colour-index case, and the foreground travels in
- * word 1 instead (established). No solid fg_h below can equal
- * it: that packing never sets bit 7.
+ * fg_h in the one-bit form the X server's bitmap GC loader sends: its GC
+ * parser sets it to this constant in the colour-index case, and the
+ * foreground travels in word 1 instead (established). No solid fg_h below
+ * can equal it: that packing never sets bit 7.
  */
 #define SGI_KONA_X_GC_BITMAP_FG_H 0xfff0
 
@@ -11090,11 +11088,11 @@ static void sgi_kona_x_load_gc(SGIKonaState *s, const uint32_t *args)
 }
 
 /*
- * 0x12a, X load position: the target drawable's x, y, width and height
- * (kon_loadGC). It is the origin of X rect coordinates, see
- * sgi_kona_x_fill_rect(). Box and pixel-write coordinates arrive absolute,
- * every sender of them setting the position to 0, 0 first, so the model
- * never adds it to those.
+ * 0x12a, X load position: the target drawable's x, y, width and height, as
+ * the X server's GC loader sends them. It is the origin of X rect
+ * coordinates, see sgi_kona_x_fill_rect(). Box and pixel-write coordinates
+ * arrive absolute, every sender of them setting the position to 0, 0 first,
+ * so the model never adds it to those.
  */
 static void sgi_kona_x_load_position(SGIKonaState *s, const uint32_t *args)
 {
@@ -11171,7 +11169,8 @@ static void sgi_kona_x_clip_run_drop(SGIKonaState *s, uint32_t next)
 
 /*
  * 0x145, X bdata4: the leading words of a clip list longer than one
- * rectangle (kon_loadClipRects), kept until the X load clip ending it.
+ * rectangle, as the X server's clip loader sends it, kept until the X
+ * load clip ending it.
  */
 static void sgi_kona_x_clip_data(SGIKonaState *s, const uint32_t *args)
 {
@@ -11192,11 +11191,11 @@ static void sgi_kona_x_clip_data(SGIKonaState *s, const uint32_t *args)
 /*
  * 0x12b, X load clip: the end of a clip list, a rectangle count n and n
  * rectangles x1, y1, x2, y2, the first words carried by any X bdata4 before
- * it (kon_loadClipRects). Inferred: each rectangle is absolute with an
- * exclusive far corner, and drawing is clipped to their union. A list whose
- * length does not match its count, including a count of 0, is logged and
- * leaves drawing clipped only to the screen, since what the pipe makes of
- * one is unknown.
+ * it, as the X server's clip loader sends it. Inferred: each rectangle is
+ * absolute with an exclusive far corner, and drawing is clipped to their
+ * union. A list whose length does not match its count, including a count of
+ * 0, is logged and leaves drawing clipped only to the screen, since what
+ * the pipe makes of one is unknown.
  */
 static void sgi_kona_x_load_clip(SGIKonaState *s, const uint32_t *args)
 {
@@ -11223,13 +11222,12 @@ static void sgi_kona_x_load_clip(SGIKonaState *s, const uint32_t *args)
 }
 
 /*
- * 0x12d, X load scissor: the clip box's x1, y1, width and height, which
- * konPolyGlyphBltSolid, konImageGlyphBlt and the fixed-width glyph senders
- * send right after a one-rectangle X load clip with the same box
- * (established). The model applies it as a second rectangle
- * with the clip, to the pixel writes, copies and fills after it, see
- * sgi_kona_x_clip(). A scissor of zero width or height clips everything,
- * logged.
+ * 0x12d, X load scissor: the clip box's x1, y1, width and height, which the
+ * X server's solid and image glyph senders and its fixed-width ones send
+ * right after a one-rectangle X load clip with the same box (established).
+ * The model applies it as a second rectangle with the clip, to the pixel
+ * writes, copies and fills after it, see sgi_kona_x_clip(). A scissor of
+ * zero width or height clips everything, logged.
  *
  * Approximated: that the pipe applies it with the clip is inferred, and
  * for one box it adds nothing to the clip. How long it lasts is
@@ -11281,10 +11279,10 @@ static void sgi_kona_x_stipple_stored(SGIKonaState *s)
 
 /*
  * 0x13d, X store stipple: a stipple-cache entry, the pattern's width and
- * height, then `height` rows, one word each, most significant bit
- * leftmost (kon_loadCachedStipple, established for the senders; the bit
- * order is inferred from a traced run's 6 by 20 I-beam). The
- * rows arrive through sgi_kona_x_stipple_word().
+ * height, then `height` rows, one word each, most significant bit leftmost
+ * (the X server's cached-stipple loader, established for the senders; the
+ * bit order is inferred from a traced run's 6 by 20 I-beam). The rows
+ * arrive through sgi_kona_x_stipple_word().
  *
  * Approximated: the cache's size, SGI_KONA_X_STIPPLE_ENTRIES patterns of
  * up to SGI_KONA_X_STIPPLE_MAX square, is the model's choice. A store
@@ -11359,11 +11357,11 @@ static void sgi_kona_x_rotate_stipple(SGIKonaState *s, const uint32_t *args)
 
 /*
  * 0x13c, X load stipple: an entry, whose pattern then masks the box, rect
- * and span fills that follow (konPolyFillRectStippledC,
- * konFillSpansStippledC), or SGI_KONA_X_STIPPLE_NONE, which ends the masking
- * (kon_loadStipple, kon_unloadStipple; both uses are inferred). An entry
- * outside the cache is logged and unloads the stipple; an entry holding no
- * pattern is logged, and the fills are not masked while it holds none.
+ * and span fills that follow (the X server's stippled rect and span fills),
+ * or SGI_KONA_X_STIPPLE_NONE, which ends the masking (its stipple load and
+ * unload routines; both uses are inferred). An entry outside the cache is
+ * logged and unloads the stipple; an entry holding no pattern is logged,
+ * and the fills are not masked while it holds none.
  */
 static void sgi_kona_x_load_stipple(SGIKonaState *s, uint32_t entry)
 {
@@ -11538,16 +11536,16 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     SGIKonaRect clip;
 
     /*
-     * Word 4's bit 31 marks kon_parseGC's FillOpaqueStippled, and FillTiled
-     * with a tile the GC private holds at +0x88 (kona.so 0x539818-0x539874):
-     * the GC then carries both colours and a stipple is loaded. A clear
-     * stipple bit paints the background, as X's opaque stipple does
-     * (inferred; the pipe was not observed). A tiled fill is drawn the same
-     * way, as a two-colour stipple from the loaded pattern and the GC's
-     * two colours: the senders seen load an 8x8 stipple before such a
-     * fill, and a tile with more than two colours could not be drawn
-     * correctly this way (approximated). With no stipple loaded the
-     * pattern is unknown, so the fill is still refused.
+     * Word 4's bit 31 marks the X server GC parser's FillOpaqueStippled,
+     * and FillTiled with a tile the GC's private data holds: the GC then
+     * carries both colours and a stipple is loaded. A clear stipple bit
+     * paints the background, as X's opaque stipple does (inferred; the pipe
+     * was not observed). A tiled fill is drawn the same way, as a
+     * two-colour stipple from the loaded pattern and the GC's two colours:
+     * the senders seen load an 8x8 stipple before such a fill, and a tile
+     * with more than two colours could not be drawn correctly this way
+     * (approximated). With no stipple loaded the pattern is unknown, so the
+     * fill is still refused.
      */
     if (!sgi_kona_x_decode_opaque(s, &gc, sgi_kona_x_stipple_loaded(s))) {
         return false;
@@ -11690,10 +11688,11 @@ static bool sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1,
 /*
  * One X rect, the words x << 16 | y with signed halves and width << 16 |
  * height with unsigned ones, the X protocol's rectangle, relative to the
- * drawable the X load position names (konPolyFillRectSolid, established).
- * Inferred: the pipe adds the position's x and y, then clips to the clip
- * list. The guest check is the greeter button's face (244, 299)-(308, 323)
- * taking the GC's colour after a position of 240, 295.
+ * drawable the X load position names (the X server's solid rect fill,
+ * established). Inferred: the pipe adds the position's x and y, then clips
+ * to the clip list. The guest check is the greeter button's face
+ * (244, 299)-(308, 323) taking the GC's colour after a position of
+ * 240, 295.
  */
 static bool sgi_kona_x_fill_rect(SGIKonaState *s, uint32_t w0, uint32_t w1,
                                   bool commit)
@@ -11711,7 +11710,7 @@ static bool sgi_kona_x_fill_rect(SGIKonaState *s, uint32_t w0, uint32_t w1,
 /*
  * 0x156, 0x157 and 0x158, X spans, spans2 and spans6: a count of 1, 2 or
  * 6, then that many points x << 16 | y with signed 16-bit halves, then
- * that many widths (konFillSpansSolid, established). Each
+ * that many widths (the X server's solid span fill, established). Each
  * span is a one-pixel-high run of `width` pixels from its point, the X
  * protocol's span, filled like an X box: clipped to the screen, the clip
  * list and the scissor, masked by the loaded stipple, with the GC's colour
@@ -11984,15 +11983,15 @@ enum {
     SGI_KONA_X_SETUP_PAD,
 };
 
-/* Mode word bit konDrawImage sets when the rows go by ioctl 0x2711. */
+/* Mode word bit the X image write sets when rows go by ioctl 0x2711. */
 #define SGI_KONA_X_SETUP_MODE_DMA 0x10
 
 /*
  * 0x136, X pixel setup: kept for the pixel write or copy after it
- * (established from kon_loadPixmapGC). The packing and shift words are table
- * entries whose meaning to the pipe is unknown. Source packing frames the
- * complete payload; each operation validates its reviewed setup subset
- * before using the retained words.
+ * (established from the X server's pixmap GC loader). The packing and shift
+ * words are table entries whose meaning to the pipe is unknown. Source
+ * packing frames the complete payload; each operation validates its
+ * reviewed setup subset before using the retained words.
  */
 static void sgi_kona_x_pixel_setup(SGIKonaState *s, const uint32_t *args)
 {
@@ -12020,12 +12019,12 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
 }
 
 /*
- * The frame-buffer word read: konal.so's kon_loadImpWordGC GC for plane
+ * The frame-buffer word read: konal.so's frame-buffer word GC for plane
  * selector 1 (cfg 0x1008, op 0x68001, addr 1, ifmt 0xa), with setup mode 2,
  * packing 2 and 2 and shift 0, one 32-bit word a pixel. Its caller, under
- * nfbReadDisplay, takes a colour-index main pixel's index from the word's
- * top bits: index = word >> (32 - depth). The model's X index is a
- * left-justified 16-bit value, so the word is that value shifted left 16.
+ * the X server's display read, takes a colour-index main pixel's index from
+ * the word's top bits: index = word >> (32 - depth). The model's X index is
+ * a left-justified 16-bit value, so the word is that value shifted left 16.
  * What the pipe puts in bits 15:0 is unknown; the caller reads bits 15:8
  * only for an alpha it is asked for, and the model leaves them zero.
  *
@@ -12033,10 +12032,10 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  * answered per pixel by sgi_kona_x_read_fb_word(). For a TrueColor
  * window with a two-word format (bit 0x4000 clear) the reader asks for
  * selectors 1 and 2 and takes red, green and blue from the first word,
- * selector 1's, when the window private's byte at +2 is 0 (0x434830);
+ * selector 1's, when a byte of the window's private data is 0;
  * selector 2's word is read and not used there. When that byte is 1 it
  * asks for 2 and 3, takes the alpha from bits 15:8 of selector 2's word
- * and red, green and blue from selector 3's (0x434708).
+ * and red, green and blue from selector 3's.
  *
  * Known limit: the model answers selector 2 with the RGB word, so a
  * reader in the second case would take blue (bits 15:8) as alpha, and refuses
@@ -12045,7 +12044,7 @@ static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
  */
 static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 {
-    /* Selector s: op (s << 18) | 0x28001 and addr s (kon_loadImpWordGC). */
+    /* Selector s: op (s << 18) | 0x28001 and addr s (konal.so's GC). */
     for (uint32_t sel = 0; sel <= 3; sel++) {
         const uint32_t form[] = {
             0x1008, (sel << 18) | 0x28001, sel, 6, 0xa, 1, 1,
@@ -12061,35 +12060,35 @@ static bool sgi_kona_x_read_fb_word_gc(const uint32_t *gc)
 /*
  * The frame-buffer word for plane selector `sel` over a pixel the model
  * holds with tag `tag` and stored word `word`, or false where the model
- * has no answer. From the reader at konal.so 0x434070-0x4353a4, which
+ * has no answer. From the frame-buffer word reader in konal.so, which
  * picks the selector and the decoding from the window's format word
  * (established for the reader, not for the pipe):
  *
- *   selector 1, 8-bit-component formats (format & 0xf == 1): a
- *   colour-index pixel's index from the top bits; a TrueColor pixel's
- *   red, green and blue from bits 31:24, 23:16 and 15:8 (0x4342a0 for a
- *   one-word format, 0x434860 for a two-word one whose window byte +2 is
- *   0). So selector 1 over a direct-colour pixel is its RGB shifted left
- *   8, as selector 2's word is answered.
+ *   selector 1, 8-bit-component formats (format & 0xf == 1): a colour-index
+ *   pixel's index from the top bits; a TrueColor pixel's red, green and
+ *   blue from bits 31:24, 23:16 and 15:8 (for a one-word format, and for a
+ *   two-word one whose window byte is 0). So selector 1 over a
+ *   direct-colour pixel is its RGB shifted left 8, as selector 2's word is
+ *   answered.
  *
- *   selector 0, 16-bit formats (format & 0xf == 2, read at 0x434c44): a
- *   TrueColor pixel's 5-bit red, green and blue from bits 31:27, 26:22
- *   and 21:17, and bit 16 the alpha flag (0x434cb4-0x434d0c). Selector 0
- *   is also the 2-bit overlay read (format 8, index in bits 15:14,
- *   0x4352a4); the model answers selector 0 over direct-colour pixels
- *   only.
+ *   selector 0, 16-bit formats (format & 0xf == 2): a TrueColor pixel's
+ *   5-bit red, green and blue from bits 31:27, 26:22 and 21:17, and bit 16
+ *   the alpha flag. Selector 0 is also the 2-bit overlay read (format 8,
+ *   index in bits 15:14); the model answers selector 0 over direct-colour
+ *   pixels only.
  *
- *   selector 3, a two-word TrueColor format whose window byte +2 is 1:
- *   red, green and blue from bits 31:24, 23:16 and 15:8 (0x434738), so
+ *   selector 3, a two-word TrueColor format whose window byte is 1:
+ *   red, green and blue from bits 31:24, 23:16 and 15:8, so
  *   over a direct-colour pixel it is answered as selector 1. The model
  *   keeps one set of RGB a pixel, so what distinguishes the selectors on
  *   the pipe is not modelled.
  *
  * Every selector reads the bank its pixel shows (see
- * sgi_kona_displayed_bank()), the screen as its caller nfbReadDisplay
- * names it, rather than refusing a pixel whose double-buffered window
- * shows bank 1 (inferred from the routine's purpose and oglsnoop's use;
- * which bank the pipe reads for each selector is unknown).
+ * sgi_kona_displayed_bank()), the screen as its caller, the X server's
+ * display read, names it, rather than refusing a pixel whose
+ * double-buffered window shows bank 1 (inferred from the routine's purpose
+ * and oglsnoop's use; which bank the pipe reads for each selector is
+ * unknown).
  *
  * Approximated: the model stores logical RGB8, so selector 0 answers the
  * top five bits of each component. What the pipe returns in the bits the
@@ -12252,14 +12251,14 @@ refused:
 }
 
 /*
- * A refused X pixel read still completes. konReadImage and the
+ * A refused X pixel read still completes. The X server's image read and the
  * frame-buffer word reader wait on word 0 of the return page with no
  * timeout (the command grammar's pixel-read reply), so a read the model
- * cannot answer would stop the X server for good. The reply is the
- * whole usable page zeroed, then the ready word: defined data, not
- * pixels the model has. Model policy; what the pipe answers to a read it
- * cannot perform is unknown. A read with no page this context owns is
- * not answered, so another context's page is never written.
+ * cannot answer would stop the X server for good. The reply is the whole
+ * usable page zeroed, then the ready word: defined data, not pixels the
+ * model has. Model policy; what the pipe answers to a read it cannot
+ * perform is unknown. A read with no page this context owns is not
+ * answered, so another context's page is never written.
  */
 static void sgi_kona_x_read_answer_refused(SGIKonaState *s)
 {
@@ -12323,13 +12322,13 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
 
 /*
  * The bits per pixel of a write's data, from the setup's source-packing
- * word, or 0 where it is not known. Inferred from kona.so's table names
- * (kon_pack8src, kon_pack16src, kon_pack32src hold 0, 1, 2 at index 0):
- * 0, 1 and 2 are 8, 16 and 32 bits. 4 is the glyph senders' constant, and
- * the greeter's glyph writes are established to be 1-bit rows (20 words
- * for a 32 by 20 image spelling "Help"). 5 is konDrawOpaqueMonoImage's,
- * inferred to be one bit a pixel as well. See sgi_kona_x_bitmap_index()
- * for what their bits paint.
+ * word, or 0 where it is not known. Inferred from kona.so's 8-, 16- and
+ * 32-bit source packing tables, which hold 0, 1, 2 at index 0: 0, 1 and 2
+ * are 8, 16 and 32 bits. 4 is the glyph senders' constant, and the
+ * greeter's glyph writes are established to be 1-bit rows (20 words for a
+ * 32 by 20 image spelling "Help"). 5 is the opaque one-bit image sender's,
+ * inferred to be one bit a pixel as well. See sgi_kona_x_bitmap_index() for
+ * what their bits paint.
  */
 static uint32_t sgi_kona_x_pixel_bpp(uint32_t src_pack)
 {
@@ -12353,13 +12352,14 @@ static uint32_t sgi_kona_x_pixel_bpp(uint32_t src_pack)
  * that leaves its pixel unchanged. With depth d and
  * v = index << (16 - d):
  *
- *   source packing 4 (the glyph senders, konDrawMonoImage): GC word 1 is
+ *   source packing 4 (the glyph senders and the one-bit image sender):
+ *   GC word 1 is
  *   P(v) = ((v >> 4) & 0xfff) | ((v & 0xf) << 20), so a set bit paints
  *   (((w1 & 0xfff) << 4) | ((w1 >> 20) & 0xf)) >> (16 - d), and a clear
  *   bit nothing. Word 0 is the constant 0xfff0 and is not read.
  *
- *   source packing 5 (konDrawOpaqueMonoImage): a set bit paints GC word
- *   0 read as v, a clear bit GC word 2 read as v.
+ *   source packing 5 (the opaque one-bit image sender): a set bit paints GC
+ *   word 0 read as v, a clear bit GC word 2 read as v.
  *
  * Approximated: which words each sender fills is established, and what
  * the pipe paints from them is inferred from that alone; the pipe was not
@@ -12450,20 +12450,20 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
 }
 
 /*
- * A glyph write (source packing 4) into a 24-bit TrueColor window: kona.so's
- * kon_parseGC, for that format (0x538384-0x5385b0), widens each colour byte
- * to twelve bits as b << 4 | b >> 4 and stores word 0 as 0xfff0 with the
- * blue value's top four bits and word 1 as its low eight bits, then green,
- * then red: blue[11:8] in word 0 bits 3:0, blue[7:0] in word 1 bits 31:24,
- * green in 23:12 and red in 11:0 (established from the code). That a set
- * bit paints that colour and a clear bit nothing, as in a colour-index
- * window, is inferred. Rewrite the pair into the colour-word form the solid
- * fills use, with alpha all ones, so the shared decoder reads it.
+ * A glyph write (source packing 4) into a 24-bit TrueColor window:
+ * kona.so's GC parser, for that format, widens each colour byte to twelve
+ * bits as b << 4 | b >> 4 and stores word 0 as 0xfff0 with the blue value's
+ * top four bits and word 1 as its low eight bits, then green, then red:
+ * blue[11:8] in word 0 bits 3:0, blue[7:0] in word 1 bits 31:24, green in
+ * 23:12 and red in 11:0 (established from the code). That a set bit paints
+ * that colour and a clear bit nothing, as in a colour-index window, is
+ * inferred. Rewrite the pair into the colour-word form the solid fills use,
+ * with alpha all ones, so the shared decoder reads it.
  *
  * A 30-bit TrueColor window's glyphs come with cfg 0 and op 0x64001, and
- * konal.so's kon_parseGC stores the same layout with each 10-bit component
- * widened as c << 2 | c >> 8 (0x541e94-0x541f48, established from the
- * code); the rewritten pair then carries ifmt 9, the 30-bit form.
+ * konal.so's GC parser stores the same layout with each 10-bit component
+ * widened as c << 2 | c >> 8 (established from the code); the rewritten
+ * pair then carries ifmt 9, the 30-bit form.
  */
 static bool sgi_kona_x_rgb_glyph_gc(uint32_t *raw)
 {
@@ -12546,19 +12546,18 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
         return false;
     }
     /*
-     * kon_loadNfbBitmapGC, konDrawMonoImage's loader, sends the glyph
-     * form's words 0 to 3 with the geometry configuration instead: cfg 0xc,
-     * op the format's low nibble (1), ifmt 0 (kona.so 0x439b0c-0x439c14,
-     * 0x43a0f4-0x43a1e8). The shared decoder reads that as a geometry GC,
-     * so its ifmt stays 0.
+     * The one-bit image sender's GC loader sends the glyph form's words 0
+     * to 3 with the geometry configuration instead: cfg 0xc, op the
+     * format's low nibble (1), ifmt 0. The shared decoder reads that as a
+     * geometry GC, so its ifmt stays 0.
      */
     geometry = pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0xc;
     /*
      * A glyph into the popup planes, as the Toolchest's menus draw their
      * entries: cfg 0x1820, the glyph form's words 0 and 1 with the popup
-     * pixel unshifted in P(v) (kon_parseGC's index case without the depth
-     * shift, 0x539680-0x5396b4), write mask (pm & 3) << 20. It lands in
-     * the popup planes as a popup fill does.
+     * pixel unshifted in P(v) (the GC parser's index case without the depth
+     * shift), write mask (pm & 3) << 20. It lands in the popup planes as a
+     * popup fill does.
      */
     popup = pack == SGI_KONA_X_PACK_BITMAP && raw[6] == 0x1820;
     if (bitmap) {
@@ -12882,7 +12881,8 @@ bool sgi_kona_x_pixel_owned(SGIKonaState *s)
 /*
  * Whether the open X pixel write waits for its rows by DMA: the setup's
  * mode word carries SGI_KONA_X_SETUP_MODE_DMA, the one word that says so
- * (established from konDrawImage), and rows are still to come.
+ * (established from the X server's image write), and rows are still to
+ * come.
  */
 bool sgi_kona_x_pixel_dma_waiting(SGIKonaState *s)
 {
@@ -13223,7 +13223,7 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 }
 
 /*
- * The X server's image write by DMA (konDrawImage): a DMA packet that
+ * The X server's image write by DMA: a DMA packet that
  * arrives while an X pixel write opened under the DMA mode bit waits for
  * its rows. The packet's lines of per_line bytes, pitch bytes apart from
  * device address io, are the rows the programmed-I/O path would have sent
@@ -13588,13 +13588,13 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
 }
 
 /*
- * 0x1e7 tag: kona_retrace_activate's request, sent for a swap after its
- * display-table rewrite and for any other retrace wait. It becomes a
- * swap record on the shared scanout, which honours one per retrace in
- * order and hands it back through sgi_kona_publish(). The record names
- * the context current when the request arrived, the one the kernel's
- * swap validated first; a request with none current still completes its
- * tag, since the driver waits on the tag either way.
+ * 0x1e7 tag: the kernel's retrace activation request, sent for a swap after
+ * its display-table rewrite and for any other retrace wait. It becomes a
+ * swap record on the shared scanout, which honours one per retrace in order
+ * and hands it back through sgi_kona_publish(). The record names the
+ * context current when the request arrived, the one the kernel's swap
+ * validated first; a request with none current still completes its tag,
+ * since the driver waits on the tag either way.
  */
 static void sgi_kona_retrace_request(SGIKonaState *s, uint32_t tag)
 {
@@ -13730,11 +13730,11 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_SWAP_PAIR:
         /*
-         * The last of the state kona_act_pcx sends with a restore after
-         * 0x1f3 and 0x1ee, consumed whole so the GL client's words after
-         * it frame. What its two words carry is unknown, and nothing
-         * waits for an answer. The pool 0x1ed that
-         * kona_dmapool_update_pipe sends with them goes to the DMA engine.
+         * The last of the state the kernel's context activation sends with
+         * a restore after 0x1f3 and 0x1ee, consumed whole so the GL
+         * client's words after it frame. What its two words carry is
+         * unknown, and nothing waits for an answer. The pool 0x1ed that the
+         * kernel's DMA pool update sends with them goes to the DMA engine.
          */
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
@@ -13960,8 +13960,8 @@ static bool sgi_kona_gl_level1_index_size(uint32_t word)
  * Level 1, an overlay visual, is told apart by looking two words further
  * on. Both readings of 1 1 occur: SceneViewer's overlay context sent the
  * configuration 1 1 0 8 and seven more words (run
- * irix-20261023T111222-0467d9), and the IRIX 6.5.30 kernel's kona_unblank
- * sends textport command 1 as 1 1 0 (kona_tport.o 0x688-0x690), which it
+ * irix-20261023T111222-0467d9), and the IRIX 6.5.30 kernel's unblank
+ * routine sends textport command 1 as 1 1 0 (in kona_tport.o), which it
  * may do once a graphics client detaches, perhaps with a context still
  * current in the model. The configuration's fourth word is the visual's
  * index size: konavis.so's visual tables hold level-1 visuals of depth 2,
@@ -13977,8 +13977,8 @@ static bool sgi_kona_gl_level1_index_size(uint32_t word)
  * is late; and a kernel 1 1 0 followed, while a context is current, by a
  * word of 0, 2, 4 or 8 from outside the textport would be misread as a
  * configuration. How the pipe itself tells the grammars apart is
- * unknown. Level 2 stays read as the textport's command 2, which
- * kona_setcolor sends.
+ * unknown. Level 2 stays read as the textport's command 2, which the
+ * kernel's textport colour setter sends.
  */
 static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
 {
@@ -14146,11 +14146,11 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         /*
          * All six header words are established: h0/h1 = width/height, as
          * the bitmap sender's own code shows its payload-size
-         * computation multiplying struct+0x8 by struct+0xa, then applying
-         * this same DIV_ROUND_UP(...,32) below; h2..h5 = x origin, y
-         * origin, x advance, y advance, from the IO6 PROM's
-         * kona_tp_bitmap, which sends six header words from halfwords
-         * +0x8..+0x12 of the caller's descriptor in that order.
+         * computation multiplying its first two header fields, then
+         * applying this same DIV_ROUND_UP(...,32) below; h2..h5 = x
+         * origin, y origin, x advance, y advance, from the IO6 PROM's
+         * textport bitmap routine, which sends six header words from
+         * consecutive halfwords of the caller's descriptor in that order.
          * sgi_kona_bitmap_blit() consumes all six; see its own comment
          * for how they combine with the raster position (command 4).
          * This corrects the previous x, y, width, height, ?, ? guess,
@@ -14858,7 +14858,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
 /*
  * Traces this window at a volume a human can read: one line for the
  * first access, then one per power-of-two access-count milestone after
- * it, instead of one per entry -- kona_mapram_init()'s own attach-time
+ * it, instead of one per entry -- the driver's own attach-time mapram
  * sweep alone touches every entry the active count selects twice (a
  * write, then a read-back), up to SGI_KONA_MAPRAM_ENTRIES entries.
  */
@@ -14995,8 +14995,8 @@ static void sgi_kona_port_write_next(SGIKonaState *s, uint32_t value)
 }
 
 /*
- * The two words kona_attach reads through the indirect port to class the
- * pipe (see "Configurations" above): the product's low bits after
+ * The two words the driver's attach reads through the indirect port to
+ * class the pipe (see "Configurations" above): the product's low bits after
  * SGI_KONA_SELECT_PRODUCT, and no Reality bit after
  * SGI_KONA_SELECT_REDUCED. An unconfigured pipe answers neither, so its
  * reads stay the logged zero they always were.
@@ -15202,7 +15202,7 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
          * A completion word is acknowledged by this write alone: the
          * driver's DMA-write wait reads the mailbox once and writes
          * nothing back to it before its handler clears the cause bit
-         * (established from kona_arm_intr and kona_intr_handler), where
+         * (established from the driver's interrupt handlers), where
          * the reply protocol consumes each word with a mailbox write
          * first. So clearing the bit consumes an unread completion word
          * at the head; left queued, completions would fill the queue.
@@ -15313,12 +15313,12 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
 }
 
 /*
- * An 8-byte access. kona.so's bulk data helpers (KonSeqData4_ip19 and its
- * siblings) store aligned pairs of data words as one doubleword at the
- * command page's offset 0, most significant word first, and odd words as
- * 4-byte stores at the data slot (the stores are established, that the pipe
- * takes them as two data words inferred). Such a store delivers the high
- * word, then the low word, each exactly as a 4-byte store at offset 0.
+ * An 8-byte access. kona.so's bulk data helpers store aligned pairs of data
+ * words as one doubleword at the command page's offset 0, most significant
+ * word first, and odd words as 4-byte stores at the data slot (the stores
+ * are established, that the pipe takes them as two data words inferred).
+ * Such a store delivers the high word, then the low word, each exactly as a
+ * 4-byte store at offset 0.
  *
  * Approximated: a doubleword at offset 0 can also open a command with its
  * high word, which the helpers never make it do, and no evidence says how

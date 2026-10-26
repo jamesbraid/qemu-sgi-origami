@@ -31,7 +31,7 @@
 #define REG_KICK            KONA_REG(0xc00108)
 #define REG_COMMAND         KONA_REG(0xc10000)
 
-/* The selectors kona_attach reads its class from. */
+/* The selectors the kernel driver's attach routine reads its class from. */
 #define SELECT_PRODUCT 0x8800
 #define SELECT_REDUCED 0xb00
 
@@ -121,7 +121,7 @@ static void put_text(uint8_t *field, size_t width, const char *text)
     memcpy(field + width - len, text, len);
 }
 
-/* gfxinit's nic_report layout, the 0x4c-byte record at `rec`. */
+/* gfxinit's board-report layout, the 0x4c-byte record at `rec`. */
 static void put_record(uint8_t *rec, const Board *b, unsigned instance)
 {
     uint64_t serial = synthetic_serial(instance);
@@ -337,7 +337,7 @@ static void test_ir2e(void)
 }
 
 /*
- * kona_attach's class: low bits 1 after selector 0x8800 make an
+ * The attach routine's class: low bits 1 after selector 0x8800 make an
  * InfiniteReality3, 0 leaves the GE16- name test to tell InfiniteReality2E
  * from InfiniteReality2; selector 0xb00's bit 10 would make a Reality.
  */

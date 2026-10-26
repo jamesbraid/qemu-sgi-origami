@@ -455,12 +455,12 @@ static void test_box6(void)
 }
 
 /*
- * A run of data tokens ending in an X box draws every box in it, as
- * konSolidFillRects sends the remainder of its boxes: two boxes in X
+ * A run of data tokens ending in an X box draws every box in it, as the X
+ * server's solid box fill sends the remainder of its boxes: two boxes in X
  * data4, then the last in X box. Each data token is checked the same way
- * with the count the grammar gives: data2 one box, data6 three, data8
- * four and data10 five, before an X box. The data words are sent as
- * kona.so stores them, the first in the token's slot.
+ * with the count the grammar gives: data2 one box, data6 three, data8 four
+ * and data10 five, before an X box. The data words are sent as kona.so
+ * stores them, the first in the token's slot.
  */
 static void test_data_run_ending_in_box(void)
 {
@@ -569,9 +569,10 @@ static void test_rect_origin(void)
 }
 
 /*
- * The rect path's runs, as konPolyFillRectSolid sends them: X rect6 with
- * six rectangles, and X data4 with two rectangles before a final X rect.
- * Every rectangle takes the position's origin; a box sent later does not.
+ * The rect path's runs, as the X server's solid rectangle fill sends them:
+ * X rect6 with six rectangles, and X data4 with two rectangles before a
+ * final X rect. Every rectangle takes the position's origin; a box sent
+ * later does not.
  */
 static void test_rect_runs(void)
 {
@@ -791,14 +792,14 @@ static void test_clip_rectangle(void)
 }
 
 /*
- * A clip list of three rectangles, as kon_loadClipRects sends one: X
- * bdata4 with the count and the first rectangle's x1, y1, x2, X bdata4
- * with its y2 and the second's x1, y1, x2, then X load clip with the
- * second's y2 and the third rectangle. A box across all three fills only
- * inside them, and so does a full-screen box under the grammar's two-box
- * list. A list whose length does not match its count clips only to
- * the screen, and a list cut short by another token is dropped, leaving
- * the X load clip after it a one-rectangle list of its own.
+ * A clip list of three rectangles, as the X server's clip-rectangle loader
+ * sends one: X bdata4 with the count and the first rectangle's x1, y1, x2,
+ * X bdata4 with its y2 and the second's x1, y1, x2, then X load clip with
+ * the second's y2 and the third rectangle. A box across all three fills
+ * only inside them, and so does a full-screen box under the grammar's
+ * two-box list. A list whose length does not match its count clips only to
+ * the screen, and a list cut short by another token is dropped, leaving the
+ * X load clip after it a one-rectangle list of its own.
  */
 static void test_clip_list(void)
 {

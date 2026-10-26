@@ -179,8 +179,8 @@
  * Register 0x05f, IMPACTSR_CMD_ALPHA in OpenBSD's impactreg.h. No public
  * driver writes it, and its function is unknown.
  * The DDX writes it 33 times per pass with value 0 immediately before
- * the PIO draw-pixel row loop (the pixel-draw routine's C variant,
- * 0x577e68-0x577ee8) in every observed capture. No read, branch or paint result
+ * the PIO draw-pixel row loop (the pixel-draw routine's C variant) in
+ * every observed capture. No read, branch or paint result
  * has been tied to it, so the name alone does not make it an alpha or colour
  * register here. Latched silently by the generic mgras_raster_rss_write()
  * store like every other unmodelled register.
@@ -265,7 +265,7 @@
  * window's visible region with a clip ID: rectangle fills with DRBPOINTERS
  * 0x90240 (the main-plane pointer word), COLORMASKMSBS 0xff,
  * COLORMASKLSBSA/B 0, PP1FILLMODE 0x142600 and the ID in FILLCOLOR_R. Its
- * fill routine (impactsr.so 0x54e310-0x54e5a0) sends FILLCOLOR_R as the ID
+ * fill routine (in impactsr.so) sends FILLCOLOR_R as the ID
  * when the ID is at most 3 and 0 otherwise, so an ID has two bits; that
  * they sit in COLORMASKMSBS bits 1:0 is inferred (the overlay form enables
  * bits 6:4 and its erase bits 7:4). The fill's logic-op field is 0, so the
@@ -1677,7 +1677,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 
 /*
  * Host reads through the raster engine's data port. The IRIX 6.5.30 X
- * server's pixel-read routine (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
+ * server's pixel-read routine (impactsr.so, SHA-256 726dc1e25b71...)
  * reads a box this way; a captured run caught it 214 times
  * while oglsnoop showed the pixel under the pointer, two pixels each
  * time (the first at seq 4088838). Established from that
@@ -1984,7 +1984,8 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * An entry is a whole 4 KiB frame number of the node physical address
  * space, node included, not a frame within the list's own node. The IRIX
  * 6.5.30 kernel's texture-table fill routine (unix.IP27, SHA-256
- * cbdb02ea5d33...) stores each entry as a 64-bit doubleword from vtopv, then
+ * cbdb02ea5d33...) stores each entry as a 64-bit doubleword from the
+ * kernel's virtual-to-physical translation, then
  * the next three entries as that value plus 1, 2 and 3, one per 4 KiB of the
  * kernel's 16 KiB page (established from the client's code). On SN0 the
  * node number is physical address bits 39:32 (NASID_SHFT 32 in Linux's

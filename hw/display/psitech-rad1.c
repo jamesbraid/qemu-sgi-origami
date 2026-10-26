@@ -34,8 +34,8 @@
  * onboard SGRAM, an integrated RAMDAC, and no PLX bridge or external
  * RGB561-style RAMDAC. It has no PLX-style
  * scatter/gather DMA engine: every rectangle-move path the shipped driver
- * uses (`rect_pio_move`, `rect_dma_move`,
- * `rad1_dma_patch_move`, `bigx_update`) drives the same Permedia2
+ * uses (its programmed-I/O and DMA rectangle moves, its patch move and its
+ * large-rectangle update) drives the same Permedia2
  * rasterizer/texture-read GP register set through
  * the FIFO-tagged block at Region Zero 0x8000-0xFFFF; what the driver calls
  * "DMA" is Permedia2's own texture-mapped
@@ -45,7 +45,7 @@
  *
  * This models a bounded compatibility profile: the flat, non-interpolated
  * texture-read rectangle copy the shipped
- * `rad1pci` kernel driver performs; the constant-colour point and rectangle
+ * IRIX kernel driver performs; the constant-colour point and rectangle
  * fills both textports draw with (the IO6
  * PROM's console=g textport and the kernel's rad1_tport.o plot every glyph
  * pixel as a point primitive and every box
@@ -167,7 +167,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
  * Control & Status block. Offset 0x10 is the interrupt status word
- * rad1_inthandler() reads and write-clears; offset
+ * the driver's interrupt handler reads and write-clears; offset
  * 0x08 is a second register the same handler unconditionally clears
  * afterward. The public TI/3Dlabs TVP4020
  * Hardware Reference Manual, Issue 6 (see the Bypass DMA block comment below
@@ -199,22 +199,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_FIFO_SPACE_READY   0x00010000u
 
 /*
- * Offset 0x40: `rad1pciattach` reads this word through the mapped Region Zero
+ * Offset 0x40: the driver's attach routine reads this word through the
+ * mapped Region Zero
  * aperture itself, not a validity
  * check on the softc pointer for PCI selector 9 (the framebuffer BAR).
- * `rad1pciattach` converts the raw word to a
- * boolean and both (a) passes it as `rad1_pinit`'s second argument and (b)
+ * The attach routine converts the raw word to a
+ * boolean and both (a) passes it as its board initialiser's second argument
+ * and (b)
  * branches on it directly to decide
  * whether attach continues toward
  * `pciio_intr_alloc`/`hwgraph_char_device_add` at all. Before this offset was
  * modeled, an unhandled read here fell through to the Control & Status
  * block's default handler and returned 0,
- * which `rad1pciattach` reads as false and aborts attach on. This directly
+ * which the attach routine reads as false and aborts attach on. This directly
  * caused the missing `/hw` graphics vertex.
  *
  * Which Permedia2 Control & Status register (if any named one) actually lives
  * at this offset is not established,
- * and `rad1_pinit`'s own use of the flag (skipping one extra block of
+ * and the board initialiser's own use of the flag (skipping one extra block of
  * GP-register zeroing when false) does not by
  * itself name the bit. This model returns a fixed nonzero word here,
  * sufficient for every known use (a plain
@@ -225,9 +227,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_ATTACH_GATE_VALUE  0x00000001u
 
 /*
- * Interrupt status bits rad1_inthandler() decodes: bit 0, bit 1 and bit 7
+ * Interrupt status bits the driver's interrupt handler decodes: bit 0, bit 1
+ * and bit 7
  * each signal a distinct softc wait-queue
- * slot. Which bit corresponds to which of rad1_dma_patch_move()'s four
+ * slot. Which bit corresponds to which of the driver's patch move's four
  * completion paths for bit 0 and bit 1 is not
  * established. Bit 7 is established: the public TI/3Dlabs TVP4020 Hardware
  * Reference Manual, Issue 6 (see the
@@ -421,8 +424,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_REG_FIFO_CONTROL       0x3078
 
 /*
- * RAMDAC block, Region Zero 0x4000-0x4FFF: rad1_init_RAMDAC()/
- * rad1_load_lut() write exactly these seven offsets.
+ * RAMDAC block, Region Zero 0x4000-0x4FFF: the driver's RAMDAC
+ * initialisation and colour-map load write exactly these seven offsets.
  * Two of those seven, 0x4008 and 0x4018, carry real palette-protocol
  * behavior, broken out below rather than
  * left in the generic RAD1_RAMDAC_R0..R6 array (whose R0/R1 members, 0x4000
@@ -493,8 +496,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * PROM textport initialiser agrees, writing dY = 0x10000 (1.0) and zero
  * dXDom/dXSub once at mode set, and the point
  * renders put Y<<16 in StartY. Neither textport renders a trapezoid; only the
- * kernel driver's fill_fb() (rad1drv.o)
- * does.
+ * kernel driver (rad1drv.o) does, in its framebuffer fill.
  */
 #define RAD1_REG_START_X_DOM        0x8000
 #define RAD1_REG_D_X_DOM            0x8008
@@ -519,7 +521,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * FBBlockColor (manual page 41); TextureEnable is what turns a rectangle into
  * the texture-read copy
  * rad1_do_render() models. The kernel driver's
- * rect_pio_move()/rect_dma_move() write 0x6020c0, the textports' box
+ * programmed-I/O and DMA rectangle moves write 0x6020c0, the textports' box
  * fills 0x6000c0 and their initialisers' clears 0x6000c8. IncreaseX/IncreaseY
  * (bits 21-22) choose the fill
  * direction; only the increasing direction every known writer uses is
@@ -544,7 +546,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * pm2fb_imageblit()'s monochrome-glyph
  * BIT_MASK_PATTERN path, which neither IRIX textport uses: the IO6 PROM
  * textport and the kernel's rad1_tport.o
- * RAD1TpDrawbitmap plot one point primitive per set glyph bit (StartXDom,
+ * bitmap routine plot one point primitive per set glyph bit (StartXDom,
  * StartY, Render), see
  * rad1_do_point_render().
  */
@@ -576,8 +578,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * 231) is set. It is not in the public
  * Linux include/video/permedia2.h list. Both textports draw every text pixel
  * and box this way: the PROM textport
- * and the kernel's rad1_tport.o RAD1TpDrawbitmap, RAD1TpPnt2i and
- * RAD1TpSboxfi each set bit 5 in 0x8828, write the
+ * and the kernel's rad1_tport.o bitmap, point and box-fill routines
+ * each set bit 5 in 0x8828, write the
  * colour here, render, then clear bit 5. The values used (0xf0f0f0
  * background, 0x606070 text) are the textport's
  * own colours in the framebuffer's raw format.
@@ -591,7 +593,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * FastFillEnable Render writes to every pixel. Both textport initialisers
  * zero it together with FBWriteData before
  * their full-screen FastFill clear (the PROM textport and rad1_tpinit.o's
- * RAD1InitBoard).
+ * board initialisation).
  */
 #define RAD1_REG_FB_BLOCK_COLOR     0x8ac8
 
@@ -1061,7 +1063,7 @@ static void rad1_do_render(PsitechRad1State *s)
     /*
      * Completion signaling, simplified; see RAD1_INT_KNOWN_MASK above. This
      * fires even when the rectangle above was
-     * empty or fell outside the active mode: rad1_inthandler()'s wait queue
+     * empty or fell outside the active mode: the driver's interrupt wait queue
      * has no separate "command rejected"
      * path, so a caller that issues an out-of-bounds Render and then waits on
      * completion needs this wake
@@ -1137,7 +1139,7 @@ static void rad1_put_pixel(PsitechRad1State *s, int32_t x, int32_t y,
  * format of every rasterizer coordinate). This is how both textports draw
  * text: one point per set glyph bit, colour
  * from FBWriteData, as both the PROM textport and the kernel driver's
- * rad1_tport.o RAD1TpDrawbitmap do. Completion
+ * rad1_tport.o bitmap routine do. Completion
  * signaling is simplified exactly as rad1_do_render()'s, see
  * RAD1_INT_KNOWN_MASK.
  */
@@ -1162,7 +1164,7 @@ static void rad1_do_point_render(PsitechRad1State *s)
  * 73, Table 5.5; matching rad1_do_render()'s decode above), filled toward
  * increasing X and Y, which is the only
  * direction any known writer uses (the PROM textport's box fill and the
- * kernel's RAD1TpSboxfi both write increasing
+ * kernel textport's box fill both write increasing
  * X/Y; the initialisers' clears do the same). A decreasing direction would
  * move the covered range to the other side
  * of the origin; unmodeled and logged rather than guessed. Completion
@@ -1286,7 +1288,7 @@ static uint32_t rad1_bydma_edge_mask(uint32_t nibble)
  * RAD1_BYTES_PER_PIXEL; see the Bypass DMA block
  * comment above), at the active mode's own scanline stride, honoring
  * ByDMAByteMask at the first and last column of
- * each row. This is the write-DMA completion path `rad1pci`'s posted write
+ * each row. This is the write-DMA completion path the driver's posted write
  * times out waiting for; see
  * RAD1_REG_BYDMA_* above and RAD1_INT_BIT7.
  */
@@ -1694,7 +1696,7 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
              * Dispatch on the primitive-selector bits (manual page 242, bits
              * 6-7). A rectangle is the kernel
              * driver's texture-read copy only when it carries TextureEnable
-             * (rect_pio_move()/ rect_dma_move() write
+             * (the programmed-I/O and DMA rectangle moves write
              * 0x6020c0) or when FBReadMode selects this model's read-back
              * (see rad1_do_render()); the textports'
              * 0x6000c0 boxes and the initialisers' 0x6000c8 FastFill clears
@@ -1862,7 +1864,7 @@ static const MemoryRegionOps rad1_regzero_ops = {
  * and gives the qtest register-contract coverage a discriminating check:
  * skipping the unlock sequence leaves the
  * erased (all-ones) content unchanged, reproducing the byte-mismatch
- * condition program_eeprom_sector()'s own caller
+ * condition the driver's flash-programming routine's own caller
  * detects, without this model needing to know that caller's error-code
  * convention.
  *
@@ -1871,7 +1873,7 @@ static const MemoryRegionOps rad1_regzero_ops = {
  * unlock addresses themselves: 0x5556 and 0x2aa9 are not 4-byte aligned, so a
  * 32-bit-only region would never see a
  * 4-byte access land exactly on them. The driver's own access width for
- * program_eeprom_sector() is not
+ * its flash programming is not
  * independently confirmed, but a byte-wide parallel NOR part addressed at odd
  * byte offsets is the ordinary,
  * industry-standard shape for this JEDEC/AMD sequence.

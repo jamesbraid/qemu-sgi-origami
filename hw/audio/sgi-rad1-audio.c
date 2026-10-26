@@ -6,14 +6,14 @@
  * analog input and output (channel types 0 and 1), AES3 input and output (2
  * and 3) and ADAT input and output (4 and
  * 5). IRIX's rad_dd.o programs a documented set of BAR0 offsets during
- * rad_start_subsys, gated by the board mode it
+ * its subsystem start, gated by the board mode it
  * reads from the PCI revision byte (see the header), so this model needs no
  * mode-selection logic of its own. It accepts whatever the guest's
  * mode-driven dispatch writes and answers with
  * the value last stored there. Modeled
  * pieces of the audio data path: the free-running UST counter at 0x30, whose
  * advancing value clears the driver's
- * "RAD UST not incrementing" report; the status DMA, which fills the driver's
+ * stalled-UST warning; the status DMA, which fills the driver's
  * host-memory descriptor-ring slots
  * with a register mirror, each running channel's DMA pointer, and receiver
  * words that present the digital inputs
@@ -50,8 +50,8 @@
  * rather than stored: the value is the
  * virtual time elapsed since reset in UST_NS_PER_TICK-nanosecond ticks,
  * truncated to 32 bits like the hardware
- * register. rad_set_ust_offset samples it twice a fixed delay apart and warns
- * "RAD UST not incrementing" if it
+ * register. The driver's UST offset routine samples it twice a fixed delay
+ * apart and warns that the UST is stalled if it
  * moved by fewer than three ticks; tying it to the clock rather than
  * returning a fixed or just-past-threshold value
  * keeps it a real counter, not a guest-specific reply.
@@ -470,7 +470,7 @@ static uint64_t sgi_rad1_audio_status_ring_base(SGIRad1AudioState *s)
 
 /*
  * The ring's slot count, recovered from the limit register.
- * rad_start_status_dma encodes it as LIMIT = 0x78 - count
+ * The driver's status-DMA start encodes it as LIMIT = 0x78 - count
  * * 0x80. A limit that does not decode to a whole ring falls back to a single
  * slot, so a caller that programmed the
  * ring differently than the driver still sees a completion.
@@ -494,7 +494,8 @@ static unsigned int sgi_rad1_audio_status_ring_slots(SGIRad1AudioState *s)
 }
 
 /*
- * One-shot status transfer. rad_one_shot_status programs the ring base and a
+ * One-shot status transfer. The driver's one-shot status routine programs
+ * the ring base and a
  * -4 limit, writes 0x40001 to 0x5c, and
  * busy-polls the base slot's +0x7c bit 31. The engine fills that one slot,
  * exactly as a continuous completion
@@ -557,7 +558,8 @@ static void sgi_rad1_audio_status_tick(void *opaque)
 }
 
 /*
- * Start the continuous engine. rad_start_status_dma resets the consumer index
+ * Start the continuous engine. The driver's status-DMA start resets the
+ * consumer index
  * to 0 and starts producing; the model
  * starts its cursor one past that (the first slot the servicer checks) and
  * schedules the first completion one
@@ -595,7 +597,7 @@ static void sgi_rad1_audio_status_ring_start(SGIRad1AudioState *s,
     timer_mod(s->status_timer, sgi_rad1_audio_status_deadline(s, 1));
 }
 
-/* Stop the continuous engine: rad_stop_status_dma's 0x1fffc, or a reset. */
+/* Stop the continuous engine: the driver's stop word 0x1fffc, or a reset. */
 static void sgi_rad1_audio_status_ring_stop(SGIRad1AudioState *s)
 {
     s->status_running = false;
@@ -737,11 +739,11 @@ static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
  *
  * A: the frame count in bits [31:18], with natural 32-bit wrap, and the 0x30
  * counter mod 2^18 latched into bits
- * [17:0] as the count moves. rad_sync_device_ust splices those low bits into
- * its UST.
+ * [17:0] as the count moves. The driver's UST synchronisation splices those
+ * low bits into its UST.
  *
  * B: a 14-bit count at the channel's shift, 4 for the analog output and 18
- * for every other type. rad_start_dma's
+ * for every other type. The driver's channel start routine's
  * post-enable poll waits for it to change. Only that field moves: the rest of
  * each B register belongs to another
  * channel or to subcode (see the header).
@@ -964,7 +966,8 @@ static void sgi_rad1_audio_chan_tick(void *opaque)
 }
 
 /*
- * The enable edge. rad_start_dma programs set A and set B with the same ring
+ * The enable edge. The driver's channel start programs set A and set B with
+ * the same ring
  * and control word, then sets bit 0 of
  * the channel's enable register; that write alone starts the channel. The
  * engine latches set A.
@@ -1202,8 +1205,8 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN:
         /*
          * Bit 0 starts and stops the analog output. Bring-up writes
-         * 0x20000000 with it clear; rad_start_dma sets it
-         * and rad_stop_dma clears it, keeping bit 29 from the shadow.
+         * 0x20000000 with it clear; the driver's channel start sets it
+         * and its channel stop clears it, keeping bit 29 from the shadow.
          */
         s->analog_out_en = val;
         sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT], val);

@@ -73,9 +73,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_EEPROM         0x1ec
 /*
- * The context deactivate KONApcxswap sends when it switches away from a
- * context: the token, then the outgoing context's index in the kernel's
- * rendering-context table.
+ * The context deactivate the kernel driver's context swap sends when it
+ * switches away from a context: the token, then the outgoing context's
+ * index in the kernel's rendering-context table.
  */
 #define SGI_KONA_CMD_CONTEXT_DEACTIVATE 0x1fc
 /*
@@ -88,14 +88,14 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_MEM_SWAP_OUT   0x1e3
 #define SGI_KONA_CMD_RESOURCE_SYNC  0x172
 /*
- * The rest of a context swap. KONApcxswap restores a context that has run
- * before with 0x1f9: the first word of its save area, the save area's page
- * word and tagged offset word, and the sentinel 0xedededed. kona_act_pcx and
- * KONAvalidateclip send 0x1f3 with eleven words and 0x1ee with three when
- * the context's state is stale, and 0x1f4 with two signed halfwords, as
- * KONAschedswapbuf also does. kona_dmapool_update_pipe sends 0x1ed with a
- * pool's page word, tagged offset word and length. What 0x1f3, 0x1ee and
- * 0x1f4 carry is unknown.
+ * The rest of a context swap. The kernel driver's context swap restores a
+ * context that has run before with 0x1f9: the first word of its save area,
+ * the save area's page word and tagged offset word, and the sentinel
+ * 0xedededed. The driver's context activation and clip validation send
+ * 0x1f3 with eleven words and 0x1ee with three when the context's state is
+ * stale, and 0x1f4 with two signed halfwords, as its swap scheduling also
+ * does. Its DMA pool update sends 0x1ed with a pool's page word, tagged
+ * offset word and length. What 0x1f3, 0x1ee and 0x1f4 carry is unknown.
  */
 #define SGI_KONA_CMD_CONTEXT_RESTORE 0x1f9
 #define SGI_KONA_CMD_CONTEXT_RECORDS 0x1f3
@@ -103,8 +103,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_SWAP_PAIR      0x1f4
 #define SGI_KONA_CMD_DMA_POOL       0x1ed
 /*
- * kona_idma's DMA packet, 0x1eb and six words, and kona_dmawrite's
- * list-write record, 0x1c8 with a pipe-memory address and a byte count.
+ * The kernel driver's DMA packet, 0x1eb and six words, and its list-write
+ * record, 0x1c8 with a pipe-memory address and a byte count.
  * sgi-kona.c hands both to the DMA engine.
  */
 #define SGI_KONA_CMD_DMA_PACKET     0x1eb
@@ -250,8 +250,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_RASTER_POS3F 0xad
 #define SGI_KONA_CMD_GL_RASTER_POS4F 0xb1
 /*
- * setCurrentRaster's raster state: fourteen of the context's floats and
- * one integer field converted to a float.
+ * The IRIX client library's raster state: fourteen of the context's floats
+ * and one integer field converted to a float.
  */
 #define SGI_KONA_CMD_GL_RASTER_STATE 0x10e
 /*
@@ -527,8 +527,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_VIDEO          0x1a6
 
 /*
- * The X cursor load's data words after its slot word: kon_cursorLogo and
- * the second sender at 0x526140 send 260. sgi-kona.c consumes them.
+ * The X cursor load's data words after its slot word: both of the X
+ * server's cursor senders send 260. sgi-kona.c consumes them.
  */
 #define SGI_KONA_X_CURSOR_DATA_WORDS 260
 
@@ -539,13 +539,13 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_GL_TEX_TABLE_WORDS 33
 
-/* The X load GC's words (kon_loadGC, kon_loadGeomGC), all framed. */
+/* The X load GC's words, from both of the X server's GC loaders, framed. */
 #define SGI_KONA_X_GC_WORDS 13
 
 /*
  * X pixel setup's words: the mode word, the source-packing,
  * destination-packing and shift table entries, width, height and left pad
- * in bits (kon_loadPixmapGC).
+ * in bits (the X server's pixmap GC loader).
  */
 #define SGI_KONA_X_PIXEL_SETUP_WORDS 7
 
@@ -557,7 +557,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_X_CLIP_WORDS     5
 #define SGI_KONA_X_BDATA4_WORDS   4
 
-/* X load scissor's words: x1, y1, width and height (konPolyGlyphBltSolid). */
+/* X load scissor's words: x1, y1, width and height (the glyph blit's). */
 #define SGI_KONA_X_SCISSOR_WORDS  4
 
 extern const SGICommandPortSelector sgi_kona_command_tokens[];

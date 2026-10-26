@@ -711,7 +711,7 @@ static void test_colour_map_low_bits_dropped(void)
 
 /*
  * Video command 0x3c, TempBlankAllChannels, as the IRIX 6.5.30 X server's
- * screen saver sends it (konBlankScreen in konal.so): the command number
+ * screen saver sends it (its screen blank in konal.so): the command number
  * at the video token's slot, one data word, 1 to blank and 0 to unblank,
  * then the checksum, the number plus the data word.
  */

@@ -150,9 +150,9 @@ static uint32_t tagged_offset_word(uint64_t addr)
 }
 
 /*
- * The GL context's first make-current: KONApcxswap's 0x1fd and 0x1f2,
- * then the client's buffer configuration for its visual, single- or
- * double-buffered with 12-bit components, and the pack word.
+ * The GL context's first make-current: the driver's context swap's 0x1fd
+ * and 0x1f2, then the client's buffer configuration for its visual, single-
+ * or double-buffered with 12-bit components, and the pack word.
  */
 static void gl_make_current(QTestState *s, bool double_buffered)
 {
@@ -171,10 +171,10 @@ static void gl_make_current(QTestState *s, bool double_buffered)
 }
 
 /*
- * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
- * rows counted down, ends exclusive: whole-screen position and clip,
- * then a display-ID GC (cfg 8) writing id into bits 7:2, as kon_drawDid
- * sends it.
+ * The X server's display-ID fill of the box from (x1, y1) to (x2, y2), rows
+ * counted down, ends exclusive: whole-screen position and clip, then a
+ * display-ID GC (cfg 8) writing id into bits 7:2, as the X server sends
+ * it.
  */
 static void x_paint_display_id(QTestState *s, uint32_t x1, uint32_t y1,
                                uint32_t x2, uint32_t y2, uint32_t id)
@@ -192,10 +192,10 @@ static void x_paint_display_id(QTestState *s, uint32_t x1, uint32_t y1,
 }
 
 /*
- * kona_act_pcx's 0x1f3 and 0x1ee for a window whose lower-left pixel is
- * at plane (x, y), as the traced run's words carry it: the corner in
- * words 0 and 1 and again in 4 and 5, the size in words 6 and 7, the
- * other words as that run sent them. The X server first gives the
+ * The driver's context-activation 0x1f3 and 0x1ee for a window whose
+ * lower-left pixel is at plane (x, y), as the traced run's words carry it:
+ * the corner in words 0 and 1 and again in 4 and 5, the size in words 6 and
+ * 7, the other words as that run sent them. The X server first gives the
  * window's pixels its display ID 0xd, as it does when it maps a window.
  */
 static void gl_place_window(QTestState *s, uint32_t x, uint32_t y,
@@ -453,7 +453,7 @@ static void test_window_needed_and_moved(void)
 
 /*
  * A swap as the GL client and the kernel send it: the client's 0xc6 0,
- * then KONAschedswapbuf's packets, the retrace request 0x1e7 in a
+ * then the driver's swap-scheduling packets, the retrace request 0x1e7 in a
  * bracket of its own, as the traced run sent them.
  */
 static void gl_swap(QTestState *s, uint32_t tag)
@@ -936,7 +936,7 @@ static void test_destroy_releases_window(void)
 }
 
 /*
- * The kernel's kona_unblank sends textport command 1 as 1 1 0, and
+ * The kernel's textport unblank sends textport command 1 as 1 1 0, and
  * kernel commands share the port, so a 1 1 0 may be followed by the
  * kernel's destroy, 0x1f8 0x103, while a context is still current. The
  * destroy must reach the kernel framer and release the window, both
@@ -1146,14 +1146,13 @@ static void test_migration_of_gl_state(void)
 
 /*
  * A context on an overlay visual draws into the overlay planes. The IRIX
- * 6.5.30 n32 libGLcore.so's buffer configuration sends the
- * visual's level, context word 0xce4, as its first word, and
- * SceneViewer's logo context sent 1 1 0 8 0 0 0 0 0 0 0, level 1 and
- * eight index bits, before its window came with display ID 0x44 (run
- * irix-20261023T111222-0467d9). Its clear to index 1 must land in the
- * overlay plane and show through the overlay map, leaving the colour
- * bank alone. A model that reads the 1 1 as the textport's command 1
- * loses the configuration and clears bank 0 in RGB instead.
+ * 6.5.30 n32 libGLcore.so's buffer configuration sends the visual's level
+ * as its first word, and SceneViewer's logo context sent 1 1 0 8 0 0 0 0 0
+ * 0 0, level 1 and eight index bits, before its window came with display ID
+ * 0x44 (run irix-20261023T111222-0467d9). Its clear to index 1 must land in
+ * the overlay plane and show through the overlay map, leaving the colour
+ * bank alone. A model that reads the 1 1 as the textport's command 1 loses
+ * the configuration and clears bank 0 in RGB instead.
  */
 static void test_overlay_context_draws_the_overlay(void)
 {
@@ -1254,7 +1253,7 @@ static void test_held_level1_migrates(gconstpointer opaque)
 
 /*
  * When an overlay window goes away, the X server clears the overlay
- * layer under it with konClearLayer: whole-screen clip and position, the
+ * layer under it with its layer clear: whole-screen clip and position, the
  * GC SceneViewer's close sent (cfg 0x28, buffer selector 3, index 0
  * under all ones), then the boxes. The logo an overlay context drew must
  * go with it, so the main planes show again, and the second overlay
