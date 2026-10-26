@@ -29,6 +29,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qapi/error.h"
+#include "qemu/cutils.h"
 #include "qemu/timer.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/rasterizer.h"
@@ -164,6 +165,9 @@ static SGIRasterTarget bench_target(Bench *b, bool rgba)
         .store_depth = bench_store_depth,
         .texture = &b->image,
         .opaque = b,
+#ifdef SGI_RASTER_PARALLEL_MAX_BANDS
+        .concurrent_pixels = true,
+#endif
     };
 }
 
@@ -475,7 +479,13 @@ typedef struct Corpus {
     uint32_t colour[2][CW * CH];
     uint32_t depth[CW * CH];
     uint32_t stencil[CW * CH];
-    uint64_t calls;
+    /*
+     * Each pixel's calls in order, and the calls for no pixel of the
+     * planes, summed: a rasterizer that draws pixels on several threads
+     * still makes each pixel's calls in one order.
+     */
+    uint64_t pixel_calls[CW * CH];
+    uint64_t outside;
     uint32_t texels[CTEX_LEVELS][(1u << CTEX_LOG2) * (1u << CTEX_LOG2)];
     /* Raw-component reads: each slot's width, and texels out of range. */
     uint8_t bits[4];
@@ -496,10 +506,24 @@ static uint64_t fnv(uint64_t h, uint64_t v)
 static void corpus_call(Corpus *c, unsigned kind, unsigned target, int x,
                         int y, uint64_t value)
 {
-    c->calls = fnv(c->calls, kind);
-    c->calls = fnv(c->calls, target);
-    c->calls = fnv(c->calls, (uint32_t)x | (uint64_t)(uint32_t)y << 32);
-    c->calls = fnv(c->calls, value);
+    uint64_t h = fnv(fnv(0, kind), target);
+
+    h = fnv(fnv(h, (uint32_t)x | (uint64_t)(uint32_t)y << 32), value);
+    if (x >= 0 && x < CW && y >= 0 && y < CH) {
+        c->pixel_calls[y * CW + x] = fnv(c->pixel_calls[y * CW + x], h);
+    } else {
+        qatomic_add(&c->outside, h);
+    }
+}
+
+static uint64_t corpus_calls(const Corpus *c)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+
+    for (unsigned i = 0; i < CW * CH; i++) {
+        h = fnv(h, c->pixel_calls[i]);
+    }
+    return fnv(h, c->outside);
 }
 
 /* Stores outside the planes are folded into the call digest, not made. */
@@ -967,7 +991,6 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         c->stencil[i] = g_rand_int(rand) & 0xff;
     }
     corpus_texture(c, rand);
-    c->calls = 0xcbf29ce484222325ull;
 
     /*
      * Ownership: the window somewhere on the planes, one to four
@@ -1081,8 +1104,41 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         .stipple_background = { 0.25, 0.5, 0.75, 1 },
         .stipple_background_index = 7,
         .opaque = c,
+#ifdef SGI_RASTER_PARALLEL_MAX_BANDS
+        .concurrent_pixels = true,
+#endif
     };
     sgi_soft_draw(&rules, &t, &d);
+    if (corpus_chance(rand, 15)) {
+        /* A clear of part of the window, under the window's rectangles. */
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_CLEAR, .ntargets = 1,
+            .x0 = g_rand_int_range(rand, 0, CW),
+            .y0 = g_rand_int_range(rand, 0, CH),
+            .clip = drawable.clip,
+            .clear_rgba = { g_rand_double(rand), g_rand_double(rand),
+                            g_rand_double(rand), g_rand_double(rand) },
+            .clear_colour_mask = corpus_chance(rand, 70) ?
+                                 SGI_GL_COLOUR_MASK_ALL :
+                                 g_rand_int_range(rand, 0, 16),
+            .clear_depth24 = g_rand_int(rand) & 0xffffff,
+            .clear_stencil = g_rand_int_range(rand, 0, 256),
+            .stencil_mask = g_rand_int(rand),
+            .index_bits = ctx.cur.index_bits,
+            .clear_index = g_rand_int_range(rand, 0, 256),
+            .index_mask = ctx.cur.index_mask,
+        };
+
+        op.clear_buffers = (corpus_chance(rand, 70) ?
+                            SGI_GL_COLOR_BUFFER_BIT : 0) |
+                           (corpus_chance(rand, 50) ?
+                            SGI_GL_DEPTH_BUFFER_BIT : 0) |
+                           (corpus_chance(rand, 30) ?
+                            SGI_GL_STENCIL_BUFFER_BIT : 0);
+        op.x1 = MIN(CW - 1, op.x0 + g_rand_int_range(rand, 0, CW));
+        op.y1 = MIN(CH - 1, op.y0 + g_rand_int_range(rand, 0, CH));
+        sgi_soft_raster(&rules, &t, &op);
+    }
     if (corpus_chance(rand, 15)) {
         /* A glBitmap run, textured from the raster position. */
         uint8_t bytes[24 * 16 / 8];
@@ -1119,7 +1175,7 @@ static void corpus_case(unsigned index, uint64_t *planes, uint64_t *calls)
         sgi_soft_draw(&rules, &t, &d);
     }
     *planes = corpus_planes(c);
-    *calls = c->calls;
+    *calls = corpus_calls(c);
     sgi_gl_cleanup(&ctx);
     g_rand_free(rand);
 }
@@ -1146,15 +1202,85 @@ static void corpus_run(unsigned count, bool verbose)
            calls_all);
 }
 
+/*
+ * Time single-triangle draws of growing size, each a draw of its own as
+ * immediate-mode clients send them: microseconds a draw and the pixels it
+ * covers, for choosing the pixel count below which a draw stays on one
+ * thread. Run once with -j 1 and once with more bands.
+ */
+static void sizes_run(unsigned repeats)
+{
+    static const unsigned legs[] = { 8, 16, 32, 64, 96, 128, 192, 256, 384,
+                                     512 };
+    Bench *b = g_new(Bench, 1);
+    SGIRasterTarget t;
+    SGIGLContext c;
+
+    bench_init(b);
+    t = bench_target(b, true);
+    context_init(b, &c);
+    c.cur.depth_test = 1;
+    for (unsigned l = 0; l < ARRAY_SIZE(legs); l++) {
+        unsigned draws = MAX(20, 400000 / (legs[l] * legs[l]));
+        GRand *rand = g_rand_new_with_seed(legs[l]);
+        int64_t start, end;
+
+        start = get_clock();
+        for (unsigned i = 0; i < draws * MAX(repeats, 1); i++) {
+            float v[3][SGI_GL_VERTEX_FLOATS] = { 0 };
+            double x = g_rand_double_range(rand, 0, W - legs[l]);
+            double y = g_rand_double_range(rand, 0, H - legs[l]);
+            double px[3][2] = {
+                { x, y }, { x + legs[l], y }, { x, y + legs[l] },
+            };
+            SGIGLDraw d = {
+                .context = 1, .mode = SGI_GL_TRIANGLES, .count = 3,
+                .vertices = &v[0][0], .state = &c.cur,
+            };
+
+            for (unsigned k = 0; k < 3; k++) {
+                v[k][SGI_GL_V_POSITION + 0] = 2 * px[k][0] / W - 1;
+                v[k][SGI_GL_V_POSITION + 1] = 2 * px[k][1] / H - 1;
+                v[k][SGI_GL_V_POSITION + 3] = 1;
+                for (unsigned j = 0; j < 4; j++) {
+                    v[k][SGI_GL_V_COLOR + j] = g_rand_double(rand);
+                }
+            }
+            sgi_soft_draw(&rules_rgba, &t, &d);
+        }
+        end = get_clock();
+        printf("size %3u pixels %6u draws %6u %9.3f us/draw\n", legs[l],
+               legs[l] * legs[l] / 2, draws * MAX(repeats, 1),
+               (end - start) / 1e3 / (draws * MAX(repeats, 1)));
+        g_rand_free(rand);
+    }
+    sgi_gl_cleanup(&c);
+    bench_cleanup(b);
+    g_free(b);
+}
+
 int main(int argc, char **argv)
 {
-    unsigned repeats = 1, cases = 0;
-    bool verbose = false;
+    unsigned repeats = 1, cases = 0, bands = 1;
+    uint64_t min_pixels = 0;
+    bool verbose = false, sizes = false;
     int only = -1;
     int opt;
 
-    while ((opt = getopt(argc, argv, "s:r:c:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "s:r:c:j:m:vzh")) != -1) {
         switch (opt) {
+        case 'j':
+            bands = atoi(optarg);
+            break;
+        case 'm':
+            if (qemu_strtou64(optarg, NULL, 0, &min_pixels)) {
+                fprintf(stderr, "bad pixel count %s\n", optarg);
+                return 1;
+            }
+            break;
+        case 'z':
+            sizes = true;
+            break;
         case 'c':
             cases = atoi(optarg);
             break;
@@ -1176,10 +1302,23 @@ int main(int argc, char **argv)
             repeats = atoi(optarg);
             break;
         default:
-            fprintf(stderr, "usage: %s [-s scene] [-r repeats] | "
-                    "-c cases [-v]\n", argv[0]);
+            fprintf(stderr, "usage: %s [-j bands] [-m min-pixels] "
+                    "[-s scene] [-r repeats] | -c cases [-v] | -z\n",
+                    argv[0]);
             return opt != 'h';
         }
+    }
+#ifdef SGI_RASTER_PARALLEL_MAX_BANDS
+    sgi_raster_set_parallel(bands, min_pixels);
+#else
+    if (bands > 1) {
+        fprintf(stderr, "this rasterizer draws on one thread only\n");
+        return 1;
+    }
+#endif
+    if (sizes) {
+        sizes_run(repeats);
+        return 0;
     }
     if (cases) {
         corpus_run(cases, verbose);
