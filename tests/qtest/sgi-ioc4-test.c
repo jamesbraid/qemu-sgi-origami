@@ -1306,6 +1306,22 @@ static void test_dma_rx_timer_count_reads_back(void)
     close(sv[0]);
 }
 
+/*
+ * The control register keeps every writable bit as written, including
+ * controls the model does not act on, such as hardware flow control and
+ * bit 20; status and command bits do not store.
+ */
+static void test_dma_control_stores_its_bits(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+    const uint32_t written = (1u << 17) | (1u << 20) | SSCR_THRESHOLD(0x1ff);
+
+    reg_write(qts, SDMA_CONTROL(0), written);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)), ==, written);
+    qtest_quit(qts);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2845,6 +2861,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-control-stores-its-bits",
+                   test_dma_control_stores_its_bits);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-count-reads-back",
                    test_dma_rx_timer_count_reads_back);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-due-before-access",

@@ -51,6 +51,7 @@
 #define IOC4_DMA_RX_TIMER(n) (IOC4_DMA_PORT_BASE(n) + 0x14)
 #define IOC4_DMA_SHADOW(n) (IOC4_DMA_PORT_BASE(n) + 0x18)
 #define IOC4_SSCR_THRESHOLD 0x000001ff
+#define IOC4_SSCR_TX_TIMER_BUSY 0x00010000
 #define IOC4_SSCR_DRAIN     0x08000000
 #define IOC4_SSCR_DMA_EN    0x10000000
 #define IOC4_SSCR_PAUSE     0x20000000
@@ -653,6 +654,9 @@ static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
     uint32_t supported = IOC4_SSCR_THRESHOLD | IOC4_SSCR_DRAIN |
                          IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE |
                          IOC4_SSCR_RESET;
+    /* Status and commands: these never read back as written. */
+    uint32_t unstored = IOC4_SSCR_TX_TIMER_BUSY | IOC4_SSCR_DRAIN |
+                        IOC4_SSCR_PAUSE_STATE | IOC4_SSCR_RESET;
     uint32_t old = p->control;
     bool want_dma = value & IOC4_SSCR_DMA_EN;
     bool want_pause = value & IOC4_SSCR_PAUSE;
@@ -663,7 +667,8 @@ static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
     }
     if (value & ~supported) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-ioc4: unsupported serial control bits 0x%08x on port %u\n",
+                      "sgi-ioc4: serial control bits 0x%08x on port %u are "
+                      "stored but not modelled\n",
                       value & ~supported, p->index);
     }
     if (!!(old & IOC4_SSCR_DMA_EN) != want_dma) {
@@ -703,8 +708,11 @@ static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
             timer_del(p->tx_timer);
         }
     }
-    p->control = value & (IOC4_SSCR_THRESHOLD | IOC4_SSCR_DMA_EN |
-                          IOC4_SSCR_PAUSE);
+    /*
+     * Every writable bit stores, as the IOC3 datasheet's control table
+     * has it, including controls with no modelled behaviour.
+     */
+    p->control = value & ~unstored;
     if (p->drain_pending) {
         p->control |= IOC4_SSCR_DRAIN;
     }
