@@ -4312,8 +4312,15 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
     return v[7];
 }
 
+/*
+ * The draw target. `textured` is false when the operation enables no
+ * texture target, and then the bound texture is not resolved: nothing
+ * reads it without one, and resolving rebuilds the bound object's level
+ * views, which every untextured primitive paid for.
+ */
 static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
-                               SGIRasterRules *rules, int stencil_bits)
+                               SGIRasterRules *rules, int stencil_bits,
+                               bool textured)
 {
     static const SGIGLTexImage unsupported_texture = {
         .base_format = UINT32_MAX,
@@ -4332,8 +4339,11 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
         .opaque = s,
         .screen_top = SGI_KONA_FB_HEIGHT - 1,
         .screen_rows_down = false,
-        .texture = sgi_kona_texture_resolve(&s->textures),
+        .texture = textured ? sgi_kona_texture_resolve(&s->textures) : NULL,
     };
+    if (!textured) {
+        return;
+    }
     /* A rejected live binding must not become an untextured draw. */
     if ((s->context_current != SGI_KONA_CONTEXT_NONE &&
          s->state[s->context_current]->pipe.texture_rebind_refused) ||
@@ -5723,7 +5733,9 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
                       d->context);
         return SGI_GL_DRAW_OK;
     }
-    sgi_kona_gl_target(s, &t, &rules, stencil_bits);
+    sgi_kona_gl_target(s, &t, &rules, stencil_bits,
+                       d->state->texture_1d || d->state->texture_2d ||
+                       d->state->texture_3d);
     if (d->state->depth_test && !sgi_kona_gl_has_depth(s, d->context)) {
         st = *d->state;
         st.depth_test = 0;
@@ -5871,7 +5883,7 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
                       "stencil visual\n");
         return;
     }
-    sgi_kona_gl_target(s, &t, &rules, stencil_bits);
+    sgi_kona_gl_target(s, &t, &rules, stencil_bits, true);
     if ((op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT) &&
         (s->context_current == SGI_KONA_CONTEXT_NONE ||
          !sgi_kona_gl_has_depth(s, s->context_current))) {
