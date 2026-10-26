@@ -1778,6 +1778,13 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         (bound && !texture_object(&tmp, handle, false))) {
         goto invalid;
     }
+    /* Another owner's saved binding names one of its own objects too. */
+    for (unsigned k = 0; k < SGI_KONA_TEXTURE_OWNERS; k++) {
+        if (k != owner && tmp.owner_bound[k] &&
+            !sgi_kona_texture_lookup(&tmp, k, tmp.owner_bound_handle[k])) {
+            goto invalid;
+        }
+    }
     tmp.bound = bound;
     tmp.bound_handle = handle;
     sgi_kona_texture_cleanup(s);
