@@ -125,6 +125,22 @@ bool sgi_pi_gfx_take_mark(void)
     return counted;
 }
 
+/* The node sending the store being forwarded, per host thread as above. */
+static __thread Object *sgi_pi_gfx_forwarding_source;
+
+Object *sgi_pi_gfx_mark_source(Object *node)
+{
+    Object *previous = sgi_pi_gfx_forwarding_source;
+
+    sgi_pi_gfx_forwarding_source = node;
+    return previous;
+}
+
+Object *sgi_pi_gfx_store_source(void)
+{
+    return sgi_pi_gfx_forwarding_source;
+}
+
 void sgi_pi_gfx_add_credits(SGIPIGfx *g, unsigned int slot, uint32_t credits,
                             const char *who)
 {

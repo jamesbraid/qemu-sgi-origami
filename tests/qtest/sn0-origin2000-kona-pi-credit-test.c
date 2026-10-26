@@ -56,12 +56,39 @@
     "-accel tcg,thread=multi -no-reboot -no-shutdown -S " \
     "-device sgi-kona,id=kona0,slot=io4,fabric-hub-widget=9 "
 
+/*
+ * The Onyx2 deskside the catalogue launches: two Hubs on the one Crossbow,
+ * the pipe in IO4 at widget 8, and the board's "pi" link on node 0's Hub,
+ * the Hub of the first node slot.
+ */
+#define DESKSIDE_ARGS \
+    "-M onyx2,topology=onyx2-deskside,nodes=2,population=1:1 " \
+    "-smp 2 -m 128M -cpu R10000 " \
+    "-accel tcg,thread=multi -no-reboot -no-shutdown -S " \
+    "-device sgi-kona,slot=io4,product=ir2,geometry=ge14-4,rm-type=rm7," \
+    "rm-count=2,texture-mb=64,display=dg5-8 "
+#define DESKSIDE_WIDGET     8
+/* The command page through node 1's uncached I/O space, and its page. */
+#define DESKSIDE_COMMAND_IO UINT64_C(0x9200000108c10000)
+#define DESKSIDE_PAGE       UINT64_C(0x108c00000)
+#define NODE1_HUB           (HUB + NODE_STRIDE)
+
+/* A processor's own Hub's slot number register, and the slot field. */
+#define LOCAL_HUB_SLOT_ID   UINT64_C(0x9200000001220048)
+#define HUB_SLOT_ID         (HUB + 0x220048)
+#define SLOT_ID_MASK        0x7
+
 /* Pool and list for the display-list case, in node 0's memory. */
 #define POOL_BASE           UINT64_C(0x40000)
 #define LIST_CALL_POOL      0x16eu
 #define DMA_POOL            0x1edu
 
-static void build_store_server(SN0Image *p)
+/*
+ * The store server. With 'one_node' set, a processor whose Hub reads a
+ * slot number other than the one the mailbox holds parks, so that on a
+ * machine of two nodes only node 0's processor serves.
+ */
+static void build_store_server(SN0Image *p, bool one_node)
 {
     unsigned int at, loop, store, word, next;
 
@@ -76,6 +103,15 @@ static void build_store_server(SN0Image *p)
     sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
     sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(MAILBOX));
+    if (one_node) {
+        sn0_emit_li64(p, SN0_R_T0, LOCAL_HUB_SLOT_ID);
+        sn0_emit_i(p, SN0_OPC_LD, SN0_R_T0, SN0_R_T1, 0);
+        sn0_emit_i(p, SN0_OPC_ANDI, SN0_R_T1, SN0_R_T1, SLOT_ID_MASK);
+        sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T2, 32);
+        at = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T1, SN0_R_T2);
+        sn0_emit_park(p);
+        sn0_patch_branch(p, at, p->pos);
+    }
 
     loop = p->pos;
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T1, 0);        /* count */
@@ -107,7 +143,7 @@ static QTestState *store_server(const char *uri)
     g_autofree char *path = NULL;
     QTestState *qts;
 
-    build_store_server(image);
+    build_store_server(image, false);
     path = sn0_image_write(image, "sn0-kona-pi-credit");
     qts = qtest_initf("%s-bios %s %s %s", MACHINE_ARGS, path,
                        uri ? "-incoming" : "", uri ? uri : "");
@@ -342,6 +378,48 @@ static void test_owed_credits_migrate(void)
     g_rmdir(dir);
 }
 
+/*
+ * A pipe returns its graphics credits to the Hub whose I/O interface sent
+ * it the stores they were charged for, and that Hub's node-widget map
+ * routes them on. IRIX on the two-node Onyx2 deskside made node 1 the
+ * pipe's master: it mapped the pipe through node 1's window and programmed
+ * node 1's map to send widget 8's credits to the attaching processor, node
+ * 0's slot A, and left node 0's map empty. Node 0's processor stores
+ * through node 1's window and is charged on node 0. A board that sent its
+ * credits to the Hub of its "pi" link, node 0, found no map entry there and
+ * dropped them; the counter ran below zero and the driver killed the pipe
+ * (death reason 25).
+ */
+static void test_credits_return_through_the_storing_hub(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    build_store_server(image, true);
+    path = sn0_image_write(image, "sn0-kona-pi-credit-deskside");
+    qts = qtest_initf("%s-bios %s", DESKSIDE_ARGS, path);
+    unlink(path);
+
+    sn0_program_nasid(qts, 1);
+    qtest_writeq(qts, MAILBOX + 32,
+                 qtest_readq(qts, HUB_SLOT_ID) & SLOT_ID_MASK);
+    qtest_writeq(qts, HUB + PI_GFX_PAGE(0),
+                 PI_GFX_PAGE_ENABLE | DESKSIDE_PAGE);
+    qtest_writeq(qts, HUB + PI_GFX_CREDIT(0), TOTAL);
+    qtest_writeq(qts, NODE1_HUB + IO_GFX_INIT(0),
+                 MAP(0, 0, DESKSIDE_WIDGET));
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    store(qts, DESKSIDE_COMMAND_IO, 1, 4);
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    store(qts, DESKSIDE_COMMAND_IO, 9, 4);
+    g_assert_cmpuint(credit(qts), ==, TOTAL - 1);
+    store(qts, DESKSIDE_COMMAND_IO, 0, 4);
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -363,5 +441,7 @@ int main(int argc, char **argv)
                    test_straddling_stores_return_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/owed-credits-migrate",
                    test_owed_credits_migrate);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/storing-hub",
+                   test_credits_return_through_the_storing_hub);
     return g_test_run();
 }

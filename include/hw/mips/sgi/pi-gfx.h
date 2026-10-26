@@ -103,6 +103,20 @@ void sgi_pi_gfx_unmark_store(bool previous);
 bool sgi_pi_gfx_take_mark(void);
 bool sgi_pi_gfx_store_counted(void);
 
+/*
+ * The node whose I/O interface puts the store now being forwarded onto its
+ * XIO link, or NULL when the processor interface did not say. A head's
+ * credits are the write responses to its stores, and a response goes back
+ * to the interface that sent the request, whose node-widget map routes it
+ * on (Linux ia64 sn/shubio.h, ii_igfx0). On a crossbar shared by two
+ * nodes that is the node the store's address names, not necessarily the
+ * head's "pi" link. sgi_pi_gfx_mark_source() returns the previous source,
+ * to be put back when the store returns. sgi_pi_gfx_store_source() does
+ * not clear it.
+ */
+Object *sgi_pi_gfx_mark_source(Object *node);
+Object *sgi_pi_gfx_store_source(void);
+
 /* 'credits' credits returned to 'slot'. */
 void sgi_pi_gfx_add_credits(SGIPIGfx *g, unsigned int slot, uint32_t credits,
                             const char *who);

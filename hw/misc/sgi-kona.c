@@ -1388,9 +1388,13 @@ static bool sgi_kona_store_counted(void)
  * is the same reading SGI_KONA_CREDIT gives the board's own credit
  * register. That register stays: the PROM tests it for zero before every
  * textport command, and it and these credits both count the words a
- * framer holds. The credits go to the board's node through the map the
- * driver programs for its widget; with no "pi" link the board logs once
- * and returns nothing.
+ * framer holds. The credits are write responses, so they go back to the
+ * Hub that sent the store now arriving, whose map for this widget routes
+ * them; on the two-node Onyx2 deskside that can be either node's Hub. A
+ * store with no sender (a qtest's) uses the "pi" link, and with neither
+ * the board logs once and returns nothing. Limitation: credits held from
+ * earlier stores go back with this store's, to its sender, so stores of
+ * one packet sent through two Hubs would return some to the wrong one.
  */
 static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
                                 uint64_t packets)
@@ -1399,6 +1403,7 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
                 sgi_kona_port_held(&s->kernel_port) ||
                 sgi_kona_port_held(&s->gl_port) ||
                 sgi_kona_port_held(&s->dma.fifo_port);
+    Object *node = sgi_pi_gfx_store_source() ?: s->pi;
     uint32_t credits;
 
     if (!open) {
@@ -1414,7 +1419,7 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
     if (!credits) {
         return;
     }
-    if (!s->pi) {
+    if (!node) {
         if (!s->pi_unlinked_logged) {
             s->pi_unlinked_logged = true;
             qemu_log_mask(LOG_UNIMP, "sgi-kona: no \"pi\" link; graphics"
@@ -1423,7 +1428,7 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
         return;
     }
     trace_sgi_kona_pi_credits(SGI_XIO_BOARD(s)->slot, credits);
-    sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, credits);
+    sgi_pi_gfx_return_credits(node, SGI_XIO_BOARD(s)->slot, credits);
 }
 
 static void sgi_kona_textport_packet(void *opaque, unsigned port_id,

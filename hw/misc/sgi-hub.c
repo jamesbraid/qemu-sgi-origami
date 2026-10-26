@@ -4702,6 +4702,25 @@ static MemTxResult sgi_hub_pi_io_read(void *opaque, hwaddr addr,
     return result;
 }
 
+static SGIHubState *sgi_hub_by_number(SGIHubState *s, uint32_t number);
+
+/*
+ * The Hub whose I/O interface sends a store at I/O-space address 'addr'
+ * onto its XIO link: the one the address's node number names. A Hub with
+ * no node geometry (a device test's) sends its own.
+ */
+static Object *sgi_hub_pio_sender(SGIHubState *s, hwaddr addr)
+{
+    SGIHubState *sender = s;
+
+    if (s->claim_node_shift && s->claim_node_shift < PI_ERR_PHYSICAL_BITS) {
+        sender = sgi_hub_by_number(s, extract64(addr, s->claim_node_shift,
+                                                PI_ERR_PHYSICAL_BITS -
+                                                s->claim_node_shift));
+    }
+    return sender ? OBJECT(sender) : NULL;
+}
+
 static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
                                        uint64_t data, unsigned size,
                                        MemTxAttrs attrs)
@@ -4711,21 +4730,25 @@ static MemTxResult sgi_hub_pi_io_write(void *opaque, hwaddr addr,
     uint8_t bytes[8];
     MemTxResult result;
     bool counted, previous;
+    Object *previous_source;
 
     BQL_LOCK_GUARD();
 
     /*
      * A graphics write: the slice pays a credit when its graphics page is
      * enabled and covers the store. The store goes on either way, marked
-     * so a head returns credit only for a store that was counted.
+     * so a head returns credit only for a store that was counted, and
+     * with the Hub that sends it to the head, which its credits go back to.
      */
     counted = sgi_pi_gfx_count_store(&s->pi_gfx, path->slice, addr,
                                      "sgi-hub");
     stq_be_p(bytes, data);
     previous = sgi_pi_gfx_mark_store(counted);
+    previous_source = sgi_pi_gfx_mark_source(sgi_hub_pio_sender(s, addr));
     result = sgi_pio_forward_write(&s->pi_forward[path->slice],
                                    s->io_space_base + addr, attrs,
                                    bytes + 8 - size, size);
+    sgi_pi_gfx_mark_source(previous_source);
     sgi_pi_gfx_unmark_store(previous);
     return result;
 }
