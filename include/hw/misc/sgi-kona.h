@@ -556,11 +556,44 @@ typedef struct SGIKonaGLImaging {
     uint32_t colour_depth;
     /*
      * Bit k: imaging stage k of histogram, minmax and the colour, post-
-     * convolution and post-colour-matrix tables is enabled; the model
-     * applies none of them.
+     * convolution and post-colour-matrix tables is enabled. The model
+     * applies the tables (SGIKonaGLColourTables), not the first two.
      */
-    uint32_t unmodelled;
+    uint32_t stages;
 } SGIKonaGLImaging;
+
+/*
+ * SGI_color_table's tables (see sgi_kona_gl_colour_table_open()): the
+ * colour, post-convolution and post-colour-matrix tables, then the texture
+ * colour table, which the model keeps but does not apply. The client
+ * library refuses a table wider than 4096.
+ */
+#define SGI_KONA_GL_TABLES     4
+#define SGI_KONA_GL_TABLE_MAX  4096
+/* A table image's words: 4096 pixels of 16 bytes and the low-bits phase. */
+#define SGI_KONA_GL_TABLE_WORDS (SGI_KONA_GL_TABLE_MAX * 4 + 1)
+
+typedef struct SGIKonaGLColourTable {
+    uint32_t format;            /* the internal format token; 0: none */
+    uint32_t width;
+    uint32_t scale[4], bias[4]; /* COLOR_TABLE_SCALE_SGI and _BIAS_SGI */
+    /* R, G, B and A after scale, bias and the clamp, float bits. */
+    uint32_t values[SGI_KONA_GL_TABLE_MAX][4];
+} SGIKonaGLColourTable;
+
+typedef struct SGIKonaGLColourTables {
+    SGIKonaGLColourTable table[SGI_KONA_GL_TABLES];
+    /* What a proxy target last recorded: its format and width. */
+    uint32_t proxy_format[SGI_KONA_GL_TABLES];
+    uint32_t proxy_width[SGI_KONA_GL_TABLES];
+    /*
+     * The 0xe8 whose image is still to come, by FIFO words or by DMA, and
+     * the FIFO words taken so far; pending[0] is 0 when none is.
+     */
+    uint32_t pending[9];
+    uint32_t staged_have;
+    uint32_t staged[SGI_KONA_GL_TABLE_WORDS];
+} SGIKonaGLColourTables;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
@@ -586,6 +619,7 @@ typedef struct SGIKonaGLState {
     bool texture_regs_saved;
     SGIKonaGLImaging imaging;
     uint32_t imaging_enabled_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLColourTables tables;
 } SGIKonaGLState;
 
 typedef struct SGIKonaPendingSwap {

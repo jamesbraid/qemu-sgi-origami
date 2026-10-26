@@ -425,6 +425,18 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_CONVOLUTION_PARAMETER  0xf8
 #define SGI_KONA_CMD_GL_CONVOLUTION_PARAMETERS 0xf9
 /*
+ * SGI_color_table's commands (established from the IRIX client library;
+ * the layouts are in sgi-kona.c, before sgi_kona_gl_colour_table_open()).
+ * A table's image is sent between 0x111 8 0x40000000 and 0x111 8 0:
+ * 0xe8 and its header, followed by the image's words unless the image
+ * comes by DMA. 0xeb sets a table's scale or bias; 0xea and 0xec read a
+ * table and a table parameter back on the return page.
+ */
+#define SGI_KONA_CMD_GL_COLOUR_TABLE         0xe8
+#define SGI_KONA_CMD_GL_GET_COLOUR_TABLE     0xea
+#define SGI_KONA_CMD_GL_COLOUR_TABLE_PARAMETERS 0xeb
+#define SGI_KONA_CMD_GL_GET_COLOUR_TABLE_PARAMETER 0xec
+/*
  * 0x116 a b c d: the client library's one-word pipe query, which it sends
  * before splitting a convolved DrawPixels or CopyPixels into strips and
  * then waits for on the return page (see sgi_kona_gl_line_distance()).

@@ -18576,6 +18576,149 @@ static void test_colour_matrix_get(void)
 }
 
 /*
+ * SGI_color_table. A table is loaded as the IRIX client library loads it,
+ * between 0x111 8 0x40000000 and 0x111 8 0: 0xe8 target, internal format,
+ * width, width - 1 as a float, then DrawPixels' format and type codes (5
+ * and 1, RGBA bytes), low bits, DMA and row flags, and the image's words.
+ * The RGB table here is black, (0x11, 0x22, 0x33) and white.
+ */
+#define COLOUR_TABLE        0x80d0
+#define POST_CONV_TABLE     0x80d1
+#define POST_MATRIX_TABLE   0x80d2
+#define PROXY_COLOUR_TABLE  0x80d3
+
+static const uint32_t colour_table_rgb[3] = {
+    0x000000ff, 0x112233ff, 0xffffffff,
+};
+
+static void colour_table_load(QTestState *s, uint32_t target,
+                              uint32_t format, const uint32_t *image,
+                              uint32_t width)
+{
+    kona_command(s, 0x111, (uint32_t[]) { 8, 0x40000000 }, 2);
+    kona_command(s, 0xe8, (uint32_t[]) {
+        target, format, width, fbits(width - 1.0f), 5, 1, 0, 0, 0,
+    }, 9);
+    for (uint32_t k = 0; image && k < width; k++) {
+        qtest_writel(s, REG_COMMAND, image[k]);
+    }
+    kona_command(s, 0x111, (uint32_t[]) { 8, 0 }, 2);
+}
+
+/*
+ * The table replaces each component it has by its value at the index the
+ * component, clamped to [0, 1], times one less than the width rounds to
+ * (SGI_color_table, "Color Table Lookup"). colour_matrix_draw()'s pixels
+ * (0x40, 0, 0) and (0, 0x80, 0) index entries 1 and 0, and 0 and 1. The
+ * three tables sit before the filter, after the post-convolution scale
+ * and bias, and after the colour matrix: with the matrix swapping red and
+ * blue, the colour table's red ends up blue, and the post-colour-matrix
+ * table reads the blue the swap made.
+ */
+static void test_colour_table_draw(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t doubled[3] = {
+        0x000000ff, 0x224466ff, 0xffffffff,
+    };
+    static const uint32_t targets[] = {
+        COLOUR_TABLE, COLOUR_TABLE, POST_CONV_TABLE, POST_MATRIX_TABLE,
+        COLOUR_TABLE, COLOUR_TABLE,
+    };
+    static const uint32_t left[] = {
+        0x110000, 0x110000, 0x000011, 0x000033, 0x400000, 0x110000,
+    };
+    static const uint32_t right[] = {
+        0x002200, 0x002200, 0x002200, 0x002200, 0x008000, 0x002200,
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS), *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    if (mode == 1) {
+        /* COLOR_TABLE_SCALE_SGI applies as the image is taken. */
+        kona_command(s, 0xeb, (uint32_t[]) {
+            COLOUR_TABLE, 0x80d6, fbits(0.5), fbits(0.5), fbits(0.5), F1,
+        }, 6);
+    }
+    colour_table_load(s, targets[mode], 0x1907,
+                      mode == 1 ? doubled : colour_table_rgb, 3);
+    if (mode == 2 || mode == 3) {
+        colour_matrix_swap(s);
+    }
+    if (mode != 4) {
+        kona_command(s, 0x24, &targets[mode], 1);
+    }
+    if (mode == 5) {
+        dir = g_dir_make_tmp("sn0-kona-colour-table-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(s, uri);
+        qtest_quit(s);
+        s = to;
+    }
+    colour_matrix_draw(s);
+    convolution_expected(s, left[mode], right[mode]);
+    qtest_quit(s);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+/*
+ * 0xea target format first count reads a table back on the return page
+ * at byte 8, four floats an entry, the components an RGB table lacks as
+ * zero; 0xec target pname reads one parameter there. A proxy records the
+ * width it was given, and its image is never sent.
+ */
+static void test_colour_table_queries(void)
+{
+    static const uint32_t params[][3] = {
+        { COLOUR_TABLE, 0x80d9, 3 },
+        { COLOUR_TABLE, 0x80d8, 0x1907 },
+        { COLOUR_TABLE, 0x80da, 12 },
+        { COLOUR_TABLE, 0x80dd, 0 },
+        { PROXY_COLOUR_TABLE, 0x80d9, 64 },
+        { PROXY_COLOUR_TABLE, 0x80d8, 0x1908 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t want[12] = { 0 };
+
+    gl_make_current(s);
+    colour_table_load(s, COLOUR_TABLE, 0x1907, colour_table_rgb, 3);
+    colour_table_load(s, PROXY_COLOUR_TABLE, 0x1908, NULL, 64);
+
+    prepare_refused_reply(s);
+    kona_command(s, 0xea, (uint32_t[]) { COLOUR_TABLE, 0x1908, 0, 3 }, 4);
+    assert_reply_posted(s);
+    for (unsigned k = 0; k < 3; k++) {
+        want[4 * k] = fbits(((colour_table_rgb[k] >> 24) & 0xff) / 255.0);
+        want[4 * k + 1] = fbits(((colour_table_rgb[k] >> 16) & 0xff) / 255.0);
+        want[4 * k + 2] = fbits(((colour_table_rgb[k] >> 8) & 0xff) / 255.0);
+    }
+    for (unsigned k = 0; k < 12; k++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * k), ==, want[k]);
+    }
+
+    for (unsigned k = 0; k < ARRAY_SIZE(params); k++) {
+        prepare_refused_reply(s);
+        kona_command(s, 0xec, params[k], 2);
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, params[k][2]);
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0xec, (uint32_t[]) { COLOUR_TABLE, 0x80d6 }, 2);
+    assert_reply_posted(s);
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * k), ==, F1);
+    }
+    qtest_quit(s);
+}
+
+/*
  * GLperf disables histogram, minmax and the colour tables before its
  * pixel cases: an imaging stage the model does not apply refuses image
  * transfers only while it is enabled.
@@ -19345,6 +19488,18 @@ int main(int argc, char **argv)
              test_colour_matrix_get);
     add_case("sn0/origin2000/kona-3d/colour-matrix/stack-overflow",
              test_colour_matrix_stack_overflow);
+    for (unsigned mode = 0; mode < 6; mode++) {
+        static const char *const names[] = {
+            "colour", "scaled", "post-convolution", "post-colour-matrix",
+            "disabled", "draw-migrates",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/colour-table/%s", names[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode), test_colour_table_draw);
+    }
+    add_case("sn0/origin2000/kona-3d/colour-table/queries",
+             test_colour_table_queries);
     add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
              test_unmodelled_stage_disabled);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
