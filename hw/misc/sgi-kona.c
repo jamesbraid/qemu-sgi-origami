@@ -15161,8 +15161,17 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
                                 uint64_t value, unsigned size)
 {
     SGIKonaState *s = opaque;
-    int cpu = current_cpu ? current_cpu->cpu_index : -1;
+    int cpu;
 
+    /*
+     * Nearly every store is a command word: the command page comes first,
+     * ahead of the register decode, which has no register inside it.
+     */
+    if (addr - SGI_KONA_TEXTPORT_PORT < SGI_KONA_COMMAND_PAGE_SIZE) {
+        sgi_kona_command_page_write(s, addr - SGI_KONA_TEXTPORT_PORT, value);
+        return;
+    }
+    cpu = current_cpu ? current_cpu->cpu_index : -1;
     switch (addr) {
     case SGI_KONA_WIDGET_CONTROL:
         /* Unknown control fields are stored without interpreted effects. */
@@ -15311,12 +15320,6 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         sgi_kona_bracket_write(s, value);
         break;
     default:
-        if (addr >= SGI_KONA_TEXTPORT_PORT &&
-            addr < SGI_KONA_TEXTPORT_PORT + SGI_KONA_COMMAND_PAGE_SIZE) {
-            sgi_kona_command_page_write(s, addr - SGI_KONA_TEXTPORT_PORT,
-                                        value);
-            break;
-        }
         if (addr >= SGI_KONA_MAPRAM_BASE &&
             addr < SGI_KONA_MAPRAM_BASE + SGI_KONA_MAPRAM_ENTRIES * 4) {
             uint32_t index = (addr - SGI_KONA_MAPRAM_BASE) / 4;
