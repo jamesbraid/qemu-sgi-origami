@@ -6,7 +6,6 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "qemu/rcu.h"
-#include "hw/core/cpu.h"
 #include "hw/display/sgi/head-work.h"
 
 SGIHeadWorkBudget sgi_head_work_budget(SGIHeadWork *w, bool timed)
@@ -78,7 +77,7 @@ void sgi_head_work_drain(SGIHeadWork *w)
 
 bool sgi_head_work_may_unlock(SGIHeadWork *w)
 {
-    return w->slice && !current_cpu;
+    return w->slice && qemu_thread_is_self(&w->thread);
 }
 
 void sgi_head_work_unlock(SGIHeadWork *w)
