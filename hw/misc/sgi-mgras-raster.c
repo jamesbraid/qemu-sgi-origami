@@ -405,17 +405,26 @@ static void mgras_work_flags_update(SGIMgrasState *s)
  * a fence an earlier kick sets cannot outlive a later clear. Until the
  * queued copy has run, a read of the register shows its effect
  * (work_flag_sets, work_flag_clears, work_ack_clears).
+ *
+ * An acknowledge keeps only the sources queued work can raise, which is
+ * the swap alone. The kernel acknowledges a swap together with the
+ * retrace, and the retrace and error latches are raised outside the
+ * command stream: a queued copy of those bits would hide a later retrace
+ * from reads and then clear it when it ran.
  */
 bool sgi_mgras_work_queue_flags(SGIMgrasState *s, SGIMgrasFlagsOp op,
                                 uint32_t bits)
 {
     MgrasQueuedWord w = {
-        .value = bits,
         .kind = MGRAS_QUEUED_FLAGS,
         .size = op,
     };
 
-    if (!sgi_mgras_work_pending(s)) {
+    if (op == MGRAS_FLAGS_ACK) {
+        bits &= SGI_MGRAS_PENDING_SWAP;
+    }
+    w.value = bits;
+    if (!bits || !sgi_mgras_work_pending(s)) {
         return false;
     }
     g_array_append_val(s->work_queue, w);
