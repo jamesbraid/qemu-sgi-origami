@@ -584,7 +584,7 @@ static QTestState *pic_tezro_runtime_start(bool incoming, char **bios_path,
     /* Machine validation requires a full-size PROM, but qtest never runs it. */
     g_autofree uint8_t *payload = g_malloc0(1476264);
     char *io9_data = pic_blank_backend(
-        0x800, "sgi-pic-tezro-data-XXXXXX");
+        0x8000, "sgi-pic-tezro-data-XXXXXX");
     char *io9_clock = pic_blank_backend(
         16, "sgi-pic-tezro-clock-XXXXXX");
     char *bios = sgi_prom_container_write(
@@ -595,7 +595,8 @@ static QTestState *pic_tezro_runtime_start(bool incoming, char **bios_path,
         io9_data, io9_clock);
     QTestState *qts = qtest_initf(
         "-M tezro,topology=tezro-tower-multi,nodes=1,"
-        "ip53-experimental=on %s -bios %s %s -S",
+        "ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+        "nvram0-clock=sgi-ds1742-clock-io9 %s -bios %s %s -S",
         incoming_arg, bios, io9_drives);
 
     *bios_path = bios;
