@@ -2804,6 +2804,31 @@ static void test_an_unbacked_transmit_ring_raises_the_pci_error(
 }
 
 /*
+ * Port B's failed fetch raises port B's own error source, bit 17, and not
+ * port A's: the engine reports a fault by port, and the chip places the
+ * source nine bits up for the second port.
+ */
+static void test_port_b_reports_its_own_dma_error(const void *data)
+{
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 1);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, UNBACKED_RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 0);
+    qtest_writel(qts, sdma(1, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(1, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 8);
+
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) &
+                    (SOURCE(0, SRC_PCI_ERROR) | SOURCE(1, SRC_PCI_ERROR)),
+                    ==, SOURCE(1, SRC_PCI_ERROR));
+    g_assert_cmphex(SOURCE(1, SRC_PCI_ERROR), ==, 1u << 17);
+}
+
+/*
  * The failed ring write must not advance produce: an index past an
  * unwritten entry points the driver at garbage.
  */
@@ -3822,6 +3847,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/system-reset-clears-held-packer",
                         NULL,
                         test_a_system_reset_clears_the_held_packer_and_the_timer);
+    qtest_add_data_func("sn0/ioc3-serial/port-b-reports-its-own-dma-error",
+                        NULL, test_port_b_reports_its_own_dma_error);
     qtest_add_data_func("sn0/ioc3-serial/unbacked-transmit-ring-raises-error",
                         NULL,
                         test_an_unbacked_transmit_ring_raises_the_pci_error);
