@@ -1169,6 +1169,39 @@ static PeerPopulationFixture *peer_population_fixture(void)
     return f;
 }
 
+static void test_l1_peer_population_preserved(void)
+{
+    /* The population cache borrows these records for process life. */
+    static SGIMachines *catalogue;
+    const SGIModelTopologyList *entry;
+
+    catalogue = load_catalogue();
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+        const SGIModelNodePopulationList *row;
+
+        if (!g_str_equal(t->name, "origin300-two-chassis")) {
+            continue;
+        }
+        g_assert_true(t->has_l1_peer_links);
+        g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_peer_links), ==, 2);
+        for (row = t->node_populations; row; row = row->next) {
+            Error *err = NULL;
+            const SGIModelTopology *view =
+                sgi_model_population_view(t, row->value, &err);
+
+            g_assert_null(err);
+            g_assert_nonnull(view);
+            g_assert_true(view->has_l1_peer_links);
+            g_assert_true(view->l1_peer_links == t->l1_peer_links);
+            g_assert_true(view->controllers == t->controllers);
+        }
+        return;
+    }
+    g_assert_not_reached();
+}
+
 static void test_io_peer_population_preserved(void)
 {
     PeerPopulationFixture *f = peer_population_fixture();
@@ -1563,6 +1596,8 @@ int main(int argc, char **argv)
                     test_tezro_requires_explicit_topology);
     g_test_add_func("/sn-model/existing-population-views",
                     test_existing_population_views);
+    g_test_add_func("/sn-model/l1-peer/population-preserved",
+                    test_l1_peer_population_preserved);
     g_test_add_func("/sn-model/io-peer/population-preserved",
                     test_io_peer_population_preserved);
     g_test_add_func("/sn-model/io-peer/population-rejects-reduced",

@@ -581,6 +581,8 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->has_io_assemblies = t->has_io_assemblies;
     view->io_assemblies = t->io_assemblies;
     view->l1_management = t->l1_management;
+    view->has_l1_peer_links = t->has_l1_peer_links;
+    view->l1_peer_links = t->l1_peer_links;
     view->ip27_firmware = t->ip27_firmware;
     view->ip35_firmware = t->ip35_firmware;
     view->has_processor_options = t->has_processor_options;

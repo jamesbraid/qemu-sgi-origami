@@ -4985,18 +4985,110 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
                                           SGI_NET_CABLE(dev));
         }
         object_unref(OBJECT(dev));
-        if (ends[0]->kind == SGI_MODEL_LINK_END_KIND_NODE &&
-            ends[1]->kind == SGI_MODEL_LINK_END_KIND_NODE) {
-            for (side = 0; side < 2; side++) {
-                SN1NodeState *node =
-                    SN1_NODE(s->bedrock_nodes[ends[side]->index]);
-                SN1NodeState *other =
-                    SN1_NODE(s->bedrock_nodes[ends[side ^ 1]->index]);
 
-                /* The reviewed compute pair carries its L1 management path. */
-                object_property_set_link(OBJECT(node->l1), "peer",
-                                         OBJECT(other->l1), &error_fatal);
-            }
+    }
+    return true;
+}
+
+/* Controller ownership resolves existing objects; links never create owners. */
+static DeviceState *sgi_machine_l1_peer_endpoint(SGIMachineState *s,
+    const SGIModelTopology *t, unsigned index, Error **errp)
+{
+    const SGIModelControllerList *controller = t->controllers;
+    const SGIModelModuleList *module = t->modules;
+    const uint32List *node;
+    DeviceState *result = NULL;
+    unsigned i;
+
+    for (i = 0; controller && i < index; i++) {
+        controller = controller->next;
+    }
+    if (!controller ||
+        controller->value->kind != SGI_MODEL_CONTROLLER_KIND_L1) {
+        goto invalid;
+    }
+    for (i = 0; module && i < controller->value->module_index; i++) {
+        module = module->next;
+    }
+    if (!module || module->value->controller_index != index) {
+        goto invalid;
+    }
+    if (s->controllers && index < s->controller_count) {
+        result = s->controllers[index];
+    }
+    for (node = module->value->nodes; node; node = node->next) {
+        DeviceState *candidate;
+
+        if (node->value >= s->num_nodes) {
+            goto invalid;
+        }
+        candidate = SN1_NODE(s->bedrock_nodes[node->value])->l1;
+        if (!candidate || (result && result != candidate)) {
+            goto invalid;
+        }
+        result = candidate;
+    }
+    if (result) {
+        return result;
+    }
+invalid:
+    error_setg(errp, "invalid L1 peer controller ownership at index %u", index);
+    return NULL;
+}
+
+static bool sgi_machine_build_l1_peer_links(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    size_t count = QAPI_LIST_LENGTH(t->controllers);
+    g_autofree int64_t *peers = NULL;
+    g_autofree DeviceState **objects = NULL;
+    const SGIModelL1PeerLinkList *entry;
+    size_t i;
+
+    if (!t->l1_peer_links) {
+        return true;
+    }
+    peers = g_new(int64_t, count);
+    objects = g_new0(DeviceState *, count);
+    for (i = 0; i < count; i++) {
+        peers[i] = -1;
+    }
+    for (entry = t->l1_peer_links; entry; entry = entry->next) {
+        unsigned source = entry->value->source_controller_index;
+        unsigned target = entry->value->target_controller_index;
+
+        if (source >= count || target >= count || source == target ||
+            peers[source] >= 0) {
+            error_setg(errp, "invalid L1 peer endpoints or duplicate source");
+            return false;
+        }
+        peers[source] = target;
+    }
+    /* Validate every endpoint before changing any peer property. */
+    for (i = 0; i < count; i++) {
+        if (peers[i] < 0) {
+            continue;
+        }
+        if (peers[peers[i]] != i) {
+            error_setg(errp, "invalid L1 peer: reciprocal link required");
+            return false;
+        }
+        objects[i] = sgi_machine_l1_peer_endpoint(s, t, i, errp);
+        if (!objects[i]) {
+            return false;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        if (peers[i] >= 0 && objects[i] == objects[peers[i]]) {
+            error_setg(errp, "invalid L1 peer: endpoints share one controller");
+            return false;
+        }
+    }
+    for (i = 0; i < count; i++) {
+        if (peers[i] >= 0 &&
+            !object_property_set_link(OBJECT(objects[i]), "peer",
+                                      OBJECT(objects[peers[i]]), errp)) {
+            return false;
         }
     }
     return true;
@@ -7678,6 +7770,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 s->num_nodes, s->sn1_routers, s->router_count);
         }
         if (!sgi_machine_build_bedrock_links(s, t, errp)) {
+            return false;
+        }
+        if (!sgi_machine_build_l1_peer_links(s, t, errp)) {
             return false;
         }
         for (node_index = 0; node_index < node_count; node_index++) {

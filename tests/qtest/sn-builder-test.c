@@ -5580,9 +5580,8 @@ static void test_origin300_two_chassis_refuses_an_uneven_record_list(
 }
 
 /*
- * The cable between the two chassis also carries their L1s' RS-422 pair, so
- * the builder makes each chassis's L1 the other's peer when it wires the
- * cable.
+ * Explicit controller links describe the peer relationship separately from
+ * the NUMAlink cable. Electrical transport remains unspecified.
  */
 #define EXPANSION_LB_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define EXPANSION_LB_REVISION UINT64_C(0x600000)
@@ -8883,6 +8882,44 @@ static void test_expansion_builder(const void *data)
     g_unlink(path);
 }
 
+static void test_explicit_l1_peers(const void *data)
+{
+    const char *fault = data;
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("sn-builder-peer-prom-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, 0x100000), ==, 0x100000);
+    g_assert_cmpint(close(fd), ==, 0);
+    QTestState *qts = qtest_initf(
+        "-M sn-builder-bedrock-test,activate=on,construction-fault=%s "
+        "-cpu R14000 -smp 2,sockets=2,cores=1,threads=1 -m 128 -bios %s -nodefaults -display none",
+        fault, path);
+    g_autofree char *peer = qom_get_str(qts, "/machine/node0/l1", "peer");
+
+    g_assert_cmpstr(peer, ==, !strcmp(fault, "l1-peer-cable-only") ?
+                   "" : "/machine/node1/l1");
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
+static void test_invalid_l1_peers(const void *data)
+{
+    const char *fault = data;
+    g_autofree char *machine = g_strdup_printf(
+        "sn-builder-bedrock-test,activate=on,construction-fault=%s", fault);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine,
+        "-cpu", "R14000", "-smp", "2,sockets=2,cores=1,threads=1",
+        "-m", "128", "-bios", "/dev/null", "-nodefaults",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "invalid L1 peer");
+}
+
 static void test_origin300_two_chassis_l1s_are_peers(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -9791,6 +9828,17 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion/migration-ownership-mismatch",
                         "ownership-mismatch=true",
                         test_expansion_management_mismatch);
+    qtest_add_data_func("sn/builder/l1-peer/without-ni", "l1-peer-explicit",
+                       test_explicit_l1_peers);
+    qtest_add_data_func("sn/builder/l1-peer/cable-only", "l1-peer-cable-only",
+                       test_explicit_l1_peers);
+    qtest_add_data_func("sn/builder/l1-peer/out-of-range",
+                       "l1-peer-out-of-range",
+                       test_invalid_l1_peers);
+    qtest_add_data_func("sn/builder/l1-peer/one-way", "l1-peer-one-way",
+                       test_invalid_l1_peers);
+    qtest_add_data_func("sn/builder/l1-peer/self", "l1-peer-self",
+                       test_invalid_l1_peers);
     qtest_add_data_func("sn/builder/origin300-two-chassis-l1s-are-peers",
                         NULL, test_origin300_two_chassis_l1s_are_peers);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",

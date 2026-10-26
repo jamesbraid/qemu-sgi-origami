@@ -1084,7 +1084,7 @@
         "required": ["kind", "source", "target"],
         "additionalProperties": false,
         "properties": {
-          "kind": { "const": "ioc4-clock" },
+          "kind": { "enum": ["ioc4-clock", "l1-peer"] },
           "source": { "$ref": "#/$defs/identifier" },
           "target": { "$ref": "#/$defs/identifier" }
         }

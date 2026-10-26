@@ -2532,5 +2532,28 @@ class SystemModelResolutionTests(unittest.TestCase):
 
 
 
+class ConfigurationPeerLinkTests(unittest.TestCase):
+    def test_configuration_links_require_a_list(self):
+        path = INPUTS / "origin300-two-chassis.yaml"
+        composition = yaml.safe_load(path.read_text())
+        composition["links"] = None
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError, "must be a list"):
+            _resolver.resolve_system_model(path, composition)
+
+    def test_configuration_links_use_expanded_component_ids(self):
+        path = INPUTS / "origin300-two-chassis.yaml"
+        composition = yaml.safe_load(path.read_text())
+        links = [{"kind": "l1-peer", "source": "master-l1",
+                 "target": "slave-l1"},
+                 {"kind": "l1-peer", "source": "slave-l1",
+                 "target": "master-l1"}]
+        composition["links"] = links
+        resolved = _resolver.resolve_system_model(path, composition)
+        self.assertEqual(resolved["links"], links)
+        links[0]["source"] = "changed"
+        self.assertEqual(resolved["links"][0]["source"], "master-l1")
+
+
 if __name__ == "__main__":
     unittest.main()

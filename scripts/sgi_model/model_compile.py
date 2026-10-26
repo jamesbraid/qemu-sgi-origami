@@ -24,7 +24,7 @@ import copy
 from collections.abc import Callable
 
 from .model_composition import (
-    validate_initialization_policy, validate_io9_clock_links,
+    validate_initialization_policy, validate_object_links,
 )
 
 from . import model_graphics, synthetic_serial
@@ -1749,6 +1749,23 @@ def _compile_io_peer(model: dict, components: dict[str, dict], entry: dict,
     }
 
 
+def _compile_l1_peer_links(model: dict, controllers: list[dict]) -> list[dict]:
+    indices = {controller["id"]: i for i, controller in enumerate(controllers)}
+    result = []
+    links = [link for link in model.get("links", [])
+             if link["kind"] == "l1-peer"]
+    for link in sorted(links,
+                       key=lambda item: (item["source"], item["target"])):
+        endpoints = [indices.get(link[key]) for key in ("source", "target")]
+        if any(index is None or controllers[index]["kind"] != "L1"
+               for index in endpoints):
+            raise CompileError(
+                "L1 peer endpoints require module-owned L1 controllers")
+        result.append({"source_controller_index": endpoints[0],
+                       "target_controller_index": endpoints[1]})
+    return result
+
+
 def _compile_l1_management(model: dict, controllers: list[dict]) -> dict | None:
     raw = model["machine"].get("emulation", {}).get("l1_management")
     if raw is None:
@@ -3085,7 +3102,7 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
 
 
     try:
-        linked_clock_boards = validate_io9_clock_links(model)
+        linked_clock_boards = validate_object_links(model)
         validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
@@ -3240,6 +3257,9 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
     assemblies = _compile_io_assemblies(model, components, io_peers, modules, controllers)
     if assemblies:
         topology["io_assemblies"] = assemblies
+    peer_links = _compile_l1_peer_links(model, controllers)
+    if peer_links:
+        topology["l1_peer_links"] = peer_links
     management = _compile_l1_management(model, controllers)
     if management is not None:
         topology["l1_management"] = management

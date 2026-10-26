@@ -1723,6 +1723,22 @@
             'slots': ['SGIModelGraphicsSlot'] } }
 
 ##
+# @SGIModelL1PeerLink:
+#
+# One directed object link in an explicitly reciprocal L1 peer pair.
+# This describes configuration, not an electrical transport.
+#
+# @source-controller-index: source index in @controllers
+#
+# @target-controller-index: target index in @controllers
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1PeerLink',
+  'data': { 'source-controller-index': 'uint32',
+            'target-controller-index': 'uint32' } }
+
+##
 # @SGIModelTopology:
 #
 # One chassis a product ships in: its wiring with every node slot
@@ -1748,6 +1764,8 @@
 #
 # @io-assemblies: explicit experimental construction policy for I/O
 #     peers
+#
+# @l1-peer-links: reciprocal object links between L1 controllers
 #
 # @l1-management: independent synthetic controller management
 #     composition
@@ -1808,6 +1826,7 @@
             '*io-peers': ['SGIModelIoPeer'],
             '*io-assemblies': ['SGIModelIoAssembly'],
             '*l1-management': 'SGIModelL1Management',
+            '*l1-peer-links': ['SGIModelL1PeerLink'],
             'routers': ['SGIModelRouter'],
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],

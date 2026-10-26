@@ -1220,7 +1220,33 @@ static void bedrock_test_set_construction_fault(Object *obj,
                                                  const char *value,
                                                  Error **errp)
 {
-    if (!strcmp(value, "ip53")) {
+    if (g_str_has_prefix(value, "l1-peer-")) {
+        SGIModelL1PeerLinkList **tail = &bedrock_test_topology.l1_peer_links;
+
+        bedrock_test_topology.has_l1_peer_links = true;
+
+        if (!strcmp(value, "l1-peer-cable-only")) {
+            bedrock_test_topology.cables = cable_list(console_test_cables, 1);
+            return;
+        }
+        for (unsigned int i = 0; i < 2; i++) {
+            SGIModelL1PeerLink *link = fixture_new0(SGIModelL1PeerLink);
+
+            link->source_controller_index = i;
+            link->target_controller_index = i ^ 1;
+            QAPI_LIST_APPEND(tail, link);
+        }
+        fixture_remember(bedrock_test_topology.l1_peer_links);
+        if (!strcmp(value, "l1-peer-out-of-range")) {
+            bedrock_test_topology.l1_peer_links->value->
+                target_controller_index = 99;
+        } else if (!strcmp(value, "l1-peer-one-way")) {
+            bedrock_test_topology.l1_peer_links->next = NULL;
+        } else if (!strcmp(value, "l1-peer-self")) {
+            bedrock_test_topology.l1_peer_links->value->
+                target_controller_index = 0;
+        }
+    } else if (!strcmp(value, "ip53")) {
         bedrock_test_install_ip53_descriptor(false);
     } else if (!strcmp(value, "ip53-two-pic-hosts")) {
         static SGIModelPciHostBridge hosts[2];

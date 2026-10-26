@@ -39,3 +39,10 @@ connector_population:
     reason: The documented two-server connection uses the LINK ports and fits no graphics enclosure.
     provenance: derived
     sources: ["007-4365-002 printed page 38: the two-server cable joins the LINK ports"]
+links:
+  - kind: l1-peer
+    source: master-l1
+    target: slave-l1
+  - kind: l1-peer
+    source: slave-l1
+    target: master-l1

@@ -381,6 +381,8 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
                              for row in topology["node_populations"]],
     }
 
+    if topology.get("l1_peer_links"):
+        result["l1-peer-links"] = _kebab_keys(topology["l1_peer_links"])
     if topology.get("io_peers"):
         result["io-peers"] = [_io_peer(peer) for peer in topology["io_peers"]]
     if topology.get("io_assemblies"):
