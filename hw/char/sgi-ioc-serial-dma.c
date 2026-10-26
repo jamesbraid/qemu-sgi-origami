@@ -111,6 +111,24 @@ bool sgi_ioc_sdma_flow_cts(SGIIOCSerialDMA *d, unsigned port)
            (sdma_control(p) & SGI_IOC_SDMA_FLOW_CONTROL);
 }
 
+/*
+ * Transmit-ring-empty is a level: set while ring DMA is on and nothing is
+ * left to send, neither in the ring nor held by the engine. Linux's IOC3 ring
+ * driver says a write can clear it without the handler, re-reads it after a
+ * write, and stops it by masking the source rather than acknowledging it.
+ * Requiring ring DMA keeps the status register's reset value of zero.
+ */
+static void sdma_update_tx_empty(SGIIOCSerialDMAPort *p)
+{
+    uint32_t mask = sdma_pointer_mask(p);
+    bool empty = (sdma_control(p) & SGI_IOC_SDMA_ENABLE) &&
+                 !((*sdma_reg(p, SGI_IOC_SDMA_TX_PRODUCE) ^
+                    *sdma_reg(p, SGI_IOC_SDMA_TX_CONSUME)) & mask) &&
+                 !p->tx_fetched && !p->tx_delay_due;
+
+    sdma_set_level(p, SGI_IOC_SDMA_SRC_TX_EMPTY, empty);
+}
+
 static bool sdma_running(SGIIOCSerialDMAPort *p)
 {
     uint32_t control = sdma_control(p);
@@ -390,7 +408,6 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
     uint32_t mask = sdma_pointer_mask(p);
     SerialState *serial = p->uart;
     uint64_t ring = sdma_ring(p, SGI_IOC_SDMA_RING_TX);
-    bool walked = false;
 
     /* A delay in progress holds every slot behind it. */
     if (p->tx_delay_due) {
@@ -476,12 +493,6 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
         p->tx_slot = 0;
         p->tx_fetched = false;
         *consume = (*consume + SGI_IOC_SDMA_ENTRY_SIZE) & mask;
-        walked = true;
-    }
-
-    /* On reaching the end of a walk, not on every idle engine. */
-    if (walked && (*consume & mask) == (*produce & mask)) {
-        sdma_raise(p, SGI_IOC_SDMA_SRC_TX_EMPTY);
     }
 }
 
@@ -504,6 +515,7 @@ static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since)
     sdma_transmit(p, since);
     sdma_receive(p);
     sdma_flush(p, since);
+    sdma_update_tx_empty(p);
 
     p->busy = false;
 }
@@ -694,7 +706,7 @@ static void sdma_thaw(SGIIOCSerialDMAPort *p, int64_t now)
     }
 }
 
-void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
+static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
                              hwaddr offset, uint32_t val)
 {
     SGIIOCSerialDMAPort *p = &d->port[port];
@@ -780,6 +792,14 @@ void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
         sgi_ioc_sdma_kick(d, port);
         return;
     }
+}
+
+void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
+                             hwaddr offset, uint32_t val)
+{
+    sdma_port_write(d, port, offset, val);
+    /* Enabling, a doorbell or a reset can change it without a walk. */
+    sdma_update_tx_empty(&d->port[port]);
 }
 
 uint32_t sgi_ioc_sdma_base_read(SGIIOCSerialDMA *d, unsigned pair, bool high)
