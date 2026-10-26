@@ -196,6 +196,26 @@ static inline void mgras_qtest_add_data_func(const char *path,
 /* PP1FILLMODE bit 13; see MGRAS_RSS_FILLCOLOR_R's comment in the raster model. */
 #define MGRAS_PP1FILLMODE_RGB      0x2000
 
+/*
+ * The raster clip rectangle and its enable; see MGRAS_RSS_CLIP_X in
+ * hw/misc/sgi-mgras-raster.c. The X server draws a primitive once per box
+ * of its window's clip list, loading the box into 0x147/0x148 and 0x11
+ * into 0x14f before each pass and 0 into 0x14f after the last (the IRIX
+ * 6.5.30 X server's point routine). 0x147 packs x1 << 16 | (x2 - 1);
+ * 0x148 packs the same rows counted from the bottom, (1024 - y2) << 16 |
+ * (1024 - y1 - 1).
+ */
+#define REG_CLIP_X              0x147
+#define REG_CLIP_Y              0x148
+#define REG_CLIP_MODE           0x14f
+#define MGRAS_CLIP_MODE_ON      0x11
+
+/* REG_CLIP_Y for screen rows top..bottom, inclusive. */
+static inline uint32_t clip_y_rows(uint32_t top, uint32_t bottom)
+{
+    return ((1023u - bottom) << 16) | (1023u - top);
+}
+
 /* x-test-format values; see SGI_MGRAS_PIXEL_FORMAT_* in sgi-mgras.h. */
 #define MGRAS_PIXEL_FORMAT_CI8     0
 #define MGRAS_PIXEL_FORMAT_RGB     1

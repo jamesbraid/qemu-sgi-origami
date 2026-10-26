@@ -877,6 +877,50 @@ static void test_dma_image_transfer_draws_ci8_indices(void)
 }
 
 /*
+ * A DMA draw is clipped like any other paint: of a six-pixel CI8 row at
+ * x 80-85, only the columns of the box (82-83) take the bytes and the CI8
+ * tag; the rest keep the RGB seed. A row outside the box takes nothing.
+ */
+static void test_dma_image_transfer_honours_clip_rectangle(void)
+{
+    static const uint8_t src[6] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };
+    static const uint8_t other[6] = { 0x77, 0x77, 0x77, 0x77, 0x77, 0x77 };
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    dma_rules_seed(80, 85, 72);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (82u << 16) | 83u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(72, 72)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+    dma_rules_draw(80, 72, 6, src, sizeof(src), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 81, 72), ==, 0x000f0f0f);
+    g_assert_cmphex(mgras_test_format(qts, 81, 72), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_test_pixel(qts, 82, 72), ==, 0x33);
+    g_assert_cmphex(mgras_test_format(qts, 82, 72), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_pixel(qts, 83, 72), ==, 0x44);
+    g_assert_cmphex(mgras_test_format(qts, 83, 72), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_pixel(qts, 84, 72), ==, 0x000f0f0f);
+    g_assert_cmphex(mgras_test_format(qts, 84, 72), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(73, 73)));
+    dma_rules_draw(80, 72, 6, other, sizeof(other), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 82, 72), ==, 0x33);
+    g_assert_cmphex(mgras_test_pixel(qts, 84, 72), ==, 0x000f0f0f);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_CLIP_MODE, 0));
+}
+
+/*
  * A DMA draw names bank 0's plane, and the shared code bounds it by that
  * plane: the plane is the whole 1280x1024 screen, so a CI8 row the
  * screen's full width and an RGB pair ending at the bottom-right pixel
@@ -6103,6 +6147,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-image-transfer-draws-ci8-indices",
         test_dma_image_transfer_draws_ci8_indices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-honours-clip-rectangle",
+        test_dma_image_transfer_honours_clip_rectangle, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-image-transfer-lands-in-bank-zero",
         test_dma_image_transfer_lands_in_bank_zero, true);
