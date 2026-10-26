@@ -7037,6 +7037,508 @@ static void test_native_profiles(void)
     }
 }
 
+#define ALPHA_ENABLE (1U << 11)
+#define ALPHA_STATE (DE + 0x198)
+
+static Shape alpha_shape(void)
+{
+    Shape c = shape_default();
+
+    c.bytes = 4;
+    c.width = 10;
+    c.height = 6;
+    c.x0 = c.y0 = 1;
+    c.x1 = 7;
+    c.y1 = 3;
+    c.primitive = 0x03020000;
+    c.draw |= ALPHA_ENABLE;
+    c.foreground = 0x12345680;
+    c.old = 0x89abcdef;
+    return c;
+}
+
+static uint32_t *alpha_expected(const Shape *c, bool pass)
+{
+    uint32_t *expected;
+
+    if (pass) {
+        return shape_reference(c);
+    }
+    expected = g_new(uint32_t, c->width * c->height);
+    for (unsigned i = 0; i < c->width * c->height; i++) {
+        expected[i] = c->old;
+    }
+    return expected;
+}
+
+static void alpha_prepare(QTestState *s, const Shape *c, uint32_t alpha)
+{
+    map_region(s, c->bank, c->bytes, c->x, c->y,
+               c->x + c->width - 1, c->y + c->height - 1);
+    shape_memory(s, c, NULL);
+    shape_stage(s, c);
+    qtest_writel(s, ALPHA_STATE, alpha);
+}
+
+static void alpha_draw(QTestState *s, const Shape *c, uint32_t alpha, bool pass)
+{
+    g_autofree uint32_t *expected = alpha_expected(c, pass);
+
+    alpha_prepare(s, c, alpha);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, c, expected);
+    g_assert_cmphex(qtest_readl(s, ALPHA_STATE), ==, alpha);
+    assert_idle(s);
+}
+
+static void test_alpha_comparisons(void)
+{
+    /* The column is LESS/EQUAL/GREATER; the function encodes that truth set. */
+    const struct {
+        uint8_t reference, alpha, column;
+    } values[] = {
+        { 0x80, 0x7f, 0 }, { 0x80, 0x80, 1 }, { 0x80, 0x81, 2 },
+        { 0, 0, 1 }, { 0, 255, 2 }, { 255, 0, 0 }, { 255, 255, 1 },
+    };
+    QTestState *s = start();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned function = 0; function < 8; function++) {
+            for (unsigned n = 0; n < ARRAY_SIZE(values); n++) {
+                for (unsigned old_alpha = 0; old_alpha < 2; old_alpha++) {
+                    Shape c = alpha_shape();
+                    bool pass = function & (1U << values[n].column);
+
+                    c.bank = bank;
+                    c.primitive = 0;
+                    c.x1 = c.y1 = 65535; /* Unused point endpoint. */
+                    c.draw &= ~0x200U;
+                    c.foreground = 0x12345600 | values[n].alpha;
+                    c.old = 0x89abcd00 | (old_alpha ? 255 : 0);
+                    alpha_draw(s, &c, function << 8 | values[n].reference,
+                               pass);
+                }
+            }
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_alpha_geometry(void)
+{
+    QTestState *s = start();
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned primitive = 0; primitive < 4; primitive++) {
+            for (unsigned mask = 0; mask < 3; mask++) {
+                Shape c = alpha_shape();
+
+                c.bank = bank;
+                c.x = 123;
+                c.y = 125;
+                c.width = 15;
+                c.height = 8;
+                c.x0 = 124;
+                c.y0 = 127;
+                c.x1 = 135;
+                c.y1 = primitive == 1 ? 127 : 130;
+                c.primitive = primitive == 0 ? 0 :
+                              primitive == 3 ? 0x03020000 : 0x01000021;
+                c.old = 0x89abcd00 | (mask ? 255 : 0);
+                if (primitive == 2 && mask == 2) {
+                    c.primitive |= 1U << 18;
+                }
+                if (mask == 1) {
+                    c.draw &= ~8U; /* Preserve the stored alpha byte. */
+                    c.plane = 0x0ff0a55a;
+                } else if (mask == 2) {
+                    c.plane = 0x00ff0000;
+                    c.draw |= 1U << 20;
+                    c.scissor = bounds(125, 126, 135, 131);
+                    c.clip = 0x21;
+                    c.screen = bounds(125, 127, 136, 132);
+                }
+                alpha_draw(s, &c, 0x181, true);  /* 0x80 < 0x81. */
+                alpha_draw(s, &c, 0x180, false); /* Strict comparison. */
+            }
+        }
+    }
+    Shape c = alpha_shape();
+
+    c.primitive = 0;
+    /* Stipple and opaque controls are inactive for points. */
+    c.draw |= 0xe0000;
+    c.stipple_mode = UINT32_MAX;
+    alpha_draw(s, &c, 0x700, true);
+    qtest_quit(s);
+}
+
+static void alpha_failure(QTestState *s, const Shape *c, const char *path,
+                           uint64_t address, uint64_t value, unsigned width)
+{
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+    uint64_t error = qtest_readq(s, CRIME + 0x250);
+    uint64_t error_address = qtest_readq(s, CRIME + 0x258);
+    uint64_t cause = qtest_readq(s, CRIME + 0x10);
+    uint32_t status = qtest_readl(s, STATUS);
+    g_autofree uint32_t *expected = alpha_expected(c, false);
+
+    save_paired_renderer(s, path, before);
+    g_assert_cmpint(memtx_write(s, address, value, width), !=, MEMTX_OK);
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    shape_memory(s, c, expected);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x250), ==, error);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x258), ==, error_address);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, cause);
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, status);
+}
+
+static void test_alpha_validity(void)
+{
+    ValidityLog v = validity_start(false, "");
+    g_autofree char *path = g_build_filename(v.directory, "state", NULL);
+    uint16_t entries[256];
+
+    for (unsigned form = 0; form < 2; form++) {
+        for (unsigned mapping = 0; mapping < 4; mapping++) {
+            for (unsigned pass = 0; pass < 2; pass++) {
+                Shape c = alpha_shape();
+                unsigned suppressed = 0;
+                uint64_t words[RENDER_WORDS];
+                uint32_t alpha = pass ? 0x780 : 0x080;
+                uint64_t address = form ? DE + 0x9b8 : DE + 0x9f0;
+                uint32_t value = form ? 0x0fffffff : 0;
+                g_autofree uint32_t *expected = NULL;
+
+                c.x = 123;
+                c.y = 126;
+                c.width = 266;
+                c.height = 4;
+                c.x0 = 124;
+                c.x1 = 387;
+                c.y0 = 127;
+                c.y1 = 128;
+                c.plane = form ? value : UINT32_MAX;
+                c.entries = entries;
+                c.suppressed = &suppressed;
+                for (unsigned i = 0; i < 256; i++) {
+                    entries[i] = 0x8000 | page_for(0, i);
+                    if (mapping == 0 || i == 1 || i == 17) {
+                        entries[i] &= 0x7fff;
+                    }
+                    if (mapping == 1) {
+                        entries[i] = 0x8400; /* Set-valid, absent RAM. */
+                    }
+                }
+                if (mapping == 3) {
+                    entries[2] = 0x9fc0; /* Late set-valid ROM aperture. */
+                }
+                alpha_prepare(v.q, &c, alpha);
+                validity_program(v.q, 0, entries);
+                qtest_writeq(v.q, 0, 0x8383838383838383ULL);
+                if (form) {
+                    qtest_writel(v.q, DE + 0x1b8, 0);
+                }
+                if (pass && (mapping == 1 || mapping == 3)) {
+                    alpha_failure(v.q, &c, path, address, value, 4);
+                } else {
+                    expected = alpha_expected(&c, pass);
+                    g_assert_cmpint(memtx_writel(v.q, address, value),
+                                    ==, MEMTX_OK);
+                    shape_memory(v.q, &c, expected);
+                    validity_record(&v, &c, suppressed);
+                    save_paired_renderer(v.q, path, words);
+                    if (form) {
+                        g_assert_cmphex(words[192 + 0x1b8 / 4], ==, value);
+                    }
+                }
+                validity_words(v.q, 0, entries);
+                g_assert_cmphex(qtest_readq(v.q, 0), ==,
+                                0x8383838383838383ULL);
+                g_assert_cmphex(qtest_readq(v.q, CRIME + 0x10), ==, 1U << 4);
+            }
+        }
+    }
+    for (unsigned hidden = 0; hidden < 2; hidden++) {
+        Shape c = alpha_shape();
+        g_autofree uint32_t *expected = NULL;
+        unsigned suppressed = 0;
+
+        c.entries = entries;
+        c.suppressed = &suppressed;
+        if (hidden) {
+            c.draw |= 1U << 20;
+            c.scissor = bounds(0, 0, 0, 0);
+        } else {
+            c.plane = 0;
+        }
+        for (unsigned i = 0; i < 256; i++) {
+            entries[i] = 0x8400;
+        }
+        expected = alpha_expected(&c, true);
+        alpha_prepare(v.q, &c, 0x700);
+        validity_program(v.q, 0, entries);
+        g_assert_cmpint(memtx_writel(v.q, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(v.q, &c, expected);
+        validity_record(&v, &c, suppressed);
+    }
+    g_unlink(path);
+    validity_finish(&v);
+}
+
+static void test_alpha_admission(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-alpha-admission-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    const uint32_t bad_alpha[] = {
+        0x880, 0x980, 0xa80, 0xb80, 0xc80, 0xd80, 0xe80, 0xf80,
+        0x1000, 0x80000000, UINT32_MAX,
+    };
+    const uint32_t bad_modes[] = { 0, 0x124, 0x200, 0x224, 0x229, 0x1028 };
+
+    for (unsigned n = 0; n < ARRAY_SIZE(bad_alpha); n++) {
+        for (unsigned hidden = 0; hidden < 2; hidden++) {
+            Shape c = alpha_shape();
+
+            if (hidden) {
+                c.draw |= 1U << 20;
+                c.scissor = bounds(0, 0, 0, 0);
+            } else {
+                c.plane = 0;
+            }
+            alpha_prepare(s, &c, bad_alpha[n]);
+            alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+        }
+    }
+    for (unsigned n = 0; n < ARRAY_SIZE(bad_modes); n++) {
+        Shape c = alpha_shape();
+
+        alpha_prepare(s, &c, 0); /* NEVER cannot hide an unsupported format. */
+        qtest_writel(s, DE + 8, bad_modes[n]);
+        alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    }
+    for (unsigned bit = 0; bit < 32; bit++) {
+        Shape c = alpha_shape();
+
+        if (0x3e0af8U & (1U << bit)) {
+            continue;
+        }
+        c.draw |= 1U << bit;
+        alpha_prepare(s, &c, 0);
+        alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    }
+    for (unsigned primitive = 1; primitive <= 3; primitive++) {
+        Shape c = alpha_shape();
+
+        c.primitive = primitive == 3 ? 0x03020000 : primitive << 24;
+        c.draw |= primitive == 1 ? 1U << 19 : 1U << 18;
+        alpha_prepare(s, &c, 0);
+        alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    }
+    Shape c = alpha_shape();
+
+    c.draw |= 1U << 21;
+    alpha_prepare(s, &c, 0);
+    map_region(s, 1, 4, 0, 0, 15, 15);
+    qtest_writel(s, DE, 0x628);
+    qtest_writel(s, DE + 0xa0, xy(c.x0, c.y0));
+    qtest_writel(s, DE + 0xa8, 1);
+    qtest_writel(s, DE + 0xac, 1);
+    alpha_failure(s, &c, path, DE + 0x9f0, 0, 4);
+    for (unsigned y = c.y0; y <= c.y1; y++) {
+        for (unsigned x = c.x0; x <= c.x1; x++) {
+            qtest_writel(s, pixel_address(1, x, y, 4), 0x10203040);
+        }
+    }
+    c.draw &= ~ALPHA_ENABLE;
+    c.foreground = 0x10203040;
+    g_autofree uint32_t *copied = alpha_expected(&c, true);
+
+    qtest_writel(s, DE + 0x18, c.draw);
+    qtest_writel(s, ALPHA_STATE, UINT32_MAX);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    shape_memory(s, &c, copied);
+    for (unsigned bytes = 1; bytes <= 4; bytes *= 2) {
+        c = alpha_shape();
+        c.bytes = bytes;
+        c.draw &= ~ALPHA_ENABLE;
+        c.draw |= 1U << 18;
+        c.stipple_mode = 0x030b0102;
+        qtest_writel(s, ALPHA_STATE, UINT32_MAX);
+        shape_run(s, &c);
+    }
+    qtest_writel(s, DE + 0x18, ALPHA_ENABLE);
+    qtest_writel(s, ALPHA_STATE, UINT32_MAX);
+    qtest_writeq(s, RE + 0x1700, 0x8000003080000031ULL);
+    qtest_writel(s, MTE, 4 << 2);
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x18, 0x55);
+    qtest_writel(s, MTE + 0x30, 0);
+    qtest_writel(s, MTE + 0x48, 1);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x838, 3), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, 0x30000), ==, 0x55555555);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_alpha_start_forms(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-alpha-start-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(registers) + 4; n++) {
+        const unsigned pairs[] = { 0x70, 0xa8, 0xc0 };
+        Shape c = alpha_shape();
+        unsigned offset = n < ARRAY_SIZE(registers) ? registers[n].offset :
+            n == ARRAY_SIZE(registers) ? 0x1f0 :
+            pairs[n - ARRAY_SIZE(registers) - 1];
+        unsigned width = n < ARRAY_SIZE(registers) ? registers[n].width :
+            n > ARRAY_SIZE(registers) ? 8 : 4;
+        bool pair = width == 8 && (offset == 0x70 || offset == 0xa8 ||
+                                   offset == 0xc0);
+        uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+        uint64_t value = offset == 0x1f0 ? 0 : shape_parameter(&c, offset);
+        g_autofree uint32_t *expected = alpha_expected(&c, true);
+
+        if (pair) {
+            value = (value << 32) | shape_parameter(&c, offset + 4);
+        }
+        alpha_prepare(s, &c, 0x280);
+        if (offset != 0x1f0) {
+            g_assert_cmpint(memtx_write(s, DE + offset, ~value, width),
+                            ==, MEMTX_OK);
+        }
+        save_paired_renderer(s, path, before);
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + offset, value, width),
+                        ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+        save_paired_renderer(s, path, after);
+        if (offset != 0x1f0) {
+            before[192 + offset / 4] = pair ? value >> 32 : value;
+            if (pair) {
+                before[192 + offset / 4 + 1] = (uint32_t)value;
+            }
+        }
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        qtest_writel(s, ALPHA_STATE, 0x12345678);
+        qtest_writel(s, DE + 0x1f0, 0x87654321);
+        qtest_writel(s, DE + 0x1f8, 0);
+        assert_idle(s);
+        shape_memory(s, &c, expected);
+    }
+    for (unsigned enable = 0; enable < 2; enable++) {
+        Shape c = alpha_shape();
+        g_autofree uint32_t *expected = NULL;
+
+        if (!enable) {
+            c.draw &= ~ALPHA_ENABLE;
+        }
+        expected = alpha_expected(&c, !enable);
+        alpha_prepare(s, &c, 0);
+        qtest_writel(s, DE + 0x18, c.draw ^ ALPHA_ENABLE);
+        g_assert_cmpint(memtx_writel(s, DE + 0x818, c.draw), ==, MEMTX_OK);
+        shape_memory(s, &c, expected);
+    }
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_alpha_state(void)
+{
+    const uint32_t values[] = { 0, UINT32_MAX, 0xa5b6c7d8 };
+    g_autofree char *dir = g_dir_make_tmp("crime-alpha-state-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start_indexed_state();
+    Shape c = alpha_shape();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+        alpha_prepare(s, &c, values[i]);
+        g_assert_cmphex(qtest_readl(s, ALPHA_STATE), ==, values[i]);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            uint64_t value;
+
+            if (width != 4) {
+                alpha_failure(s, &c, path, ALPHA_STATE, UINT64_MAX, width);
+                g_assert_cmpint(memtx_read(s, ALPHA_STATE, &value, width),
+                                !=, MEMTX_OK);
+            }
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            alpha_failure(s, &c, path, ALPHA_STATE + delta, 0, 4);
+        }
+        alpha_failure(s, &c, path, ALPHA_STATE - 4, UINT64_MAX, 8);
+        for (unsigned alias = 0; alias < 2; alias++) {
+            uint64_t value;
+            uint64_t address = ALPHA_STATE + (alias ? 0x800 : 4);
+
+            alpha_failure(s, &c, path, address, UINT32_MAX, 4);
+            g_assert_cmpint(memtx_read(s, address, &value, 4), !=, MEMTX_OK);
+        }
+        g_assert_cmphex(qtest_readl(s, ALPHA_STATE), ==, values[i]);
+    }
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readl(s, ALPHA_STATE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, DE + 0x18), ==, 0);
+    g_autofree uint32_t *expected = alpha_expected(&c, false);
+
+    shape_memory(s, &c, expected);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_alpha_migration(void)
+{
+    const uint32_t values[] = { 0x280, 0, UINT32_MAX, 0xa5b6c7d8 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+        g_autofree char *dir =
+            g_dir_make_tmp("crime-alpha-migrate-XXXXXX", NULL);
+        g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+        g_autofree char *path = g_build_filename(dir, "state", NULL);
+        QTestState *from = start();
+        QTestState *to = start_options("-incoming defer");
+        Shape c = alpha_shape();
+        g_autofree uint32_t *expected = alpha_expected(&c, i != 1);
+        g_autofree uint32_t *unchanged = alpha_expected(&c, false);
+
+        alpha_prepare(from, &c, values[i]);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration(to, "completed");
+        g_assert_cmphex(qtest_readl(to, ALPHA_STATE), ==, values[i]);
+        g_assert_cmphex(qtest_readl(to, DE + 0x18), ==, c.draw);
+        shape_memory(to, &c, unchanged);
+        if (i >= 2) {
+            alpha_failure(to, &c, path, DE + 0x9f0, 0, 4);
+            qtest_writel(to, DE + 0x18, c.draw & ~ALPHA_ENABLE);
+        }
+        g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+        shape_memory(to, &c, expected);
+        qtest_readl(to, ALPHA_STATE);
+        qtest_writel(to, DE + 0x1f0, 0x87654321);
+        qtest_writel(to, DE + 0x1f8, 0);
+        assert_idle(to);
+        shape_memory(to, &c, expected);
+        qtest_system_reset(to);
+        g_assert_cmphex(qtest_readl(to, ALPHA_STATE), ==, 0);
+        g_assert_cmphex(qtest_readl(to, DE + 0x18), ==, 0);
+        shape_memory(to, &c, expected);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_unlink(sock);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+}
+
 /* Use the native Meson groups while retaining one TAP plan per process. */
 static GPtrArray *group_paths;
 
@@ -7096,6 +7598,13 @@ int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
+    add_case("sgi/crime/render/alpha/comparisons", test_alpha_comparisons);
+    add_case("sgi/crime/render/alpha/geometry", test_alpha_geometry);
+    add_case("sgi/crime/render/alpha/validity", test_alpha_validity);
+    add_case("sgi/crime/render/alpha/admission", test_alpha_admission);
+    add_case("sgi/crime/render/alpha/start-forms", test_alpha_start_forms);
+    add_case("sgi/crime/render/alpha/state", test_alpha_state);
+    add_case("sgi/crime/render/alpha/migration", test_alpha_migration);
     add_case("sgi/crime/render/native/translations", test_native_translations);
     add_case("sgi/crime/render/native/parameters", test_native_parameters);
     add_case("sgi/crime/render/native/isolation", test_native_isolation);

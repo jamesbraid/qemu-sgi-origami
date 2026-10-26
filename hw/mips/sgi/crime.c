@@ -792,6 +792,24 @@ static void crime_render_sample(const CrimeRenderGeometry *g, unsigned i,
     }
 }
 
+static bool crime_render_alpha_pass(uint32_t color, uint32_t test)
+{
+    uint8_t alpha = color, reference = test;
+
+    switch (test >> 8) {
+    case 0: return false;
+    case 1: return alpha < reference;
+    case 2: return alpha == reference;
+    case 3: return alpha <= reference;
+    case 4: return alpha > reference;
+    case 5: return alpha != reference;
+    case 6: return alpha >= reference;
+    case 7: return true;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
                                            unsigned words)
@@ -804,6 +822,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
+    bool alpha, alpha_pass;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     g_autofree CrimeRenderPixel *pixels = NULL;
@@ -819,7 +838,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     draw = p[0x18 / 4];
     clip = p[0x10 / 4];
     copy = draw & 0x200000;
-    if ((draw & ~0x3e02f8U) || p[0x50 / 4] ||
+    alpha = draw & 0x800;
+    if (alpha && (p[0x198 / 4] & ~0x7ffULL)) {
+        return crime_transfer_fail(offset, "unsupported alpha comparison");
+    }
+    if ((draw & ~0x3e0af8U) || p[0x50 / 4] ||
         (copy ? p[0x58 / 4] != 0 : (p[0x58 / 4] & 0x80008000U)) ||
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
@@ -828,6 +851,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     destination_y = p[0x58 / 4] & 0xffff;
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
+    if (alpha && (copy || stipple || (p[0x8 / 4] & ~0xc00ULL) != 0x228)) {
+        return crime_transfer_fail(offset, "unsupported alpha primitive");
+    }
     if (copy && (geometry.opcode != 3 || stipple)) {
         return crime_transfer_fail(offset,
                                    "unsupported stipple or primitive copy");
@@ -927,6 +953,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     }
     plane = draw & 0x80 ? p[0x1b8 / 4] : UINT32_MAX;
     plane &= UINT32_MAX >> (32 - 8 * bytes);
+    alpha_pass = !alpha || crime_render_alpha_pass(p[0xd0 / 4], p[0x198 / 4]);
     pixels = g_new(CrimeRenderPixel, geometry.capacity);
     for (unsigned i = 0; i < geometry.samples; i++) {
         int cx, cy;
@@ -991,7 +1018,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                         mask &= ~(0xffU << (8 * (bytes - 1 - b)));
                     }
                 }
-                if (!mask) {
+                if (!mask || !alpha_pass) {
                     continue;
                 }
                 pixel = &pixels[count];
