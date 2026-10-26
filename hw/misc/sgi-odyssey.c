@@ -5292,6 +5292,8 @@ typedef struct OdysseyTextureDetailWeight {
 typedef struct OdysseyTextureVolume {
     SGIOdysseyState *s;
     uint32_t base, stride_units, level_word2;
+    /* Its slices in tex_slice_offset/tex_slice_width (texture setup). */
+    uint32_t first_slice, slices;
     uint32_t width, height, depth, base_format, words;
     bool colour_table_alpha, border;
     OdysseyTextureDetailWeight detail_weight;
@@ -5358,10 +5360,8 @@ static bool odyssey_texture_read_3d_at(const OdysseyTextureVolume *volume,
                                       bool border, uint32_t *rgba)
 {
     SGIOdysseyState *s = volume->s;
-    uint64_t slice_offset, base;
+    uint32_t px, py, width, height, slice, at, stride;
     uint64_t offset = 0;
-    uint32_t px, py, width, height;
-    int object;
     OdysseyTexture texture;
 
     if ((border && (x < -1 || y < -1 || z < -1 ||
@@ -5371,33 +5371,34 @@ static bool odyssey_texture_read_3d_at(const OdysseyTextureVolume *volume,
         (!border && (x < 0 || y < 0 || z < 0 ||
                      x >= (int32_t)volume->width ||
                      y >= (int32_t)volume->height ||
-                     z >= (int32_t)volume->depth)) ||
-        volume->level_word2 > ODSY_VOLUME_SLICE_SHIFT_MAX ||
-        umul64_overflow(border ? z + 1 : z,
-                        odyssey_volume_slice_stride(volume->level_word2),
-                        &slice_offset) ||
-        uadd64_overflow(volume->base, slice_offset, &base) ||
-        base > UINT32_MAX) {
+                     z >= (int32_t)volume->depth))) {
         return false;
     }
-    object = odyssey_object_find(s, base);
-    if (object < 0) {
+    /*
+     * Setup found and checked the object of every slice a read in these
+     * bounds can reach (odyssey_texture_setup()), so the slice's place in
+     * the object store is read from its table, not looked up per texel.
+     */
+    slice = border ? z + 1 : z;
+    if (slice >= volume->slices) {
         return false;
     }
+    at = volume->first_slice + slice;
+    stride = s->tex_slice_width[at];
     width = border ? volume->width + 2 : volume->width;
     height = border ? volume->height + 2 : volume->height;
     px = border ? x + 1 : x;
     py = border ? y + 1 : y;
-    if (border && (umul64_overflow(s->obj_width[object], 15, &offset) ||
+    if (border && (umul64_overflow(stride, 15, &offset) ||
                    uadd64_overflow(offset, 15, &offset) ||
-                   uadd64_overflow(s->obj_offset[object], offset,
+                   uadd64_overflow(s->tex_slice_offset[at], offset,
                                    &offset))) {
         return false;
     }
     texture = (OdysseyTexture) {
         .s = s,
-        .offset = border ? offset : s->obj_offset[object],
-        .stride = s->obj_width[object], .width = width,
+        .offset = border ? offset : s->tex_slice_offset[at],
+        .stride = stride, .width = width,
         .height = height, .base_format = volume->base_format,
         .words = volume->words,
     };
@@ -5920,6 +5921,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint32_t base = entry[0] & 0x1fffffffu;
         bool mipmap = min >= 0x40;
         uint64_t slice_stride;
+        uint32_t slice_next, level_slice;
 
         /*
          * Observed small-volume mip levels follow the preceding level's
@@ -5973,6 +5975,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             goto unsupported;
         }
         memset(chain, 0, sizeof(*chain));
+        slice_next = 0;
         for (uint32_t i = 0; i < count; i++) {
             uint32_t level_width = MAX(1, width >> i);
             uint32_t level_height = MAX(1, height >> i);
@@ -5983,6 +5986,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                       s->tex_levels[i * 3 + 2])) {
                 goto unsupported;
             }
+            level_slice = slice_next;
             for (uint32_t z = 0;
                  z < level_depth + (three_d_stored ? 2 : 0); z++) {
                 uint64_t offset, slice_base, storage_end;
@@ -6019,13 +6023,20 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                                    level_height + 2)) {
                     goto unsupported;
                 }
+                if (slice_next >= ARRAY_SIZE(s->tex_slice_offset)) {
+                    goto unsupported;
+                }
+                s->tex_slice_offset[slice_next] = s->obj_offset[object];
+                s->tex_slice_width[slice_next] = s->obj_width[object];
+                slice_next++;
             }
             chain->volumes[i] = (OdysseyTextureVolume) {
                 .s = s, .base = base, .stride_units = stride_units,
                 .level_word2 = entry[2], .width = level_width,
                 .height = level_height, .depth = level_depth,
                 .base_format = image->base_format, .words = s->obj_used,
-                .border = three_d_stored,
+                .border = three_d_stored, .first_slice = level_slice,
+                .slices = slice_next - level_slice,
             };
             chain->levels[i] = (SGIGLTexLevel) {
                 .level = i, .width = level_width, .height = level_height,

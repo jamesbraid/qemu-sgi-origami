@@ -17262,6 +17262,58 @@ static void test_texture_adapter_volume_mipmap_nearest(void)
     board_quit(qts);
 }
 
+/*
+ * Each draw samples a volume's slices where texture setup found them. Give
+ * the eight level-0 slices distinct colours, upload them last slice first,
+ * so slice order and object order disagree, and sample every slice. Then
+ * grow slice 3's object so the store moves it, and sample again: the next
+ * draw must read the moved slice and the others as before.
+ */
+static void volume_slices_sample(QTestState *qts, const uint32_t *colours)
+{
+    const uint32_t lod[] = { 0x00011013, 0, 0, 0, 0 };
+
+    texture_adapter_window(qts);
+    push_user_words(qts, lod, ARRAY_SIZE(lod));
+    for (unsigned z = 0; z < 8; z++) {
+        texture_adapter_point_3d_rgba(qts, 10 + z, 12, 0.5f, 0.5f,
+                                     (z + 0.5f) / 8,
+                                     (const uint32_t[]) {
+                                         ODSY_F_ONE, ODSY_F_ONE,
+                                         ODSY_F_ONE, ODSY_F_ONE,
+                                     });
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + z, 12), ==, colours[z]);
+    }
+}
+
+static void test_texture_adapter_volume_slices_follow_each_draw(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t colours[8];
+    uint32_t pixels[16 * 8];
+
+    volume_mipmap_upload(qts, -1);
+    for (int z = 7; z >= 0; z--) {
+        colours[z] = ((0x20u * (z + 1)) << 24) | (0x10u * z) << 8 | 0xff;
+        for (unsigned i = 0; i < 64; i++) {
+            pixels[i] = colours[z];
+        }
+        texture_adapter_upload_3d_slice(qts, 0x16a800 + 0x80 * z, pixels, 8,
+                                        8);
+    }
+    volume_mipmap_bind(qts);
+    volume_slices_sample(qts, colours);
+
+    colours[3] = 0x123456ff;
+    for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
+        pixels[i] = colours[3];
+    }
+    texture_adapter_upload_3d_slice(qts, 0x16a800 + 0x80 * 3, pixels, 8, 16);
+    volume_mipmap_bind(qts);
+    volume_slices_sample(qts, colours);
+    board_quit(qts);
+}
+
 static void test_texture_adapter_volume_mipmap_missing_slice(void)
 {
     const unsigned missing[] = { 7, 11, 13, 14 };
@@ -21658,6 +21710,8 @@ int main(int argc, char **argv)
              test_texture_adapter_volume_mipmap_base_level);
     add_case("sn1/odyssey/texture-adapter/volume-mipmap-nearest",
              test_texture_adapter_volume_mipmap_nearest);
+    add_case("sn1/odyssey/texture-adapter/volume-slices-follow-each-draw",
+             test_texture_adapter_volume_slices_follow_each_draw);
     add_case("sn1/odyssey/texture-adapter/volume-mipmap-missing-slice",
              test_texture_adapter_volume_mipmap_missing_slice);
     add_fresh_case("sn1/odyssey/texture-adapter/volume-mipmap-state-restore",
