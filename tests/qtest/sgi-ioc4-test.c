@@ -1242,6 +1242,35 @@ static void test_dma_rx_timer_expiry(void)
     g_assert_nonnull(contents);
 }
 
+/*
+ * An expiry already due is applied before a register access, whether or not
+ * the main loop has run the timer yet. Stopping the VM keeps timer callbacks
+ * from running while the qtest clock still moves.
+ */
+static void test_dma_rx_timer_due_before_access(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input = 0x64;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_TIMER(0), 2);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], &input, 1), ==, 1);
+    g_usleep(10000);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    qtest_clock_step(qts, 125001);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==,
+                    RX_TIMER_EXPIRED(0));
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2781,6 +2810,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-rx-timer-due-before-access",
+                   test_dma_rx_timer_due_before_access);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry-after-full-entry",
                    test_dma_rx_timer_expiry_after_full_entry);
     qtest_add_func("/sgi-ioc4/dma-error-capture-reset",
