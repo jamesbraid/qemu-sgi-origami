@@ -386,6 +386,77 @@ static void test_deskside_kona_presents_ir2(void)
     assert_kona_configuration(DESKSIDE_ARGS, 8, 0, 1, 2);
 }
 
+/*
+ * The two Hubs of the deskside share Crossbow 0, n2 at widget 9 and n1 at
+ * widget A, and the firmware names each Hub's peer by reading the peer's
+ * network status through the Crossbow: it aims big window 0 of its own
+ * node's I/O space at the peer's widget, in I/O space, and reads the
+ * doubleword at 0x01600000, whose bits 16:8 are the node number. The
+ * firmware gives n2, the global master, number 0 and n1 number 1, so the
+ * Hub in the second node position answers to number 0. A processor's
+ * window must be the Hub that holds the number in the address, after
+ * renumbering as before; reaching the Hub that started with that number
+ * reads the processor's own Hub back and records both Crossbow host ports
+ * as one node.
+ */
+#define LOCAL_HUB             (SPACE_IO + 0x01000000)
+#define HUB_BWIN_ENTRY0       0x400160
+#define BWIN_IO_SPACE         (UINT64_C(1) << 12)
+#define BWIN_WIDGET(w)        ((uint64_t)(w) << 8)
+#define HUB_NI_STATUS         0x600000
+#define NI_REGION_SIZE        (UINT64_C(1) << 17)
+#define NI_NODE(status)       (((status) >> 8) & 0x1ff)
+#define BWIN0                 UINT64_C(0x20000000)
+#define PEER_STATUS           UINT64_C(0x01600000)
+
+static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t addr)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t addr,
+                       uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+}
+
+/* Read the peer's node number through this processor's own big window. */
+static unsigned int peer_number(QTestState *qts, unsigned int cpu,
+                                unsigned int own, unsigned int peer_widget)
+{
+    cpu_writeq(qts, cpu, LOCAL_HUB + HUB_BWIN_ENTRY0,
+               BWIN_IO_SPACE | BWIN_WIDGET(peer_widget));
+    return NI_NODE(cpu_readq(qts, cpu, SPACE_IO + own * NODE_STRIDE +
+                             BWIN0 + PEER_STATUS));
+}
+
+static void test_deskside_peer_hubs_name_each_other(void)
+{
+    QTestState *qts = qtest_init(DESKSIDE_ARGS);
+    /* Processors 0 and 1 sit on n1's node board, 2 and 3 on n2's. */
+    const unsigned int n1_cpu = 0, n2_cpu = 2;
+
+    /* Number the Hubs as the firmware does: n2 keeps 0, n1 takes 1. */
+    cpu_writeq(qts, n1_cpu, LOCAL_HUB + HUB_NI_STATUS,
+               NI_REGION_SIZE | (UINT64_C(1) << 8));
+    g_assert_cmpuint(NI_NODE(cpu_readq(qts, n1_cpu,
+                                       LOCAL_HUB + HUB_NI_STATUS)), ==, 1);
+    g_assert_cmpuint(NI_NODE(cpu_readq(qts, n2_cpu,
+                                       LOCAL_HUB + HUB_NI_STATUS)), ==, 0);
+
+    /* Each master-side and slave-side probe, in both orders of setup. */
+    g_assert_cmpuint(peer_number(qts, n2_cpu, 0, 0xa), ==, 1);
+    g_assert_cmpuint(peer_number(qts, n1_cpu, 1, 0x9), ==, 0);
+    g_assert_cmpuint(peer_number(qts, n2_cpu, 0, 0xa), ==, 1);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -405,5 +476,7 @@ int main(int argc, char **argv)
                    test_rack_kona_presents_ir3);
     qtest_add_func("sn0/onyx2/deskside-kona-presents-ir2",
                    test_deskside_kona_presents_ir2);
+    qtest_add_func("sn0/onyx2/deskside-peer-hubs-name-each-other",
+                   test_deskside_peer_hubs_name_each_other);
     return g_test_run();
 }

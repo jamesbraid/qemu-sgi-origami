@@ -2303,11 +2303,16 @@ static void assert_machine_not_stopped(QTestState *qts)
     g_assert_cmpstr(qdict_get_str(status, "status"), !=, "internal-error");
 }
 
+/* Node 0's I/O space once it is numbered, where its windows sit. */
+#define PEER_TEST_NASID0 0x20
+#define NODE0_IO_SPACE (IO_SPACE + ((uint64_t)PEER_TEST_NASID0 << 32))
+
 /*
  * The bounded 64-bit peer identity probe: a big window aimed at a Hub's
  * I/O space reads that Hub's network-interface status at 0x01600000,
  * from the Hub that physically receives it rather than one looked up by
- * node number.
+ * node number. The window itself is named by node 0's number, as the
+ * firmware names its own.
  */
 static uint64_t identity_probe(QTestState *qts, unsigned int widget,
                                uint64_t offset, unsigned int size,
@@ -2319,13 +2324,10 @@ static uint64_t identity_probe(QTestState *qts, unsigned int widget,
     stq_be_p(bytes, IO_BWIN_WIDGET(widget) | IO_BWIN_OTHER_SPACE);
     g_assert_true(qtest_memwrite_cpu(qts, 0, HUB_BASE + IO_BWIN_ENTRY(0),
                                      bytes, sizeof(bytes)));
-    *answered = cpu_read_width(qts, 0, BIG_WINDOW(0) + offset, size, &value);
+    *answered = cpu_read_width(qts, 0, NODE0_IO_SPACE + BIG_WINDOW_BASE +
+                               offset, size, &value);
     return value;
 }
-
-/* Node 0's I/O space once it is numbered, where its small windows sit. */
-#define PEER_TEST_NASID0 0x20
-#define NODE0_IO_SPACE (IO_SPACE + ((uint64_t)PEER_TEST_NASID0 << 32))
 
 /*
  * Give every Hub its own number, so each probe answer names its sender,

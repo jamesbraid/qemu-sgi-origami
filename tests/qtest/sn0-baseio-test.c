@@ -657,22 +657,23 @@ static void test_baseio_timekeeper_repair_stores(void)
         QTestState *qts;
         uint8_t marker = repairs[cpu & 1].marker;
         uint8_t checksum = repairs[cpu & 1].checksum;
-        uint64_t window = IO_SPACE + UINT64_C(0x20000000) +
-                          IOC3_TIMEKEEPER;
+        /*
+         * Every processor stores through node 0's window, named by the
+         * number node 0's Hub holds: a big window has no reader-local
+         * alias, so an address naming no Hub's number reaches none.
+         */
+        uint64_t window = IO_SPACE + module_nasids[0] * NODE_STRIDE +
+                          UINT64_C(0x20000000) + IOC3_TIMEKEEPER;
 
         /*
-         * The first processor stores through its own node and the last
-         * through node 0's window, and between them they make both
-         * repairs. The thorough setup tries every processor.
+         * The first processor shares node 0's Hub and the last sits behind
+         * the other Crossbow, and between them they make both repairs. The
+         * thorough setup tries every processor.
          */
         if (cpu != 0 && cpu != cpus - 1 && !g_test_slow()) {
             continue;
         }
         qts = start_module();
-        if (cpu >= 2) {
-            /* The other Crossbow reaches BaseIO through node 0's window. */
-            window += module_nasids[0] * NODE_STRIDE;
-        }
         g_test_message("source CPU %u", cpu);
         program_module(qts);
         program_baseio_ioc3(qts);

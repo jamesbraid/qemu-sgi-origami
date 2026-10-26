@@ -279,23 +279,12 @@ typedef struct SN0NodeState {
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
 /*
- * Shared by every product: one nameless big-window alias per CPU plus one
- * routed alias per (source CPU, target node) pair. owner parents the new
- * MemoryRegions; *route_out receives the array so the caller can free it
- * (nothing frees it today; the machine object outlives the process, as
- * sn0_instance_finalize's comment notes).
- */
-/*
  * The node's module has power or has not. An unpowered node answers nothing:
  * its Hub is switched off (sgi_hub_set_power()) and so are the windows that
  * reach the I/O it hosts, which the Crossbows and boards behind them can only
  * be reached through.
  */
 void sn0_node_set_power(SN0NodeState *node, bool on);
-
-void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
-                             unsigned int num_nodes,
-                             MemoryRegion **route_out);
 
 /*
  * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
