@@ -313,6 +313,13 @@ struct SGIOdysseyState {
     uint32_t tex_detail_function_valid;
     uint32_t tex_env[5];
     uint32_t tex_levels[SGI_ODYSSEY_TEX_LEVELS * 3];
+    /*
+     * The object store word offset and row length of each volume slice the
+     * current draw samples, resolved once by texture setup so the texel
+     * readers look nothing up. Scratch for one draw, not migrated.
+     */
+    uint32_t tex_slice_offset[SGI_ODYSSEY_OBJECTS + 2];
+    uint32_t tex_slice_width[SGI_ODYSSEY_OBJECTS + 2];
     uint32_t tex_level0;
     uint32_t tex_lod[4];
     uint32_t tex_coord[2];

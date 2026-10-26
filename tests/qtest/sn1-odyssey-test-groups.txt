@@ -366,6 +366,7 @@ texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-trilinear
 texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-depth-one
 texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-base-level
 texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-nearest
+texture-3d /mips64/sn1/odyssey/texture-adapter/volume-slices-follow-each-draw
 texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-missing-slice
 texture-3d /mips64/sn1/odyssey/texture-adapter/volume-mipmap-state-restore
 texture-3d /mips64/sn1/odyssey/texture-adapter/level-zero-3d
