@@ -2342,6 +2342,41 @@ static void test_migration(void)
     qtest_quit(to);
 }
 
+/* The byte a guest wrote to the UST control port travels with the machine. */
+static void test_ust_control_migration(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
+    int64_t departed;
+
+    ust_port_write(from, 1, 0x3f);
+    departed = qtest_clock_step(from, 1);
+    migrate_module(from, to);
+    wait_until_running(to);
+    qtest_clock_set(to, departed);
+    g_assert_cmphex(ust_port_read(to, 1), ==, 0x3f);
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
+/*
+ * A system reset returns the port to the all-ones it powers up with, where
+ * the NVRAM beside it keeps its contents.
+ */
+static void test_ust_control_reset(void)
+{
+    QTestState *qts = start_module();
+
+    ust_port_write(qts, 1, 0x3f);
+    g_assert_cmphex(ust_port_read(qts, 1), ==, 0x3f);
+    qtest_system_reset(qts);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+    }
+    g_assert_cmphex(ust_port_read(qts, 1), ==, 0xff);
+    qtest_quit(qts);
+}
+
 /*
  * Loading a stream is no power event. The controller drives its power
  * output to what the load left it, and a rise there must not cold-start the
@@ -2544,6 +2579,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/o2000-module-management/nvram-read-vs-second-adapter",
                    test_nvram_read_survives_a_second_adapter);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
+    qtest_add_func("/sn0/o2000-module-management/ust-control-migration",
+                   test_ust_control_migration);
+    qtest_add_func("/sn0/o2000-module-management/ust-control-reset",
+                   test_ust_control_reset);
     qtest_add_func("/sn0/o2000-module-management/load-is-not-power-return",
                    test_load_is_not_a_power_return);
     qtest_add_func("/sn0/o2000-module-management/late-grant-service",
