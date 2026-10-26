@@ -25,6 +25,7 @@
 #include <math.h>
 #include "qemu/log.h"
 #include "qemu/host-utils.h"
+#include "qemu/notify.h"
 #include "qemu/thread.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/x-gc.h"
@@ -1478,11 +1479,14 @@ static void __attribute__((constructor)) sgi_soft_unorm8_init(void)
  * through a synchronous draw (SGIGLTexImage), so a texel read twice in one
  * draw reads the same both times: a bilinear tap reads four, and adjacent
  * fragments mostly the same four. Each thread draws through its own
- * cache; a draw starts by taking a new serial, which empties it without
- * clearing it. Only the draw's own image is cached: a detail texture is
- * sampled through a copy of it whose wrap differs. Border texels, depth
- * texels, whose value depends on the comparison reference, and failed
- * reads always go to the family.
+ * table of about 256 KiB, allocated on its first textured draw and freed
+ * when the thread exits through qemu_thread_exit() or its start routine.
+ * A thread that never does, such as the main thread or a band worker,
+ * keeps its table until the process ends. A draw starts by taking a new
+ * serial, which empties the table without clearing it. Only the draw's
+ * own image is cached: a detail texture is sampled through a copy of it
+ * whose wrap differs. Border texels, depth texels, whose value depends on
+ * the comparison reference, and failed reads always go to the family.
  */
 #define SGI_SOFT_TEXEL_CACHE_SIZE 4096
 
@@ -1505,13 +1509,25 @@ typedef struct SGISoftTexelCache {
     SGISoftTexelEntry entry[SGI_SOFT_TEXEL_CACHE_SIZE];
 } SGISoftTexelCache;
 
-static __thread SGISoftTexelCache sgi_soft_texel_cache;
+static __thread SGISoftTexelCache *sgi_soft_texel_cache;
+static __thread Notifier sgi_soft_texel_cache_exit;
+
+static void sgi_soft_texel_cache_free(Notifier *n, void *unused)
+{
+    g_free(sgi_soft_texel_cache);
+    sgi_soft_texel_cache = NULL;
+}
 
 static SGISoftTexelCache *sgi_soft_texel_cache_begin(
     const SGIGLTexImage *image)
 {
-    SGISoftTexelCache *c = &sgi_soft_texel_cache;
+    SGISoftTexelCache *c = sgi_soft_texel_cache;
 
+    if (!c) {
+        c = sgi_soft_texel_cache = g_new0(SGISoftTexelCache, 1);
+        sgi_soft_texel_cache_exit.notify = sgi_soft_texel_cache_free;
+        qemu_thread_atexit_add(&sgi_soft_texel_cache_exit);
+    }
     c->serial++;
     c->image = image;
     c->bypass = false;
