@@ -96,7 +96,7 @@ layer:
                 limitations:
                   - "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant"
                   - "presents the TM7 as its 64 MB texture board, which is inferred"
-                  - "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  - "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
                 pairing: established
                 assembly: "030-1398-001"
                 settings:
@@ -108,7 +108,7 @@ layer:
               - product: ir3
                 fidelity: approximated
                 limitations:
-                  - "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                  - "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
                 pairing: established
                 assembly: "030-1398-001"
                 settings:
