@@ -298,6 +298,35 @@ static bool load(GByteArray *a, SGIKonaTextureState *s)
     return ok;
 }
 
+/*
+ * Each owner's saved binding names one of that owner's objects: a stream
+ * where another owner's binding names nothing is refused, not loaded with
+ * a binding that later resolves to no texture.
+ */
+static void test_owner_binding_migration(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    GByteArray *a;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    sgi_kona_texture_defaults(&p);
+    sgi_kona_texture_set_owner(&src, 1);
+    g_assert_true(sgi_kona_texture_bind(&src, 7, &p));
+    sgi_kona_texture_set_owner(&src, 2);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    /* Owner 1's saved flag and handle are the stream's words 7 and 8. */
+    g_assert_cmpuint(ldl_be_p(a->data + 20 + 8), ==, 1);
+    g_assert_cmpuint(ldl_be_p(a->data + 20 + 12), ==, 7);
+    stl_be_p(a->data + 20 + 12, 8);
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 static void test_migration(void)
 {
     SGIKonaTextureState src, dst;
@@ -2826,6 +2855,8 @@ int main(int argc, char **argv)
                     test_sharpen_curve_sampling);
     g_test_add_func("/sgi/kona/texture/filter-curves/budget",
                     test_filter_curve_budget);
+    g_test_add_func("/sgi/kona/texture/owner-binding-migration",
+                    test_owner_binding_migration);
     g_test_add_func("/sgi/kona/texture/filter-curves/migration",
                     test_filter_curve_migration);
     return g_test_run();

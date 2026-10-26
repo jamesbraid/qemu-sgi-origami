@@ -9289,7 +9289,8 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
  * afterwards; the client library sends the two from the same context, but
  * a context switch can fall between them, and the other context's own
  * commands would then replace or clear the load. Each context's load is
- * therefore its own once its rows are in, or while its rows are to come
+ * therefore its own (inferred: what the pipe saves at a switch is
+ * unknown) once its rows are in, or while its rows are to come
  * by DMA (atlantis's DMA load has been seen switched out before its DMA
  * packet): when context `slot` becomes current, such a load another
  * context made is set aside with that context, and one `slot` set aside
@@ -9355,7 +9356,8 @@ static void sgi_kona_texture_regs_load(SGIKonaState *s,
  * context switch can fall between the pieces (mirrors' 0x106 and its 0x179
  * have been seen split by atlantis's own bind and 0x178), and the record
  * must then complete this context's bind, not the other program's. So the
- * words are each context's own, kept with it while another is current, as
+ * words are each context's own (inferred: what the pipe saves at a switch
+ * is unknown), kept with it while another is current, as
  * the textures they name are (sgi_kona_texture_set_owner()), along with
  * whether a bind still waits for its record and the association that
  * record would commit. A context that has none starts from the reset

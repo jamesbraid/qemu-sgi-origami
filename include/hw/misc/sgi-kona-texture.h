@@ -100,11 +100,15 @@ typedef struct SGIKonaTextureObject {
 } SGIKonaTextureObject;
 
 /*
- * Texture handles are a context's own: the client library numbers its
- * textures from 0 in each context, and places them in that context's own
- * texture-memory region. Objects are therefore kept per owner, the
- * context sgi_kona_texture_set_owner() last named (0 for none, k + 1 for
- * context table entry k), and each owner keeps its own binding.
+ * Texture handles are a context's own (inferred): two programs on one
+ * pipe each number their textures from 0 and place them in their own
+ * texture-memory region from table word 0. Objects are therefore kept
+ * per owner, the context sgi_kona_texture_set_owner() last named (0 for
+ * none, k + 1 for context table entry k), and each owner keeps its own
+ * binding. Limitation: two contexts of one program that share textures
+ * have not been observed; the client library keeps its texture memory
+ * per process, so the model, which keeps objects per context, would not
+ * let one context use the other's textures.
  */
 #define SGI_KONA_TEXTURE_OWNERS 66
 
