@@ -8402,7 +8402,8 @@ static void test_raster_texture_coordinates(void)
         g_assert_cmpfloat(f.c.raster_pos[0], ==, 32);
         g_assert_cmpfloat(f.c.raster_pos[1], ==, 32);
     }
-    g_assert_cmpuint(pixels.reads, ==, 6);
+    /* Both pixels sample one texel, which each rectangle reads once. */
+    g_assert_cmpuint(pixels.reads, ==, 3);
 }
 
 static void test_copy_pixels_texture_overlap(void)
@@ -8430,7 +8431,8 @@ static void test_copy_pixels_texture_overlap(void)
     g_assert_cmphex(frag_pixel(&f, 33, 32), ==, 0x0000ff);
     g_assert_cmphex(frag_pixel(&f, 34, 32), ==, 0);
     g_assert_cmpuint(source.reads, ==, 2);
-    g_assert_cmpuint(pixels.reads, ==, 2);
+    /* Both pixels sample the raster position's texel, read once. */
+    g_assert_cmpuint(pixels.reads, ==, 1);
 }
 
 static void test_raster_texture_transfer_alpha(void)
@@ -8488,7 +8490,8 @@ static void test_bitmap_texture_coordinates(void)
     g_assert_cmphex(frag_pixel(&f, 34, 32), ==, 0x0000ff);
     g_assert_cmpfloat(f.c.raster_pos[0], ==, 34);
     g_assert_cmpfloat(f.c.raster_pos[1], ==, 35);
-    g_assert_cmpuint(pixels.reads, ==, 2);
+    /* Both set bits sample the raster position's texel, read once. */
+    g_assert_cmpuint(pixels.reads, ==, 1);
 }
 
 static void test_raster_texture_invalid_coordinates(void)

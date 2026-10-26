@@ -1741,6 +1741,45 @@ static bool sgi_soft_texture_derivatives(const double value[4],
     return isfinite(out[4]);
 }
 
+/*
+ * The last level selection a thread's draw made, by the footprint it was
+ * made for: sgi_soft_texture_select() depends on nothing else that varies
+ * within a draw, and the fragments of a primitive whose Q/W is constant
+ * across it all have the same footprint.
+ */
+typedef struct SGISoftTexSelectionMemo {
+    uint64_t serial;
+    uint64_t rho;
+    SGISoftTexSelection selected;
+} SGISoftTexSelectionMemo;
+
+static __thread SGISoftTexSelectionMemo sgi_soft_texture_selected;
+
+static bool sgi_soft_texture_select_memo(const SGISoftDraw *r, double rho,
+                                         SGISoftTexSelection *out)
+{
+    const SGIGLTexImage *im = r->texture;
+    SGISoftTexSelectionMemo *m = &sgi_soft_texture_selected;
+    bool memo = r->texels && r->texels->image == im;
+    uint64_t bits;
+
+    memcpy(&bits, &rho, sizeof(bits));
+    if (memo && m->serial == r->texels->serial && m->rho == bits) {
+        *out = m->selected;
+        return true;
+    }
+    if (!sgi_soft_texture_select(im->min_filter, im->mag_filter,
+                                 im->pyramid, r->texture_last, rho, out)) {
+        return false;
+    }
+    if (memo) {
+        *m = (SGISoftTexSelectionMemo) {
+            .serial = r->texels->serial, .rho = bits, .selected = *out,
+        };
+    }
+    return true;
+}
+
 static void sgi_soft_texture_mix(double value[4], const double other[4],
                                   double alpha)
 {
@@ -1897,9 +1936,7 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
         const SGIGLTexLevel *level;
         double other[4];
 
-        if (!sgi_soft_texture_select(im->min_filter, im->mag_filter,
-                                      im->pyramid, r->texture_last,
-                                      frag->texture_rho, &selected)) {
+        if (!sgi_soft_texture_select_memo(r, frag->texture_rho, &selected)) {
             sgi_soft_texture_report(r, 8, "invalid footprint, "
                                           "fragment dropped");
             return false;
@@ -3063,12 +3100,16 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     SGISoftFrag flat_frag, frag;
     SGISoftVertex v[3];
     SGISoftTexPlane gradient;
+    /* The footprint's per-axis scales, and its value where Q/W is flat. */
+    double tex_ns = 0, tex_nt = 0, tex_nr = 0, flat_rho = NAN;
+    bool flat_q = false, flat_ok = false;
     int64_t min_x, max_x, min_y, max_y, area, step0, step1, step2;
     double offset;
     bool ccw, front;
     int px0, px1, py0, py1;
     bool smooth = st->shade_model != SGI_GL_FLAT;
     bool simple = sgi_soft_simple_fragments(r);
+    double tex_row[4];
     const int sub = r->rules->subpixel_bits;
 
     for (int i = 0; i < 3; i++) {
@@ -3087,6 +3128,33 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
+    }
+    if (r->texture_base) {
+        tex_ns = r->texture_base->width *
+                 sgi_soft_texture_lod_scale(r->texture->lod_scale_s);
+        tex_nt = r->texture->one_dimensional ? 0 :
+                 r->texture_base->height *
+                 sgi_soft_texture_lod_scale(r->texture->lod_scale_t);
+        tex_nr = r->texture->volume ? r->texture_base->depth *
+                 sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0;
+        /*
+         * With Q/W the same at every vertex, each fragment's Q/W is the
+         * plane's own value, since its x and y terms are products with
+         * zero, and every S/W, T/W and R/W enters the derivatives only
+         * through such a product, which is zero for a finite value: their
+         * signs aside, the derivatives are those at any finite point, and
+         * the footprint, made of their magnitudes, is one number. Only
+         * each fragment's finiteness test remains its own.
+         */
+        flat_q = gradient.dx[2] == 0 && gradient.dy[2] == 0;
+        if (flat_q) {
+            double value[4] = { 0, 0, gradient.value[2], 0 }, out[5];
+
+            flat_ok = sgi_soft_texture_derivatives(value, gradient.dx,
+                                                   gradient.dy, tex_ns,
+                                                   tex_nt, tex_nr, out);
+            flat_rho = out[4];
+        }
     }
     ccw = st->window_matrix_given && st->window_rows_down ? area < 0 :
                                                             area > 0;
@@ -3170,6 +3238,11 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                  step2, area, offset, &flat_frag, smooth);
             continue;
         }
+        if (r->texture_base) {
+            for (unsigned k = 0; k < 4; k++) {
+                tex_row[k] = (py + 0.5 - gradient.y) * gradient.dy[k];
+            }
+        }
         for (int px = px0 + lo; px <= px0 + hi;
              px++, e1 += step1, e2 += step2) {
             double b1, b2, z, w0, w1, w2, sum, depth_w;
@@ -3232,18 +3305,19 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                 for (unsigned k = 0; k < 4; k++) {
                     value[k] = gradient.value[k] +
                                (px + 0.5 - gradient.x) * gradient.dx[k] +
-                               (py + 0.5 - gradient.y) * gradient.dy[k];
+                               tex_row[k];
                 }
-                frag.texture_rho = sgi_soft_texture_derivatives(value,
-                    gradient.dx, gradient.dy, r->texture_base->width *
-                    sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
-                    r->texture->one_dimensional ? 0 :
-                    r->texture_base->height *
-                    sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
-                    r->texture->volume ? r->texture_base->depth *
-                    sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
-                    out) ?
-                    out[4] : NAN;
+                if (flat_q) {
+                    double d = value[2];
+
+                    frag.texture_rho = flat_ok &&
+                        isfinite(value[0] / d) && isfinite(value[1] / d) &&
+                        (!tex_nr || isfinite(value[3] / d)) ? flat_rho : NAN;
+                } else {
+                    frag.texture_rho = sgi_soft_texture_derivatives(value,
+                        gradient.dx, gradient.dy, tex_ns, tex_nt, tex_nr,
+                        out) ? out[4] : NAN;
+                }
             }
             if (background) {
                 sgi_soft_stipple_background(r, &frag);
@@ -5173,6 +5247,9 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
+    if (r.texture) {
+        r.texels = sgi_soft_texel_cache_begin(r.texture);
+    }
     r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     memcpy(r.targets, op->targets, sizeof(r.targets));
     if (!sgi_soft_setup_ops(&r)) {
@@ -5227,6 +5304,9 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
         !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
         !p->zoom[0] || !p->zoom[1] || !sgi_soft_window(p->state, &r.win)) {
         return;
+    }
+    if (r.texture) {
+        r.texels = sgi_soft_texel_cache_begin(r.texture);
     }
     r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     memcpy(r.targets, op->targets, sizeof(r.targets));
