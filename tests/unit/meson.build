@@ -389,6 +389,10 @@ foreach test_name, extra: tests
   endif
   if test_name == 'test-sgi-gl'
     test_c_args += ['-DSGI_GL_TEXTURE_TEST']
+    if meson.get_compiler('c').has_link_argument('-Wl,--wrap=sysconf')
+      test_link_args += ['-Wl,--wrap=sysconf']
+      test_c_args += ['-DSGI_GL_SYSCONF_WRAP']
+    endif
   endif
   exe = executable(test_name, src, genh, dependencies: deps,
                    link_args: test_link_args, c_args: test_c_args)

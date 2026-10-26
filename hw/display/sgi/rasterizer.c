@@ -118,6 +118,12 @@ typedef struct SGISoftFrag {
 
 static unsigned sgi_soft_bands_wanted;
 static uint64_t sgi_soft_bands_min_pixels = SGI_RASTER_PARALLEL_MIN_PIXELS;
+/*
+ * The host's processors, read once: glibc reads them from sysfs, which
+ * costs three system calls, and every draw and clear chooses its bands.
+ * A later change to the host's online processors is not seen.
+ */
+static unsigned sgi_soft_host_processors = 1;
 
 /* A band other than the first repeats the primitive work: say it once. */
 static __thread bool sgi_soft_band_quiet;
@@ -145,9 +151,15 @@ static void sgi_soft_pool_reset(void)
     sgi_soft_pool.pending = 0;
 }
 
-/* A forked child has none of its parent's workers: start its own. */
+/*
+ * Count the host's processors. A forked child has none of its parent's
+ * workers: start its own.
+ */
 static void __attribute__((constructor)) sgi_soft_pool_init(void)
 {
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+    sgi_soft_host_processors = MAX(cpus, 1);
     sgi_soft_pool_reset();
     pthread_atfork(NULL, NULL, sgi_soft_pool_reset);
 }
@@ -188,9 +200,8 @@ static unsigned sgi_soft_bands(void)
     unsigned bands = qatomic_read(&sgi_soft_bands_wanted);
 
     if (!bands) {
-        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-
-        bands = MIN(SGI_RASTER_PARALLEL_DEFAULT_BANDS, MAX(cpus, 1));
+        bands = MIN(SGI_RASTER_PARALLEL_DEFAULT_BANDS,
+                    sgi_soft_host_processors);
     }
     return MIN(bands, SGI_RASTER_PARALLEL_MAX_BANDS);
 }

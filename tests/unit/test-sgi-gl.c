@@ -328,6 +328,98 @@ static void test_band_parallel_draw(void)
     g_hash_table_destroy(threads);
 }
 
+#ifdef SGI_GL_SYSCONF_WRAP
+static unsigned processor_queries;
+
+typedef long SysconfFn(int name);
+SysconfFn __real_sysconf, __wrap_sysconf;
+
+long __wrap_sysconf(int name)
+{
+    if (name == _SC_NPROCESSORS_ONLN) {
+        qatomic_inc(&processor_queries);
+    }
+    return __real_sysconf(name);
+}
+#endif
+
+/*
+ * Choosing whether to draw in bands must not ask the host how many
+ * processors it has: glibc reads that from sysfs, three system calls, and
+ * a guest drawing small strips makes tens of thousands of draws a second.
+ * Small draws and clears, into targets that do and do not allow bands,
+ * and a draw large enough to run in bands, with the default bands.
+ */
+static void test_band_choice_asks_no_host(void)
+{
+    static BandPlanes b;
+    float verts[12][SGI_GL_VERTEX_FLOATS] = { 0 };
+    float big[3][SGI_GL_VERTEX_FLOATS] = {
+        { [SGI_GL_V_POSITION + 0] = -1, [SGI_GL_V_POSITION + 1] = -1,
+          [SGI_GL_V_POSITION + 3] = 1 },
+        { [SGI_GL_V_POSITION + 0] = 1, [SGI_GL_V_POSITION + 1] = -1,
+          [SGI_GL_V_POSITION + 3] = 1 },
+        { [SGI_GL_V_POSITION + 0] = -1, [SGI_GL_V_POSITION + 1] = 1,
+          [SGI_GL_V_POSITION + 3] = 1 },
+    };
+    SGIRasterRules rules = rules_supported;
+    SGIGLContext c;
+
+#ifndef SGI_GL_SYSCONF_WRAP
+    g_test_skip("linker does not support sysconf wrapping");
+    return;
+#endif
+    for (unsigned i = 0; i < G_N_ELEMENTS(verts); i++) {
+        verts[i][SGI_GL_V_POSITION + 0] = -0.5 + 0.05 * (i / 2);
+        verts[i][SGI_GL_V_POSITION + 1] = -0.5 + 0.05 * (i % 2);
+        verts[i][SGI_GL_V_POSITION + 3] = 1;
+        verts[i][SGI_GL_V_COLOR + 0] = 1;
+    }
+    sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
+    context_init(&c);
+    processor_queries = 0;
+    for (unsigned concurrent = 0; concurrent < 2; concurrent++) {
+        SGIRasterTarget t = {
+            .store_colour = band_store_colour,
+            .load_colour = band_load_colour,
+            .load_depth = band_load_depth,
+            .store_depth = band_store_depth,
+            .load_stencil = band_load_stencil,
+            .store_stencil = band_store_stencil,
+            .opaque = &b,
+            .concurrent_pixels = concurrent,
+        };
+        SGIGLDraw d = {
+            .context = 0x1234, .mode = SGI_GL_TRIANGLE_STRIP,
+            .count = G_N_ELEMENTS(verts), .vertices = &verts[0][0],
+            .state = &c.cur,
+        };
+        SGIGLDraw large = {
+            .context = 0x1234, .mode = SGI_GL_TRIANGLES,
+            .count = G_N_ELEMENTS(big), .vertices = &big[0][0],
+            .state = &c.cur,
+        };
+        SGIRasterOp clear = {
+            .kind = SGI_RASTER_CLEAR, .ntargets = 1,
+            .x0 = 2, .y0 = 2, .x1 = 9, .y1 = 9,
+            .clip = { .n = 1, .r = { { 0, 0, W - 1, H - 1 } } },
+            .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+            .clear_rgba = { 0.25, 0.5, 0.75, 1 },
+            .clear_colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        };
+
+        for (unsigned i = 0; i < 100; i++) {
+            g_assert_cmpint(sgi_soft_draw(&rules, &t, &d), ==,
+                            SGI_GL_DRAW_OK);
+            sgi_soft_raster(&rules, &t, &clear);
+        }
+        g_assert_cmpint(sgi_soft_draw(&rules, &t, &large), ==,
+                        SGI_GL_DRAW_OK);
+    }
+    sgi_gl_cleanup(&c);
+    g_assert_cmpuint(processor_queries, ==, 0);
+}
+
 #define NVERTS 9
 
 /*
@@ -14289,6 +14381,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/triangle-coverage-exact",
                     test_triangle_coverage_exact);
     g_test_add_func("/sgi-gl/band-parallel-draw", test_band_parallel_draw);
+    g_test_add_func("/sgi-gl/band-choice-asks-no-host",
+                    test_band_choice_asks_no_host);
     g_test_add_func("/sgi-gl/finish-is-a-fence", test_finish_is_a_fence);
     g_test_add_func("/sgi-gl/clear-op", test_clear_op);
     g_test_add_func("/sgi-gl/rounding", test_rounding);
