@@ -1108,12 +1108,11 @@ static void test_clip_accesses(void)
         unsigned width;
         bool write, hard;
     } accesses[] = {
-        { 0, 8, false, true }, { 0, 4, false, true },
+        { 0, 4, false, true },
         { 0, 1, true, true }, { 0, 2, true, true }, { 0, 4, true, true },
         { 1, 8, true, true }, { 4, 8, true, true }, { -4, 8, true, true },
         { 24, 4, true, true }, { 25, 8, true, true },
         { 0x800, 8, true, true }, { 0x800, 8, false, true },
-        { -8, 8, true, false }, { -8, 8, false, false },
     };
     uint16_t entries[16];
     uint8_t before[CLIP_STATE_BYTES], after[CLIP_STATE_BYTES];

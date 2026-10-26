@@ -1667,8 +1667,8 @@ static void test_renderer_refusal(void)
 {
     const RendererAccess accesses[] = {
         { 0x408, 4, true }, { 0x600, 8, true },
-        { 0x2080, 8, true }, { 0x2081, 4, true },
-        { 0x2080, 4, false }, { 0x2084, 1, true },
+        { 0x2098, 8, true }, { 0x2099, 4, true },
+        { 0x20a4, 4, false }, { 0x209c, 1, true },
         { 0x2400, 4, true }, { 0x408, 4, false },
         { 0x21f0, 4, false }, { 0x21f8, 4, false },
         { 0x27fc, 4, true },

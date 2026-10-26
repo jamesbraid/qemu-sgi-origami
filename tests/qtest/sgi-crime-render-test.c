@@ -6721,6 +6721,322 @@ static void test_ordinary_copy_banks(void)
     qtest_quit(s);
 }
 
+/* Native storage does not grant these parameters a START command. */
+static const Register native_registers[] = {
+    { 0x080, 4, false }, { 0x084, 4, false }, { 0x088, 4, false },
+    { 0x08c, 4, false }, { 0x090, 4, false }, { 0x094, 4, false },
+    { 0x0e0, 4, false }, { 0x0e4, 4, false }, { 0x0e8, 4, false },
+    { 0x0ec, 4, false }, { 0x0f0, 4, false }, { 0x0f4, 4, false },
+    { 0x0f8, 4, false }, { 0x0fc, 4, false }, { 0x100, 4, false },
+    { 0x104, 4, false }, { 0x108, 4, false }, { 0x10c, 4, false },
+    { 0x110, 4, true }, { 0x118, 8, true },
+    { 0x120, 8, false }, { 0x128, 8, false }, { 0x130, 4, false },
+    { 0x138, 8, false }, { 0x140, 8, false }, { 0x148, 8, false },
+    { 0x150, 8, false }, { 0x158, 4, false }, { 0x15c, 4, false },
+    { 0x160, 4, true }, { 0x168, 4, true }, { 0x170, 4, true },
+    { 0x178, 4, false }, { 0x180, 4, false }, { 0x188, 4, false },
+    { 0x190, 4, false }, { 0x194, 4, false }, { 0x198, 4, true },
+    { 0x1a0, 4, true }, { 0x1a8, 4, true }, { 0x1c0, 4, true },
+    { 0x1c8, 8, false }, { 0x1d0, 8, false }, { 0x1d8, 8, false },
+    { 0x1e0, 4, true }, { 0x1e8, 4, true },
+};
+
+static uint64_t native_pattern(unsigned index)
+{
+    return 0x123456789abcdef0ULL ^ ((uint64_t)(index + 1) << 40) ^
+           ((index + 1) * 0x01020305ULL);
+}
+
+static void native_translations(QTestState *s, bool write, bool zero)
+{
+    for (unsigned i = 0; i < 256; i++) {
+        uint64_t address = RE + 0x1000 + 8 * i;
+        uint64_t value = zero ? 0 : native_pattern(i);
+
+        if (write) {
+            g_assert_cmpint(memtx_writeq(s, address, value), ==, MEMTX_OK);
+        } else {
+            uint64_t actual;
+
+            g_assert_cmpint(memtx_readq(s, address, &actual), ==, MEMTX_OK);
+            g_assert_cmphex(actual, ==, value);
+        }
+    }
+}
+
+static void test_native_translations(void)
+{
+    QTestState *s = start();
+    uint64_t value;
+
+    qtest_writeq(s, 0x30000, 0x76543210fedcba98ULL);
+    native_translations(s, false, true);
+    native_translations(s, true, false);
+    for (unsigned i = 0; i < 256; i++) {
+        uint64_t address = RE + 0x1000 + 8 * i;
+        uint8_t bytes[8];
+
+        qtest_memread(s, address, bytes, sizeof(bytes));
+        g_assert_cmphex(ldq_be_p(bytes), ==, native_pattern(i));
+        for (unsigned width = 1; width < 8; width *= 2) {
+            g_assert_cmpint(memtx_write(s, address, 0, width), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_read(s, address, &value, width),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned delta = 1; delta < 8; delta++) {
+            g_assert_cmpint(memtx_writeq(s, address + delta, 0), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_readq(s, address + delta, &value),
+                            !=, MEMTX_OK);
+        }
+    }
+    g_assert_cmpint(memtx_writeq(s, RE + 0x1800, UINT64_MAX), !=, MEMTX_OK);
+    g_assert_cmpint(memtx_readq(s, RE + 0x1800, &value), !=, MEMTX_OK);
+    native_translations(s, false, false);
+    g_assert_cmphex(qtest_readq(s, 0x30000), ==, 0x76543210fedcba98ULL);
+    assert_idle(s);
+    qtest_system_reset(s);
+    native_translations(s, false, true);
+    qtest_quit(s);
+}
+
+static void native_parameters(QTestState *s, bool write, bool zero)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(native_registers); i++) {
+        const Register *r = &native_registers[i];
+        uint64_t value = zero ? 0 : native_pattern(r->offset);
+        uint64_t actual;
+
+        if (r->width == 4) {
+            value = (uint32_t)value;
+        }
+        if (write) {
+            g_assert_cmpint(memtx_write(s, DE + r->offset, value, r->width),
+                            ==, MEMTX_OK);
+        } else if (r->readable) {
+            g_assert_cmpint(memtx_read(s, DE + r->offset, &actual, r->width),
+                            ==, MEMTX_OK);
+            g_assert_cmphex(actual, ==, value);
+        } else {
+            g_assert_cmpint(memtx_read(s, DE + r->offset, &actual, r->width),
+                            !=, MEMTX_OK);
+        }
+    }
+}
+
+static void test_native_parameters(void)
+{
+    const unsigned holes[] = { 0x2054, 0x205c, 0x2064, 0x2098,
+                               0x20a4, 0x2114, 0x2174, 0x21ec, 0x408 };
+    QTestState *s = start();
+    uint64_t value;
+
+    native_parameters(s, false, true);
+    native_parameters(s, true, false);
+    for (unsigned i = 0; i < ARRAY_SIZE(native_registers); i++) {
+        const Register *r = &native_registers[i];
+
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width != r->width) {
+                g_assert_cmpint(memtx_write(s, DE + r->offset, 0, width),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_read(s, DE + r->offset, &value, width),
+                                !=, MEMTX_OK);
+            }
+        }
+        for (unsigned delta = 1; delta < r->width; delta++) {
+            g_assert_cmpint(memtx_write(s, DE + r->offset + delta, 0,
+                                        r->width), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_read(s, DE + r->offset + delta, &value,
+                                       r->width), !=, MEMTX_OK);
+        }
+        if (r->readable) {
+            uint8_t bytes[8];
+            uint64_t expected = native_pattern(r->offset);
+
+            qtest_memread(s, DE + r->offset, bytes, r->width);
+            uint64_t actual = r->width == 8 ? ldq_be_p(bytes) :
+                              (uint32_t)ldl_be_p(bytes);
+
+            g_assert_cmphex(actual, ==,
+                            r->width == 8 ? expected : (uint32_t)expected);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(holes); i++) {
+        g_assert_cmpint(memtx_read(s, RE + holes[i], &value, 4), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_writel(s, RE + holes[i], 0), !=, MEMTX_OK);
+        g_assert_cmpint(memtx_writel(s, RE + holes[i], UINT32_MAX),
+                        !=, MEMTX_OK);
+    }
+    native_parameters(s, false, false);
+    qtest_system_reset(s);
+    native_parameters(s, false, true);
+    qtest_quit(s);
+}
+
+static void test_native_isolation(void)
+{
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-native-isolation-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = start();
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    native_translations(s, true, false);
+    native_parameters(s, true, false);
+    tile(s, 0, 0, 3);
+    setup(s, 0x228, false);
+    qtest_writel(s, DE + 0x18, 0x2f8);
+    qtest_writel(s, DE + 0x1b0, 6);
+    qtest_writel(s, DE + 0xd0, 0x1234abcd);
+    qtest_writel(s, DE + 0x70, xy(0, 0));
+    qtest_writel(s, DE + 0x74, xy(1, 0));
+    qtest_memset(s, 0x30000, 0x5a, 16);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    for (unsigned x = 0; x < 2; x++) {
+        g_assert_cmphex(qtest_readl(s, 0x30000 + 4 * x), ==,
+                        0x5a5a5a5a ^ 0x1234abcd);
+    }
+    native_parameters(s, true, false);
+    native_parameters(s, false, false);
+    qtest_writel(s, DE + 0x60, 0x01000000);
+    qtest_writel(s, DE + 0x70, xy(2, 0));
+    qtest_writel(s, DE + 0x74, xy(3, 0));
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    save_paired_renderer(s, path, before);
+    for (unsigned i = 0; i < ARRAY_SIZE(native_registers); i++) {
+        const Register *r = &native_registers[i];
+        uint64_t value = r->width == 8 ? UINT64_MAX : UINT32_MAX;
+
+        g_assert_cmpint(memtx_write(s, DE + 0x800 + r->offset, value,
+                                    r->width), !=, MEMTX_OK);
+    }
+    save_paired_renderer(s, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(qtest_readl(s, 0x30000 + 4 * x), ==,
+                        0x5a5a5a5a ^ 0x1234abcd);
+    }
+    assert_idle(s);
+    qtest_quit(s);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_native_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("crime-native-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *from = start();
+    QTestState *to = start_options("-incoming defer");
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
+
+    native_translations(from, true, false);
+    native_parameters(from, true, false);
+    qtest_writel(from, DE + 8, 0xdeadbeef);
+    qtest_writeq(from, 0x30000, 0x1122334455667788ULL);
+    save_paired_renderer(from, path, before);
+    for (unsigned i = 0; i < ARRAY_SIZE(native_registers); i++) {
+        const Register *r = &native_registers[i];
+        uint64_t expected = native_pattern(r->offset);
+
+        g_assert_cmphex(before[192 + r->offset / 4], ==,
+                        r->width == 8 ? expected : (uint32_t)expected);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    native_translations(to, false, false);
+    native_parameters(to, false, false);
+    save_paired_renderer(to, path, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    g_assert_cmphex(qtest_readl(to, DE + 8), ==, 0xdeadbeef);
+    g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), !=, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(to, 0x30000), ==, 0x1122334455667788ULL);
+    tile(to, 0, 0, 3);
+    setup(to, 0x228, false);
+    qtest_writel(to, DE + 0x18, 0x2f8);
+    qtest_writel(to, DE + 0x1b0, 6);
+    qtest_writel(to, DE + 0xd0, 0x1234abcd);
+    qtest_writel(to, DE + 0x70, xy(0, 0));
+    qtest_writel(to, DE + 0x74, xy(1, 0));
+    g_assert_cmpint(memtx_writel(to, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(to, 0x30000), ==,
+                    0x1122334455667788ULL ^ 0x1234abcd1234abcdULL);
+    qtest_system_reset(to);
+    native_translations(to, false, true);
+    native_parameters(to, false, true);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+static void test_native_clear_sources(void)
+{
+    QTestState *s = start();
+    const unsigned sources[] = { 3, 6 };
+
+    qtest_writeq(s, RE + 0x1600, 0x8003000000000000ULL);
+    qtest_writeq(s, RE + 0x16e0, 0x8003000000000000ULL);
+    qtest_writel(s, MTE + 8, UINT32_MAX);
+    qtest_writel(s, MTE + 0x18, 0x12345655);
+    qtest_writel(s, MTE + 0x20, UINT32_MAX);
+    qtest_writel(s, MTE + 0x28, UINT32_MAX);
+    qtest_writel(s, MTE + 0x30, xy(7, 0));
+    qtest_writel(s, MTE + 0x38, xy(9, 0));
+    qtest_writel(s, MTE + 0x40, UINT32_MAX);
+    qtest_writel(s, MTE + 0x48, 1);
+    for (unsigned n = 0; n < ARRAY_SIZE(sources); n++) {
+        qtest_memset(s, 0x30000, 0x5a, 16);
+        qtest_writel(s, MTE, sources[n] << 5 | 6 << 2);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), ==, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            g_assert_cmphex(qtest_readb(s, 0x30000 + i), ==,
+                            i >= 7 && i <= 9 ? 0x55 : 0x5a);
+        }
+        g_assert_cmphex(qtest_readq(s, RE + 0x16e0), ==,
+                        0x8003000000000000ULL);
+        qtest_writel(s, MTE, 0x800 | sources[n] << 5 | 6 << 2);
+        g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), !=, MEMTX_OK);
+        for (unsigned i = 0; i < 16; i++) {
+            g_assert_cmphex(qtest_readb(s, 0x30000 + i), ==,
+                            i >= 7 && i <= 9 ? 0x55 : 0x5a);
+        }
+    }
+    qtest_writel(s, MTE, 3 << 2);
+    g_assert_cmpint(memtx_writel(s, MTE + 0x870, 0), !=, MEMTX_OK);
+    qtest_quit(s);
+}
+
+static void test_native_profiles(void)
+{
+    for (unsigned legacy = 0; legacy < 2; legacy++) {
+        QTestState *s = start_profile(legacy ? "legacy-software" : "1.5",
+                                      false, !legacy, "");
+        uint64_t value;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(native_registers); i++) {
+            const Register *r = &native_registers[i];
+
+            g_assert_cmpint(memtx_write(s, DE + r->offset, UINT64_MAX,
+                                        r->width), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_read(s, DE + r->offset, &value, r->width),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned i = 0; i < 32; i++) {
+            g_assert_cmpint(memtx_writeq(s, RE + 0x1600 + 8 * i, UINT64_MAX),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_readq(s, RE + 0x1600 + 8 * i, &value),
+                            !=, MEMTX_OK);
+        }
+        qtest_quit(s);
+    }
+}
+
 /* Use the native Meson groups while retaining one TAP plan per process. */
 static GPtrArray *group_paths;
 
@@ -6780,6 +7096,13 @@ int main(int argc, char **argv)
 {
     take_group_paths(&argc, argv);
     g_test_init(&argc, &argv, NULL);
+    add_case("sgi/crime/render/native/translations", test_native_translations);
+    add_case("sgi/crime/render/native/parameters", test_native_parameters);
+    add_case("sgi/crime/render/native/isolation", test_native_isolation);
+    add_case("sgi/crime/render/native/migration", test_native_migration);
+    add_case("sgi/crime/render/native/clear-sources",
+             test_native_clear_sources);
+    add_case("sgi/crime/render/native/profiles", test_native_profiles);
     add_case("sgi/crime/render/ordinary/copies",
              test_ordinary_copies);
     add_case("sgi/crime/render/ordinary/copy-faults",
