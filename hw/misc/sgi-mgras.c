@@ -1052,6 +1052,21 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     uint64_t sequence = s->trace_sequence++;
 
     trace_sgi_mgras_mmio(sequence, addr, value, size, true);
+    /*
+     * Nearly every store is a command word to the main port once the
+     * port is ready. It passes every width check below, so take it
+     * before them; the same case in the switch handles the rest.
+     */
+    if (addr == MGRAS_CONTEXT_COMMAND && s->ready && s->protocol != 1) {
+        if (size == 4) {
+            sgi_mgras_raster_command_token(s, value);
+            return;
+        }
+        if (size == 8) {
+            sgi_mgras_raster_command(s, value);
+            return;
+        }
+    }
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
     }
