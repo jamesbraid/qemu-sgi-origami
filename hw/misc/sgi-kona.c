@@ -1354,12 +1354,14 @@ static bool sgi_kona_store_counted(void)
 }
 
 /*
- * Return credits to the Hub that sent the store now arriving, or with
- * none (a qtest's store, or the board's own thread) to the "pi" link.
+ * Return credits to the Hub that sent the store now arriving. With none,
+ * on the board's own thread settling credits held since the last store,
+ * they go to that store's Hub, or with no store yet to the "pi" link, as
+ * a qtest's store's do.
  */
 static void sgi_kona_pi_return(SGIKonaState *s, uint32_t credits)
 {
-    Object *node = sgi_pi_gfx_store_source() ?: s->pi;
+    Object *node = sgi_pi_gfx_store_source() ?: s->pi_store_node ?: s->pi;
 
     if (!credits) {
         return;
@@ -8290,7 +8292,11 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
     }
-    /* The source snapshot reads board memory only (sgi_kona_work_unlock()). */
+    /*
+     * The whole transfer, the source snapshot and the destination writes,
+     * touches only board memory and command-stream state
+     * (sgi_kona_work_unlock()).
+     */
     unlocked = sgi_kona_work_unlock(s);
     copied = sgi_gl_copy_pixels_rgba_transfer(&s->state[i]->gl, &sink,
                                               x, y, a[2], a[3],
@@ -17917,9 +17923,13 @@ static MemTxResult sgi_kona_write(void *opaque, hwaddr addr,
     uint64_t packets = s->pi_packets;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
     bool queued;
+    Object *source = sgi_pi_gfx_store_source();
 
     if (!sgi_head_work_enter()) {
         return sgi_kona_refuse(addr, true);
+    }
+    if (source) {
+        s->pi_store_node = source;
     }
     if (s->context_failed) {
         sgi_head_work_leave();
