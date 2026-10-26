@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "3de591cfb31e9b8cdd6b78da43888e8d8a805eba9df023d62a771553baceef66"
+    "a60b8ff82c1bd6e4c009d0b1316f0849504bef8f5cbe2fffede6cdaae9d9c639"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -559,6 +559,40 @@ class StorageTests(unittest.TestCase):
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(names, [f"module{index}-nvram"
                                          for index in range(expected)])
+
+    def test_scsi_adapters_follow_the_listed_pci_functions(self):
+        """Every SCSI host adapter a topology's I/O boards list is one
+        offered adapter, whichever spelling the board's own compiler
+        record gives its kind: the IO9's ISP12160 counts as the IP45's
+        does. Boards built from a preset list no functions here and are
+        left to the preset."""
+        topologies = {item["name"]: item
+                      for item in self.catalogue["topologies"]}
+        targets = {"isp1040": list(range(1, 8)),
+                   "isp12160": list(range(1, 16))}
+        for offering in self.catalogue["offerings"]:
+            listed = [function["kind"]
+                      for board in topologies[offering["topology"]]
+                      ["io-boards"]
+                      for function in board.get("pci-functions", [])]
+            if not listed:
+                continue
+            expected = [{"type": "scsi", "bus": f"scsi.{index}",
+                         "targets": targets[kind]}
+                        for index, kind in enumerate(
+                            kind for kind in listed if kind in targets)]
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(offering["scsi-adapters"], expected)
+
+    def test_ip53_offerings_list_the_io9_isp12160(self):
+        for offering in self.catalogue["offerings"]:
+            if offering["product"] not in {"origin350", "onyx350", "tezro",
+                                           "onyx4-host"}:
+                continue
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(offering["scsi-adapters"], [
+                    {"type": "scsi", "bus": "scsi.0",
+                     "targets": list(range(1, 16))}])
 
 
 class Ip27FirmwareTests(unittest.TestCase):
