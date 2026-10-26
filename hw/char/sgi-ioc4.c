@@ -807,8 +807,10 @@ static uint64_t ioc4_dma_register_read(SGIIOC4State *s, hwaddr addr)
     }
     switch ((addr - IOC4_DMA_PORT_BASE(n)) / 4) {
     case 0:
+        /* Bit 16 reads set while a transmit delay entry is running. */
         return s->dma[n].control |
-               (ioc4_port_paused(&s->dma[n]) ? IOC4_SSCR_PAUSE_STATE : 0);
+               (ioc4_port_paused(&s->dma[n]) ? IOC4_SSCR_PAUSE_STATE : 0) |
+               (s->dma[n].tx_timer_running ? IOC4_SSCR_TX_TIMER_BUSY : 0);
     case 1: return s->dma[n].tx_produce;
     case 2: return s->dma[n].tx_consume;
     case 3: return s->dma[n].rx_produce;
