@@ -44,6 +44,17 @@ struct SGIMachineClass {
      * topology= against the compiled catalogue instead.
      */
     const SGIModelTopology *test_topology;
+    /*
+     * The product's default topology's memory, for a topology that fails
+     * to resolve; default_ram_size itself holds a marker.
+     */
+    uint64_t fallback_ram_size;
+    /*
+     * The default RAM backend's creator, which the machine runs after it
+     * has settled the default memory size.
+     */
+    bool (*parent_create_default_memdev)(MachineState *ms, const char *path,
+                                         Error **errp);
 };
 
 /*
@@ -66,14 +77,22 @@ void sgi_machine_class_add_storage(ObjectClass *oc);
 
 /*
  * Exposed for each product class file (sn0.c's origin200/origin2000, sn1.c's
- * origin300): default_cpus, max_cpus and default_ram_size for
- * mc->default_cpus/max_cpus/default_ram_size, derived from the same topology
- * the class names.
+ * origin300): the values for mc->default_cpus, max_cpus and min_cpus, and the
+ * memory to give sgi_machine_class_set_default_ram() (not default_ram_size
+ * itself), derived from the same topology the class names.
  */
 unsigned int sgi_machine_topology_default_cpus(const SGIModelTopology *t);
 unsigned int sgi_machine_product_max_cpus(const char *product);
 unsigned int sgi_machine_product_min_cpus(const char *product);
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
+
+/*
+ * Give a product class the memory its default topology fits, to be settled
+ * to the selected topology's own when -m is absent. Replaces setting
+ * default_ram_size, which holds a marker so the machine can tell no -m from
+ * any explicit one.
+ */
+void sgi_machine_class_set_default_ram(MachineClass *mc, uint64_t bytes);
 
 /*
  * Copies the machine's chassis-eeprom/board-eeprom/spd-eeprom identity-record
