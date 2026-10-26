@@ -485,6 +485,18 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "IP53 node boards"):
             compile_model(model)
 
+    def test_normal_offering_follows_the_normal_selection(self):
+        def offerings(model):
+            catalogue = json.loads(render_catalogue_json([model]))
+            return catalogue["offerings"]
+
+        model = _resolved("origin350")
+        self.assertTrue(all("required-properties" not in item["processor"]
+                            for item in offerings(model)))
+        del model["machine"]["emulation"]["ip53_runtime"]["normal_selection"]
+        self.assertTrue(all("required-properties" in item["processor"]
+                            for item in offerings(model)))
+
     def test_each_product_has_one_machine_default(self):
         models = [_resolved(name) for name in sorted({
             *PRODUCT_MODELS.values(), "origin200-dual",
