@@ -1503,6 +1503,41 @@ static void test_dma_channel_reset_keeps_settings(void)
     qtest_quit(qts);
 }
 
+/*
+ * Transmit-ring-empty is a level: set while ring DMA is on and nothing is
+ * left to send, clear while an entry is still in the engine, and deaf to an
+ * acknowledgement. Linux's IOC3 driver treats it so, and IOC4 follows.
+ */
+static void test_dma_tx_empty_follows_the_ring(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t data[4] = { 3, 0, 0, 0 };
+    const uint8_t control[4] = { TX_DELAY, 0, 0, 0 };
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_RING_EMPTY(0), ==, 0);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_RING_EMPTY(0), ==,
+                    TX_RING_EMPTY(0));
+    reg_write(qts, 0x08, TX_RING_EMPTY(0));
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_RING_EMPTY(0), ==,
+                    TX_RING_EMPTY(0));
+
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, data, control);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 8);
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_RING_EMPTY(0), ==, 0);
+    qtest_clock_step(qts, 3 * 1000000);
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_RING_EMPTY(0), ==,
+                    TX_RING_EMPTY(0));
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -3048,6 +3083,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-tx-empty-follows-the-ring",
+                   test_dma_tx_empty_follows_the_ring);
     qtest_add_func("/sgi-ioc4/dma-channel-reset-keeps-settings",
                    test_dma_channel_reset_keeps_settings);
     qtest_add_func("/sgi-ioc4/dma-tx-delay-sets-the-busy-bit",
