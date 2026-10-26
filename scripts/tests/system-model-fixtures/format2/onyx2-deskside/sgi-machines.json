@@ -1139,12 +1139,12 @@
                         "values": [
                           {
                             "description": "GE14-4, four geometry engines",
-                            "evidence": "030-1129-002, whole-tetra",
+                            "evidence": "030-1129-002",
                             "value": "ge14-4"
                           },
                           {
                             "description": "GE14-2, two geometry engines",
-                            "evidence": "030-1051-002, fancy-akita",
+                            "evidence": "030-1051-002",
                             "value": "ge14-2"
                           }
                         ]
@@ -1157,7 +1157,7 @@
                         "values": [
                           {
                             "description": "RM7",
-                            "evidence": "030-1054-001, whole-tetra",
+                            "evidence": "030-1054-001",
                             "value": "rm7"
                           }
                         ]
@@ -1186,7 +1186,7 @@
                         "values": [
                           {
                             "description": "64 MB",
-                            "evidence": "TM7 030-1053-001, whole-tetra",
+                            "evidence": "TM7 030-1053-001",
                             "value": "64"
                           }
                         ]
@@ -1199,12 +1199,12 @@
                         "values": [
                           {
                             "description": "DG5-8, 8 channels",
-                            "evidence": "030-1087-001, whole-tetra",
+                            "evidence": "030-1087-001",
                             "value": "dg5-8"
                           },
                           {
                             "description": "DG5-2, 2 channels",
-                            "evidence": "030-1055-001, fancy-akita",
+                            "evidence": "030-1055-001",
                             "value": "dg5-2"
                           }
                         ]
@@ -1230,7 +1230,7 @@
                         "values": [
                           {
                             "description": "GE16-4, four geometry engines",
-                            "evidence": "030-1398-001, true-wombat",
+                            "evidence": "030-1398-001",
                             "value": "ge16-4"
                           }
                         ]
@@ -1243,7 +1243,7 @@
                         "values": [
                           {
                             "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
-                            "evidence": "030-1402-001, true-wombat",
+                            "evidence": "030-1402-001",
                             "value": "rm9"
                           }
                         ]
@@ -1272,7 +1272,7 @@
                         "values": [
                           {
                             "description": "64 MB",
-                            "evidence": "TM7 030-1053-001, whole-tetra",
+                            "evidence": "TM7 030-1053-001",
                             "value": "64"
                           }
                         ]
@@ -1285,12 +1285,12 @@
                         "values": [
                           {
                             "description": "DG5-8, 8 channels",
-                            "evidence": "030-1087-001, whole-tetra",
+                            "evidence": "030-1087-001",
                             "value": "dg5-8"
                           },
                           {
                             "description": "DG5-2, 2 channels",
-                            "evidence": "030-1055-001, fancy-akita",
+                            "evidence": "030-1055-001",
                             "value": "dg5-2"
                           }
                         ]

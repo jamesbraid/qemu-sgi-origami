@@ -66,7 +66,7 @@
       },
       "master": "node0-hub",
       "name": "direct peer CrayLink",
-      "notes": "A direct Hub-to-Hub CrayLink cable joining the two modules, per the Owner's Guide's Connecting Two Modules procedure and this machine's own documentation (origin200-dual.md). Neither module has a Router or a Star/Null Router card, so this is not the numbered Origin 2000 Router-to-Router cable the link.kind schema description names; \"cable\" is selected as the closest of the five kinds to an external direct connector, not a claim that a Router is present.",
+      "notes": "A direct Hub-to-Hub CrayLink cable joining the two modules, per the Owner's Guide's Connecting Two Modules procedure. Neither module has a Router or a Star/Null Router card, so this is not the numbered Origin 2000 Router-to-Router cable the link.kind schema description names; \"cable\" is selected as the closest of the five kinds to an external direct connector, not a claim that a Router is present.",
       "provenance": "vendor-document",
       "sources": [
         "007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted",

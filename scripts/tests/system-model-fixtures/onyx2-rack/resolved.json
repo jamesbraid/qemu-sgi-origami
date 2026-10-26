@@ -4210,7 +4210,7 @@
                   "limitations": [
                     "presents the GE16-4 geometry board, since no InfiniteReality2E capture gives the GE16 variant",
                     "presents the TM7 as its 64 MB texture board, which is inferred",
-                    "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                    "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
                   ],
                   "name": "InfiniteReality2E",
                   "pairing": "established",
@@ -4224,7 +4224,7 @@
                       "values": [
                         {
                           "description": "GE16-4, four geometry engines",
-                          "evidence": "030-1398-001, true-wombat",
+                          "evidence": "030-1398-001",
                           "value": "ge16-4"
                         }
                       ]
@@ -4237,7 +4237,7 @@
                       "values": [
                         {
                           "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
-                          "evidence": "030-1402-001, true-wombat",
+                          "evidence": "030-1402-001",
                           "value": "rm9"
                         }
                       ]
@@ -4270,7 +4270,7 @@
                       "values": [
                         {
                           "description": "64 MB",
-                          "evidence": "TM7 030-1053-001, whole-tetra",
+                          "evidence": "TM7 030-1053-001",
                           "value": "64"
                         }
                       ]
@@ -4283,12 +4283,12 @@
                       "values": [
                         {
                           "description": "DG5-2, 2 channels",
-                          "evidence": "030-1055-001, fancy-akita",
+                          "evidence": "030-1055-001",
                           "value": "dg5-2"
                         },
                         {
                           "description": "DG5-8, 8 channels",
-                          "evidence": "030-1087-001, whole-tetra",
+                          "evidence": "030-1087-001",
                           "value": "dg5-8"
                         }
                       ]
@@ -4300,7 +4300,7 @@
                   "description": "GE16-4 geometry board, RM10 raster managers (RM9 in configmon), 256 MB texture per RM",
                   "fidelity": "approximated",
                   "limitations": [
-                    "a DG5-2 in a rack presents fancy-akita's 030-1055-001, since no capture shows a plain DG5-2 in an Onyx2 rack"
+                    "a DG5-2 in a rack presents the 030-1055-001 part, since no capture shows a plain DG5-2 in an Onyx2 rack"
                   ],
                   "name": "InfiniteReality3",
                   "pairing": "established",
@@ -4314,7 +4314,7 @@
                       "values": [
                         {
                           "description": "GE16-4, four geometry engines",
-                          "evidence": "030-1398-001, true-wombat",
+                          "evidence": "030-1398-001",
                           "value": "ge16-4"
                         }
                       ]
@@ -4327,7 +4327,7 @@
                       "values": [
                         {
                           "description": "RM9; gfxinfo names the InfiniteReality3 board RM10",
-                          "evidence": "030-1402-001, true-wombat",
+                          "evidence": "030-1402-001",
                           "value": "rm9"
                         }
                       ]
@@ -4360,7 +4360,7 @@
                       "values": [
                         {
                           "description": "256 MB",
-                          "evidence": "030-1588-001, true-wombat",
+                          "evidence": "030-1588-001",
                           "value": "256"
                         }
                       ]
@@ -4373,12 +4373,12 @@
                       "values": [
                         {
                           "description": "DG5-2, 2 channels",
-                          "evidence": "030-1055-001, fancy-akita",
+                          "evidence": "030-1055-001",
                           "value": "dg5-2"
                         },
                         {
                           "description": "DG5-8, 8 channels",
-                          "evidence": "030-1087-001, whole-tetra",
+                          "evidence": "030-1087-001",
                           "value": "dg5-8"
                         }
                       ]

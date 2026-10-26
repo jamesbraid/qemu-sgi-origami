@@ -430,7 +430,7 @@ static void test_catalogue_records(void)
         g_assert_cmpstr(qdict_get_str(display, "default"), ==, "dg5-2");
         g_assert_cmpstr(qdict_get_str(find(values, "value", "dg5-2"),
                                       "evidence"), ==,
-                        "030-1055-001, fancy-akita");
+                        "030-1055-001");
         g_assert_nonnull(find(values, "value", "dg5-8"));
         g_assert_cmpint(qlist_size(values), ==, 2);
     }

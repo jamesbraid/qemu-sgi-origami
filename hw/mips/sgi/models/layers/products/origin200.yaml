@@ -111,7 +111,7 @@ layer:
       notes: >-
         This model covers the one-module Origin 200 and QEMU's base profile. The
         Owner's Guide also documents a two-module form with three or four CPUs.
-        [Dual-module Origin 200](origin200-dual.md) records that form separately.
+        The origin200-dual model records that form separately.
         The node number occupies physical address bits 39:32 and a node owns 4 GB,
         so every offset below is node-relative and a second node is a different
         base rather than a different map.
