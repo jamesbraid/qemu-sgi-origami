@@ -18,6 +18,7 @@
 
 #include "qemu/thread.h"
 #include "qemu/timer.h"
+#include "hw/display/sgi/head-guard.h"
 
 /*
  * How much one slice may do: host time, because a slice exists to bound
@@ -93,19 +94,5 @@ bool sgi_head_work_overdue(SGIHeadWork *w, int64_t ns);
 bool sgi_head_work_may_unlock(SGIHeadWork *w);
 void sgi_head_work_unlock(SGIHeadWork *w);
 void sgi_head_work_relock(SGIHeadWork *w);
-
-/*
- * Whether this thread is inside an SGI head's register access or work.
- * A head's DMA can be aimed through the Crossbow at another head's
- * registers, and that head's access can let go of the big lock to wait
- * for its own work, so an access that arrives from inside any head's
- * access or work is refused, as QEMU's re-entrancy guard would refuse it.
- * Bracket every register access and every slice with enter and leave;
- * enter returns false for an access that must be refused.
- */
-bool sgi_head_work_enter(void);
-void sgi_head_work_leave(void);
-/* Bracket a slice or drain that runs outside any register access. */
-void sgi_head_work_enter_work(void);
 
 #endif
