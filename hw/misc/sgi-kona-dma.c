@@ -12,6 +12,7 @@
 #include "qapi/visitor.h"
 #include "migration/vmstate.h"
 #include "exec/hwaddr.h"
+#include "hw/core/cpu.h"
 #include "hw/display/sgi/pixel-dma.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/misc/sgi-kona.h"
@@ -533,16 +534,54 @@ static bool sgi_kona_dma_pool_pages(SGIKonaState *s, SGIDMAPageList *pl,
  * A fetched list's words go through the command page's own decoder, the
  * one the GL client's doorbell words reach: a compiled list holds the
  * words immediate mode writes there ("Display lists, vertex arrays and
- * the DMA pool"). The model renders no GL, so the selectors it frames
- * are consumed, not drawn.
+ * the DMA pool"). A slice decodes them a word at a time and stops at the
+ * first word boundary past its budget, mid-packet included: the framers
+ * keep a partial packet between slices, and every other command-stream
+ * word waits behind the list until it finishes (hw/misc/sgi-kona.c), so
+ * nothing else reaches them meanwhile.
  */
-static void sgi_kona_dma_fetch_decode(void *opaque, uint32_t context,
-                                      const uint32_t *words, unsigned n)
+static bool sgi_kona_dma_list_slice(SGIKonaState *s, SGIHeadWorkBudget *b)
 {
-    SGIKonaState *s = opaque;
+    SGIKonaDma *d = &s->dma;
+    SGICommandFetch *f = &d->fetch;
+    bool spent = false;
 
-    for (unsigned i = 0; i < n; i++) {
-        sgi_kona_command_word(s, words[i]);
+    while (!spent && d->list_segment < f->nsegments) {
+        const SGIFetchSegment *seg = &f->segments[d->list_segment];
+
+        while (!spent && d->list_word < seg->nwords) {
+            sgi_kona_command_word(s, seg->words[d->list_word++]);
+            spent = sgi_head_work_spent(b);
+        }
+        if (d->list_word >= seg->nwords) {
+            d->list_segment++;
+            d->list_word = 0;
+        }
+    }
+    return d->list_segment >= f->nsegments;
+}
+
+static void sgi_kona_dma_list_finish(SGIKonaState *s, int ret)
+{
+    sgi_fetch_finish(&s->dma.fetch, ret, &sgi_kona_dma_head_ops, s);
+    s->dma.list_busy = false;
+    trace_sgi_kona_work(ret ? "list-abandoned" : "list-done", 0,
+                        s->work_queue ? s->work_queue->len : 0);
+}
+
+bool sgi_kona_dma_list_step(SGIKonaState *s, SGIHeadWorkBudget *b)
+{
+    if (!sgi_kona_dma_list_slice(s, b)) {
+        return false;
+    }
+    sgi_kona_dma_list_finish(s, 0);
+    return true;
+}
+
+void sgi_kona_dma_list_abandon(SGIKonaState *s)
+{
+    if (s->dma.list_busy) {
+        sgi_kona_dma_list_finish(s, SGI_FAIL_BUSY);
     }
 }
 
@@ -583,6 +622,7 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
     SGICommandFetch *f = &d->fetch;
     uint64_t seq = d->seq++;
     g_autofree uint64_t *pages = NULL;
+    SGIHeadWorkBudget budget;
     int ret;
 
     if (pool && !d->pool_valid) {
@@ -595,7 +635,6 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
     }
     if (!f->open) {
         f->context = s->context_current < 0 ? 0 : s->context_current;
-        f->decode = sgi_kona_dma_fetch_decode;
         f->next = sgi_kona_dma_fetch_next;
         f->little_endian = false;
         f->max_words = SGI_KONA_DMA_LIST_MAX_WORDS;
@@ -621,14 +660,36 @@ static void sgi_kona_dma_invoke(SGIKonaState *s, bool pool,
                                   (uint64_t)d->list_base + pairs[0],
                                   pairs[1], s);
     }
-    if (!ret) {
-        sgi_fetch_run(f, s);
+    if (ret) {
+        sgi_fetch_finish(f, ret, &sgi_kona_dma_head_ops, s);
+        if (ret == SGI_FAIL_BUSY) {
+            sgi_head_publish(&sgi_kona_dma_head_ops, s, seq, SGI_DONE_FAILED,
+                             SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BUSY);
+        }
+        return;
     }
-    sgi_fetch_finish(f, ret, &sgi_kona_dma_head_ops, s);
-    if (ret == SGI_FAIL_BUSY) {
-        sgi_head_publish(&sgi_kona_dma_head_ops, s, seq, SGI_DONE_FAILED,
-                         SGI_KONA_DMA_COOKIE_NONE, SGI_FAIL_BUSY);
+
+    /*
+     * The words are the list's as of this invocation: the fetch copied
+     * them. A processor's store runs the list here until the first word
+     * boundary past one slice of host time, and the rest on the board's
+     * thread, so the processor can take its timer interrupts while the
+     * pipe works through the list; so does a list a word waiting behind
+     * another starts. One word can draw a large primitive, so the store
+     * can still take as long as that draw. An invocation from outside any
+     * processor (qtest) runs whole, as it always did, unless
+     * x-test-slice-words cuts it.
+     */
+    d->list_busy = true;
+    d->list_segment = 0;
+    d->list_word = 0;
+    budget = sgi_head_work_budget(&s->work,
+                                  current_cpu || s->work_replaying);
+    if (sgi_kona_dma_list_step(s, &budget)) {
+        return;
     }
+    trace_sgi_kona_work("list-deferred", 0, f->nwords);
+    sgi_head_work_schedule(&s->work);
 }
 
 /*

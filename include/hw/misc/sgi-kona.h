@@ -17,6 +17,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/gl-context.h"
+#include "hw/display/sgi/head-work.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/display/sgi/x-gc.h"
@@ -1816,6 +1817,20 @@ struct SGIKonaState {
      * guest state and not migrated, matching hw/misc/sgi-mgras.c's own
      * test_pixel_x/test_pixel_y precedent.
      */
+    /*
+     * Display-list work that outlasts the store that started it. A list a
+     * processor invokes runs in slices of host time, the first inside the
+     * store and the rest on the board's thread (hw/display/sgi/head-work.c),
+     * and the command-stream words stored meanwhile wait in work_queue
+     * behind it (sgi_kona_work_defer()). The work is finished before the
+     * machine stops, so none of this is migrated.
+     */
+    SGIHeadWork work;
+    VMChangeStateEntry *work_vm_state;
+    GArray *work_queue;         /* SGIKonaQueuedWord, oldest first */
+    uint32_t work_head;         /* the oldest word not yet executed */
+    bool work_replaying;        /* a queued word is being executed */
+
     /* Host-only access ordering, not migrated or reset with guest state. */
     uint64_t trace_sequence;
     uint32_t test_pixel_x;
