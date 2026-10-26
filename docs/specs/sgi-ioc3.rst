@@ -69,14 +69,15 @@ abandons is in the record and not on the wire -- which is the point.
 Serial DMA engines
 ==================
 
-Each port has an engine moving characters between the port's 16550
-and a pair of memory rings. The engine is shared with IOC4, which has
-the same per-port registers and ring format, and lives in
-``hw/char/sgi-ioc-serial-dma.c``; the chip supplies the register
-window, its interrupt status bits and the UARTs. One base register places all four rings
--- port A transmit, A receive, B transmit, B receive, in that order,
-each of the size the base register's low bit selects -- so a ring's
-address is derived from port and direction and is not readable back.
+Each port has an engine moving characters between the port's 16550 and a
+pair of memory rings. The engine is shared with IOC4, which has the same
+per-port registers and ring format, and lives in
+``hw/char/sgi-ioc-serial-dma.c``; the chip supplies the register window,
+its interrupt status bits and the UARTs. One base register places all
+four rings -- port A transmit, A receive, B transmit, B receive, in that
+order, each of the size the base register's low bit selects -- so a
+ring's address is derived from port and direction and is not readable
+back.
 The chip-control register's port-offset fields are stored, not acted
 on: real silicon multiplexes the ports through them, and every guest
 programs the two offsets the model implements.
@@ -91,24 +92,27 @@ exercises them is the firmware's base I/O diagnostic (both ports in
 loopback, full rings) and IRIX's DMA-ring console.
 
 Transmit
-    Each entry carries four control bytes typed per data byte:
-    a character, a modem-control write, a delay, or nothing -- the
-    empty type is how a driver ends a short entry, and an engine
-    sending all four regardless puts memory garbage on the wire. A
-    descriptor fetch the fabric refuses stops the walk with the
-    consume index on the entry. In loopback the receiver is drained
-    per transmitted character, because the receive FIFO is sixteen
-    bytes against rings the diagnostic fills five hundred characters
-    at a time. Each looped-back character also spends the 16550's
-    character time for the programmed line on the wire before the
-    receiver sees it, and the engine sends the next one only then:
-    the 16550 core hands it over at once, and without the delay the
-    receive timer starts a character time early. An access to the
-    block delivers an arrival already due, at its own time, the way it
-    applies a due receive-timer expiry. The walk sends characters one
-    line time apart and fills no transmit FIFO ahead of the line, so
-    in loopback its consume index can trail silicon's, if the part
-    runs ahead that way; nothing observed settles which.
+    Each entry carries four control bytes typed per data byte: a
+    character, a modem-control write, a delay, or nothing -- the empty
+    type is how a driver ends a short entry, and an engine sending all
+    four regardless puts memory garbage on the wire. A descriptor fetch
+    the fabric refuses stops the walk with the consume index on the
+    entry. An entry once fetched stays with the engine until its last
+    slot has gone, as the unpacker count in the consume index implies,
+    so rewriting the ring under a half-sent entry changes nothing
+    already taken. In loopback the receiver is drained per transmitted
+    character, because the receive FIFO is sixteen bytes against rings
+    the diagnostic fills five hundred characters at a time. Each
+    looped-back character also spends the 16550's character time for the
+    programmed line on the wire before the receiver sees it, and the
+    engine sends the next one only then: the 16550 core hands it over at
+    once, and without the delay the receive timer starts a character
+    time early. An access to the block delivers an arrival already due,
+    at its own time, the way it applies a due receive-timer expiry. The
+    walk sends characters one line time apart and fills no transmit FIFO
+    ahead of the line, so in loopback its consume index can trail
+    silicon's, if the part runs ahead that way; nothing observed settles
+    which.
 
 Receive
     Characters pack four to an entry; the produce index reports the
@@ -116,37 +120,48 @@ Receive
     packing engine and one writing an entry per character. A full
     ring, or a fabric-refused entry write, refuses the delivery and
     keeps the characters -- in the packer, and behind it the FIFO,
-    whose fullness is what stops the chardev feeding more. The
-    receive timer counts idle time on the 16 kHz clock from the last
-    delivery, is armed through bit 31 of the consume index, and on
-    expiry raises its source only while characters are waiting.
-    Re-arming it over a non-empty ring rewinds it, prompting the
-    driver again for the remainder -- a model choice no source
-    states. The model posts a short group when the engine goes idle
-    rather than on expiry; the interrupt still waits for the timer,
-    so an interrupt-driven driver sees datasheet timing while an
-    index-polling guest sees a short entry earlier than silicon
-    shows one. The
-    high-water source is a *level* in characters (not entries),
+    whose fullness is what stops the chardev feeding more. An entry
+    posts when its fourth character arrives; fewer wait in the packer
+    until the receive timer runs out or a drain, as the public Linux
+    ring drivers' comment on the part says. The timer's arm is a
+    latch: bit 31 of a consume write sets it, a write with bit 31
+    clear leaves it, and the consume index reads it back. The timer
+    starts on the 16 kHz clock at the first character received while
+    armed; an arm write starts nothing, and later characters do not
+    start a running timer again (a model choice). Expiry posts what
+    the packer holds, raises its source and spends the arm. Raising
+    it when the ring is already empty is a model choice no source
+    settles; without it IRIX's ring console stalls with the arm spent
+    and nothing to make it re-arm. The high-water source is a *level*
+    counted in ring entries, as both Linux drivers program it,
     recomputed wherever the waiting count moves: a latched raise
     storms a guest whose service loop cannot clear it, which is
     exactly IRIX's ring-console behavior against a latching model.
+    Transmit-ring-empty is a level too, set while ring DMA is on and
+    nothing is left to send.
 
 Two control-register bits are commands, not settings: the channel
 reset returns the four indices to the ring start while preserving
 the watermark and timer reload, and the receive drain (bit 27) moves
-whatever the port and packer hold into the ring and reads back clear
-immediately -- IRIX polls it to zero and tears the console down
-forever against a model that stores it.
+whatever the packer holds into the ring and reads back set until it
+has. It waits while ring DMA is off or paused and while the ring is
+full, and completes at once when nothing is held; IRIX polls it to
+zero, so a drain that never completed would tear its console down. A
+transmit entry typed as a delay holds the walk for that many
+milliseconds, with control bit 16 set meanwhile, and a pause freezes
+the receive timer and any delay where they stand.
 
 The 16550 shadow register is a read-only mirror of the port's status
 and modem lines, assembled fresh per read -- deliberately not read
 through the byte-wide ops, whose modem/line-status reads clear delta
 and error latches. The DMA-side console driver reads carrier from
 here, so a shadow left at zero hangs console open on a cached
-carrier-down. Writes to it, and to the two hardware-owned indices,
-are discarded without a guest-error report: stock firmware and
-OpenBSD write them on every boot.
+carrier-down. Writes to it are discarded without a guest-error report:
+stock firmware and OpenBSD write it on every boot. The main block
+stores the pointer field of a write to either hardware-owned index,
+the transmit consume or receive produce index, because the Origin 300
+IO-8 board test writes one and reads it back; only the per-port alias
+pages refuse those writes.
 
 Each port also has an alias page: a second view of its seven
 registers for mapping one engine into user space without the rest of
