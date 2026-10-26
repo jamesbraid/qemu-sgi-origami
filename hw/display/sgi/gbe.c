@@ -844,10 +844,6 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     sync_clock(s);
     if (addr >= 0x10000 && addr < 0x10050) {
         index = (addr - 0x10000) / 4;
-        if (index == 19 && (v & FIELDS)) {
-            unsupported("capture alignment");
-            goto done;
-        }
         v &= index == 0 ? FREEZE | FIELDS : index == 6 ? 127 : FIELDS;
         if (s->vt[index] != v) {
             /* Repeated evaluation of unchanged invalid timing is noisy. */

@@ -4,6 +4,7 @@
 #include "qemu/bswap.h"
 #include "qemu/units.h"
 #include "libqtest.h"
+#include "memtx.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
 #include <glib/gstdio.h>
@@ -976,6 +977,12 @@ static void test_did_overlay(void)
     frame(q);
     g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x89abcd);
     g_assert_cmphex(screen(q, 31, 4, 1, 0), ==, 0x0000ff);
+    qtest_writeb(q, 0x70000, 255);
+    wr(q, CMAP(4607), 0xa1b2c300);
+    frame(q);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0xa1b2c3);
+    wr(q, CMAP(4607), 0x89abcd00);
+    g_assert_cmphex(rd(q, 0x58000), ==, 0);
     wr(q, GMAP(0x89), 0x05000000);
     wr(q, GMAP(0xab), 0x00060000);
     wr(q, GMAP(0xcd), 0x00000700);
@@ -1105,7 +1112,7 @@ static void test_access_and_unsupported(void)
     wr(q, 0xc, 0);
     g_assert_cmphex(rd(q, 0xc), ==, 8);
     wr(q, VT(19), 123);
-    g_assert_cmphex(rd(q, VT(19)), ==, 0);
+    g_assert_cmphex(rd(q, VT(19)), ==, 123);
     qtest_quit(q);
 }
 
@@ -2015,9 +2022,210 @@ static void test_board_mte_scanout(void)
     g_rmdir(dir);
 }
 
+static const struct {
+    unsigned first, count;
+    uint32_t mask;
+} indexed_tables[] = {
+    { 0x48000, 32, 0x1fff }, { 0x50000, 4608, 0xffffff00 },
+    { 0x60000, 256, 0xffffff00 }, { 0x70008, 3, 0xffffff00 },
+    { 0x78000, 64, UINT32_MAX },
+};
+
+static uint32_t table_pattern(unsigned address)
+{
+    return 0x795b3d1f ^ (address * 0x1020305u);
+}
+
+static void indexed_values(QTestState *q, bool write, bool zero)
+{
+    for (unsigned t = 0; t < ARRAY_SIZE(indexed_tables); t++) {
+        for (unsigned i = 0; i < indexed_tables[t].count; i++) {
+            unsigned address = indexed_tables[t].first + 4 * i;
+            uint32_t value = zero ? 0 : table_pattern(address);
+
+            if (write) {
+                wr(q, address, value);
+            } else {
+                g_assert_cmphex(rd(q, address) & indexed_tables[t].mask, ==,
+                                value & indexed_tables[t].mask);
+            }
+        }
+    }
+}
+
+static void test_indexed_coverage(void)
+{
+    QTestState *q = start(MEMTX_TEST_DEVICE);
+    const unsigned holes[] = { 0x48080, 0x54800, 0x60400, 0x70014,
+                               0x78100, 0x80000, 0x90000, 0x10050 };
+
+    qtest_irq_intercept_out_named(q, PATH, "sysbus-irq");
+    indexed_values(q, true, false);
+    indexed_values(q, false, false);
+    for (unsigned t = 0; t < ARRAY_SIZE(indexed_tables); t++) {
+        unsigned address = indexed_tables[t].first +
+                           4 * (indexed_tables[t].count - 1);
+        uint8_t bytes[4];
+        uint64_t value;
+
+        qtest_memread(q, BASE + address, bytes, sizeof(bytes));
+        g_assert_cmphex((uint32_t)ldl_be_p(bytes), ==,
+                        table_pattern(address) & indexed_tables[t].mask);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width == 4) {
+                continue;
+            }
+            g_assert_cmpint(memtx_store(q, BASE + address, 0, width),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + address, &value, width),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            g_assert_cmpint(memtx_store(q, BASE + address + delta, 0, 4),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + address + delta, &value, 4),
+                            !=, MEMTX_OK);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(holes); i++) {
+        wr(q, holes[i], 0x12345678);
+        g_assert_cmphex(rd(q, holes[i]), ==, UINT32_MAX);
+    }
+    indexed_values(q, false, false);
+    g_assert_cmphex(rd(q, 0x58000), ==, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(q, i), ==, 0);
+    }
+    qtest_system_reset(q);
+    indexed_values(q, false, true);
+    qtest_quit(q);
+}
+
+static void test_scalar_coverage(void)
+{
+    const struct {
+        unsigned address;
+        uint32_t mask;
+    } controls[] = {
+        { 0x20000, 0x1fff }, { 0x20004, 0xffffffe1 },
+        { 0x20008, 0xffffffe1 }, { 0x30000, 0x7fff },
+        { 0x30004, 0xffff0000 }, { 0x30008, 0xffffffe1 },
+        { 0x3000c, 0xffffffe1 }, { 0x40000, 0x1ffff },
+        { 0x40004, 0x1ffff }, { 0x70000, UINT32_MAX }, { 0x70004, 3 },
+    };
+    QTestState *q = start(MEMTX_TEST_DEVICE);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(controls); i++) {
+        unsigned address = controls[i].address;
+        uint32_t raw = table_pattern(address);
+        uint64_t value;
+
+        /* FIFO reset has its own tests and is not ordinary storage. */
+        if (address == 0x20000) {
+            raw &= ~(1U << 13);
+        } else if (address == 0x30000) {
+            raw &= ~(1U << 15);
+        }
+        uint32_t pattern = raw & controls[i].mask;
+
+        wr(q, address, raw);
+        g_assert_cmphex(rd(q, address), ==, pattern);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width != 4) {
+                g_assert_cmpint(memtx_store(q, BASE + address, 0, width),
+                                !=, MEMTX_OK);
+                g_assert_cmpint(memtx_load(q, BASE + address, &value, width),
+                                !=, MEMTX_OK);
+            }
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            g_assert_cmpint(memtx_store(q, BASE + address + delta, 0, 4),
+                            !=, MEMTX_OK);
+        }
+        g_assert_cmphex(rd(q, address), ==, pattern);
+    }
+    qtest_system_reset(q);
+    for (unsigned i = 0; i < ARRAY_SIZE(controls); i++) {
+        g_assert_cmphex(rd(q, controls[i].address), ==, 0);
+    }
+    qtest_quit(q);
+}
+
+static void test_timing_coverage(void)
+{
+    QTestState *q = start(MEMTX_TEST_DEVICE);
+
+    for (unsigned i = 0; i < 20; i++) {
+        uint32_t mask = i == 0 ? 0x80ffffff : i == 6 ? 127 : 0xffffff;
+        uint32_t pattern = table_pattern(VT(i)) | 0x80000000;
+        uint64_t value;
+
+        wr(q, VT(i), pattern);
+        g_assert_cmphex(rd(q, VT(i)), ==, pattern & mask);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width == 4) {
+                continue;
+            }
+            g_assert_cmpint(memtx_store(q, BASE + VT(i), 0, width),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + VT(i), &value, width),
+                            !=, MEMTX_OK);
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            g_assert_cmpint(memtx_store(q, BASE + VT(i) + delta, 0, 4),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + VT(i) + delta, &value, 4),
+                            !=, MEMTX_OK);
+        }
+        g_assert_cmphex(rd(q, VT(i)), ==, pattern & mask);
+    }
+    qtest_quit(q);
+}
+
+static void test_indexed_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-indexed-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    QTestState *from = start("");
+    QTestState *to = start("-incoming defer");
+
+    indexed_values(from, true, false);
+    for (unsigned i = 0; i < 20; i++) {
+        wr(from, VT(i), table_pattern(VT(i)) | 0x80000000);
+    }
+    wr(from, 0x30008, 0x12345661);
+    wr(from, 0x3000c, 0x87654321);
+    qtest_irq_intercept_out_named(to, PATH, "sysbus-irq");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    indexed_values(to, false, false);
+    for (unsigned i = 0; i < 20; i++) {
+        g_assert_cmphex(rd(to, VT(i)), ==, rd(from, VT(i)));
+    }
+    g_assert_cmphex(rd(to, 0x30008), ==, 0x12345661);
+    g_assert_cmphex(rd(to, 0x3000c), ==, 0x87654321);
+    g_assert_cmphex(rd(to, 0x58000), ==, 0);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(to, i), ==, 0);
+    }
+    qtest_system_reset(to);
+    indexed_values(to, false, true);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi-gbe/coverage/indexed", test_indexed_coverage);
+    qtest_add_func("/sgi-gbe/coverage/timing", test_timing_coverage);
+    qtest_add_func("/sgi-gbe/coverage/scalars", test_scalar_coverage);
+    qtest_add_func("/sgi-gbe/coverage/migration", test_indexed_migration);
     qtest_add_func("/sgi-gbe/reset", test_reset);
     qtest_add_func("/sgi-gbe/dma-reset/registers", test_dma_reset_registers);
     qtest_add_func("/sgi-gbe/dma-reset/planes", test_dma_reset_planes);
