@@ -399,6 +399,20 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * pop-lights command with a count n and n words.
  */
 #define SGI_KONA_CMD_GL_DRAW_PIXELS 0x3a
+/*
+ * The EXT_convolution filters, each sent between 0x111 0x10 0x40000000
+ * and 0x111 0x10 0 (established from the IRIX client library): 0xef, a
+ * 1D filter, with a check word, the width, the format and type codes,
+ * the image address's low two bits and two more parsed words; 0xf0, a
+ * 2D filter, with the height after the width; then the image's words.
+ * 0xf2 and 0xf3 copy a 1D or 2D filter from the framebuffer, with four
+ * and five words. The separable filter, 0xf5, and the readback, 0xf4,
+ * are not framed: the layout of 0xf5's two headers is not decoded.
+ */
+#define SGI_KONA_CMD_GL_CONVOLUTION_1D       0xef
+#define SGI_KONA_CMD_GL_CONVOLUTION_2D       0xf0
+#define SGI_KONA_CMD_GL_COPY_CONVOLUTION_1D  0xf2
+#define SGI_KONA_CMD_GL_COPY_CONVOLUTION_2D  0xf3
 #define SGI_KONA_CMD_GL_READ_PIXELS 0x39
 #define SGI_KONA_CMD_GL_COPY_PIXELS 0x38
 #define SGI_KONA_CMD_GL_COPY_OVERLAP 0x110

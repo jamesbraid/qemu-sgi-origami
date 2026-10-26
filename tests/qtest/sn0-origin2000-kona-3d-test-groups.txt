@@ -17,6 +17,7 @@
 draw /mips64/sn0/origin2000/kona-3d/accumulation
 draw /mips64/sn0/origin2000/kona-3d/bitmap-dma
 draw /mips64/sn0/origin2000/kona-3d/colour-matrix
+draw /mips64/sn0/origin2000/kona-3d/convolution
 draw /mips64/sn0/origin2000/kona-3d/copy-pixels
 draw /mips64/sn0/origin2000/kona-3d/copy-query
 draw /mips64/sn0/origin2000/kona-3d/depth-blend

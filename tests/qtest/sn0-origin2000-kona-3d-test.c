@@ -17633,6 +17633,105 @@ static void test_multisample_state(void)
     assert_stencil_colour(qts, 0xff0000);
 }
 
+/*
+ * EXT_convolution filters, between 0x111 0x10 0x40000000 and 0x111 0x10 0,
+ * as mirrors sends a 3 by 3 float luminance filter: 0xf0, a check word,
+ * width, height, format 6 (luminance), type 6 (float), the image address's
+ * low two bits and two parsed words, then the nine filter words. The
+ * filter's words must not open commands: here they are a clear of the
+ * colour buffer to red, which must not happen.
+ */
+static void convolution_filter(QTestState *s, uint32_t token,
+                               const uint32_t *header, unsigned n,
+                               const uint32_t *image, unsigned words)
+{
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(s, token, header, n);
+    for (unsigned k = 0; k < words; k++) {
+        qtest_writel(s, KONA_REG(0xc10000), image[k]);
+    }
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+}
+
+static const uint32_t convolution_trap[9] = {
+    0x1d, 0x3f800000, 0, 0, 0x3f800000, 0x1a, 0x4000, 0x1a, 0x4000,
+};
+
+static void assert_convolution_in_step(QTestState *s)
+{
+    assert_stencil_colour(s, 0x0000ff);
+    kona_command_f(s, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    assert_stencil_colour(s, 0x00ff00);
+}
+
+static void test_convolution_2d_framed(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    convolution_filter(qts, 0xf0, (uint32_t[]){ 1, 3, 3, 6, 6, 0, 0, 0 }, 8,
+                       convolution_trap, 9);
+    assert_convolution_in_step(qts);
+}
+
+/* 1D: seven header words; 33 bytes from byte 1 of a word: nine words. */
+static void test_convolution_1d_framed(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    convolution_filter(qts, 0xef, (uint32_t[]){ 1, 33, 6, 1, 1, 0, 0 }, 7,
+                       convolution_trap, 9);
+    assert_convolution_in_step(qts);
+}
+
+/* An empty filter sends no image; the framebuffer copies send no data. */
+static void test_convolution_empty_and_copies(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    convolution_filter(qts, 0xf0, (uint32_t[]){ 1, 0, 3, 6, 6, 0, 0, 0 }, 8,
+                       NULL, 0);
+    convolution_filter(qts, 0xf2, (uint32_t[]){ 0x8010, 0x1908, 0, 3 }, 4,
+                       NULL, 0);
+    convolution_filter(qts, 0xf3, (uint32_t[]){ 0x8011, 0x1908, 0, 0, 3 },
+                       5, NULL, 0);
+    assert_convolution_in_step(qts);
+}
+
+/* A filter's image part-way through migrates and finishes on the far side. */
+static void test_convolution_migration(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-convolution-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(dest_args);
+    gl_make_current(from);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(from, 0xf0, (uint32_t[]){ 1, 3, 3, 6, 6, 0, 0, 0 }, 8);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(from, KONA_REG(0xc10000), convolution_trap[k]);
+    }
+    sgi_migrate_stopped(from, uri);
+    for (unsigned k = 4; k < 9; k++) {
+        qtest_writel(to, KONA_REG(0xc10000), convolution_trap[k]);
+    }
+    kona_command(to, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+    assert_convolution_in_step(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 14, 1, 0 };
@@ -18228,6 +18327,14 @@ int main(int argc, char **argv)
              test_accum_medium_visual_reads);
     add_case("sn0/origin2000/kona-3d/accumulation/multisample-state",
              test_multisample_state);
+    add_case("sn0/origin2000/kona-3d/convolution/2d-framed",
+             test_convolution_2d_framed);
+    add_case("sn0/origin2000/kona-3d/convolution/1d-framed",
+             test_convolution_1d_framed);
+    add_case("sn0/origin2000/kona-3d/convolution/empty-and-copies",
+             test_convolution_empty_and_copies);
+    add_case("sn0/origin2000/kona-3d/convolution/migration",
+             test_convolution_migration);
     add_case("sn0/origin2000/kona-3d/stencil/completion/"
              "invalid-state-enumerants",
              test_stencil_invalid_state_enumerants);

@@ -403,6 +403,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x1d8, 1 }, { 0x1d9, 3 }, { 0x1da, 4 }, { 0x1a7, 2 }, { 0x1a8, 4 },
     /* glSpriteParameter*SGIX, glSampleMaskSGIS and glSamplePatternSGIS. */
     { 0x1a4, 2 }, { 0x1a5, 4 }, { 0x118, 2 }, { 0x117, 1 },
+    /* The convolution filters and their framebuffer copies. */
+    { 0xef, 7 }, { 0xf0, 8 }, { 0xf2, 4 }, { 0xf3, 5 },
     { 0x72, 2 }, { 0x73, 1 }, { 0x74, 1 }, { 0x75, 1 },
     /* Lighting. */
     { 0x7, 6 }, { 0x8, 6 }, { 0x9, 5 }, { 0xa, 5 }, { 0x97, 6 },

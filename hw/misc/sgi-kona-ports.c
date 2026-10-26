@@ -382,6 +382,10 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_SPRITE_VECTOR, 4 },
     { SGI_KONA_CMD_GL_SAMPLE_MASK, 2 },
     { SGI_KONA_CMD_GL_SAMPLE_PATTERN, 1 },
+    { SGI_KONA_CMD_GL_CONVOLUTION_1D, 7 },
+    { SGI_KONA_CMD_GL_CONVOLUTION_2D, 8 },
+    { SGI_KONA_CMD_GL_COPY_CONVOLUTION_1D, 4 },
+    { SGI_KONA_CMD_GL_COPY_CONVOLUTION_2D, 5 },
     /* Lighting. */
     { SGI_KONA_CMD_GL_LIGHTF, 6 },
     { SGI_KONA_CMD_GL_LIGHTI, 6 },
