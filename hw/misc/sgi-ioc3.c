@@ -16,6 +16,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/misc/sgi-board-record.h"
+#include "hw/char/sgi-ioc-serial-dma.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "net/util.h"
@@ -210,11 +211,6 @@ static void sgi_ioc3_update_irq(SGIIOC3State *s)
     qemu_set_irq(s->superio_irq, !!(s->int_status & s->int_enable));
 }
 
-static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port);
-static void sgi_ioc3_sdma_run_from(SGIIOC3State *s, unsigned int port,
-                                   int64_t since);
-static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s);
-
 static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
 {
     SGIIOC3State *s = opaque;
@@ -227,17 +223,14 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
      * On every level, not assertion alone: IRIX's DMA-ring console receives
      * with the 16550 interrupts disabled entirely.
      */
-    sgi_ioc3_sdma_run(s, port);
+    sgi_ioc_sdma_kick(&s->sdma_engine, port);
 }
 
 static void sgi_ioc3_sdma_tx_ready(void *opaque, int port, int level)
 {
     SGIIOC3State *s = opaque;
 
-    s->sdma_tx_ready[port] = level;
-    if (level) {
-        sgi_ioc3_sdma_run(s, port);
-    }
+    sgi_ioc_sdma_set_tx_ready(&s->sdma_engine, port, level);
 }
 
 /* The ethernet child's GPIO level becomes this chip's PCI interrupt pin. */
@@ -510,7 +503,7 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
-        sgi_ioc3_sdma_rx_timer_catch_up(s);
+        sgi_ioc_sdma_catch_up(&s->sdma_engine);
         return s->int_status;
     case SGI_IOC3_INT_ENABLE_SET:
         /*
@@ -556,7 +549,7 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
         /* An acknowledgement must not be undone by a late expiry. */
-        sgi_ioc3_sdma_rx_timer_catch_up(s);
+        sgi_ioc_sdma_catch_up(&s->sdma_engine);
         /* Write-one-to-clear; the level-driven bits ignore the write. */
         s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
                                    SGI_IOC3_INT_PARALLEL_SERVICE |
@@ -579,8 +572,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         trace_sgi_ioc3_chip_control_write(s, s->chip_control,
                                           val & SGI_IOC3_CHIP_CTRL_MASK);
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
-        sgi_ioc3_sdma_run(s, 0);
-        sgi_ioc3_sdma_run(s, 1);
+        sgi_ioc_sdma_kick(&s->sdma_engine, 0);
+        sgi_ioc_sdma_kick(&s->sdma_engine, 1);
         break;
     case SGI_IOC3_INT_OUTPUT: {
         uint32_t int_out = val & SGI_IOC3_INT_OUT_MASK;
@@ -756,22 +749,6 @@ static void sgi_ioc3_serial_record(SGIIOC3State *s, unsigned int port,
     qemu_chr_fe_write_all(&s->serial_record[port], &ch, 1);
 }
 
-/*
- * Looped back with the engine's hardware flow control on, the port reports
- * clear-to-send asserted even with request-to-send clear. The board test
- * observes the level, not the mechanism behind it, so this supplies the level
- * alone and leaves the modem-control register as software wrote it.
- */
-static bool sgi_ioc3_serial_flow_cts(SGIIOC3State *s, unsigned int port)
-{
-    hwaddr control = SGI_IOC3_SDMA_PORT_A + port * SGI_IOC3_SDMA_PORT_STRIDE +
-                     SGI_IOC3_SDMA_CONTROL;
-
-    return (s->serial[port].mcr & UART_MCR_LOOP) &&
-           (s->sdma_reg[(control - SGI_IOC3_SDMA_BASE) / 4] &
-            SGI_IOC3_SDMA_FLOW_CONTROL);
-}
-
 /* Byte-wide only; both guests place their own byte lanes; add none here. */
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -799,7 +776,7 @@ static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == UART_MSR) {
         val |= handle->chip->serial_msr_test[handle->port];
         handle->chip->serial_msr_test[handle->port] = 0;
-        if (sgi_ioc3_serial_flow_cts(handle->chip, handle->port)) {
+        if (sgi_ioc_sdma_flow_cts(&handle->chip->sdma_engine, handle->port)) {
             val |= UART_MSR_CTS;
         }
     }
@@ -885,412 +862,33 @@ static bool sgi_ioc3_sdma_port_offset(hwaddr reg, unsigned int *port,
     return false;
 }
 
-static uint32_t *sgi_ioc3_sdma_port_reg(SGIIOC3State *s, unsigned int port,
-                                        hwaddr offset)
+static void sgi_ioc3_sdma_raise(void *opaque, unsigned port,
+                                SGIIOCSerialDMASource src)
 {
-    hwaddr reg = SGI_IOC3_SDMA_PORT_A + port * SGI_IOC3_SDMA_PORT_STRIDE +
-                 offset;
+    SGIIOC3State *s = opaque;
 
-    return &s->sdma_reg[(reg - SGI_IOC3_SDMA_BASE) / 4];
-}
-
-static uint32_t sgi_ioc3_sdma_control(SGIIOC3State *s, unsigned int port)
-{
-    return *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_CONTROL);
-}
-
-/* The selected ring size is also every index register's pointer width. */
-static uint32_t sgi_ioc3_sdma_ring_size(SGIIOC3State *s)
-{
-    uint32_t lo = s->sdma_reg[(SGI_IOC3_SDMA_RING_LO - SGI_IOC3_SDMA_BASE) / 4];
-
-    return (lo & SGI_IOC3_SDMA_RING_4K) ? SGI_IOC3_SDMA_RING_4K_SIZE
-                                        : SGI_IOC3_SDMA_RING_1K_SIZE;
-}
-
-static uint32_t sgi_ioc3_sdma_pointer_mask(SGIIOC3State *s)
-{
-    return (sgi_ioc3_sdma_ring_size(s) - 1) & ~(SGI_IOC3_SDMA_ENTRY_SIZE - 1);
-}
-
-/* The size-select bit is not address: unmasked, every ring is a byte off. */
-static uint64_t sgi_ioc3_sdma_ring(SGIIOC3State *s, unsigned int port,
-                                   unsigned int direction)
-{
-    uint32_t hi = s->sdma_reg[(SGI_IOC3_SDMA_RING_HI - SGI_IOC3_SDMA_BASE) / 4];
-    uint32_t lo = s->sdma_reg[(SGI_IOC3_SDMA_RING_LO - SGI_IOC3_SDMA_BASE) / 4];
-    uint64_t base = ((uint64_t)hi << 32) | (lo & SGI_IOC3_SDMA_RING_ADDRESS);
-    unsigned int index = port * SGI_IOC3_SDMA_RING_DIRS + direction;
-
-    return base + (uint64_t)index * sgi_ioc3_sdma_ring_size(s);
-}
-
-/*
- * OR into the live register: a loopback transmit walk re-enters the receiver,
- * and writing back a pre-walk snapshot would lose its sources.
- */
-static void sgi_ioc3_raise_serial_source(SGIIOC3State *s, unsigned int port,
-                                         unsigned int source)
-{
-    s->int_status |= SGI_IOC3_SERIAL_SOURCE(port, source);
+    s->int_status |= SGI_IOC3_SERIAL_SOURCE(port, src);
     sgi_ioc3_update_irq(s);
 }
 
-static void sgi_ioc3_set_serial_source(SGIIOC3State *s, unsigned int port,
-                                       unsigned int source, bool level)
+static void sgi_ioc3_sdma_set_level(void *opaque, unsigned port,
+                                    SGIIOCSerialDMASource src, bool level)
 {
-    uint32_t bit = SGI_IOC3_SERIAL_SOURCE(port, source);
+    SGIIOC3State *s = opaque;
+    uint32_t bit = SGI_IOC3_SERIAL_SOURCE(port, src);
 
     s->int_status = (s->int_status & ~bit) | (level ? bit : 0);
     sgi_ioc3_update_irq(s);
 }
 
-static bool sgi_ioc3_sdma_running(SGIIOC3State *s, unsigned int port)
-{
-    uint32_t control = sgi_ioc3_sdma_control(s, port);
-
-    return (control & SGI_IOC3_SDMA_ENABLE) &&
-           !(control & SGI_IOC3_SDMA_PAUSE);
-}
-
-/* Post the packer as one entry; unfilled slots carry no validity flags. */
-static bool sgi_ioc3_sdma_post(SGIIOC3State *s, unsigned int port,
-                               uint32_t *produce, uint32_t *consume,
-                               uint32_t mask)
-{
-    uint64_t ring = sgi_ioc3_sdma_ring(s, port, SGI_IOC3_SDMA_RING_RX);
-    uint32_t next = (*produce + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
-
-    /* Full: refuse; the characters keep in the packer and the FIFO. */
-    if (next == (*consume & mask)) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_RING_FULL);
-        return false;
-    }
-
-    /* A refused write must not advance the index past a missing entry. */
-    if (dma_memory_write(s->dma_as, ring + (*produce & mask),
-                         s->sdma_packer[port], SGI_IOC3_SDMA_ENTRY_SIZE,
-                         MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_PCI_ERROR);
-        return false;
-    }
-    *produce = next;
-    s->sdma_packed[port] = 0;
-    memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
-    s->sdma_delivered[port] = true;
-    return true;
-}
-
-/*
- * The reload is receive idleness, in 16 kHz ticks from the last delivery,
- * which `since` places: a loopback arrival serviced late still counts from
- * when it reached the receiver.
- */
-static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port,
-                                         int64_t since)
-{
-    uint32_t reload = *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_TIMER)
-                      & SGI_IOC3_SDMA_TIMER_RELOAD;
-
-    /* Once it has run, the count it held from the reload write is spent. */
-    s->sdma_rx_idle_count[port] = 0;
-    timer_mod(s->sdma_rx_timer[port],
-              since + (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
-}
-
-/* A drained ring expires into silence. */
-static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
-{
-    SGIIOC3SerialAlias *handle = opaque;
-    SGIIOC3State *s = handle->chip;
-    unsigned int port = handle->port;
-    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_PRODUCE);
-    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_CONSUME);
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-
-    s->sdma_rx_idle_count[port] = 0;
-
-    /* A still-packed entry means the ring was full; retry now. */
-    if (s->sdma_packed[port] &&
-        sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
-        s->sdma_delivered[port] = false;
-    }
-
-    if ((*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) &&
-        ((*produce ^ *consume) & mask)) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_RX_TIMER);
-    }
-}
-
-/* A looped-back character reaches the receiver; the walk goes on from then. */
-static void sgi_ioc3_sdma_loop_arrived(SGIIOC3State *s, unsigned int port)
-{
-    int64_t when = s->sdma_loop_due[port];
-
-    s->sdma_loop_due[port] = 0;
-    timer_del(s->sdma_loop_timer[port]);
-    sgi_ioc3_sdma_run_from(s, port, when);
-}
-
-static void sgi_ioc3_sdma_loop_expired(void *opaque)
-{
-    SGIIOC3SerialAlias *handle = opaque;
-
-    if (handle->chip->sdma_loop_due[handle->port]) {
-        sgi_ioc3_sdma_loop_arrived(handle->chip, handle->port);
-    }
-}
-
-/*
- * An expiry already due happens before an access, not whenever the main
- * loop next services the timer. The count field is read off the clock, so
- * without this a guest can read a spent count while the source it raises
- * is still clear: the IO-8 board test loads a two-tick reload, waits 10 ms
- * and requires the source set. A loopback
- * arrival already due goes first, since it is what starts the timer.
- */
-static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s)
-{
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    unsigned int port;
-
-    for (port = 0; port < SGI_IOC3_SERIAL_PORTS; port++) {
-        QEMUTimer *timer = s->sdma_rx_timer[port];
-
-        /* Each arrival can send the next character; the ring bounds it. */
-        while (s->sdma_loop_due[port] && s->sdma_loop_due[port] <= now) {
-            sgi_ioc3_sdma_loop_arrived(s, port);
-        }
-
-        if (timer_pending(timer) && timer_expire_time_ns(timer) <= now) {
-            timer_del(timer);
-            sgi_ioc3_sdma_rx_timer_expired(&s->sdma_alias_port[port]);
-        }
-    }
-}
-
-/*
- * A level, recomputed wherever the waiting count moves: a latched raise
- * storms IRIX's ring console. The mark counts characters, not entries.
- */
-static void sgi_ioc3_sdma_update_high_water(SGIIOC3State *s, unsigned int port)
-{
-    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_PRODUCE);
-    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_CONSUME);
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-    uint32_t high_water = sgi_ioc3_sdma_control(s, port) &
-                          SGI_IOC3_SDMA_HIGH_WATER;
-    uint32_t waiting = ((*produce - *consume) & mask) /
-                       SGI_IOC3_SDMA_ENTRY_SIZE * SGI_IOC3_SDMA_ENTRY_CHARS;
-
-    sgi_ioc3_set_serial_source(s, port, SGI_IOC3_INT_RX_HIGH_WATER,
-                               high_water && waiting >= high_water);
-}
-
-/*
- * End of burst: a short group posts now rather than on timer expiry; the
- * interrupt still waits for the timer, the timing drivers observe.
- */
-static void sgi_ioc3_sdma_flush(SGIIOC3State *s, unsigned int port,
-                                int64_t since)
-{
-    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_PRODUCE);
-    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_CONSUME);
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-
-    /* A looped-back character still on the line continues the burst. */
-    if (s->sdma_loop_due[port]) {
-        sgi_ioc3_sdma_update_high_water(s, port);
-        return;
-    }
-
-    if (s->sdma_packed[port]) {
-        sgi_ioc3_sdma_post(s, port, produce, consume, mask);
-    }
-
-    sgi_ioc3_sdma_update_high_water(s, port);
-
-    if (!s->sdma_delivered[port]) {
-        return;
-    }
-    s->sdma_delivered[port] = false;
-
-    if (*consume & SGI_IOC3_SDMA_ARM_RX_TIMER) {
-        sgi_ioc3_sdma_rx_timer_start(s, port, since);
-    }
-}
-
-static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
-{
-    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_PRODUCE);
-    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_RX_CONSUME);
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-    SerialState *serial = &s->serial[port];
-
-    /*
-     * The 16550 core loops a character back the moment it is written; on
-     * the part it takes a character time on the line to arrive.
-     */
-    if (s->sdma_loop_due[port]) {
-        return;
-    }
-
-    while (sgi_ioc3_sdma_running(s, port)) {
-        uint8_t lsr;
-        uint8_t msr;
-        uint8_t status;
-
-        /* On refusal the drain stops without dropping anything. */
-        if (s->sdma_packed[port] == SGI_IOC3_SDMA_ENTRY_CHARS &&
-            !sgi_ioc3_sdma_post(s, port, produce, consume, mask)) {
-            break;
-        }
-
-        lsr = serial_io_ops.read(serial, UART_LSR, 1);
-        if (!(lsr & UART_LSR_DR)) {
-            break;
-        }
-
-        /* LSR before RBR: reading LSR clears the latches it describes. */
-        s->sdma_packer[port][s->sdma_packed[port]] =
-            serial_io_ops.read(serial, UART_RBR_THR, 1);
-        msr = serial_io_ops.read(serial, UART_MSR, 1);
-        if (sgi_ioc3_serial_flow_cts(s, port)) {
-            msr |= UART_MSR_CTS;
-        }
-
-        status = SGI_IOC3_SDMA_RX_DATA_OK | SGI_IOC3_SDMA_RX_MODEM_OK;
-        if (lsr & UART_LSR_OE) {
-            status |= SGI_IOC3_SDMA_RX_OVERRUN;
-        }
-        if (lsr & UART_LSR_PE) {
-            status |= SGI_IOC3_SDMA_RX_PARITY;
-        }
-        if (lsr & UART_LSR_FE) {
-            status |= SGI_IOC3_SDMA_RX_FRAMING;
-        }
-        if (lsr & UART_LSR_BI) {
-            status |= SGI_IOC3_SDMA_RX_BREAK;
-        }
-        if (msr & UART_MSR_CTS) {
-            status |= SGI_IOC3_SDMA_RX_CTS;
-        }
-        if (msr & UART_MSR_DCD) {
-            status |= SGI_IOC3_SDMA_RX_CD;
-        }
-        s->sdma_packer[port][SGI_IOC3_SDMA_ENTRY_CHARS +
-                             s->sdma_packed[port]] = status;
-
-        ++s->sdma_packed[port];
-    }
-}
-
-/*
- * Each control byte types its data byte; the empty type ends the entry, and
- * sending past it puts memory garbage on the wire.
- */
-static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port,
-                                   int64_t since)
-{
-    uint32_t *produce = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_TX_PRODUCE);
-    uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
-                                               SGI_IOC3_SDMA_TX_CONSUME);
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-    SerialState *serial = &s->serial[port];
-    uint64_t ring = sgi_ioc3_sdma_ring(s, port, SGI_IOC3_SDMA_RING_TX);
-    bool walked = false;
-
-    while (sgi_ioc3_sdma_running(s, port) &&
-           (*consume & mask) != (*produce & mask)) {
-        uint8_t entry[SGI_IOC3_SDMA_ENTRY_SIZE];
-        unsigned int i;
-        bool loop;
-
-        /*
-         * A refused fetch stops the walk: the stack bytes are not an entry.
-         */
-        if (dma_memory_read(s->dma_as, ring + (*consume & mask), entry,
-                            sizeof(entry), MEMTXATTRS_UNSPECIFIED) !=
-            MEMTX_OK) {
-            sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_PCI_ERROR);
-            break;
-        }
-
-        for (i = s->sdma_tx_slot[port];
-             i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
-            uint8_t control = entry[SGI_IOC3_SDMA_ENTRY_CHARS + i];
-            uint8_t type = control & SGI_IOC3_SDMA_TX_TYPE;
-
-            /* Wherever it sits: the slots behind it are not sent. */
-            if (type == SGI_IOC3_SDMA_TX_NOTHING) {
-                break;
-            }
-
-            switch (type) {
-            case SGI_IOC3_SDMA_TX_CHARACTER:
-                /* In loopback the line carries one character at a time. */
-                if (!s->sdma_tx_ready[port] || s->sdma_loop_due[port]) {
-                    return;
-                }
-                loop = serial->mcr & UART_MCR_LOOP;
-                /* What has already arrived goes ahead of this one. */
-                if (loop) {
-                    sgi_ioc3_sdma_receive(s, port);
-                }
-                serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
-                sgi_ioc3_serial_record(s, port, entry[i]);
-                if (loop) {
-                    s->sdma_loop_due[port] = since +
-                                             serial->char_transmit_time;
-                    timer_mod(s->sdma_loop_timer[port],
-                              s->sdma_loop_due[port]);
-                }
-                /*
-                 * Drain per character or loopback overruns the 16-byte FIFO.
-                 */
-                sgi_ioc3_sdma_receive(s, port);
-                break;
-            case SGI_IOC3_SDMA_TX_MODEM:
-                serial_io_ops.write(serial, UART_MCR, entry[i], 1);
-                break;
-            case SGI_IOC3_SDMA_TX_DELAY:
-                break;
-            }
-
-            s->sdma_tx_slot[port] = i + 1;
-
-            if (control & SGI_IOC3_SDMA_TX_INTERRUPT) {
-                sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_DONE);
-            }
-        }
-
-        s->sdma_tx_slot[port] = 0;
-        *consume = (*consume + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
-        walked = true;
-    }
-
-    /* On reaching the end of a walk, not on every idle engine. */
-    if (walked && (*consume & mask) == (*produce & mask)) {
-        sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_RING_EMPTY);
-    }
-}
-
 /*
  * Chip control places each port's 16550 for its DMA engine. Aimed anywhere
  * else, the engine does not reach the port; what it reaches instead is not
- * modelled.
+ * modelled. The walk also drives a 16550 the board may not have fitted.
  */
-static bool sgi_ioc3_sdma_aimed(SGIIOC3State *s, unsigned int port)
+static bool sgi_ioc3_sdma_reachable(void *opaque, unsigned port)
 {
+    SGIIOC3State *s = opaque;
     static const hwaddr uart[SGI_IOC3_SERIAL_PORTS] = {
         SGI_IOC3_SERIAL_A, SGI_IOC3_SERIAL_B,
     };
@@ -1299,229 +897,23 @@ static bool sgi_ioc3_sdma_aimed(SGIIOC3State *s, unsigned int port)
     uint32_t field = (s->chip_control >> shift) &
                      SGI_IOC3_CHIP_CTRL_PORT_FIELD;
 
+    if (!s->board->serial[port]) {
+        return false;
+    }
     return field == (uart[port] & 0xfff) / 8;
 }
 
-/* `since` is when the walk starts: now, or when a loopback arrival was due. */
-static void sgi_ioc3_sdma_run_from(SGIIOC3State *s, unsigned int port,
-                                   int64_t since)
+static void sgi_ioc3_sdma_transmitted(void *opaque, unsigned port, uint8_t ch)
 {
-    /* The walk drives a 16550 the board may not have fitted. */
-    if (!s->board->serial[port]) {
-        return;
-    }
-
-    if (!sgi_ioc3_sdma_aimed(s, port)) {
-        return;
-    }
-
-    /* Loopback re-enters; a second walk would post a half-filled entry. */
-    if (s->sdma_busy[port]) {
-        return;
-    }
-    s->sdma_busy[port] = true;
-
-    sgi_ioc3_sdma_transmit(s, port, since);
-    sgi_ioc3_sdma_receive(s, port);
-    sgi_ioc3_sdma_flush(s, port, since);
-
-    s->sdma_busy[port] = false;
+    sgi_ioc3_serial_record(opaque, port, ch);
 }
 
-static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
-{
-    sgi_ioc3_sdma_run_from(s, port, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-}
-
-/* Resets the four indices and nothing else; the settings survive. */
-static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
-{
-    unsigned int reg;
-
-    for (reg = SGI_IOC3_SDMA_TX_PRODUCE; reg <= SGI_IOC3_SDMA_RX_CONSUME;
-         reg += 4) {
-        *sgi_ioc3_sdma_port_reg(s, port, reg) = 0;
-    }
-
-    s->sdma_packed[port] = 0;
-    memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
-    s->sdma_delivered[port] = false;
-    s->sdma_tx_slot[port] = 0;
-
-    timer_del(s->sdma_rx_timer[port]);
-    s->sdma_rx_idle_count[port] = 0;
-}
-
-/*
- * A passive mirror read from the register file's fields: the byte-wide read
- * ops clear the latches and this view must not.
- */
-static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
-{
-    SerialState *serial = &s->serial[port];
-    uint8_t lsr = serial->lsr;
-    uint8_t mcr = serial->mcr;
-    uint8_t msr;
-    uint32_t shadow;
-
-    /* In loopback the modem-control outputs wire back to status. */
-    if (mcr & UART_MCR_LOOP) {
-        msr = ((mcr & 0x0c) << 4) | ((mcr & 0x02) << 3) | ((mcr & 0x01) << 5);
-    } else {
-        msr = serial->msr;
-    }
-    if (sgi_ioc3_serial_flow_cts(s, port)) {
-        msr |= UART_MSR_CTS;
-    }
-
-    shadow = lsr & SGI_IOC3_SHADOW_LSR_MASK;
-
-    if (msr & UART_MSR_DCTS) {
-        shadow |= SGI_IOC3_SHADOW_DELTA_CTS;
-    }
-    if (msr & UART_MSR_DDCD) {
-        shadow |= SGI_IOC3_SHADOW_DELTA_CD;
-    }
-    if (msr & UART_MSR_CTS) {
-        shadow |= SGI_IOC3_SHADOW_CTS;
-    }
-    if (msr & UART_MSR_DCD) {
-        shadow |= SGI_IOC3_SHADOW_CD;
-    }
-    if (mcr & UART_MCR_DTR) {
-        shadow |= SGI_IOC3_SHADOW_DTR;
-    }
-    if (mcr & UART_MCR_RTS) {
-        shadow |= SGI_IOC3_SHADOW_RTS;
-    }
-    if (mcr & UART_MCR_OUT1) {
-        shadow |= SGI_IOC3_SHADOW_OUT1;
-    }
-    if (mcr & UART_MCR_OUT2) {
-        shadow |= SGI_IOC3_SHADOW_OUT2;
-    }
-    if (mcr & UART_MCR_LOOP) {
-        shadow |= SGI_IOC3_SHADOW_LOOPBACK;
-    }
-    return shadow;
-}
-
-static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
-                                        hwaddr offset)
-{
-    uint32_t val;
-
-    sgi_ioc3_sdma_rx_timer_catch_up(s);
-
-    if (offset == SGI_IOC3_SDMA_SHADOW) {
-        return sgi_ioc3_sdma_shadow(s, port);
-    }
-
-    val = *sgi_ioc3_sdma_port_reg(s, port, offset);
-
-    if (offset == SGI_IOC3_SDMA_CONTROL && (val & SGI_IOC3_SDMA_PAUSE)) {
-        val |= SGI_IOC3_SDMA_PAUSED;
-    }
-
-    /* The produce index also reports the packer's held count. */
-    if (offset == SGI_IOC3_SDMA_RX_PRODUCE) {
-        val |= (uint32_t)s->sdma_packed[port] << SGI_IOC3_SDMA_HELD_SHIFT;
-    }
-
-    /*
-     * Ticks left while running. Idle, the count is whatever a reload write
-     * last loaded, until the timer runs or the channel resets.
-     */
-    if (offset == SGI_IOC3_SDMA_RX_TIMER) {
-        uint32_t ticks = s->sdma_rx_idle_count[port];
-
-        if (timer_pending(s->sdma_rx_timer[port])) {
-            int64_t left = timer_expire_time_ns(s->sdma_rx_timer[port]) -
-                           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
-            ticks = MIN(MAX(left, 0) / SGI_IOC3_SDMA_TIMER_TICK_NS,
-                        SGI_IOC3_SDMA_TIMER_RELOAD);
-        }
-        val |= ticks << SGI_IOC3_SDMA_TIMER_COUNT_SHIFT;
-    }
-
-    return val;
-}
-
-static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
-                                     hwaddr offset, uint32_t val)
-{
-    uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
-
-    /* A write that stops or rewinds the timer comes after an expiry due. */
-    sgi_ioc3_sdma_rx_timer_catch_up(s);
-
-    switch (offset) {
-    case SGI_IOC3_SDMA_CONTROL:
-        *sgi_ioc3_sdma_port_reg(s, port, offset) =
-            val & ~SGI_IOC3_SDMA_CTRL_UNSTORED;
-        if (val & SGI_IOC3_SDMA_RESET) {
-            sgi_ioc3_sdma_reset_port(s, port);
-        }
-        if (!(val & SGI_IOC3_SDMA_ENABLE)) {
-            timer_del(s->sdma_rx_timer[port]);
-        }
-        /*
-         * The drain bit is a command IRIX polls to zero, and enabling is a
-         * start: the firmware hands the ring over before enabling.
-         */
-        sgi_ioc3_sdma_run(s, port);
-        return;
-
-    case SGI_IOC3_SDMA_TX_PRODUCE:
-        *sgi_ioc3_sdma_port_reg(s, port, offset) = val & mask;
-        sgi_ioc3_sdma_run(s, port);
-        return;
-
-    case SGI_IOC3_SDMA_RX_CONSUME: {
-        uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port, offset);
-        uint32_t *produce;
-
-        *consume = val & (mask | SGI_IOC3_SDMA_ARM_RX_TIMER);
-        sgi_ioc3_sdma_run(s, port);
-
-        /* Bit 31 arms the timer; re-arming over a non-empty ring rewinds. */
-        produce = sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_PRODUCE);
-        if (!(*consume & SGI_IOC3_SDMA_ARM_RX_TIMER)) {
-            timer_del(s->sdma_rx_timer[port]);
-        } else if ((*produce ^ *consume) & mask) {
-            sgi_ioc3_sdma_rx_timer_start(s, port,
-                                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-        }
-        return;
-    }
-
-    case SGI_IOC3_SDMA_RX_TIMER:
-        *sgi_ioc3_sdma_port_reg(s, port, offset) =
-            val & SGI_IOC3_SDMA_TIMER_RELOAD;
-        /*
-         * The write loads the count as well; a running timer keeps its own.
-         */
-        s->sdma_rx_idle_count[port] = val & SGI_IOC3_SDMA_TIMER_RELOAD;
-        return;
-
-    case SGI_IOC3_SDMA_SHADOW:
-        /* Discarded silently: OpenBSD writes zero here on every boot. */
-        return;
-
-    /*
-     * The engine advances these two, and software can still place them: the
-     * board test writes each and reads it back. Only the pointer field
-     * stores, so a write cannot forge the held counts the engine reports in
-     * the bits above it.
-     */
-    case SGI_IOC3_SDMA_TX_CONSUME:
-    case SGI_IOC3_SDMA_RX_PRODUCE:
-        *sgi_ioc3_sdma_port_reg(s, port, offset) = val & mask;
-        sgi_ioc3_sdma_run(s, port);
-        return;
-    }
-}
+static const SGIIOCSerialDMAOps sgi_ioc3_sdma_engine_ops = {
+    .raise = sgi_ioc3_sdma_raise,
+    .set_level = sgi_ioc3_sdma_set_level,
+    .reachable = sgi_ioc3_sdma_reachable,
+    .transmitted = sgi_ioc3_sdma_transmitted,
+};
 
 static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -1532,9 +924,10 @@ static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
     uint32_t val;
 
     if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
-        val = sgi_ioc3_sdma_read_port(s, port, offset);
+        val = sgi_ioc_sdma_port_read(&s->sdma_engine, port, offset);
     } else {
-        val = s->sdma_reg[addr / 4];
+        val = sgi_ioc_sdma_base_read(&s->sdma_engine, 0,
+                                     reg == SGI_IOC3_SDMA_RING_HI);
     }
 
     trace_sgi_ioc3_sdma_read((uint32_t)reg, val);
@@ -1552,11 +945,12 @@ static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
     trace_sgi_ioc3_sdma_write((uint32_t)reg, (uint32_t)val);
 
     if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
-        sgi_ioc3_sdma_write_port(s, port, offset, val);
+        sgi_ioc_sdma_port_write(&s->sdma_engine, port, offset, val);
         return;
     }
 
-    s->sdma_reg[addr / 4] = val;
+    sgi_ioc_sdma_base_write(&s->sdma_engine, 0, reg == SGI_IOC3_SDMA_RING_HI,
+                            val);
 }
 
 static const MemoryRegionOps sgi_ioc3_sdma_ops = {
@@ -1578,7 +972,7 @@ static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
         alias->port * (SGI_IOC3_SDMA_ALIAS_B - SGI_IOC3_SDMA_ALIAS_A) + addr;
     uint32_t val;
 
-    if (addr >= SGI_IOC3_SDMA_PORT_REGS * 4) {
+    if (addr >= SGI_IOC_SDMA_PORT_REGS * 4) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc3: read of serial DMA alias offset 0x%"
                       HWADDR_PRIx " which is past the seven registers a page "
@@ -1586,7 +980,8 @@ static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
         return 0;
     }
 
-    val = sgi_ioc3_sdma_read_port(alias->chip, alias->port, addr);
+    val = sgi_ioc_sdma_port_read(&alias->chip->sdma_engine, alias->port,
+                                 addr);
     trace_sgi_ioc3_sdma_read(reg, val);
     return val;
 }
@@ -1598,7 +993,7 @@ static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
     uint32_t reg = SGI_IOC3_SDMA_ALIAS_A +
         alias->port * (SGI_IOC3_SDMA_ALIAS_B - SGI_IOC3_SDMA_ALIAS_A) + addr;
 
-    if (addr >= SGI_IOC3_SDMA_PORT_REGS * 4) {
+    if (addr >= SGI_IOC_SDMA_PORT_REGS * 4) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc3: write of 0x%08x to serial DMA alias offset 0x%"
                       HWADDR_PRIx " which is past the seven registers a page "
@@ -1612,15 +1007,16 @@ static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
      * advances and the 16550 shadow. The main block takes writes to the first
      * two.
      */
-    if (addr == SGI_IOC3_SDMA_TX_CONSUME ||
-        addr == SGI_IOC3_SDMA_RX_PRODUCE ||
-        addr == SGI_IOC3_SDMA_SHADOW) {
+    if (addr == SGI_IOC_SDMA_TX_CONSUME ||
+        addr == SGI_IOC_SDMA_RX_PRODUCE ||
+        addr == SGI_IOC_SDMA_SHADOW) {
         trace_sgi_ioc3_sdma_write_refused(reg, (uint32_t)val);
         return;
     }
 
     trace_sgi_ioc3_sdma_write(reg, (uint32_t)val);
-    sgi_ioc3_sdma_write_port(alias->chip, alias->port, addr, val);
+    sgi_ioc_sdma_port_write(&alias->chip->sdma_engine, alias->port, addr,
+                            val);
 }
 
 static const MemoryRegionOps sgi_ioc3_sdma_alias_ops = {
@@ -2061,26 +1457,17 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
         memory_region_add_subregion(&s->bar, SGI_IOC3_SDMA_BASE, &s->sdma);
     }
 
+    sgi_ioc_sdma_init(&s->sdma_engine, SGI_IOC3_SERIAL_PORTS,
+                      &sgi_ioc3_sdma_engine_ops, s, s->dma_as);
+
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         s->sdma_alias_port[i].chip = s;
         s->sdma_alias_port[i].port = i;
 
-        /*
-         * For both ports whatever the board fits. The reset path deletes
-         * every timer and the migration format carries the array whole, so
-         * leaving one unmade would make an absent port a null dereference
-         * rather than a quiet nothing.
-         */
-        s->sdma_rx_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                           sgi_ioc3_sdma_rx_timer_expired,
-                                           &s->sdma_alias_port[i]);
-        s->sdma_loop_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                             sgi_ioc3_sdma_loop_expired,
-                                             &s->sdma_alias_port[i]);
-
         if (!s->board->serial[i]) {
             continue;
         }
+        sgi_ioc_sdma_attach_uart(&s->sdma_engine, i, &s->serial[i]);
 
         memory_region_init_io(&s->sdma_alias[i], OBJECT(dev),
                               &sgi_ioc3_sdma_alias_ops,
@@ -2177,9 +1564,8 @@ static void sgi_ioc3_exit(PCIDevice *dev)
         if (s->board->serial[i]) {
             qdev_unrealize(DEVICE(&s->serial[i]));
         }
-        timer_free(s->sdma_rx_timer[i]);
-        timer_free(s->sdma_loop_timer[i]);
     }
+    sgi_ioc_sdma_finalize(&s->sdma_engine);
     timer_del(s->int_out_timer);
     if (s->board->eth) {
         qdev_unrealize(DEVICE(&s->eth));
@@ -2207,17 +1593,8 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->int_enable = 0;
     sgi_ioc3_update_irq(s);
 
-    memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
+    sgi_ioc_sdma_reset(&s->sdma_engine);
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
-        timer_del(s->sdma_rx_timer[i]);
-        s->sdma_rx_idle_count[i] = 0;
-        /* The 16550's own reset empties the FIFO the character sits in. */
-        timer_del(s->sdma_loop_timer[i]);
-        s->sdma_loop_due[i] = 0;
-        s->sdma_tx_slot[i] = 0;
-        s->sdma_packed[i] = 0;
-        memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
-        s->sdma_delivered[i] = false;
         /* Reset clears the rest of modem control, so it clears this too. */
         s->serial_mcr_autoflow[i] = 0;
         s->serial_lsr_test[i] = 0;
@@ -2324,15 +1701,6 @@ static bool sgi_ioc3_serial_b_needed(void *opaque, int version_id)
     return s->board->serial[1];
 }
 
-static int sgi_ioc3_pre_load(void *opaque)
-{
-    SGIIOC3State *s = opaque;
-
-    /* A stream without the loopback subsection has nothing on the line. */
-    memset(s->sdma_loop_due, 0, sizeof(s->sdma_loop_due));
-    return 0;
-}
-
 static int sgi_ioc3_post_load(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
@@ -2340,7 +1708,7 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
     sgi_ioc3_update_irq(s);
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
-        sgi_ioc3_sdma_run(s, i);
+        sgi_ioc_sdma_kick(&s->sdma_engine, i);
         /*
          * baudbase is a realize-time property of the embedded SerialState,
          * not a migrated field, so vmstate_serial's own post_load (which
@@ -2356,47 +1724,10 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     return 0;
 }
 
-static bool sgi_ioc3_sdma_loop_needed(void *opaque)
-{
-    SGIIOC3State *s = opaque;
-
-    return s->sdma_loop_due[0] || s->sdma_loop_due[1];
-}
-
-/* The due time is the state; the timer is only its wake-up. */
-static int sgi_ioc3_sdma_loop_post_load(void *opaque, int version_id)
-{
-    SGIIOC3State *s = opaque;
-    unsigned int i;
-
-    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
-        if (s->sdma_loop_due[i]) {
-            timer_mod(s->sdma_loop_timer[i], s->sdma_loop_due[i]);
-        } else {
-            timer_del(s->sdma_loop_timer[i]);
-        }
-    }
-    return 0;
-}
-
-static const VMStateDescription vmstate_sgi_ioc3_sdma_loop = {
-    .name = "sgi-ioc3/sdma-loop",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = sgi_ioc3_sdma_loop_needed,
-    .post_load = sgi_ioc3_sdma_loop_post_load,
-    .fields = (const VMStateField[]) {
-        VMSTATE_INT64_ARRAY(sdma_loop_due, SGIIOC3State,
-                            SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
     .version_id = 22,
     .minimum_version_id = 22,
-    .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(pin_input_mask, SGIIOC3State),
@@ -2418,12 +1749,10 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                             SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT8_ARRAY(serial_msr_test, SGIIOC3State,
                             SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_UINT16_ARRAY(sdma_rx_idle_count, SGIIOC3State,
-                             SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
-        VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
+        VMSTATE_SGI_IOC_SDMA(sdma_engine, SGIIOC3State),
         VMSTATE_UINT32(chip_control, SGIIOC3State),
         VMSTATE_UINT32(int_out, SGIIOC3State),
         VMSTATE_UINT32(int_out_active, SGIIOC3State),
@@ -2431,21 +1760,9 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_BOOL(int_out_pulse_end, SGIIOC3State),
         VMSTATE_BOOL(int_out_square_started, SGIIOC3State),
         VMSTATE_TIMER_PTR(int_out_timer, SGIIOC3State),
-        VMSTATE_UINT8_2DARRAY(sdma_packer, SGIIOC3State,
-                              SGI_IOC3_SERIAL_PORTS,
-                              SGI_IOC3_SDMA_ENTRY_SIZE),
-        VMSTATE_UINT8_ARRAY(sdma_packed, SGIIOC3State,
-                            SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_UINT8_ARRAY(sdma_tx_slot, SGIIOC3State, SGI_IOC3_SERIAL_PORTS),
-        VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
-                                SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),
         VMSTATE_END_OF_LIST()
     },
-    .subsections = (const VMStateDescription * const []) {
-        &vmstate_sgi_ioc3_sdma_loop,
-        NULL
-    }
 };
 
 static const Property sgi_ioc3_properties[] = {

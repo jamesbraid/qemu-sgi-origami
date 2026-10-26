@@ -11,6 +11,7 @@
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
+#include "hw/char/sgi-ioc-serial-dma.h"
 #include "hw/rtc/ds1685.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/net/sgi-ioc3-eth.h"
@@ -209,92 +210,12 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SDMA_PORT_A        0x0b8
 #define SGI_IOC3_SDMA_PORT_B        0x0d4
 
-#define SGI_IOC3_SDMA_CONTROL       0x00
-#define SGI_IOC3_SDMA_TX_PRODUCE    0x04
-#define SGI_IOC3_SDMA_TX_CONSUME    0x08
-#define SGI_IOC3_SDMA_RX_PRODUCE    0x0c
-#define SGI_IOC3_SDMA_RX_CONSUME    0x10
-#define SGI_IOC3_SDMA_RX_TIMER      0x14
-#define SGI_IOC3_SDMA_SHADOW        0x18
-
 #define SGI_IOC3_SDMA_BASE          SGI_IOC3_SDMA_RING_HI
-#define SGI_IOC3_SDMA_PORT_REGS     7
-#define SGI_IOC3_SDMA_PORT_STRIDE  (SGI_IOC3_SDMA_PORT_B - SGI_IOC3_SDMA_PORT_A)
 
-/* The size select is in the register but outside the address. */
-#define SGI_IOC3_SDMA_RING_4K       (1u << 0)
-#define SGI_IOC3_SDMA_RING_ADDRESS  0xfffff000u
-#define SGI_IOC3_SDMA_RING_1K_SIZE  0x400
-#define SGI_IOC3_SDMA_RING_4K_SIZE  0x1000
-
-/* Four rings in fixed order: A tx, A rx, B tx, B rx. */
-#define SGI_IOC3_SDMA_RING_TX       0
-#define SGI_IOC3_SDMA_RING_RX       1
-#define SGI_IOC3_SDMA_RING_DIRS     2
-
-#define SGI_IOC3_SDMA_HIGH_WATER    0x1ffu
-#define SGI_IOC3_SDMA_TX_TIMER_RUN  (1u << 16)
-#define SGI_IOC3_SDMA_FLOW_CONTROL  (1u << 17)
-#define SGI_IOC3_SDMA_POST_ON_CD    (1u << 18)
-#define SGI_IOC3_SDMA_POST_ON_CTS   (1u << 19)
-#define SGI_IOC3_SDMA_QUAD_SPEED    (1u << 20)
-#define SGI_IOC3_SDMA_NO_DIVIDER    (1u << 21)
-#define SGI_IOC3_SDMA_RX_TO_MEMORY  (1u << 27)
-#define SGI_IOC3_SDMA_ENABLE        (1u << 28)
-#define SGI_IOC3_SDMA_PAUSE         (1u << 29)
-#define SGI_IOC3_SDMA_PAUSED        (1u << 30)
-#define SGI_IOC3_SDMA_RESET         (1u << 31)
-
-/* Hardware read-backs and act-and-clear commands; never stored. */
-#define SGI_IOC3_SDMA_CTRL_UNSTORED (SGI_IOC3_SDMA_TX_TIMER_RUN | \
-                                     SGI_IOC3_SDMA_PAUSED | \
-                                     SGI_IOC3_SDMA_RX_TO_MEMORY | \
-                                     SGI_IOC3_SDMA_RESET)
-
-/* Indices address the ring in entries; rx consume bit 31 arms the timer. */
-#define SGI_IOC3_SDMA_ARM_RX_TIMER  (1u << 31)
-#define SGI_IOC3_SDMA_HELD_SHIFT    24
-#define SGI_IOC3_SDMA_TX_HELD       (0xfu << SGI_IOC3_SDMA_HELD_SHIFT)
-#define SGI_IOC3_SDMA_RX_HELD       (0x7u << SGI_IOC3_SDMA_HELD_SHIFT)
-
-#define SGI_IOC3_SDMA_TIMER_RELOAD  0xfffu
-#define SGI_IOC3_SDMA_TIMER_COUNT   0x0fff0000u
-#define SGI_IOC3_SDMA_TIMER_COUNT_SHIFT 16
-
-#define SGI_IOC3_SDMA_TIMER_TICK_NS 62500   /* one 16 kHz tick */
-
-/* Eight bytes per entry: four data bytes, then their status/control. */
-#define SGI_IOC3_SDMA_ENTRY_SIZE    8
-#define SGI_IOC3_SDMA_ENTRY_CHARS   4
-
-/* A transmit control byte types the data byte beside it. */
-#define SGI_IOC3_SDMA_TX_TYPE       0xc0
-#define SGI_IOC3_SDMA_TX_NOTHING    0x00
-#define SGI_IOC3_SDMA_TX_CHARACTER  0x40
-#define SGI_IOC3_SDMA_TX_MODEM      0x80
-#define SGI_IOC3_SDMA_TX_DELAY      0xc0
-#define SGI_IOC3_SDMA_TX_INTERRUPT  0x20
-
-#define SGI_IOC3_SDMA_RX_OVERRUN    0x01
-#define SGI_IOC3_SDMA_RX_PARITY     0x02
-#define SGI_IOC3_SDMA_RX_FRAMING    0x04
-#define SGI_IOC3_SDMA_RX_BREAK      0x08
-#define SGI_IOC3_SDMA_RX_CTS        0x10
-#define SGI_IOC3_SDMA_RX_CD         0x20
-#define SGI_IOC3_SDMA_RX_MODEM_OK   0x40
-#define SGI_IOC3_SDMA_RX_DATA_OK    0x80
-
-/* The 16550 shadow's own bit positions, not the status byte's. */
-#define SGI_IOC3_SHADOW_LSR_MASK    0x000000ffu
-#define SGI_IOC3_SHADOW_DELTA_CTS   (1u << 16)
-#define SGI_IOC3_SHADOW_DELTA_CD    (1u << 19)
-#define SGI_IOC3_SHADOW_CTS         (1u << 20)
-#define SGI_IOC3_SHADOW_CD          (1u << 23)
-#define SGI_IOC3_SHADOW_DTR         (1u << 24)
-#define SGI_IOC3_SHADOW_RTS         (1u << 25)
-#define SGI_IOC3_SHADOW_OUT1        (1u << 26)
-#define SGI_IOC3_SHADOW_OUT2        (1u << 27)
-#define SGI_IOC3_SHADOW_LOOPBACK    (1u << 28)
+/*
+ * The register and ring layout behind these offsets is the engine's, shared
+ * with IOC4: see hw/char/sgi-ioc-serial-dma.h.
+ */
 
 /* Per-port alias pages; three registers are read-only through them. */
 #define SGI_IOC3_SDMA_ALIAS_A       0x08000
@@ -302,7 +223,6 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SDMA_ALIAS_SIZE    (16 * KiB)
 
 #define SGI_IOC3_SDMA_SIZE          (SGI_IOC3_ENET_BASE - SGI_IOC3_SDMA_BASE)
-#define SGI_IOC3_SDMA_REGS          (SGI_IOC3_SDMA_SIZE / 4)
 
 /*
  * The buffer RAM: 16 data bits plus a stored parity bit per 32-bit slot; a
@@ -511,35 +431,10 @@ struct SGIIOC3State {
     SGIIOC3EthState eth;
 
     MemoryRegion sdma;
-    uint32_t sdma_reg[SGI_IOC3_SDMA_REGS];
+    SGIIOCSerialDMA sdma_engine;
 
     MemoryRegion sdma_alias[SGI_IOC3_SERIAL_PORTS];
     SGIIOC3SerialAlias sdma_alias_port[SGI_IOC3_SERIAL_PORTS];
-
-    /* Re-entry guard for loopback walks; only true inside a call. */
-    bool sdma_busy[SGI_IOC3_SERIAL_PORTS];
-
-    /* Serial child's holding-register level and retained entry slot. */
-    bool sdma_tx_ready[SGI_IOC3_SERIAL_PORTS];
-    uint8_t sdma_tx_slot[SGI_IOC3_SERIAL_PORTS];
-
-    /* A ring entry under construction, and its held count. */
-    uint8_t sdma_packer[SGI_IOC3_SERIAL_PORTS][SGI_IOC3_SDMA_ENTRY_SIZE];
-    uint8_t sdma_packed[SGI_IOC3_SERIAL_PORTS];
-
-    /* Delivery sources fire per burst, not per entry. */
-    bool sdma_delivered[SGI_IOC3_SERIAL_PORTS];
-
-    QEMUTimer *sdma_rx_timer[SGI_IOC3_SERIAL_PORTS];
-    /* The receive timer's count while it is not running. */
-    uint16_t sdma_rx_idle_count[SGI_IOC3_SERIAL_PORTS];
-
-    /*
-     * A looped-back character still on the line: when it reaches the
-     * receiver, or 0 with none in flight. The timer is only its wake-up.
-     */
-    int64_t sdma_loop_due[SGI_IOC3_SERIAL_PORTS];
-    QEMUTimer *sdma_loop_timer[SGI_IOC3_SERIAL_PORTS];
 
     AddressSpace *dma_as;   /* chip-owned view over the PCI bus-master space */
 
