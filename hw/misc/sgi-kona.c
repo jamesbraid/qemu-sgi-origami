@@ -1811,10 +1811,27 @@ static unsigned sgi_kona_gl_run_uploads(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
 static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st);
+
+/*
+ * Whether context i's image transfers are refused: for pixel state the
+ * model does not keep, or while an imaging stage it does not apply is
+ * enabled.
+ */
+static bool sgi_kona_gl_transfer_refused(const SGIKonaState *s, int i)
+{
+    return i != SGI_KONA_CONTEXT_NONE &&
+           (s->state[i]->pipe.pixel_transfer_unsupported ||
+            s->state[i]->imaging.unmodelled);
+}
 static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im);
 static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t);
 static bool sgi_kona_gl_post_conv(const SGIKonaGLPixelTransfer *t,
                                   double rgba[4]);
+static bool sgi_kona_gl_matrix_stage(const uint32_t m[16],
+                                     const SGIKonaGLPixelTransfer *t);
+static bool sgi_kona_gl_pixel_stages(const SGIKonaGLPixelTransfer *t,
+                                     const uint32_t m[16], bool convolved,
+                                     double rgba[4]);
 static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
                                 double (**image)[4], uint32_t *width,
                                 uint32_t *height);
@@ -6234,6 +6251,9 @@ static void sgi_kona_gl_imaging_init(SGIKonaGLImaging *im)
             im->filters[f].scale[c] = 0x3f800000;
         }
     }
+    for (unsigned k = 0; k < 4; k++) {
+        im->colour_matrix[k * 5] = 0x3f800000;
+    }
 }
 
 static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
@@ -6262,6 +6282,8 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
         .pixel_transfer.depth_scale = 0x3f800000,
         .pixel_transfer.post_conv_scale = { 0x3f800000, 0x3f800000,
                                             0x3f800000, 0x3f800000 },
+        .pixel_transfer.post_matrix_scale = { 0x3f800000, 0x3f800000,
+                                              0x3f800000, 0x3f800000 },
         .unpack_alignment = 4,
         .pack_alignment = 4,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
@@ -6825,6 +6847,63 @@ static void sgi_kona_gl_int_params(uint32_t pname, const uint32_t *in,
 }
 
 /*
+ * A matrix command while the matrix mode is GL_COLOR (0x1800): the pipe
+ * keeps the colour matrix with the other matrices, since the library
+ * keeps none of them (as below), and applies it to image transfers
+ * (sgi_kona_gl_pixel_stages()). The commands act on it as on any matrix
+ * (SGI_color_matrix). Returns false for a command that is not a matrix
+ * command, which then goes on as usual.
+ */
+static bool sgi_kona_gl_colour_matrix(SGIKonaState *s, int i,
+                                      const SGIGLCmd *cmd)
+{
+    SGIKonaGLImaging *im = &s->state[i]->imaging;
+    float m[16];
+
+    switch (cmd->op) {
+    case SGI_GL_OP_PUSH_MATRIX:
+    case SGI_GL_OP_POP_MATRIX:
+    case SGI_GL_OP_LOAD_MATRIX:
+    case SGI_GL_OP_LOAD_IDENTITY:
+    case SGI_GL_OP_MULT_MATRIX:
+    case SGI_GL_OP_TRANSLATE:
+    case SGI_GL_OP_SCALE:
+    case SGI_GL_OP_ROTATE:
+    case SGI_GL_OP_FRUSTUM:
+    case SGI_GL_OP_ORTHO:
+        break;
+    default:
+        return false;
+    }
+    if (s->state[i]->gl.in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        return true;
+    }
+    if (cmd->op == SGI_GL_OP_PUSH_MATRIX) {
+        if (im->colour_depth >= SGI_KONA_GL_COLOUR_STACK - 1) {
+            sgi_kona_gl_set_error(s, 0x503);    /* GL_STACK_OVERFLOW */
+            return true;
+        }
+        memcpy(im->colour_stack[im->colour_depth++], im->colour_matrix,
+               sizeof(im->colour_matrix));
+        return true;
+    }
+    if (cmd->op == SGI_GL_OP_POP_MATRIX) {
+        if (!im->colour_depth) {
+            sgi_kona_gl_set_error(s, 0x504);    /* GL_STACK_UNDERFLOW */
+            return true;
+        }
+        memcpy(im->colour_matrix, im->colour_stack[--im->colour_depth],
+               sizeof(im->colour_matrix));
+        return true;
+    }
+    memcpy(m, im->colour_matrix, sizeof(m));
+    sgi_gl_matrix_apply(m, cmd);
+    memcpy(im->colour_matrix, m, sizeof(m));
+    return true;
+}
+
+/*
  * The GL client's transform, vertex attribute and lighting commands, onto
  * the current context's shared operations: the matrix family 0xcf to
  * 0xdf, glRect's begin, the vertices, colours, normals, texture
@@ -7174,6 +7253,10 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
         break;
     }
     trace_sgi_kona_gl_command(selector, i);
+    if (s->state[i]->gl.matrix_mode == 0x1800 &&
+        sgi_kona_gl_colour_matrix(s, i, &cmd)) {
+        return true;
+    }
     sgi_kona_gl_sink(s, &sink);
     sgi_kona_gl_run(s, i, &sink, &cmd);
     return true;
@@ -7930,7 +8013,7 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
     }
     p = &s->state[i]->pipe;
     w = &s->state[i]->window;
-    if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
+    if (p->pixel_zoom_unsupported || sgi_kona_gl_transfer_refused(s, i) ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])) ||
         !width || !height ||
@@ -8244,7 +8327,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
         sgi_kona_gl_set_error(s, 0x502);
         return false;
     }
-    if (s->state[i]->gl.in_begin || p->pixel_transfer_unsupported) {
+    if (s->state[i]->gl.in_begin || sgi_kona_gl_transfer_refused(s, i)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
                       " unsupported; %s\n", outcome);
         return false;
@@ -8351,7 +8434,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                       PRIu32 " answered %" PRIu64 " pixels of another kind"
                       " with zero\n", w, h, foreign);
     }
-    post_conv = !sgi_kona_gl_post_conv_default(&p->pixel_transfer);
+    post_conv = sgi_kona_gl_imaging_active(s->state[i]);
     data = g_malloc0(len);
     for (uint32_t r = 0; r < h; r++) {
         for (uint32_t c = 0; c < cols; c++) {
@@ -8419,8 +8502,9 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                 } else if (!sgi_kona_gl_index_rgba(&p->pixel_transfer,
                                                     raw, values) ||
                            (post_conv &&
-                            !sgi_kona_gl_post_conv(&p->pixel_transfer,
-                                                   values)) ||
+                            !sgi_kona_gl_pixel_stages(&p->pixel_transfer,
+                                s->state[i]->imaging.colour_matrix, false,
+                                values)) ||
                            !sgi_kona_gl_pixel_pack_double(format, type, values,
                                    p->pack_swap_bytes, out, pixel_bytes)) {
                     return false;
@@ -8439,7 +8523,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
 
             if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer, source) ||
                 (post_conv &&
-                 !sgi_kona_gl_post_conv(&p->pixel_transfer, source)) ||
+                 !sgi_kona_gl_pixel_stages(&p->pixel_transfer,
+                     s->state[i]->imaging.colour_matrix, false, source)) ||
                 !sgi_kona_gl_pixel_pack_double(format, type, source,
                                                   p->pack_swap_bytes,
                                          out, pixel_bytes)) {
@@ -8802,6 +8887,25 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         /* Empty storage represents the public one-entry zero table. */
         native[0] = map->count ? map->count : 1;
         n = 1;
+    } else if (name >= 0x8010 && name <= 0x8012) {
+        /* The convolution enables. */
+        native[0] = (s->state[i]->imaging.enabled >> (name - 0x8010)) & 1;
+        n = 1;
+    } else if (name == 0x80b1) {
+        /* GL_COLOR_MATRIX, the float bits in column order. */
+        for (unsigned k = 0; k < 16; k++) {
+            native[k] = s->state[i]->imaging.colour_matrix[k];
+        }
+        n = 16;
+    } else if (name == 0x80b2) {
+        native[0] = s->state[i]->imaging.colour_depth + 1;
+        n = 1;
+    } else if (name >= 0x80b4 && name <= 0x80bb) {
+        const SGIKonaGLPixelTransfer *t = &s->state[i]->pipe.pixel_transfer;
+
+        native[0] = name <= 0x80b7 ? t->post_matrix_scale[name - 0x80b4] :
+                                     t->post_matrix_bias[name - 0x80b8];
+        n = 1;
     } else if (name == 0xc01) {
         native[0] = sgi_kona_gl_draw_buffer(s->state[i]);
         n = 1;
@@ -9006,8 +9110,10 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
             };
         s->state[i]->transfer_attrib[*depth] =
             s->state[i]->pipe.pixel_transfer;
+        /* The imaging enables: convolution low, the unmodelled above. */
         s->state[i]->imaging_enabled_attrib[*depth] =
-            s->state[i]->imaging.enabled;
+            s->state[i]->imaging.enabled |
+            s->state[i]->imaging.unmodelled << 3;
         s->state[i]->attrib_mask[*depth] = mask;
         ++*depth;
     } else {
@@ -9231,7 +9337,9 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
     /* The convolution enables are both enable and pixel-mode state. */
     if (s->state[i]->attrib_mask[k] & (0x2000 | 0x20)) {
         s->state[i]->imaging.enabled =
-            s->state[i]->imaging_enabled_attrib[k];
+            s->state[i]->imaging_enabled_attrib[k] & 7;
+        s->state[i]->imaging.unmodelled =
+            s->state[i]->imaging_enabled_attrib[k] >> 3;
     }
     if (s->state[i]->attrib_mask[k] & 0x20) {
         memcpy(s->state[i]->pipe.pixel_zoom,
@@ -9735,10 +9843,19 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
         .depth_scale = 0x3f800000,
         .post_conv_scale = { 0x3f800000, 0x3f800000,
                              0x3f800000, 0x3f800000 },
+        .post_matrix_scale = { 0x3f800000, 0x3f800000,
+                               0x3f800000, 0x3f800000 },
+    };
+    static const uint32_t identity_matrix[16] = {
+        0x3f800000, 0, 0, 0, 0, 0x3f800000, 0, 0,
+        0, 0, 0x3f800000, 0, 0, 0, 0, 0x3f800000,
     };
     const SGIKonaGLPixelTransfer *t = u->transfer_captured ?
                                      &u->transfer : &identity;
-    bool post_conv = !sgi_kona_gl_post_conv_default(t);
+    const uint32_t *matrix = u->transfer_captured ? u->colour_matrix :
+                                                    identity_matrix;
+    bool post_conv = !sgi_kona_gl_post_conv_default(t) ||
+                     sgi_kona_gl_matrix_stage(matrix, t);
 
     if (sgi_kona_texture_copy(u->header)) {
         /* The copy's words are already the model's texels. */
@@ -9778,7 +9895,8 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
                 sgi_kona_gl_rgba_transfer(t, values);
         }
         if (!converted ||
-            (post_conv && !sgi_kona_gl_post_conv(t, values)) ||
+            (post_conv &&
+             !sgi_kona_gl_pixel_stages(t, matrix, false, values)) ||
             !sgi_kona_gl_pixel_pack_double(5, 1, values, false,
                                             bytes, sizeof(bytes))) {
             qemu_log_mask(LOG_UNIMP,
@@ -10408,7 +10526,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         return 0;
     }
     pixels = (uint64_t)h[1] * h[2];
-    if (p->pixel_transfer_unsupported) {
+    if (sgi_kona_gl_transfer_refused(s, i)) {
         reason = "native texture pixel transfer unsupported";
     } else if (sgi_kona_gl_filter_2d(&s->state[i]->imaging) >= 0 ||
                ((s->state[i]->imaging.enabled & 1) &&
@@ -10447,6 +10565,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         u->source_stride = stride;
         u->swap_bytes = p->unpack_swap_bytes;
         u->transfer = p->pixel_transfer;
+        memcpy(u->colour_matrix, s->state[i]->imaging.colour_matrix,
+               sizeof(u->colour_matrix));
         u->transfer_captured = true;
         u->pio_layout = !h[6];
         u->pio_phase = h[6] ? 0 : layout.phase;
@@ -10530,7 +10650,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         (a[2] == 12 && sgi_kona_gl_stencil_bits(s, i) != 8) ||
         (a[2] == 13 && p->depth_bits && p->depth_bits != 24) ||
         p->pixel_zoom_unsupported ||
-        p->pixel_transfer_unsupported;
+        sgi_kona_gl_transfer_refused(s, i);
     if (refused) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels profile refused; %s\n",
                       a[5] ? "DMA not staged" : "draining framed words");
@@ -10577,7 +10697,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
         goto out;
     }
     p = &s->state[i]->pipe;
-    if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported) {
+    if (p->pixel_zoom_unsupported || sgi_kona_gl_transfer_refused(s, i)) {
         goto out;
     }
     index_destination = indexed_image && s->state[i]->gl.cur.index_bits;
@@ -10767,7 +10887,7 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
 
     if (u->count && u->draw_pixels && s->context_current == i &&
         !s->state[i]->pipe.pixel_zoom_unsupported &&
-        !s->state[i]->pipe.pixel_transfer_unsupported &&
+        !sgi_kona_gl_transfer_refused(s, i) &&
         sgi_kona_gl_imaging_active(s->state[i])) {
         const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
         const SGIKonaGLPipe *p = &s->state[i]->pipe;
@@ -10799,7 +10919,7 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
         }
     } else if (u->count && u->draw_pixels && s->context_current == i &&
         !s->state[i]->pipe.pixel_zoom_unsupported &&
-        !s->state[i]->pipe.pixel_transfer_unsupported) {
+        !sgi_kona_gl_transfer_refused(s, i)) {
         for (unsigned channel = 0; channel < 4; channel++) {
             transfer.scale[channel] = sgi_kona_gl_float(
                 s->state[i]->pipe.pixel_transfer.scale[channel]);
@@ -11298,6 +11418,12 @@ static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
     case 0x8020 ... 0x8023:     /* GL_POST_CONVOLUTION_c_BIAS */
         destination = &p->pixel_transfer.post_conv_bias[pname - 0x8020];
         break;
+    case 0x80b4 ... 0x80b7:     /* GL_POST_COLOR_MATRIX_c_SCALE */
+        destination = &p->pixel_transfer.post_matrix_scale[pname - 0x80b4];
+        break;
+    case 0x80b8 ... 0x80bb:     /* GL_POST_COLOR_MATRIX_c_BIAS */
+        destination = &p->pixel_transfer.post_matrix_bias[pname - 0x80b8];
+        break;
     default:
         p->pixel_transfer_unsupported = true;
         qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported pixel transfer 0x%x;"
@@ -11374,13 +11500,24 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         s->texture_bind_generation = 0;
     }
+    /*
+     * Histogram, minmax and the three colour tables, imaging stages the
+     * model does not apply: image transfers are refused while one is
+     * enabled.
+     */
     if (i != SGI_KONA_CONTEXT_NONE && !s->state[i]->gl.in_begin &&
-        ((s->state[i]->gl.matrix_mode == 0x1800 && selector >= 0xcf &&
-          selector <= 0xdf && selector != SGI_KONA_CMD_GL_MATRIX_MODE) ||
-         ((selector == 0x24 || selector == 0x25) &&
-          (args[0] == 0x8024 || args[0] == 0x802e || args[0] == 0x80d0 ||
-           args[0] == 0x80d1 || args[0] == 0x80d2)))) {
-        s->state[i]->pipe.pixel_transfer_unsupported = true;
+        (selector == 0x24 || selector == 0x25)) {
+        static const uint32_t caps[] = {
+            0x8024, 0x802e, 0x80d0, 0x80d1, 0x80d2,
+        };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
+            if (args[0] == caps[k] && selector == 0x24) {
+                s->state[i]->imaging.unmodelled |= 1u << k;
+            } else if (args[0] == caps[k]) {
+                s->state[i]->imaging.unmodelled &= ~(1u << k);
+            }
+        }
     }
     if (i != SGI_KONA_CONTEXT_NONE &&
         sgi_kona_gl_multisample(s, i, selector, args)) {
@@ -12485,16 +12622,80 @@ static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t)
     return true;
 }
 
+/* Whether the colour matrix stage changes anything. */
+static bool sgi_kona_gl_matrix_stage(const uint32_t m[16],
+                                     const SGIKonaGLPixelTransfer *t)
+{
+    for (unsigned k = 0; k < 16; k++) {
+        if (m[k] != (k % 5 ? 0 : 0x3f800000)) {
+            return true;
+        }
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (t->post_matrix_scale[c] != 0x3f800000 || t->post_matrix_bias[c]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
  * Whether colour image transfers have a stage after the pixel maps: a 2D
- * filter, or post-convolution scale and bias other than 1 and 0. With
- * neither, the transfer is exactly what it was without the imaging
- * subset.
+ * filter, post-convolution scale and bias other than 1 and 0, or a colour
+ * matrix or post-matrix scale and bias other than identity. With none,
+ * the transfer is exactly what it was without the imaging subset.
  */
 static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st)
 {
     return sgi_kona_gl_filter_2d(&st->imaging) >= 0 ||
-           !sgi_kona_gl_post_conv_default(&st->pipe.pixel_transfer);
+           !sgi_kona_gl_post_conv_default(&st->pipe.pixel_transfer) ||
+           sgi_kona_gl_matrix_stage(st->imaging.colour_matrix,
+                                    &st->pipe.pixel_transfer);
+}
+
+/*
+ * The colour matrix, post-matrix scale and bias, then the clamp to
+ * [0, 1] (the OpenGL reference page for glPixelTransfer: R' = (m1 R + m5
+ * G + m9 B + m13 A) Rscale + Rbias, the matrix in column order).
+ */
+static bool sgi_kona_gl_post_matrix(const uint32_t m[16],
+                                    const SGIKonaGLPixelTransfer *t,
+                                    double rgba[4])
+{
+    double in[4];
+
+    memcpy(in, rgba, sizeof(in));
+    for (unsigned r = 0; r < 4; r++) {
+        double value = 0;
+
+        for (unsigned c = 0; c < 4; c++) {
+            value += sgi_kona_gl_float(m[c * 4 + r]) * in[c];
+        }
+        value = value * sgi_kona_gl_float(t->post_matrix_scale[r]) +
+                sgi_kona_gl_float(t->post_matrix_bias[r]);
+        if (!isfinite(value)) {
+            return false;
+        }
+        rgba[r] = CLAMP(value, 0.0, 1.0);
+    }
+    return true;
+}
+
+/*
+ * The per-pixel stages after convolution, in their order: post-convolution
+ * scale and bias with the clamp, when a filter applied or they are not 1
+ * and 0, then the colour matrix stage when it changes anything.
+ */
+static bool sgi_kona_gl_pixel_stages(const SGIKonaGLPixelTransfer *t,
+                                     const uint32_t m[16], bool convolved,
+                                     double rgba[4])
+{
+    if ((convolved || !sgi_kona_gl_post_conv_default(t)) &&
+        !sgi_kona_gl_post_conv(t, rgba)) {
+        return false;
+    }
+    return !sgi_kona_gl_matrix_stage(m, t) ||
+           sgi_kona_gl_post_matrix(m, t, rgba);
 }
 
 /* Post-convolution scale and bias, then the clamp to [0, 1]. */
@@ -12580,7 +12781,8 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
                     }
                     d[c] = filtered ? sum : in[(uint64_t)y * w + x][c];
                 }
-                if (!sgi_kona_gl_post_conv(t, d)) {
+                if (!sgi_kona_gl_pixel_stages(t, st->imaging.colour_matrix,
+                                              true, d)) {
                     return false;
                 }
             }
@@ -12592,7 +12794,8 @@ static bool sgi_kona_gl_imaging(const SGIKonaGLState *st,
         return true;
     }
     for (uint64_t k = 0; k < (uint64_t)w * h; k++) {
-        if (!sgi_kona_gl_post_conv(t, in[k])) {
+        if (!sgi_kona_gl_pixel_stages(t, st->imaging.colour_matrix, false,
+                                      in[k])) {
             return false;
         }
     }
@@ -20198,8 +20401,8 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
     .name = TYPE_SGI_KONA "/gl-transfer",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = sgi_kona_gl_transfer_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(scale, SGIKonaGLPixelTransfer, 4),
@@ -20224,6 +20427,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
                              SGIKonaGLPixelMap),
         VMSTATE_UINT32_ARRAY(post_conv_scale, SGIKonaGLPixelTransfer, 4),
         VMSTATE_UINT32_ARRAY(post_conv_bias, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_UINT32_ARRAY(post_matrix_scale, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_UINT32_ARRAY(post_matrix_bias, SGIKonaGLPixelTransfer, 4),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -20883,13 +21088,19 @@ static int sgi_kona_gl_imaging_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
-    return im->enabled > 7 ? -EINVAL : 0;
+    for (unsigned k = 0; k < SGI_KONA_GL_ATTRIB_DEPTH; k++) {
+        if (((SGIKonaGLState *)opaque)->imaging_enabled_attrib[k] > 0xff) {
+            return -EINVAL;
+        }
+    }
+    return im->enabled > 7 || im->unmodelled > 0x1f ||
+           im->colour_depth > SGI_KONA_GL_COLOUR_STACK - 1 ? -EINVAL : 0;
 }
 
 static const VMStateDescription vmstate_sgi_kona_gl_imaging = {
     .name = TYPE_SGI_KONA "/logical-state/imaging",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = sgi_kona_gl_imaging_needed,
     .post_load = sgi_kona_gl_imaging_post_load,
     .fields = (const VMStateField[]) {
@@ -20899,6 +21110,11 @@ static const VMStateDescription vmstate_sgi_kona_gl_imaging = {
         VMSTATE_UINT32(imaging.enabled, SGIKonaGLState),
         VMSTATE_UINT32(imaging.pending_token, SGIKonaGLState),
         VMSTATE_UINT32_ARRAY(imaging.pending, SGIKonaGLState, 9),
+        VMSTATE_UINT32_ARRAY(imaging.colour_matrix, SGIKonaGLState, 16),
+        VMSTATE_UINT32_2DARRAY(imaging.colour_stack, SGIKonaGLState,
+                               SGI_KONA_GL_COLOUR_STACK - 1, 16),
+        VMSTATE_UINT32(imaging.colour_depth, SGIKonaGLState),
+        VMSTATE_UINT32(imaging.unmodelled, SGIKonaGLState),
         VMSTATE_UINT32_ARRAY(imaging_enabled_attrib, SGIKonaGLState,
                              SGI_KONA_GL_ATTRIB_DEPTH),
         VMSTATE_END_OF_LIST()
@@ -21421,6 +21637,11 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     for (unsigned k = 0; k < 4; k++) {
         qemu_put_be32(f, u->transfer.post_conv_scale[k]);
         qemu_put_be32(f, u->transfer.post_conv_bias[k]);
+        qemu_put_be32(f, u->transfer.post_matrix_scale[k]);
+        qemu_put_be32(f, u->transfer.post_matrix_bias[k]);
+    }
+    for (unsigned k = 0; k < 16; k++) {
+        qemu_put_be32(f, u->colour_matrix[k]);
     }
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
@@ -21503,6 +21724,11 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     for (unsigned k = 0; k < 4; k++) {
         tmp.transfer.post_conv_scale[k] = qemu_get_be32(f);
         tmp.transfer.post_conv_bias[k] = qemu_get_be32(f);
+        tmp.transfer.post_matrix_scale[k] = qemu_get_be32(f);
+        tmp.transfer.post_matrix_bias[k] = qemu_get_be32(f);
+    }
+    for (unsigned k = 0; k < 16; k++) {
+        tmp.colour_matrix[k] = qemu_get_be32(f);
     }
     tmp.complete = complete;
     tmp.swap_bytes = swap;
