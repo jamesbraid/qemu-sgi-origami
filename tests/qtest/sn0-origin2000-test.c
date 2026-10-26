@@ -1839,7 +1839,8 @@ static void test_router_nic_inventory_migration(void)
         "EMUR00", "EMUR01",
     };
     QTestState *from = start_module();
-    QTestState *to = qtest_init("-M origin2000 -incoming defer");
+    QTestState *to = qtest_init("-M origin2000 -smp 8 -m 256M "
+                               "-incoming defer");
     RouterNIC nics[] = {
         { from, 0, 0 },
         { from, 2, 0 },
@@ -1868,7 +1869,8 @@ static void test_router_nic_inventory_migration(void)
 static void test_migration(void)
 {
     QTestState *from = start_module();
-    QTestState *to = qtest_init("-M origin2000 -incoming defer");
+    QTestState *to = qtest_init("-M origin2000 -smp 8 -m 256M "
+                               "-incoming defer");
     const uint64_t target = UINT64_C(0x21) * NODE_STRIDE + MEM_PROBE;
     const uint64_t marker = UINT64_C(0x123456789abcdef);
     uint64_t value;
@@ -1926,7 +1928,8 @@ static void test_xbow_link_reset_lifecycle(void)
 static void test_isolated_migration(void)
 {
     QTestState *from = start_module();
-    QTestState *to = qtest_init("-M origin2000 -incoming defer");
+    QTestState *to = qtest_init("-M origin2000 -smp 8 -m 256M "
+                               "-incoming defer");
     const uint64_t marker = UINT64_C(0x123456789abcdef);
     g_autoptr(QDict) response = NULL;
     uint64_t status;
@@ -2210,7 +2213,8 @@ static void test_mutated_reset(void)
 static void test_distinct_table_migration(void)
 {
     QTestState *from = start_module();
-    QTestState *to = qtest_init("-M origin2000 -incoming defer");
+    QTestState *to = qtest_init("-M origin2000 -smp 8 -m 256M "
+                               "-incoming defer");
     const uint64_t local = UINT64_C(0x12) * NODE_STRIDE + MEM_PROBE;
     const uint64_t meta = UINT64_C(0x31) * NODE_STRIDE + MEM_PROBE;
     const uint64_t unwritten = UINT64_C(0x32) * NODE_STRIDE + MEM_PROBE;

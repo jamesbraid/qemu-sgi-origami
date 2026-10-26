@@ -60,12 +60,12 @@ layer:
     - 2
     - 2
     provenance: derived
-    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"]
+    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18", "SGI Origin 2000 remanufactured product guide 1068 (9/99) printed page 7 PDF page 7: node card main memory 256MB to 4GB per card; printed page 6 PDF page 6: from 256MB to 4GB ECC main memory per board"]
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
       node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
-  memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
+  memory_kits_per_node: [kit-256, kit-256, kit-256, kit-256]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
   # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
@@ -105,7 +105,7 @@ layer:
     machine:
       name: Origin 2000 rack module
       model_role: emulation-target
-      notes: Selected installation with two processors and one 64 MiB bank per node. Optional
+      notes: Selected installation with two processors and 256 MiB per node in two 128 MB banks. Optional
         I/O slots and external CrayLink connectors are empty. This is a selected population,
         not a captured machine inventory. Selected hardware configuration. The full processor
         mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer.

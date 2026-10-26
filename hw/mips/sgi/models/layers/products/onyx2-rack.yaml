@@ -66,12 +66,12 @@ layer:
     - 2
     - 2
     provenance: derived
-    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"]
+    sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18", "SGI Onyx2 remanufactured product guide 1073 (6/99) printed page 3 PDF page 3: every Onyx2 deskside and single-rack system lists 256MB as the smallest system RAM; the node card minimum is 256MB (1068 printed page 7), the Onyx2 using the same node board"]
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
       node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
-  memory_kits_per_node: [kit-64, kit-64, kit-64, kit-64]
+  memory_kits_per_node: [kit-256, kit-256, kit-256, kit-256]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
   # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
@@ -126,8 +126,8 @@ layer:
       name: Onyx2 rack with one InfiniteReality pipe
       model_role: emulation-target
       notes: >-
-        Selected installation with two processors and one 64 MiB bank per
-        node. IO1 holds a BaseIO-G with its MediaIO daughtercard, and IO3
+        Selected installation with two processors and 256 MiB in two
+        128 MB banks per node. IO1 holds a BaseIO-G with its MediaIO daughtercard, and IO3
         holds the Xtown that cables to one pipe in the graphics module: a
         geometry board, one raster manager with texture memory and a display
         generator, reached through the graphics module's Ktown. The pipe's

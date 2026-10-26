@@ -14,7 +14,7 @@ layer:
     supported_cpu_populations:
     - [2, 2]
     provenance: vendor-document
-    sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors"]
+    sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors", "SGI Onyx2 remanufactured product guide 1073 (6/99) printed page 3 PDF page 3: every Onyx2 deskside and single-rack system lists 256MB as the smallest system RAM; the node card minimum is 256MB (1068 printed page 7), the Onyx2 using the same node board"]
     # One or two node boards, node slot 1 first (docs/specs/sgi-onyx2.rst,
     # Node-board populations). The deskside's one Crossbow carries every
     # XIO slot, so a single node board controls all of them.
@@ -47,7 +47,7 @@ layer:
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu-a, cpu-b]
-  memory_kits_per_node: [kit-64, kit-64]
+  memory_kits_per_node: [kit-256, kit-256]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
   # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
@@ -104,7 +104,7 @@ layer:
       model_role: emulation-target
       notes: >-
         Selected installation of two node boards, each with two processors
-        and one 64 MiB bank, joined by the midplane's Null Router. IO1 holds
+        and 256 MiB in two 128 MB banks, joined by the midplane's Null Router. IO1 holds
         a BaseIO-G with its MediaIO daughtercard; the graphics board set
         takes XIO4 directly, with a geometry board, one raster manager with
         texture memory and a display generator, and no Ktown, so the pipe's

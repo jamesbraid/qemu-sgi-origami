@@ -1174,8 +1174,9 @@ class SystemModelResolutionTests(unittest.TestCase):
         self.assertEqual(model["machine"]["model_role"], "emulation-target")
         population = model["composition"]["population"]
         self.assertEqual(population["cpus_per_node"], [2] * 4)
-        self.assertEqual(population["memory_mib_per_node"], [64] * 4)
-        self.assertEqual(population["memory_bank_mib_per_node"], [[64] + [0] * 7] * 4)
+        self.assertEqual(population["memory_mib_per_node"], [256] * 4)
+        self.assertEqual(population["memory_bank_mib_per_node"],
+                         [[128, 128] + [0] * 6] * 4)
         connectors = {item["id"] for item in model["components"]
                       if item["kind"] == "connector"}
         selections = model["composition"]["connector_population"]
