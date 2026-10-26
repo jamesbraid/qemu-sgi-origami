@@ -19126,7 +19126,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial,nodes=1",
       "memory-per-node-mib": {
@@ -19136,7 +19138,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -19301,7 +19303,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
       "memory-per-node-mib": {
@@ -19311,7 +19315,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -19471,7 +19475,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
       "memory-per-node-mib": {
@@ -19481,7 +19487,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -19646,7 +19652,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-rack-base,nodes=1",
       "memory-per-node-mib": {
@@ -19656,7 +19664,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -19821,7 +19829,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-tower-multi,nodes=1",
       "memory-per-node-mib": {
@@ -19831,7 +19841,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -19991,7 +20001,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-tower-multi,nodes=1",
       "memory-per-node-mib": {
@@ -20001,7 +20013,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
@@ -20166,7 +20178,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "tezro,topology=tezro-tower-one,nodes=1",
       "memory-per-node-mib": {
@@ -20176,7 +20190,7 @@
         "default": 4096
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
