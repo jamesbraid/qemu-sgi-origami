@@ -826,8 +826,8 @@ static void test_migration_without_blank_unblanks(void)
 }
 
 /*
- * A deskside pipe configured as fancy-akita's: an InfiniteReality2 whose
- * DG5-2 display generator, 030-1055-001, has two channels.
+ * A deskside pipe configured as a real two-GE InfiniteReality2: its DG5-2
+ * display generator, 030-1055-001, has two channels.
  */
 #define DG5_2_ARGS \
     "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \

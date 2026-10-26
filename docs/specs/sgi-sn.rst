@@ -675,9 +675,10 @@ graphics can change between boots.
 Default pipes follow QEMU's display-adapter convention. A machine that
 ships with graphics fits its catalogue default unless a graphics
 ``-device`` or ``-vga none`` is given: ``octane`` an SI at ``widget-11``,
-``octane2`` a V12 at ``widget-11``, the Onyx2 desksides whole-tetra's
-InfiniteReality2 and the racks true-wombat's InfiniteReality3 with a
-plain DG5-2, and ``fuel`` its V12. The Origin 200 and Origin 2000 fit
+``octane2`` a V12 at ``widget-11``, the Onyx2 desksides the
+InfiniteReality2 of a real Onyx2 deskside and the racks the
+InfiniteReality3 of a real Onyx2 rack with a plain DG5-2, and ``fuel``
+its V12. The Origin 200 and Origin 2000 fit
 none.
 Any graphics ``-device`` replaces the default, whichever slot it names,
 so an Octane with ``-device sgi-mgras,slot=widget-9`` leaves

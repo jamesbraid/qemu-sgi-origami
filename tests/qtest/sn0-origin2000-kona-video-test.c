@@ -577,8 +577,8 @@ static QTestState *kona_init_dg(const char *dg, char **log)
 /*
  * A configured pipe describes every channel its display generator has:
  * GetBoardConfig's board mask has a bit for each physical channel, two
- * for fancy-akita's DG5-2 030-1055-001 and eight for whole-tetra's
- * 030-1087-001, and GetChannelConfig answers each one present (0x1), the
+ * for the DG5-2 030-1055-001 and eight for the 030-1087-001 seen in a real
+ * Onyx2 deskside, and GetChannelConfig answers each one present (0x1), the
  * channels past 0 not yet running. A channel past the board's last gets
  * no reply and is logged.
  */

@@ -396,7 +396,7 @@ static void test_catalogue_records(void)
         g_assert_null(strstr(text->str, "\"changeable\": true"));
     }
 
-    /* The deskside's default is whole-tetra's configuration. */
+    /* The deskside's default is the real Onyx2 deskside capture's pipe. */
     slot = slot_record("onyx2-deskside", "io4");
     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(slot, "default"),
                                   "product"), ==, "ir2");
@@ -413,8 +413,8 @@ static void test_catalogue_records(void)
                     "Onyx2 deskside");
 
     /*
-     * The rack's default is true-wombat's with a plain DG5-2 in place of
-     * its DG5-2 with GVO, which is not modelled.
+     * The rack's default is the real Onyx2 rack capture's pipe with a
+     * plain DG5-2 in place of its DG5-2 with GVO, which is not modelled.
      */
     slot = slot_record("onyx2-rack", "io3");
     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(slot, "default"),
@@ -539,7 +539,7 @@ static void test_device_replaces_default(void)
     g_assert_cmpstr(type, ==, "si-t");
     qtest_quit(qts);
 
-    /* fancy-akita's pipe: GE14-2, two RMs and its own display generator. */
+    /* A two-GE pipe: GE14-2, two RMs and its own display generator. */
     qts = start(launch_for("onyx2-deskside"),
                 "-device sgi-kona,slot=io4,product=ir2,geometry=ge14-2,"
                 "rm-count=2,display=dg5-2");

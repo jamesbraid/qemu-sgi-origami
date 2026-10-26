@@ -2352,10 +2352,15 @@ typedef struct SGIKonaProduct {
 } SGIKonaProduct;
 
 /*
- * GE14-4: whole-tetra's board and hinv revision. GE14-2: fancy-akita's
- * owner list (030-1051-002 rev K) and gfxinfo (2 GEs, occupancy 0x03);
- * its board words are whole-tetra's GE14-4 ones, approximated. GE16-4:
- * true-wombat's board, hinv revision and words.
+ * The captures are hinv, gfxinfo and board lists from real systems: an
+ * Onyx2 deskside InfiniteReality2 (web:irixnet-post-32192), an Onyx2 rack
+ * InfiniteReality3 (web:nekonomicon-16285), and an owner's board list and
+ * gfxinfo for a two-GE InfiniteReality2.
+ *
+ * GE14-4: the deskside capture's board and hinv revision. GE14-2: the
+ * two-GE owner's list (030-1051-002 rev K) and gfxinfo (2 GEs, occupancy
+ * 0x03); its board words are the deskside's GE14-4 ones, approximated.
+ * GE16-4: the rack capture's board, hinv revision and words.
  */
 static const SGIKonaGeometry sgi_kona_ge14_2 = {
     "ge14-2", { "GE14-2", "030-1051-002", "K" }, 2, 0x3,
@@ -2371,10 +2376,10 @@ static const SGIKonaGeometry sgi_kona_ge16_4 = {
 };
 
 /*
- * RM7: whole-tetra's part and board word, fancy-akita's name and
- * revision. RM9: true-wombat's board (configmon names it RM9, revision E)
- * and board word. gfxinfo names an RM9 only by that name, right-justified
- * in the record.
+ * RM7: the deskside capture's part and board word, the two-GE owner's
+ * name and revision. RM9: the rack capture's board (configmon names it
+ * RM9, revision E) and board word. gfxinfo names an RM9 only by that name,
+ * right-justified in the record.
  */
 static const SGIKonaRaster sgi_kona_rm7 = {
     "rm7", { "RM7", "030-1054-001", "G" }, 0x3020c06,
@@ -2385,11 +2390,12 @@ static const SGIKonaRaster sgi_kona_rm9 = {
 
 /*
  * Texture boards and the size code gfxinfo turns into its "Texture
- * Memory" text (2 is 64MB, 4 is 256MB). TM7 64 MB: whole-tetra's part,
- * fancy-akita's name and revision; an RM9-64 is "030-1402-00x +
- * 030-1053-00x" (comp.sys.sgi.marketplace, 2 August 2004), so the RM9's
- * 64 MB board is taken to be the same TM7, inferred. 256 MB:
- * true-wombat's 030-1588-001, whose name and revision no source gives.
+ * Memory" text (2 is 64MB, 4 is 256MB). TM7 64 MB: the deskside
+ * capture's part, the two-GE owner's name and revision; an RM9-64 is
+ * "030-1402-00x + 030-1053-00x" (comp.sys.sgi.marketplace, 2 August 2004),
+ * so the RM9's 64 MB board is taken to be the same TM7, inferred. 256 MB:
+ * the rack capture's 030-1588-001, whose name and revision no source
+ * gives.
  */
 static const SGIKonaTexture sgi_kona_tm7_64 = {
     64, 2, { "TM7", "030-1053-001", "F" },
@@ -2399,7 +2405,7 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
 };
 
 /*
- * true-wombat's GVO option, configmon revision B, and the code gfxinfo
+ * The rack capture's GVO option, configmon revision B, and the code gfxinfo
  * prints "GVO option detected" for. The option's identity only: the model
  * has no GVO video output.
  */
@@ -2411,11 +2417,11 @@ static const SGIKonaOption sgi_kona_gvo = {
  * Display boards, by the "display" type: the board names a
  * community-compiled list of SGI PCA numbers gives, each presenting the
  * parts a capture shows for it.
- * dg5-8, 030-1087-001: whole-tetra's board, whose gfxinfo reports eight
- * channels and 64K of external gamma; the record's name and revision are
- * not given. dg5-2, 030-1055-001: fancy-akita's DG5-2 (owner list,
- * revision unreadable), two channels. dg5-2-gvo: true-wombat's DG5-2 base
- * for an option board, 030-1242-001 revision D, with its GVO record; the
+ * dg5-8, 030-1087-001: the deskside capture's board, whose gfxinfo reports
+ * eight channels and 64K of external gamma; the record's name and revision
+ * are not given. dg5-2, 030-1055-001: the two-GE owner's DG5-2 (owner list,
+ * revision unreadable), two channels. dg5-2-gvo: the rack capture's DG5-2
+ * base for an option board, 030-1242-001 revision D, with its GVO record; the
  * model has no GVO output, so the machine catalogue does not offer it.
  */
 static const SGIKonaDisplay sgi_kona_displays[] = {
@@ -2676,7 +2682,10 @@ static void sgi_kona_identity_record(SGIXioBoardState *board,
         record->part = c->geometry->board.part;
         record->revision = c->geometry->board.revision;
     } else if (part->record == &sgi_kona_ktown_record) {
-        /* true-wombat's Ktown: hinv and configmon name it KTOWN, rev F. */
+        /*
+         * The rack capture's Ktown: hinv and configmon name it KTOWN,
+         * rev F.
+         */
         record->name = "KTOWN";
         record->revision = "F";
     }
@@ -3434,7 +3443,8 @@ static bool sgi_kona_video_names_channel(uint32_t command)
  *   Words 1-16 would name the format, which the X server looks up as a
  *   .vfo file itself, and 17 its datestamp: no setter sends a name, so
  *   where a pipe takes them from is unknown, and the model sends none,
- *   as the true-wombat capture's channel 0 shows ("0 pixels, 0 lines").
+ *   as the real Onyx2 rack capture's channel 0 shows ("0 pixels, 0
+ *   lines").
  * - GetChannelBlanking: word 0 whether ChannelBlanking blanks it.
  * - GetResize: words 0-3 the input rectangle (x, the top row counted from
  *   the bottom of the managed area, width, height), 4-7 the rectangle a
