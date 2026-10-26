@@ -729,6 +729,33 @@ static void mgras_xmap_write(SGIMgrasState *s, hwaddr addr, uint32_t value)
     s->dirty = true;
 }
 
+/*
+ * How long the sync and idle bits may read clear for waiting work: well
+ * inside the IRIX kernel's 2 s read-DMA and 3 s raster-idle waits.
+ */
+#define MGRAS_STATUS_BUSY_NS    (500 * SCALE_MS)
+
+void sgi_mgras_flags_write(SGIMgrasState *s, SGIMgrasFlagsOp op,
+                           uint32_t bits)
+{
+    if (op == MGRAS_FLAGS_SET) {
+        s->hq_flags |= bits;
+        return;
+    }
+    if (op == MGRAS_FLAGS_CLEAR) {
+        s->hq_flags &= ~bits;
+        return;
+    }
+    s->pending &= ~bits;
+    if (bits & MGRAS_PENDING_FLAGS) {
+        s->first_ack = true;
+    }
+    if (bits & MGRAS_PENDING_CONTEXT) {
+        s->second_ack = true;
+    }
+    mgras_update_irq(s);
+}
+
 static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
                                      unsigned size)
 {
@@ -881,8 +908,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return size == 1 ? (s->dac_config & 0xff) : s->dac_config;
     case SGI_MGRAS_DAC_LUT_INDEX_LOW: return s->dac_lut_index_low;
     case 0x008000: return 0;
-    /* Keep unresolved status bits separate from modeled pending sources. */
-    case 0x011020: return s->pending | s->hq_status_extra;
+    /*
+     * Keep unresolved status bits separate from modeled pending sources.
+     * An acknowledge still queued behind work reads as done.
+     */
+    case 0x011020:
+        return (s->pending & ~s->work_ack_clears) | s->hq_status_extra;
     case 0x011040: return s->irq_mask;
     case SGI_MGRAS_HQ_CONFIG_A: return s->hq_config_a;
     case SGI_MGRAS_HQ_CONFIG_B: return s->hq_config_b;
@@ -895,8 +926,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_SCHED_ARG_3: return s->sched_arg_3;
     case SGI_MGRAS_SCHED_ARG_4: return s->sched_arg_4;
     /* Both offsets expose the same stored flag word. */
-    case SGI_MGRAS_HQ_FLAGS: return s->hq_flags;
-    case SGI_MGRAS_HQ_FLAGS_CLEAR: return s->hq_flags;
+    /*
+     * Both offsets expose the same stored flag word, with any set or
+     * clear still queued behind work read as done.
+     */
+    case SGI_MGRAS_HQ_FLAGS:
+    case SGI_MGRAS_HQ_FLAGS_CLEAR:
+        return (s->hq_flags & ~s->work_flag_clears) | s->work_flag_sets;
     /* Retrace status content is unsupported. */
     case SGI_MGRAS_RETRACE_STATUS_1: return 0;
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
@@ -918,10 +954,25 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * behind it are still running (sgi-mgras-raster.c), so those waits
      * wait for them; otherwise every command has finished and both read
      * set. When the board clears either is unknown.
+     *
+     * The model board is far slower than the real one, and a full-size
+     * GLperf list runs for many seconds, past the kernel's 2 s and 3 s
+     * limits. So the bits read clear only for the first
+     * MGRAS_STATUS_BUSY_NS of continuous work, and set after that. A
+     * pixel read that then goes ahead still waits for the work at its
+     * data or DMA-status read. Finishing the work at this read instead
+     * would stall the processor: the kernel's retrace routine reads this
+     * register about 30 times a second.
      */
     case 0x020000:
-        return sgi_mgras_work_pending(s) ? 0x10 : 0x13;
-    /* Commands execute synchronously, so modeled FIFO occupancy is zero. */
+        return sgi_mgras_work_pending(s) &&
+               !sgi_head_work_overdue(&s->work, MGRAS_STATUS_BUSY_NS) ?
+               0x10 : 0x13;
+    /*
+     * FIFO occupancy reads zero: the model takes every word off the port
+     * as it arrives, into the parser or behind waiting work. What the
+     * board shows here while it works is unknown.
+     */
     case 0x020008: return 0;
     /* Bus and DMA activity are not modeled and report idle. */
     case 0x020100: return 0;
@@ -1213,10 +1264,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         s->prefix_written = true;
         return;
     case 0x011028:
-        s->pending &= ~(uint32_t)value;
-        if (value & MGRAS_PENDING_FLAGS) s->first_ack = true;
-        if (value & MGRAS_PENDING_CONTEXT) s->second_ack = true;
-        mgras_update_irq(s); return;
+        sgi_mgras_flags_write(s, MGRAS_FLAGS_ACK, value);
+        sgi_mgras_work_queue_flags(s, MGRAS_FLAGS_ACK, value);
+        return;
     /* Store unresolved status bits separately from pending sources. */
     case 0x011020: s->hq_status_extra = value; return;
     /*
@@ -1257,8 +1307,14 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     case SGI_MGRAS_SCHED_ARG_3: s->sched_arg_3 = value; return;
     case SGI_MGRAS_SCHED_ARG_4: s->sched_arg_4 = value; return;
     /* The set port ORs bits. The clear port removes them. */
-    case SGI_MGRAS_HQ_FLAGS: s->hq_flags |= value; return;
-    case SGI_MGRAS_HQ_FLAGS_CLEAR: s->hq_flags &= ~(uint32_t)value; return;
+    case SGI_MGRAS_HQ_FLAGS:
+        sgi_mgras_flags_write(s, MGRAS_FLAGS_SET, value);
+        sgi_mgras_work_queue_flags(s, MGRAS_FLAGS_SET, value);
+        return;
+    case SGI_MGRAS_HQ_FLAGS_CLEAR:
+        sgi_mgras_flags_write(s, MGRAS_FLAGS_CLEAR, value);
+        sgi_mgras_work_queue_flags(s, MGRAS_FLAGS_CLEAR, value);
+        return;
     /* Store this unresolved scheduling argument without interpreting it. */
     case SGI_MGRAS_RETRACE_ACK: return;
     case SGI_MGRAS_NIC:
@@ -1490,19 +1546,37 @@ static void mgras_access_begin(SGIMgrasState *s, hwaddr addr, bool write)
  */
 static void mgras_access_end(SGIMgrasState *s)
 {
-    if (!s->work_drawing) {
+    if (!s->work.drawing) {
         sgi_mgras_display_flush(s);
     }
 }
 
-static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * An access from inside any SGI head's access or work on this thread: a
+ * board's DMA aimed through the Crossbow at these registers. Refused and
+ * logged, as QEMU's re-entrancy guard, which these registers opt out of,
+ * would refuse it.
+ */
+static MemTxResult mgras_refuse(hwaddr addr, bool write)
 {
-    uint64_t value;
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s at 0x%" HWADDR_PRIx
+                  " from inside a graphics head's work refused\n",
+                  write ? "write" : "read", addr);
+    return MEMTX_ACCESS_ERROR;
+}
 
+static MemTxResult mgras_mmio_read(void *opaque, hwaddr addr, uint64_t *data,
+                                   unsigned size, MemTxAttrs attrs)
+{
+    if (!sgi_head_work_enter()) {
+        *data = 0;
+        return mgras_refuse(addr, false);
+    }
     mgras_access_begin(opaque, addr, false);
-    value = mgras_read(opaque, addr, size);
+    *data = mgras_read(opaque, addr, size);
     mgras_access_end(opaque);
-    return value;
+    sgi_head_work_leave();
+    return MEMTX_OK;
 }
 
 /*
@@ -1538,21 +1612,28 @@ static void mgras_return_credit(SGIMgrasState *s)
     sgi_pi_gfx_return_credits(node, SGI_XIO_BOARD(s)->slot, 1);
 }
 
-static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
-                             unsigned size)
+static MemTxResult mgras_mmio_write(void *opaque, hwaddr addr,
+                                    uint64_t value, unsigned size,
+                                    MemTxAttrs attrs)
 {
     bool counted = sgi_pi_gfx_store_counted();
 
+    if (!sgi_head_work_enter()) {
+        return mgras_refuse(addr, true);
+    }
     mgras_access_begin(opaque, addr, true);
     mgras_write(opaque, addr, value, size);
     if (counted) {
         mgras_return_credit(opaque);
     }
     mgras_access_end(opaque);
+    sgi_head_work_leave();
+    return MEMTX_OK;
 }
 
 static const MemoryRegionOps mgras_ops = {
-    .read = mgras_mmio_read, .write = mgras_mmio_write,
+    .read_with_attrs = mgras_mmio_read,
+    .write_with_attrs = mgras_mmio_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /* Preserve 64-bit FIFO words instead of splitting them into callbacks. */
@@ -1819,10 +1900,12 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     /*
      * An access that must wait for display-list work sleeps inside its
      * handler with the big lock let go (sgi_mgras_work_drain()), and a
-     * second processor's access then arrives while the first is still in
-     * the device. The guard would refuse it, which the Hub reports to
-     * IRIX as a read access error. Nothing else re-enters: the board's
-     * DMA reaches node memory only.
+     * second processor's access may then arrive while the first is still
+     * in the device. QEMU's re-entrancy guard is per device, not per
+     * thread, and would refuse that access, which the Hub reports to IRIX
+     * as a read access error. The handlers keep a guard per thread
+     * instead (sgi_head_work_enter()), which still refuses a board's own
+     * DMA arriving here from inside its work or another head's.
      */
     s->regs.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
@@ -1866,7 +1949,9 @@ static void mgras_unregister_cleanup(SGIMgrasState *s)
 static void mgras_vm_state(void *opaque, bool running, RunState state)
 {
     if (!running) {
+        sgi_head_work_enter_work();
         sgi_mgras_work_drain(opaque, UINT64_MAX);
+        sgi_head_work_leave();
     }
 }
 
@@ -1971,7 +2056,9 @@ static bool mgras_xmap_indices_valid(SGIMgrasState *s)
 /* The machine stopped first (mgras_vm_state); this only makes sure. */
 static int mgras_pre_save(void *opaque)
 {
+    sgi_head_work_enter_work();
     sgi_mgras_work_drain(opaque, UINT64_MAX);
+    sgi_head_work_leave();
     return 0;
 }
 
@@ -2814,7 +2901,7 @@ static void mgras_instance_init(Object *obj)
      * than of host time, and whether any is still waiting to run.
      */
     object_property_add_uint32_ptr(obj, "x-test-slice-words",
-                                   &s->test_slice_words,
+                                   &s->work.test_words,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_bool(obj, "x-test-work-pending",
                              mgras_test_get_work_pending, NULL);
@@ -2878,11 +2965,6 @@ static void mgras_instance_finalize(Object *obj)
     SGIMgrasState *s = SGI_MGRAS(obj);
 
     mgras_unregister_cleanup(s);
-    if (s->work_vm_state) {
-        qemu_del_vm_change_state_handler(s->work_vm_state);
-        s->work_vm_state = NULL;
-    }
-    sgi_mgras_work_cleanup(s);
     sgi_mgras_gl_cleanup(s);
 }
 

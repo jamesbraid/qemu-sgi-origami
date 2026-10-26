@@ -11,8 +11,7 @@
 #include "qemu/cutils.h"
 #include "qemu/units.h"
 #include "qemu/timer.h"
-#include "qemu/thread.h"
-#include "qemu/main-loop.h"
+#include "hw/display/sgi/head-work.h"
 #include "hw/core/cpu.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-display.h"
@@ -360,6 +359,7 @@ typedef enum MgrasQueuedKind {
     MGRAS_QUEUED_COMMAND,       /* a 64-bit write to the main port */
     MGRAS_QUEUED_FIFO,          /* a 64-bit write to the normal FIFO */
     MGRAS_QUEUED_DMA_MAP,       /* a write to the DMA source-mapping port */
+    MGRAS_QUEUED_FLAGS,         /* a flag set, flag clear or acknowledge */
 } MgrasQueuedKind;
 
 typedef struct MgrasQueuedWord {
@@ -369,6 +369,59 @@ typedef struct MgrasQueuedWord {
 } MgrasQueuedWord;
 
 static void mgras_work_schedule(SGIMgrasState *s);
+
+/* What the flag writes and acknowledges still in the queue will do. */
+static void mgras_work_flags_update(SGIMgrasState *s)
+{
+    s->work_flag_sets = s->work_flag_clears = s->work_ack_clears = 0;
+    for (unsigned int i = 0; i < s->work_queue->len; i++) {
+        MgrasQueuedWord *w = &g_array_index(s->work_queue, MgrasQueuedWord, i);
+
+        if (w->kind != MGRAS_QUEUED_FLAGS) {
+            continue;
+        }
+        switch (w->size) {
+        case MGRAS_FLAGS_SET:
+            s->work_flag_sets |= w->value;
+            s->work_flag_clears &= ~w->value;
+            break;
+        case MGRAS_FLAGS_CLEAR:
+            s->work_flag_clears |= w->value;
+            s->work_flag_sets &= ~w->value;
+            break;
+        default:
+            s->work_ack_clears |= w->value;
+            break;
+        }
+    }
+}
+
+/*
+ * A write to the HQ flag set or clear port, or an acknowledge of pending
+ * sources, while work is waiting. Drivers poll and acknowledge these while
+ * the pipe works, so the write acts at once on the bits as they stand. It
+ * also waits in the queue, so that a bit an earlier word sets or raises
+ * when it runs (a DMA kick's fence, say) ends as the processor ordered:
+ * a fence an earlier kick sets cannot outlive a later clear. Until the
+ * queued copy has run, a read of the register shows its effect
+ * (work_flag_sets, work_flag_clears, work_ack_clears).
+ */
+bool sgi_mgras_work_queue_flags(SGIMgrasState *s, SGIMgrasFlagsOp op,
+                                uint32_t bits)
+{
+    MgrasQueuedWord w = {
+        .value = bits,
+        .kind = MGRAS_QUEUED_FLAGS,
+        .size = op,
+    };
+
+    if (!sgi_mgras_work_pending(s)) {
+        return false;
+    }
+    g_array_append_val(s->work_queue, w);
+    mgras_work_flags_update(s);
+    return true;
+}
 
 /*
  * Whether a word arriving now has to wait, and if so keep it. A word
@@ -386,7 +439,7 @@ static bool mgras_work_defer(SGIMgrasState *s, MgrasQueuedKind kind,
      * Only another thread can arrive while a slice's draw has let go of
      * the big lock, and its words go behind everything the slice has.
      */
-    if (s->work_drawing) {
+    if (s->work.drawing) {
         g_array_append_val(s->work_queue, w);
         return true;
     }
@@ -3303,41 +3356,6 @@ static MgrasListHeader mgras_raster_list_header(const uint32_t *w, unsigned n,
 }
 
 /*
- * How much work one slice may do: host time, because the slice exists to
- * bound how long the thread running it holds the device, and for qtest a
- * count of words. A slice always does at least one word.
- */
-typedef struct MgrasWorkBudget {
-    int64_t deadline;           /* QEMU_CLOCK_REALTIME; INT64_MAX: none */
-    uint32_t words;             /* UINT32_MAX: none */
-} MgrasWorkBudget;
-
-/*
- * One slice of host time. The IRIX kernel's scheduler clock on these
- * machines ticks every 10 ms, and a processor cannot take its tick while
- * its store is still inside the board, so a slice stays well below that.
- */
-#define MGRAS_WORK_SLICE_NS (1 * SCALE_MS)
-
-static bool mgras_work_spent(MgrasWorkBudget *b)
-{
-    if (b->words != UINT32_MAX && !--b->words) {
-        return true;
-    }
-    return b->deadline != INT64_MAX &&
-           qemu_clock_get_ns(QEMU_CLOCK_REALTIME) >= b->deadline;
-}
-
-static MgrasWorkBudget mgras_work_budget(SGIMgrasState *s, bool timed)
-{
-    return (MgrasWorkBudget) {
-        .deadline = timed ? qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
-                            MGRAS_WORK_SLICE_NS : INT64_MAX,
-        .words = s->test_slice_words ? s->test_slice_words : UINT32_MAX,
-    };
-}
-
-/*
  * Decode the list in progress until it ends or the budget is spent; true
  * when it has ended. The ranges' words reach the command parser one at a
  * time, as port words do, so a slice may stop anywhere, mid-packet
@@ -3346,7 +3364,7 @@ static MgrasWorkBudget mgras_work_budget(SGIMgrasState *s, bool timed)
  * a range whose header mgras_raster_list_next() did not accept, whose
  * words are not decoded.
  */
-static bool mgras_raster_list_slice(SGIMgrasState *s, MgrasWorkBudget *b)
+static bool mgras_raster_list_slice(SGIMgrasState *s, SGIHeadWorkBudget *b)
 {
     SGICommandFetch *f = &s->list_fetch;
     SGIMgrasCmdParser port;
@@ -3370,7 +3388,7 @@ static bool mgras_raster_list_slice(SGIMgrasState *s, MgrasWorkBudget *b)
         }
         while (!spent && s->list_word < seg->nwords) {
             mgras_command_fifo_token(s, seg->words[s->list_word++]);
-            spent = mgras_work_spent(b);
+            spent = sgi_head_work_spent(b);
         }
         if (s->list_word >= seg->nwords) {
             s->list_segment++;
@@ -3476,7 +3494,7 @@ static void mgras_raster_list_execute(SGIMgrasState *s, uint32_t offset,
     SGIDMABus bus;
     SGIDMAPageList pl;
     g_autofree uint64_t *page_addr = NULL;
-    MgrasWorkBudget budget;
+    SGIHeadWorkBudget budget;
     int ret;
 
     /*
@@ -3526,17 +3544,19 @@ static void mgras_raster_list_execute(SGIMgrasState *s, uint32_t offset,
 
     /*
      * The words are the pool's as of this execute: the fetch copied them.
-     * A processor's execute runs for one slice here and the rest on the
-     * machine clock, so the processor can take its interrupts meanwhile,
-     * as it does while the board works through a list; so does one that
-     * had waited behind another list. An execute from outside any
+     * A processor's execute runs here until the first word boundary past
+     * one slice of host time, and the rest on the board's thread, so the
+     * processor can take its interrupts meanwhile, as it does while the
+     * board works through a list; so does one that had waited behind
+     * another list. One word can draw a large primitive, so the store can
+     * still take as long as that draw. An execute from outside any
      * processor runs whole, as it always did.
      */
     s->list_busy = true;
     s->list_segment = 0;
     s->list_word = 0;
     memset(&s->list_parser, 0, sizeof(s->list_parser));
-    budget = mgras_work_budget(s, current_cpu || s->work_replaying);
+    budget = sgi_head_work_budget(&s->work, current_cpu || s->work_replaying);
     if (mgras_raster_list_slice(s, &budget)) {
         mgras_raster_list_finish(s, 0);
         return;
@@ -3726,8 +3746,12 @@ static void mgras_work_replay_one(SGIMgrasState *s)
     case MGRAS_QUEUED_FIFO:
         sgi_mgras_raster_fifo_write(s, w.value);
         break;
-    default:
+    case MGRAS_QUEUED_DMA_MAP:
         mgras_dma_map_token(s, w.value);
+        break;
+    default:
+        sgi_mgras_flags_write(s, w.size, w.value);
+        mgras_work_flags_update(s);
         break;
     }
     s->work_replaying = false;
@@ -3738,7 +3762,7 @@ static void mgras_work_replay_one(SGIMgrasState *s)
  * order, until the budget is spent or nothing is left. A waiting word may
  * execute another list, which the loop then runs in turn.
  */
-static void mgras_work_step(SGIMgrasState *s, MgrasWorkBudget *b)
+static void mgras_work_step(SGIMgrasState *s, SGIHeadWorkBudget *b)
 {
     for (;;) {
         if (s->list_busy) {
@@ -3751,7 +3775,7 @@ static void mgras_work_step(SGIMgrasState *s, MgrasWorkBudget *b)
             return;
         }
         mgras_work_replay_one(s);
-        if (!s->list_busy && mgras_work_spent(b)) {
+        if (!s->list_busy && sgi_head_work_spent(b)) {
             return;
         }
     }
@@ -3762,111 +3786,68 @@ bool sgi_mgras_work_pending(SGIMgrasState *s)
     return s->list_busy || (s->work_queue && s->work_queue->len);
 }
 
-/*
- * The next slice runs a short gap later on the machine clock, so it never
- * runs while the machine is stopped, and under qtest only when the test
- * steps the clock. The gap is for the vCPUs: outside its draws a slice
- * holds the big lock, and a thread that drops the lock and takes it
- * straight back usually wins it again.
- */
-#define MGRAS_WORK_GAP_NS (100 * SCALE_US)
-
 static void mgras_work_schedule(SGIMgrasState *s)
 {
-    if (!timer_pending(s->work_timer)) {
-        timer_mod(s->work_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MGRAS_WORK_GAP_NS);
-    }
+    sgi_head_work_schedule(&s->work);
 }
 
-/*
- * A slice runs on the board's own thread, not the main loop's: the main
- * loop raises the processors' timer interrupts, and a draw would hold it
- * for as long as one takes, 11 ms for a 500x500 quad, delaying the
- * scheduler tick past what IRIX makes up. The machine clock still
- * decides when each slice may run, so a stopped machine runs none and
- * qtest steps them.
- */
-static void mgras_work_timer(void *opaque)
+static void mgras_work_step_cb(void *opaque, SGIHeadWorkBudget *b)
 {
-    SGIMgrasState *s = opaque;
-
-    s->work_go = true;
-    qemu_cond_signal(&s->work_kick);
+    mgras_work_step(opaque, b);
 }
 
-static void *mgras_work_thread(void *opaque)
+static bool mgras_work_pending_cb(void *opaque)
 {
-    SGIMgrasState *s = opaque;
-
-    bql_lock();
-    for (;;) {
-        MgrasWorkBudget budget;
-
-        while (!s->work_go && !s->work_exit) {
-            qemu_cond_wait_bql(&s->work_kick);
-        }
-        if (s->work_exit) {
-            break;
-        }
-        s->work_go = false;
-        budget = mgras_work_budget(s, true);
-        s->work_slice = true;
-        mgras_work_step(s, &budget);
-        s->work_slice = false;
-        qemu_cond_broadcast(&s->work_cond);
-        if (sgi_mgras_work_pending(s)) {
-            mgras_work_schedule(s);
-        }
-        sgi_mgras_display_flush(s);
-    }
-    bql_unlock();
-    return NULL;
+    return sgi_mgras_work_pending(opaque);
 }
 
-/* Wait out a slice running on another thread with the big lock let go. */
-static void mgras_work_wait_slice(SGIMgrasState *s)
+static void mgras_work_slice_done(void *opaque)
 {
-    while (s->work_slice) {
-        qemu_cond_wait_bql(&s->work_cond);
-    }
+    sgi_mgras_display_flush(opaque);
 }
+
+static const SGIHeadWorkOps mgras_work_ops = {
+    .step = mgras_work_step_cb,
+    .pending = mgras_work_pending_cb,
+    .slice_done = mgras_work_slice_done,
+};
 
 void sgi_mgras_work_drain(SGIMgrasState *s, hwaddr addr)
 {
-    MgrasWorkBudget budget = { .deadline = INT64_MAX, .words = UINT32_MAX };
     int64_t start;
 
-    mgras_work_wait_slice(s);
+    sgi_head_work_wait_slice(&s->work);
     if (!sgi_mgras_work_pending(s)) {
         return;
     }
     start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-    mgras_work_step(s, &budget);
-    timer_del(s->work_timer);
+    sgi_head_work_drain(&s->work);
     trace_sgi_mgras_work("drained", addr,
                          qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start);
+}
+
+/* Abandon the list in progress and the words behind it. */
+static void mgras_work_abandon(SGIMgrasState *s)
+{
+    if (s->list_busy) {
+        mgras_raster_list_finish(s, SGI_FAIL_BUSY);
+    }
+    g_array_set_size(s->work_queue, 0);
+    mgras_work_flags_update(s);
+    sgi_head_work_idle(&s->work);
 }
 
 /* Reset clears the FIFO and abandons the work in progress. */
 void sgi_mgras_work_reset(SGIMgrasState *s)
 {
-    mgras_work_wait_slice(s);
-    if (s->list_busy) {
-        mgras_raster_list_finish(s, SGI_FAIL_BUSY);
-    }
-    g_array_set_size(s->work_queue, 0);
-    timer_del(s->work_timer);
+    sgi_head_work_wait_slice(&s->work);
+    mgras_work_abandon(s);
 }
 
 void sgi_mgras_work_init(SGIMgrasState *s)
 {
     s->work_queue = g_array_new(false, false, sizeof(MgrasQueuedWord));
-    s->work_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_work_timer, s);
-    qemu_cond_init(&s->work_cond);
-    qemu_cond_init(&s->work_kick);
-    qemu_thread_create(&s->work_thread, "sgi-mgras-work", mgras_work_thread,
-                       s, QEMU_THREAD_JOINABLE);
+    sgi_head_work_init(&s->work, "sgi-mgras-work", &mgras_work_ops, s);
 }
 
 /* Also for a board whose realize failed before sgi_mgras_work_init(). */
@@ -3875,16 +3856,10 @@ void sgi_mgras_work_cleanup(SGIMgrasState *s)
     if (!s->work_queue) {
         return;
     }
-    /* The thread needs the big lock to see that it should stop. */
-    s->work_exit = true;
-    qemu_cond_signal(&s->work_kick);
-    bql_unlock();
-    qemu_thread_join(&s->work_thread);
-    bql_lock();
-    timer_free(s->work_timer);
-    s->work_timer = NULL;
+    sgi_head_work_cleanup(&s->work);
+    if (s->list_busy) {
+        mgras_raster_list_finish(s, SGI_FAIL_BUSY);
+    }
     g_array_free(s->work_queue, true);
     s->work_queue = NULL;
-    qemu_cond_destroy(&s->work_cond);
-    qemu_cond_destroy(&s->work_kick);
 }

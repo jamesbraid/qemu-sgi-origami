@@ -2050,6 +2050,51 @@ static void test_gl_list_reset_abandons_slices(void)
 }
 
 /*
+ * A flag clear written behind a fence word still waiting: the clear acts
+ * at once on the flags as they stand, and waits in the queue too, so the
+ * fence the earlier word sets when it runs is cleared after it, as the
+ * processor ordered. Until then a read shows the clear already done.
+ */
+static void test_gl_list_flag_clear_keeps_its_order(void)
+{
+    gl_list_execute_then_query();
+    gl_word(qts, MGRAS_FENCE_TOKEN);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    while (gl_list_work_pending()) {
+        qtest_clock_step(qts, 100 * 1000);
+        g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE,
+                        ==, 0);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+    gl_list_check_finished();
+}
+
+/*
+ * The sync and idle bits read clear only for the first 500 ms of
+ * continuous work, well inside the IRIX kernel's 2 s and 3 s waits on
+ * them, and set after that even though the list is not finished.
+ */
+static void test_gl_list_status_busy_is_bounded(void)
+{
+    gl_list_execute_then_query();
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x10);
+    qtest_clock_step(qts, 400 * 1000 * 1000);
+    g_assert_true(gl_list_work_pending());
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x10);
+    qtest_clock_step(qts, 200 * 1000 * 1000);
+    g_assert_true(gl_list_work_pending());
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
+    while (gl_list_work_pending()) {
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    gl_list_check_finished();
+}
+
+
+/*
  * A page-list entry is the page's whole frame number, node included. On
  * more than one node, as a captured run had four, a
  * pool page on node 1 is frame (1 << 20) | f: SN0's node number is
@@ -6508,6 +6553,12 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-reset-abandons-slices",
         test_gl_list_reset_abandons_slices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-flag-clear-keeps-its-order",
+        test_gl_list_flag_clear_keeps_its_order, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-status-busy-is-bounded",
+        test_gl_list_status_busy_is_bounded, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-page-on-another-node",
         test_gl_list_page_on_another_node, false);

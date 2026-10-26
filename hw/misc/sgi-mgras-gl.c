@@ -32,7 +32,6 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
-#include "hw/core/cpu.h"
 #include "system/runstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -4156,12 +4155,10 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
      * meanwhile an access that would touch either waits for the slice,
      * and command-FIFO words queue (sgi-mgras-raster.c).
      */
-    if (s->work_slice && !current_cpu) {
-        s->work_drawing = true;
-        bql_unlock();
+    if (sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_unlock(&s->work);
         result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
-        bql_lock();
-        s->work_drawing = false;
+        sgi_head_work_relock(&s->work);
     } else {
         result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     }
