@@ -133,9 +133,19 @@ void sgi_scanout_invalidate(SGIScanout *s, int first, int count)
 
     first = MAX(first, 0);
     last = MIN(last, h - 1);
-    if (first <= last) {
-        bitmap_set(s->dirty, first, last - first + 1);
+    if (first > last) {
+        return;
     }
+    /*
+     * A band-parallel draw marks rows from several threads at once, a
+     * pixel at a time: leave a row already marked alone rather than make
+     * every pixel's store contend for its word.
+     */
+    if (first == last &&
+        qatomic_read(&s->dirty[BIT_WORD(first)]) & BIT_MASK(first)) {
+        return;
+    }
+    bitmap_set_atomic(s->dirty, first, last - first + 1);
 }
 
 void sgi_scanout_invalidate_all(SGIScanout *s)
