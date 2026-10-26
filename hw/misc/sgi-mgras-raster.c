@@ -2336,7 +2336,7 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int32_t y = d->y + (reverse_y ? -row : row);
 
-        sgi_mgras_display_did_line(s, false, y, did);
+        sgi_mgras_display_did_line(s, false, y, did, d->x + d->w);
         for (int32_t col = 0; col < d->w; col++) {
             uint32_t index = y * s->width + d->x + col;
             bool back = (s->xmap[0].buf_select[0] >> did[d->x + col]) & 1;

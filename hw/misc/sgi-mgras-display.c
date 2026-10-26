@@ -93,8 +93,14 @@ static uint32_t mgras_gamma_apply(SGIMgrasState *s, uint32_t bgr)
     return (b << 16) | (g << 8) | r;
 }
 
+/*
+ * The display IDs of columns 0..columns-1 of line y. The table is a run
+ * list from column 0, so a reader that needs only the left part of the
+ * line stops walking there.
+ */
 static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
-                           unsigned int y, uint8_t *did)
+                           unsigned int y, uint8_t *did,
+                           unsigned int columns)
 {
     const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
     uint16_t ptr = s->vc3_sram[(s->vc3_reg[entry_reg] + y) & mask];
@@ -103,7 +109,7 @@ static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
     unsigned int steps = 0;
 
     run = s->vc3_sram[++ptr & mask];
-    for (unsigned int x = 0; x < s->width; x++) {
+    for (unsigned int x = 0; x < columns; x++) {
         /* Bound the walk; a guest table can repeat a column forever. */
         while ((run >> MGRAS_DID_COLUMN_SHIFT) == x &&
                steps++ < s->width) {
@@ -123,15 +129,16 @@ uint8_t sgi_mgras_display_did(SGIMgrasState *s, bool overlay, unsigned int x,
         return 0;
     }
     mgras_did_line(s, overlay ? MGRAS_VC3_OVERLAY_DID_ENTRY :
-                   MGRAS_VC3_MAIN_DID_ENTRY, y, did);
+                   MGRAS_VC3_MAIN_DID_ENTRY, y, did, s->width);
     return did[x];
 }
 
 void sgi_mgras_display_did_line(SGIMgrasState *s, bool overlay,
-                                unsigned int y, uint8_t *did)
+                                unsigned int y, uint8_t *did,
+                                unsigned int columns)
 {
     mgras_did_line(s, overlay ? MGRAS_VC3_OVERLAY_DID_ENTRY :
-                   MGRAS_VC3_MAIN_DID_ENTRY, y, did);
+                   MGRAS_VC3_MAIN_DID_ENTRY, y, did, columns);
 }
 
 /*
@@ -280,8 +287,8 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         memset(dst, 0, s->width * sizeof(*dst));
         return;
     }
-    mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did);
-    mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did);
+    mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did, s->width);
+    mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did, s->width);
     for (int x = 0; x < s->width; x++) {
         int i = y * s->width + x;
 

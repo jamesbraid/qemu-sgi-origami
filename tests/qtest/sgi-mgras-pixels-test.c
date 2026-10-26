@@ -5072,6 +5072,18 @@ static void test_dma_image_transfer_reads_screen_to_host_did_selection(void)
     g_assert_cmpmem(got + sizeof(front), sizeof(got) - sizeof(front),
                     poison + sizeof(front),
                     sizeof(poison) - sizeof(front));
+
+    /* The box's last column selects too: DID 14 now shows the back bank. */
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 14);
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (258u << 16) | 641u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, 4, front + 4, 4);
+    g_assert_cmpmem(got + 4, 4, selected, 4);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
