@@ -623,6 +623,15 @@ struct SGIMgrasState {
     /* Host-only: the missing link has been logged once. */
     bool pi_unlinked_logged;
     /*
+     * Host-only, fixed once the board is placed: the link's credit hook
+     * and the widget it is told, so that a store does not look up the
+     * node's interface class again. NULL sends the credit through
+     * sgi_pi_gfx_return_credits(), which logs a node without the hook.
+     */
+    void (*pi_return_credits)(Object *node, unsigned int widget,
+                              uint32_t credits);
+    unsigned int pi_widget;
+    /*
      * The board's serial-number chip behind the MicroLAN register at
      * 0x011098. Without a fitted record the register keeps the older
      * always-done answer.
