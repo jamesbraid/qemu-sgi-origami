@@ -57,7 +57,9 @@
 #define ONE_NODE "-M origin300 -cpu R14000 -smp 2 "
 #define TWO_NODES "-M origin300,topology=origin300-two-chassis " \
                   "-cpu R14000 -smp 4 -m 1024 "
-#define IP53_NODE "-M origin350,ip53-experimental=on " \
+#define IP53_NODE "-M origin350,ip53-experimental=on," \
+                  "nvram0=sgi-ds1742-data-io9," \
+                  "nvram0-clock=sgi-ds1742-clock-io9 " \
                   "-cpu R16000,r16000-experimental=on," \
                   "r16000-reset-mode=0x009cad85," \
                   "r16000-scache-bytes=0x800000 -smp 4 -m 2G "
@@ -203,7 +205,7 @@ static QTestState *start_ip53_vpro(void)
 
     fd = g_file_open_tmp("sn1-pi-gfx-vpro-data-XXXXXX", &data, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-pi-gfx-vpro-clock-XXXXXX", &clock, &error);
     g_assert_no_error(error);
@@ -212,7 +214,8 @@ static QTestState *start_ip53_vpro(void)
     quoted_data = g_shell_quote(data);
     quoted_clock = g_shell_quote(clock);
     qts = qtest_initf(
-        "-M tezro,topology=tezro-tower-multi "
+        "-M tezro,topology=tezro-tower-multi,nvram0=sgi-ds1742-data-io9,"
+        "nvram0-clock=sgi-ds1742-clock-io9 "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000 "
         "-smp 4 -m 4G " RUN "-bios %s "
@@ -240,7 +243,7 @@ static QTestState *start_ip53(void)
 
     fd = g_file_open_tmp("sn1-pi-gfx-data-XXXXXX", &data, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-pi-gfx-clock-XXXXXX", &clock, &error);
     g_assert_no_error(error);

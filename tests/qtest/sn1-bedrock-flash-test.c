@@ -799,7 +799,9 @@ static QTestState *ip53_tcg_flash_start(const char *image,
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
 
-    return qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
+    return qtest_initf("-M origin350,ip53-experimental=on,"
+                       "nvram0=sgi-ds1742-data-io9,"
+                       "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
                        "-cpu R16000,r16000-experimental=on,"
                        "r16000-reset-mode=0x009cad85,"
                        "r16000-scache-bytes=0x800000 "
@@ -822,7 +824,9 @@ static QTestState *ip53_tcg_static_start(const char *bios,
     g_autofree char *quoted_data = g_shell_quote(data);
     g_autofree char *quoted_clock = g_shell_quote(clock);
 
-    return qtest_initf("-M origin350,ip53-experimental=on -m 2G -smp 4 "
+    return qtest_initf("-M origin350,ip53-experimental=on,"
+                       "nvram0=sgi-ds1742-data-io9,"
+                       "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
                        "-cpu R16000,r16000-experimental=on,"
                        "r16000-reset-mode=0x009cad85,"
                        "r16000-scache-bytes=0x800000 "
@@ -911,7 +915,7 @@ static void test_ip53_reset_boundary_tlb_fill_order(void)
         g_autofree char *bios = sized_image("ip53-boundary-bios",
                                             IP53_EXECUTION_SIZE);
         g_autofree char *image = flash_image("ip53-boundary-flash");
-        g_autofree char *data = sized_image("ip53-boundary-rtc-data", 0x800);
+        g_autofree char *data = sized_image("ip53-boundary-rtc-data", 0x8000);
         g_autofree char *clock = sized_image("ip53-boundary-rtc-clock", 16);
         g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
         uint64_t boundary = IP53_RESET + IP53_EXECUTION_SIZE;
@@ -964,7 +968,7 @@ static void test_ip53_static_reset_view(void)
     uint8_t bytes[sizeof(first_prom)];
     g_autofree char *bios = sized_image("ip53-static-bios",
                                         IP53_EXECUTION_SIZE);
-    g_autofree char *data = sized_image("ip53-static-rtc-data", 0x800);
+    g_autofree char *data = sized_image("ip53-static-rtc-data", 0x8000);
     g_autofree char *clock = sized_image("ip53-static-rtc-clock", 16);
     g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
     uint64_t boundary = IP53_RESET + IP53_EXECUTION_SIZE;
@@ -1044,7 +1048,7 @@ static void test_ip53_guest_store_refuses_reset_view(void)
         g_autofree char *bios = sized_image("ip53-store-bios",
                                             IP53_EXECUTION_SIZE);
         g_autofree char *image = flash_image("ip53-store-flash");
-        g_autofree char *data = sized_image("ip53-store-rtc-data", 0x800);
+        g_autofree char *data = sized_image("ip53-store-rtc-data", 0x8000);
         g_autofree char *clock = sized_image("ip53-store-rtc-clock", 16);
         g_autofree char *log = log_file("ip53-store");
         g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
@@ -1121,7 +1125,7 @@ static void test_ip53_tcg_code_refresh(void)
         g_autofree char *bios = sized_image("ip53-tcg-bios",
                                             IP53_EXECUTION_SIZE);
         g_autofree char *image = flash_image("ip53-tcg-flash");
-        g_autofree char *data = sized_image("ip53-tcg-rtc-data", 0x800);
+        g_autofree char *data = sized_image("ip53-tcg-rtc-data", 0x8000);
         g_autofree char *clock = sized_image("ip53-tcg-rtc-clock", 16);
         g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
         uint8_t instruction[4];
@@ -1179,7 +1183,7 @@ static void test_ip53_tcg_mapped_prom_to_ram_copy(void)
     size_t route_size = route_count * sizeof(route_code[0]);
     g_autofree char *bios = sized_image("ip53-route-copy-bios",
                                         IP53_EXECUTION_SIZE);
-    g_autofree char *data = sized_image("ip53-route-copy-rtc-data", 0x800);
+    g_autofree char *data = sized_image("ip53-route-copy-rtc-data", 0x8000);
     g_autofree char *clock = sized_image("ip53-route-copy-rtc-clock", 16);
     g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
     g_autofree uint8_t *code_bytes = g_malloc(route_size);
@@ -1250,7 +1254,7 @@ static void test_ip53_reset_views_are_shared(void)
     uint8_t bytes[sizeof(cached_fetch)];
     g_autofree char *bios = sized_image("ip53-shared-reset-bios",
                                         IP53_EXECUTION_SIZE);
-    g_autofree char *data = sized_image("ip53-shared-reset-rtc-data", 0x800);
+    g_autofree char *data = sized_image("ip53-shared-reset-rtc-data", 0x8000);
     g_autofree char *clock = sized_image("ip53-shared-reset-rtc-clock", 16);
     g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
     QTestState *s;
@@ -2362,7 +2366,7 @@ static void test_ip53_bte_uses_local_memory_directory(void)
     const uint64_t backing_sentinel = UINT64_C(0xa5c33ca596699669);
     const uint64_t error_status = 1 | (UINT64_C(1) << 16);
     g_autofree char *bios = sized_image("ip53-bte-bios", IP53_EXECUTION_SIZE);
-    g_autofree char *data = sized_image("ip53-bte-rtc-data", 0x800);
+    g_autofree char *data = sized_image("ip53-bte-rtc-data", 0x8000);
     g_autofree char *clock = sized_image("ip53-bte-rtc-clock", 16);
     g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
     uint8_t source_bytes[128];
@@ -2520,7 +2524,7 @@ static void test_ip53_cpu_accesses_shared_reset_ram(void)
     const uint64_t decoy = UINT64_C(0xdec0dec0dec0dec0);
     g_autofree char *bios = sized_image("ip53-shared-ram-bios",
                                         IP53_EXECUTION_SIZE);
-    g_autofree char *data = sized_image("ip53-shared-ram-rtc-data", 0x800);
+    g_autofree char *data = sized_image("ip53-shared-ram-rtc-data", 0x8000);
     g_autofree char *clock = sized_image("ip53-shared-ram-rtc-clock", 16);
     g_autofree uint8_t *payload = g_malloc0(IP53_EXECUTION_SIZE);
     uint32_t code[256];

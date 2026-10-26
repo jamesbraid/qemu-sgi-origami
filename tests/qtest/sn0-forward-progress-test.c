@@ -170,14 +170,19 @@ static const Recipe recipes[] = {
     { "origin2000", "-M origin2000", 0 },
     { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
-    { "origin350", "-M origin350,topology=origin350,ip53-experimental=on",
+    { "origin350", "-M origin350,topology=origin350,ip53-experimental=on,"
+      "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "onyx350", "-M onyx350,topology=onyx350-compat,"
-      "ip53-experimental=on", 16 * 1024 * 1024, prepare_ip53, 0, true },
-    { "tezro", "-M tezro,topology=tezro-tower-multi,ip53-experimental=on",
+    { "onyx350", "-M onyx350,topology=onyx350-compat,ip53-experimental=on,"
+      "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
+      16 * 1024 * 1024, prepare_ip53, 0, true },
+    { "tezro", "-M tezro,topology=tezro-tower-multi,ip53-experimental=on,"
+      "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },
     { "onyx4-host", "-M onyx4-host,topology=onyx4-host-serial-compat,"
-      "ip53-experimental=on", 16 * 1024 * 1024, prepare_ip53, 0, true },
+      "ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9",
+      16 * 1024 * 1024, prepare_ip53, 0, true },
     /* IP30 has only 16 KiB of low RAM; the SN state address is unmapped. */
     { "octane", "-M octane -m 128M -cpu R10000", 0, NULL, 0x3000 },
     { "octane2", "-M octane2 -m 256M -cpu " OCTANE2_CPU,
@@ -918,7 +923,7 @@ static void boot(Run *r, const Recipe *recipe, Program program)
         g_strdup_printf("-drive if=pflash,index=0,file=%s,format=raw", path) :
         g_strdup_printf("-bios %s", path);
     if (recipe->io9) {
-        io9_data = blank_io9_backend(0x800);
+        io9_data = blank_io9_backend(0x8000);
         io9_clock = blank_io9_backend(16);
         io9_drives = g_strdup_printf(
             "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "

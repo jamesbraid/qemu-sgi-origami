@@ -69,10 +69,14 @@ static const Launch launches[] = {
       "/machine/module0/widget-11" },
     { "fuel", "fuel", "-cpu R14000 -smp 1 -m 512M",
       SN1_PROM, "/machine/module0/graphics-slot" },
-    { "onyx350-compat", "onyx350,topology=onyx350-compat",
+    { "onyx350-compat", "onyx350,topology=onyx350-compat,"
+      "nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
       "r16000-scache-bytes=0x800000 -smp 4 -m 8G", SN1_PROM, NULL, true },
-    { "tezro-tower-multi", "tezro,topology=tezro-tower-multi",
+    { "tezro-tower-multi", "tezro,topology=tezro-tower-multi,"
+      "nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9",
       "-cpu R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
       "r16000-scache-bytes=0x400000 -smp 4 -m 4G", SN1_PROM, NULL, true },
 };
@@ -898,7 +902,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     octane_flash = temporary("sgi-pipes-flash-XXXXXX", 4, 0xff);
     sn1_prom = temporary("sgi-pipes-prom-XXXXXX.bin", PROM_SIZE, 0);
-    ip53_data = temporary("sgi-pipes-ip53-data-XXXXXX", 0x800, 0);
+    ip53_data = temporary("sgi-pipes-ip53-data-XXXXXX", 0x8000, 0);
     ip53_clock = temporary("sgi-pipes-ip53-clock-XXXXXX", 16, 0);
 
     qts = qtest_init("-M none");

@@ -4151,6 +4151,7 @@ static void test_machine_node_board_profiles(void)
         uint32_t firmware_word;
         uint32_t cpu_mhz;
         uint32_t hub_mhz;
+        bool ds1742;
     } profiles[] = {
         { "origin350", "2G", 4, "0x009cad85", "0x800000",
           "IP53_4CPU", "030-1868-001", "-C", 0x37, { 1, 18, 5 },
@@ -4169,7 +4170,7 @@ static void test_machine_node_board_profiles(void)
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
         { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
-          { 1, 48, 1 }, 0, 0, 0 },
+          { 1, 48, 1 }, 0, 0, 0, true },
         { "tezro,topology=tezro-rack-base", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x51,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
@@ -4185,7 +4186,7 @@ static void test_machine_node_board_profiles(void)
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-node-board-data-XXXXXX", &data, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-node-board-clock-XXXXXX", &clock, &error);
     g_assert_no_error(error);
@@ -4198,8 +4199,16 @@ static void test_machine_node_board_profiles(void)
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(profiles); i++) {
         uint8_t reply[160];
+        const char *storage_options = profiles[i].ds1742 ? "" :
+            ",nvram0=sgi-ds1742-data-io9,"
+            "nvram0-clock=sgi-ds1742-clock-io9";
+        fd = open(data, O_WRONLY | O_TRUNC);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(ftruncate(fd, profiles[i].ds1742 ? 0x800 :
+                                  0x8000), ==, 0);
+        g_assert_cmpint(close(fd), ==, 0);
 
-        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+        s = qtest_initf("-M %s,ip53-experimental=on%s -m %s -smp %u "
                         "-cpu R16000,r16000-experimental=on,"
                         "r16000-reset-mode=%s,r16000-scache-bytes=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
@@ -4207,7 +4216,8 @@ static void test_machine_node_board_profiles(void)
                         "format=raw "
                         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                         "format=raw -display none -S",
-                        profiles[i].machine, profiles[i].memory,
+                        profiles[i].machine, storage_options,
+                        profiles[i].memory,
                         profiles[i].cpus, profiles[i].reset_mode,
                         profiles[i].scache_bytes, flash, data, clock);
         qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
@@ -4258,7 +4268,9 @@ static void test_machine_node_board_profiles(void)
             "tezro,topology=tezro-tower-one,l1-revision=2.3.4";
         uint8_t reply[160];
 
-        s = qtest_initf("-M %s,ip53-experimental=on -m 4G -smp 1 "
+        s = qtest_initf("-M %s,ip53-experimental=on,"
+                            "nvram0=sgi-ds1742-data-io9,"
+                            "nvram0-clock=sgi-ds1742-clock-io9 -m 4G -smp 1 "
                         "-cpu R16000,r16000-experimental=on,"
                         "r16000-reset-mode=0x009bad85,"
                         "r16000-scache-bytes=0x400000 "
@@ -4295,7 +4307,9 @@ static void test_machine_node_board_profiles(void)
             g_assert_no_error(error);
             machine = g_strdup_printf("%s,%s=%s", profiles[i].machine,
                                       property, override_path);
-            s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+            s = qtest_initf("-M %s,ip53-experimental=on,"
+                            "nvram0=sgi-ds1742-data-io9,"
+                            "nvram0-clock=sgi-ds1742-clock-io9 -m %s -smp %u "
                             "-cpu R16000,r16000-experimental=on,"
                             "r16000-reset-mode=%s,r16000-scache-bytes=%s "
                             "-drive if=pflash,index=0,file=%s,format=raw "
@@ -4342,7 +4356,9 @@ static void test_machine_node_board_profiles(void)
         machine = g_strdup_printf(
             "%s,chassis-eeprom.0=%s,board-eeprom.0=%s",
             profiles[0].machine, override_path, override_path);
-        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+        s = qtest_initf("-M %s,ip53-experimental=on,"
+                            "nvram0=sgi-ds1742-data-io9,"
+                            "nvram0-clock=sgi-ds1742-clock-io9 -m %s -smp %u "
                         "-cpu R16000,r16000-experimental=on,"
                         "r16000-reset-mode=%s,r16000-scache-bytes=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
@@ -4387,16 +4403,23 @@ static void test_machine_cpu_context_global_overrides(void)
         const char *cpus;
         const char *cpu;
     } profiles[] = {
-        { "origin350,ip53-experimental=on", "2G", "4",
+        { "origin350,ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+          "nvram0-clock=sgi-ds1742-clock-io9", "2G", "4",
           "R16000,r16000-experimental=on,r16000-reset-mode=0x009cad85,"
           "r16000-scache-bytes=0x800000" },
-        { "onyx350,topology=onyx350-compat,ip53-experimental=on", "8G",
+        { "onyx350,topology=onyx350-compat,ip53-experimental=on,"
+          "nvram0=sgi-ds1742-data-io9,"
+          "nvram0-clock=sgi-ds1742-clock-io9", "8G",
           "4", "R16000,r16000-experimental=on,r16000-reset-mode=0x009caf85,"
           "r16000-scache-bytes=0x800000" },
-        { "tezro,topology=tezro-tower-one,ip53-experimental=on", "4G", "1",
+        { "tezro,topology=tezro-tower-one,ip53-experimental=on,"
+          "nvram0=sgi-ds1742-data-io9,"
+          "nvram0-clock=sgi-ds1742-clock-io9", "4G", "1",
           "R16000,r16000-experimental=on,r16000-reset-mode=0x009bad85,"
           "r16000-scache-bytes=0x400000" },
-        { "onyx4-host,topology=onyx4-host-serial-compat,ip53-experimental=on",
+        { "onyx4-host,topology=onyx4-host-serial-compat,ip53-experimental=on,"
+          "nvram0=sgi-ds1742-data-io9,"
+          "nvram0-clock=sgi-ds1742-clock-io9",
           "8G", "4", "R16000,r16000-experimental=on,"
           "r16000-reset-mode=0x009dad85,r16000-scache-bytes=0x1000000" },
         { "origin300", "512M", "2", "R14000" },
@@ -4419,7 +4442,7 @@ static void test_machine_cpu_context_global_overrides(void)
     fd = g_file_open_tmp("sn1-l1-context-global-data-XXXXXX", &data,
                          &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-context-global-clock-XXXXXX", &clock,
                          &error);
@@ -4464,7 +4487,8 @@ static QTestState *start_ip53_context_migration_profile(
     g_autofree char *board_option = board_file ?
         g_strdup_printf(",board-eeprom.0=%s", board_file) : g_strdup("");
 
-    return qtest_initf("-M %s,ip53-experimental=on%s -m %s -smp %u "
+    return qtest_initf("-M %s,ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+                       "nvram0-clock=sgi-ds1742-clock-io9%s -m %s -smp %u "
                        "-cpu R16000,r16000-experimental=on,"
                        "r16000-reset-mode=%s,r16000-scache-bytes=%s "
                        "-drive if=pflash,index=0,file=%s,format=raw "
@@ -4520,7 +4544,7 @@ static void test_ip53_cpu_context_migration(void)
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-cpu-context-data-XXXXXX", &data, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-cpu-context-clock-XXXXXX", &clock, &error);
     g_assert_no_error(error);
@@ -4657,7 +4681,9 @@ static QTestState *start_tezro_revision_profile(const char *incoming,
                                                 const char *data,
                                                 const char *clock)
 {
-    return qtest_initf("-M tezro,topology=tezro-tower-one,ip53-experimental=on "
+    return qtest_initf("-M tezro,topology=tezro-tower-one,ip53-experimental=on,"
+                       "nvram0=sgi-ds1742-data-io9,"
+                       "nvram0-clock=sgi-ds1742-clock-io9 "
                        "-m 4G -smp 1 -cpu R16000,r16000-experimental=on,"
                        "r16000-reset-mode=0x009bad85,"
                        "r16000-scache-bytes=0x400000 "
@@ -4690,7 +4716,7 @@ static void test_machine_l1_revision_migration(void)
     fd = g_file_open_tmp("sn1-l1-tezro-migrate-data-XXXXXX", &data,
                          &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-tezro-migrate-clock-XXXXXX", &clock,
                          &error);
@@ -4734,6 +4760,7 @@ static void test_machine_port_speed_profiles(void)
         uint32_t first;
         uint32_t brick_type;
         bool irouter_compat;
+        bool ds1742;
     } profiles[] = {
         { "origin350", "2G", 4, "0x009cad85", "0x800000", 1,
           0x37, true },
@@ -4748,7 +4775,7 @@ static void test_machine_port_speed_profiles(void)
         { "onyx4-host,topology=onyx4-host-serial-compat", "8G", 4,
           "0x009dad85", "0x1000000", 1, 0x37, true },
         { "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial", "4G", 4,
-          "0x009bad85", "0x400000", 0, 0x39, false },
+          "0x009bad85", "0x400000", 0, 0x39, false, true },
     };
     int fd;
 
@@ -4762,7 +4789,7 @@ static void test_machine_port_speed_profiles(void)
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-ip53-data-XXXXXX", &data, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     fd = g_file_open_tmp("sn1-l1-ip53-clock-XXXXXX", &clock, &error);
     g_assert_no_error(error);
@@ -4770,7 +4797,15 @@ static void test_machine_port_speed_profiles(void)
     g_assert_cmpint(close(fd), ==, 0);
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(profiles); i++) {
-        s = qtest_initf("-M %s,ip53-experimental=on -m %s -smp %u "
+        const char *storage_options = profiles[i].ds1742 ? "" :
+            ",nvram0=sgi-ds1742-data-io9,"
+            "nvram0-clock=sgi-ds1742-clock-io9";
+        fd = open(data, O_WRONLY | O_TRUNC);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(ftruncate(fd, profiles[i].ds1742 ? 0x800 :
+                                  0x8000), ==, 0);
+        g_assert_cmpint(close(fd), ==, 0);
+        s = qtest_initf("-M %s,ip53-experimental=on%s -m %s -smp %u "
                         "-cpu R16000,r16000-experimental=on,"
                         "r16000-reset-mode=%s,r16000-scache-bytes=%s "
                         "-drive if=pflash,index=0,file=%s,format=raw "
@@ -4778,7 +4813,8 @@ static void test_machine_port_speed_profiles(void)
                         "format=raw "
                         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,"
                         "format=raw -display none -S",
-                        profiles[i].machine, profiles[i].memory,
+                        profiles[i].machine, storage_options,
+                        profiles[i].memory,
                         profiles[i].cpus,
                         profiles[i].reset_mode, profiles[i].scache_bytes,
                         flash, data, clock);

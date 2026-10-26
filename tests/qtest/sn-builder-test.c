@@ -3114,7 +3114,7 @@ static void test_ip53_runtime_construction(void)
     data_fd = g_file_open_tmp("sn-builder-origin350-ip53-data-XXXXXX",
                               &data_path, &err);
     g_assert_no_error(err);
-    g_assert_cmpint(ftruncate(data_fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(data_fd, 0x8000), ==, 0);
     g_assert_cmpint(close(data_fd), ==, 0);
     clock_fd = g_file_open_tmp("sn-builder-origin350-ip53-clock-XXXXXX",
                                &clock_path, &err);
@@ -3123,7 +3123,8 @@ static void test_ip53_runtime_construction(void)
     g_assert_cmpint(close(clock_fd), ==, 0);
     qts = qtest_initf(
         "-M origin350,topology=origin350,"
-        "ip53-experimental=on -m 2G -smp 4 "
+        "ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+        "nvram0-clock=sgi-ds1742-clock-io9 -m 2G -smp 4 "
         "-cpu R16000,r16000-experimental=on,"
         "r16000-reset-mode=0x009cad85,r16000-scache-bytes=0x800000 "
         "-drive if=pflash,index=0,file=%s,format=raw "
@@ -3148,7 +3149,7 @@ static void test_ip53_runtime_construction(void)
     ioc4 = qom_child_type(qts, "/machine", "io9-io9-d1-f0");
     scsi = qom_child_type(qts, "/machine", "io9-io9-d3-f0");
     ethernet = qom_child_type(qts, "/machine", "io9-io9-d4-f0");
-    rtc = qom_child_type(qts, "/machine", "ds1742-io9");
+    rtc = qom_child_type(qts, "/machine", "ds1744-io9");
     g_assert_cmpstr(bedrock, ==, "sgi-bedrock");
     g_assert_cmpstr(boot_flash, ==, "sgi-bedrock-flash");
     g_assert_cmpstr(pic, ==, "sgi-pic");
@@ -3156,7 +3157,7 @@ static void test_ip53_runtime_construction(void)
     g_assert_cmpstr(scsi, ==, "qlogic-isp12160");
     g_assert_cmpstr(ethernet, ==, "bcm570x");
     ip53_bcm_assert_static_device(qts);
-    g_assert_cmpstr(rtc, ==, "ds1742");
+    g_assert_cmpstr(rtc, ==, "ds1744");
     g_assert_null(qom_child_type(qts, "/machine/node0", "xbridge"));
 
     response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
@@ -3243,6 +3244,8 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
         g_str_has_prefix(machine, "tezro,") ? "0x400000" : "0x800000";
     IP53RuntimeTestFixture *fixture = g_new0(IP53RuntimeTestFixture, 1);
     int flash_fd, data_fd, clock_fd;
+    bool ds1742 = strstr(machine,
+                        "tezro-deskside-700mhz-4mib-serial-trial") != NULL;
 
     flash_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-flash-XXXXXX",
                                &fixture->flash_path, &err);
@@ -3252,7 +3255,7 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
     data_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-data-XXXXXX",
                               &fixture->data_path, &err);
     g_assert_no_error(err);
-    g_assert_cmpint(ftruncate(data_fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(data_fd, ds1742 ? 0x800 : 0x8000), ==, 0);
     g_assert_cmpint(close(data_fd), ==, 0);
     clock_fd = g_file_open_tmp("sn-builder-origin350-ip53-test-clock-XXXXXX",
                                &fixture->clock_path, &err);
@@ -3264,11 +3267,13 @@ static IP53RuntimeTestFixture *ip53_runtime_test_start_options(
                         "r16000-reset-mode=%s,r16000-scache-bytes=%s",
                         reset_mode, scache_bytes) : g_strdup("R16000");
     arguments = g_strdup_printf(
-        "-M %s -m %s -smp %s -cpu %s "
+        "-M %s%s -m %s -smp %s -cpu %s "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-display none -S %s", machine, memory, cpus, cpu,
+        "-display none -S %s", machine,
+        ds1742 ? "" : ",nvram0=sgi-ds1742-data-io9,"
+        "nvram0-clock=sgi-ds1742-clock-io9", memory, cpus, cpu,
         fixture->flash_path, fixture->data_path,
         fixture->clock_path,
         extra ? extra : "");
@@ -3298,7 +3303,7 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
         qts, "/machine", "io9-io9-d3-f0");
     g_autofree char *ethernet = qom_child_type(
         qts, "/machine", "io9-io9-d4-f0");
-    g_autofree char *rtc = qom_child_type(qts, "/machine", "ds1742-io9");
+    g_autofree char *rtc = qom_child_type(qts, "/machine", "ds1744-io9");
     g_autofree char *tree = NULL;
     g_autoptr(QDict) response = NULL;
     g_autoptr(QDict) memory = NULL;
@@ -3334,7 +3339,7 @@ static void test_onyx4_host_ip53_compatibility_construction(void)
                                   "port-speed-first"), ==, 1);
     g_assert_cmpstr(scsi, ==, "qlogic-isp12160");
     g_assert_cmpstr(ethernet, ==, "bcm570x");
-    g_assert_cmpstr(rtc, ==, "ds1742");
+    g_assert_cmpstr(rtc, ==, "ds1744");
     g_assert_null(qom_child_type(qts, "/machine", "node1"));
     g_assert_null(qom_child_type(qts, "/machine", "router0"));
     tree = qtest_hmp(qts, "info qtree");
@@ -3699,12 +3704,12 @@ static void test_ip53_onyx350_compat_composition(void)
     l1 = qom_child_type(qts, "/machine/node0", "l1");
     pic = qom_child_type(qts, "/machine", "pic-pic");
     ioc4 = qom_child_type(qts, "/machine", "io9-io9-d1-f0");
-    rtc = qom_child_type(qts, "/machine", "ds1742-io9");
+    rtc = qom_child_type(qts, "/machine", "ds1744-io9");
     g_assert_cmpstr(bedrock, ==, "sgi-bedrock");
     g_assert_cmpstr(l1, ==, "sgi-l1");
     g_assert_cmpstr(pic, ==, "sgi-pic");
     g_assert_cmpstr(ioc4, ==, "sgi-ioc4");
-    g_assert_cmpstr(rtc, ==, "ds1742");
+    g_assert_cmpstr(rtc, ==, "ds1744");
     device_id = qtest_readl(qts, pic_widget + UINT64_C(0x21000));
     g_assert_cmphex(device_id, ==, UINT32_C(0x100a10a9));
 
@@ -5275,7 +5280,7 @@ static void test_ip53_runtime_cpu_property_refusals(void)
     data_fd = g_file_open_tmp("sn-builder-origin350-ip53-refuse-data-XXXXXX",
                               &data_path, &error);
     g_assert_no_error(error);
-    g_assert_cmpint(ftruncate(data_fd, 0x800), ==, 0);
+    g_assert_cmpint(ftruncate(data_fd, 0x8000), ==, 0);
     g_assert_cmpint(close(data_fd), ==, 0);
     clock_fd = g_file_open_tmp("sn-builder-origin350-ip53-refuse-clock-XXXXXX",
                                &clock_path, &error);
@@ -5286,7 +5291,9 @@ static void test_ip53_runtime_cpu_property_refusals(void)
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
         const char *args[] = {
             qtest_qemu_binary(NULL), "-M",
-            "origin350,ip53-experimental=on", "-m", "2G", "-smp", "4",
+            "origin350,ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+            "nvram0-clock=sgi-ds1742-clock-io9",
+            "-m", "2G", "-smp", "4",
             "-cpu", cases[i].cpu, "-bios", bios,
             "-drive", NULL, "-drive", NULL, "-display", "none", NULL,
         };

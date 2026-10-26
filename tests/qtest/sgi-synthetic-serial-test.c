@@ -54,19 +54,27 @@ typedef struct TopologyExtra {
     const char *topology;
     const char *machine_options;   /* appended to -M */
     bool storage;                  /* binds the expansion configuration */
-    bool io9;                      /* needs DS1742 backends */
+    bool io9;                      /* needs IO9 timekeeper backends */
+    bool ds1742;                   /* legacy 2 KiB IO9 timekeeper */
 } TopologyExtra;
 
 static const TopologyExtra topology_extras[] = {
     { "fuel", FUEL_IDENTITY },
-    { "origin350", ",ip53-experimental=on", .io9 = true },
-    { "onyx350-compat", ",ip53-experimental=on", .io9 = true },
-    { "onyx4-host-serial-compat", ",ip53-experimental=on", .io9 = true },
+    { "origin350", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx350-compat", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "onyx4-host-serial-compat", ",ip53-experimental=on,"
+      "nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "tezro-deskside-700mhz-4mib-serial-trial",
-      ",ip53-experimental=on", .io9 = true },
-    { "tezro-rack-base", ",ip53-experimental=on", .io9 = true },
-    { "tezro-tower-multi", ",ip53-experimental=on", .io9 = true },
-    { "tezro-tower-one", ",ip53-experimental=on", .io9 = true },
+      ",ip53-experimental=on", .io9 = true, .ds1742 = true },
+    { "tezro-rack-base", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-tower-multi", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
+    { "tezro-tower-one", ",ip53-experimental=on,nvram0=sgi-ds1742-data-io9,"
+      "nvram0-clock=sgi-ds1742-clock-io9", .io9 = true },
     { "origin300-numalink-pci-expansion-experiment",
       STORAGE_BINDING, true },
     { "origin300-pci-expansion-configuration-storage-experiment",
@@ -82,7 +90,8 @@ typedef struct MachineCase {
     char *args;            /* -M and its options, -cpu, -smp, -m, -device */
     bool ip35;             /* takes the IP35 PROM size */
     bool storage;          /* binds the expansion configuration storage */
-    bool io9;              /* needs DS1742 backends */
+    bool io9;              /* needs IO9 timekeeper backends */
+    bool ds1742;           /* legacy 2 KiB IO9 timekeeper */
 } MachineCase;
 
 /* What one machine's walk collected. */
@@ -343,7 +352,7 @@ static void test_machine_serials(const void *data)
                                 storage);
     }
     if (c->io9) {
-        io9_data = blank_image(0x800);
+        io9_data = blank_image(c->ds1742 ? 0x800 : 0x8000);
         io9_clock = blank_image(16);
         io9_drives = g_strdup_printf(
             "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
@@ -484,6 +493,7 @@ static GPtrArray *catalogue_cases(void)
         c->ip35 = boot_flash_is_ip35(offering);
         c->storage = extra && extra->storage;
         c->io9 = extra && extra->io9;
+        c->ds1742 = extra && extra->ds1742;
         c->args = g_strdup_printf(
             "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
             qdict_get_str(offering, "machine-options"),
