@@ -553,7 +553,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         /* Write-one-to-clear; the level-driven bits ignore the write. */
         s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
                                    SGI_IOC3_INT_PARALLEL_SERVICE |
-                                   SGI_IOC3_INT_RX_HIGH_WATER_LEVEL));
+                                   SGI_IOC3_INT_RX_HIGH_WATER_LEVEL |
+                                   SGI_IOC3_INT_TX_EMPTY_LEVEL));
         sgi_ioc3_update_irq(s);
         break;
     case SGI_IOC3_INT_ENABLE_SET:

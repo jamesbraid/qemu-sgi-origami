@@ -276,6 +276,10 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_INT_RX_HIGH_WATER_LEVEL \
     (SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_RX_HIGH_WATER) | \
      SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_RX_HIGH_WATER))
+/* And transmit-ring-empty, which follows the ring the engine is sending. */
+#define SGI_IOC3_INT_TX_EMPTY_LEVEL \
+    (SGI_IOC3_SERIAL_SOURCE(0, SGI_IOC3_INT_TX_RING_EMPTY) | \
+     SGI_IOC3_SERIAL_SOURCE(1, SGI_IOC3_INT_TX_RING_EMPTY))
 
 /*
  * The parallel port's four consecutive sources: its service interrupt, one

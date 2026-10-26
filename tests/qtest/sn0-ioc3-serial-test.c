@@ -1623,6 +1623,50 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 }
 
 /*
+ * Transmit-ring-empty follows the ring: set while ring DMA is on and nothing
+ * is left to send, clear while an entry is still going out, and deaf to an
+ * acknowledgement. Linux's IOC3 ring driver says a write can clear it
+ * without the handler, re-reads it after a write, and stops it by masking
+ * the source rather than acknowledging it.
+ */
+static void test_transmit_empty_follows_the_ring(const void *data)
+{
+    const uint8_t out[4] = { 'e', 'm', 'p', 't' };
+    const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+
+    /* Off, the ring raises nothing; on and empty, it does. */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+                    ==, 0);
+    enable_dma(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+                    ==, SOURCE(0, SRC_TX_RING_EMPTY));
+
+    /* Acknowledging it changes nothing while the ring stays empty. */
+    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_TX_RING_EMPTY));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+                    ==, SOURCE(0, SRC_TX_RING_EMPTY));
+
+    /* An entry still on its way out clears it... */
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+                    ==, 0);
+
+    /* ...until its last character has gone. */
+    carry_on_the_line(qts, sizeof(out));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+                    ==, SOURCE(0, SRC_TX_RING_EMPTY));
+}
+
+/*
  * A delay-typed byte holds the slots behind it for that many milliseconds,
  * with the control register's transmit-timer bit set while it runs; an
  * explicit interrupt asked of the delay comes when it ends. Both Linux
@@ -1832,7 +1876,7 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
     int sock;
     const uint8_t out[4] = { 'i', 'r', 'q', '?' };
     const uint8_t control[4] = {
-        TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY,
+        TX_CHARACTER | TX_INTERRUPT, TX_EMPTY, TX_EMPTY, TX_EMPTY,
     };
 
     qts = qtest_init_with_serial("-M origin200", &sock);
@@ -1846,12 +1890,12 @@ static void test_a_serial_dma_source_follows_the_enable_mask(const void *data)
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
 
     /* Latched: it is set in the status register with nothing enabled. */
-    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
-                    ==, SOURCE(0, SRC_TX_RING_EMPTY));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, SOURCE(0, SRC_TX_DONE));
 
-    /* And it acknowledges, which the two pass-through bits do not. */
-    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_TX_RING_EMPTY));
-    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_RING_EMPTY),
+    /* And it acknowledges, which the level-following bits do not. */
+    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_TX_DONE));
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
                     ==, 0);
 
     close(sock);
@@ -3467,6 +3511,8 @@ int main(int argc, char **argv)
                         test_a_pause_is_acknowledged_and_stops_the_walk);
     qtest_add_data_func("sn0/ioc3-serial/reset-returns-to-the-start", NULL,
                         test_a_reset_returns_the_channels_to_the_start);
+    qtest_add_data_func("sn0/ioc3-serial/transmit-empty-follows-the-ring", NULL,
+                        test_transmit_empty_follows_the_ring);
     qtest_add_data_func("sn0/ioc3-serial/delay-entry-holds-the-line", NULL,
                         test_a_delay_entry_holds_the_line);
     qtest_add_data_func("sn0/ioc3-serial/modem-entry-reaches-modem-register",
