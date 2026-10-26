@@ -176,8 +176,7 @@ static void sdma_rx_timer_expired(void *opaque)
         p->delivered = false;
     }
 
-    if ((*consume & SGI_IOC_SDMA_ARM_RX_TIMER) &&
-        ((*produce ^ *consume) & mask)) {
+    if (p->armed && ((*produce ^ *consume) & mask)) {
         sdma_raise(p, SGI_IOC_SDMA_SRC_RX_TIMER);
     }
 }
@@ -274,7 +273,7 @@ static void sdma_flush(SGIIOCSerialDMAPort *p, int64_t since)
     }
     p->delivered = false;
 
-    if (*consume & SGI_IOC_SDMA_ARM_RX_TIMER) {
+    if (p->armed) {
         sdma_rx_timer_start(p, since);
     }
 }
@@ -472,6 +471,7 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
         *sdma_reg(p, reg) = 0;
     }
 
+    p->armed = false;
     p->packed = 0;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
     p->delivered = false;
@@ -559,6 +559,11 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
         val |= SGI_IOC_SDMA_PAUSED;
     }
 
+    /* The consume index reports the arm, which a write can only set. */
+    if (offset == SGI_IOC_SDMA_RX_CONSUME && p->armed) {
+        val |= SGI_IOC_SDMA_ARM_RX_TIMER;
+    }
+
     /* The produce index also reports the packer's held count. */
     if (offset == SGI_IOC_SDMA_RX_PRODUCE) {
         val |= (uint32_t)p->packed << SGI_IOC_SDMA_HELD_SHIFT;
@@ -618,14 +623,22 @@ void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
         uint32_t *consume = sdma_reg(p, offset);
         uint32_t *produce;
 
-        *consume = val & (mask | SGI_IOC_SDMA_ARM_RX_TIMER);
+        /*
+         * Bit 31 sets the arm and a write with it clear leaves the arm
+         * alone: both Linux ring drivers arm as a read starts and end the
+         * read with bit 31 clear, under a comment calling that write a
+         * re-arm, and IRIX's ring console does the same.
+         */
+        *consume = val & mask;
+        if (val & SGI_IOC_SDMA_ARM_RX_TIMER) {
+            p->armed = true;
+        }
         sgi_ioc_sdma_kick(d, port);
 
-        /* Bit 31 arms the timer; re-arming over a non-empty ring rewinds. */
+        /* Arming over a non-empty ring rewinds the timer. */
         produce = sdma_reg(p, SGI_IOC_SDMA_RX_PRODUCE);
-        if (!(*consume & SGI_IOC_SDMA_ARM_RX_TIMER)) {
-            timer_del(p->rx_timer);
-        } else if ((*produce ^ *consume) & mask) {
+        if ((val & SGI_IOC_SDMA_ARM_RX_TIMER) &&
+            ((*produce ^ *consume) & mask)) {
             sdma_rx_timer_start(p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         }
         return;
@@ -734,6 +747,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         p->packed = 0;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->delivered = false;
+        p->armed = false;
     }
 }
 
@@ -791,6 +805,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_UINT8(packed, SGIIOCSerialDMAPort),
         VMSTATE_TIMER_PTR(rx_timer, SGIIOCSerialDMAPort),
         VMSTATE_UINT16(rx_idle_count, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(armed, SGIIOCSerialDMAPort),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

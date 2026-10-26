@@ -574,6 +574,29 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 }
 
 /*
+ * The arm is a latch, not the stored bit: a consume write with bit 31 clear
+ * leaves it set, and the register reports it. Both Linux ring drivers arm
+ * as a read starts and end the read with bit 31 clear, under a comment that
+ * calls that write a re-arm; IRIX's ring console does the same.
+ */
+static void test_a_consume_without_the_arm_keeps_it(const void *data)
+{
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0x18);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_CONSUME)), ==,
+                    CONSUME_ARM_TIMER | 0x18);
+
+    /* A channel reset is what clears it. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_RESET);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_CONSUME)), ==, 0);
+}
+
+/*
  * Writing the reload loads the count too, and a timer that is not running
  * holds it there. The Origin 300 IO-8 board test resets the channel, writes
  * 0xfff with the timer unarmed and requires 0x0fff0fff back under a mask of
@@ -1854,6 +1877,43 @@ static void test_the_receive_timer_raises_on_expiry(
     qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_RX_TIMER));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
                     ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * The receive pattern of both Linux ring drivers: arm, then consume with bit
+ * 31 clear. The character that follows must still start the timer, or a
+ * short burst waits for more input before software hears of it.
+ */
+static void test_the_linux_receive_pattern_keeps_the_timer(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'l';
+    uint8_t got, status;
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex(got, ==, sent);
+
+    qtest_clock_step(qts, 0x140 * RX_TIMER_TICK_NS + RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
 
     close(sock);
     qtest_quit(qts);
@@ -3211,6 +3271,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-consume-keeps-arming-bit",
                         NULL,
                         test_the_receive_consume_keeps_its_arming_bit);
+    qtest_add_data_func("sn0/ioc3-serial/consume-without-arm-keeps-it", NULL,
+                        test_a_consume_without_the_arm_keeps_it);
     qtest_add_data_func("sn0/ioc3-serial/reload-write-loads-idle-count", NULL,
                         test_a_reload_write_loads_the_idle_count);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-keeps-twelve-bits", NULL,
@@ -3289,6 +3351,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-counts-and-raises",
                         NULL,
                         test_the_receive_timer_raises_on_expiry);
+    qtest_add_data_func("sn0/ioc3-serial/linux-receive-pattern-keeps-timer",
+                        NULL, test_the_linux_receive_pattern_keeps_the_timer);
     qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",
                         NULL, test_port_a_read_catches_the_receive_timer_up);
     qtest_add_data_func("sn0/ioc3-serial/port-b-read-catches-receive-timer-up",
