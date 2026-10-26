@@ -1998,6 +1998,57 @@ static void test_the_linux_receive_pattern_keeps_the_timer(const void *data)
 }
 
 /*
+ * Pausing freezes a running receive timer where it stands, and resuming
+ * lets it finish the time it had left. No source settles what the part
+ * does; this is the rule the IOC4 model already follows, chosen for both.
+ */
+static void test_a_pause_freezes_the_receive_timer(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'p';
+    uint8_t got, status;
+    uint32_t count;
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+
+    /* Half the count runs, then the pause holds the rest. */
+    qtest_clock_step(qts, 0xa0 * RX_TIMER_TICK_NS);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE | CTRL_PAUSE);
+    count = (qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff;
+    qtest_clock_step(qts, 0x200 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+    g_assert_cmphex((qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) >> 16) & 0xfff,
+                    ==, count);
+
+    /* Resumed, it runs out after the time it had left. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    qtest_clock_step(qts, (count - 1) * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, 0);
+    qtest_clock_step(qts, 2 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_TIMER),
+                    ==, SOURCE(0, SRC_RX_TIMER));
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * An expiry the clock has passed is visible to the next read, whether or
  * not the main loop has serviced the timer yet. The Origin 300 IO-8 board
  * test loads a two-tick reload, arms the timer, sends one character in
@@ -3435,6 +3486,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_raises_on_expiry);
     qtest_add_data_func("sn0/ioc3-serial/linux-receive-pattern-keeps-timer",
                         NULL, test_the_linux_receive_pattern_keeps_the_timer);
+    qtest_add_data_func("sn0/ioc3-serial/pause-freezes-receive-timer", NULL,
+                        test_a_pause_freezes_the_receive_timer);
     qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",
                         NULL, test_port_a_read_catches_the_receive_timer_up);
     qtest_add_data_func("sn0/ioc3-serial/port-b-read-catches-receive-timer-up",
