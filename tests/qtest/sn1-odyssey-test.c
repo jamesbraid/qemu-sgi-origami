@@ -11596,6 +11596,153 @@ static void test_command_fifo_gl_window_id_compare(void)
 }
 
 /*
+ * The 2D fills apply the window's pixel rules a row at a time, so pin them
+ * where a row walk could go wrong: clip rectangles that overlap, touch or
+ * stand apart, the id test inside them, and a logical operation that would
+ * show a pixel painted twice. XOR over an overlap must still flip a pixel
+ * once. The expected image is computed here from the rules, pixel by pixel.
+ * A copy along its own row must read each pixel before it is overwritten.
+ */
+#define FILL_RUNS_X 100
+#define FILL_RUNS_Y 100
+#define FILL_RUNS_W 64
+#define FILL_RUNS_H 32
+
+static const uint32_t fill_runs_clip[4][4] = {
+    { 104, 104, 131, 119 },     /* overlaps the next */
+    { 120, 110, 147, 127 },
+    { 148, 104, 151, 107 },     /* touches the one above */
+    { 156, 120, 159, 123 },     /* apart */
+};
+
+/* Rows that cross each rectangle's edges, for the slower id-plane probe. */
+static const uint32_t fill_runs_rows[] = { 103, 104, 107, 108, 110, 119, 120,
+                                           123, 127 };
+
+static bool fill_runs_in_clip(uint32_t x, uint32_t y)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        const uint32_t *r = fill_runs_clip[i];
+
+        if (x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool fill_runs_allowed(uint32_t x, uint32_t y)
+{
+    /* The id-3 window fails the id test. */
+    return !(x >= 140 && x < 150) && fill_runs_in_clip(x, y);
+}
+
+static void fill_runs_check(QTestState *qts, uint32_t xor_from_pattern)
+{
+    g_autofree uint32_t *got = g_new(uint32_t, FILL_RUNS_W * FILL_RUNS_H);
+
+    odsy_test_pixels(qts, FILL_RUNS_X, FILL_RUNS_Y, FILL_RUNS_W, FILL_RUNS_H,
+                     got);
+    for (uint32_t row = 0; row < FILL_RUNS_H; row++) {
+        for (uint32_t col = 0; col < FILL_RUNS_W; col++) {
+            uint32_t x = FILL_RUNS_X + col, y = FILL_RUNS_Y + row;
+            uint32_t want = 0x11;
+
+            if (fill_runs_allowed(x, y)) {
+                want ^= 0x16;
+                /* Pattern bits: every other column, from the leftmost. */
+                if (xor_from_pattern && col < 32 && !(col & 1)) {
+                    want ^= xor_from_pattern;
+                }
+            }
+            g_assert_cmphex(got[row * FILL_RUNS_W + col], ==, want);
+        }
+    }
+}
+
+static void test_command_fifo_fill_runs_match_pixel_rules(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bitmap[32];
+    uint32_t row[8];
+
+    index_fill(qts, 0x11, FILL_RUNS_X, FILL_RUNS_Y, FILL_RUNS_X + FILL_RUNS_W,
+               FILL_RUNS_Y + FILL_RUNS_H);
+    id_plane_write(qts, 25, 0xf8, FILL_RUNS_X, FILL_RUNS_Y,
+                   FILL_RUNS_X + FILL_RUNS_W, FILL_RUNS_Y + FILL_RUNS_H);
+    id_plane_write(qts, 3, 0xf8, 140, FILL_RUNS_Y, 150,
+                   FILL_RUNS_Y + FILL_RUNS_H);
+    window_clip(qts, fill_runs_clip, 4);
+    id_compare(qts, false, ODSY_ID_COMPARE_MAIN(25));
+
+    /* GXxor over the whole box: one flip wherever the rules allow. */
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, ODSY_MODE_INDEX_LOGIC_OP);
+    cmd_push(qts, ODSY_CMD_LOGIC_OP);
+    cmd_push(qts, 6);
+    colour_index_fill(qts, 0x16, FILL_RUNS_X, FILL_RUNS_Y,
+                      FILL_RUNS_X + FILL_RUNS_W, FILL_RUNS_Y + FILL_RUNS_H);
+    fill_runs_check(qts, 0);
+
+    /* The same through a transparent pattern of every other column. */
+    for (unsigned i = 0; i < 32; i++) {
+        bitmap[i] = 0xaaaaaaaa;
+    }
+    pattern_load(qts, bitmap);
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_32X32);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, ODSY_PATTERN_MODE_ENABLE | ODSY_MODE_INDEX_LOGIC_OP);
+    colour_index_fill(qts, 0x01, FILL_RUNS_X, FILL_RUNS_Y, FILL_RUNS_X + 32,
+                      FILL_RUNS_Y + FILL_RUNS_H);
+    fill_runs_check(qts, 0x01);
+    board_quit(qts);
+
+    /* An id-plane write under the same rectangles, the id test off. */
+    qts = board_start("");
+    window_clip(qts, fill_runs_clip, 4);
+    id_plane_write(qts, 9, 0xf8, FILL_RUNS_X, FILL_RUNS_Y,
+                   FILL_RUNS_X + FILL_RUNS_W, FILL_RUNS_Y + FILL_RUNS_H);
+    for (unsigned i = 0; i < ARRAY_SIZE(fill_runs_rows); i++) {
+        uint32_t y = fill_runs_rows[i];
+
+        for (uint32_t x = FILL_RUNS_X; x < FILL_RUNS_X + FILL_RUNS_W; x++) {
+            g_assert_cmphex(odsy_did(qts, x, y), ==,
+                            fill_runs_in_clip(x, y) ? 9 << 3 : 0);
+        }
+    }
+    board_quit(qts);
+
+    /* A copy three pixels right along its own row: memmove's result. */
+    qts = board_start("");
+    for (unsigned i = 0; i < 8; i++) {
+        odsy_test_pixel_write(qts, 600 + i, 600, 0x01020300u + i);
+    }
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+    cmd_push(qts, 0x00002000);
+    cmd_push(qts, (600u << 16) | 600);  /* SRC */
+    cmd_push(qts, 0x80502050);
+    cmd_push(qts, (1u << 16) | 8);      /* SIZE: 8 wide, 1 tall */
+    cmd_push(qts, 0x82223042);
+    cmd_push(qts, 0x00002000);
+    cmd_push(qts, (600u << 16) | 603);  /* DST */
+    cmd_push(qts, 0x3222204b);
+    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_1);
+    cmd_push(qts, ODSY_CMD_QUICK_FLUSH_ARG);
+    cmd_push(qts, ODSY_CMD_STROBE);
+    cmd_push(qts, ODSY_CMD_STROBE);
+    odsy_test_pixels(qts, 600, 600, 8, 1, row);
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, 603 + i, 600), ==,
+                        0x01020300u + i);
+        g_assert_cmphex(row[i], ==, 0x01020300u + (i < 3 ? i : i - 3));
+    }
+    board_quit(qts);
+}
+
+/*
  * The test is part of the window the kernel pushes. The off-screen tail's
  * zero 0x840 does not replace it, a user-port 0x840 overrides it only until
  * the library's 0x90008116, and the restore brings it back with the window.
@@ -20914,6 +21061,8 @@ int main(int argc, char **argv)
              test_command_fifo_pattern_quad_opaque);
     add_case("sn1/odyssey/command-fifo-integer-logic-op",
              test_command_fifo_integer_logic_op);
+    add_case("sn1/odyssey/command-fifo-fill-runs-match-pixel-rules",
+             test_command_fifo_fill_runs_match_pixel_rules);
     add_case("sn1/odyssey/command-fifo-image-raster-rgb",
              test_command_fifo_image_raster_rgb);
     add_case("sn1/odyssey/command-fifo-image-raster-descending",
