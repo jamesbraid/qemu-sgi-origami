@@ -188,6 +188,15 @@ typedef struct SGIKonaMesaProvider SGIKonaMesaProvider;
  * timing to simulate the real interrupt's latency.
  */
 #define SGI_KONA_INT_CAUSE 0x800238
+/*
+ * The FIFO low-watermark cause, which the driver enables only while its
+ * graphics flow-control handler waits for the pipe to drain, and whose
+ * handler wakes the waiting thread (established from the IRIX 6.5.30
+ * driver's flow-control and general interrupt handlers). When the pipe
+ * raises it is not known; see
+ * sgi_kona_work_lowater().
+ */
+#define SGI_KONA_INT_CAUSE_LOWATER (1u << 1)
 #define SGI_KONA_INT_CAUSE_MAILBOX (1u << 4)
 
 /*
@@ -1459,6 +1468,12 @@ struct SGIKonaState {
      */
     Object *pi;
     uint32_t pi_held;
+    /*
+     * Credits the pipe has freed while the credit target at +0x7c is
+     * parked (bit 0 set), held until a target is written back
+     * (sgi_kona_pi_return()).
+     */
+    uint32_t pi_parked;
     bool pi_unlinked_logged;
     Object *pi_class_node;
     struct SGIPIGfxClass *pi_class;
@@ -1885,6 +1900,7 @@ struct SGIKonaState {
     VMChangeStateEntry *work_vm_state;
     GArray *work_queue;         /* SGIKonaQueuedWord, oldest first */
     uint32_t work_head;         /* the oldest word not yet executed */
+    Object *work_replay_node;   /* the Hub of the store being replayed */
     bool work_replaying;        /* a queued word is being executed */
 
     /*

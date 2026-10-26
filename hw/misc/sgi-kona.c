@@ -1361,9 +1361,26 @@ static bool sgi_kona_store_counted(void)
  */
 static void sgi_kona_pi_return(SGIKonaState *s, uint32_t credits)
 {
-    Object *node = sgi_pi_gfx_store_source() ?: s->pi_store_node ?: s->pi;
+    Object *node = s->work_replaying && s->work_replay_node ?
+                   s->work_replay_node :
+                   sgi_pi_gfx_store_source() ?: s->pi_store_node ?: s->pi;
 
     if (!credits) {
+        return;
+    }
+    /*
+     * When the IRIX driver switches a thread out, it parks the credit
+     * target, writing 1 to +0x7c and reading it back, and then detaches the
+     * thread's flow; when it switches the thread back in, it attaches the
+     * flow, writes back the counter it saved and restores the target (0x22,
+     * its credit transaction number shifted left one). Credits freed while
+     * the target is parked go back once it is restored. Inferred: a real
+     * pipe's credits for stores already taken when the target is parked
+     * must reach the counter after it is restored, or IRIX's count would
+     * fall short of its total; how the pipe holds them is not known.
+     */
+    if (s->low_window_write & 1) {
+        s->pi_parked += credits;
         return;
     }
     if (!node) {
@@ -18251,7 +18268,20 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         value = s->int_vectors;
         break;
     case SGI_KONA_CREDIT:
-        value = sgi_kona_credit(s);
+        /*
+         * A pipe with work waiting reads as a full FIFO. The IRIX driver's
+         * flow-control handler only compares this register with 0x300:
+         * above it, it enables the low-watermark cause and puts the storing
+         * thread to sleep until that cause; at or below it, it waits a
+         * millisecond for the credits to come back and then gives up its
+         * time slice. One queued word can stand for seconds of the model's
+         * work, so a level counted in words would understate the wait; a
+         * fixed full reading gives the driver the one answer that fits.
+         * Model choice: how full a real pipe's FIFO reads while it works is
+         * unknown.
+         */
+        value = sgi_kona_work_pending(s) ? SGI_KONA_CREDIT_MASK :
+                                           sgi_kona_credit(s);
         break;
     case SGI_KONA_CREDIT_CONFIG:
         value = s->credit_config;
@@ -18373,10 +18403,21 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
                          (level ? SGI_KONA_ONEWIRE_LEVEL : 0);
         break;
     }
-    case SGI_KONA_LOW_WINDOW_WRITE:
-        /* Observed value 0x23 during install; meaning unknown. */
+    case SGI_KONA_LOW_WINDOW_WRITE: {
+        /*
+         * The credit target (see sgi_kona_pi_return()): the IO6 firmware
+         * writes 0x23 once, the driver 1 to park it and its transaction
+         * number shifted left one to restore it.
+         */
+        uint32_t parked = s->pi_parked;
+
         s->low_window_write = value;
+        if (!(value & 1) && parked) {
+            s->pi_parked = 0;
+            sgi_kona_pi_return(s, parked);
+        }
         break;
+    }
     case SGI_KONA_INT_DEST_UPPER:
         s->int_dest_upper = value;
         break;
@@ -18563,8 +18604,11 @@ static void sgi_kona_log_split(hwaddr addr, bool write)
  * - command-stream stores queue, in the order they arrive, and run once
  *   the list has finished: the command page, the DMA FIFO port, the
  *   bracket register, the internal port write and the map RAM, which the
- *   list's DMA translates through. Each store's credit goes back at once,
- *   as the board returns one when its FIFO takes the store.
+ *   list's DMA translates through. Each store's credit goes back when the
+ *   work takes the store, as the board returns one when it frees the FIFO
+ *   slot. The driver's credits so bound the backlog to the FIFO, and the
+ *   processor interface's flow control puts the storing thread to sleep
+ *   (hw/mips/sgi/pi-gfx.c, sgi_kona_work_lowater()).
  * - the interrupt cause, interrupt enable and mailbox registers, which the
  *   kernel's interrupt handler reads and acknowledges while the pipe
  *   works, act at once, as do the retrace tag and widget identity reads.
@@ -18575,16 +18619,19 @@ static void sgi_kona_log_split(hwaddr addr, bool write)
  *   not depend on how far the work has got.
  *
  * Inferred from the driver's use, not measured: which registers the board
- * serves while its pipe is busy. A store with SGI_KONA_WORK_QUEUE_MAX
- * words already waiting waits for the work instead, as a full FIFO would
- * hold a processor's stores; the board's own FIFO depth is not known.
+ * serves while its pipe is busy. Stores the processor interface did not
+ * count (its graphics page disabled, or a qtest's) are not bounded by
+ * credits: past SGI_KONA_WORK_QUEUE_MAX waiting words such a store waits
+ * for the work, which keeps the queue's memory bounded.
  */
 typedef struct SGIKonaQueuedWord {
     uint32_t addr;
     uint32_t value;
+    bool counted;               /* the store's credit goes back with it */
+    Object *node;               /* the Hub that sent the store */
 } SGIKonaQueuedWord;
 
-#define SGI_KONA_WORK_QUEUE_MAX (64 * 1024)
+#define SGI_KONA_WORK_QUEUE_MAX (1024 * 1024)
 
 typedef enum SGIKonaAccess {
     SGI_KONA_ACCESS_WAITS,
@@ -18609,6 +18656,8 @@ static SGIKonaAccess sgi_kona_access_kind(hwaddr addr, bool write)
     case SGI_KONA_INT_ENABLE:
     case SGI_KONA_MAILBOX:
         return SGI_KONA_ACCESS_NOW;
+    case SGI_KONA_CREDIT:
+        return write ? SGI_KONA_ACCESS_WAITS : SGI_KONA_ACCESS_NOW;
     case SGI_KONA_RETRACE_TAG:
     case SGI_KONA_WIDGET_ID:
         return write ? SGI_KONA_ACCESS_WAITS : SGI_KONA_ACCESS_NOW;
@@ -18695,9 +18744,12 @@ static bool sgi_kona_word_ends_long_command(SGIKonaState *s, hwaddr addr)
  * waited and nothing else is left.
  */
 static bool sgi_kona_work_defer(SGIKonaState *s, hwaddr addr,
-                                uint32_t value)
+                                uint32_t value, bool counted)
 {
-    SGIKonaQueuedWord w = { .addr = addr, .value = value };
+    SGIKonaQueuedWord w = {
+        .addr = addr, .value = value, .counted = counted,
+        .node = sgi_pi_gfx_store_source(),
+    };
 
     /* qtest, which has no processor, stands in for one with the knob. */
     if (!s->work.drawing && !sgi_kona_work_pending(s) &&
@@ -18709,6 +18761,10 @@ static bool sgi_kona_work_defer(SGIKonaState *s, hwaddr addr,
             return false;
         }
         if (s->work_queue->len - s->work_head >= SGI_KONA_WORK_QUEUE_MAX) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: %u words wait behind"
+                          " the pipe's work, more than graphics credits"
+                          " allow; waiting for the work\n",
+                          s->work_queue->len - s->work_head);
             sgi_kona_work_drain(s, addr);
             return false;
         }
@@ -18722,17 +18778,40 @@ static bool sgi_kona_work_defer(SGIKonaState *s, hwaddr addr,
     return true;
 }
 
+/*
+ * The pipe has drained: the FIFO low-watermark cause, when the driver has
+ * enabled it. The driver enables it only while a thread waits for the
+ * pipe to drain below its threshold (its flow-control handler), and that
+ * threshold is the credit register's level 0x300, which the model reads
+ * while work waits as a full FIFO (sgi_kona_read_word()). Model choice:
+ * the cause is raised when the work and the words behind it are all done;
+ * when a real pipe raises it, against which register, is unknown.
+ */
+static void sgi_kona_work_lowater(SGIKonaState *s)
+{
+    if (s->int_enable & SGI_KONA_INT_CAUSE_LOWATER) {
+        s->int_cause |= SGI_KONA_INT_CAUSE_LOWATER;
+        trace_sgi_kona_work("lowater", 0, s->int_enable);
+        sgi_kona_raise_vector(s, true);
+    }
+}
+
 static void sgi_kona_work_replay_one(SGIKonaState *s)
 {
     SGIKonaQueuedWord w = g_array_index(s->work_queue, SGIKonaQueuedWord,
                                         s->work_head);
 
+    uint64_t packets = s->pi_packets;
+
     s->work_head++;
-    if (s->context_failed) {
-        return;
-    }
     s->work_replaying = true;
-    sgi_kona_write_word(s, w.addr, w.value, 4);
+    s->work_replay_node = w.node;
+    if (!s->context_failed) {
+        sgi_kona_write_word(s, w.addr, w.value, 4);
+    }
+    /* The pipe takes the store now, and its credit goes back. */
+    sgi_kona_pi_credits(s, w.counted, packets);
+    s->work_replay_node = NULL;
     s->work_replaying = false;
 }
 
@@ -18772,6 +18851,7 @@ static void sgi_kona_work_step(void *opaque, SGIHeadWorkBudget *b)
      * nothing holds them: no store may arrive to return them.
      */
     sgi_kona_pi_credits(s, false, s->pi_packets);
+    sgi_kona_work_lowater(s);
 }
 
 static bool sgi_kona_work_pending_cb(void *opaque)
@@ -18885,11 +18965,11 @@ static MemTxResult sgi_kona_read(void *opaque, hwaddr addr,
  * (sgi_kona_access_kind()). True when the word was kept to run later.
  */
 static bool sgi_kona_store_word(SGIKonaState *s, hwaddr addr,
-                                uint32_t value)
+                                uint32_t value, bool counted)
 {
     switch (sgi_kona_access_kind(addr, true)) {
     case SGI_KONA_ACCESS_QUEUES:
-        if (sgi_kona_work_defer(s, addr, value)) {
+        if (sgi_kona_work_defer(s, addr, value, counted)) {
             return true;
         }
         break;
@@ -18930,20 +19010,25 @@ static MemTxResult sgi_kona_write(void *opaque, hwaddr addr,
     }
     trace_sgi_kona_pio_write(s->trace_sequence++, cpu, addr, value, size);
 
+    /*
+     * A store whose words wait behind the work keeps its credit until the
+     * work takes them: its last word carries it (sgi_kona_work_replay_one()).
+     * The graphics credits so bound the words that can wait to the
+     * pipe's FIFO, as on the board; the processor interface's flow control
+     * then holds the storing thread back (hw/mips/sgi/pi-gfx.c).
+     */
     if (size != 8) {
-        queued = sgi_kona_store_word(s, addr, value);
+        queued = sgi_kona_store_word(s, addr, value, counted);
     } else if (sgi_kona_doubleword_data(addr)) {
-        queued = sgi_kona_store_word(s, addr, value >> 32);
-        queued |= sgi_kona_store_word(s, addr, (uint32_t)value);
+        queued = sgi_kona_store_word(s, addr, value >> 32, false);
+        queued |= sgi_kona_store_word(s, addr, (uint32_t)value, counted);
     } else {
         sgi_kona_log_split(addr, true);
-        queued = sgi_kona_store_word(s, addr, value >> 32);
-        queued |= sgi_kona_store_word(s, addr + 4, (uint32_t)value);
+        queued = sgi_kona_store_word(s, addr, value >> 32, false);
+        queued |= sgi_kona_store_word(s, addr + 4, (uint32_t)value,
+                                      counted);
     }
-    /* A store kept behind the work has left the port: its credit too. */
-    if (queued) {
-        sgi_kona_pi_return(s, counted);
-    } else {
+    if (!queued) {
         sgi_kona_pi_credits(s, counted, packets);
     }
     sgi_head_work_leave();
@@ -19938,6 +20023,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 
     /* Increment 2: register-window plain storage and the mailbox queue. */
     s->low_window_write = 0;
+    s->pi_parked = 0;
     s->int_dest_upper = 0;
     s->int_dest_lower = 0;
     s->int_vectors = 0;
@@ -21589,12 +21675,13 @@ static const VMStateDescription vmstate_sgi_kona_bracket = {
 
 static const VMStateDescription vmstate_sgi_kona_credit = {
     .name = TYPE_SGI_KONA "/credit",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .needed = sgi_kona_credit_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(credit_config, SGIKonaState),
         VMSTATE_UINT32(pi_held, SGIKonaState),
+        VMSTATE_UINT32(pi_parked, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
