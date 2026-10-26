@@ -1004,30 +1004,24 @@ def _processor_choices(topology: dict) -> list[dict]:
              "cpus_per_node": None, "default": True}]
 
 
-_IP53_NORMAL_OFFERINGS = {
-    ("origin350", "origin350", (4,)): (2048, 700_000_000, 8, 0x009cad85),
-    ("onyx350", "onyx350-compat", (4,)): (8192, 800_000_000, 8, 0x009caf85),
-    ("tezro", "tezro-tower-one", (1,)): (4096, 700_000_000, 4, 0x009bad85),
-    ("tezro", "tezro-tower-multi", (4,)): (4096, 700_000_000, 4, 0x009bad85),
-    ("tezro", "tezro-rack-base", (1,)): (4096, 700_000_000, 4, 0x009bad85),
-    ("onyx4-host", "onyx4-host-serial-compat", (4,)):
-        (8192, 1_000_000_000, 16, 0x009dad85),
-}
 _IP53_REQUIRED_CPU_PROPERTIES = [
     "r16000-experimental", "r16000-reset-mode", "r16000-scache-bytes",
 ]
 
 
 def _is_ip53_normal_offering(
-    product: str, topology: str, cpu_population: tuple[int, ...],
+    topology: dict, cpu_population: tuple[int, ...],
     default_memory: tuple[int, ...], accepted_memory: list[int],
     assembly: dict,
 ) -> bool:
-    """Whether this exact approved IP53 offering needs no caller CPU flags."""
-    expected = _IP53_NORMAL_OFFERINGS.get(
-        (product, topology, tuple(cpu_population)))
-    if expected is None:
+    """Whether this offering is its topology's approved normal IP53 launch,
+    which needs no caller CPU flags. The topology's own ip53-runtime
+    normal selection names it, the same record QEMU admits it from."""
+    selection = (topology.get("ip53_runtime") or {}).get("normal_selection")
+    if selection is None or tuple(cpu_population) != (selection["cpus"],):
         return False
+    expected = (selection["memory_mib"], selection["clock_hz"],
+                selection["cache_mib"], selection["mode_word"])
     memory_mib, clock_hz, cache_mib, mode_bits = expected
     return (
         default_memory == (memory_mib,)
@@ -1216,7 +1210,7 @@ def _offerings_for(model: dict, topology: dict,
                 set(cpu_population) <= set(choice["cpus_per_node"])):
             assembly = choice["assembly"]
             normal_ip53 = _is_ip53_normal_offering(
-                machine_name, configuration_name, tuple(cpu_population),
+                topology, tuple(cpu_population),
                 default_memory, choice["accepted_memory_mib"], assembly,
             )
             offerings.append({
