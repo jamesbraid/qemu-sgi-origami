@@ -52,6 +52,10 @@ config SGI_IOC4
 config SGI_IOC3_PARALLEL
     bool
 
+config SGI_IOC_SERIAL_DMA
+    bool
+    select SERIAL
+
 config VIRTIO_SERIAL
     bool
     default y

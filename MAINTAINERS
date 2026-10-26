@@ -1500,6 +1500,7 @@ F: hw/display/sgi/
 F: tests/qtest/sgi-gbe-test.c
 F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
+F: hw/char/sgi-ioc-serial-dma.c
 F: hw/input/sgi-ioc3-kbc.c
 F: hw/misc/sgi-*.c
 F: hw/misc/sgi-kona-mesa-provider.h
@@ -1520,6 +1521,7 @@ F: include/hw/audio/sgi-rad1-audio-pcm.h
 F: include/hw/display/sgi/
 F: include/hw/i2c/pcf8584.h
 F: include/hw/i2c/i2c-wire.h
+F: include/hw/char/sgi-ioc-serial-dma.h
 F: include/hw/input/sgi-ioc3-kbc.h
 F: include/hw/misc/sgi-*.h
 F: include/hw/net/dp83840.h

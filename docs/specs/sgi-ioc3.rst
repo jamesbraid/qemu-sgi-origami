@@ -70,7 +70,10 @@ Serial DMA engines
 ==================
 
 Each port has an engine moving characters between the port's 16550
-and a pair of memory rings. One base register places all four rings
+and a pair of memory rings. The engine is shared with IOC4, which has
+the same per-port registers and ring format, and lives in
+``hw/char/sgi-ioc-serial-dma.c``; the chip supplies the register
+window, its interrupt status bits and the UARTs. One base register places all four rings
 -- port A transmit, A receive, B transmit, B receive, in that order,
 each of the size the base register's low bit selects -- so a ring's
 address is derived from port and direction and is not readable back.

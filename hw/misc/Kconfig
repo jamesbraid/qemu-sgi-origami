@@ -313,6 +313,7 @@ config SGI_IOC3
     select SGI_IOC3_ETH
     select SGI_IOC3_KBC
     select SGI_IOC3_PARALLEL
+    select SGI_IOC_SERIAL_DMA
 
 config SGI_ROUTER
     bool
