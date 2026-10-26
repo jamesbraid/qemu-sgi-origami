@@ -1538,6 +1538,37 @@ static void test_dma_tx_empty_follows_the_ring(void)
     close(sv[0]);
 }
 
+/*
+ * The receive timer's arm is a latch: a consume write with bit 31 clear
+ * leaves it, the register reads it back, and the next character still
+ * starts the timer. Both Linux ring drivers arm as a read starts and end
+ * the read with bit 31 clear.
+ */
+static void test_dma_consume_without_arm_keeps_it(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input = 0x6b;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_TIMER(0), 2);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    reg_write(qts, SDMA_RX_CONSUME(0), 0);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], &input, 1), ==, 1);
+    g_usleep(10000);
+    qtest_clock_step(qts, 125001);
+    ioc4_wait_reg(qts, 0x08, RX_TIMER_EXPIRED(0), RX_TIMER_EXPIRED(0));
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -2851,7 +2882,8 @@ static void test_dma_active_state_migration(void)
     g_assert_cmphex(reg_read(to, SDMA_CONTROL(0)) &
                     (SSCR_DMA_EN | SSCR_PAUSE_STATE), ==, SSCR_DMA_EN);
     g_assert_cmphex(reg_read(to, SDMA_RX_PRODUCE(0)), ==, 0x3f8);
-    g_assert_cmphex(reg_read(to, SDMA_RX_CONSUME(0)), ==, 0);
+    /* The consume index reads the pointer with the arm, still set. */
+    g_assert_cmphex(reg_read(to, SDMA_RX_CONSUME(0)), ==, SRCIR_TIMER_ARM);
     g_assert_cmphex(reg_read(to, SDMA_TX_PRODUCE(0)), ==, 8);
     g_assert_cmphex(reg_read(to, SDMA_TX_CONSUME(0)), ==, 0);
     g_assert_cmphex(reg_read(to, 0x08) & RX_RING_FULL(0), ==,
@@ -3083,6 +3115,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-consume-without-arm-keeps-it",
+                   test_dma_consume_without_arm_keeps_it);
     qtest_add_func("/sgi-ioc4/dma-tx-empty-follows-the-ring",
                    test_dma_tx_empty_follows_the_ring);
     qtest_add_func("/sgi-ioc4/dma-channel-reset-keeps-settings",

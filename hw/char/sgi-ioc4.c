@@ -855,7 +855,8 @@ static uint64_t ioc4_dma_register_read(SGIIOC4State *s, hwaddr addr)
     case 1: return s->dma[n].tx_produce;
     case 2: return s->dma[n].tx_consume;
     case 3: return s->dma[n].rx_produce;
-    case 4: return s->dma[n].rx_consume;
+    case 4: return s->dma[n].rx_consume |
+                   (s->dma[n].timer_armed ? IOC4_SRCIR_TIMER_ARM : 0);
     case 5: return (s->dma[n].rx_timer_reload & 0xfff) |
                    ioc4_rx_timer_count(&s->dma[n]) << 16;
     case 6: return s->dma[n].shadow;
@@ -953,11 +954,16 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
                           "sgi-ioc4: RX consumer 0x%08x on port %u has bits "
                           "outside the pointer field\n", value, n);
         }
+        /*
+         * Bit 31 sets the arm and a write with it clear leaves the arm and
+         * any running timer alone: both Linux ring drivers arm as a read
+         * starts and end the read with bit 31 clear, under a comment that
+         * calls that write a re-arm.
+         */
         p->rx_consume = pointer;
-        timer_del(p->rx_timer);
-        p->timer_armed = value & IOC4_SRCIR_TIMER_ARM;
-        p->rx_timer_running = false;
-        p->rx_remaining_ns = 0;
+        if (value & IOC4_SRCIR_TIMER_ARM) {
+            p->timer_armed = true;
+        }
         if (p->rx_staged || p->drain_pending) {
             ioc4_rx_publish(p);
         }
