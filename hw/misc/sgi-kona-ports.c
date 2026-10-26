@@ -116,14 +116,18 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
      * class, key, offset and size, both in granules; a copy-down class, old
      * offset, new offset and size; a swap-out class, offset, size, granule,
      * copy count, host address >> 12, (address & 0xfff) | 0x9000 and the
-     * completion reason 0x102. 0x172 carries one 0 at every sender read. The
-     * swap-in, suspend and resume packets are not here: swap-in can carry
-     * its data inline, resume the words a suspend reply returned, and the
-     * 0x104 after a suspend has no stated count.
+     * completion reason 0x102. 0x172 carries one 0 at every sender read. A
+     * swap-in frames its first six words, class to host address >> 12;
+     * sgi-kona.c takes the rest, which carry its data inline or a tagged
+     * offset. A suspend is 0x1df and its completion reason 0x104. The
+     * resume, 0x1de, is not here: it carries the words a suspend reply
+     * returned, and the model's reply returns none.
      */
     { SGI_KONA_CMD_MEM_REGION, 4 },
     { SGI_KONA_CMD_MEM_COPY_DOWN, 4 },
     { SGI_KONA_CMD_MEM_SWAP_OUT, 8 },
+    { SGI_KONA_CMD_MEM_SWAP_IN, 6 },
+    { SGI_KONA_CMD_MEM_SUSPEND, 1 },
     { SGI_KONA_CMD_RESOURCE_SYNC, 1 },
     { SGI_KONA_CMD_X_INIT, 3 },        /* width, height, depth code */
     /* The X server's GC load, from its per-GC state */
