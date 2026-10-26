@@ -15,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
 #include "sn0-user-image.h"
@@ -65,8 +66,8 @@
     "-M onyx2,topology=onyx2-deskside,nodes=2,population=1:1 " \
     "-smp 2 -m 128M -cpu R10000 " \
     "-accel tcg,thread=multi -no-reboot -no-shutdown -S " \
-    "-device sgi-kona,slot=io4,product=ir2,geometry=ge14-4,rm-type=rm7," \
-    "rm-count=2,texture-mb=64,display=dg5-8 "
+    "-device sgi-kona,id=kona0,slot=io4,product=ir2,geometry=ge14-4," \
+    "rm-type=rm7,rm-count=2,texture-mb=64,display=dg5-8 "
 #define DESKSIDE_WIDGET     8
 /* The command page through node 1's uncached I/O space, and its page. */
 #define DESKSIDE_COMMAND_IO UINT64_C(0x9200000108c10000)
@@ -420,6 +421,89 @@ static void test_credits_return_through_the_storing_hub(void)
     qtest_quit(qts);
 }
 
+/*
+ * Credits a framer still held when a display list began go back once the
+ * list has run on the board's thread, where no store is arriving: to the
+ * Hub of the last store, as they would have with that store. On the
+ * deskside of test_credits_return_through_the_storing_hub(), node 0's map
+ * is empty, so a board that sent them to its "pi" link, node 0's Hub,
+ * dropped them and the counter stayed one short.
+ *
+ * The list runs two words a slice (x-test-slice-words), so the store that
+ * invokes it returns with the list's first packet open in a framer: that
+ * store's credit is held. The list ends in the sync probe, which brings
+ * the framers back to idle.
+ */
+#define DESKSIDE_KONA_IO(offset)  (UINT64_C(0x9200000108000000) + (offset))
+#define DESKSIDE_QOM_PATH         "/machine/module0/kona0"
+
+static bool kona_work_pending(QTestState *qts)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-work-pending'}}", DESKSIDE_QOM_PATH);
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+static void test_settled_credits_return_through_the_storing_hub(void)
+{
+    static const uint32_t list[] = {
+        1, 0x3, 5, 0x11 << 2, 0x22 << 2, 0x33 << 2,
+        1, 0x2, 5,
+        1, 9, 0,
+    };
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    SgiWait w;
+
+    build_store_server(image, true);
+    path = sn0_image_write(image, "sn0-kona-pi-credit-settle");
+    qts = qtest_initf("%s-bios %s", DESKSIDE_ARGS, path);
+    unlink(path);
+
+    sn0_program_nasid(qts, 1);
+    qtest_writeq(qts, MAILBOX + 32,
+                 qtest_readq(qts, HUB_SLOT_ID) & SLOT_ID_MASK);
+    qtest_writeq(qts, HUB + PI_GFX_PAGE(0),
+                 PI_GFX_PAGE_ENABLE | DESKSIDE_PAGE);
+    qtest_writeq(qts, HUB + PI_GFX_CREDIT(0), TOTAL);
+    qtest_writeq(qts, NODE1_HUB + IO_GFX_INIT(0),
+                 MAP(0, 0, DESKSIDE_WIDGET));
+    for (unsigned i = 0; i < ARRAY_SIZE(list); i++) {
+        uint8_t bytes[4];
+
+        stl_be_p(bytes, list[i]);
+        qtest_memwrite(qts, POOL_BASE + 4 * i, bytes, sizeof(bytes));
+    }
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': 2}}", DESKSIDE_QOM_PATH);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    /* The kernel maps the pool's page, then registers the pool. */
+    store(qts, DESKSIDE_KONA_IO(0x100000 + 4 * (POOL_BASE >> 14)),
+          0x20000000 | (uint32_t)(POOL_BASE >> 12), 4);
+    store(qts, DESKSIDE_COMMAND_IO, DMA_POOL, 4);
+    store(qts, DESKSIDE_COMMAND_IO, (uint32_t)(POOL_BASE >> 12), 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0x9000 | (uint32_t)(POOL_BASE & 0xfff), 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0x4000, 4);
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+
+    store(qts, DESKSIDE_COMMAND_IO, LIST_CALL_POOL, 4);
+    store(qts, DESKSIDE_COMMAND_IO, 0, 4);
+    store(qts, DESKSIDE_COMMAND_IO, ARRAY_SIZE(list), 4);
+    sgi_wait_start(&w, "display list work");
+    while (kona_work_pending(qts)) {
+        sgi_wait_pause(&w, 1000);
+    }
+    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -441,6 +525,8 @@ int main(int argc, char **argv)
                    test_straddling_stores_return_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/owed-credits-migrate",
                    test_owed_credits_migrate);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/settle-storing-hub",
+                   test_settled_credits_return_through_the_storing_hub);
     qtest_add_func("sn0/origin2000/kona-pi-credit/storing-hub",
                    test_credits_return_through_the_storing_hub);
     return g_test_run();

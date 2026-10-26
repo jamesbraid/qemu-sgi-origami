@@ -1414,6 +1414,13 @@ struct SGIKonaState {
      * access, so it is not migrated.
      */
     uint64_t pi_packets;
+    /*
+     * The Hub that sent the last store that named one, which held credits
+     * settled on the board's own thread go back to (sgi_kona_pi_return()).
+     * Host-only and not migrated: after a migration the "pi" link stands
+     * in until the next store.
+     */
+    Object *pi_store_node;
 
     /*
      * SGI_KONA_RETRACE_TAG as it reads, and whether the retrace now being
@@ -1813,11 +1820,6 @@ struct SGIKonaState {
     uint32_t resolve_line[SGI_KONA_FB_WIDTH];
 
     /*
-     * Host-only qtest introspection coordinates for x-test-pixel. Not
-     * guest state and not migrated, matching hw/misc/sgi-mgras.c's own
-     * test_pixel_x/test_pixel_y precedent.
-     */
-    /*
      * Display-list work that outlasts the store that started it. A list a
      * processor invokes runs in slices of host time, the first inside the
      * store and the rest on the board's thread (hw/display/sgi/head-work.c),
@@ -1831,6 +1833,11 @@ struct SGIKonaState {
     uint32_t work_head;         /* the oldest word not yet executed */
     bool work_replaying;        /* a queued word is being executed */
 
+    /*
+     * Host-only qtest introspection coordinates for x-test-pixel. Not
+     * guest state and not migrated, matching hw/misc/sgi-mgras.c's own
+     * test_pixel_x/test_pixel_y precedent.
+     */
     /* Host-only access ordering, not migrated or reset with guest state. */
     uint64_t trace_sequence;
     uint32_t test_pixel_x;
