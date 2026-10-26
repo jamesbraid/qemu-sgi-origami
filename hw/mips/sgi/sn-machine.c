@@ -284,7 +284,6 @@ struct SGIMachineState {
 
     unsigned int num_nodes;
     SN0NodeState **nodes;
-    MemoryRegion *big_window_route;
 
     /* This machine's Routers, in descriptor order, so a cable's own
      * SGIModelLinkEnd index addresses them. */
@@ -7764,9 +7763,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
     g_assert(cpu_index == machine->smp.cpus);
-
-    sn0_map_cpu_big_windows(OBJECT(s), s->nodes, s->num_nodes,
-                            &s->big_window_route);
 
     /*
      * The two-chassis Origin 200's two Hub-embedded ELSCs share
