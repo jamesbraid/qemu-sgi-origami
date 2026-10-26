@@ -841,8 +841,12 @@ static void test_ip53_v12(void)
         QTestState *qts = start(l, "");
         g_autofree char *type = qom_type(qts, "/machine/module0/widget-12");
         g_autofree char *product = NULL;
+        g_autofree char *keyboard = qom_type(qts,
+                                             "/machine/io9-io9-d1-f0/kbc/kbd");
 
         g_assert_null(type);
+        /* The IO9 keyboard is there with or without a pipe. */
+        g_assert_cmpstr(keyboard, ==, "ps2-kbd");
         g_assert_cmphex(qtest_readl(qts, vpro + 0x0004), !=,
                         UINT32_C(0xac013047));
         g_assert_cmphex(qtest_readl(qts, SPACE_IO + IP53_XBOW_LINK_AUX(12)) &

@@ -143,8 +143,6 @@ struct SGIIOC4State {
     bool serial_dma_experimental;
     bool pci_status_compat;
     bool ata_readback_compat;
-    bool ps2_input;
-    uint8_t ps2_input_mode;
     uint32_t ata_readback;
     IRQState uart_irq[IOC4_PORTS];
     uint32_t serial_pending;
@@ -1262,7 +1260,6 @@ static const VMStateDescription vmstate_ioc4 = {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
         VMSTATE_UINT8_EQUAL(pci_status_compat_mode, SGIIOC4State),
         VMSTATE_UINT8_EQUAL(ata_readback_compat_mode, SGIIOC4State),
-        VMSTATE_UINT8_EQUAL(ps2_input_mode, SGIIOC4State),
         VMSTATE_UINT32(ata_readback, SGIIOC4State),
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC4State),
         VMSTATE_STRUCT_ARRAY(uart, SGIIOC4State, IOC4_PORTS, 0,
@@ -1374,8 +1371,13 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
                                     &uart->io);
     }
 
-    s->kbc.ports_present = s->ps2_input;
-    s->ps2_input_mode = s->ps2_input;
+    /*
+     * Every IP53 product's IO9 brings the keyboard and mouse ports out on
+     * a daughtercard on its base module (inferred for Onyx 4), so a
+     * keyboard and mouse are always attached, as on an IOC3 board that
+     * wires its ports. A real system's connectors may be empty.
+     */
+    s->kbc.ports_present = true;
     if (!qdev_realize(DEVICE(&s->kbc), BUS(&s->kbc_bus), errp)) {
         for (i = 0; i < IOC4_PORTS; i++) {
             memory_region_del_subregion(&s->bar, &s->uart[i].io);
@@ -1418,7 +1420,6 @@ static const Property ioc4_properties[] = {
                      false),
     DEFINE_PROP_BOOL("ata-readback-compat", SGIIOC4State,
                      ata_readback_compat, false),
-    DEFINE_PROP_BOOL("ps2-input", SGIIOC4State, ps2_input, false),
     DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_CHR("chardev1", SGIIOC4State, uart[0].chr),
