@@ -376,7 +376,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x177, 1 }, { 0x1d7, 4 }, { 0x17e, 1 }, { 0xee, 1 }, { 0x1ce, 1 },
     { 0xe3, 4 }, { 0xc, 4 }, { 0xe4, 1 },
     /* Clears, begins, end, rect, flushes, finish, errors, resolve. */
-    { 0x1d, 4 }, { 0x1a, 1 }, { 0x1b, 4 }, { 0x1c, 1 }, { 0x1e, 1 },
+    { 0x1d, 4 }, { 0x1a, 1 }, { 0x1b, 4 }, { 0xc5, 2 }, { 0x1c, 1 },
+    { 0x1e, 1 },
     { 0x1f, 2 }, { 0x57, 1 }, { 0x58, 1 }, { 0x59, 1 }, { 0x5a, 1 },
     { 0x5b, 1 }, { 0x5c, 1 }, { 0x5d, 1 }, { 0x5e, 1 }, { 0x5f, 1 },
     { 0x60, 1 }, { 0x71, 1 }, { 0x3, 1 }, { 0xc7, 1 }, { 0xc6, 1 },
@@ -398,8 +399,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0xa9, 2 }, { 0xad, 3 }, { 0xb1, 4 },
     { 0x10e, 15 }, { 0x28, 4 }, { 0x29, 8 },
     { 0x1d8, 1 }, { 0x1d9, 3 }, { 0x1da, 4 }, { 0x1a7, 2 }, { 0x1a8, 4 },
-    /* glSpriteParameter*SGIX and glSampleMaskSGIS. */
-    { 0x1a4, 2 }, { 0x1a5, 4 }, { 0x118, 2 },
+    /* glSpriteParameter*SGIX, glSampleMaskSGIS and glSamplePatternSGIS. */
+    { 0x1a4, 2 }, { 0x1a5, 4 }, { 0x118, 2 }, { 0x117, 1 },
     { 0x72, 2 }, { 0x73, 1 }, { 0x74, 1 }, { 0x75, 1 },
     /* Lighting. */
     { 0x7, 6 }, { 0x8, 6 }, { 0x9, 5 }, { 0xa, 5 }, { 0x97, 6 },

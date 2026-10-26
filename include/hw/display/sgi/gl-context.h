@@ -53,6 +53,7 @@ typedef uint32_t SGIColourTarget;
 /* The buffers a clear names, glClear's mask bits. */
 #define SGI_GL_DEPTH_BUFFER_BIT 0x0100
 #define SGI_GL_STENCIL_BUFFER_BIT 0x0400
+#define SGI_GL_ACCUM_BUFFER_BIT 0x0200
 #define SGI_GL_COLOR_BUFFER_BIT 0x4000
 
 struct SGIGLDrawState;
@@ -215,6 +216,11 @@ enum {
 #define SGI_GL_LINEAR_DETAIL_SGIS       0x8097
 #define SGI_GL_LINEAR_DETAIL_ALPHA_SGIS 0x8098
 #define SGI_GL_LINEAR_DETAIL_COLOR_SGIS 0x8099
+/* glAccum's operations (OpenGL 1.2.1, 4.2.4); ADD is also a texture mode. */
+#define SGI_GL_ACCUM                    0x0100
+#define SGI_GL_LOAD                     0x0101
+#define SGI_GL_RETURN                   0x0102
+#define SGI_GL_MULT                     0x0103
 #define SGI_GL_ADD                      0x0104
 #define SGI_GL_REPEAT           0x2901
 #define SGI_GL_CLAMP            0x2900
@@ -747,6 +753,8 @@ typedef struct SGIGLPolygonAssembly {
     uint32_t enabled, loaded;
 } SGIGLPolygonAssembly;
 
+#define SGI_GL_INVALID_ENUM 0x0500
+#define SGI_GL_INVALID_OPERATION 0x0502
 #define SGI_GL_OUT_OF_MEMORY 0x0505
 
 typedef enum SGIGLDrawResult {

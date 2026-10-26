@@ -4285,13 +4285,20 @@ static void sgi_kona_gl_store_stencil(void *opaque, int x, int y,
  * mirrors (IRIX 6.5.30 demos) asks for the visual 0 10 0 1 0 4 15 1 0 0:
  * 10-bit RGB components, double-buffered, four samples, a 15-bit depth
  * buffer and a one-bit stencil. The model draws every visual single
- * sampled with eight-bit colour, so a 10-bit RGB visual and four
- * samples, the only count seen, are approximated: drawing is the
- * single-sample result OpenGL gives with multisampling off. A one-bit
+ * sampled with eight-bit colour, so a 10-bit RGB visual and four or eight
+ * samples, the counts the Small and Medium visual tables offer, are
+ * approximated: drawing is the single-sample result OpenGL gives with
+ * multisampling off, whatever GL_MULTISAMPLE_SGIS, the sample mask and the
+ * sample pattern say (they are accepted and kept by the client, not
+ * applied). Where the pipe resolves samples, and what a readback of a
+ * multisampled buffer returns, is unknown; an edge drawn with and without
+ * multisampling on a real pipe, read back, would settle it. A one-bit
  * stencil keeps
  * its stencil values to that bit, as OpenGL's stencil width rules say;
  * the model stores it in the low bit of its eight-bit plane.
  */
+static bool sgi_kona_gl_extra_buffers(const uint32_t *v);
+
 static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
 {
     const SGIKonaGLPipe *p;
@@ -4305,8 +4312,9 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
     if (!p->draw_config_received || v[0] != 0 ||
         !(((v[1] == 8 || v[1] == 10 || v[1] == 12) && !v[2]) ||
           (!v[1] && (v[2] == 8 || v[2] == 12))) || v[3] > 1 ||
-        v[4] != 0 || (v[5] != 0 && (v[5] != 4 || !v[1])) || v[6] > 32 ||
-        (v[7] != 0 && v[7] != 1 && v[7] != 8) || v[8] != 0 || v[9] != 0) {
+        v[4] != 0 || (v[5] != 0 && ((v[5] != 4 && v[5] != 8) || !v[1])) ||
+        v[6] > 32 || (v[7] != 0 && v[7] != 1 && v[7] != 8) ||
+        !sgi_kona_gl_extra_buffers(v)) {
         return -1;
     }
     return v[7];
@@ -6025,6 +6033,9 @@ static void sgi_kona_gl_state_init(SGIKonaState *s, SGIKonaGLState *state,
         .pack_alignment = 4,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
         .returns.clear_depth = UINT64_C(0x3ff0000000000000),
+        .multisample_enables = 1,       /* GL_MULTISAMPLE_SGIS starts on */
+        .sample_mask_value = 0x3f800000,
+        .sample_pattern = SGI_KONA_GL_1PASS_SGIS,
     };
     state->iris = (SGIKonaGLIrisRule) { 0 };
     state->attrib_depth = 0;
@@ -6098,12 +6109,33 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
     sgi_kona_gl_set_drawable(s, i);
 }
 
-/* The cleared ordinary RGB source subset, not the physical visual layout. */
+/*
+ * The accumulation and auxiliary-buffer words a visual may carry: none, or
+ * the 25-bit accumulation buffer and the one auxiliary buffer that the
+ * Small and Medium visual tables offer (established from the IRIX X
+ * server's tables). The accumulation buffer is modelled
+ * (sgi_kona_gl_accum()); an auxiliary buffer is accepted with the visual,
+ * and drawing into one stays refused by glDrawBuffer.
+ */
+static bool sgi_kona_gl_extra_buffers(const uint32_t *v)
+{
+    return (v[SGI_KONA_GL_BUFFER_CONFIG_ACCUM] == 0 ||
+            v[SGI_KONA_GL_BUFFER_CONFIG_ACCUM] == 25) &&
+           v[SGI_KONA_GL_BUFFER_CONFIG_AUX] <= 1;
+}
+
+/*
+ * The RGB visuals whose colour glReadPixels reads: 8-, 10- and 12-bit
+ * components, all kept in the eight-bit planes; 4 or 8 samples, drawn
+ * single-sampled (see sgi_kona_gl_stencil_bits()); no stencil buffer; and
+ * the extra buffers above. Not the physical visual layout.
+ */
 static bool sgi_kona_gl_rgb_config(const uint32_t *v)
 {
-    return v[0] == 0 && (v[1] == 8 || v[1] == 12) && v[2] == 0 &&
-           v[3] <= 1 && v[4] == 0 && v[5] == 0 && v[6] <= 32 &&
-           v[7] == 0 && v[8] == 0 && v[9] == 0;
+    return v[0] == 0 && (v[1] == 8 || v[1] == 10 || v[1] == 12) &&
+           v[2] == 0 && v[3] <= 1 && v[4] == 0 &&
+           (v[5] == 0 || v[5] == 4 || v[5] == 8) && v[6] <= 32 &&
+           v[7] == 0 && sgi_kona_gl_extra_buffers(v);
 }
 
 /*
@@ -6117,7 +6149,8 @@ static bool sgi_kona_gl_index_config(const uint32_t *v)
 {
     return !v[0] && !v[1] && (v[2] == 8 || v[2] == 12) && v[3] <= 1 &&
            !v[4] && !v[5] && v[6] <= 32 &&
-           (v[7] == 0 || v[7] == 1 || v[7] == 8) && !v[8] && !v[9];
+           (v[7] == 0 || v[7] == 1 || v[7] == 8) &&
+           sgi_kona_gl_extra_buffers(v);
 }
 
 static bool sgi_kona_gl_colour_config(const uint32_t *v)
@@ -6349,6 +6382,9 @@ static void sgi_kona_gl_run(SGIKonaState *s, int i, SGIGLSink *sink,
  * are never loaded by the client this was read from, so they stay the
  * identity GL starts with.
  */
+static void sgi_kona_gl_accum(SGIKonaState *s, int i, uint32_t op,
+                              const uint32_t *clear, float value);
+
 static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
                                 const uint32_t *args, unsigned argc)
 {
@@ -6376,10 +6412,13 @@ static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
     case SGI_KONA_CMD_GL_CLEAR:
         word = args[0] & (SGI_GL_COLOR_BUFFER_BIT | SGI_GL_DEPTH_BUFFER_BIT |
                           SGI_GL_STENCIL_BUFFER_BIT);
-        if (args[0] != word) {
+        if (args[0] & SGI_GL_ACCUM_BUFFER_BIT) {
+            sgi_kona_gl_accum(s, i, 0, s->state[i]->pipe.accum_clear, 0);
+        }
+        if (args[0] & ~(word | SGI_GL_ACCUM_BUFFER_BIT)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: glClear of buffers 0x%"
-                          PRIx32 "; only colour, depth and stencil buffers are"
-                          " modelled\n", args[0]);
+                          PRIx32 "; only colour, depth, stencil and"
+                          " accumulation buffers are modelled\n", args[0]);
         }
         cmd = (SGIGLCmd) { SGI_GL_OP_CLEAR, 1, &word };
         break;
@@ -6951,6 +6990,85 @@ static void sgi_kona_gl_stipple_rows(SGIKonaState *s, int i)
 }
 
 /*
+ * SGIS_multisample's state: glEnable and glDisable of GL_MULTISAMPLE_SGIS,
+ * GL_SAMPLE_ALPHA_TO_MASK_SGIS, GL_SAMPLE_ALPHA_TO_ONE_SGIS and
+ * GL_SAMPLE_MASK_SGIS reach the pipe as the ordinary 0x24 and 0x25 words,
+ * glSampleMaskSGIS as 0x118 with its value clamped to [0, 1] and the
+ * invert flag, glSamplePatternSGIS as 0x117 and the pattern; the client
+ * keeps none of it and asks the pipe for it back through 0x4c (established
+ * from the IRIX client library). The model keeps the state for those
+ * replies, with the extension's initial values, and draws single-sampled
+ * whatever it says (see sgi_kona_gl_stencil_bits()). Returns false for a
+ * word that is not one of these.
+ */
+#define SGI_KONA_GL_MULTISAMPLE_SGIS    0x809d
+#define SGI_KONA_GL_SAMPLE_MASK_SGIS    0x80a0
+#define SGI_KONA_GL_SAMPLE_MASK_VALUE   0x80aa
+#define SGI_KONA_GL_SAMPLE_MASK_INVERT  0x80ab
+#define SGI_KONA_GL_SAMPLE_PATTERN      0x80ac
+
+static bool sgi_kona_gl_multisample(SGIKonaState *s, int i, uint32_t selector,
+                                    const uint32_t *args)
+{
+    SGIKonaGLPipe *p = &s->state[i]->pipe;
+
+    switch (selector) {
+    case SGI_KONA_CMD_GL_ENABLE:
+    case SGI_KONA_CMD_GL_DISABLE:
+        if (args[0] < SGI_KONA_GL_MULTISAMPLE_SGIS ||
+            args[0] > SGI_KONA_GL_SAMPLE_MASK_SGIS) {
+            return false;
+        }
+        if (selector == SGI_KONA_CMD_GL_ENABLE) {
+            p->multisample_enables |=
+                1u << (args[0] - SGI_KONA_GL_MULTISAMPLE_SGIS);
+        } else {
+            p->multisample_enables &=
+                ~(1u << (args[0] - SGI_KONA_GL_MULTISAMPLE_SGIS));
+        }
+        break;
+    case SGI_KONA_CMD_GL_SAMPLE_MASK:
+        p->sample_mask_value = args[0];
+        p->sample_mask_invert = args[1] != 0;
+        break;
+    case SGI_KONA_CMD_GL_SAMPLE_PATTERN:
+        if (args[0] < SGI_KONA_GL_1PASS_SGIS ||
+            args[0] > SGI_KONA_GL_4PASS_3_SGIS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: sample pattern 0x%"
+                          PRIx32 " is not one\n", args[0]);
+            sgi_kona_gl_set_error(s, SGI_GL_INVALID_ENUM);
+            return true;
+        }
+        p->sample_pattern = args[0];
+        break;
+    default:
+        return false;
+    }
+    trace_sgi_kona_gl_command(selector, i);
+    return true;
+}
+
+/* The multisample state's 0x4c reply, or false for another name. */
+static bool sgi_kona_gl_multisample_get(const SGIKonaGLPipe *p, uint32_t name,
+                                        uint64_t *value)
+{
+    if (name >= SGI_KONA_GL_MULTISAMPLE_SGIS &&
+        name <= SGI_KONA_GL_SAMPLE_MASK_SGIS) {
+        *value = (p->multisample_enables >>
+                  (name - SGI_KONA_GL_MULTISAMPLE_SGIS)) & 1;
+    } else if (name == SGI_KONA_GL_SAMPLE_MASK_VALUE) {
+        *value = p->sample_mask_value;
+    } else if (name == SGI_KONA_GL_SAMPLE_MASK_INVERT) {
+        *value = p->sample_mask_invert;
+    } else if (name == SGI_KONA_GL_SAMPLE_PATTERN) {
+        *value = p->sample_pattern;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/*
  * The GL client's raster state, onto the current context's draw state:
  * depth, blending, alpha, stencil, masks, logic op, culling and facing,
  * polygon modes and offset, lines and points, fog, clip planes, draw
@@ -7148,7 +7266,13 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
         cmd.nargs = 2;
         break;
     case SGI_KONA_CMD_GL_CLEAR_ACCUM:
-        trace_sgi_kona_command_unmodelled(selector, 0);
+        trace_sgi_kona_gl_command(selector, i);
+        memcpy(s->state[i]->pipe.accum_clear, args,
+               sizeof(s->state[i]->pipe.accum_clear));
+        return true;
+    case SGI_KONA_CMD_GL_ACCUM:
+        trace_sgi_kona_gl_command(selector, i);
+        sgi_kona_gl_accum(s, i, args[0], NULL, sgi_kona_gl_float(args[1]));
         return true;
     default:
         return false;
@@ -7172,9 +7296,15 @@ static bool sgi_kona_gl_read_enum(uint32_t buffer)
            buffer == SGI_GL_FRONT || buffer == SGI_GL_BACK;
 }
 
-/* Resolve logical roles at use time; unavailable BACK never falls back. */
-static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
-                                 uint32_t *selection)
+/*
+ * The bank glReadBuffer names for context i, resolving logical roles at
+ * use time; an unavailable BACK never falls back. `readback` adds the
+ * visual check of what glReadPixels may return (sgi_kona_gl_rgb_config());
+ * the accumulation buffer's reads take the colour whatever the visual's
+ * other buffers.
+ */
+static int sgi_kona_gl_colour_bank(SGIKonaState *s, unsigned i,
+                                   uint32_t *selection, bool readback)
 {
     const SGIKonaGLPipe *p = &s->state[i]->pipe;
     const SGIKonaGLWindow *w = &s->state[i]->window;
@@ -7182,8 +7312,8 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
     bool back;
 
     if (!w->placed || !w->width || !w->height ||
-        !sgi_kona_gl_read_compatible(p) || p->read_binding_unknown ||
-        p->returns.read_buffer_unsupported) {
+        (readback && !sgi_kona_gl_read_compatible(p)) ||
+        p->read_binding_unknown || p->returns.read_buffer_unsupported) {
         return -1;
     }
     if (!buffer) {
@@ -7195,6 +7325,205 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
     }
     *selection = buffer;
     return w->double_buffered ? w->displayed_bank ^ back : 0;
+}
+
+/* Resolve logical roles at use time; unavailable BACK never falls back. */
+static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
+                                 uint32_t *selection)
+{
+    return sgi_kona_gl_colour_bank(s, i, selection, true);
+}
+
+/*
+ * The accumulation buffer (OpenGL 1.2.1, 4.2.4). The client library sends
+ * glAccum as 0xc5 with the operation's enumerant and the value as a float,
+ * glClearAccum as 0x1b with four floats clamped to [-1, 1], and clears the
+ * buffer through glClear's 0x200 bit; it does no accumulation itself and
+ * checks nothing before sending glAccum (established from the IRIX client
+ * library, which sends these from both immediate mode and display lists,
+ * and from IRIS GL's acbuf, which calls them). So the pipe holds the
+ * buffer and does the arithmetic. Visuals with one carry 25 in the buffer
+ * configuration's accumulation word; the pipe's storage is not visible to
+ * software.
+ *
+ * Approximated: the model keeps each component as a single-precision float
+ * and follows OpenGL's arithmetic: LOAD and ACCUM add value times the read
+ * buffer's colour, its alpha 1 as the planes hold none, MULT and ADD act on
+ * the buffer, RETURN writes value times the buffer, clamped to [0, 1] and
+ * rounded to eight bits, to the draw buffers under the colour mask. Each
+ * reaches the pixels glClear would (sgi_gl_clear_area()) that the window
+ * owns. How the pipe stores 25 bits a component, rounds on RETURN and
+ * saturates past [-1, 1] is unknown; a real pipe's readback after a
+ * sequence of operations would settle it. An operation in a context whose
+ * visual has no accumulation buffer, in colour-index mode, or with an
+ * unknown operation sets GL_INVALID_OPERATION or GL_INVALID_ENUM, as
+ * OpenGL asks; that the pipe raises them, as the library does not, is
+ * inferred. The accumulation qtests check the arithmetic as stated.
+ */
+#define SGI_KONA_ACCUM_PLANES 4
+
+static bool sgi_kona_accum_ready(SGIKonaState *s)
+{
+    SGIBoardMemory *m = &s->accum_mem;
+    const uint64_t plane = (uint64_t)SGI_KONA_FB_WIDTH *
+                           SGI_KONA_FB_HEIGHT * 4;
+
+    if (m->bytes) {
+        return true;
+    }
+    sgi_board_memory_init(m, SGI_KONA_ACCUM_PLANES * plane);
+    for (unsigned k = 0; k < SGI_KONA_ACCUM_PLANES; k++) {
+        SGIPlane p = {
+            .base = k * plane,
+            .len = plane,
+            .width = SGI_KONA_FB_WIDTH,
+            .height = SGI_KONA_FB_HEIGHT,
+            .stride = SGI_KONA_FB_WIDTH * 4,
+            .format = SGI_PLANE_RAW,
+            .packing = SGI_PACK_BE_RED_LOW,
+            .evidence = "model: accumulation component as float bits",
+        };
+
+        if (sgi_board_memory_add_plane(m, &p, NULL) == SGI_PLANE_NONE) {
+            sgi_board_memory_cleanup(m);
+            return false;
+        }
+    }
+    return true;
+}
+
+static float sgi_kona_accum_load(SGIKonaState *s, unsigned k, int x, int y)
+{
+    return sgi_kona_gl_float(sgi_plane_load(&s->accum_mem,
+                             sgi_board_memory_plane(&s->accum_mem, k), x, y));
+}
+
+static void sgi_kona_accum_store(SGIKonaState *s, unsigned k, int x, int y,
+                                 float value)
+{
+    union { float f; uint32_t u; } bits = { .f = value };
+
+    sgi_plane_store(&s->accum_mem, sgi_board_memory_plane(&s->accum_mem, k),
+                    x, y, bits.u);
+}
+
+/* A colour component in [0, 1] as the eight-bit planes round it. */
+static uint32_t sgi_kona_accum_channel(float value)
+{
+    return (uint32_t)floor(CLAMP(value, 0.0f, 1.0f) * 255.0 + 0.5);
+}
+
+static void sgi_kona_gl_accum(SGIKonaState *s, int i, uint32_t op,
+                              const uint32_t *clear, float value)
+{
+    SGIKonaGLState *state = s->state[i];
+    SGIGLContext *c = &state->gl;
+    SGIRasterOp area = { 0 };
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
+    uint32_t ntargets = 0, mask = 0, selection;
+    int bank = -1;
+    float fill[4];
+
+    if (clear && (!state->pipe.draw_config_received ||
+                  !state->pipe.draw_config[SGI_KONA_GL_BUFFER_CONFIG_ACCUM])) {
+        /* A clear of a buffer the visual lacks does nothing (4.2.3). */
+        return;
+    }
+    if (!state->pipe.draw_config_received ||
+        !state->pipe.draw_config[SGI_KONA_GL_BUFFER_CONFIG_ACCUM] ||
+        c->cur.index_bits) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: accumulation operation "
+                      "0x%" PRIx32 " in context %d, whose visual has no "
+                      "accumulation buffer\n", op, i);
+        sgi_kona_gl_set_error(s, SGI_GL_INVALID_OPERATION);
+        return;
+    }
+    if (op < SGI_GL_ACCUM || op > SGI_GL_ADD) {
+        if (!clear) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: glAccum operation 0x%"
+                          PRIx32 " is not one\n", op);
+            sgi_kona_gl_set_error(s, SGI_GL_INVALID_ENUM);
+            return;
+        }
+    }
+    if (!sgi_gl_clear_area(c, &area)) {
+        return;
+    }
+    if (!sgi_kona_accum_ready(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: no memory for the "
+                      "accumulation buffer\n");
+        sgi_kona_gl_set_error(s, SGI_GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (clear) {
+        for (unsigned k = 0; k < 4; k++) {
+            fill[k] = sgi_kona_gl_float(clear[k]);
+        }
+    } else if (op == SGI_GL_ACCUM || op == SGI_GL_LOAD) {
+        bank = sgi_kona_gl_colour_bank(s, i, &selection, false);
+        if (bank < 0) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: glAccum of 0x%" PRIx32
+                          " with no readable colour buffer; dropped\n", op);
+            return;
+        }
+    } else if (op == SGI_GL_RETURN) {
+        ntargets = sgi_gl_draw_targets(&c->cur, targets);
+        mask = sgi_raster_colour_mask(&sgi_kona_gl_rules, c->cur.colour_mask);
+    }
+    for (int y = area.y0; y <= area.y1; y++) {
+        for (int x = area.x0; x <= area.x1; x++) {
+            float acc[4], colour[4] = { 0 };
+
+            if (!sgi_clip_contains(&area.clip, x, y) ||
+                !sgi_kona_gl_pixel_owned(s, x, y)) {
+                continue;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                acc[k] = sgi_kona_accum_load(s, k, x, y);
+            }
+            if (bank >= 0) {
+                uint32_t rgb = sgi_kona_bank_read(s, bank, x, y);
+
+                colour[0] = ((rgb >> 16) & 0xff) / 255.0f;
+                colour[1] = ((rgb >> 8) & 0xff) / 255.0f;
+                colour[2] = (rgb & 0xff) / 255.0f;
+                colour[3] = 1.0f;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                if (clear) {
+                    acc[k] = fill[k];
+                } else if (op == SGI_GL_ACCUM) {
+                    acc[k] += value * colour[k];
+                } else if (op == SGI_GL_LOAD) {
+                    acc[k] = value * colour[k];
+                } else if (op == SGI_GL_MULT) {
+                    acc[k] *= value;
+                } else if (op == SGI_GL_ADD) {
+                    acc[k] += value;
+                }
+            }
+            if (op == SGI_GL_RETURN && !clear) {
+                uint32_t rgb = sgi_kona_accum_channel(value * acc[0]) << 16 |
+                               sgi_kona_accum_channel(value * acc[1]) << 8 |
+                               sgi_kona_accum_channel(value * acc[2]);
+
+                for (uint32_t t = 0; mask && t < ntargets; t++) {
+                    uint32_t out = rgb;
+
+                    if (mask != 0xffffff) {
+                        out = (rgb & mask) |
+                              (sgi_kona_gl_load_colour(s, targets[t], x, y) &
+                               ~mask);
+                    }
+                    sgi_kona_gl_store_colour(s, targets[t], x, y, out);
+                }
+                continue;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                sgi_kona_accum_store(s, k, x, y, acc[k]);
+            }
+        }
+    }
 }
 
 /* Depth is independent of the colour ReadBuffer selection. */
@@ -8224,6 +8553,14 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         n = 1;
     } else if (name == 0xc01) {
         native[0] = sgi_kona_gl_draw_buffer(s->state[i]);
+        n = 1;
+    } else if (name == 0xb80) {
+        /* GL_ACCUM_CLEAR_VALUE, as glClearAccum sent it. */
+        for (n = 0; n < 4; n++) {
+            native[n] = s->state[i]->pipe.accum_clear[n];
+        }
+    } else if (sgi_kona_gl_multisample_get(&s->state[i]->pipe, name,
+                                           &native[0])) {
         n = 1;
     } else if (name == 0xc02) {
         if (sgi_kona_gl_read_bank(s, i, &out[0]) < 0) {
@@ -10580,6 +10917,10 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
            args[0] == 0x8024 || args[0] == 0x802e || args[0] == 0x80d0 ||
            args[0] == 0x80d1 || args[0] == 0x80d2)))) {
         s->state[i]->pipe.pixel_transfer_unsupported = true;
+    }
+    if (i != SGI_KONA_CONTEXT_NONE &&
+        sgi_kona_gl_multisample(s, i, selector, args)) {
+        return;
     }
     switch (selector) {
     case SGI_KONA_CMD_GL_BUFFER_CONFIG:
@@ -16488,6 +16829,7 @@ static void sgi_kona_instance_finalize(Object *obj)
     sgi_board_memory_cleanup(&s->mem);
     sgi_board_memory_cleanup(&s->desktop_mem);
     sgi_board_memory_cleanup(&s->x_write_mem);
+    sgi_board_memory_cleanup(&s->accum_mem);
     g_free(s->bitmap_payload);
     g_free(s->map_ram);
     g_free(s->arm_high);
@@ -16704,6 +17046,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
      */
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
+    /* Made again, cleared, on the next accumulation operation. */
+    sgi_board_memory_cleanup(&s->accum_mem);
     s->desktop_state_used = false;
     s->display_id_generation++;
     memset(s->desktop_map, 0, sizeof(s->desktop_map));
@@ -17367,6 +17711,34 @@ static bool sgi_kona_video_data_needed(void *opaque)
            sgi_kona_video_data_words(s->video_command) !=
            SGI_KONA_VIDEO_DATA_UNKNOWN;
 }
+
+/* The accumulation buffer, once a context has made it. */
+static bool sgi_kona_accum_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->accum_mem.bytes != NULL;
+}
+
+static int sgi_kona_accum_pre_load(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return sgi_kona_accum_ready(s) ? 0 : -ENOMEM;
+}
+
+static const VMStateDescription vmstate_sgi_kona_accum = {
+    .name = TYPE_SGI_KONA "/accumulation",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_accum_needed,
+    .pre_load = sgi_kona_accum_pre_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(accum_mem, SGIKonaState, 0, vmstate_sgi_board_memory,
+                       SGIBoardMemory),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static const VMStateDescription vmstate_sgi_kona_video_data = {
     .name = TYPE_SGI_KONA "/video-data",
@@ -18407,8 +18779,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer_pipe = {
 
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = sgi_kona_gl_pipe_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(unpack_alignment, SGIKonaGLPipe),
@@ -18435,6 +18807,11 @@ static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
         VMSTATE_UINT32(array_state, SGIKonaGLPipe),
         VMSTATE_BOOL(array_state_valid, SGIKonaGLPipe),
         VMSTATE_BOOL(array_open, SGIKonaGLPipe),
+        VMSTATE_UINT32_ARRAY(accum_clear, SGIKonaGLPipe, 4),
+        VMSTATE_UINT32(multisample_enables, SGIKonaGLPipe),
+        VMSTATE_UINT32(sample_mask_value, SGIKonaGLPipe),
+        VMSTATE_UINT32(sample_mask_invert, SGIKonaGLPipe),
+        VMSTATE_UINT32(sample_pattern, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -20013,6 +20390,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_gl_level1,
         &vmstate_sgi_kona_channels,
         &vmstate_sgi_kona_video_data,
+        &vmstate_sgi_kona_accum,
         NULL
     },
 };

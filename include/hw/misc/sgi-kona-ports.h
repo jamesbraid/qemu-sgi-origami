@@ -286,6 +286,13 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_GL_SAMPLE_MASK       0x118
 /*
+ * glSamplePatternSGIS: 0x117 and the pattern's enumerant, GL_1PASS_SGIS
+ * to GL_4PASS_3_SGIS.
+ */
+#define SGI_KONA_CMD_GL_SAMPLE_PATTERN    0x117
+#define SGI_KONA_GL_1PASS_SGIS            0x80a1
+#define SGI_KONA_GL_4PASS_3_SGIS          0x80a6
+/*
  * glDrawArrays (from the IRIX client library): 0x180 and the enabled
  * arrays' state word when it changed; then inside glBegin and glEnd,
  * 0x181 0, a short run, a bulk run and 0x1a3 0. A short run's token is
@@ -322,6 +329,12 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_TEX_ENVF    0x11
 #define SGI_KONA_CMD_GL_TEX_ENVI    0x12
 #define SGI_KONA_CMD_GL_CLEAR_ACCUM 0x1b
+/*
+ * glAccum: 0xc5, the operation's enumerant and the value as a float, with
+ * no check by the client library; glClearAccum is 0x1b and four floats
+ * the library clamps to [-1, 1].
+ */
+#define SGI_KONA_CMD_GL_ACCUM       0xc5
 #define SGI_KONA_CMD_GL_CLEAR_INDEX 0x1c
 #define SGI_KONA_CMD_GL_CLEAR_STENCIL 0x1e
 #define SGI_KONA_CMD_GL_CLEAR_DEPTH 0x1f
@@ -582,9 +595,18 @@ extern const unsigned sgi_kona_command_num_tokens;
 #define SGI_KONA_CMD_GL_READ_CONFIG   0x4
 #define SGI_KONA_CMD_GL_READ_DRAWABLE 0x114
 #define SGI_KONA_GL_BUFFER_CONFIG_WORDS 10
-/* The buffer configuration's double-buffer and depth words, from 0. */
+/*
+ * The buffer configuration's words, from 0: level, RGB component bits,
+ * index bits, double-buffer, stereo, samples, depth bits, stencil bits,
+ * accumulation red bits and auxiliary buffers (established from the IRIX
+ * client library's sender and its glGetIntegerv table, which reads the
+ * same fields).
+ */
 #define SGI_KONA_GL_BUFFER_CONFIG_DOUBLE 3
+#define SGI_KONA_GL_BUFFER_CONFIG_SAMPLES 5
 #define SGI_KONA_GL_BUFFER_CONFIG_DEPTH  6
+#define SGI_KONA_GL_BUFFER_CONFIG_ACCUM  8
+#define SGI_KONA_GL_BUFFER_CONFIG_AUX    9
 
 /*
  * Every GL command the model frames, keyed by its 16-bit selector, apart

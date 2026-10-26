@@ -391,6 +391,19 @@ typedef struct SGIKonaGLPixelTransfer {
 
 typedef struct SGIKonaGLPipe {
     uint32_t pending_error;
+    /* glClearAccum's four floats, as sent (sgi_kona_gl_accum()). */
+    uint32_t accum_clear[4];
+    /*
+     * The multisample state the client queries back from the pipe: the
+     * enables of GL_MULTISAMPLE_SGIS to GL_SAMPLE_MASK_SGIS (bit k for
+     * 0x809d + k), glSampleMaskSGIS's value (float bits) and invert flag,
+     * and glSamplePatternSGIS's pattern. Kept, not applied: see
+     * sgi_kona_gl_multisample().
+     */
+    uint32_t multisample_enables;
+    uint32_t sample_mask_value;
+    uint32_t sample_mask_invert;
+    uint32_t sample_pattern;
     bool pixel_zoom_unsupported;
     uint32_t pixel_zoom[2];
     bool pixel_transfer_unsupported;
@@ -1522,6 +1535,11 @@ struct SGIKonaState {
 
     /* Pending source pixels stay separate from canonical board storage. */
     SGIBoardMemory x_write_mem;
+    /*
+     * The accumulation buffer, four float planes, red to alpha, made on a
+     * context's first accumulation operation (sgi_kona_gl_accum()).
+     */
+    SGIBoardMemory accum_mem;
     bool x_write_snapshot;
     bool x_write_refused;
     bool x_write_multi;
