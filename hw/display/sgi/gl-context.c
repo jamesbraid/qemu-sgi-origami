@@ -612,10 +612,45 @@ static void sgi_gl_stack_command(SGIGLContext *c, uint16_t op, float *m)
     memcpy(m, stack[--(*depth)], 16 * sizeof(float));
 }
 
+bool sgi_gl_matrix_apply(float m[16], const SGIGLCmd *cmd)
+{
+    double arg[16];
+
+    switch (cmd->op) {
+    case SGI_GL_OP_LOAD_MATRIX:
+        /* The words are the floats' bits; copying keeps every bit. */
+        memcpy(m, cmd->args, 16 * sizeof(float));
+        return true;
+    case SGI_GL_OP_TRANSLATE:
+    case SGI_GL_OP_SCALE:
+    case SGI_GL_OP_ROTATE:
+        if (sgi_gl_transform_matrix(cmd->op, cmd->args, arg)) {
+            sgi_gl_multiply(m, arg);
+        }
+        return true;
+    case SGI_GL_OP_LOAD_IDENTITY:
+        sgi_gl_identity(m);
+        return true;
+    case SGI_GL_OP_MULT_MATRIX:
+        for (int i = 0; i < 16; i++) {
+            arg[i] = sgi_gl_float(cmd->args[i]);
+        }
+        sgi_gl_multiply(m, arg);
+        return true;
+    case SGI_GL_OP_FRUSTUM:
+    case SGI_GL_OP_ORTHO:
+        if (sgi_gl_projection_matrix(cmd->op, cmd->args, arg)) {
+            sgi_gl_multiply(m, arg);
+        }
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void sgi_gl_matrix_command(SGIGLContext *c, const SGIGLCmd *cmd)
 {
     float *m, load[16];
-    double arg[16];
 
     if (cmd->op == SGI_GL_OP_LOAD_MATRIX) {
         /* The words are the floats' bits; copying keeps every bit. */
@@ -627,33 +662,11 @@ static void sgi_gl_matrix_command(SGIGLContext *c, const SGIGLCmd *cmd)
     if (!m) {
         return;
     }
-    switch (cmd->op) {
-    case SGI_GL_OP_PUSH_MATRIX:
-    case SGI_GL_OP_POP_MATRIX:
+    if (cmd->op == SGI_GL_OP_PUSH_MATRIX || cmd->op == SGI_GL_OP_POP_MATRIX) {
         sgi_gl_stack_command(c, cmd->op, m);
         return;
-    case SGI_GL_OP_TRANSLATE:
-    case SGI_GL_OP_SCALE:
-    case SGI_GL_OP_ROTATE:
-        if (sgi_gl_transform_matrix(cmd->op, cmd->args, arg)) {
-            sgi_gl_multiply(m, arg);
-        }
-        return;
-    case SGI_GL_OP_LOAD_IDENTITY:
-        sgi_gl_identity(m);
-        return;
-    case SGI_GL_OP_MULT_MATRIX:
-        for (int i = 0; i < 16; i++) {
-            arg[i] = sgi_gl_float(cmd->args[i]);
-        }
-        sgi_gl_multiply(m, arg);
-        return;
-    default:
-        if (sgi_gl_projection_matrix(cmd->op, cmd->args, arg)) {
-            sgi_gl_multiply(m, arg);
-        }
-        return;
     }
+    sgi_gl_matrix_apply(m, cmd);
 }
 
 /* The arguments each command takes. */

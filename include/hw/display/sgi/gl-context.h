@@ -1105,6 +1105,14 @@ bool sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
  * and logged, for a slot the context does not keep.
  */
 bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
+
+/*
+ * Apply one matrix command (load, identity, multiply, translate, scale,
+ * rotate, frustum or ortho) to `m` as the context does to its current
+ * matrix. For a family that keeps a matrix the context does not, such as
+ * the imaging subset's colour matrix. False for any other command.
+ */
+bool sgi_gl_matrix_apply(float m[16], const SGIGLCmd *cmd);
 /*
  * The colour targets the draw state's draw buffers select, in bit order
  * and each once, into out; returns how many.
