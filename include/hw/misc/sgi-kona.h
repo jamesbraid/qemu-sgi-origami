@@ -340,6 +340,11 @@ typedef struct SGIKonaGLReturnState {
     uint64_t clear_depth;
     uint32_t read_buffer;
     bool read_buffer_unsupported;
+    /*
+     * glDrawBuffer's last accepted enumerant, for glGet; 0 until one comes
+     * after the visual last set the draw mask, when the mask names it.
+     */
+    uint32_t draw_buffer;
 } SGIKonaGLReturnState;
 
 /*
