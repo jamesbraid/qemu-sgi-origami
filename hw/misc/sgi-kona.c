@@ -1427,8 +1427,22 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
         }
         return;
     }
-    trace_sgi_kona_pi_credits(SGI_XIO_BOARD(s)->slot, credits);
-    sgi_pi_gfx_return_credits(node, SGI_XIO_BOARD(s)->slot, credits);
+    /* The board's own field, not a checked cast: this runs every store. */
+    trace_sgi_kona_pi_credits(s->parent_obj.slot, credits);
+    /*
+     * Keyed on the node the credit goes back to, which is the Hub that
+     * sent the store, not the "pi" link.
+     */
+    if (s->pi_class_node != node) {
+        s->pi_class_node = node;
+        s->pi_class = SGI_PI_GFX_GET_CLASS(node);
+    }
+    if (!s->pi_class->return_credits) {
+        /* Logs that the node returns nothing. */
+        sgi_pi_gfx_return_credits(node, s->parent_obj.slot, credits);
+        return;
+    }
+    s->pi_class->return_credits(node, s->parent_obj.slot, credits);
 }
 
 static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
