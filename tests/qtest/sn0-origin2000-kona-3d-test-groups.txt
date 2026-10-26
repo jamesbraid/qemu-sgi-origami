@@ -41,6 +41,7 @@ draw /mips64/sn0/origin2000/kona-3d/stencil-boundaries
 draw /mips64/sn0/origin2000/kona-3d/stencil-maps
 draw /mips64/sn0/origin2000/kona-3d/stencil-pixels
 draw /mips64/sn0/origin2000/kona-3d/stencil-read-dma
+draw /mips64/sn0/origin2000/kona-3d/stencil-visual
 draw /mips64/sn0/origin2000/kona-3d/stencil-transport
 draw /mips64/sn0/origin2000/kona-3d/stencil/completion
 

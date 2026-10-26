@@ -6385,15 +6385,18 @@ static bool sgi_kona_gl_extra_buffers(const uint32_t *v)
 /*
  * The RGB visuals whose colour glReadPixels reads: 8-, 10- and 12-bit
  * components, all kept in the eight-bit planes; 4 or 8 samples, drawn
- * single-sampled (see sgi_kona_gl_stencil_bits()); no stencil buffer; and
- * the extra buffers above. Not the physical visual layout.
+ * single-sampled (see sgi_kona_gl_stencil_bits()); a stencil of none, 1 bit
+ * (GLperf's visual is 0 12 0 1 0 0 23 1 0 0) or 8, which does not change
+ * where colour is read from, as for index visuals; and the extra buffers
+ * above. Not the physical visual layout.
  */
 static bool sgi_kona_gl_rgb_config(const uint32_t *v)
 {
     return v[0] == 0 && (v[1] == 8 || v[1] == 10 || v[1] == 12) &&
            v[2] == 0 && v[3] <= 1 && v[4] == 0 &&
            (v[5] == 0 || v[5] == 4 || v[5] == 8) && v[6] <= 32 &&
-           v[7] == 0 && sgi_kona_gl_extra_buffers(v);
+           (v[7] == 0 || v[7] == 1 || v[7] == 8) &&
+           sgi_kona_gl_extra_buffers(v);
 }
 
 /*

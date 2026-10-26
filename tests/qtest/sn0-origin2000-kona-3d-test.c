@@ -1907,7 +1907,7 @@ static void test_read_visual_records(void)
     /* One auxiliary buffer, as the Medium tables offer, reads back. */
     static const uint32_t invalid[][2] = {
         { 0, 0x100 }, { 1, 0 }, { 1, 7 }, { 1, 16 }, { 2, 8 },
-        { 3, 2 }, { 4, 1 }, { 5, 1 }, { 6, 33 }, { 7, 1 },
+        { 3, 2 }, { 4, 1 }, { 5, 1 }, { 6, 33 }, { 7, 2 },
         { 8, 16 }, { 9, 2 },
     };
     uint32_t record[10];
@@ -3703,29 +3703,31 @@ static void test_stencil_state_and_plane_migrate(void)
         stencil_triangle(s);
         assert_stencil_value(s, 0xa5);
     }
-    assert_source_refused(to);
+    /* Colour reads from the stencil visual have a source. */
+    assert_read_colour(to, 0x0000ff);
     return_context_deactivate(to);
     return_context_restore(to, SAVE_AREA);
-    assert_source_refused(to);
+    assert_read_colour(to, 0x0000ff);
     assert_stencil_value(to, 0xa5);
     qtest_quit(to);
     qtest_quit(from);
     g_rmdir(dir);
 }
 
-static void test_stencil_visual_readback_remains_refused(void)
+/*
+ * An 8-bit stencil visual's colour is read from the colour bank like any
+ * RGB visual's; the stencil keeps its own plane.
+ */
+static void test_stencil_visual_readback(void)
 {
     gl_reset();
     stencil_setup(qts);
     stencil_clear(qts, 53, 255);
     assert_stencil_value(qts, 53);
-    assert_source_refused(qts);
+    assert_read_colour(qts, 0x0000ff);
     return_context_deactivate(qts);
     return_context_restore(qts, SAVE_AREA);
-    assert_source_refused(qts);
-    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
-    place_read_window(qts, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
-    assert_source_refused(qts);
+    assert_read_colour(qts, 0x0000ff);
     assert_stencil_value(qts, 53);
     stencil_config(qts, 0);
     kona_command_f(qts, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
@@ -3769,14 +3771,15 @@ static void test_stencil_partial_visual_migration(void)
             } else {
                 assert_stencil_colour(s, 0x0000ff);
             }
-            if (cases[i].after == 0) {
+            /* Colour reads have a source with no stencil or 8 bits. */
+            if (cases[i].after == 0 || cases[i].after == 8) {
                 assert_read_colour(s, 0x0000ff);
             } else {
                 assert_source_refused(s);
             }
             stencil_config(s, 8);
             assert_stencil_value(s, 61);
-            assert_source_refused(s);
+            assert_read_colour(s, 0x0000ff);
         }
         qtest_quit(to);
         qtest_quit(from);
@@ -18575,6 +18578,53 @@ static void test_render_mode(void)
     g_assert_cmpuint(count_occurrences(found, "render mode 0x1c02"), ==, 1);
 }
 
+/*
+ * GLperf's visual: 12-bit RGB, single-buffered here, 23 depth bits and a
+ * 1-bit stencil (buffer configuration 0 12 0 0 0 0 23 1 0 0). Its colour
+ * reads and copies have a source like any RGB visual's: before, the
+ * stencil word made the visual unknown, so every ReadPixels answered
+ * zeros and every CopyPixels was refused.
+ */
+static void make_current_stencil_visual(QTestState *s)
+{
+    uint32_t config[10] = { 0, 0xc, 0, 0, 0, 0, 23, 1 };
+
+    gl_make_current(s);
+    kona_command(s, 1, config, 10);
+}
+
+static void test_stencil_visual_read(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    make_current_stencil_visual(s);
+    gl_window_cleared(s, 0, 0, 1);
+    assert_read_colour(s, 0x0000ff);
+    qtest_quit(s);
+}
+
+static void test_stencil_visual_copy(void)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    make_current_stencil_visual(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 5, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, 0xff0000ff);
+    qtest_writel(s, REG_COMMAND, 0x00ff00ff);
+    kona_command_f(s, 0xa9, (float[]) { 0.5, 0.5 }, 2);
+    kona_command(s, 0x38, (uint32_t[]) { 64, 64, 2, 1, 0, 0x1800, 0 }, 7);
+    expected_clear(e, 0x000000);
+    for (unsigned y = 64; y <= 96; y += 32) {
+        e->rgb[((127 - y) * 128 + y) * 3] = 255;
+        e->rgb[((127 - y) * 128 + y + 1) * 3 + 1] = 255;
+    }
+    assert_window_matches(s, e);
+    qtest_quit(s);
+}
+
 /* The filter and its enable migrate with the context. */
 static void test_convolution_state_migration(void)
 {
@@ -19187,9 +19237,8 @@ int main(int argc, char **argv)
              test_stencil_reset_and_partial_packets);
     add_case("sn0/origin2000/kona-3d/stencil/state-and-plane-migrate",
              test_stencil_state_and_plane_migrate);
-    add_case("sn0/origin2000/kona-3d/stencil/"
-             "visual-readback-remains-refused",
-             test_stencil_visual_readback_remains_refused);
+    add_case("sn0/origin2000/kona-3d/stencil/visual-readback",
+             test_stencil_visual_readback);
     add_case("sn0/origin2000/kona-3d/stencil/completion/"
              "partial-visual-migration",
              test_stencil_partial_visual_migration);
@@ -19242,6 +19291,10 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
              test_unmodelled_stage_disabled);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
+    add_case("sn0/origin2000/kona-3d/stencil-visual/read",
+             test_stencil_visual_read);
+    add_case("sn0/origin2000/kona-3d/stencil-visual/copy",
+             test_stencil_visual_copy);
     add_case("sn0/origin2000/kona-3d/convolution/2d-framed",
              test_convolution_2d_framed);
     add_case("sn0/origin2000/kona-3d/convolution/1d-framed",
