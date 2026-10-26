@@ -11571,6 +11571,41 @@ static bool sgi_kona_x_stipple_loaded(SGIKonaState *s)
 }
 
 /*
+ * The X paths reach a row's pixels through one run (sgi_plane_run()) when
+ * the row allows it, and pixel by pixel otherwise: a run resolves the
+ * plane's format, bounds and host address once per row instead of once per
+ * pixel, and loads and stores the same bytes. A NULL plane has no run.
+ */
+static void sgi_kona_x_row(SGIBoardMemory *m, const SGIPlane *p, int64_t x1,
+                           int64_t x2, int row, SGIPlaneRun *run)
+{
+    if (!p || x1 < INT_MIN || x2 > INT_MAX ||
+        !sgi_plane_run(m, p, x1, row, x2 - x1, run)) {
+        run->host = NULL;
+    }
+}
+
+static inline uint32_t sgi_kona_x_row_load(SGIBoardMemory *m,
+                                           const SGIPlane *p,
+                                           const SGIPlaneRun *run,
+                                           int64_t x1, int x, int row)
+{
+    return run->host ? sgi_plane_run_load(run, x - x1) :
+                       sgi_plane_load(m, p, x, row);
+}
+
+static inline void sgi_kona_x_row_store(SGIBoardMemory *m, const SGIPlane *p,
+                                        const SGIPlaneRun *run, int64_t x1,
+                                        int x, int row, uint32_t value)
+{
+    if (run->host) {
+        sgi_plane_run_store(run, x - x1, value);
+    } else {
+        sgi_plane_store(m, p, x, row, value);
+    }
+}
+
+/*
  * Retain the existing clipped/stippled geometry. Validate every accessed
  * destination before any canonical word/tag store.
  */
@@ -11585,6 +11620,8 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     unsigned banks = 1;
     SGIXGC gc;
     SGIKonaRect clip;
+    uint32_t foreground = 0, background_value = 0;
+    bool constant;
 
     /*
      * Word 4's bit 31 marks the X server GC parser's FillOpaqueStippled,
@@ -11650,7 +11687,10 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
         for (unsigned bank = 0; bank < banks; bank++) {
             for (int y = y1; y < y2; y++) {
                 int row = SGI_KONA_FB_HEIGHT - 1 - y;
+                SGIPlaneRun front_run, tag_run;
 
+                sgi_kona_x_row(memory, front[bank], x1, x2, row, &front_run);
+                sgi_kona_x_row(memory, tag[bank], x1, x2, row, &tag_run);
                 for (int x = x1; x < x2; x++) {
                     if (!sgi_kona_x_clip_contains(s, x, y) ||
                         (!gc.opaque_or_tiled &&
@@ -11658,10 +11698,10 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                         continue;
                     }
                     if ((tag[bank] &&
-                         sgi_plane_load(memory, tag[bank], x, row) !=
-                             target_tag) ||
-                        sgi_plane_load(memory, front[bank], x, row) >
-                            gc.width_mask) {
+                         sgi_kona_x_row_load(memory, tag[bank], &tag_run,
+                                             x1, x, row) != target_tag) ||
+                        sgi_kona_x_row_load(memory, front[bank], &front_run,
+                                            x1, x, row) > gc.width_mask) {
                         qemu_log_mask(LOG_UNIMP,
                                       "sgi-kona: X fill incompatible "
                                       "destination at (%d,%d)\n", x, y);
@@ -11674,11 +11714,23 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
     if (!commit) {
         return true;
     }
+    /*
+     * A GC that needs no destination makes each pixel's word from its
+     * colour alone, so the two colours' results are made once here.
+     */
+    constant = !sgi_x_gc_needs_destination(&gc);
+    if (constant) {
+        foreground = sgi_x_gc_apply(&gc, gc.foreground, 0);
+        background_value = sgi_x_gc_apply(&gc, gc.background, 0);
+    }
     for (unsigned bank = 0; bank < banks; bank++) {
         for (int y = y1; y < y2; y++) {
             int row = SGI_KONA_FB_HEIGHT - 1 - y;
             bool changed = false;
+            SGIPlaneRun front_run, tag_run;
 
+            sgi_kona_x_row(memory, front[bank], x1, x2, row, &front_run);
+            sgi_kona_x_row(memory, tag[bank], x1, x2, row, &tag_run);
             for (int x = x1; x < x2; x++) {
                 uint32_t old, value;
                 bool set;
@@ -11690,15 +11742,25 @@ static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
                 if (!set && !gc.opaque_or_tiled) {
                     continue;
                 }
-                old = sgi_plane_load(memory, front[bank], x, row);
-                value = sgi_x_gc_apply(&gc, background || !set ?
-                                       gc.background : gc.foreground, old);
+                old = sgi_kona_x_row_load(memory, front[bank], &front_run,
+                                          x1, x, row);
+                if (constant) {
+                    value = background || !set ? background_value :
+                                                 foreground;
+                } else {
+                    value = sgi_x_gc_apply(&gc, background || !set ?
+                                           gc.background : gc.foreground,
+                                           old);
+                }
                 if (value != old ||
                     (tag[bank] &&
-                     sgi_plane_load(memory, tag[bank], x, row) != target_tag)) {
-                    sgi_plane_store(memory, front[bank], x, row, value);
+                     sgi_kona_x_row_load(memory, tag[bank], &tag_run, x1, x,
+                                         row) != target_tag)) {
+                    sgi_kona_x_row_store(memory, front[bank], &front_run, x1,
+                                         x, row, value);
                     if (tag[bank]) {
-                        sgi_plane_store(memory, tag[bank], x, row, target_tag);
+                        sgi_kona_x_row_store(memory, tag[bank], &tag_run, x1,
+                                             x, row, target_tag);
                     } else {
                         s->desktop_state_used = true;
                         if (gc.target == SGI_X_GC_DID) {
@@ -12477,10 +12539,21 @@ static void sgi_kona_x_write_clear(SGIKonaState *s)
 
         sgi_kona_x_write_bounds(s, &r);
         for (int64_t y = r.y1; y < r.y2; y++) {
-            for (int64_t x = r.x1; x < r.x2; x++) {
-                sgi_plane_store(&s->x_write_mem, source, x, y, 0);
-                sgi_plane_store(&s->x_write_mem, valid, x, y, 0);
-                sgi_plane_store(&s->x_write_mem, ones, x, y, 0);
+            const SGIPlane *planes[] = { source, valid, ones };
+
+            /* Zero is all zero bytes in every packing: clear rows whole. */
+            for (unsigned i = 0; i < ARRAY_SIZE(planes); i++) {
+                SGIPlaneRun run;
+
+                sgi_kona_x_row(&s->x_write_mem, planes[i], r.x1, r.x2, y,
+                               &run);
+                if (run.host) {
+                    memset(run.host, 0, (r.x2 - r.x1) * run.bpp);
+                    continue;
+                }
+                for (int64_t x = r.x1; x < r.x2; x++) {
+                    sgi_plane_store(&s->x_write_mem, planes[i], x, y, 0);
+                }
             }
         }
     }
@@ -13472,7 +13545,14 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
         int64_t j = j0 + row;
         int src_row = SGI_KONA_FB_HEIGHT - 1 - (sy + j);
         int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
+        SGIPlaneRun src_run, src_tag_run, dst_run, dst_tag_run;
 
+        sgi_kona_x_row(&s->mem, front, sx + i0, sx + i1, src_row, &src_run);
+        sgi_kona_x_row(&s->mem, tag, sx + i0, sx + i1, src_row,
+                       &src_tag_run);
+        sgi_kona_x_row(&s->mem, front, dx + i0, dx + i1, dst_row, &dst_run);
+        sgi_kona_x_row(&s->mem, tag, dx + i0, dx + i1, dst_row,
+                       &dst_tag_run);
         for (size_t col = 0; col < width; col++) {
             int64_t i = i0 + col;
             SGIKonaXPreparedPixel *pixel = &prepared[row * width + col];
@@ -13481,10 +13561,14 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
             if (!window_copy && !sgi_kona_x_clip_contains(s, dx + i, dy + j)) {
                 continue;
             }
-            source = sgi_plane_load(&s->mem, front, sx + i, src_row);
-            source_tag = sgi_plane_load(&s->mem, tag, sx + i, src_row);
-            dest = sgi_plane_load(&s->mem, front, dx + i, dst_row);
-            dest_tag = sgi_plane_load(&s->mem, tag, dx + i, dst_row);
+            source = sgi_kona_x_row_load(&s->mem, front, &src_run, sx + i0,
+                                         sx + i, src_row);
+            source_tag = sgi_kona_x_row_load(&s->mem, tag, &src_tag_run,
+                                             sx + i0, sx + i, src_row);
+            dest = sgi_kona_x_row_load(&s->mem, front, &dst_run, dx + i0,
+                                       dx + i, dst_row);
+            dest_tag = sgi_kona_x_row_load(&s->mem, tag, &dst_tag_run,
+                                           dx + i0, dx + i, dst_row);
             if (!window_copy &&
                 (source_tag != target_tag || source > gc.width_mask ||
                  (sgi_x_gc_needs_destination(&gc) &&
@@ -13505,7 +13589,11 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
         int64_t j = j0 + row;
         int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
         bool changed = false;
+        SGIPlaneRun dst_run, dst_tag_run;
 
+        sgi_kona_x_row(&s->mem, front, dx + i0, dx + i1, dst_row, &dst_run);
+        sgi_kona_x_row(&s->mem, tag, dx + i0, dx + i1, dst_row,
+                       &dst_tag_run);
         for (size_t col = 0; col < width; col++) {
             int64_t i = i0 + col;
             const SGIKonaXPreparedPixel *pixel = &prepared[row * width + col];
@@ -13513,8 +13601,10 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
             if (!pixel->write) {
                 continue;
             }
-            sgi_plane_store(&s->mem, front, dx + i, dst_row, pixel->value);
-            sgi_plane_store(&s->mem, tag, dx + i, dst_row, pixel->tag);
+            sgi_kona_x_row_store(&s->mem, front, &dst_run, dx + i0, dx + i,
+                                 dst_row, pixel->value);
+            sgi_kona_x_row_store(&s->mem, tag, &dst_tag_run, dx + i0, dx + i,
+                                 dst_row, pixel->tag);
             changed = true;
         }
         if (changed) {
@@ -13569,25 +13659,36 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
     }
     for (unsigned y = r.y1; y < r.y2; y++) {
         unsigned py = SGI_KONA_FB_HEIGHT - 1 - y;
+        SGIPlaneRun valid_run, source_run, ones_run, front_run, tag_run;
 
+        sgi_kona_x_row(&s->x_write_mem, valid, r.x1, r.x2, y, &valid_run);
+        sgi_kona_x_row(&s->x_write_mem, source, r.x1, r.x2, y, &source_run);
+        sgi_kona_x_row(&s->x_write_mem, ones, r.x1, r.x2, y, &ones_run);
+        sgi_kona_x_row(memory, front, r.x1, r.x2, py, &front_run);
+        sgi_kona_x_row(memory, tag, r.x1, r.x2, py, &tag_run);
         for (unsigned x = r.x1; x < r.x2; x++) {
             SGIKonaXPreparedPixel *pixel =
                 &prepared[(y - r.y1) * width + x - r.x1];
             uint32_t dest, dest_tag;
 
-            if (!sgi_plane_load(&s->x_write_mem, valid, x, y)) {
+            if (!sgi_kona_x_row_load(&s->x_write_mem, valid, &valid_run,
+                                     r.x1, x, y)) {
                 continue;
             }
-            dest = sgi_plane_load(memory, front, x, py);
-            dest_tag = tag ? sgi_plane_load(memory, tag, x, py) : target_tag;
+            dest = sgi_kona_x_row_load(memory, front, &front_run, r.x1, x,
+                                       py);
+            dest_tag = tag ? sgi_kona_x_row_load(memory, tag, &tag_run, r.x1,
+                                                 x, py) : target_tag;
             if (sgi_x_gc_needs_destination(&gc) &&
                 (dest_tag != target_tag || dest > gc.width_mask)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: X streamed write "
                               "incompatible destination (%u,%u)\n", x, y);
                 return;
             }
-            uint32_t zero = sgi_plane_load(&s->x_write_mem, source, x, y);
-            uint32_t one = sgi_plane_load(&s->x_write_mem, ones, x, y);
+            uint32_t zero = sgi_kona_x_row_load(&s->x_write_mem, source,
+                                                &source_run, r.x1, x, y);
+            uint32_t one = sgi_kona_x_row_load(&s->x_write_mem, ones,
+                                               &ones_run, r.x1, x, y);
 
             pixel->value = (zero & ~dest) | (one & dest);
             pixel->tag = target_tag;
@@ -13597,15 +13698,20 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
     for (unsigned y = r.y1; y < r.y2; y++) {
         unsigned py = SGI_KONA_FB_HEIGHT - 1 - y;
         bool changed = false;
+        SGIPlaneRun front_run, tag_run;
 
+        sgi_kona_x_row(memory, front, r.x1, r.x2, py, &front_run);
+        sgi_kona_x_row(memory, tag, r.x1, r.x2, py, &tag_run);
         for (unsigned x = r.x1; x < r.x2; x++) {
             const SGIKonaXPreparedPixel *pixel =
                 &prepared[(y - r.y1) * width + x - r.x1];
 
             if (pixel->write) {
-                sgi_plane_store(memory, front, x, py, pixel->value);
+                sgi_kona_x_row_store(memory, front, &front_run, r.x1, x, py,
+                                     pixel->value);
                 if (tag) {
-                    sgi_plane_store(memory, tag, x, py, pixel->tag);
+                    sgi_kona_x_row_store(memory, tag, &tag_run, r.x1, x, py,
+                                         pixel->tag);
                 } else {
                     s->desktop_state_used = true;
                 }
