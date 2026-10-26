@@ -2,8 +2,8 @@
 /*
  * InfiniteReality/KONA's DMA engine, on the shared pixel DMA.
  *
- * The packet, established by a full reading of kona_idma and
- * kona_dmawrite: the selector 0x1eb, then six words --
+ * The packet, established by a full reading of the kernel driver's DMA
+ * routines: the selector 0x1eb, then six words --
  *
  *   1  io >> 12
  *   2  (io & 0xfff) | 0x9000
@@ -12,26 +12,26 @@
  *   5  its gap, the bytes between one line's end and the next line
  *   6  0x100 when the sender wants a completion, else 0
  *
- * -- where io is the device address of the pinned buffer. The kick
- * register takes the literals 0x30000, 0x10000 and 0 around the packet as
- * a bracket; it is not a word count, so this engine frames on the
- * selector and ignores the kick. Before the packet, kona_dmawrite writes
- * its command buffer's records to the same port: 0x1c8 with a pipe-memory
- * address and a byte count, when a display list is copied into pipe
- * memory. A record says
- * where the next packet's bytes go, so the engine holds it and places
- * that packet's transfer in the list plane. With no record, a packet
- * that arrives while an X pixel write opened under its DMA mode bit waits
- * for its rows is the X server's image: its bytes, read through the XG
- * map RAM, feed that write (sgi_kona_x_image_dma()). With neither, the
+ * -- where io is the device address of the pinned buffer. The kick register
+ * takes the literals 0x30000, 0x10000 and 0 around the packet as a bracket;
+ * it is not a word count, so this engine frames on the selector and ignores
+ * the kick. Before the packet, the driver's DMA write routine writes its
+ * command buffer's records to the same port: 0x1c8 with a pipe-memory
+ * address and a byte count, when a display list is copied into pipe memory.
+ * A record says where the next packet's bytes go, so the engine holds it
+ * and places that packet's transfer in the list plane. With no record, a
+ * packet that arrives while an X pixel write opened under its DMA mode bit
+ * waits for its rows is the X server's image: its bytes, read through the
+ * XG map RAM, feed that write (sgi_kona_x_image_dma()). With neither, the
  * packet is logged without transferring bytes or posting completion.
  *
  * Every transfer is an SGIPixelDMA (hw/display/sgi/pixel-dma.c) against
  * the board memory, so the shared layer resolves the guest pages, bounds
  * the transfer by its plane and page list, and publishes its completion.
- * The completion's cookie comes from the packet's word 6: kona_dmawrite
- * sleeps after each packet until the mailbox delivers 0x100 under cause
- * bit 0x10. That the pipe posts the packet's own last word is inferred.
+ * The completion's cookie comes from the packet's word 6: the driver's DMA
+ * write routine sleeps after each packet until the mailbox delivers 0x100
+ * under cause bit 0x10. That the pipe posts the packet's own last word is
+ * inferred.
  *
  * Approximated, and kept from the engine this replaces:
  *
@@ -68,7 +68,7 @@
 
 typedef struct SGIKonaState SGIKonaState;
 
-/* The packet's selector and its six words, kona_idma. */
+/* The packet's selector and its six words, as the kernel driver sends them. */
 #define SGI_KONA_DMA_PACKET        SGI_KONA_CMD_DMA_PACKET
 #define SGI_KONA_DMA_PACKET_WORDS  6
 
@@ -80,11 +80,11 @@ typedef struct SGIKonaState SGIKonaState;
 #define SGI_KONA_DMA_ADDR_TAG 0x9000
 
 /*
- * The DMA pool 0x1ed registers: kona_dmapool requires its base and length
- * to be multiples of SGI_KONA_DMA_POOL_PAGE, which the model takes as the
- * pool's page size. SGI_KONA_DMA_POOL_MAX bounds the length, the model's
- * choice: the library's pool starts at 8 MiB and grows 4 MiB at a time,
- * and no limit is known.
+ * The DMA pool 0x1ed registers: the driver's DMA pool requires its base and
+ * length to be multiples of SGI_KONA_DMA_POOL_PAGE, which the model takes
+ * as the pool's page size. SGI_KONA_DMA_POOL_MAX bounds the length, the
+ * model's choice: the library's pool starts at 8 MiB and grows 4 MiB at a
+ * time, and no limit is known.
  */
 #define SGI_KONA_DMA_POOL_PAGE  0x4000
 #define SGI_KONA_DMA_POOL_MAX   ((uint32_t)(256 * MiB))

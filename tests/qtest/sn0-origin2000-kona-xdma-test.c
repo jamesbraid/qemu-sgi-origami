@@ -2,15 +2,15 @@
 /*
  * SGI KONA qtests for the X server's image writes by DMA.
  *
- * konDrawImage sends the clip 0x12b, the position 0x12a, the pixmap GC
- * 0x129, the pixel setup 0x136 with mode bit 0x10, the pixel write 0x139
- * with only its x and y, and then the kernel's DMA packet, 0x1eb and six
- * words, carries the rows from the client's buffer through the XG map
- * RAM; the X server sends the pixel finish 0x13a after the kernel's wait
- * ends. The kernel waits for the mailbox word 0x100 under cause bit 0x10,
- * which only the general vector's handler reads. These cases check that
- * the packet's bytes draw through the open pixel write as its page words
- * would, and that the completion follows them in that order.
+ * The X server's image draw sends the clip 0x12b, the position 0x12a, the
+ * pixmap GC 0x129, the pixel setup 0x136 with mode bit 0x10, the pixel
+ * write 0x139 with only its x and y, and then the kernel's DMA packet,
+ * 0x1eb and six words, carries the rows from the client's buffer through
+ * the XG map RAM; the X server sends the pixel finish 0x13a after the
+ * kernel's wait ends. The kernel waits for the mailbox word 0x100 under
+ * cause bit 0x10, which only the general vector's handler reads. These
+ * cases check that the packet's bytes draw through the open pixel write as
+ * its page words would, and that the completion follows them in that order.
  *
  * The fixture is KONA as a -device at the empty slot IO4, crossbow0's
  * widget 11, with fabric-hub-widget=9 so the board reads node 0's memory.
@@ -42,9 +42,9 @@
 #define CAUSE_FATAL         0x100u
 
 /*
- * kona_reset_adaptor's values in the traced run: the general vector 0x10
+ * The driver's adaptor-reset values in the traced run: the general vector 0x10
  * and the geometry-engine vector 0x11, to node 0's Hub at widget 9; and
- * KONAstart's interrupt mask.
+ * the driver's pipe-start interrupt mask.
  */
 #define KERNEL_INT_VECTORS    0x3e2210
 #define KERNEL_INT_DEST_UPPER 0x98000
@@ -225,7 +225,7 @@ static void kona_command(QTestState *s, uint32_t token, const uint32_t *args,
 }
 
 /*
- * konDrawImage's words up to its pixel write, for a GC of 13 words and a
+ * The image draw's words up to its pixel write, for a GC of 13 words and a
  * setup of mode, packings, shift, width, height and pad: the clip and
  * position covering the 1280 by 1024 screen, the GC, the setup and the
  * write at (x, y) with no data words.
@@ -250,7 +250,7 @@ static const uint32_t gc_true24[13] = {
     0, 0, 0, 0, 0xffffff, 0xffffff, 0x2804, 0x60001, 1, 6, 8, 0, 0,
 };
 
-/* kona_idma's packet in the kernel's bracket, as the run sent it. */
+/* The kernel driver's DMA packet in its bracket, as the run sent it. */
 static void dma_packet(QTestState *s, uint32_t io, uint32_t total,
                        uint32_t per_line, uint32_t gap, uint32_t done)
 {

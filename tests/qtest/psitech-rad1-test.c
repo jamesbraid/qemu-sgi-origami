@@ -150,9 +150,9 @@
 #define LOGICOP_USE_CONSTANT_FB_WRITE_DATA  (1u << 5)
 
 /*
- * Render bits follow manual pp. 242-243. Driver rect_pio_move and
- * rect_dma_move use TextureEnable; IO6 PROM 6.156 box fill at 0x11c2a6bc
- * and kernel RAD1TpSboxfi write 0x6000c0. Both clear with FastFill
+ * Render bits follow manual pp. 242-243. The driver's programmed-I/O and DMA
+ * rectangle moves use TextureEnable; IO6 PROM 6.156 box fill at 0x11c2a6bc and
+ * the kernel textport's box fill write 0x6000c0. Both clear with FastFill
  * 0x6000c8 and draw glyph pixels with point command 0x80.
  */
 #define RENDER_FASTFILL         (1u << 3)
@@ -395,7 +395,7 @@ static void test_control_status_registers(void)
     g_assert_cmpuint(regzero_read(qts, R_FIFO_SPACE), >, 0x64);
 
     /*
-     * The driver's `rad1pciattach` path checks this register before it will
+     * The driver's attach path checks this register before it will
      * finish attach: any nonzero word unblocks it, so this only pins
      * "nonzero", not a specific bit pattern; see
      * hw/display/psitech-rad1.c's own disclosure at RAD1_REG_ATTACH_GATE.
@@ -491,11 +491,11 @@ static void test_render_negative_origin_rejected(void)
 }
 
 /*
- * A host-memory (system memory) rectangle copy: TextureBaseAddress's bit 30
- * set means this session's copy of the manual's own text: "the texture
- * resides in system memory ... and should be fetched across the PCI bus" --
- * so this exercises the same host-DMA-mapped source
- * rect_dma_move()/bigx_update() use.
+ * A host-memory (system memory) rectangle copy: TextureBaseAddress's bit 30 set
+ * means this session's copy of the manual's own text: "the texture resides in
+ * system memory ... and should be fetched across the PCI bus" -- so this
+ * exercises the same host-DMA-mapped source the driver's DMA rectangle move and
+ * large-rectangle update use.
  */
 static void test_render_host_copy(void)
 {
@@ -548,7 +548,7 @@ static void test_render_honors_write_mask(void)
 
 /*
  * FBReadMode Read Destination Enable (manual p. 211) copies a VRAM
- * rectangle to host TextureBaseAddress, as rad1_dma_patch_move() does.
+ * rectangle to host TextureBaseAddress, as the driver's patch move does.
  * Using this bit to select readback is a model approximation documented
  * in hw/display/psitech-rad1.c.
  */
@@ -604,7 +604,7 @@ static void test_bydma_registers_round_trip(void)
  * Start host-memory DMA via ByDMAAddress/ByDMAStride/ByDMAMemAddr/
  * ByDMASize/ByDMAByteMask and ByDMAControl. Check VRAM and completion
  * IntFlags bit 7 alone, distinct from Render RAD1_INT_KNOWN_MASK; this
- * is the path rad1pci's posted write waits for.
+ * is the path the driver's posted write waits for.
  */
 static void test_bydma_write_transfer(void)
 {
@@ -672,7 +672,8 @@ static void test_bydma_byte_mask_edges(void)
 /*
  * Completed Render sets all three known interrupt bits together; source
  * mapping is unresolved (hw/display/psitech-rad1.c:RAD1_INT_KNOWN_MASK).
- * Guest writes clear exactly the bits read, as rad1_inthandler() does.
+ * Guest writes clear exactly the bits read, as the driver's interrupt
+ * handler does.
  */
 static void test_interrupt_status_write_clear(void)
 {
@@ -716,10 +717,10 @@ static void test_flash_program_sequence(void)
 }
 
 /*
- * A data write without the unlock sequence leaves flash unchanged. At
- * the register level, this reproduces the byte-mismatch condition
- * program_eeprom_sector()'s caller detects, without this model
- * needing to know that caller's own error-code convention.
+ * A data write without the unlock sequence leaves flash unchanged. At the
+ * register level, this reproduces the byte-mismatch condition the driver's
+ * flash-programming caller detects, without this model needing to know that
+ * caller's own error-code convention.
  */
 static void test_flash_program_without_unlock_is_ignored(void)
 {
@@ -742,7 +743,7 @@ static void test_flash_program_without_unlock_is_ignored(void)
  * Point command (manual p. 62, 5.3.3) writes one pixel at 16.16
  * StartXDom/StartY using FBWriteData when UseConstantFBWriteData is set
  * (pp. 217, 231). IO6 PROM 6.156 draws glyphs at 0x11c2a428-
- * 0x11c2a42c; kernel RAD1TpDrawbitmap does likewise.
+ * 0x11c2a42c; the kernel textport's bitmap routine does likewise.
  */
 static void test_render_point_writes_one_pixel(void)
 {
@@ -768,7 +769,8 @@ static void test_render_point_writes_one_pixel(void)
  * A rectangle primitive without TextureEnable is a constant fill of
  * RectangleOrigin/RectangleSize (manual page 62, "5.3.4 Rectangles") with
  * FBWriteData, honoring FBHardwareWriteMask. The PROM textport uses this
- * for box fill (0x11c2a6a8-0x11c2a6bc), as does the kernel's RAD1TpSboxfi.
+ * for box fill (0x11c2a6a8-0x11c2a6bc), as does the kernel textport's box
+ * fill.
  */
 static void test_render_rectangle_constant_fill(void)
 {
@@ -829,8 +831,8 @@ static void test_render_rectangle_fill_negative_origin(void)
 /*
  * FastFill (manual page 41, "Block Writes") writes FBBlockColor to every
  * pixel regardless of FBWriteData. Both textport
- * initialisers issue it for full-screen clear (0x11c29fc4-0x11c29ff8;
- * rad1_tpinit.o RAD1InitBoard).
+ * initialisers issue it for full-screen clear (0x11c29fc4-0x11c29ff8, and
+ * rad1_tpinit.o's board initialisation).
  */
 static void test_render_fastfill_uses_block_color(void)
 {
@@ -880,7 +882,7 @@ static void test_render_fill_without_colour_source(void)
  * StartXDom/StartXSub/StartY and their deltas being 16.16 fixed point (manual
  * page 70, "5.3.14 Registers"; Count on page 73). dY = 1.0 is exactly what
  * the PROM textport initialiser writes at mode set (0x11c16110); only the
- * kernel driver's fill_fb() (rad1drv.o) renders a trapezoid.
+ * kernel driver's framebuffer fill (rad1drv.o) renders a trapezoid.
  */
 static void test_render_trapezoid_spans(void)
 {

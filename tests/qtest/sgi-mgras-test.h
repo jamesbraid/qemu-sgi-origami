@@ -1948,7 +1948,7 @@ static inline void mgras_public_rect(QTestState *s, unsigned x, unsigned y,
 
 /*
  * The context image's clip words, as the IRIX 6.5.30 kernel's
- * clip validation routine writes them (mgras.o listing 0x61d8-0x67b4): word
+ * clip validation routine in mgras.o writes them: word
  * 3 is (mode << 4) | enables, and enable bit i selects rectangle i, whose
  * columns and rows are words 11 and 12, 9 and 10, 7 and 8 or 5 and 6,
  * each first << 16 | last counted from the bottom-left of the screen. A
@@ -2670,8 +2670,8 @@ static inline void gl_polygon_context_check(QTestState *s)
 /*
  * GL_TEXTURE_MATRIX is queried at 0x6a + i, column-major like the other
  * matrices, and GL_TEXTURE_STACK_DEPTH at 0x923, returned as
- * ((answer - 0xb45) >> 4) + 1 with 0xb45 the hq3_revB_HQ4.u symbol-table
- * word at file offset 0x218. glMatrixMode(GL_TEXTURE) sends 0x2a04 with
+ * ((answer - 0xb45) >> 4) + 1 with 0xb45 a hq3_revB_HQ4.u symbol-table
+ * word. glMatrixMode(GL_TEXTURE) sends 0x2a04 with
  * 0x1702.
  */
 #define GL_Q_TEXTURE          0x06a

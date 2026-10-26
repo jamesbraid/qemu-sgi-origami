@@ -104,9 +104,9 @@ static void check_word_unsupported(const SGICommandPortSelector *selectors,
 }
 
 /*
- * The DMA FIFO port's selectors and counts: KONAsetdisplaymode's 0x1e6
- * and the bare select-feed pair. Every other kernel packet's sender writes
- * the command page instead.
+ * The DMA FIFO port's selectors and counts: the kernel display-mode set's
+ * 0x1e6 and the bare select-feed pair. Every other kernel packet's sender
+ * writes the command page instead.
  */
 static const SGICommandPortSelector expected_fifo_selectors[] = {
     { 0x1e6, 3 }, { 0x1f5, 0 }, { 0x1f6, 0 },

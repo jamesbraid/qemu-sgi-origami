@@ -38,23 +38,22 @@
  * SGIOdysseyState's colour-plane field: the real board's SDRAM framebuffer
  * base, stride and channel packing were not located.
  *
- * The fourth increment adds a command-FIFO interpreter (0x110000) for the
- * three operations a console driver needs: solid rectangle fill,
- * screen-to-screen copy (console scrolling) and monochrome glyph blit
- * (console text). The grammar is recovered from OpenBSD's public odyssey(4)
- * driver -- odyssey_fillrect(), odyssey_copyrect() and odyssey_putchar() --
- * and agrees with the command stream the IRIX X server sends
- * (odyssey-xsgi-2d-command-grammar-20260922.md). The FIFO is
- * hardware-sequenced, not address-counted: every 32-bit or 64-bit store is
- * the next word of a command stream that a small state machine below parses
- * one word at a time. Every recognized word, opcode and register is cited at
- * its handler; an unrecognized command word is reported once through
- * LOG_UNIMP and treated as taking no operands, the same
- * do-not-invent-an-arity stance odyssey_reg() already takes for unestablished
- * register widths. This increment's approximations -- the glyph
- * raster-position template's exact word grouping, the per-pixel color word's
- * bit layout, and which 32-bit half of an 8-byte FIFO store is logically
- * first -- are documented at their handlers below.
+ * The fourth increment adds a command-FIFO interpreter (0x110000) for the three
+ * operations a console driver needs: solid rectangle fill, screen-to-screen
+ * copy (console scrolling) and monochrome glyph blit (console text). The
+ * grammar is recovered from OpenBSD's public odyssey(4) driver --
+ * odyssey_fillrect(), odyssey_copyrect() and odyssey_putchar() -- and agrees
+ * with the command stream the IRIX X server sends. The FIFO is
+ * hardware-sequenced, not address-counted: every 32-bit or 64-bit store is the
+ * next word of a command stream that a small state machine below parses one
+ * word at a time. Every recognized word, opcode and register is cited at its
+ * handler; an unrecognized command word is reported once through LOG_UNIMP and
+ * treated as taking no operands, the same do-not-invent-an-arity stance
+ * odyssey_reg() already takes for unestablished register widths. This
+ * increment's approximations -- the glyph raster-position template's exact word
+ * grouping, the per-pixel color word's bit layout, and which 32-bit half of an
+ * 8-byte FIFO store is logically first -- are documented at their handlers
+ * below.
  *
  * The fifth increment turns those interrupt registers into an actual
  * delivery. XIO interrupts on this platform are crosstalk packets,
@@ -406,25 +405,23 @@
 #define ODSY_DRAW_MASK_RESET 0x1         /* buffer 0, left: an approximation */
 
 /*
- * Reset values a real Tezro V12's firmware diagnostics printed for a
- * healthy board (odyssey-baseio-prom-graphics-20260925.md, cited through
- * odyssey-fuel-identity-spike-20260925.md): widget request timeout and
- * flow-control configuration. The Buzz registers above carry no such
- * reference value, so they reset to zero.
+ * Reset values a real Tezro V12's firmware diagnostics printed for a healthy
+ * board: widget request timeout and flow-control configuration. The Buzz
+ * registers above carry no such reference value, so they reset to zero.
  */
 #define ODSY_XT_REQ_TIMEOUT_RESET 0x000fffff
 #define ODSY_FLCTL_CONFIG_RESET 0x0001c000
 
 /*
  * Status register 0x1064 (odsy status0). This model's command FIFO drains
- * synchronously in the write handler, so it is always enabled, always empty
- * and always below the low-water mark, and never fills. The kernel's periodic
- * gfx-credits check reads this register and treats a clear low-water or
- * enabled bit as a graphics error, so a board that never answered it (the
- * default no-register path, reading zero) drew an "odsy board 0: Graphics
- * error" alert on every check and then took its board-reset recovery path.
- * The bit names are established in the datasheet's status table; the real
- * board's timing-dependent FIFO occupancy is not modeled (see the datasheet's
+ * synchronously in the write handler, so it is always enabled, always empty and
+ * always below the low-water mark, and never fills. The kernel's periodic
+ * gfx-credits check reads this register and treats a clear low-water or enabled
+ * bit as a graphics error, so a board that never answered it (the default
+ * no-register path, reading zero) drew a graphics-error alert for board 0 on
+ * every check and then took its board-reset recovery path. The bit names are
+ * established in the datasheet's status table; the real board's
+ * timing-dependent FIFO occupancy is not modeled (see the datasheet's
  * approximation ledger).
  */
 #define ODSY_STATUS0_FIFO_ENABLED 0x10000000
@@ -440,11 +437,10 @@
  * credits: on real hardware it fires when the FIFO drains to its low-water
  * mark. This model drains the FIFO synchronously in the write handler, so every
  * command submission leaves the FIFO empty and below low water. Raise it on
- * each submission (the drain edge). Without it "gfx credits below bias" never
- * clears, the kernel logs "odsy board 0: Graphics error", and it gives up
- * starting Xsgi.
- * The real board's timing-dependent occupancy is not modeled (see the
- * datasheet's approximation ledger).
+ * each submission (the drain edge). Without it the driver's command credits
+ * stay below their threshold, the kernel logs a graphics error for board 0, and
+ * it gives up starting Xsgi. The real board's timing-dependent occupancy is not
+ * modeled (see the datasheet's approximation ledger).
  */
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
 
@@ -650,7 +646,7 @@
  * context 1). The driver polls guest RAM at the context shadow address
  * (ODSY_CTX_SHADOW_ADDR_UPPER/_LOWER) plus ODSY_CTX_SWITCH_DONE_OFFSET for
  * a nonzero 32-bit word, with a 15 s timeout and no interrupt -- the
- * kernel driver's context-switch wait reports "CTXSW timeout" on a stall.
+ * kernel driver's context-switch wait reports a timeout on a stall.
  */
 #define ODSY_CTX_SWITCH_PORT 0x118000
 #define ODSY_CTX_SWITCH_OPCODE_SHIFT 40
@@ -661,14 +657,13 @@
 
 /*
  * The command-FIFO self-test read-back. The kernel driver's command-FIFO
- * initialisation pushes a fixed nine-word preamble (three command words to
- * the FIFO, five 64-bit selector pushes to the backend-select port, one
- * more command word), waits 2 ms, then reads this register and requires
- * the OK value; a real V12 answers exactly 0x003d0046
- * (odyssey-octane2-v12-registers-20260926.md). Both the kernel's console
- * graphics initialisation and the kernel driver's X-server initialisation
- * path retry six times and give up if it never matches, so the whole
- * graphics bring-up depends on it.
+ * initialisation pushes a fixed nine-word preamble (three command words to the
+ * FIFO, five 64-bit selector pushes to the backend-select port, one more
+ * command word), waits 2 ms, then reads this register and requires the OK
+ * value; a real V12 answers exactly 0x003d0046. Both the kernel's console
+ * graphics initialisation and the kernel driver's X-server initialisation path
+ * retry six times and give up if it never matches, so the whole graphics
+ * bring-up depends on it.
  */
 #define ODSY_CFIFO_SELFTEST 0x201594
 #define ODSY_CFIFO_SELFTEST_OK 0x003d0046
@@ -1322,9 +1317,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_UCODE_TAIL_ONE_SHOT 0x203
 #define ODSY_UCODE_TAIL 0x25e
 /*
- * A hardware clip-plane stage is a 0 word followed by one of these
- * (odyssey-gl-geometry-program.md, "The assembled list", hardware clip
- * planes).
+ * A hardware clip-plane stage is a 0 word followed by one of these.
  */
 #define ODSY_UCODE_CLIP 0x00c
 #define ODSY_UCODE_CLIP_TEXTURED 0x01a
@@ -2135,11 +2128,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_CONFIG_FOUR_BANKS (1u << 29)
 #define ODSY_CONFIG_LATENCY_2 (1u << 28)
 /*
- * Bits 27:24 the live V12 capture read back as 0x1
- * (odyssey-octane2-v12-registers-20260926.md): a "driver's don't-care
- * copy field" per that capture, its meaning otherwise not established.
- * Modeled as an unconditional constant since only the one profile has
- * been measured and nothing ties it to size, bank count or latency.
+ * Bits 27:24 the live V12 capture read back as 0x1: a "driver's don't-care copy
+ * field" per that capture, its meaning otherwise not established. Modeled as an
+ * unconditional constant since only the one profile has been measured and
+ * nothing ties it to size, bank count or latency.
  */
 #define ODSY_CONFIG_COPY_FIELD (1u << 24)
 
@@ -2203,14 +2195,13 @@ static void odyssey_cmd_unimplemented(SGIOdysseyState *s, uint32_t word)
 }
 
 /*
- * The modeled register an access names, or -1. A configuration-block
- * register answers its 64-bit address and the 32-bit spelling of either
- * half identically: a live V12 board reads the same value back at a
- * register's base and at base+4 across the whole block, not just on the
- * identity register (odyssey-octane2-v12-registers-20260926.md). Every
- * other register has only been seen as a 32-bit access. Every other
- * width, alignment and offset is unmodeled rather than an error: what the
- * board does with them is not established.
+ * The modeled register an access names, or -1. A configuration-block register
+ * answers its 64-bit address and the 32-bit spelling of either half
+ * identically: a live V12 board reads the same value back at a register's base
+ * and at base+4 across the whole block, not just on the identity register.
+ * Every other register has only been seen as a 32-bit access. Every other
+ * width, alignment and offset is unmodeled rather than an error: what the board
+ * does with them is not established.
  */
 static int64_t odyssey_reg(hwaddr addr, unsigned size)
 {
@@ -2774,17 +2765,16 @@ static void odyssey_shadow_ring(SGIOdysseyState *s, uint64_t base,
  * the fields its attribute replay reads (from its disassembly); the other
  * bits are not read there and are written zero.
  *
- * An attribute the model keeps no record of (record[A][0] zero: 5 and 6,
- * which that kernel's log calls texcoordA and texcoordB, and 13) selects
- * slot 0, which this save never writes for it, so the replay sends back
- * what that slot already holds: on a page the board has never filled, the
- * kernel template's word. Selecting a held vertex's or the current slot
- * instead pointed the replay at a slot the save left empty, and the kernel
- * rejects a ring word with no operands that is not an edge-flag word: it
- * logged an illegal restore command for both attributes, for each held
- * vertex after the first and for the current values. This is an
- * approximation: the board's values for these attributes, and the slots
- * it saves them in, are unknown, and the model keeps no state for them.
+ * An attribute the model keeps no record of (record[A][0] zero: 5 and 6, two
+ * texture-coordinate attributes, and 13) selects slot 0, which this save never
+ * writes for it, so the replay sends back what that slot already holds: on a
+ * page the board has never filled, the kernel template's word. Selecting a held
+ * vertex's or the current slot instead pointed the replay at a slot the save
+ * left empty, and the kernel rejects a ring word with no operands that is not
+ * an edge-flag word: it logged an illegal restore command for both attributes,
+ * for each held vertex after the first and for the current values. This is an
+ * approximation: the board's values for these attributes, and the slots it
+ * saves them in, are unknown, and the model keeps no state for them.
  */
 static void odyssey_shadow_descriptor(SGIOdysseyState *s, uint64_t base,
                                       uint32_t off,
@@ -12400,11 +12390,10 @@ static void odyssey_instance_init(Object *obj)
 }
 
 /*
- * Crosstalk part 0xc013 and manufacturer 0x023 are the board's, from the
- * part number the IP35 driver registers for. Revision nibble 0xa and the
- * 128 MB/four-bank/latency-3 memory profile are the values a live V12
- * board (030-1611-001 rev C) answered, not a placeholder
- * (odyssey-octane2-v12-registers-20260926.md). The one-wire record
+ * Crosstalk part 0xc013 and manufacturer 0x023 are the board's, from the part
+ * number the IP35 driver registers for. Revision nibble 0xa and the 128
+ * MB/four-bank/latency-3 memory profile are the values a live V12 board
+ * (030-1611-001 rev C) answered, not a placeholder. The one-wire record
  * defaults to the public owner record of the 128 MB board; the serial is
  * synthetic and says so.
  *

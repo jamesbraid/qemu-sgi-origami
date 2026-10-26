@@ -296,8 +296,8 @@ static void assert_weave(QTestState *s, unsigned x0, unsigned y0)
 }
 
 /*
- * The X server's image write from a traced guest run, in
- * konDrawImage's order: clip, position, GC, setup 0 with 0, 1, 8, 4, 4, 0,
+ * The X server's image write from a traced guest run, in the order of the X
+ * server's image draw: clip, position, GC, setup 0 with 0, 1, 8, 4, 4, 0,
  * write at (0, 0), the four words 0x7, 0x70000, 0x700, 0x7000000, finish.
  * Big-endian rows put index 7 at x = 3, 1, 2, 0 of rows 0 to 3; a
  * little-endian reading would put it at 0, 2, 1, 3. The pixels are X
@@ -526,7 +526,7 @@ static void test_write_clipped(void)
 }
 
 /*
- * konCopyRect's group: position and clip over the screen, the GC the run
+ * The X server's copy group: position and clip over the screen, the GC the run
  * sent, setup 1 with 1, 1, 0 and the size, then the copy.
  */
 static void copy_rect(QTestState *s, int32_t sx, int32_t sy, int32_t dx,
@@ -982,11 +982,11 @@ static void read_unanswered(QTestState *s, int32_t x, int32_t y)
 }
 
 /*
- * The X server's frame-buffer word read, as an oglsnoop start sent it:
- * kon_loadImpWordGC's GC for plane selector 1, setup 2 2 2 0, then 0x138.
- * Its caller under nfbReadDisplay takes a colour-index pixel's index from
- * the word's top bits, so each word is the left-justified index. Selector
- * 2's GC stays refused.
+ * The X server's frame-buffer word read, as an oglsnoop start sent it: the
+ * GC of its frame-buffer word loader for plane selector 1, setup 2 2 2 0,
+ * then 0x138. Its caller under the X server's display read takes a
+ * colour-index pixel's index from the word's top bits, so each word is the
+ * left-justified index. Selector 2's GC stays refused.
  */
 static void test_read_fb_word(void)
 {
@@ -1039,9 +1039,9 @@ static void test_read_fb_word(void)
 
     /*
      * Selector 1 over a TrueColor pixel is the reader's RGB word too, red
-     * in bits 31:24 (konal.so 0x4342a0), and over a colour-index pixel
-     * beside it the left-justified index: one 4 by 1 read across both
-     * kinds, as the file manager's edge reads cross windows.
+     * in bits 31:24, and over a colour-index pixel beside it the
+     * left-justified index: one 4 by 1 read across both kinds, as the file
+     * manager's edge reads cross windows.
      */
     x_command(qts, TOKEN_GC, gc, 13);
     x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 2, 2, 2, 0, 4, 1, 0 }, 7);
@@ -1058,7 +1058,7 @@ static void test_read_fb_word(void)
 
     /*
      * Selector 3, the RGB word of the pair a window with byte +2 set
-     * reads (konal.so 0x434738), is the same RGB word.
+     * reads, is the same RGB word.
      */
     memcpy(other, gc, sizeof(other));
     other[7] = 0xe8001;
@@ -1073,8 +1073,7 @@ static void test_read_fb_word(void)
 
     /*
      * Selector 0, the 16-bit formats' read, packs five bits of red, green
-     * and blue in bits 31:17 (konal.so 0x434cb4); over a colour-index
-     * pixel it stays refused.
+     * and blue in bits 31:17; over a colour-index pixel it stays refused.
      */
     memcpy(other, gc, sizeof(other));
     other[7] = 0x28001;
@@ -1491,7 +1490,7 @@ static void read_gl_command(QTestState *s, uint32_t token,
 
 /*
  * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
- * rows counted down, ends exclusive, as kon_drawDid sends it: whole-screen
+ * rows counted down, ends exclusive, as the X server sends it: whole-screen
  * position and clip, then a display-ID GC (cfg 8) writing id into bits
  * 7:2. The read GC is loaded again after it.
  */

@@ -971,7 +971,7 @@ static void test_texture_volume_unset_comparison(void)
 
 static void test_texture_volume_layout(void)
 {
-    /* Layout mode two, then mode one: 0x22c4590's [3,2]/[2,2], [3,2]/[3,1]. */
+    /* Layout mode two, then mode one: [3,2]/[2,2], then [3,2]/[3,1]. */
     static const struct {
         uint32_t storage, layout;
     } families[] = {

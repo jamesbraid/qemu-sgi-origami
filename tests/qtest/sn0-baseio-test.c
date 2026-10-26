@@ -62,13 +62,12 @@
 #define MIO_IOC3_WINDOW 0xa00000
 
 /*
- * The MediaIO daughtercard's RAD1 audio ASIC, io6g only, at Bridge PCI
- * device 7, where a real BaseIO-G owner's hinv -v lists it.
- * Device 7's own 1 MB window (this file's own
- * BRIDGE_DEVICE(7) window) with BAR0, the 0x2000-byte register file, at the
- * window's base. IRIX's rad_attach maps exactly that much through BAR0 and
- * stores the result as the register base every later access uses; a
- * smaller BAR leaves it NULL. The same inventory shows no function at
+ * The MediaIO daughtercard's RAD1 audio ASIC, io6g only, at Bridge PCI device
+ * 7, where a real BaseIO-G owner's hinv -v lists it. Device 7's own 1 MB window
+ * (this file's own BRIDGE_DEVICE(7) window) with BAR0, the 0x2000-byte register
+ * file, at the window's base. The IRIX driver's attach maps exactly that much
+ * through BAR0 and stores the result as the register base every later access
+ * uses; a smaller BAR leaves it NULL. The same inventory shows no function at
  * device 5.
  */
 #define MIO_RAD1_DEVICE 7
@@ -83,7 +82,7 @@
     (((uint32_t)MIO_RAD1_DEVICE_ID << 16) | MIO_RAD1_VENDOR_ID)
 
 /*
- * The revision byte's high nibble is the board mode rad_create_subsys
+ * The revision byte's high nibble is the board mode the IRIX driver
  * dispatches on (7: MediaIO), its low nibble a sub-revision; hinv prints
  * them as "RAD revision 7.0".
  */
@@ -118,9 +117,9 @@
 #define RAD1_REG_UNDOCUMENTED_GAP 0x60
 
 /*
- * The status-DMA descriptor-ring base/limit registers rad_start_status_dma
- * and rad_one_shot_status program, plus the parallel second set, in the
- * 0x400..0x528 DMA bank. Restated independently from the model's own names.
+ * The status-DMA descriptor-ring base/limit registers the driver's status-DMA
+ * start and one-shot status routines program, plus the parallel second set, in
+ * the 0x400..0x528 DMA bank. Restated independently from the model's own names.
  */
 #define RAD1_REG_STATUS_BASE2_LO  0x4b4
 #define RAD1_REG_STATUS_BASE2_HI  0x4b8
@@ -134,7 +133,7 @@
 #define RAD1_REG_SAMPLE_POS_LAST  0x2c
 
 /*
- * The free-running UST counter rad_set_ust_offset polls for advancement,
+ * The free-running UST counter the driver polls for advancement,
  * read-only, one tick per RAD1_UST_NS_PER_TICK ns of virtual time.
  */
 #define RAD1_REG_UST_COUNTER      0x30
@@ -142,8 +141,8 @@
 
 /*
  * Status-DMA control values written to 0x5c: the ring-engine start, the
- * one-shot start, and the stop, from the RAD1 driver's
- * rad_start_status_dma, rad_one_shot_status and rad_stop_status_dma.
+ * one-shot start, and the stop, from the RAD1 driver's status-DMA start,
+ * one-shot status and status-DMA stop routines.
  *
  * What a completion leaves in its 0x80-byte slot, from the streaming-engine
  * contract and status-slot flag bits: registers 0x04..0x34
@@ -903,14 +902,14 @@ static uint32_t rad1_ring_read(QTestState *qts, uint64_t ram)
 }
 
 /*
- * The one-shot status-DMA handshake. rad_one_shot_status programs the ring
- * base and a -4 limit, writes the one-shot start word (0x40001, ring bit
- * clear) to 0x5c, and busy-polls the base slot's +0x7c bit 31; the engine
- * transfers status into that single slot and marks it done. This places a
- * ring in node-0 RAM, seeds the slot with stale words, kicks the one-shot,
- * and confirms the completion rewrote the flag and completion words to the
- * no-input values, left the analog output's pointer word alone (the channel
- * has not run since reset), and left the adjacent slot alone.
+ * The one-shot status-DMA handshake. The driver's one-shot status routine
+ * programs the ring base and a -4 limit, writes the one-shot start word
+ * (0x40001, ring bit clear) to 0x5c, and busy-polls the base slot's +0x7c bit
+ * 31; the engine transfers status into that single slot and marks it done. This
+ * places a ring in node-0 RAM, seeds the slot with stale words, kicks the
+ * one-shot, and confirms the completion rewrote the flag and completion words
+ * to the no-input values, left the analog output's pointer word alone (the
+ * channel has not run since reset), and left the adjacent slot alone.
  */
 static void test_io6g_rad1_status_dma_handshake(void)
 {
@@ -1010,7 +1009,7 @@ static void rad1_step_to(QTestState *qts, int64_t t_start, int64_t offset)
 }
 
 /*
- * The continuous status-DMA engine. rad_start_status_dma writes the
+ * The continuous status-DMA engine. The driver's status-DMA start writes the
  * ring-engine start word, with the ring bit and an interval field, to 0x5c;
  * the engine then keeps completing slots around the ring on its own, one
  * per interval. So, unlike the one-shot, no slot completes on the register
@@ -1318,7 +1317,7 @@ static void test_io6g_rad1_type1_output_stream(void)
     t_enable = rad1_clock_now(qts);
     g_assert_cmphex(rad1_read(qts, RAD1_REG_ANALOG_OUT_EN), ==, RAD1_OUT_RUN);
 
-    /* B's type 1 field ticks inside rad_start_dma's 50 x 10 us poll. */
+    /* B's type 1 field ticks inside the channel start's 50 x 10 us poll. */
     qtest_clock_step(qts, 500000);
     b = rad1_read(qts, RAD1_OUT_POS_B);
     g_assert_cmphex(RAD1_POS_B_TYPE1(b), !=, RAD1_POS_B_TYPE1(b0));
@@ -1611,8 +1610,8 @@ static void test_io6g_rad1_output_migration(void)
 }
 
 /*
- * Fill the input ring with a poison word no sample can equal, and program
- * both of the input's register sets for it, as rad_start_dma does. The
+ * Fill the input ring with a poison word no sample can equal, and program both
+ * of the input's register sets for it, as the driver's channel start does. The
  * enable is left alone.
  */
 static void rad1_prepare_input(QTestState *qts)
@@ -1732,7 +1731,7 @@ static void test_io6g_rad1_type0_input_stream(void)
                RAD1_IN_ENABLE_RUN | RAD1_IN_MUX_CLOCK);
     rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
 
-    /* B's type 0 field ticks inside rad_start_dma's 50 x 10 us poll. */
+    /* B's type 0 field ticks inside the channel start's 50 x 10 us poll. */
     rad1_step_to(qts, t_enable, 500000);
     b = rad1_read(qts, RAD1_OUT_POS_B);
     g_assert_cmphex(RAD1_POS_B_TYPE0(b), !=, 0);
@@ -2938,14 +2937,13 @@ static uint32_t rad1_mux_word(QTestState *qts)
 }
 
 /*
- * The mux serial word, shifted out as rad_vl_write_MUX_SEL_MIO does: for
- * each bit, most significant first, 0x8c = bit | 2, then 0x4c from its
- * shadow with bit 27 clear, then set; then 0x88 = 2, 0x88 = 3 to latch,
- * and 0x8c restored. The model decodes the word into its read-only
- * "mux-word" property. The shadow here keeps bit 0 of 0x4c set, as the
- * driver's does with the analog input running, and the input keeps
- * running on its clock through it. A second word replaces the first only
- * at its own latch.
+ * The mux serial word, shifted out as the driver's MediaIO mux-select write
+ * does: for each bit, most significant first, 0x8c = bit | 2, then 0x4c from
+ * its shadow with bit 27 clear, then set; then 0x88 = 2, 0x88 = 3 to latch, and
+ * 0x8c restored. The model decodes the word into its read-only "mux-word"
+ * property. The shadow here keeps bit 0 of 0x4c set, as the driver's does with
+ * the analog input running, and the input keeps running on its clock through
+ * it. A second word replaces the first only at its own latch.
  */
 static void rad1_send_mux_word(QTestState *qts, uint32_t shadow, uint16_t word)
 {
@@ -2991,11 +2989,11 @@ static void test_io6g_rad1_mux_word(void)
 }
 
 /*
- * The free-running UST counter at 0x30. rad_set_ust_offset reads it twice a
- * fixed delay apart and warns "RAD UST not incrementing" if it moved by fewer
- * than three ticks; the model derives it from the virtual clock, so stepping
- * that clock advances it in proportion. Confirm it advances by about the
- * expected tick count across a clock step (not a constant, not a fixed
+ * The free-running UST counter at 0x30. The driver's UST offset routine reads
+ * it twice a fixed delay apart and warns that the UST is stalled if it moved by
+ * fewer than three ticks; the model derives it from the virtual clock, so
+ * stepping that clock advances it in proportion. Confirm it advances by about
+ * the expected tick count across a clock step (not a constant, not a fixed
  * just-past-threshold value), and that a write cannot change it.
  */
 static void test_io6g_rad1_ust_counter(void)

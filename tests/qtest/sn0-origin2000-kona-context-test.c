@@ -44,7 +44,7 @@
 #define REG_INT_VECTORS     KONA_REG(0x00005c)
 
 /*
- * kona_reset_adaptor's values in the traced run: the general vector 0x10
+ * The driver's adaptor-reset values in the traced run: the general vector 0x10
  * and the geometry-engine vector 0x11, to node 0's Hub at widget 9.
  */
 #define KERNEL_INT_VECTORS    0x3e2210
@@ -215,7 +215,7 @@ static void kona_register_return_page(QTestState *s, uint64_t page)
                                       tagged_offset_word(page), 0x4000 }, 3);
 }
 
-/* KONAstart's 0x1f1 for a host physical reason page. */
+/* The driver's pipe-start 0x1f1 for a host physical reason page. */
 static void kona_register_reason_page(QTestState *s, uint64_t page)
 {
     kona_command_kicked(s, 0x1f1,
@@ -224,9 +224,9 @@ static void kona_register_reason_page(QTestState *s, uint64_t page)
 }
 
 /*
- * KONApcxswap's first activation of a context: 0x1fd with the save area's
- * page word, tagged offset word and 64 KiB, then 0x1f2 with the return
- * page, each in its own bracket.
+ * The driver's context swap's first activation of a context: 0x1fd with the
+ * save area's page word, tagged offset word and 64 KiB, then 0x1f2 with the
+ * return page, each in its own bracket.
  */
 static void context_first(QTestState *s, uint32_t save_page,
                           uint32_t save_offset, uint64_t return_page)
@@ -245,8 +245,8 @@ static void context_first_physical(QTestState *s, uint64_t save,
 }
 
 /*
- * KONApcxswap's deactivate of the outgoing context: 0x1fc and its index,
- * with no closing kick, as the driver sleeps there.
+ * The driver's context-swap deactivate of the outgoing context: 0x1fc and
+ * its index, with no closing kick, as the driver sleeps there.
  */
 static void context_deactivate(QTestState *s, uint32_t index)
 {
@@ -257,11 +257,11 @@ static void context_deactivate(QTestState *s, uint32_t index)
 }
 
 /*
- * A restore as KONApcxswap and kona_act_pcx send it, with a context that
- * registered no pool: 0x1f9 with word 0 of the save area at host address
- * `save`, the save area's page word and tagged offset word and the
- * sentinel; 0x1ed 0 0x9000 0; and the last packet, whose token is word 2
- * of the save area and whose one word is 0.
+ * A restore as the driver's context swap and context activation send it,
+ * with a context that registered no pool: 0x1f9 with word 0 of the save
+ * area at host address `save`, the save area's page word and tagged offset
+ * word and the sentinel; 0x1ed 0 0x9000 0; and the last packet, whose token
+ * is word 2 of the save area and whose one word is 0.
  */
 static void context_restore(QTestState *s, uint64_t save, uint32_t save_page,
                             uint32_t save_offset)
@@ -363,8 +363,8 @@ static char *log_through(const char *found, const char *needle)
  * A swap back to a context that has run before, as a traced guest run
  * saw it: 0x1f9 with save-area word 0, the
  * save area's page word and tagged offset word and the sentinel;
- * kona_mem_reserve_func's 0x1e4; kona_dmapool_update_pipe's 0x1ed for no
- * pool, which registers none; kona_act_pcx's 0x1f3, 0x1ee and 0x1f4,
+ * the pipe-memory reservation's 0x1e4; the DMA pool update's 0x1ed for no
+ * pool, which registers none; the context activation's 0x1f3, 0x1ee and 0x1f4,
  * each bracketed; and its last packet, whose token comes from save-area
  * word 2, sent here as 0x172. Each token is followed by exactly its count
  * of words shaped to misframe the stream if the count is wrong: one too
@@ -3398,13 +3398,14 @@ static void test_packed_index_short_reported_once(void)
 }
 
 /*
- * A retrace request, 0x1e7 and its tag, completes at the next retrace:
- * the tag register reads the tag and the video cause bit 0x8 rises, with
- * the general vector sent, which is what runs kona_video_intr and its
- * kona_swap_complete. Before the retrace neither has happened, and a
- * retrace without a request rearms the periodic cause. Two requests complete
- * one per retrace, in order. The clock starts at 0, so the first 20 ms step
- * crosses the retrace at 16.7 ms and the next the one at 33.3 ms.
+ * A retrace request, 0x1e7 and its tag, completes at the next retrace: the
+ * tag register reads the tag and the video cause bit 0x8 rises, with the
+ * general vector sent, which is what runs the driver's video interrupt
+ * handler and its swap completion. Before the retrace neither has happened,
+ * and a retrace without a request rearms the periodic cause. Two requests
+ * complete one per retrace, in order. The clock starts at 0, so the first
+ * 20 ms step crosses the retrace at 16.7 ms and the next the one at 33.3
+ * ms.
  */
 static void test_retrace_request_completes(void)
 {

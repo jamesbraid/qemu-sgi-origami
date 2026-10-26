@@ -182,7 +182,7 @@
  * The logical operation, established from the listing: glLogicOp accepts
  * GL_CLEAR to GL_SET and writes 0x4004 and the operation less GL_CLEAR.
  * glEnable of GL_COLOR_LOGIC_OP (capability 0xbf2) writes 0x6b04 and 1
- * when the context byte at 0xc94 is set, and of GL_INDEX_LOGIC_OP
+ * when a context byte is set, and of GL_INDEX_LOGIC_OP
  * (capability 0xbf1) when it is clear, so one token enables the operation
  * for the context's own colour form, the byte marking an RGBA context
  * (inferred from which capability each path serves); glDisable writes
@@ -347,8 +347,8 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  *   (GL_CCW) and writes 0x5604 and the direction unchanged; the
  *   display-list compiler's front-face routine compiles it.
  * - glEnable(GL_CULL_FACE): the enable routine, for capability 0xb44,
- *   writes 0x7200 alone and sets bit 0x1000 of the context word at
- *   +0x700. glDisable writes 0x7300 alone and clears the bit, only while
+ *   writes 0x7200 alone and sets bit 0x1000 of a context word.
+ *   glDisable writes 0x7300 alone and clears the bit, only while
  *   it is set (the disable routine).
  * - the GE11 cull-state restore routine writes 0x7200 or 0x7300 from that
  *   bit, and the host-culling glDrawArrays path writes 0x7300 before
@@ -713,15 +713,15 @@ enum {
  * and keeps them out of the 2D register file.
  *
  * The kernel's clip validation routine (IRIX 6.5.30 mgras.a member mgras.o,
- * SHA-256 6a65e70d3cdc..., listing 0x61d8-0x67b4) writes words 2 to 15
+ * SHA-256 6a65e70d3cdc...) writes words 2 to 15
  * from the window and its visible rectangles, bottom-up and inclusive,
  * each as first << 16 | last. Established from that listing:
  *
  * - Word 3 is (mode << 4) | enables. Enable bit i is set for each of the
  *   first four visible rectangles, rectangle 0 in words 11 and 12, 1 in
  *   9 and 10, 2 in 7 and 8 and 3 in 5 and 6. All four pairs are stored
- *   on every call (0x6534-0x6558 on the port, 0x63e8-0x6424 in the saved
- *   copy); a pair whose bit is clear carries leftover stack contents that
+ *   on every call, on the port and in the saved copy; a pair whose bit is
+ *   clear carries leftover stack contents that
  *   mean nothing.
  * - A window with one to four visible rectangles gets mode 1 and those
  *   rectangles. One with none, but a nonzero width, gets mode 1 and its
@@ -848,8 +848,8 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  *   With 1 that sets bit 0 and writes 0x0000dd00, then 0x00010200 when
  *   bit 1 is set and 0x0000df00 when it is not. With anything else it
  *   clears bit 0 and writes 0x0000de00 or 0x0000df00, by a flag the
- *   listing reads at 0x1018. It writes nothing while the context byte at
- *   0xc94, which marks an RGBA context (inferred, as for the logical
+ *   listing reads. It writes nothing while the context byte
+ *   that marks an RGBA context (inferred, as for the logical
  *   operation above), is clear.
  *
  * So 0x00010200 arrives exactly when both are on. The library sends it
@@ -1188,7 +1188,7 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
 /*
  * Image word 1 has both of bits 31 and 30 set only on the first delivery
  * of a new context. The IRIX 6.5.30 kernel's context allocator
- * (0xc0000000003f38c8 in unix.IP27) zeroes the new context, sets image word
+ * (in unix.IP27) zeroes the new context, sets image word
  * 0 to -1 and ORs 0xc0000000 into word 1. After writing the image
  * the context-switch routine clears bit 27 of word 1 for every context and bits
  * 31, 30, 29 and 26 for every context but the default, whose image keeps bit 31
@@ -1261,7 +1261,7 @@ static SGIGLContext *mgras_gl(SGIMgrasState *s)
  * sends 0x48 as the triple's first word
  * for GL_FRONT, and for GL_BACK on a shallow visual (a deep visual's
  * GL_BACK sends 4 first), and 0x43 for GL_FRONT_AND_BACK, when a flag in
- * its context (offset 0xce4) is set, and 1 to 0xf otherwise; established
+ * its context is set, and 1 to 0xf otherwise; established
  * from that listing. SceneViewer's logo context, the only context of that
  * program's overlay scene graph (SoXtRenderArea::setOverlaySceneGraph on
  * a level-1 colour-index visual; it sets glViewport(0, 0, 80, 80) and
@@ -1620,9 +1620,9 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
  * external RAM (ERAM) at the address its context image carries in word 0,
  * and moves contexts between ERAM and a host buffer when it needs room.
  * Established from mgras.o in the IRIX 6.5.30 IP27 mgras.a (SHA-256
- * 6a65e70d3cdc...): the ERAM read routine (.text 0xf18) builds a DMA read
+ * 6a65e70d3cdc...): the ERAM read routine builds a DMA read
  * descriptor, kicks it and then writes 0xfc08 with the ERAM address and a
- * word count, then 0x0100; the ERAM write routine (.text 0x11f0) sends the
+ * word count, then 0x0100; the ERAM write routine sends the
  * image back in chunks of at most 0x384 words, each 0xfd04 with the count, the
  * descriptor and its kick, then 0xfb08 with the ERAM address and count,
  * and ends with 0xfa00.
@@ -1986,7 +1986,7 @@ typedef enum MgrasGLQueryPacking {
  *   index 0x3a + i and 0x4a + i, each word stored as a float into
  *   element i of the result (the client's loop advances its output one
  *   float per query), which glGet returns column-major.
- * - GL_TEXTURE_MATRIX: 0x6a + i with a1 0 (table offset 0x164), read the
+ * - GL_TEXTURE_MATRIX: 0x6a + i with a1 0, read the
  *   same way.
  * - GL_MATRIX_MODE: index 0x29, a1 0; the client returns the word plus
  *   0x1701, so the word is the mode's enumerant less GL_PROJECTION.
@@ -2000,7 +2000,7 @@ typedef enum MgrasGLQueryPacking {
  *   hold the 1/256 pixel the model snaps vertices to; how the board rounds
  *   them is not published, and the model rounds to nearest.
  * - GL_CURRENT_RASTER_POSITION_VALID: 0x35c. The client ANDs the word
- *   with the microcode symbol table's word at offset 0x240 and returns
+ *   with a word from the microcode symbol table and returns
  *   whether the result is nonzero. That mask's value is not recorded, so
  *   the model answers all ones for a valid position and zero otherwise,
  *   which reads correctly for any mask but zero; which bits the board
@@ -2148,26 +2148,26 @@ static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
 
 /*
  * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. The glGet routine
- * queries index 0x83 (table offset 0x1f4, a1 0) and 0x922 (0x1f8, a1 1)
- * and returns ((answer - base) >> 4) + 1, the base the symbol-table word
- * at offset 0x1e4 for the modelview stack and 0x1e8 for the projection
- * stack (from the IRIX 6.5.30 IP27GR532 libGLcore.so). Those words, at
- * file offsets 0x210 and 0x214 of /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
+ * queries index 0x83 (a1 0) and 0x922 (a1 1)
+ * and returns ((answer - base) >> 4) + 1, the base a symbol-table word
+ * for each stack (from the IRIX 6.5.30 IP27GR532 libGLcore.so). Those
+ * words, in /usr/gfx/ucode/MGRAS/hq3_revB_HQ4.u (SHA-256
  * a696e9772a876ed02378111e80a01270161cb4ad8fc39355f40fe96d1fcdb062), are
- * 0x925 and 0xb25; the index words at 0x220 and 0x224 are 0x83 and
- * 0x922, as the query notes give them. So the answer is an address in
+ * 0x925 for the modelview stack and 0xb25 for the projection stack; the
+ * file's index words for the two are 0x83 and 0x922, as the query notes
+ * give them. So the answer is an address in
  * the GE's matrix stack, 16 words a matrix, and the model answers base +
  * 16 * (depth - 1) from the loaded context's stack. That the board's
  * word is that address is inferred from the client's arithmetic; the
  * modelview base lies 32 matrices below the projection base, the depth
  * the model gives both stacks.
  *
- * GL_TEXTURE_STACK_DEPTH is index 0x923 (table offset 0x1fc) with its
- * base at table offset 0x1ec; the file words at
- * 0x228 and 0x218 are 0x923 and 0xb45. The texture base lies two
- * matrices above the projection base, so the board's projection stack
- * holds two (inferred), where the model's holds 32 like its others. The
- * colour-matrix stack is not kept, and its query still answers zero.
+ * GL_TEXTURE_STACK_DEPTH is index 0x923 with its base in the same
+ * table; the file's words for them are 0x923 and 0xb45. The texture
+ * base lies two matrices above the projection base, so the board's
+ * projection stack holds two (inferred), where the model's holds 32 like
+ * its others. The colour-matrix stack is not kept, and its query still
+ * answers zero.
  */
 static const struct {
     uint16_t index;
@@ -2298,7 +2298,7 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
  * GL_COLOR_WRITEMASK and GL_INDEX_WRITEMASK are both query 0x32b. For the
  * colour mask the client tests the answer's bits 0 to 3 in turn as red, green,
  * blue and alpha; for the index mask it returns the answer ANDed with
- * (1 << n) - 1, n the context word at 0xcb4, the index's bits. Established
+ * (1 << n) - 1, n a context word holding the index's bits. Established
  * from the IRIX 6.5.30 IP27GR532 libGLcore.so. That the board keeps one
  * write-mask word for both is inferred from the shared index. In
  * colour-index mode the model answers glIndexMask's mask, and in RGBA mode
@@ -3253,13 +3253,12 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
  */
 /*
  * Clip IDs. When a window has no visible rectangle the kernel can give
- * (five or more), its clip validation (MgrasValidateClip, IRIX 6.5.30
- * mgras.o, file offsets 0x6598-0x662c of the relocatable object) binds
- * the whole window as rectangle 0, mode 1, and, when the window has a
- * clip ID, sets bit 4 + ID of image word 4 (file offsets 0x62d8-0x62f0
- * and 0x65d4-0x65dc compute (x & 3) | (y & 3) << 2 | 1 << (4 + ID)). The
- * same word goes to the kernel's shadow of raster register 0x17b (file
- * offset 0x634c), which the X server sets to 0xc00 for its own
+ * (five or more), its clip validation routine (in the IRIX 6.5.30
+ * mgras.o) binds the whole window as rectangle 0, mode 1, and, when the
+ * window has a clip ID, sets bit 4 + ID of image word 4 (computed as
+ * (x & 3) | (y & 3) << 2 | 1 << (4 + ID)). The same word goes to the
+ * kernel's shadow of raster register 0x17b, which the X server sets to
+ * 0xc00 for its own
  * drawing. The X server tags the window's visible region with that ID
  * first (sgi-mgras-raster.c, mgras_fill_clip_id()): twilight's window got
  * ID 1 over exactly its visible boxes and word 4 0x20 (run
@@ -4545,10 +4544,11 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * row: 69 and 0 for ipaste's 69-pixel tiles of four bytes, 51 and 0 for
  * imgview's 68 pixels of three on the SI, 50 and 0 for mandel's 100
  * indices, and 48 and 48 for imgview's 128 pixels of three on the SSI
- * (inferred from those; they are the tile descriptor's words +8 and +0xc
- * in the IP27GR564 listing, which sets bit 4 of 0x8d20's last word when
- * the second is 0). Why the SSI's client splits a row in two is not
- * known: the image bytes are whole rows. A colour-index image's bytes a
+ * (inferred from those; they are two words of the library's tile
+ * descriptor in the IP27GR564 listing, which sets bit 4 of 0x8d20's last
+ * word when the second is 0). Why the SSI's client splits a row in two
+ * is not known: the image bytes are whole rows. A colour-index image's
+ * bytes a
  * pixel are the 1, 2 or 4 that give that many words, which is 2 for every
  * rectwrite captured; an image too narrow to tell (one index wide, or two
  * at 1 or 2 bytes) is logged and not drawn. The image is the bottom row

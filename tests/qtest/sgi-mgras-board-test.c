@@ -326,8 +326,8 @@ static void test_xmap_buf_select_write(void)
 }
 
 /*
- * SGI's Octane IDE XMAP test (the XMAP register test, ide.IP30 6.5.30 at
- * 0xa80000002086907c) writes each of eight patterns to XMAP_BUF_SELECT
+ * SGI's Octane IDE XMAP test (the XMAP register test, ide.IP30 6.5.30)
+ * writes each of eight patterns to XMAP_BUF_SELECT
  * and reads it back: all 32 bits under index byte 0, which it calls the
  * main buffer select, and the low 8 bits under index byte 4, the overlay
  * buffer select. A mismatch fails the board.
@@ -800,8 +800,8 @@ static void test_dac_mode_byte_readback(void)
 }
 
 /*
- * SGI's Octane IDE DAC reset (the DAC reset test, ide.IP30 6.5.30 at
- * 0xa800000020854920) addresses DAC registers through REG_DAC_LUT_INDEX,
+ * SGI's Octane IDE DAC reset (the DAC reset test, ide.IP30 6.5.30)
+ * addresses DAC registers through REG_DAC_LUT_INDEX,
  * a halfword whose high byte is the register number, and moves their
  * data through REG_DAC_LUT_DATA_2 a byte at a time. It fails the board
  * unless the address reads back, register 3 (the DAC ID) is 0x79 with
@@ -855,8 +855,8 @@ static void test_dac_register_file_matches_ide_reset(void)
 }
 
 /*
- * SGI's Octane IDE DAC address test (the DAC address test, ide.IP30 6.5.30 at
- * 0xa800000020853c2c) writes a byte to 0x071811 and requires it back in
+ * SGI's Octane IDE DAC address test (the DAC address test, ide.IP30
+ * 6.5.30) writes a byte to 0x071811 and requires it back in
  * bits 15:8 of the halfword at 0x071810, the register number. It then
  * writes the halfword with the pattern in its high byte and checks the
  * same byte. The halfword's low byte is never compared.
@@ -882,8 +882,8 @@ static void test_dac_address_byte_port(void)
 }
 
 /*
- * SGI's Octane IDE VC3 register test (the VC3 register test, ide.IP30 6.5.30
- * at 0xa80000002083da2c) stops video timing, then writes walking-one,
+ * SGI's Octane IDE VC3 register test (the VC3 register test, ide.IP30
+ * 6.5.30) stops video timing, then writes walking-one,
  * walking-zero, 0 and 0xffff patterns to VC3 registers 0-0x13 and reads
  * each straight back, all 16 bits. Register 7 is the SRAM address
  * (VC3_RAM_ADDR in the test's own names), so it reads back as the
@@ -1002,7 +1002,7 @@ static void test_dac_gamma_curve_applies_to_scanout(void)
 }
 
 /*
- * The IRIX 6.5.30 X server's screen saver (mgrasBlankScreen in
+ * The IRIX 6.5.30 X server's screen saver (its screen-blank routine in
  * impactsr.so) blanks by writing 0 to DAC register 4, the pixel mask,
  * through the byte ports, and unblanks by writing 0xff there. A traced
  * desktop session makes exactly those two writes when its saver fires

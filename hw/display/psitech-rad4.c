@@ -216,7 +216,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  * Architecture", Preliminary Rev. 1.1, 23 January
  * 1995, page 27's register address table and pages 37-39. Index 0x0030's
  * value 0x60 disables the cursor and
- * cross-hair at initialization; the driver's own init_RGB561 routine writes
+ * cross-hair at initialization; the driver's own RGB561 initialisation writes
  * that value and then nine more RGB561
  * data-port writes that are all zero, confirming every other cursor register
  * here also resets to zero on that path.
@@ -240,7 +240,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  *
  * - Reads and writes go through the fourth RGB561 port, BAR2 +0x930000
  * (RAD4_BAR2_RGB_RESERVED below), not the
- *   ordinary data port at +0x920000. The shipped driver's init_RGB561 routine
+ *   ordinary data port at +0x920000. The shipped driver's RGB561 initialisation
  * sets the index through the same two
  *   struct fields it uses for every other index-then-data sequence, but the
  * three RGB data writes that follow
@@ -2162,16 +2162,15 @@ static bool rad4_dma_merge_byte(PsitechRad4State *s, uint32_t local_addr,
  * page 6, section 2.2.2.5 on page 9 and section 3.6.3.3 on page 26), so
  * the bytes either side of an unaligned span keep their values.
  *
- * That the plane mask applies to DMA at all is inferred, not documented
- * for the board: the mask register is programmed "before CPU
- * transfer/fill and restored afterward" and both driver DMA render paths
- * (bigx_update and rad4_rect_dma_move/fill/copy) share the threshold logic
- * that chooses between CPU and DMA, so it is taken to be the memory
- * controller's masked write rather than a CPU-only feature. Applying it per
- * byte lane for a partial dword is inferred the same way. The mask in force
- * when the data arrives applies. The overlay-index rule of
- * rad4_masked_store() is a CPU-store compatibility rule and never applies
- * here.
+ * That the plane mask applies to DMA at all is inferred, not documented for the
+ * board: the mask register is programmed "before CPU transfer/fill and restored
+ * afterward" and both driver DMA render paths (the large-rectangle update and
+ * the rectangle move, fill and copy) share the threshold logic that chooses
+ * between CPU and DMA, so it is taken to be the memory controller's masked
+ * write rather than a CPU-only feature. Applying it per byte lane for a partial
+ * dword is inferred the same way. The mask in force when the data arrives
+ * applies. The overlay-index rule of rad4_masked_store() is a CPU-store
+ * compatibility rule and never applies here.
  *
  * Only the bytes whose value changes mark their rows for the display. The
  * buffered X server's daemon re-uploads the whole screen from its shadow

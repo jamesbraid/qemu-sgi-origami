@@ -2,14 +2,15 @@
 /*
  * SGI KONA DMA engine qtests.
  *
- * The engine (hw/misc/sgi-kona-dma.c) frames kona_idma's packet, 0x1eb and
- * six words, and kona_dmawrite's 0x1c8 record on the kernel FIFO port, and
- * moves each packet's bytes through the shared pixel DMA. These cases pin
- * where a transfer's bytes land (the framebuffer at x-test-dma-fb-offset,
- * or the list plane at a record's pipe-memory address), which transfers
- * are refused and by whom, and the completion each packet publishes: one
- * record carrying the cookie its word 6 asks for. include/hw/misc/
- * sgi-kona-dma.h has the packet and what is approximated.
+ * The engine (hw/misc/sgi-kona-dma.c) frames the kernel driver's DMA
+ * packet, 0x1eb and six words, and its 0x1c8 list-write record on the
+ * kernel FIFO port, and moves each packet's bytes through the shared pixel
+ * DMA. These cases pin where a transfer's bytes land (the framebuffer at
+ * x-test-dma-fb-offset, or the list plane at a record's pipe-memory
+ * address), which transfers are refused and by whom, and the completion
+ * each packet publishes: one record carrying the cookie its word 6 asks
+ * for. include/hw/misc/sgi-kona-dma.h has the packet and what is
+ * approximated.
  *
  * The words go through qtest_writel() one at a time at the push register,
  * with the kick literals the driver writes around them, rather than
@@ -186,7 +187,7 @@ static void kona_dma_push_word(QTestState *s, uint32_t word)
 
 /*
  * A whole packet from its raw words, bracketed by the kick literals
- * kona_idma writes: 0x30000 before the selector, 0x10000 before word 1
+ * the driver writes: 0x30000 before the selector, 0x10000 before word 1
  * and 0 after word 6.
  */
 static void kona_dma_packet_raw(QTestState *s, const uint32_t w[6])
@@ -211,7 +212,7 @@ static void kona_dma_packet(QTestState *s, uint64_t addr, uint32_t total,
     });
 }
 
-/* kona_dmawrite's record: the next packet's bytes go to pipe memory. */
+/* The driver's list-write record: the next packet's bytes go to pipe memory. */
 static void kona_dma_list_write(QTestState *s, uint32_t dest, uint32_t bytes)
 {
     kona_dma_push_word(s, KONA_DMA_LIST_WRITE);
@@ -497,7 +498,7 @@ static void test_dma_destination_offset_out_of_range_refused(void)
 #define DMA_LIST_WORDS (1 + KONA_LIST_ROW / 4 + 1)
 
 /*
- * kona_dmawrite's list copy: a 0x1c8 record naming pipe-memory address
+ * The driver's display-list copy: a 0x1c8 record naming pipe-memory address
  * 0xffc and 4,104 bytes, then a packet of that many bytes in one line.
  * The bytes land in the list plane from that address, across the end of
  * row 0, the whole of row 1 and the start of row 2, and nothing lands in
@@ -701,7 +702,7 @@ static void kona_command(QTestState *s, const uint32_t *words, unsigned n)
 }
 
 /*
- * kona_dmapool's registration of a pool at device address `device` whose
+ * The driver's DMA pool registration of a pool at device address `device` whose
  * pages are host memory from `host`: one 16 KiB map RAM entry per page,
  * the page's 4 KiB frame number with the 16 KiB kind, as the kernel loads
  * them before the packet, then 0x1ed, the split device address and the
@@ -993,11 +994,12 @@ static void test_list_nested_and_poolless_refused(void)
 #define DMA_POST_SRC UINT64_C(0x16004)
 
 /*
- * A packet whose word 6 is 0x100 completes as kona_arm_intr expects: the
- * mailbox holds 0x100 under cause bit 0x10, and the read-clear-acknowledge
- * sequence clears both. A packet whose word 6 is 0 posts nothing, and
- * neither does a display list's completion. A refused packet whose
- * sender waits sets the fatal bit 0x100 and posts no mailbox word.
+ * A packet whose word 6 is 0x100 completes as the driver's interrupt arming
+ * expects: the mailbox holds 0x100 under cause bit 0x10, and the
+ * read-clear-acknowledge sequence clears both. A packet whose word 6 is 0
+ * posts nothing, and neither does a display list's completion. A refused
+ * packet whose sender waits sets the fatal bit 0x100 and posts no mailbox
+ * word.
  */
 static void test_dma_completion_posts_mailbox(void)
 {

@@ -27,7 +27,7 @@ static uint32_t index_mask(uint32_t word)
 /*
  * Whether a 12-bit colour field is a widened component: an 8-bit one
  * b << 4 | b >> 4 for 24-bit TrueColor, a 10-bit one c << 2 | c >> 8 for
- * 30-bit TrueColor (kon_parseGC, konal.so 0x541d1c-0x541f78).
+ * 30-bit TrueColor, as the IRIX X server's GC builder widens them.
  */
 static bool canonical_component(unsigned component, bool rgb30)
 {
@@ -104,8 +104,8 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     uint32_t plane = w[6] & 0x3c;
     uint32_t mask_word = w[4] & ~0x80000000U;
     /*
-     * kon_parseGC copies the buffer selector in op bits 1:0 into bits 3:2
-     * for a format with bit 0x80000 (konal.so 0x542e98-0x542ec0). What
+     * The IRIX X server's GC builder copies the buffer selector in op
+     * bits 1:0 into bits 3:2 for a format with bit 0x80000. What
      * the second copy selects is unknown; a copy equal to the first is
      * read as the same selection, and any other value is deferred.
      */
@@ -128,19 +128,19 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
         return decode_did(w, gc);
     }
     /*
-     * cfg 0x28 with buffer selector 3 is kon_loadGeomGC's form for an
-     * 8-bit overlay window drawn into both overlay buffers: it repeats
-     * the index and the mask in the high byte and replaces the plane
-     * set with 0x28 (konal.so 0x53a1c8-0x53a2fc; selector 1 gives 0x2c
-     * and 2 gives 0x30). konClearLayer sends it, through
-     * kon_loadClearGC, to clear the overlay layer, index 0 under all
+     * cfg 0x28 with buffer selector 3 is the X server's geometry GC
+     * loader's form for an 8-bit overlay window drawn into both overlay
+     * buffers: it repeats the index and the mask in the high byte and
+     * replaces the plane set with 0x28 (selector 1 gives 0x2c and 2
+     * gives 0x30). The X server's layer clear sends it, through its
+     * clear GC loader, to clear the overlay layer, index 0 under all
      * ones, before its boxes. A 15-bit overlay format (format bit
      * 0x2000) also gets 0x28, whatever its selector, with the value
-     * p << 1 | 1 and the mask pm << 1 | 1 (0x53a058-0x53a10c); those
-     * forms stay deferred. Limitation: a 15-bit GC sent with selector 3
-     * whose value and mask happen to repeat one byte would be read as
-     * this form. No caller is known to send one; konClearLayer passes
-     * the 8-bit format for the overlay layer.
+     * p << 1 | 1 and the mask pm << 1 | 1; those forms stay deferred.
+     * Limitation: a 15-bit GC sent with selector 3 whose value and mask
+     * happen to repeat one byte would be read as this form. No caller is
+     * known to send one; the layer clear passes the 8-bit format for the
+     * overlay layer.
      */
     if ((plane == 0x28 && !(w[6] == 0x28 && op == 3)) ||
         (w[6] == 0x1008 && w[7] == 0x10001 && w[10] == 5)) {
@@ -150,8 +150,8 @@ static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
     case 0:
         /*
          * 30-bit TrueColor: cfg 0 from every builder, told apart by ifmt
-         * 9, or 0 from the geometry builder (kon_parseGC sets ifmt 9 and
-         * op residual 0x24000, konal.so 0x542194-0x542204).
+         * 9, or 0 from the geometry builder (the X server's GC builder
+         * sets ifmt 9 and op residual 0x24000).
          */
         if (!rgb30) {
             return SGI_X_GC_BAD_FIELDS;

@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SGI KONA qtests for what the X server sends after kon_InitHW: the video
- * command, token 0x1a6, with its command number, data words and checksum,
- * and the replies its display generator probe waits for on the return
- * page; the gamma load, 0x12f, the probe makes between them; and the X
- * tokens after the probe, up to the root-window fill. Each case is a
- * discriminating test for the behaviour its comment names.
+ * SGI KONA qtests for what the X server sends after its hardware
+ * initialisation: the video command, token 0x1a6, with its command number,
+ * data words and checksum, and the replies its display generator probe
+ * waits for on the return page; the gamma load, 0x12f, the probe makes
+ * between them; and the X tokens after the probe, up to the root-window
+ * fill. Each case is a discriminating test for the behaviour its comment
+ * names.
  *
  * The fixture is sn0-origin2000-kona-bringup-test.c's: KONA as a -device
  * at the empty slot IO4, crossbow0's widget 11, with fabric-hub-widget=9
@@ -264,11 +265,11 @@ static void test_framing_and_checksum(void)
 }
 
 /*
- * XServerVideoInit is consumed whole and posts nothing: the return page
- * is untouched, no host write is made, and the next command frames. So
- * is konBlankScreen's TempBlankAllChannels (0x3c), sent right after the
- * probe with data 0 and no reply, and it is named
- * rather than logged as unmodelled.
+ * XServerVideoInit is consumed whole and posts nothing: the return page is
+ * untouched, no host write is made, and the next command frames. So is the
+ * X server's screen blank's TempBlankAllChannels (0x3c), sent right after
+ * the probe with data 0 and no reply, and it is named rather than logged as
+ * unmodelled.
  */
 static void test_x_server_video_init_no_reply(void)
 {
@@ -1024,7 +1025,7 @@ static void test_x_tokens_consumed(void)
 
 /*
  * The second cursor sender's load, slot 0x2698 (38 times 260) in the
- * run, frames as 261 words like kon_cursorLogo's slot 0 and traces its
+ * run, frames as 261 words like the first cursor sender's slot 0 and traces its
  * slot: the 260 data words, all sync probes, queue no mailbox reply, and
  * the page is in step afterwards.
  */

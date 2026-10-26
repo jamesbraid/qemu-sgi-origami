@@ -166,9 +166,10 @@ static uint32_t tagged_offset_word(uint64_t addr)
 }
 
 /*
- * The GL context's first make-current: KONApcxswap's 0x1fd and 0x1f2,
- * then the client's buffer configuration, single-buffered with 12-bit
- * components and `depth` depth bits, and the pack word. Four commands.
+ * The GL context's first make-current: the driver's context swap's 0x1fd
+ * and 0x1f2, then the client's buffer configuration, single-buffered with
+ * 12-bit components and `depth` depth bits, and the pack word. Four
+ * commands.
  */
 static void gl_make_current_depth(QTestState *s, uint32_t depth)
 {
@@ -782,9 +783,9 @@ static void kona_command_f(QTestState *s, uint32_t token, const float *v,
 }
 
 /*
- * kona_act_pcx's 0x1f3 and 0x1ee for the probe's window, as the GL suite
- * sends them, then the client's viewport, flat shading and a clear in
- * the colour r, g, b.
+ * The driver's context-activation 0x1f3 and 0x1ee for the probe's window,
+ * as the GL suite sends them, then the client's viewport, flat shading and
+ * a clear in the colour r, g, b.
  */
 static void gl_window_cleared(QTestState *s, float r, float g, float b)
 {
@@ -1933,12 +1934,11 @@ static void test_read_overlay_level_config(void)
 }
 
 /*
- * The kernel's kona_unblank sends textport command 1 as 1 1 0
- * (kona_tport.o 0x688-0x690), and every kernel textport packet after it
- * opens with the sync word. With a context still current, 1 1 0 then
- * 1 9 0 must be textport command 1 and the sync probe, not a buffer
- * configuration that swallows the probe; the context's configuration
- * and read source are as they were.
+ * The kernel's textport unblank sends textport command 1 as 1 1 0, and
+ * every kernel textport packet after it opens with the sync word. With a
+ * context still current, 1 1 0 then 1 9 0 must be textport command 1 and
+ * the sync probe, not a buffer configuration that swallows the probe; the
+ * context's configuration and read source are as they were.
  */
 static void test_read_unblank_keeps_source(void)
 {
@@ -14266,8 +14266,8 @@ static void renderer_typed_setup(QTestState *s)
 }
 
 /*
- * The X server's display-ID fill of the box from (x1, y1) to (x2, y2),
- * rows counted down, ends exclusive, as kon_drawDid sends it.
+ * The X server's display-ID fill of the box from (x1, y1) to (x2, y2), rows
+ * counted down, ends exclusive, as the X server sends it.
  */
 static void renderer_paint_display_id(QTestState *s, uint32_t x1,
                                       uint32_t y1, uint32_t x2, uint32_t y2,
