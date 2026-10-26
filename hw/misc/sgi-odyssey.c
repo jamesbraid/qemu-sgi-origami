@@ -3508,6 +3508,88 @@ static bool odyssey_pixel_allowed(SGIOdysseyState *s, int64_t x, int64_t y)
     return false;
 }
 
+/*
+ * The pixels of one row that odyssey_pixel_allowed() passes before its id
+ * test: the plane bound and the union of the kept clip rectangles, as
+ * ascending, disjoint, non-touching [start, end) runs. The 2D fills below
+ * walk these a row at a time instead of testing every rectangle at every
+ * pixel; they still apply the id test per pixel, in the same order.
+ */
+typedef struct OdysseyRowRuns {
+    unsigned n;
+    int64_t start[SGI_ODYSSEY_CLIP_RECTS];
+    int64_t end[SGI_ODYSSEY_CLIP_RECTS];
+} OdysseyRowRuns;
+
+static void odyssey_row_runs(SGIOdysseyState *s, int64_t y,
+                             OdysseyRowRuns *runs)
+{
+    unsigned n = 0, kept = 0;
+
+    runs->n = 0;
+    if (y < 0 || y >= SGI_ODYSSEY_HEIGHT) {
+        return;
+    }
+    for (unsigned i = 0; i < s->clip_kept; i++) {
+        const SGIClipRect *r = &s->clip_rect[i];
+        int64_t a = MAX((int64_t)r->x0, 0);
+        int64_t b = MIN((int64_t)r->x1 + 1, SGI_ODYSSEY_WIDTH);
+        unsigned j = n++;
+
+        if (y < r->y0 || y > r->y1 || a >= b) {
+            n--;
+            continue;
+        }
+        /* Insertion by start: there are at most four. */
+        while (j && runs->start[j - 1] > a) {
+            runs->start[j] = runs->start[j - 1];
+            runs->end[j] = runs->end[j - 1];
+            j--;
+        }
+        runs->start[j] = a;
+        runs->end[j] = b;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        if (kept && runs->start[i] <= runs->end[kept - 1]) {
+            runs->end[kept - 1] = MAX(runs->end[kept - 1], runs->end[i]);
+        } else {
+            runs->start[kept] = runs->start[i];
+            runs->end[kept] = runs->end[i];
+            kept++;
+        }
+    }
+    runs->n = kept;
+}
+
+/*
+ * Colour buffer b's bytes for the n pixels of row y from x, when all of them
+ * lie in its plane and its device-backed memory: the same bytes
+ * sgi_plane_store() and sgi_plane_load() reach one pixel at a time. NULL
+ * otherwise, and the caller goes a pixel at a time.
+ */
+static uint8_t *odyssey_buffer_row(SGIOdysseyState *s, unsigned b, int64_t x,
+                                   int64_t y, int64_t n,
+                                   const SGIPlane **plane, unsigned *bpp)
+{
+    SGIBoardMemory *m = odyssey_buffer_mem(s, b);
+    const SGIPlane *p = odyssey_buffer_plane(s, b);
+    unsigned size = sgi_plane_bytes_per_pixel(p->format);
+    uint64_t at, len;
+
+    if (!m->bytes || n <= 0 || x < 0 || y < 0 || x + n > p->width ||
+        y >= p->height) {
+        return NULL;
+    }
+    at = p->base + (uint64_t)y * p->stride + (uint64_t)x * size;
+    len = (uint64_t)n * size;
+    if (at > m->size || len > m->size - at) {
+        return NULL;
+    }
+    *plane = p;
+    *bpp = size;
+    return m->bytes + at;
+}
+
 /* A colour write, into each buffer the drawing mask selects. */
 static void odyssey_paint_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
                                 uint32_t pixel)
@@ -3565,16 +3647,12 @@ static void odyssey_aux_store(SGIOdysseyState *s, uint64_t at,
  * when the drawing mask selects buffer 1, else the id byte -- and stored
  * under the 0x1023 plane mask (odyssey_aux_store()).
  */
-static void odyssey_paint_aux(SGIOdysseyState *s, int64_t x, int64_t y,
-                              uint32_t index, uint8_t op)
+static void odyssey_paint_aux_at(SGIOdysseyState *s, uint64_t at,
+                                 uint32_t index, uint8_t op)
 {
-    uint64_t at = (uint64_t)y * SGI_ODYSSEY_WIDTH + x;
     unsigned buffers = odyssey_draw_buffers(s);
     uint8_t byte = index;
 
-    if (!odyssey_pixel_allowed(s, x, y)) {
-        return;
-    }
     if (op != SGI_LOGIC_COPY) {
         byte = sgi_logic_op(op, index,
                             buffers & (1u << ODSY_AUX_OVERLAY_BUFFER) ?
@@ -3582,6 +3660,15 @@ static void odyssey_paint_aux(SGIOdysseyState *s, int64_t x, int64_t y,
     }
     odyssey_aux_store(s, at, buffers, byte,
                       s->plane_write_mask >> ODSY_PLANE_MASK_SHIFT);
+}
+
+static void odyssey_paint_aux(SGIOdysseyState *s, int64_t x, int64_t y,
+                              uint32_t index, uint8_t op)
+{
+    if (odyssey_pixel_allowed(s, x, y)) {
+        odyssey_paint_aux_at(s, (uint64_t)y * SGI_ODYSSEY_WIDTH + x, index,
+                             op);
+    }
 }
 
 /*
@@ -3636,6 +3723,95 @@ static void odyssey_paint_integer(SGIOdysseyState *s, int64_t x, int64_t y,
 }
 
 /*
+ * odyssey_paint_integer() at each pixel of row y from x0 up to x1, given the
+ * row's runs (odyssey_row_runs()), a run of the buffer's bytes at a time.
+ * Each pixel is tested, combined and stored exactly as the per-pixel path
+ * does it. Pixels are independent -- a colour store touches only its own
+ * pixel in each buffer, and an id-plane store only its own id byte, which
+ * the id test reads first -- so going a buffer at a time rather than a pixel
+ * at a time stores the same bytes.
+ */
+static void odyssey_paint_integer_span(SGIOdysseyState *s,
+                                       const OdysseyRowRuns *runs, int64_t y,
+                                       int64_t x0, int64_t x1, bool is_index,
+                                       uint32_t value)
+{
+    uint32_t src = odyssey_fill_pixel(is_index, value);
+    uint32_t enable = is_index ? ODSY_MODE_INDEX_LOGIC_OP :
+                                 ODSY_MODE_COLOR_LOGIC_OP;
+    uint8_t op = s->gl_ctx.cur.logic_op_mode - SGI_GL_CLEAR;
+    bool logic = (s->pattern_mode & enable) && op != SGI_LOGIC_COPY;
+    bool id_test = odyssey_id_compare_active(s);
+    unsigned buffers = odyssey_draw_buffers(s);
+    bool aux = odyssey_dest_is_id_planes(s);
+
+    for (unsigned r = 0; r < runs->n; r++) {
+        int64_t a = MAX(x0, runs->start[r]);
+        int64_t e = MIN(x1, runs->end[r]);
+
+        if (a >= e) {
+            continue;
+        }
+        if (aux) {
+            for (int64_t x = a; x < e; x++) {
+                if (!id_test || odyssey_id_compare_passes(s, x, y)) {
+                    odyssey_paint_aux_at(s, (uint64_t)y * SGI_ODYSSEY_WIDTH +
+                                         x, src,
+                                         logic ? op : SGI_LOGIC_COPY);
+                }
+            }
+            continue;
+        }
+        for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
+            const SGIPlane *plane;
+            uint8_t word[4];
+            unsigned bpp;
+            uint8_t *row;
+
+            if (!(buffers & (1u << b))) {
+                continue;
+            }
+            row = odyssey_buffer_row(s, b, a, y, e - a, &plane, &bpp);
+            if (!row) {
+                for (int64_t x = a; x < e; x++) {
+                    uint32_t out = src;
+
+                    if (id_test && !odyssey_id_compare_passes(s, x, y)) {
+                        continue;
+                    }
+                    if (logic) {
+                        out = sgi_logic_op(op, src,
+                                           odyssey_buffer_load(s, b, x, y));
+                        out = is_index ? out & ODSY_INDEX_MASK : out | 0xff;
+                    }
+                    odyssey_buffer_store(s, b, x, y, out);
+                }
+                continue;
+            }
+            sgi_plane_encode(plane, src, word);
+            for (int64_t x = a; x < e; x++, row += bpp) {
+                uint32_t out;
+
+                if (id_test && !odyssey_id_compare_passes(s, x, y)) {
+                    continue;
+                }
+                if (!logic) {
+                    if (bpp == 4) {
+                        memcpy(row, word, 4);
+                    } else {
+                        memcpy(row, word, bpp);
+                    }
+                    continue;
+                }
+                out = sgi_logic_op(op, src, sgi_plane_decode(plane, row));
+                sgi_plane_encode(plane, is_index ? out & ODSY_INDEX_MASK :
+                                                   out | 0xff, row);
+            }
+        }
+    }
+}
+
+/*
  * odyssey_fillrect(): BEGIN(QUADS)/COLOR_3UB or COLOR_INDEX/four VERTEX_2I
  * corners/END drives the solid rectangle fill. odyssey_gl_end() routes a
  * QUADS fill here when pattern mode is off, and to odyssey_pattern_fill()
@@ -3646,12 +3822,13 @@ static void odyssey_fill_rect(SGIOdysseyState *s, uint32_t x, uint32_t y,
                               uint32_t w, uint32_t h, bool is_index,
                               uint32_t value)
 {
-    uint32_t row, col;
+    OdysseyRowRuns runs;
+    uint32_t row;
 
     for (row = 0; row < h; row++) {
-        for (col = 0; col < w; col++) {
-            odyssey_paint_integer(s, x + col, y + row, is_index, value);
-        }
+        odyssey_row_runs(s, (int64_t)y + row, &runs);
+        odyssey_paint_integer_span(s, &runs, (int64_t)y + row, x,
+                                   (int64_t)x + w, is_index, value);
     }
     sgi_scanout_invalidate_all(&s->scanout);
 }
@@ -3668,18 +3845,26 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
                                  uint32_t w, uint32_t h, uint8_t value,
                                  uint8_t mask)
 {
-    uint32_t row, col;
+    unsigned buffers = odyssey_draw_buffers(s);
+    bool id_test = odyssey_id_compare_active(s);
+    OdysseyRowRuns runs;
+    uint32_t row;
 
+    /* A row's runs a pixel at a time, as odyssey_paint_integer_span(). */
     for (row = 0; row < h; row++) {
-        for (col = 0; col < w; col++) {
-            uint32_t px = x + col, py = y + row;
-            uint64_t at = (uint64_t)py * SGI_ODYSSEY_WIDTH + px;
-            unsigned buffers = odyssey_draw_buffers(s);
+        int64_t py = (int64_t)y + row;
 
-            if (!odyssey_pixel_allowed(s, px, py)) {
-                continue;
+        odyssey_row_runs(s, py, &runs);
+        for (unsigned r = 0; r < runs.n; r++) {
+            int64_t a = MAX((int64_t)x, runs.start[r]);
+            int64_t e = MIN((int64_t)x + w, runs.end[r]);
+
+            for (int64_t px = a; px < e; px++) {
+                if (!id_test || odyssey_id_compare_passes(s, px, py)) {
+                    odyssey_aux_store(s, (uint64_t)py * SGI_ODYSSEY_WIDTH + px,
+                                      buffers, value, mask);
+                }
             }
-            odyssey_aux_store(s, at, buffers, value, mask);
         }
     }
     /* A pixel's drawable picks its colour at scanout. */
@@ -3722,7 +3907,27 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned source,
 
     for (row = 0; row < h_clip; row++) {
         uint32_t sr = reverse_rows ? h_clip - 1 - row : row;
+        const SGIPlane *src_plane, *dst_plane;
+        unsigned src_bpp, dst_bpp;
+        uint8_t *src_row = w_clip ?
+            odyssey_buffer_row(s, source, sx, (int64_t)sy + sr, w_clip,
+                               &src_plane, &src_bpp) : NULL;
+        uint8_t *dst_row = src_row ?
+            odyssey_buffer_row(s, dest, dx, (int64_t)dy + sr, w_clip,
+                               &dst_plane, &dst_bpp) : NULL;
 
+        /*
+         * A row wholly inside both planes, in the same encoding, is the
+         * byte copy the pixel loop below makes. The loop runs its columns
+         * so that a read stays ahead of the write it could meet, which is
+         * what memmove() does for the one overlapping case, a row copied
+         * along itself.
+         */
+        if (dst_row && src_plane->format == dst_plane->format &&
+            src_plane->packing == dst_plane->packing) {
+            memmove(dst_row, src_row, (size_t)w_clip * dst_bpp);
+            continue;
+        }
         for (col = 0; col < w_clip; col++) {
             uint32_t sc = reverse_cols ? w_clip - 1 - col : col;
             /* An out-of-plane source reads zero, as the guarded read did. */
@@ -3872,14 +4077,29 @@ static void odyssey_pattern_fill(SGIOdysseyState *s, uint32_t x, uint32_t y,
 {
     bool opaque = s->pattern_shape & ODSY_PATTERN_SHAPE_OPAQUE;
     uint32_t background = odyssey_pattern_background(s, is_index);
+    OdysseyRowRuns runs;
     uint32_t u, v;
 
+    /* Each row as spans of equal pattern bits, painted a span at a time. */
     for (v = 0; v < h; v++) {
-        for (u = 0; u < w; u++) {
-            if (odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v)) {
-                odyssey_paint_integer(s, x + u, y + v, is_index, value);
-            } else if (opaque) {
-                odyssey_paint_integer(s, x + u, y + v, is_index, background);
+        int64_t py = (int64_t)y + v;
+
+        odyssey_row_runs(s, py, &runs);
+        if (!runs.n) {
+            continue;
+        }
+        for (u = 0; u < w;) {
+            bool bit = odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v);
+            uint32_t first = u;
+
+            do {
+                u++;
+            } while (u < w &&
+                     odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v) == bit);
+            if (bit || opaque) {
+                odyssey_paint_integer_span(s, &runs, py, (int64_t)x + first,
+                                           (int64_t)x + u, is_index,
+                                           bit ? value : background);
             }
         }
     }
