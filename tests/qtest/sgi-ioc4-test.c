@@ -1340,6 +1340,26 @@ static void test_dma_engine_indices_take_writes(void)
     qtest_quit(qts);
 }
 
+/*
+ * A host-owned index written with bits outside its pointer field keeps the
+ * pointer field and logs the rest; the port does not stop.
+ */
+static void test_dma_host_index_masks_its_pointer(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+    g_autofree char *contents = NULL;
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 0x10014);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0x10);
+    reg_write(qts, SDMA_RX_CONSUME(0), 0x2c);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)) & 0xff8, ==, 0x28);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(strstr(contents, "outside the pointer field"));
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -1552,7 +1572,7 @@ static void test_dma_rejects_bad_base_and_pointer(void)
     contents = ioc4_log_file_take(log);
     g_assert_nonnull(strstr(contents, "misaligned DMA pair base"));
     g_assert_nonnull(strstr(contents, "DMA base change rejected"));
-    g_assert_nonnull(strstr(contents, "invalid TX producer"));
+    g_assert_nonnull(strstr(contents, "outside the pointer field"));
 }
 
 static void test_dma_full_reset_clears_shadow(void)
@@ -2879,6 +2899,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-host-index-masks-its-pointer",
+                   test_dma_host_index_masks_its_pointer);
     qtest_add_func("/sgi-ioc4/dma-engine-indices-take-writes",
                    test_dma_engine_indices_take_writes);
     qtest_add_func("/sgi-ioc4/dma-control-stores-its-bits",
