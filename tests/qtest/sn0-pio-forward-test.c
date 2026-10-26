@@ -127,11 +127,14 @@ static void test_bridge_follows_a_moved_bar(void)
 
 /*
  * Slice 0 stores the word in its mailbox, once, at the address in its
- * mailbox, then clears the count.
+ * mailbox, then clears the count. Both slices start this image at reset,
+ * so slice 1 parks: two processors serving the one mailbox could each
+ * make the store, and one that read a request before the test re-aimed
+ * the window could make it after.
  */
 static void build_store_server(SN0Image *p)
 {
-    unsigned int at, loop;
+    unsigned int at, loop, slice1;
 
     at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
     sn0_patch_branch(p, at, ENTRY);
@@ -143,6 +146,8 @@ static void build_store_server(SN0Image *p)
     p->pos = ENTRY;
     sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_T2);
+    slice1 = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
     sn0_emit_li(p, SN0_R_S0, SN0_KSEG1(MAILBOX));
 
     loop = p->pos;
@@ -155,6 +160,9 @@ static void build_store_server(SN0Image *p)
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_ZERO, 0);      /* done */
     at = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
     sn0_patch_branch(p, at, loop);
+
+    sn0_patch_branch(p, slice1, p->pos);
+    sn0_emit_park(p);
 }
 
 /* Slice 0 stores @word at processor address @addr. */
