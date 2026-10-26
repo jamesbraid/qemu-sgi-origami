@@ -1260,11 +1260,17 @@ struct SGIKonaState {
      * charged a credit for whose words a command-port framer still holds:
      * their credits go back with the packet's last word (see
      * sgi_kona_pi_credits()). pi_unlinked_logged is host-only: a board
-     * with no link has logged that it returns nothing.
+     * with no link has logged that it returns nothing. pi_class is the
+     * credit interface of pi_class_node, the node the last credit went
+     * back to, looked up again only when that node changes: an interface
+     * lookup searches the class's interfaces, and credits go back on most
+     * stores.
      */
     Object *pi;
     uint32_t pi_held;
     bool pi_unlinked_logged;
+    Object *pi_class_node;
+    struct SGIPIGfxClass *pi_class;
     /*
      * Packets the command ports have framed, counted so a store can tell
      * whether one ended while it was taken. Compared only within one
