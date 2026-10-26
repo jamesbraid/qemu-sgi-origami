@@ -788,6 +788,42 @@ uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
  * buffer under the stencil write mask, the colour buffers under the colour
  * or index mask, and the accumulation buffer is not modelled.
  */
+bool sgi_gl_clear_area(const SGIGLContext *c, SGIRasterOp *op)
+{
+    const SGIGLDrawable *d = &c->cur.drawable;
+
+    if (!d->bound || !d->clip.n) {
+        return false;
+    }
+    op->clip = d->clip;
+    op->x0 = d->clip.r[0].x0;
+    op->y0 = d->clip.r[0].y0;
+    op->x1 = d->clip.r[0].x1;
+    op->y1 = d->clip.r[0].y1;
+    for (uint32_t i = 1; i < MIN(d->clip.n, SGI_CLIP_MAX); i++) {
+        op->x0 = MIN(op->x0, d->clip.r[i].x0);
+        op->y0 = MIN(op->y0, d->clip.r[i].y0);
+        op->x1 = MAX(op->x1, d->clip.r[i].x1);
+        op->y1 = MAX(op->y1, d->clip.r[i].y1);
+    }
+    if (c->cur.scissor_test) {
+        int64_t sx = (int64_t)d->origin[0] + c->cur.scissor[0];
+        int64_t sy = (int64_t)d->origin[1] + c->cur.scissor[1];
+        int64_t x0 = MAX(op->x0, sx), y0 = MAX(op->y0, sy);
+        int64_t x1 = MIN(op->x1, sx + c->cur.scissor[2] - 1);
+        int64_t y1 = MIN(op->y1, sy + c->cur.scissor[3] - 1);
+
+        if (x0 > x1 || y0 > y1) {
+            return false;
+        }
+        op->x0 = x0;
+        op->y0 = y0;
+        op->x1 = x1;
+        op->y1 = y1;
+    }
+    return true;
+}
+
 static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                          uint32_t mask)
 {
@@ -807,35 +843,9 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
                       "dropped\n");
         return;
     }
-    if (!d->clip.n) {
-        /* A window others wholly cover: nothing to clear. */
+    /* A window others wholly cover, or a scissor off it: nothing. */
+    if (!sgi_gl_clear_area(c, &op)) {
         return;
-    }
-    op.clip = d->clip;
-    op.x0 = d->clip.r[0].x0;
-    op.y0 = d->clip.r[0].y0;
-    op.x1 = d->clip.r[0].x1;
-    op.y1 = d->clip.r[0].y1;
-    for (uint32_t i = 1; i < MIN(d->clip.n, SGI_CLIP_MAX); i++) {
-        op.x0 = MIN(op.x0, d->clip.r[i].x0);
-        op.y0 = MIN(op.y0, d->clip.r[i].y0);
-        op.x1 = MAX(op.x1, d->clip.r[i].x1);
-        op.y1 = MAX(op.y1, d->clip.r[i].y1);
-    }
-    if (c->cur.scissor_test) {
-        int64_t sx = (int64_t)d->origin[0] + c->cur.scissor[0];
-        int64_t sy = (int64_t)d->origin[1] + c->cur.scissor[1];
-        int64_t x0 = MAX(op.x0, sx), y0 = MAX(op.y0, sy);
-        int64_t x1 = MIN(op.x1, sx + c->cur.scissor[2] - 1);
-        int64_t y1 = MIN(op.y1, sy + c->cur.scissor[3] - 1);
-
-        if (x0 > x1 || y0 > y1) {
-            return;
-        }
-        op.x0 = x0;
-        op.y0 = y0;
-        op.x1 = x1;
-        op.y1 = y1;
     }
     if (mask & SGI_GL_COLOR_BUFFER_BIT) {
         op.clear_buffers |= SGI_GL_COLOR_BUFFER_BIT;
