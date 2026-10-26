@@ -14,6 +14,7 @@
 # reads, pixel drawing and copies, colour index, and the rest of the GL
 # state.
 
+draw /mips64/sn0/origin2000/kona-3d/accumulation
 draw /mips64/sn0/origin2000/kona-3d/bitmap-dma
 draw /mips64/sn0/origin2000/kona-3d/colour-matrix
 draw /mips64/sn0/origin2000/kona-3d/copy-pixels

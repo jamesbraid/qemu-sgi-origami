@@ -273,6 +273,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_CLEAR_COLOR, 4 },
     { SGI_KONA_CMD_GL_CLEAR, 1 },
     { SGI_KONA_CMD_GL_CLEAR_ACCUM, 4 },
+    { SGI_KONA_CMD_GL_ACCUM, 2 },           /* the operation, one float */
     { SGI_KONA_CMD_GL_CLEAR_INDEX, 1 },
     { SGI_KONA_CMD_GL_CLEAR_STENCIL, 1 },
     { SGI_KONA_CMD_GL_CLEAR_DEPTH, 2 },     /* one double */
@@ -375,6 +376,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_SPRITE_MODE, 2 },
     { SGI_KONA_CMD_GL_SPRITE_VECTOR, 4 },
     { SGI_KONA_CMD_GL_SAMPLE_MASK, 2 },
+    { SGI_KONA_CMD_GL_SAMPLE_PATTERN, 1 },
     /* Lighting. */
     { SGI_KONA_CMD_GL_LIGHTF, 6 },
     { SGI_KONA_CMD_GL_LIGHTI, 6 },

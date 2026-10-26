@@ -1904,10 +1904,11 @@ static void assert_source_refused(QTestState *s)
 static void test_read_visual_records(void)
 {
     static const uint32_t config[10] = { 0, 12 };
+    /* One auxiliary buffer, as the Medium tables offer, reads back. */
     static const uint32_t invalid[][2] = {
         { 0, 0x100 }, { 1, 0 }, { 1, 7 }, { 1, 16 }, { 2, 8 },
         { 3, 2 }, { 4, 1 }, { 5, 1 }, { 6, 33 }, { 7, 1 },
-        { 8, 16 }, { 9, 1 },
+        { 8, 16 }, { 9, 2 },
     };
     uint32_t record[10];
 
@@ -3489,8 +3490,13 @@ static void test_stencil_masks_and_colour_targets(void)
 
 static void test_stencil_incomplete_or_invalid_visual_refused(void)
 {
+    /*
+     * One auxiliary buffer and a 25-bit accumulation buffer are visuals
+     * the Medium tables offer; two auxiliary buffers and a one-bit
+     * accumulation buffer are none.
+     */
     static const struct { unsigned field; uint32_t value; } bad[] = {
-        { 7, 4 }, { 4, 1 }, { 9, 1 }, { 1, 7 }, { 6, 33 },
+        { 7, 4 }, { 4, 1 }, { 9, 2 }, { 1, 7 }, { 6, 33 },
         { 0, 0x100 }, { 2, 8 }, { 3, 2 }, { 5, 1 }, { 8, 1 },
     };
 
@@ -3805,9 +3811,9 @@ static void test_stencil_accumulation_clear_diagnostic(void)
     assert_stencil_value(s, 91);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "glClear of buffers 0x200; only colour"));
-    g_assert_nonnull(strstr(found, "glClear of buffers 0x4700; only colour"));
-    g_assert_cmpuint(count_occurrences(found, "glClear of buffers"), ==, 2);
+    /* The visual has no accumulation buffer: its clear does nothing. */
+    g_assert_cmpuint(count_occurrences(found, "glClear of buffers"), ==, 0);
+    g_assert_null(strstr(found, "accumulation operation"));
     g_assert_false(log_shows_misframing(found));
 }
 
@@ -17434,6 +17440,194 @@ static void test_texture_native_1d(gconstpointer opaque)
     qtest_quit(from);
 }
 
+/*
+ * The accumulation buffer, glAccum (0xc5 op value) and glClearAccum (0x1b
+ * r g b a) on a single-buffered RGB visual with a 25-bit accumulation
+ * buffer and four samples, as the Medium visual tables offer: OpenGL's
+ * arithmetic, the colour written back at eight bits a channel.
+ */
+static void accum_setup(QTestState *s)
+{
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 1, (uint32_t[]){ 0, 8, 0, 0, 0, 4, 0, 0, 25, 0 }, 10);
+}
+
+static void accum_colour(QTestState *s, float r, float g, float b)
+{
+    kona_command_f(s, 0x1d, (float[]){ r, g, b, 1 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+}
+
+static void accum(QTestState *s, uint32_t op, float value)
+{
+    kona_command(s, 0xc5, (uint32_t[]){ op, fbits(value) }, 2);
+}
+
+static void test_accum_arithmetic(void)
+{
+    gl_reset();
+    accum_setup(qts);
+    kona_command_f(qts, 0x1b, (float[]){ 0.25, 0.5, 0, 0 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    accum_colour(qts, 1, 0, 0);
+    accum(qts, 0x100, 0.5);                     /* GL_ACCUM */
+    accum_colour(qts, 0, 1, 0);
+    accum(qts, 0x100, 0.5);
+    accum(qts, 0x104, 0.1);                     /* GL_ADD */
+    accum_colour(qts, 0, 0, 0);
+    accum(qts, 0x102, 1.0);                     /* GL_RETURN */
+    /* 0.85, 1.1 clamped to 1, 0.1 */
+    assert_stencil_colour(qts, 0xd9ff1a);
+    assert_read_colour(qts, 0xd9ff1a);
+    accum(qts, 0x101, 1.0);                     /* GL_LOAD */
+    accum(qts, 0x103, 0.5);                     /* GL_MULT */
+    accum(qts, 0x102, 1.0);
+    assert_stencil_colour(qts, 0x6d800d);
+    /* RETURN scales: 2 x (0.427, 0.5, 0.051) */
+    accum(qts, 0x102, 2.0);
+    assert_stencil_colour(qts, 0xd9ff1a);
+    assert_native_error(qts, 0);
+}
+
+/* GL_ACCUM_CLEAR_VALUE comes back as glClearAccum sent it. */
+static void test_accum_clear_value(void)
+{
+    gl_reset();
+    accum_setup(qts);
+    kona_command_f(qts, 0x1b, (float[]){ -0.5, 0.25, 1, 0.75 }, 4);
+    kona_command(qts, 0x4c, (uint32_t[]){ 0xb80 }, 1);
+    assert_reply_posted(qts);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, fbits(-0.5));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, fbits(0.25));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16), ==, fbits(1));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 20), ==, fbits(0.75));
+}
+
+/* RETURN keeps channels the colour mask closes; the scissor bounds all. */
+static void test_accum_mask_and_scissor(void)
+{
+    gl_reset();
+    accum_setup(qts);
+    kona_command_f(qts, 0x1b, (float[]){ 1, 1, 1, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    accum_colour(qts, 0, 0, 1);
+    kona_command(qts, 0x21, (uint32_t[]){ 1, 0, 1, 1 }, 4);
+    accum(qts, 0x102, 1.0);
+    assert_stencil_colour(qts, 0xff00ff);
+    kona_command(qts, 0x21, (uint32_t[]){ 1, 1, 1, 1 }, 4);
+    /* A scissor box off the probe's centre: nothing there changes. */
+    kona_command(qts, 0xc, (uint32_t[]){ 0, 0, 2, 2 }, 4);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xc11 }, 1);
+    accum(qts, 0x101, 0.0);
+    kona_command(qts, 0x25, (uint32_t[]){ 0xc11 }, 1);
+    accum(qts, 0x102, 1.0);
+    assert_stencil_colour(qts, 0xffffff);
+}
+
+/*
+ * A visual with no accumulation buffer: a clear of it does nothing, and an
+ * operation sets GL_INVALID_OPERATION and leaves the colour alone. An
+ * operation that is none of the five sets GL_INVALID_ENUM.
+ */
+static void test_accum_absent(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    assert_native_error(qts, 0);
+    accum(qts, 0x102, 1.0);
+    assert_native_error(qts, 0x502);
+    assert_stencil_colour(qts, 0x0000ff);
+    accum_setup(qts);
+    accum(qts, 0x105, 1.0);
+    assert_native_error(qts, 0x500);
+}
+
+/* The buffer and the clear value survive migration. */
+static void test_accum_migration(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-accum-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(dest_args);
+    accum_setup(from);
+    kona_command_f(from, 0x1b, (float[]){ 0, 0.5, 0, 0 }, 4);
+    kona_command(from, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    accum_colour(from, 1, 0, 0);
+    accum(from, 0x100, 0.25);
+    sgi_migrate_stopped(from, uri);
+    accum_colour(to, 0, 0, 0);
+    accum(to, 0x102, 2.0);
+    assert_stencil_colour(to, 0x80ff00);
+    kona_command(to, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    accum(to, 0x102, 1.0);
+    assert_stencil_colour(to, 0x008000);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+/*
+ * The Medium tables' visuals with samples, accumulation and an auxiliary
+ * buffer read back like any RGB one: 10-bit components, 8 samples, a
+ * 16-bit depth buffer, accumulation and one auxiliary buffer.
+ */
+static void test_accum_medium_visual_reads(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 1, (uint32_t[]){ 0, 10, 0, 0, 0, 8, 16, 0, 25, 1 }, 10);
+    accum_colour(qts, 0, 1, 0);
+    assert_read_colour(qts, 0x00ff00);
+}
+
+/*
+ * SGIS_multisample's state, kept for the client's queries: the enables
+ * start with only GL_MULTISAMPLE_SGIS on, glSampleMaskSGIS's value and
+ * invert flag and glSamplePatternSGIS's pattern come back as sent, and a
+ * pattern that is not one sets GL_INVALID_ENUM.
+ */
+static uint32_t multisample_get(QTestState *s, uint32_t name)
+{
+    kona_command(s, 0x4c, (uint32_t[]){ name }, 1);
+    assert_reply_posted(s);
+    return guest_word(s, RETURN_PAGE + 8);
+}
+
+static void test_multisample_state(void)
+{
+    gl_reset();
+    accum_setup(qts);
+    g_assert_cmphex(multisample_get(qts, 0x809d), ==, 1);
+    g_assert_cmphex(multisample_get(qts, 0x80a0), ==, 0);
+    g_assert_cmphex(multisample_get(qts, 0x80aa), ==, fbits(1));
+    g_assert_cmphex(multisample_get(qts, 0x80ac), ==, 0x80a1);
+    kona_command(qts, 0x25, (uint32_t[]){ 0x809d }, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0x809e }, 1);
+    kona_command(qts, 0x118, (uint32_t[]){ fbits(0.5), 1 }, 2);
+    kona_command(qts, 0x117, (uint32_t[]){ 0x80a4 }, 1);
+    g_assert_cmphex(multisample_get(qts, 0x809d), ==, 0);
+    g_assert_cmphex(multisample_get(qts, 0x809e), ==, 1);
+    g_assert_cmphex(multisample_get(qts, 0x80aa), ==, fbits(0.5));
+    g_assert_cmphex(multisample_get(qts, 0x80ab), ==, 1);
+    g_assert_cmphex(multisample_get(qts, 0x80ac), ==, 0x80a4);
+    kona_command(qts, 0x117, (uint32_t[]){ 0x80a7 }, 1);
+    assert_native_error(qts, 0x500);
+    g_assert_cmphex(multisample_get(qts, 0x80ac), ==, 0x80a4);
+    /* Drawing stays single-sampled whatever the state says. */
+    accum_colour(qts, 1, 0, 0);
+    assert_stencil_colour(qts, 0xff0000);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 14, 1, 0 };
@@ -18015,6 +18209,20 @@ int main(int argc, char **argv)
     add_case("sn0/origin2000/kona-3d/stencil/completion/"
              "accumulation-clear-diagnostic",
              test_stencil_accumulation_clear_diagnostic);
+    add_case("sn0/origin2000/kona-3d/accumulation/arithmetic",
+             test_accum_arithmetic);
+    add_case("sn0/origin2000/kona-3d/accumulation/clear-value",
+             test_accum_clear_value);
+    add_case("sn0/origin2000/kona-3d/accumulation/mask-and-scissor",
+             test_accum_mask_and_scissor);
+    add_case("sn0/origin2000/kona-3d/accumulation/absent",
+             test_accum_absent);
+    add_case("sn0/origin2000/kona-3d/accumulation/migration",
+             test_accum_migration);
+    add_case("sn0/origin2000/kona-3d/accumulation/medium-visual-reads",
+             test_accum_medium_visual_reads);
+    add_case("sn0/origin2000/kona-3d/accumulation/multisample-state",
+             test_multisample_state);
     add_case("sn0/origin2000/kona-3d/stencil/completion/"
              "invalid-state-enumerants",
              test_stencil_invalid_state_enumerants);
