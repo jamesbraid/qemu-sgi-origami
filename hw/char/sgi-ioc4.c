@@ -92,6 +92,7 @@ struct SGIIOC4Port {
     uint32_t rx_produce;
     uint32_t rx_consume;
     uint32_t rx_timer_reload;
+    uint16_t rx_idle_count;
     uint32_t shadow;
     uint8_t rx_data[4];
     uint8_t rx_status[4];
@@ -343,6 +344,8 @@ static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value,
     p->rx_count++;
     if (p->timer_armed && !p->rx_remaining_ns &&
         (p->rx_timer_reload & 0xfff)) {
+        /* Once it runs, the count a reload write loaded is spent. */
+        p->rx_idle_count = 0;
         p->rx_remaining_ns = (int64_t)(p->rx_timer_reload & 0xfff) * 62500;
         if (p->rx_remaining_ns) {
             p->rx_timer_running = true;
@@ -626,6 +629,7 @@ static void ioc4_port_reset(SGIIOC4Port *p)
     p->tx_produce = p->tx_consume = 0;
     p->rx_produce = p->rx_consume = 0;
     p->rx_timer_reload = 0;
+    p->rx_idle_count = 0;
     p->shadow &= ~IOC4_DMA_SHADOW_OUTPUTS;
     memset(p->rx_data, 0, sizeof(p->rx_data));
     memset(p->rx_status, 0, sizeof(p->rx_status));
@@ -739,6 +743,26 @@ static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
     ioc4_update_rx_threshold(p);
 }
 
+/*
+ * The receive timer's live count, in 16 kHz ticks: what is left while it
+ * runs or a pause holds it, otherwise what a reload write last loaded.
+ */
+static uint32_t ioc4_rx_timer_count(SGIIOC4Port *p)
+{
+    int64_t left;
+
+    if (!p->rx_timer_running) {
+        return p->rx_idle_count;
+    }
+    if (timer_pending(p->rx_timer)) {
+        left = timer_expire_time_ns(p->rx_timer) -
+               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    } else {
+        left = p->rx_remaining_ns;
+    }
+    return MIN(MAX(left, 0) / 62500, 0xfff);
+}
+
 static uint64_t ioc4_dma_register_read(SGIIOC4State *s, hwaddr addr)
 {
     unsigned n;
@@ -770,7 +794,8 @@ static uint64_t ioc4_dma_register_read(SGIIOC4State *s, hwaddr addr)
     case 2: return s->dma[n].tx_consume;
     case 3: return s->dma[n].rx_produce;
     case 4: return s->dma[n].rx_consume;
-    case 5: return s->dma[n].rx_timer_reload & 0xfff;
+    case 5: return (s->dma[n].rx_timer_reload & 0xfff) |
+                   ioc4_rx_timer_count(&s->dma[n]) << 16;
     case 6: return s->dma[n].shadow;
     default: return UINT64_MAX;
     }
@@ -883,6 +908,8 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
                           value & ~0xfff, n);
         }
         p->rx_timer_reload = value & 0xfff;
+        /* The write loads the count as well; a running timer keeps its own. */
+        p->rx_idle_count = value & 0xfff;
         break;
     case 6:
         if (value & ~IOC4_DMA_SHADOW_OUTPUTS) {
@@ -1206,6 +1233,7 @@ static const VMStateDescription vmstate_ioc4_port = {
         VMSTATE_UINT32(rx_produce, SGIIOC4Port),
         VMSTATE_UINT32(rx_consume, SGIIOC4Port),
         VMSTATE_UINT32(rx_timer_reload, SGIIOC4Port),
+        VMSTATE_UINT16(rx_idle_count, SGIIOC4Port),
         VMSTATE_UINT32(shadow, SGIIOC4Port),
         VMSTATE_UINT8_ARRAY(rx_data, SGIIOC4Port, 4),
         VMSTATE_UINT8_ARRAY(rx_status, SGIIOC4Port, 4),

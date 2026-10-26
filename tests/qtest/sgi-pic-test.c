@@ -2273,8 +2273,13 @@ static void pic_bedrock_ioc4_set_dma_base(QTestState *qts)
 
 static void pic_ioc4_check_register_endianness(QTestState *qts)
 {
+    /*
+     * A reload write also loads the idle count, which reads back in bits
+     * 16-27, so the whole word tells a byte-swapped access apart.
+     */
     pic_ioc4_write_reg(qts, IOC4_DMA_RX_TIMER, 0x3a5);
-    g_assert_cmphex(pic_ioc4_read_reg(qts, IOC4_DMA_RX_TIMER), ==, 0x3a5);
+    g_assert_cmphex(pic_ioc4_read_reg(qts, IOC4_DMA_RX_TIMER), ==,
+                    0x03a503a5);
     pic_ioc4_write_reg(qts, IOC4_DMA_RX_TIMER, 0);
 }
 
