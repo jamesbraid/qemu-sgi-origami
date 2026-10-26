@@ -51,6 +51,7 @@
 #define STS_BB          0x01    /* set while the bus is free */
 
 #define MSC_ADDRESS     0x08
+#define UST_PORT_ADDRESS 0x20
 #define NVRAM_FIRST     0x50
 #define NVRAM_BYTES     2048
 #define NVRAM_IDENTITY_PAGE 0x700
@@ -481,6 +482,45 @@ static void nvram_write_block(QTestState *qts, unsigned node, uint16_t offset,
         if (i == count) {
             return;
         }
+    }
+    g_assert_not_reached();
+}
+
+/*
+ * The UST control port is one byte with no subaddress: a read returns it and
+ * a write replaces it, the access pattern the stock PROM uses.
+ */
+static uint8_t ust_port_read(QTestState *qts, unsigned node)
+{
+    unsigned attempt;
+
+    for (attempt = 0; attempt < 8; attempt++) {
+        uint8_t value;
+
+        if (!start_transfer(qts, node, UST_PORT_ADDRESS, true)) {
+            stop_transfer(qts, node);
+            continue;
+        }
+        discard_byte(qts, node);
+        value = take_byte(qts, node, true);
+        stop_transfer(qts, node);
+        return value;
+    }
+    g_assert_not_reached();
+}
+
+static void ust_port_write(QTestState *qts, unsigned node, uint8_t value)
+{
+    unsigned attempt;
+
+    for (attempt = 0; attempt < 8; attempt++) {
+        if (!start_transfer(qts, node, UST_PORT_ADDRESS, false) ||
+            !send_byte(qts, node, value)) {
+            stop_transfer(qts, node);
+            continue;
+        }
+        stop_transfer(qts, node);
+        return;
     }
     g_assert_not_reached();
 }
@@ -1070,6 +1110,24 @@ static void test_nvram_is_shared(void)
         g_assert_cmphex(nvram_read(qts, ADAPTER_COUNT - 1, offsets[i]), ==,
                         value);
     }
+    qtest_quit(qts);
+}
+
+/*
+ * The module's UST control sits on the management bus (Origin2000 and Onyx2
+ * Diagnostic Roadmap, 108-0164-002, Figure B-1). The stock PROM reads and
+ * rewrites its byte at I2C address 0x20 when it finds exactly two Hubs and
+ * no Router, and reports an unanswered address as a boot error. Every node
+ * reaches the one port, starting from the expander's power-on all-ones.
+ */
+static void test_ust_control_port(void)
+{
+    QTestState *qts = start_module();
+
+    g_assert_cmphex(ust_port_read(qts, 1), ==, 0xff);
+    ust_port_write(qts, 1, 0x3f);
+    g_assert_cmphex(ust_port_read(qts, 1), ==, 0x3f);
+    g_assert_cmphex(ust_port_read(qts, 0), ==, 0x3f);
     qtest_quit(qts);
 }
 
@@ -2421,6 +2479,8 @@ int main(int argc, char **argv)
                    test_stop_withdraws_a_released_start);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
+    qtest_add_func("/sn0/o2000-module-management/ust-control-port",
+                   test_ust_control_port);
     qtest_add_func("/sn0/o2000-module-management/new-nvram-store",
                    test_new_store_contents);
     qtest_add_func("/sn0/o2000-module-management/nvram-twelve-byte-write",

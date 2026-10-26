@@ -177,6 +177,25 @@ Module management bus
        controller.
      - see :ref:`sgi-elsc-nvram`
      - Ratings and sources are on the controller page.
+   * - The module's UST control sits on the same bus.
+     - established
+     - 108-0164-002 Figure B-1, printed page B-1 (PDF 55), which groups it
+       with voltage-margin control and the NVRAM.
+   * - The UST control answers at I2C address ``0x20`` as a one-byte port:
+       a single-byte read returns it and a single-byte write replaces it,
+       with no subaddress.
+     - inferred
+     - The stock 6.156 PROM reads and rewrites that byte, changing bits
+       7:6, when it finds two Hubs and no Router, and reports an unanswered
+       address as a boot error. A published two-node Onyx2 deskside console
+       running the same PROM shows no such error.
+   * - The model fits a PCF8574 expander there, with no output wired: a read
+       returns the last byte written, all ones from power-on.
+     - approximation
+     - The access pattern and address are the PCF8574's, but no public
+       source names the part, what drives its pins, or its power-on value.
+       A board photograph, schematic or a read of the byte on a running
+       deskside would settle it.
 
 .. _sgi-origin2000-module-number:
 

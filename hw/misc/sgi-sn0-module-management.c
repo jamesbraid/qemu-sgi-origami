@@ -11,6 +11,7 @@
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/gpio/pcf8574.h"
 #include "hw/i2c/pcf8584.h"
 #include "hw/i2c/i2c-wire.h"
 #include "hw/misc/sgi-sn0-module-management.h"
@@ -842,6 +843,30 @@ static bool mgmt_create_nvram(SN0ModuleManagementState *s, Error **errp)
     return i2c_slave_realize_and_unref(nvram, s->bus, errp);
 }
 
+/*
+ * The module's UST control shares the management bus with the controller and
+ * its NVRAM (108-0164-002, Figure B-1). The stock PROM reads one byte from
+ * I2C address 0x20 and writes it back with bits 7:6 changed, with no
+ * subaddress, on a module it finds with two Hubs and no Router; an
+ * unanswered address is a boot error, and a real two-node deskside running
+ * the same PROM reports none. No public source identifies the part. A
+ * one-byte port at 0x20 with that access pattern is the PCF8574 expander's,
+ * so that part stands in for it: an approximation, with no output line
+ * wired, so a read returns the last byte written, and all ones from
+ * power-on. The subtype only joins it to the shared wire, which selects
+ * nothing that has not opted in.
+ */
+#define TYPE_SGI_SN0_UST_CONTROL "sgi-sn0-ust-control"
+
+static bool mgmt_create_ust_control(SN0ModuleManagementState *s, Error **errp)
+{
+    I2CSlave *port = i2c_slave_new(TYPE_SGI_SN0_UST_CONTROL,
+                                   SGI_O2000_UST_CONTROL_ADDR);
+
+    object_property_add_child(OBJECT(s), "ust-control", OBJECT(port));
+    return i2c_slave_realize_and_unref(port, s->bus, errp);
+}
+
 static void mgmt_realize(DeviceState *dev, Error **errp)
 {
     SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
@@ -900,6 +925,9 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (!mgmt_create_nvram(s, errp)) {
+        return;
+    }
+    if (!mgmt_create_ust_control(s, errp)) {
         return;
     }
 
@@ -1117,9 +1145,19 @@ static const TypeInfo sgi_sn0_module_management_info = {
     .class_init = mgmt_class_init,
 };
 
+static const TypeInfo sgi_sn0_ust_control_info = {
+    .name = TYPE_SGI_SN0_UST_CONTROL,
+    .parent = TYPE_PCF8574,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_I2C_WIRE_ENDPOINT },
+        { }
+    },
+};
+
 static void sgi_sn0_module_management_register_types(void)
 {
     type_register_static(&sgi_sn0_module_management_info);
+    type_register_static(&sgi_sn0_ust_control_info);
 }
 
 type_init(sgi_sn0_module_management_register_types)
