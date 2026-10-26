@@ -1540,14 +1540,9 @@ static const SGICommandPortOps sgi_kona_textport_ops = {
     .unsupported = sgi_kona_textport_unsupported,
 };
 
-static bool sgi_kona_kernel_token_known(uint32_t word)
+static bool sgi_kona_kernel_token_known(SGIKonaState *s, uint32_t word)
 {
-    for (unsigned i = 0; i < sgi_kona_command_num_tokens; i++) {
-        if (sgi_kona_command_tokens[i].selector == word) {
-            return true;
-        }
-    }
-    return false;
+    return sgi_command_port_selector(&s->kernel_port, word) != NULL;
 }
 
 /*
@@ -8667,14 +8662,10 @@ static void sgi_kona_x_box_data_drop(SGIKonaState *s, uint32_t next);
 static void sgi_kona_x_clip_run_drop(SGIKonaState *s, uint32_t next);
 
 /* The GL command table's entry for a 16-bit selector, or NULL. */
-static const SGICommandPortSelector *sgi_kona_gl_token(uint32_t selector)
+static const SGICommandPortSelector *sgi_kona_gl_token(SGIKonaState *s,
+                                                       uint32_t selector)
 {
-    for (unsigned i = 0; i < sgi_kona_gl_num_tokens; i++) {
-        if (sgi_kona_gl_tokens[i].selector == selector) {
-            return &sgi_kona_gl_tokens[i];
-        }
-    }
-    return NULL;
+    return sgi_command_port_selector(&s->gl_port, selector);
 }
 
 /*
@@ -8733,7 +8724,7 @@ static bool sgi_kona_gl_token_word(SGIKonaState *s, uint32_t word,
         return false;
     }
     *selector = low;
-    return sgi_kona_gl_token(low) != NULL;
+    return sgi_kona_gl_token(s, low) != NULL;
 }
 
 /* Open a GL command at a word between packets: see sgi_kona_gl_packet(). */
@@ -14080,7 +14071,7 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
             return;
         }
         if (word != SGI_KONA_TEXTPORT_SYNC_WORD &&
-            sgi_kona_kernel_token_known(word)) {
+            sgi_kona_kernel_token_known(s, word)) {
             sgi_kona_kernel_port_word(s, word);
             return;
         }
@@ -14605,7 +14596,7 @@ static void sgi_kona_user_input(SGIKonaState *s)
 static void sgi_kona_command_input(SGIKonaState *s, uint32_t word)
 {
     if (s->kernel_input) {
-        if (s->kernel_port.framing || sgi_kona_kernel_token_known(word)) {
+        if (s->kernel_port.framing || sgi_kona_kernel_token_known(s, word)) {
             sgi_kona_kernel_port_word(s, word);
             return;
         }
@@ -14720,7 +14711,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_x_clip_run_drop(s, token);
         return;
     }
-    if (!sgi_kona_kernel_token_known(token)) {
+    if (!sgi_kona_kernel_token_known(s, token)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: unknown token 0x%" PRIx32 " stored at"
                       " command page offset 0x%" PRIx32 "; value 0x%" PRIx32
@@ -16954,9 +16945,9 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
      * held only in the GL grammar and between packets.
      */
     if (s->gl_port.framing &&
-        (!sgi_kona_gl_token(s->gl_port.selector) ||
+        (!sgi_kona_gl_token(s, s->gl_port.selector) ||
          s->gl_port.argc_expected !=
-         sgi_kona_gl_token(s->gl_port.selector)->argc ||
+         sgi_kona_gl_token(s, s->gl_port.selector)->argc ||
          s->gl_port.argc_have >= s->gl_port.argc_expected)) {
         return -EINVAL;
     }
