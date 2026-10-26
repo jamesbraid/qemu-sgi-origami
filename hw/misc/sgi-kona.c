@@ -1354,6 +1354,40 @@ static bool sgi_kona_store_counted(void)
 }
 
 /*
+ * Return credits to the Hub that sent the store now arriving, or with
+ * none (a qtest's store, or the board's own thread) to the "pi" link.
+ */
+static void sgi_kona_pi_return(SGIKonaState *s, uint32_t credits)
+{
+    Object *node = sgi_pi_gfx_store_source() ?: s->pi;
+
+    if (!credits) {
+        return;
+    }
+    if (!node) {
+        if (!s->pi_unlinked_logged) {
+            s->pi_unlinked_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: no \"pi\" link; graphics"
+                          " credits are not returned\n");
+        }
+        return;
+    }
+    /* The board's own field, not a checked cast: this runs every store. */
+    trace_sgi_kona_pi_credits(s->parent_obj.slot, credits);
+    /* Keyed on the store's own node: either Hub may master the pipe. */
+    if (s->pi_class_node != node) {
+        s->pi_class_node = node;
+        s->pi_class = SGI_PI_GFX_GET_CLASS(node);
+    }
+    if (!s->pi_class->return_credits) {
+        /* Logs that the node returns nothing. */
+        sgi_pi_gfx_return_credits(node, s->parent_obj.slot, credits);
+        return;
+    }
+    s->pi_class->return_credits(node, s->parent_obj.slot, credits);
+}
+
+/*
  * The graphics credits of the processor stores the board takes. The
  * driver's flow control charges one credit in the storing processor's
  * interface for each uncached store into the page it enabled for the
@@ -1404,7 +1438,6 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
                 sgi_kona_port_held(&s->kernel_port) ||
                 sgi_kona_port_held(&s->gl_port) ||
                 sgi_kona_port_held(&s->dma.fifo_port);
-    Object *node = sgi_pi_gfx_store_source() ?: s->pi;
     uint32_t credits;
 
     if (!open) {
@@ -1417,33 +1450,7 @@ static void sgi_kona_pi_credits(SGIKonaState *s, bool counted,
         s->pi_held += counted;
         return;
     }
-    if (!credits) {
-        return;
-    }
-    if (!node) {
-        if (!s->pi_unlinked_logged) {
-            s->pi_unlinked_logged = true;
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: no \"pi\" link; graphics"
-                          " credits are not returned\n");
-        }
-        return;
-    }
-    /* The board's own field, not a checked cast: this runs every store. */
-    trace_sgi_kona_pi_credits(s->parent_obj.slot, credits);
-    /*
-     * Keyed on the node the credit goes back to, which is the Hub that
-     * sent the store, not the "pi" link.
-     */
-    if (s->pi_class_node != node) {
-        s->pi_class_node = node;
-        s->pi_class = SGI_PI_GFX_GET_CLASS(node);
-    }
-    if (!s->pi_class->return_credits) {
-        /* Logs that the node returns nothing. */
-        sgi_pi_gfx_return_credits(node, s->parent_obj.slot, credits);
-        return;
-    }
-    s->pi_class->return_credits(node, s->parent_obj.slot, credits);
+    sgi_kona_pi_return(s, credits);
 }
 
 static void sgi_kona_textport_packet(void *opaque, unsigned port_id,
@@ -4563,6 +4570,32 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
  * reads it without one, and resolving rebuilds the bound object's level
  * views, which every untextured primitive paid for.
  */
+/*
+ * In a slice of display-list work on the board's thread, a draw or pixel
+ * rectangle runs without the big lock, which a large one would otherwise
+ * hold for milliseconds, keeping the processors from their interrupts and
+ * the main loop from their timers. It reads and writes only board memory
+ * and the state the command stream sets; meanwhile an access that would
+ * touch either waits for the slice, and command-stream words queue
+ * (sgi_kona_work_defer()). Returns whether the lock was let go, for
+ * sgi_kona_work_relock(); a nested call keeps it let go.
+ */
+static bool sgi_kona_work_unlock(SGIKonaState *s)
+{
+    if (s->work.drawing || !sgi_head_work_may_unlock(&s->work)) {
+        return false;
+    }
+    sgi_head_work_unlock(&s->work);
+    return true;
+}
+
+static void sgi_kona_work_relock(SGIKonaState *s, bool unlocked)
+{
+    if (unlocked) {
+        sgi_head_work_relock(&s->work);
+    }
+}
+
 static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
                                SGIRasterRules *rules, int stencil_bits,
                                bool textured)
@@ -5967,6 +6000,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIKonaShadow host;
     unsigned reason;
     Error *err = NULL;
+    bool unlocked;
 
     if (s->mesa_failed) {
         return SGI_GL_DRAW_OK;
@@ -6081,7 +6115,9 @@ scalar:
     if (s->host_gpu) {
         sgi_kona_count_fallback(s, reason, d);
     }
+    unlocked = sgi_kona_work_unlock(s);
     ret = sgi_soft_draw(&rules, &t, d);
+    sgi_kona_work_relock(s, unlocked);
 report:
     if (ret != SGI_GL_DRAW_OK) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: GL draw of context %" PRIu32
@@ -6107,6 +6143,7 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
     SGIRasterOp copy;
     SGIGLDrawState state;
     int stencil_bits = sgi_kona_gl_stencil_bits(s, s->context_current);
+    bool unlocked;
 
     if (op->kind == SGI_RASTER_PIXELS && op->pixels.stencil &&
         stencil_bits != 8) {
@@ -6144,7 +6181,9 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
         copy.pixels.state = &state;
         op = &copy;
     }
+    unlocked = sgi_kona_work_unlock(s);
     sgi_soft_raster(&rules, &t, op);
+    sgi_kona_work_relock(s, unlocked);
 }
 
 /*
@@ -8100,6 +8139,7 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
     SGIGLSink sink;
     float zoom_x, zoom_y;
     bool depth = a[5] == 0x1801, stencil = a[5] == 0x1802;
+    bool unlocked, copied;
 
     if (i != SGI_KONA_CONTEXT_NONE && s->state[i]->gl.in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
@@ -8250,10 +8290,14 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
     }
-    if (sgi_gl_copy_pixels_rgba_transfer(&s->state[i]->gl, &sink,
-                                         x, y, a[2], a[3],
-                                         sgi_kona_gl_copy_read, &source,
-                                         zoom_x, zoom_y, &transfer)) {
+    /* The source snapshot reads board memory only (sgi_kona_work_unlock()). */
+    unlocked = sgi_kona_work_unlock(s);
+    copied = sgi_gl_copy_pixels_rgba_transfer(&s->state[i]->gl, &sink,
+                                              x, y, a[2], a[3],
+                                              sgi_kona_gl_copy_read, &source,
+                                              zoom_x, zoom_y, &transfer);
+    sgi_kona_work_relock(s, unlocked);
+    if (copied) {
         return;
     }
 refused:
@@ -17159,6 +17203,13 @@ static bool sgi_kona_class_word(SGIKonaState *s, uint64_t *value)
     }
 }
 
+/* Whether display-list work is in progress or words wait behind it. */
+static bool sgi_kona_work_pending(SGIKonaState *s)
+{
+    return s->dma.list_busy ||
+           (s->work_queue && s->work_head < s->work_queue->len);
+}
+
 static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
                                    unsigned size)
 {
@@ -17246,7 +17297,8 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         value = s->loader_328;
         break;
     case SGI_KONA_ACTIVITY:
-        value = s->activity ? SGI_KONA_ACTIVITY_BUS : 0;
+        value = s->activity || sgi_kona_work_pending(s) ?
+                SGI_KONA_ACTIVITY_BUS : 0;
         break;
     case 0x8003d0:
         if (sgi_kona_class_word(s, &value)) {
@@ -17496,13 +17548,326 @@ static void sgi_kona_log_split(hwaddr addr, bool write)
                   write ? "store" : "load", addr);
 }
 
-static uint64_t sgi_kona_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * Display-list work and the accesses that meet it.
+ *
+ * A list a processor invokes runs in slices (hw/misc/sgi-kona-dma.c), so
+ * the store that invoked it can return while the pipe still works, and
+ * the processor takes its timer interrupts meanwhile. IRIX on IP27 counts
+ * one scheduler tick per Count/Compare interrupt and does not make up lost
+ * ones, so a list run whole inside the store stopped its clock for as long
+ * as the list took: a GLperf fill on an Onyx2 lost all but 1.5% of them.
+ *
+ * Meanwhile an access either goes behind the work, waits for it, or acts
+ * on the board as it stands:
+ *
+ * - command-stream stores queue, in the order they arrive, and run once
+ *   the list has finished: the command page, the DMA FIFO port, the
+ *   bracket register, the internal port write and the map RAM, which the
+ *   list's DMA translates through. Each store's credit goes back at once,
+ *   as the board returns one when its FIFO takes the store.
+ * - the interrupt cause, interrupt enable and mailbox registers, which the
+ *   kernel's interrupt handler reads and acknowledges while the pipe
+ *   works, act at once, as do the retrace tag and widget identity reads.
+ *   A cause bit or mailbox word queued work raises appears when that work
+ *   runs, as on the board.
+ * - every other access waits for the work to finish: it reads what the
+ *   work writes or changes what it reads, and the model's results must
+ *   not depend on how far the work has got.
+ *
+ * Inferred from the driver's use, not measured: which registers the board
+ * serves while its pipe is busy. A store with SGI_KONA_WORK_QUEUE_MAX
+ * words already waiting waits for the work instead, as a full FIFO would
+ * hold a processor's stores; the board's own FIFO depth is not known.
+ */
+typedef struct SGIKonaQueuedWord {
+    uint32_t addr;
+    uint32_t value;
+} SGIKonaQueuedWord;
+
+#define SGI_KONA_WORK_QUEUE_MAX (64 * 1024)
+
+typedef enum SGIKonaAccess {
+    SGI_KONA_ACCESS_WAITS,
+    SGI_KONA_ACCESS_NOW,
+    SGI_KONA_ACCESS_QUEUES,
+} SGIKonaAccess;
+
+static SGIKonaAccess sgi_kona_access_kind(hwaddr addr, bool write)
+{
+    SGIKonaAccess stream = write ? SGI_KONA_ACCESS_QUEUES :
+                                   SGI_KONA_ACCESS_WAITS;
+
+    if (addr - SGI_KONA_TEXTPORT_PORT < SGI_KONA_COMMAND_PAGE_SIZE) {
+        return stream;
+    }
+    switch (addr) {
+    case SGI_KONA_DMA_FIFO_PUSH:
+    case SGI_KONA_DMA_FIFO_KICK:
+    case SGI_KONA_PORT_WRITE_NEXT:
+        return stream;
+    case SGI_KONA_INT_CAUSE:
+    case SGI_KONA_INT_ENABLE:
+    case SGI_KONA_MAILBOX:
+        return SGI_KONA_ACCESS_NOW;
+    case SGI_KONA_RETRACE_TAG:
+    case SGI_KONA_WIDGET_ID:
+        return write ? SGI_KONA_ACCESS_WAITS : SGI_KONA_ACCESS_NOW;
+    /*
+     * The kernel reads and writes the low-window word while the pipe
+     * works, its video interrupt handler writes the other two at every
+     * retrace (0x800228 is unmodelled and logged), and its timeout check
+     * reads the activity latch every 500 ms while it waits on the pipe;
+     * the command stream reaches none of them. The latch reads set while
+     * work waits, the pipe being busy, and the work sets it again as it
+     * consumes words.
+     */
+    case SGI_KONA_LOW_WINDOW_WRITE:
+    case SGI_KONA_ACTIVITY:
+        return SGI_KONA_ACCESS_NOW;
+    case 0x800228:
+        return write ? SGI_KONA_ACCESS_NOW : SGI_KONA_ACCESS_WAITS;
+    default:
+        if (addr >= SGI_KONA_MAPRAM_BASE &&
+            addr < SGI_KONA_MAPRAM_BASE + SGI_KONA_MAPRAM_ENTRIES * 4) {
+            return stream;
+        }
+        return SGI_KONA_ACCESS_WAITS;
+    }
+}
+
+/* Finish the work now, on this thread, waiting out a slice on another. */
+static void sgi_kona_work_drain(SGIKonaState *s, hwaddr addr)
+{
+    int64_t start;
+
+    if (!s->work_queue) {
+        return;
+    }
+    sgi_head_work_wait_slice(&s->work);
+    if (!sgi_kona_work_pending(s)) {
+        return;
+    }
+    start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    sgi_head_work_drain(&s->work);
+    trace_sgi_kona_work("drained", addr,
+                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start);
+}
+
+/*
+ * Whether a plain word stored on the command page now would end a command
+ * that can keep the pipe busy for milliseconds: a GL CopyPixels, or the
+ * last word of a data run (a DrawPixels strip, a texture load, a bitmap,
+ * a vertex array), whose command then runs. Such a word becomes work of
+ * its own, so the store returns before the command runs, as a list's
+ * does. It only peeks at the framers, which the word itself may still
+ * change on its way in (a context switch's settling of a suspended
+ * command, say): a word wrongly taken for one only runs a little later,
+ * in order, so the guess need not be exact.
+ */
+static bool sgi_kona_word_ends_long_command(SGIKonaState *s, hwaddr addr)
+{
+    hwaddr offset = addr - SGI_KONA_TEXTPORT_PORT;
+
+    if ((offset != 0 && offset != SGI_KONA_COMMAND_DATA_SLOT) ||
+        s->kernel_input || s->swapin_stage || s->gamma_remaining ||
+        s->cursor_remaining || s->gl_tex_table_remaining) {
+        return false;
+    }
+    if (s->gl_data_remaining) {
+        return s->gl_data_remaining == 1;
+    }
+    if (sgi_kona_dma_calls_open(s) || s->x_pixel_remaining ||
+        s->x_stipple_store_remaining || s->color_map_remaining ||
+        s->video_open || s->flash_op.op || s->kernel_port.framing) {
+        return false;
+    }
+    return s->gl_port.framing &&
+           s->gl_port.selector == SGI_KONA_CMD_GL_COPY_PIXELS &&
+           s->gl_port.argc_have + 1 == s->gl_port.argc_expected;
+}
+
+/*
+ * Whether a command-stream word stored now has to wait, and if so keep
+ * it. A word that would start long work on a processor becomes the work
+ * (sgi_kona_word_ends_long_command()). Only another processor can store
+ * while a slice's draw has let go of the big lock, and its word goes
+ * behind everything, even when the slice is running a word that had
+ * waited and nothing else is left.
+ */
+static bool sgi_kona_work_defer(SGIKonaState *s, hwaddr addr,
+                                uint32_t value)
+{
+    SGIKonaQueuedWord w = { .addr = addr, .value = value };
+
+    /* qtest, which has no processor, stands in for one with the knob. */
+    if (!s->work.drawing && !sgi_kona_work_pending(s) &&
+        (current_cpu || s->work.test_words) && !s->work_replaying &&
+        sgi_kona_word_ends_long_command(s, addr)) {
+        trace_sgi_kona_work("word-deferred", addr, value);
+    } else if (!s->work.drawing) {
+        if (!sgi_kona_work_pending(s)) {
+            return false;
+        }
+        if (s->work_queue->len - s->work_head >= SGI_KONA_WORK_QUEUE_MAX) {
+            sgi_kona_work_drain(s, addr);
+            return false;
+        }
+    }
+    if (s->work_head == s->work_queue->len) {
+        g_array_set_size(s->work_queue, 0);
+        s->work_head = 0;
+    }
+    g_array_append_val(s->work_queue, w);
+    sgi_head_work_schedule(&s->work);
+    return true;
+}
+
+static void sgi_kona_work_replay_one(SGIKonaState *s)
+{
+    SGIKonaQueuedWord w = g_array_index(s->work_queue, SGIKonaQueuedWord,
+                                        s->work_head);
+
+    s->work_head++;
+    if (s->context_failed) {
+        return;
+    }
+    s->work_replaying = true;
+    sgi_kona_write_word(s, w.addr, w.value, 4);
+    s->work_replaying = false;
+}
+
+/*
+ * Go on with the list in progress and then the words behind it, in
+ * order, until the budget is spent or nothing is left. A waiting word may
+ * invoke another list, which the loop then runs in turn.
+ */
+static void sgi_kona_work_run(SGIKonaState *s, SGIHeadWorkBudget *b)
+{
+    for (;;) {
+        if (s->dma.list_busy && !sgi_kona_dma_list_step(s, b)) {
+            return;
+        }
+        if (s->work_head == s->work_queue->len) {
+            return;
+        }
+        sgi_kona_work_replay_one(s);
+        if (!s->dma.list_busy && sgi_head_work_spent(b)) {
+            return;
+        }
+    }
+}
+
+static void sgi_kona_work_step(void *opaque, SGIHeadWorkBudget *b)
+{
+    SGIKonaState *s = opaque;
+
+    sgi_kona_work_run(s, b);
+    if (sgi_kona_work_pending(s)) {
+        return;
+    }
+    g_array_set_size(s->work_queue, 0);
+    s->work_head = 0;
+    /*
+     * The stores a framer still held when the list began go back once
+     * nothing holds them: no store may arrive to return them.
+     */
+    sgi_kona_pi_credits(s, false, s->pi_packets);
+}
+
+static bool sgi_kona_work_pending_cb(void *opaque)
+{
+    return sgi_kona_work_pending(opaque);
+}
+
+static const SGIHeadWorkOps sgi_kona_work_ops = {
+    .step = sgi_kona_work_step,
+    .pending = sgi_kona_work_pending_cb,
+};
+
+/* Abandon the list in progress and the words behind it. */
+static void sgi_kona_work_abandon(SGIKonaState *s)
+{
+    if (!s->work_queue) {
+        return;
+    }
+    sgi_head_work_wait_slice(&s->work);
+    sgi_kona_dma_list_abandon(s);
+    g_array_set_size(s->work_queue, 0);
+    s->work_head = 0;
+    sgi_head_work_idle(&s->work);
+}
+
+/*
+ * Display-list work is finished before the machine stops, so a stopped
+ * machine, and any state saved from it, has none in progress. Finishing
+ * may write guest memory, which a migration then still sends.
+ */
+static void sgi_kona_work_vm_state(void *opaque, bool running,
+                                   RunState state)
+{
+    if (!running) {
+        sgi_head_work_enter_work();
+        sgi_kona_work_drain(opaque, UINT64_MAX);
+        sgi_head_work_leave();
+    }
+}
+
+static void sgi_kona_work_init(SGIKonaState *s)
+{
+    s->work_queue = g_array_new(false, false, sizeof(SGIKonaQueuedWord));
+    sgi_head_work_init(&s->work, "sgi-kona-work", &sgi_kona_work_ops, s);
+    s->work_vm_state = qemu_add_vm_change_state_handler(
+        sgi_kona_work_vm_state, s);
+}
+
+static void sgi_kona_work_cleanup(SGIKonaState *s)
+{
+    if (!s->work_queue) {
+        return;
+    }
+    qemu_del_vm_change_state_handler(s->work_vm_state);
+    s->work_vm_state = NULL;
+    sgi_head_work_cleanup(&s->work);
+    sgi_kona_dma_list_abandon(s);
+    g_array_free(s->work_queue, true);
+    s->work_queue = NULL;
+    s->work_head = 0;
+}
+
+/*
+ * An access from inside any SGI head's access or work on this thread: a
+ * board's DMA aimed through the Crossbow at these registers. Refused and
+ * logged, as QEMU's re-entrancy guard, which these registers opt out of,
+ * would refuse it.
+ */
+static MemTxResult sgi_kona_refuse(hwaddr addr, bool write)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: %s at 0x%" HWADDR_PRIx
+                  " from inside a graphics head's work refused\n",
+                  write ? "write" : "read", addr);
+    return MEMTX_ACCESS_ERROR;
+}
+
+static MemTxResult sgi_kona_read(void *opaque, hwaddr addr,
+                                 uint64_t *data, unsigned size,
+                                 MemTxAttrs attrs)
 {
     SGIKonaState *s = opaque;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
-    uint64_t sequence = s->trace_sequence++;
+    uint64_t sequence;
     uint64_t value;
 
+    if (!sgi_head_work_enter()) {
+        *data = 0;
+        return sgi_kona_refuse(addr, false);
+    }
+    if (sgi_kona_access_kind(addr, false) != SGI_KONA_ACCESS_NOW ||
+        (size == 8 &&
+         sgi_kona_access_kind(addr + 4, false) != SGI_KONA_ACCESS_NOW)) {
+        sgi_kona_work_drain(s, addr);
+    }
+    sequence = s->trace_sequence++;
     if (size != 8) {
         value = sgi_kona_read_word(opaque, addr, size);
     } else {
@@ -17511,37 +17876,75 @@ static uint64_t sgi_kona_read(void *opaque, hwaddr addr, unsigned size)
                 sgi_kona_read_word(opaque, addr + 4, 4);
     }
     trace_sgi_kona_pio_read(sequence, cpu, addr, value, size);
-    return value;
+    sgi_head_work_leave();
+    *data = value;
+    return MEMTX_OK;
+}
+
+/*
+ * One word of a store, behind the work, after it, or at once
+ * (sgi_kona_access_kind()). True when the word was kept to run later.
+ */
+static bool sgi_kona_store_word(SGIKonaState *s, hwaddr addr,
+                                uint32_t value)
+{
+    switch (sgi_kona_access_kind(addr, true)) {
+    case SGI_KONA_ACCESS_QUEUES:
+        if (sgi_kona_work_defer(s, addr, value)) {
+            return true;
+        }
+        break;
+    case SGI_KONA_ACCESS_WAITS:
+        sgi_kona_work_drain(s, addr);
+        break;
+    default:
+        break;
+    }
+    sgi_kona_write_word(s, addr, value, 4);
+    return false;
 }
 
 /*
  * One processor store, whatever its width: the graphics credit it was
  * charged is sampled here, once, before anything it carries is acted on.
  */
-static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
-                           unsigned size)
+static MemTxResult sgi_kona_write(void *opaque, hwaddr addr,
+                                  uint64_t value, unsigned size,
+                                  MemTxAttrs attrs)
 {
     SGIKonaState *s = opaque;
     bool counted = sgi_kona_store_counted();
     uint64_t packets = s->pi_packets;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
+    bool queued;
 
+    if (!sgi_head_work_enter()) {
+        return sgi_kona_refuse(addr, true);
+    }
     if (s->context_failed) {
-        return;
+        sgi_head_work_leave();
+        return MEMTX_OK;
     }
     trace_sgi_kona_pio_write(s->trace_sequence++, cpu, addr, value, size);
 
     if (size != 8) {
-        sgi_kona_write_word(opaque, addr, value, size);
+        queued = sgi_kona_store_word(s, addr, value);
     } else if (sgi_kona_doubleword_data(addr)) {
-        sgi_kona_write_word(opaque, addr, value >> 32, 4);
-        sgi_kona_write_word(opaque, addr, (uint32_t)value, 4);
+        queued = sgi_kona_store_word(s, addr, value >> 32);
+        queued |= sgi_kona_store_word(s, addr, (uint32_t)value);
     } else {
         sgi_kona_log_split(addr, true);
-        sgi_kona_write_word(opaque, addr, value >> 32, 4);
-        sgi_kona_write_word(opaque, addr + 4, (uint32_t)value, 4);
+        queued = sgi_kona_store_word(s, addr, value >> 32);
+        queued |= sgi_kona_store_word(s, addr + 4, (uint32_t)value);
     }
-    sgi_kona_pi_credits(s, counted, packets);
+    /* A store kept behind the work has left the port: its credit too. */
+    if (queued) {
+        sgi_kona_pi_return(s, counted);
+    } else {
+        sgi_kona_pi_credits(s, counted, packets);
+    }
+    sgi_head_work_leave();
+    return MEMTX_OK;
 }
 
 /*
@@ -17553,8 +17956,8 @@ static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
  * told apart.
  */
 static const MemoryRegionOps sgi_kona_ops = {
-    .read = sgi_kona_read,
-    .write = sgi_kona_write,
+    .read_with_attrs = sgi_kona_read,
+    .write_with_attrs = sgi_kona_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = {
         .min_access_size = 4,
@@ -17583,6 +17986,17 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
     memory_region_init_io(&s->regs, OBJECT(s), &sgi_kona_ops, s,
                           "sgi-kona.regs",
                           SGI_KONA_APERTURE_SIZE);
+    /*
+     * An access that must wait for display-list work sleeps inside its
+     * handler with the big lock let go (sgi_head_work_wait_slice()), and a
+     * second processor's access may then arrive while the first is still
+     * in the device. QEMU's re-entrancy guard is per device, not per
+     * thread, and would refuse that access. The handlers keep a guard per
+     * thread instead (sgi_head_work_enter()), which still refuses a
+     * board's own DMA arriving here from inside its work or another
+     * head's.
+     */
+    s->regs.disable_reentrancy_guard = true;
     s->reason_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_kona_reason_timer,
                                    s);
     board->cpu_face = &s->regs;
@@ -17807,6 +18221,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     }
     sgi_kona_channels_reset(s);
     sgi_kona_channels_apply(s);
+    sgi_kona_work_init(s);
     return true;
 }
 
@@ -18295,6 +18710,11 @@ static void sgi_kona_test_get_context_digest(Object *obj, Visitor *v,
     visit_type_str(v, name, &digest, errp);
 }
 
+static bool sgi_kona_test_get_work_pending(Object *obj, Error **errp)
+{
+    return sgi_kona_work_pending(SGI_KONA(obj));
+}
+
 static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
@@ -18321,6 +18741,15 @@ static void sgi_kona_instance_init(Object *obj)
                         sgi_kona_test_get_gl_data_word, NULL, NULL, NULL);
     object_property_add(obj, "x-test-gl-data-words", "str",
                         sgi_kona_test_get_gl_data_words, NULL, NULL, NULL);
+    /*
+     * Display-list work in slices of x-test-slice-words list words rather
+     * than of host time, and whether any is still waiting to run.
+     */
+    object_property_add_uint32_ptr(obj, "x-test-slice-words",
+                                   &s->work.test_words,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_bool(obj, "x-test-work-pending",
+                             sgi_kona_test_get_work_pending, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -18473,6 +18902,9 @@ static void sgi_kona_instance_finalize(Object *obj)
 static void sgi_kona_reset_hold(Object *obj, ResetType type)
 {
     SGIKonaState *s = SGI_KONA(obj);
+
+    /* Reset abandons the display list in progress and the words behind. */
+    sgi_kona_work_abandon(s);
 
     sgi_kona_texture_reset(&s->textures);
     sgi_kona_texture_upload_clear(s);
@@ -18731,10 +19163,14 @@ static const Property sgi_kona_properties[] = {
     DEFINE_PROP_STRING("pixel-depth", SGIKonaState, pixel_depth),
 };
 
+/* The machine stopped first (sgi_kona_work_vm_state()); this makes sure. */
 static int sgi_kona_pre_save(void *opaque)
 {
     SGIKonaState *s = opaque;
 
+    sgi_head_work_enter_work();
+    sgi_kona_work_drain(s, UINT64_MAX);
+    sgi_head_work_leave();
     sgi_kona_renderer_stop(s);
     return 0;
 }
@@ -22333,6 +22769,7 @@ static DeviceUnrealize sgi_kona_parent_unrealize;
 
 static void sgi_kona_unrealize(DeviceState *dev)
 {
+    sgi_kona_work_cleanup(SGI_KONA(dev));
     sgi_kona_renderer_stop(SGI_KONA(dev));
     sgi_kona_parent_unrealize(dev);
 }

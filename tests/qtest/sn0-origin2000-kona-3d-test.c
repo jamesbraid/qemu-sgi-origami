@@ -1083,6 +1083,18 @@ static void assert_window_matches(QTestState *s, const Expected *e)
     }
 }
 
+/* The probe's window as the display shows it now. */
+static void read_window(QTestState *s, Expected *e)
+{
+    g_autofree uint8_t *frame = kona_screendump(s);
+    const unsigned top = FB_HEIGHT - PROBE_Y - PROBE_SIZE;
+
+    for (unsigned r = 0; r < PROBE_SIZE; r++) {
+        memcpy(e->rgb + r * PROBE_SIZE * 3,
+               frame + ((top + r) * FB_WIDTH + PROBE_X) * 3, PROBE_SIZE * 3);
+    }
+}
+
 static void gl_begin(QTestState *s, uint32_t mode)
 {
     kona_command(s, 0x57 + mode, (uint32_t[]){ 0 }, 1);
@@ -12970,6 +12982,49 @@ static void test_raw_bitmap_large(void)
     qtest_quit(s);
 }
 
+static bool kona_work_pending(QTestState *s)
+{
+    QDict *resp = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-work-pending'}}");
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+static void kona_slice_words(QTestState *s, uint32_t words)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-slice-words','value':%u}}", words);
+}
+
+/*
+ * A CopyPixels runs after the store that ends it returns, on the board's
+ * thread, as a display list does: a large one otherwise kept the storing
+ * processor from its timer interrupts (hw/misc/sgi-kona.c). qtest stands
+ * in for a processor with x-test-slice-words. The store returns with the
+ * window unchanged, and the copy lands once the clock runs it.
+ */
+static void copy_pixels_after_the_store(QTestState *s, const uint32_t *copy,
+                                        unsigned n)
+{
+    g_autofree Expected *before = g_new(Expected, 1);
+    unsigned steps = 0;
+
+    read_window(s, before);
+    kona_slice_words(s, 1);
+    kona_command(s, 0x38, copy, n);
+    g_assert_true(kona_work_pending(s));
+    assert_window_matches(s, before);
+    while (kona_work_pending(s)) {
+        g_assert_cmpuint(++steps, <, 1000);
+        qtest_clock_step(s, 100 * 1000);
+    }
+    kona_slice_words(s, 0);
+}
+
 static void test_copy_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -13035,6 +13090,8 @@ static void test_copy_pixels(gconstpointer opaque)
         for (unsigned k = 4; k < ARRAY_SIZE(copy); k++) {
             qtest_writel(s, REG_COMMAND, copy[k]);
         }
+    } else if (mode == 17) {
+        copy_pixels_after_the_store(s, copy, ARRAY_SIZE(copy));
     } else {
         kona_command(s, 0x38, copy, ARRAY_SIZE(copy));
     }
@@ -19594,7 +19651,7 @@ int main(int argc, char **argv)
         "nonidentity-zoom-refused", "begin-refused", "default-color-map",
         "clipped-source-refused", "invalid-raster", "incomplete-texture",
         "no-context", "nonfinite-transfer-refused", "packet-migrates",
-        "raster-position-preserved",
+        "raster-position-preserved", "runs-after-the-store",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(copy_pixels_cases); mode++) {
         g_autofree char *path = g_strdup_printf(

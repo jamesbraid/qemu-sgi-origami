@@ -63,6 +63,7 @@
 #include "qemu/units.h"
 #include "migration/vmstate.h"
 #include "hw/display/sgi/command-fetch.h"
+#include "hw/display/sgi/head-work.h"
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-ports.h"
 
@@ -175,12 +176,18 @@ typedef struct SGIKonaDma {
 
     /*
      * The display-list fetch and the ranges its next() hook still has to
-     * give it. A fetch runs within the command that invokes it, so none
-     * of this outlives an access and none of it is migrated.
+     * give it, which it takes while the list is mapped. A list longer than
+     * one slice keeps its words in the fetch until it finishes: list_busy
+     * is set from the map to the finish, and list_segment and list_word
+     * say where the next slice starts. The work is finished before the
+     * machine stops (hw/misc/sgi-kona.c), so none of this is migrated.
      */
     SGICommandFetch fetch;
     const uint32_t *ranges;
     unsigned nranges;
+    bool list_busy;
+    uint32_t list_segment;
+    uint32_t list_word;
 
     /*
      * The pixel the from-plane conversion resolves next: the reverse
@@ -238,6 +245,15 @@ void sgi_kona_dma_calls_word(SGIKonaState *s, uint32_t word);
 
 /* Drops a 0x170 or 0x171 still taking its pairs, logged by the caller. */
 void sgi_kona_dma_calls_drop(SGIKonaState *s);
+
+/*
+ * Goes on with the display list in progress until the budget is spent;
+ * finishes it and returns true once its last word has been decoded.
+ */
+bool sgi_kona_dma_list_step(SGIKonaState *s, SGIHeadWorkBudget *b);
+
+/* Abandons the display list in progress, published as FAILED with BUSY. */
+void sgi_kona_dma_list_abandon(SGIKonaState *s);
 
 /* The engine's state beyond the port, a subsection of the device's. */
 extern const VMStateDescription vmstate_sgi_kona_dma;

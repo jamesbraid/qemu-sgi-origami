@@ -991,6 +991,153 @@ static void test_list_nested_and_poolless_refused(void)
     kona_assert_last_completion(qts, DONE_CONSUMED, 0, ARRAY_SIZE(outer));
 }
 
+/*
+ * A list a processor invokes keeps running after the store that invoked
+ * it returns, in slices on the machine clock, and the command-stream words
+ * stored meanwhile wait behind it (hw/misc/sgi-kona.c). The processor is
+ * then free to take its timer interrupts while the pipe works: IRIX's
+ * scheduler clock on an Onyx2 lost every tick for as long as one list
+ * took when the whole list ran inside the store. qtest has no processor,
+ * and an invocation from outside one runs whole, so these cases cut the
+ * slices by list words with x-test-slice-words.
+ */
+#define LIST_SLICE_WORDS 4
+#define REG_CREDIT       KONA_REG(0x800208)
+#define REG_ACTIVITY     KONA_REG(0x8003a8)
+#define ACTIVITY_BUS     0x4u
+#define SYNC_ANSWER      0x1234abcdu
+
+static bool kona_work_pending(QTestState *s)
+{
+    QDict *resp = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-work-pending'}}", KONA_QOM_PATH);
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+static unsigned kona_work_finish(QTestState *s)
+{
+    unsigned steps = 0;
+
+    while (kona_work_pending(s)) {
+        g_assert_cmpuint(++steps, <, 1000);
+        qtest_clock_step(s, 100 * 1000);
+    }
+    return steps;
+}
+
+/*
+ * The 13-word point list invoked from the pool four words a slice, with
+ * a sync probe stored behind it. The store returns with the list
+ * unfinished: the point is not drawn, no completion is published, and
+ * the probe waits unanswered.
+ */
+static void kona_list_invoke_then_probe(void)
+{
+    uint32_t completions;
+
+    kona_reset();
+    kona_write_be32_array(qts, DMA_POOL_BASE, list_words,
+                          ARRAY_SIZE(list_words));
+    kona_register_pool(qts, DMA_POOL_BASE, 0x4000);
+    kona_qom_set_uint(qts, "x-test-slice-words", LIST_SLICE_WORDS);
+    completions = kona_completions(qts);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALL_POOL, 0, ARRAY_SIZE(list_words),
+    }, 3);
+    kona_command(qts, (const uint32_t[]) { 1, 9, 0 }, 3);
+    g_assert_true(kona_work_pending(qts));
+    g_assert_cmphex(kona_point_pixel(qts), !=, LIST_POINT_RGB);
+    g_assert_cmpuint(kona_completions(qts), ==, completions);
+}
+
+/* The whole list drawn, its completion published, and the probe answered. */
+static void kona_list_check_finished(void)
+{
+    g_assert_false(kona_work_pending(qts));
+    g_assert_cmphex(kona_point_pixel(qts), ==, LIST_POINT_RGB);
+    kona_assert_last_completion(qts, DONE_CONSUMED, 0, 13);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, CAUSE_MAILBOX);
+    g_assert_cmphex(qtest_readl(qts, REG_MAILBOX), ==, SYNC_ANSWER);
+    kona_qom_set_uint(qts, "x-test-slice-words", 0);
+}
+
+/*
+ * Until the clock runs the rest, the interrupt cause reads clear and the
+ * mailbox empty, without waiting: the kernel's interrupt handler reads
+ * them while the pipe works. Its timeout check's read of the activity
+ * latch shows the busy pipe, and its acknowledge waits for nothing
+ * either.
+ */
+static void test_list_runs_in_slices(void)
+{
+    kona_list_invoke_then_probe();
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_MAILBOX), ==, 0);
+    qtest_writel(qts, REG_ACTIVITY, ACTIVITY_BUS);
+    g_assert_cmphex(qtest_readl(qts, REG_ACTIVITY), ==, ACTIVITY_BUS);
+    g_assert_true(kona_work_pending(qts));
+    /* Nine words left at four a slice, then the probe. */
+    g_assert_cmpuint(kona_work_finish(qts), >=, 2);
+    kona_list_check_finished();
+}
+
+/* Any other read finishes the work first. */
+static void test_list_read_waits_for_slices(void)
+{
+    kona_list_invoke_then_probe();
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+    kona_list_check_finished();
+}
+
+/* A machine that stops has finished the work: nothing is left to migrate. */
+static void test_list_finishes_before_stop(void)
+{
+    kona_list_invoke_then_probe();
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    g_assert_false(kona_work_pending(qts));
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    kona_list_check_finished();
+}
+
+/* Reset abandons the list and the probe behind it. */
+static void test_list_reset_abandons_slices(void)
+{
+    kona_list_invoke_then_probe();
+    kona_reset();
+    g_assert_false(kona_work_pending(qts));
+    g_assert_cmphex(kona_point_pixel(qts), !=, LIST_POINT_RGB);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_MAILBOX), ==, 0);
+    kona_qom_set_uint(qts, "x-test-slice-words", 0);
+}
+
+/*
+ * A list that invokes a list still finds the fetch running when the outer
+ * list runs in slices: the inner invocation fails with BUSY and the outer
+ * one completes after it.
+ */
+static void test_list_nested_in_slices_refused(void)
+{
+    static const uint32_t outer[] = { LIST_CALL_POOL, 0x100, 6, 1, 0x2, 5 };
+
+    kona_reset();
+    kona_write_be32_array(qts, DMA_POOL_BASE, outer, ARRAY_SIZE(outer));
+    kona_register_pool(qts, DMA_POOL_BASE, 0x4000);
+    kona_qom_set_uint(qts, "x-test-slice-words", 2);
+    kona_command(qts, (const uint32_t[]) {
+        LIST_CALL_POOL, 0, ARRAY_SIZE(outer),
+    }, 3);
+    g_assert_true(kona_work_pending(qts));
+    kona_work_finish(qts);
+    g_assert_cmpuint(kona_completions(qts), ==, 2);
+    kona_assert_last_completion(qts, DONE_CONSUMED, 0, ARRAY_SIZE(outer));
+    kona_qom_set_uint(qts, "x-test-slice-words", 0);
+}
+
 #define DMA_POST_SRC UINT64_C(0x16004)
 
 /*
@@ -1187,6 +1334,16 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona/dma/list-calls-eight-ranges",
                    test_list_calls_eight_ranges);
     qtest_add_func("sn0/origin2000/kona/dma/migration", test_dma_migration);
+    qtest_add_func("sn0/origin2000/kona/dma/list-runs-in-slices",
+                   test_list_runs_in_slices);
+    qtest_add_func("sn0/origin2000/kona/dma/list-read-waits-for-slices",
+                   test_list_read_waits_for_slices);
+    qtest_add_func("sn0/origin2000/kona/dma/list-finishes-before-stop",
+                   test_list_finishes_before_stop);
+    qtest_add_func("sn0/origin2000/kona/dma/list-reset-abandons-slices",
+                   test_list_reset_abandons_slices);
+    qtest_add_func("sn0/origin2000/kona/dma/list-nested-in-slices-refused",
+                   test_list_nested_in_slices_refused);
     qtest_add_func("sn0/origin2000/kona/dma/list-migration",
                    test_list_migration);
 
