@@ -517,8 +517,11 @@ typedef struct SGIKonaTextureRegs {
  */
 #define SGI_KONA_GL_FILTER_MAX 7
 #define SGI_KONA_GL_FILTERS    3
-/* The colour matrix stack's depth: the shared context's for the others. */
-#define SGI_KONA_GL_COLOUR_STACK 32
+/*
+ * The colour matrix stack's depth: the IRIX client library reports a
+ * GL_MAX_COLOR_MATRIX_STACK_DEPTH of 2 to every application.
+ */
+#define SGI_KONA_GL_COLOUR_STACK 2
 
 typedef struct SGIKonaGLFilter {
     /* The internal format code: alpha 0, RGB 1, RGBA 2, L 3, LA 4, I 5. */

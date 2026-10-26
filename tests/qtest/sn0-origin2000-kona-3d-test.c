@@ -18471,6 +18471,25 @@ static void test_colour_matrix_leaves_modelview(void)
 }
 
 /*
+ * The colour matrix stack holds two matrices, the depth the IRIX client
+ * library reports: the first push fits, the second sets GL_STACK_OVERFLOW
+ * (0x503) and leaves the stack as it was.
+ */
+static void test_colour_matrix_stack_overflow(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
+    kona_command(s, 0xd9, (uint32_t[]) { 0 }, 1);
+    assert_native_depth(s, 0x80b2, (uint32_t[]) { 2 }, 1);
+    kona_command(s, 0xd9, (uint32_t[]) { 0 }, 1);
+    assert_native_depth(s, 0x80b2, (uint32_t[]) { 2 }, 1);
+    assert_native_error(s, 0x503);
+    qtest_quit(s);
+}
+
+/*
  * glGet answers the colour matrix (0x80b1), its stack depth (0x80b2), the
  * post-matrix scale and bias (0x80b4 to 0x80bb) and the convolution
  * enables (0x8010 to 0x8012), which the library asks the pipe for.
@@ -19218,6 +19237,8 @@ int main(int argc, char **argv)
              test_colour_matrix_texture);
     add_case("sn0/origin2000/kona-3d/colour-matrix/get",
              test_colour_matrix_get);
+    add_case("sn0/origin2000/kona-3d/colour-matrix/stack-overflow",
+             test_colour_matrix_stack_overflow);
     add_case("sn0/origin2000/kona-3d/imaging/unmodelled-stage-disabled",
              test_unmodelled_stage_disabled);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
