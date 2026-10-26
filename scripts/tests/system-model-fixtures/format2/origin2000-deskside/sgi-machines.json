@@ -3242,7 +3242,7 @@
               "value": "io6g"
             }
           ],
-          "reason": "the plain BaseIO has no keyboard or mouse port, so a graphics console needs the BaseIO-G that an Onyx2 ships with"
+          "reason": "the plain BaseIO has no keyboard or mouse port; the BaseIO-G that an Onyx2 ships with has them"
         },
         "max-pipes": 1,
         "slots": [

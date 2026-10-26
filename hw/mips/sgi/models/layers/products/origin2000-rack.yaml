@@ -82,7 +82,7 @@ layer:
     # A launch without one keeps the plain board.
     machine_properties:
       properties: {baseio-preset: io6g}
-      reason: "the plain BaseIO has no keyboard or mouse port, so a graphics console needs the BaseIO-G that an Onyx2 ships with"
+      reason: "the plain BaseIO has no keyboard or mouse port; the BaseIO-G that an Onyx2 ships with has them"
     slots:
       - names: [io2, io3, io4, io5, io6, io7, io8, io9, io10, io11, io12]
         description: "XIO slot {number}"
