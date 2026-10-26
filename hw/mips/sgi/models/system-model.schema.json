@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://origami.invalid/schema/system-model-v1.json",
-  "title": "origami system model",
-  "description": "A machine's physical components, buses, interrupt chains, installed identities, and static emulation configuration. Origami exports static descriptors independently. QEMU adopts and tracks those descriptors with its consumer changes; builds never regenerate them. QEMU owns device behavior and object lifetime.",
+  "title": "SGI system model",
+  "description": "A machine's physical components, buses, interrupt chains, installed identities, and static emulation configuration. QEMU owns these descriptors, generates its machine inputs from them with scripts/sgi-model.py, and owns device behavior and object lifetime.",
 
   "type": "object",
   "required": ["model_version", "evidence_policy", "composition", "machine", "space_selection", "processors", "address_spaces", "components", "buses", "connections"],

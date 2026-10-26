@@ -1,7 +1,6 @@
 /*
  * TI TSB12LV22 revision-01 standalone register model (SLLS290, July 1998).
  * PHY, ROM, bus, cycle scheduling, power transitions and DMA are unsupported.
- * The reviewed contract is Origami docs/datasheets/tsb12lv22.md.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 #include "qemu/osdep.h"
