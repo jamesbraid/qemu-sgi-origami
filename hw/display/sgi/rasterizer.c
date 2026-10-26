@@ -3002,35 +3002,6 @@ static bool sgi_soft_texture_coefficients(const SGISoftDraw *r,
 }
 
 /*
- * Map and rasterize one triangle of a clipped polygon, given its three
- * vertices in the view volume and, for flat shading, the provoking
- * vertex of the triangle it was clipped from (OpenGL 1.2.1, 2.13.7 and
- * table 2.9).
- *
- * Facing (2.13.1) is the sign of the triangle's area in window
- * coordinates on the subpixel grid: a positive area is front facing under
- * glFrontFace(GL_CCW) and a negative one under GL_CW. Under a window
- * matrix whose rows run down the display, window y runs opposite to the
- * client's, which mirrors the winding, so the area's sign is taken
- * negated: a triangle counter-clockwise as the client drew it is
- * counter-clockwise here too, for culling and two-sided colour alike.
- * With GL_CULL_FACE enabled a triangle whose facing glCullFace names is
- * not rasterized (3.5.1). When the draw carries back colours a
- * back-facing triangle takes them. A polygon or quad is drawn as
- * triangles, each facing by its own area, which for a convex polygon is
- * the polygon's facing; so is each triangle of a clipped one. The tie
- * rule still names edges in window rows as they run, so under rows down
- * the display SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN's owned edges are the
- * bottom and left ones on the display.
- *
- * The fragments are also bounded by the viewport rectangle, when there
- * is one, which clipping has already made them lie in; a normalized depth
- * outside [0, 1] could now come only from rounding, and is still dropped.
- *
- * Depth is interpolated linearly in window coordinates and colour with
- * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
- */
-/*
  * Whether a triangle's fragments can take sgi_soft_simple_row() instead of
  * the full per-fragment path: state that leaves each fragment's work at
  * interpolation, the depth range, pixel ownership, the depth test and an
@@ -3236,6 +3207,35 @@ sgi_soft_simple_span(const SGISoftDraw *r, const SGISoftVertex v[3], int py,
 #undef SGI_SOFT_SIMPLE
 }
 
+/*
+ * Map and rasterize one triangle of a clipped polygon, given its three
+ * vertices in the view volume and, for flat shading, the provoking
+ * vertex of the triangle it was clipped from (OpenGL 1.2.1, 2.13.7 and
+ * table 2.9).
+ *
+ * Facing (2.13.1) is the sign of the triangle's area in window
+ * coordinates on the subpixel grid: a positive area is front facing under
+ * glFrontFace(GL_CCW) and a negative one under GL_CW. Under a window
+ * matrix whose rows run down the display, window y runs opposite to the
+ * client's, which mirrors the winding, so the area's sign is taken
+ * negated: a triangle counter-clockwise as the client drew it is
+ * counter-clockwise here too, for culling and two-sided colour alike.
+ * With GL_CULL_FACE enabled a triangle whose facing glCullFace names is
+ * not rasterized (3.5.1). When the draw carries back colours a
+ * back-facing triangle takes them. A polygon or quad is drawn as
+ * triangles, each facing by its own area, which for a convex polygon is
+ * the polygon's facing; so is each triangle of a clipped one. The tie
+ * rule still names edges in window rows as they run, so under rows down
+ * the display SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN's owned edges are the
+ * bottom and left ones on the display.
+ *
+ * The fragments are also bounded by the viewport rectangle, when there
+ * is one, which clipping has already made them lie in; a normalized depth
+ * outside [0, 1] could now come only from rounding, and is still dropped.
+ *
+ * Depth is interpolated linearly in window coordinates and colour with
+ * the perspective correction of equation 3.4 (OpenGL 1.2.1, 3.5.1).
+ */
 static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                       const SGIVolumeVertex *va,
                                       const SGIVolumeVertex *vb,
