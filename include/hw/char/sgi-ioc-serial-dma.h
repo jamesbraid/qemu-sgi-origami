@@ -159,6 +159,13 @@ typedef struct SGIIOCSerialDMAPort {
     bool tx_delay_irq;
     QEMUTimer *tx_delay_timer;
 
+    /*
+     * When a pause began, or 0 when not paused, and when the receive timer
+     * it froze would have run out.
+     */
+    int64_t paused_at;
+    int64_t rx_frozen_due;
+
     /* A ring entry under construction, and its held count. */
     uint8_t packer[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t packed;
