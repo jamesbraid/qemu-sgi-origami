@@ -862,6 +862,56 @@ static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
     s->format[idx] = format;
 }
 
+/*
+ * mgras_clipped() for a run of one row at a time: narrow columns
+ * [*x0, *x1] of index row y, both on the screen, to those the clip
+ * rectangle passes. False when it passes none of them.
+ */
+static bool mgras_clip_row(SGIMgrasState *s, int y, int *x0, int *x1)
+{
+    uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
+    uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
+    unsigned int row = s->height - 1 - y;
+
+    if (s->rss[MGRAS_RSS_CLIP_MODE] == MGRAS_CLIP_MODE_ON) {
+        if (row < (cy >> 16) || row > (cy & 0xffff)) {
+            return false;
+        }
+        *x0 = MAX(*x0, (int)(cx >> 16));
+        *x1 = MIN(*x1, (int)(cx & 0xffff));
+    }
+    return *x0 <= *x1;
+}
+
+/*
+ * mgras_put_pixel() of one colour to columns x0..x1 of index row y, all
+ * on the screen. Fills and copies arrive a rectangle at a time, so the
+ * clip, the mask and the op are settled once for the row rather than at
+ * every pixel.
+ */
+static void mgras_put_row(SGIMgrasState *s, int y, int x0, int x1,
+                          uint32_t color, uint8_t op, uint32_t mask,
+                          uint8_t format)
+{
+    uint32_t *front = s->front + y * s->width;
+
+    if (!(mask & 0x00ffffff) || !mgras_clip_row(s, y, &x0, &x1)) {
+        return;
+    }
+    if ((op & 0xf) == 0x3) {
+        uint32_t ink = color & 0x00ffffff & mask;
+
+        for (int x = x0; x <= x1; x++) {
+            front[x] = ink | (front[x] & ~mask);
+        }
+    } else {
+        for (int x = x0; x <= x1; x++) {
+            front[x] = mgras_paint_pixel(op, front[x], color, mask);
+        }
+    }
+    memset(s->format + y * s->width + x0, format, x1 - x0 + 1);
+}
+
 
 static bool mgras_overlay_target(SGIMgrasState *s)
 {
@@ -918,9 +968,7 @@ static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
-        for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_pixel(s, y * s->width + x, color, op, mask, format);
-        }
+        mgras_put_row(s, y, x_lo, x_hi, color, op, mask, format);
     }
 }
 
@@ -934,8 +982,14 @@ static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
-        for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_overlay(s, y * s->width + x, index, op);
+        uint8_t *overlay = s->overlay + y * s->width;
+        int x0 = x_lo, x1 = x_hi;
+
+        if (!mgras_clip_row(s, y, &x0, &x1)) {
+            continue;
+        }
+        for (int x = x0; x <= x1; x++) {
+            overlay[x] = mgras_logic_op(op, overlay[x], index);
         }
     }
 }
@@ -1036,7 +1090,7 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
                     s->rss[MGRAS_RSS_CHAR_L];
     bool overlay = mgras_overlay_target(s);
     int y = y0 + s->glyph_row;
-    int width;
+    int width, lo, hi;
 
     if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
@@ -1048,16 +1102,25 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
         return;
     }
     width = MIN(x1 - x0 + 1, 64);
-    for (int i = 0; i < width; i++) {
-        bool set = (bits >> (63 - i)) & 1;
+    /* The row's clip, settled once for its columns. */
+    lo = x0;
+    hi = x0 + width - 1;
+    if (!mgras_clip_row(s, y, &lo, &hi)) {
+        return;
+    }
+    for (int i = lo - x0; i <= hi - x0; i++) {
+        unsigned int idx = y * s->width + x0 + i;
 
-        if (set) {
-            mgras_put_pixel(s, y * s->width + x0 + i, ink, op, mask,
-                        format);
-            if (overlay) {
-                mgras_put_overlay(s, y * s->width + x0 + i,
-                                  mgras_overlay_ink(s), op);
-            }
+        if (!((bits >> (63 - i)) & 1)) {
+            continue;
+        }
+        if (mask & 0x00ffffff) {
+            s->front[idx] = mgras_paint_pixel(op, s->front[idx], ink, mask);
+            s->format[idx] = format;
+        }
+        if (overlay) {
+            s->overlay[idx] = mgras_logic_op(op, s->overlay[idx],
+                                             mgras_overlay_ink(s));
         }
     }
 }
@@ -2192,11 +2255,21 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
     for (int32_t row = 0; row < d->h; row++) {
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int y = d->y + row;
+        int x0 = d->x, x1 = d->x + d->w - 1;
+        uint32_t *front = s->front + y * s->width;
 
         if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, false)) {
             return SGI_FAIL_BOUNDS;
         }
-        for (int32_t col = 0; col < d->w; col++) {
+        /*
+         * The box is on the screen (mgras_raster_dma_draw_image()), so
+         * the row's clip can be settled once: this is mgras_put_pixel()
+         * and mgras_put_overlay() for each column the clip passes.
+         */
+        if (!mgras_clip_row(s, y, &x0, &x1)) {
+            continue;
+        }
+        for (int32_t col = x0 - d->x; col <= x1 - d->x; col++) {
             const uint8_t *p = bytes + col * d->guest_bpp;
             /*
              * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
@@ -2214,14 +2287,21 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
              */
             uint32_t color = d->guest_bpp == 1 ? p[0] :
                 ((uint32_t)p[3] << 16) | ((uint32_t)p[2] << 8) | p[1];
-            uint8_t format = d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
-                                                 SGI_MGRAS_PIXEL_FORMAT_RGB;
+            int x = d->x + col;
 
-            mgras_put_pixel(s, y * s->width + d->x + col, color, op, mask,
-                            format);
-            if (overlay) {
-                mgras_put_overlay(s, y * s->width + d->x + col, p[0], op);
+            if (mask & 0x00ffffff) {
+                front[x] = mgras_paint_pixel(op, front[x], color, mask);
             }
+            if (overlay) {
+                s->overlay[y * s->width + x] =
+                    mgras_logic_op(op, s->overlay[y * s->width + x], p[0]);
+            }
+        }
+        if (mask & 0x00ffffff) {
+            memset(s->format + y * s->width + x0,
+                   d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
+                                       SGI_MGRAS_PIXEL_FORMAT_RGB,
+                   x1 - x0 + 1);
         }
     }
     s->dirty = true;

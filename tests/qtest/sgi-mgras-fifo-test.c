@@ -36,14 +36,6 @@
 #define MGRAS_FENCE_PUSH_1          0x00080b04
 #define MGRAS_FENCE_PUSH_2          0x000000b1000e0400ULL
 
-/*
- * The raster clip rectangle and its enable; see MGRAS_RSS_CLIP_X in
- * hw/misc/sgi-mgras-raster.c.
- */
-#define REG_CLIP_X              0x147
-#define REG_CLIP_Y              0x148
-#define REG_CLIP_MODE           0x14f
-#define MGRAS_CLIP_MODE_ON      0x11
 #define REG_RED                 0x05c
 #define REG_RE_LINE             0x041
 #define REG_RE_BLOCKCOPY        0x045
@@ -2979,20 +2971,11 @@ static void test_re_line_transparent_stipple_keeps_clear_bits(void)
 
 
 /*
- * The X server draws a primitive once per box of its window's clip list,
- * loading the box into 0x147/0x148 and 0x11 into 0x14f before each pass
- * and 0 into 0x14f after the last (the point routine in the IRIX 6.5.30
- * impactsr.so). 0x147 packs x1 << 16 | (x2 - 1); 0x148 packs the same
- * rows counted from the bottom, (1024 - y2) << 16 | (1024 - y1 - 1). A
- * pixel outside the box is not written, so a fill that covers the box
- * paints only the box. Without this the Icon Catalog's icons painted
- * through the Background Setting panel stacked above them.
+ * A pixel outside the clip box (clip_y_rows() in sgi-mgras-test.h) is not
+ * written, so a fill that covers the box paints only the box. Without
+ * this the Icon Catalog's icons painted through the Background Setting
+ * panel stacked above them.
  */
-static uint32_t clip_y_rows(uint32_t top, uint32_t bottom)
-{
-    return ((1023u - bottom) << 16) | (1023u - top);
-}
-
 static void test_fill_honours_clip_rectangle(void)
 {
     mgras_reset();
@@ -3071,6 +3054,145 @@ static void test_overlay_fill_honours_clip_rectangle(void)
     g_assert_cmphex(mgras_test_overlay(qts, 109, 215), ==, 0);
     g_assert_cmphex(mgras_test_overlay(qts, 115, 220), ==, 0);
     g_assert_cmphex(mgras_test_overlay(qts, 100, 200), ==, 0);
+}
+
+/*
+ * The box limits a fill whatever its op and colour mask, and only the
+ * pixels inside take the fill's format tag. The seed is an RGB fill of
+ * 0x0f0f0f over two rows; the box covers four columns of the second.
+ */
+static void test_masked_fill_honours_clip_rectangle(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x0f << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, 0x0f << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, 0x0f << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (300u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (309u << 16) | 401u));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (302u << 16) | 305u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(401, 401)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+
+    /* White XORed over the seed is 0xf0f0f0; green keeps the seed. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ff00ff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_XOR << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xff << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, 0xff << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, 0xff << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (309u << 16) | 401u));
+
+    g_assert_cmphex(mgras_test_pixel(qts, 302, 401), ==, 0x00f00ff0);
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 401), ==, 0x00f00ff0);
+    g_assert_cmphex(mgras_test_pixel(qts, 301, 401), ==, 0x000f0f0f);
+    g_assert_cmphex(mgras_test_pixel(qts, 306, 401), ==, 0x000f0f0f);
+    g_assert_cmphex(mgras_test_pixel(qts, 303, 400), ==, 0x000f0f0f);
+
+    /* A CI8 copy under the low byte alone: index and tag, in the box. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x000000ff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x5a));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (309u << 16) | 401u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 302, 401), ==, 0x00f00f5a);
+    g_assert_cmphex(mgras_test_format(qts, 302, 401), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_format(qts, 305, 401), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_pixel(qts, 301, 401), ==, 0x000f0f0f);
+    g_assert_cmphex(mgras_test_format(qts, 301, 401), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_test_format(qts, 306, 401), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_test_format(qts, 303, 400), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+}
+
+/*
+ * A glyph row is clipped column by column, and a row outside the box
+ * still takes its execute: the next execute paints the next row. Rows
+ * 200-203 of a 32-column glyph at x 100; the box is x 110-119 on rows
+ * 201 and 202. Row 201's pattern sets columns 16-23 only, so it shows
+ * whether row 200's execute was counted.
+ */
+static void test_glyph_row_honours_clip_rectangle(void)
+{
+    static const uint32_t rows[4] = {
+        0xffffffff, 0x0000ff00, 0xffffffff, 0xffffffff,
+    };
+
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00ffffff)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_X, (110u << 16) | 119u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_Y, clip_y_rows(201, 202)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CLIP_MODE, MGRAS_CLIP_MODE_ON));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (100u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (131u << 16) | 203u));
+    for (int i = 0; i < ARRAY_SIZE(rows); i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_CHAR_H, rows[i]));
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 200), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 201), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 116, 201), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 119, 201), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 201), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 109, 202), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 110, 202), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 119, 202), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 120, 202), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 115, 203), ==, 0);
 }
 
 /*
@@ -3908,6 +4030,12 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/overlay-fill-honours-clip-rectangle",
         test_overlay_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/masked-fill-honours-clip-rectangle",
+        test_masked_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/glyph-row-honours-clip-rectangle",
+        test_glyph_row_honours_clip_rectangle, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/re-line-clip-follows-xywin-origin",
         test_re_line_clip_follows_xywin_origin, true);
