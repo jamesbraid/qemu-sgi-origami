@@ -1027,6 +1027,38 @@ static void test_a_transmit_entry_sends_its_four_characters(const void *data)
 }
 
 /*
+ * The engine holds an entry it has started, as the unpacker count in the
+ * transmit consume index says the part does: rewriting the ring under a
+ * half-sent entry changes nothing already taken.
+ */
+static void test_a_started_entry_is_sent_as_fetched(const void *data)
+{
+    const uint8_t out[4] = { 'h', 'e', 'l', 'd' };
+    const uint8_t changed[4] = { 'w', 'x', 'y', 'z' };
+    const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    uint8_t got[4], status[4];
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+
+    /* The first character is on the line; the rest wait in the engine. */
+    qtest_memwrite(qts, RING_TX(0), changed, sizeof(changed));
+    carry_on_the_line(qts, sizeof(out));
+
+    collect_rx_chars(qts, 0, sizeof(out), got, status);
+    g_assert_cmpmem(got, sizeof(got), out, sizeof(out));
+}
+
+/*
  * A blocked backend must leave the entry with the engine. Advancing the ring
  * while the 16550 is blocked overruns its small FIFO and loses the middle of
  * this burst.
@@ -3298,6 +3330,8 @@ int main(int argc, char **argv)
                         NULL, test_an_unaimed_engine_leaves_its_port_alone);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
+    qtest_add_data_func("sn0/ioc3-serial/started-entry-sent-as-fetched", NULL,
+                        test_a_started_entry_is_sent_as_fetched);
     qtest_add_data_func("sn0/ioc3-serial/blocked-backend-keeps-every-character",
                         NULL,
                         test_a_blocked_backend_keeps_every_transmit_character);
