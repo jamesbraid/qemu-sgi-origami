@@ -1170,11 +1170,17 @@ static void sgi_hub_trace_kick(CPUState *target, const char *reason)
  * This node's processor for a slice. qemu_get_cpu() walks the machine's whole
  * processor list, and the parked-poller paths below ask for one on every
  * poll, so the answer is kept. A slice not yet created resolves on a later
- * call rather than being remembered as absent.
+ * call rather than being remembered as absent. A slice past the node's
+ * populated sockets has none: the vCPU numbered after this node's last is
+ * the next node's, which a write to this Hub's processor B enable must not
+ * reach.
 */
 static CPUState *sgi_hub_cpu(SGIHubState *s, unsigned int slice)
 {
     assert(slice < SGI_HUB_PROCESSORS);
+    if (slice >= s->cpus) {
+        return NULL;
+    }
     if (unlikely(!s->cpu[slice])) {
         s->cpu[slice] = qemu_get_cpu(s->cpu_base + slice);
     }
