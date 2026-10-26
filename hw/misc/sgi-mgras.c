@@ -1482,20 +1482,23 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
  * the model's results must not depend on how far it has got. These do
  * not wait, and act on the board as it stands:
  *
- * - values the command stream neither reads nor writes: the FIFO and bus
- *   status words the model keeps constant, the scheduler words, and the
- *   XMAP index the IRIX kernel's retrace routine selects;
+ * - values the command stream neither reads nor writes: the FIFO, bus and
+ *   PP sync status words the model keeps constant, the scheduler words,
+ *   and the PP1 select and XMAP index the IRIX kernel's retrace routine
+ *   sets;
  * - the completion and interrupt registers drivers poll and acknowledge
  *   while the pipe works: the sync and idle bits, the HQ flags (the
  *   OpenGL client polls flag 17 for a query's answer), the pending
  *   sources and their enables;
- * - the XMAP's display registers, which act on scanout at once, as the
- *   kernel's swap at retrace expects. A DMA read still waiting reads
- *   the bank the buffer select names when it runs, not when it was
- *   queued: an approximation, as on the board the two race.
+ * - the XMAP's display registers, read or written, which act on scanout
+ *   at once, as the kernel's swap at retrace expects. A DMA read still
+ *   waiting reads the bank the buffer select names when it runs, not
+ *   when it was queued: an approximation, as on the board the two race.
  *
  * Inferred from the drivers' use, not measured: on the board these are
- * host-interface registers outside the command FIFO.
+ * host-interface registers outside the command FIFO. The flag ports and
+ * the acknowledge also queue a copy behind the work, so that they end in
+ * the order the processor wrote them (sgi_mgras_work_queue_flags()).
  */
 static bool mgras_access_waits(SGIMgrasState *s, hwaddr addr, bool write)
 {
@@ -1509,15 +1512,20 @@ static bool mgras_access_waits(SGIMgrasState *s, hwaddr addr, bool write)
     case 0x020008:
     case 0x020100:
     case 0x011020:
+    case 0x071f00:
+    case SGI_MGRAS_REPP_SYNC:
         return write;
     case 0x011028:
     case 0x011048:
+        return !write;
+    case 0x011040:
+    case SGI_MGRAS_PP1_SELECT:
     case 0x071c88:
+    case SGI_MGRAS_REPP_STATUS_3:
+    case SGI_MGRAS_REPP_STATUS_4:
     case SGI_MGRAS_XMAP_BUF_SELECT:
     case SGI_MGRAS_XMAP_MAIN_MODE:
     case SGI_MGRAS_XMAP_OVERLAY_MODE:
-        return !write;
-    case 0x011040:
     case SGI_MGRAS_SCHED_ARG_1:
     case SGI_MGRAS_SCHED_ARG_2:
     case SGI_MGRAS_SCHED_ARG_3:
