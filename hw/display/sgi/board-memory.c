@@ -184,38 +184,13 @@ static bool sgi_plane_is_le(const SGIPlane *p)
 static inline uint32_t sgi_plane_get(const SGIPlane *p, unsigned bpp,
                                      const uint8_t *bytes)
 {
-    switch (bpp) {
-    case 1:
-        return bytes[0];
-    case 2:
-        return sgi_plane_is_le(p) ? lduw_le_p(bytes) : lduw_be_p(bytes);
-    default:
-        return sgi_plane_is_le(p) ? ldl_le_p(bytes) : ldl_be_p(bytes);
-    }
+    return sgi_plane_word_load(bytes, bpp, sgi_plane_is_le(p));
 }
 
 static inline void sgi_plane_put(const SGIPlane *p, unsigned bpp,
                                  uint32_t word, uint8_t *bytes)
 {
-    switch (bpp) {
-    case 1:
-        bytes[0] = word;
-        break;
-    case 2:
-        if (sgi_plane_is_le(p)) {
-            stw_le_p(bytes, word);
-        } else {
-            stw_be_p(bytes, word);
-        }
-        break;
-    default:
-        if (sgi_plane_is_le(p)) {
-            stl_le_p(bytes, word);
-        } else {
-            stl_be_p(bytes, word);
-        }
-        break;
-    }
+    sgi_plane_word_store(bytes, bpp, sgi_plane_is_le(p), word);
 }
 
 uint32_t sgi_plane_decode(const SGIPlane *p, const uint8_t *bytes)

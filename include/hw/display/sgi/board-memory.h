@@ -177,44 +177,55 @@ typedef struct SGIPlaneRun {
 bool sgi_plane_run(const SGIBoardMemory *m, const SGIPlane *p, int x, int y,
                    int n, SGIPlaneRun *run);
 
-static inline uint32_t sgi_plane_run_load(const SGIPlaneRun *run, int i)
+/* One plane word of `bpp` bytes, little-endian when `le` is set. */
+static inline uint32_t sgi_plane_word_load(const uint8_t *bytes,
+                                           unsigned bpp, bool le)
 {
-    const uint8_t *bytes = run->host + (size_t)i * run->bpp;
-
-    switch (run->bpp) {
+    switch (bpp) {
     case 1:
         return bytes[0];
     case 2:
-        return run->le ? lduw_le_p(bytes) : lduw_be_p(bytes);
+        return le ? lduw_le_p(bytes) : lduw_be_p(bytes);
     default:
-        return run->le ? ldl_le_p(bytes) : ldl_be_p(bytes);
+        return le ? ldl_le_p(bytes) : ldl_be_p(bytes);
     }
 }
 
-static inline void sgi_plane_run_store(const SGIPlaneRun *run, int i,
-                                       uint32_t word)
+static inline void sgi_plane_word_store(uint8_t *bytes, unsigned bpp,
+                                        bool le, uint32_t word)
 {
-    uint8_t *bytes = run->host + (size_t)i * run->bpp;
-
-    switch (run->bpp) {
+    switch (bpp) {
     case 1:
         bytes[0] = word;
         break;
     case 2:
-        if (run->le) {
+        if (le) {
             stw_le_p(bytes, word);
         } else {
             stw_be_p(bytes, word);
         }
         break;
     default:
-        if (run->le) {
+        if (le) {
             stl_le_p(bytes, word);
         } else {
             stl_be_p(bytes, word);
         }
         break;
     }
+}
+
+static inline uint32_t sgi_plane_run_load(const SGIPlaneRun *run, int i)
+{
+    return sgi_plane_word_load(run->host + (size_t)i * run->bpp, run->bpp,
+                               run->le);
+}
+
+static inline void sgi_plane_run_store(const SGIPlaneRun *run, int i,
+                                       uint32_t word)
+{
+    sgi_plane_word_store(run->host + (size_t)i * run->bpp, run->bpp,
+                         run->le, word);
 }
 
 /* A plane word to and from its stored bytes, in the plane's packing. */
