@@ -468,6 +468,11 @@ struct SGIOdysseyState {
      * 0x00).
      */
     SGIGLContext gl_ctx;
+    /*
+     * The drawable odyssey_gl_bind() last built for the shared context:
+     * scratch, derived from the window registers, not migrated.
+     */
+    SGIGLDrawable gl_bind_drawable;
     SGIRenderer *mesa_renderer;
     /*
      * The host has no renderer, so x-mesa-renderer draws everything on the
