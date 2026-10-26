@@ -1431,13 +1431,16 @@ static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
  * enables, which covers both command ports, and the pipe returns the
  * credit when it frees the store's FIFO slot. The model takes every store
  * off the port before the handler returns, so the credit goes back at
- * once, to the widget's entry in the master node's map. The mark is
- * sampled first: one store is one credit, whatever the handler stores in
- * turn and however wide the store was.
+ * once, as a write response to the Hub that sent the store, whose map
+ * routes it (sgi_pi_gfx_store_source()); a store with no sender uses the
+ * "pi" link. The mark is sampled first: one store is one credit, whatever
+ * the handler stores in turn and however wide the store was.
  */
 static void mgras_return_credit(SGIMgrasState *s)
 {
-    if (!s->pi) {
+    Object *node = sgi_pi_gfx_store_source() ?: s->pi;
+
+    if (!node) {
         if (!s->pi_unlinked_logged) {
             s->pi_unlinked_logged = true;
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: no pi link; graphics "
@@ -1445,11 +1448,15 @@ static void mgras_return_credit(SGIMgrasState *s)
         }
         return;
     }
-    if (!s->pi_return_credits) {
-        sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, 1);
+    /*
+     * The hook cached when the board was placed is the "pi" link's; a
+     * store another Hub sent goes back through that Hub's own class.
+     */
+    if (node == s->pi && s->pi_return_credits) {
+        s->pi_return_credits(node, s->pi_widget, 1);
         return;
     }
-    s->pi_return_credits(s->pi, s->pi_widget, 1);
+    sgi_pi_gfx_return_credits(node, SGI_XIO_BOARD(s)->slot, 1);
 }
 
 static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
