@@ -2800,7 +2800,7 @@ static bool sgi_soft_simple_fragments(const SGISoftDraw *r)
  * The constant flags select a specialisation each, so the per-pixel loop
  * carries no test of them.
  */
-static inline __attribute__((always_inline))
+static inline QEMU_ALWAYS_INLINE
 void sgi_soft_simple_row(const SGISoftDraw *r, const SGISoftVertex v[3],
                          int py, int px0, int px1, int64_t e1, int64_t e2,
                          int64_t step1, int64_t step2, int64_t area,
@@ -2932,12 +2932,16 @@ void sgi_soft_simple_row(const SGISoftDraw *r, const SGISoftVertex v[3],
     }
 }
 
-static void sgi_soft_simple_span(const SGISoftDraw *r,
-                                 const SGISoftVertex v[3], int py, int px0,
-                                 int px1, int64_t e1, int64_t e2,
-                                 int64_t step1, int64_t step2, int64_t area,
-                                 double offset, const SGISoftFrag *flat,
-                                 bool smooth)
+/*
+ * Out of line: its eight specialisations inlined into the triangle
+ * routine made that four times larger and slowed its generic loop, which
+ * textured triangles take, by 2-3%. It is called once a row.
+ */
+static void __attribute__((noinline))
+sgi_soft_simple_span(const SGISoftDraw *r, const SGISoftVertex v[3], int py,
+                     int px0, int px1, int64_t e1, int64_t e2, int64_t step1,
+                     int64_t step2, int64_t area, double offset,
+                     const SGISoftFrag *flat, bool smooth)
 {
     bool rgba = r->t->store_rgba;
 
