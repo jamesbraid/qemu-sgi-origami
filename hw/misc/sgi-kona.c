@@ -3887,12 +3887,12 @@ static void sgi_kona_cursor_word(SGIKonaState *s, uint32_t word)
 
 /*
  * The GL client's 0xee 0 (get line-mode distance, paraphrasing the pipe's
- * command name): __glkon_get_special waits for word
- * 0 of the return page to go non-zero, and its caller then copies 32 words
- * from byte 8, eight records of four, words 0 and 1 of each into one
- * 16-word context block and words 2 and 3 into another, which the
- * library's pixel-transfer code reads later (established from the
- * reader). The answer goes on the current context's return page.
+ * command name): the IRIX client library's special-query routine waits
+ * for word 0 of the return page to go non-zero, and its caller then copies 32
+ * words from byte 8, eight records of four, words 0 and 1 of each into one
+ * 16-word context block and words 2 and 3 into another, which the library's
+ * pixel-transfer code reads later (established from the reader). The answer
+ * goes on the current context's return page.
  *
  * Approximated: what the 32 words mean is unknown, and zeros are the
  * model's choice. The guest check is the minimal GLX program's probe
@@ -3965,11 +3965,11 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
 
 /*
  * The GL client's 0x3b 0 and 0x3d 0, the current-attribute and
- * raster-position queries. libGLcore's two senders (n32 6.5.30, at
- * 0xd95a5a0 and 0xd95a670) pass the selector to __glkon_get_special,
- * wait for word 0 of the return page, and return a pointer into the
- * words from byte 8 by the pname asked for; the glGet descriptors at
- * 0xda82b10 read every one of those words as a binary32. So the layouts
+ * raster-position queries. libGLcore's two senders (n32 6.5.30) pass
+ * the selector to the client library's special-query routine, wait for
+ * word 0 of the return page, and return a pointer into the words from
+ * byte 8 by the pname asked for; the library's glGet descriptors read
+ * every one of those words as a binary32. So the layouts
  * below are established from the reader:
  *
  *   0x3b: current RGBA (+0x00), index (+0x10), normal xyz (+0x14),
@@ -4081,7 +4081,7 @@ static const SGIRasterRules sgi_kona_gl_rules = {
  * of 2, 4 or 8 bits, single-buffered, nothing else.
  *
  * Established: the IRIX 6.5.30 n32 libGLcore.so's configuration routine
- * (0xd949e50-0xd949f18) sends the context's level, its word 0xce4 (the
+ * sends the context's level, its word 0xce4 (the
  * library's GLDEBUG print names it "lvl"), as the first word, and
  * SceneViewer's logo context sent 1 0 8 0 0 0 0 0 0 0 (run
  * irix-20261023T111222-0467d9), whose window the kernel then placed with
@@ -6205,12 +6205,12 @@ static void sgi_kona_gl_finish(SGIKonaState *s, uint32_t wait)
  * last normal is not lit (SGI's OpenGL Porting Guide, 007-1797-030,
  * appendix B, "Color/normal flag"). The IRIX 6.5.30 n32 IP27KONA
  * libGLcore.so (SHA-256 1639e2c6...352f) leaves it to the pipe: its
- * __glkonim_IglooInterfaceSGIX (0xd9881a0) sends GL_IGLOO_COLORNORMAL_SGIX
- * as 0x1be and GL_IGLOO_LMC_COLOR_SGIX as 0x113, each with the caller's
- * parameter word, and keeps no state of its own (established from the
- * listing). Inferred: the rule holds while the last colour-normal word is
- * nonzero and the last LMC colour word is 1, the values for which the
- * IP27GR532 MGRAS library of the same release turns the rule on.
+ * glIglooInterfaceSGIX sends GL_IGLOO_COLORNORMAL_SGIX as 0x1be and
+ * GL_IGLOO_LMC_COLOR_SGIX as 0x113, each with the caller's parameter word, and
+ * keeps no state of its own (established from the listing). Inferred: the rule
+ * holds while the last colour-normal word is nonzero and the last LMC colour
+ * word is 1, the values for which the IP27GR532 MGRAS library of the same
+ * release turns the rule on.
  *
  * While the rule holds and lighting is enabled in an RGBA context, the
  * model lights a vertex whose colour came after the last normal with
@@ -7080,8 +7080,8 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
         break;
     case SGI_KONA_CMD_GL_TEX_GEN:
         /*
-         * __glkonim_TexGen{i,f,d,iv,fv,dv} (n32 libGLcore 0xda66590-
-         * 0xda66640, 0xd94f000-0xd94f330): the coordinate, the pname,
+         * glTexGen{i,f,d,iv,fv,dv} in the IRIX n32 client library: the
+         * coordinate, the pname,
          * then for an object or eye plane four single floats, and for
          * anything else, the mode among them, one integer word.
          */
@@ -7981,7 +7981,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 #define SGI_KONA_TEXTURE_COPIED_STORAGE 0x30
 
 /*
- * 0x52, a texel readback (__glkonReadTexels3D): before the library gives a
+ * 0x52, a texel readback: before the library gives a
  * resident texture's pipe memory to another, it copies the texture to host
  * memory with this command inside a select-feed bracket, and loads the
  * copy back later with 0x174 when the texture is used again. Its words,
@@ -9073,7 +9073,8 @@ static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
 /*
  * glDrawArrays' vertices (see SGI_KONA_CMD_GL_ARRAY_STATE). The state
  * word holds one field for each enabled array, zero for a disabled one
- * (libGLcore's +0x1518 & +0x151c, __glim_*PointerEXT and glEnable): the
+ * (libGLcore's context words +0x1518 and +0x151c, which the
+ * gl*PointerEXT calls and glEnable set): the
  * position's size and type in bits 0 to 7, the normal's type in 8 to 11,
  * the colour's type and size in 12 to 19, the texture coordinate's type
  * and size in 20 to 26, the edge flag in bit 27 and the colour index's

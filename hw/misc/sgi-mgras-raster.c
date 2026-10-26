@@ -2737,8 +2737,8 @@ static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
 /*
  * A transfer to the GE, carrying the image of the loaded context's pixel
  * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
- * it with (slot << 1) | 0xa1 (the DMA setup routine, 0xd9c2b10 in the
- * IRIX 6.5.30 IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
+ * it with (slot << 1) | 0xa1 (the DMA setup routine in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
  * of ipaste, imgview and i3dm (a captured run), where the
  * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
  * reads bit 4 clear as the GE's port only with a draw waiting, inferred
@@ -2875,8 +2875,8 @@ bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
 
 /*
  * The HQ page-list form, as the OpenGL client's TRAM restore sends it
- * (its texture-load-from-save routine, 0xd9a4390 in the IRIX 6.5.30
- * IP27GR532 libGLcore.so): 0x00080010 with four words, X.Org's pg_list0
+ * (its texture-load-from-save routine in the IRIX 6.5.30 IP27GR532
+ * libGLcore.so): 0x00080010 with four words, X.Org's pg_list0
  * to pg_list3, holding up to eight 16-bit entries high half first, the
  * last with bit 15 set; pg_offset (register 5), pg_widtha (8), register
  * 9 and pg_linecnt (7) 1, with pg_width (4) 0x1000 sent before. In a
@@ -3018,8 +3018,8 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * which covers the first of the list's 14 pool pages, and nothing else
  * reached the board before glFlush. So the rest of the list can only be
  * reached from the pool. Each range there begins with a header the
- * client's range-header routine (libGLcore.so IP27GR532, SHA-256 626d6d94...,
- * 0xd970cf0) writes from the range's type, and the same run's fetch
+ * client's range-header routine (libGLcore.so IP27GR532, SHA-256 626d6d94...)
+ * writes from the range's type, and the same run's fetch
  * records (sgi_mgras_dma_chunk, seq 7576884 and 7576887) show the board
  * reading exactly these words at the execute:
  *
@@ -3029,7 +3029,8 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  *   0x00080c08, callee offset, size  called list's first range, then next
  *
  * Established from the client's code: the three forms, their 2, 3 and 6
- * header words (the table at .rodata 0xdac9588), that the display-list pool
+ * header words (from a table in the library's read-only data), that the
+ * display-list pool
  * routine writes the next range's pool offset and size into a range's words 1
  * and 2, and that the display-list call-resolve routine writes the called
  * list's first range into words 4 and 5 of a calling range. A descriptor flag

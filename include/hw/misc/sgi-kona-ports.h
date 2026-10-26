@@ -254,7 +254,10 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * one integer field converted to a float.
  */
 #define SGI_KONA_CMD_GL_RASTER_STATE 0x10e
-/* __glKonUpdateEvalAttributes: four words, then 0x29 with eight. */
+/*
+ * The IRIX client library's evaluator attribute update: four words, then
+ * 0x29 with eight.
+ */
 #define SGI_KONA_CMD_GL_EVAL_ATTRIB  0x28
 #define SGI_KONA_CMD_GL_EVAL_ATTRIB2 0x29
 /*
@@ -271,20 +274,19 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_POINT_PARAMETER   0x1a7
 #define SGI_KONA_CMD_GL_POINT_ATTENUATION 0x1a8
 /*
- * glSpriteParameter*SGIX (libGLcore __glkonim_SpriteParameter*SGIX):
- * 0x1a4 with the mode pname and the mode, or 0x1a5 with a pname and three
- * words, the axis's or translation's floats, or the mode three times as
- * an integer.
+ * glSpriteParameter*SGIX: 0x1a4 with the mode pname and the mode, or 0x1a5 with
+ * a pname and three words, the axis's or translation's floats, or the mode
+ * three times as an integer.
  */
 #define SGI_KONA_CMD_GL_SPRITE_MODE       0x1a4
 #define SGI_KONA_CMD_GL_SPRITE_VECTOR     0x1a5
 /*
- * glSampleMaskSGIS (__glkonim_SampleMaskSGIS): 0x118, the value clamped
+ * glSampleMaskSGIS: 0x118, the value clamped
  * to zero through one, and the invert flag.
  */
 #define SGI_KONA_CMD_GL_SAMPLE_MASK       0x118
 /*
- * glDrawArrays (libGLcore __glkonim_DrawArraysEXT): 0x180 and the enabled
+ * glDrawArrays (from the IRIX client library): 0x180 and the enabled
  * arrays' state word when it changed; then inside glBegin and glEnd,
  * 0x181 0, a short run, a bulk run and 0x1a3 0. A short run's token is
  * 0x1a3 - e * r (e = 1, 2 or 4 enabled arrays) or 0x1a1 - e * r (e = 3,
@@ -384,9 +386,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 /*
  * A texel readback, 0x52 and 18 words, which the library sends inside a
  * select-feed bracket to copy a resident texture to host memory before it
- * gives the texture's pipe memory to another (__glkonReadTexels3D), or
- * answered on the return page when small. The library's mode command
- * 0x111 and two words (__glKonSetNoModeState) comes before it.
+ * gives the texture's pipe memory to another, or answered on the return
+ * page when small. The library's mode command 0x111 and two words comes
+ * before it.
  */
 #define SGI_KONA_CMD_GL_READ_TEXELS 0x52
 #define SGI_KONA_GL_READ_TEXELS_WORDS 18
@@ -422,7 +424,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 /*
  * glIglooInterfaceSGIX, which IRIS GL's IGLOO library calls to set IRIS GL
  * behaviour, sends one selector and one word for each of five parameters
- * (established from libGLcore's __glkonim_IglooInterfaceSGIX): IRIS GL
+ * (established from libGLcore's glIglooInterfaceSGIX): IRIS GL
  * mode 0x81a2 as 0x112, LMC colour 0x81a3 as 0x113, colour-normal 0x81a1
  * as 0x1be and tmesh mode 0x81a4 as 0x1c9, each with the caller's first
  * parameter word, and swap-tmesh 0x81a0 as 0x1a9 and a literal 0. Full
@@ -439,7 +441,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 /*
  * glTexGen in every form sends 0x14 and nine words: the coordinate, the
  * parameter name and seven value words, the unused ones zero (established
- * from libGLcore's __glkonim_TexGen senders). A mode goes as one integer
+ * from libGLcore's glTexGen senders). A mode goes as one integer
  * word; an object or eye plane as four floats; the two SGIX parameters
  * 0x81f6 and 0x81f7 as seven floats. The mode and the two planes go to
  * the shared GL's texture coordinate generation; the SGIS point and line
@@ -449,8 +451,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_GL_TEX_GEN_WORDS   9
 /*
  * The glRasterPos forms other than the float ones above, each sent as
- * the caller's components (established from libGLcore's
- * __glkonim_RasterPos senders): a double as two words, an integer or
+ * the caller's components (established from libGLcore's glRasterPos
+ * senders): a double as two words, an integer or
  * short as one sign-extended word.
  */
 #define SGI_KONA_CMD_GL_RASTER_POS2D 0xa8
@@ -531,9 +533,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_X_CURSOR_DATA_WORDS 260
 
 /*
- * The texture table's data words after its slot word: bindTexTable hands
- * __glkon_datavn 33 words, which it sends as sixteen doubleword stores and
- * one word store. sgi-kona.c consumes them.
+ * The texture table's data words after its slot word: the IRIX client
+ * library hands its data sender 33 words, which it sends as sixteen
+ * doubleword stores and one word store. sgi-kona.c consumes them.
  */
 #define SGI_KONA_GL_TEX_TABLE_WORDS 33
 

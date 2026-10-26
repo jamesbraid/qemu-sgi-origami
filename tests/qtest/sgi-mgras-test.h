@@ -2066,7 +2066,7 @@ static inline void gl_migrate(void (*setup)(QTestState *),
 
 /*
  * glDepthRange is 0x4808 and near and far as floats, which the client does not
- * clamp (the depth-range routine, 0xd960590); GL_DEPTH_RANGE is queried at
+ * clamp; GL_DEPTH_RANGE is queried at
  * 0xc21 and 0xc22 and read as floats. OpenGL 1.2.1 (2.10.1) starts the range at
  * [0, 1] and clamps each value to [0, 1].
  */
@@ -2217,9 +2217,9 @@ static inline uint32_t gl_lit_triangle(QTestState *qts, bool back)
 }
 
 /*
- * Polygon culling as the client sends it (the cull-face routine 0xd95f260,
- * the front-face routine 0xd9544b0, the enable routine and the disable routine
- * for GL_CULL_FACE): 0x7404 and the face, 0x5604 and the direction,
+ * Polygon culling as the client sends it (the cull-face routine, the
+ * front-face routine, and the enable and disable routines for
+ * GL_CULL_FACE): 0x7404 and the face, 0x5604 and the direction,
  * 0x7200 and 0x7300 alone.
  */
 #define GL_CULL_ON            0x00007200
@@ -2251,7 +2251,7 @@ static inline void gl_fill_window(QTestState *qts, float r, float g, float b)
 }
 
 /*
- * glScissor (the scissor routine 0xd97c260): 0x3910 and x, width - 1, y,
+ * glScissor (the scissor routine): 0x3910 and x, width - 1, y,
  * height - 1; glEnable and glDisable of GL_SCISSOR_TEST: 0x6e04 and 1 or
  * 0. GL_SCISSOR_BOX is queried at 0xc24 to 0xc27 as x, y and the last
  * column and row, and GL_SCISSOR_TEST at 0xc28.
@@ -2272,7 +2272,7 @@ static inline void gl_scissor(QTestState *qts, int32_t x, int32_t y, int32_t w,
 }
 
 /*
- * glAlphaFunc (the alpha-function routine 0xd95ea40): 0x3e08, the function less
+ * glAlphaFunc (the alpha-function routine): 0x3e08, the function less
  * GL_NEVER and the reference as a 12-bit fraction; glEnable and glDisable
  * of GL_ALPHA_TEST: 0x6404 and 1 or 0. GL_ALPHA_TEST is bit 6 of query
  * 0x288, and GL_ALPHA_TEST_FUNC and _REF bits 2:0 and 14:3 of 0x2cc.

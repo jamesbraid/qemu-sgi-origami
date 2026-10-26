@@ -4828,9 +4828,9 @@ static void test_texture_native_publication(void)
 
 /*
  * A texel readback, the copy the library takes of a resident texture
- * before it gives the texture's memory to another (__glkonReadTexels3D):
- * its mode command 0x111 and two words, then 0x52 and 18 words inside a
- * select-feed bracket, naming the texture by the destination a texel load
+ * before it gives the texture's memory to another: its mode command
+ * 0x111 and two words, then 0x52 and 18 words inside a select-feed
+ * bracket, naming the texture by the destination a texel load
  * gave it (geometry word 0x23, banks 0 and 0). The finish writes the
  * texels to the mapped page and posts completion reason 0x100 with the
  * finish's tag; without the readback the pipe never completed the
@@ -5078,7 +5078,7 @@ static void texture_cache_upload(QTestState *s, uint32_t id, uint32_t addr,
     kona_command(s, 0x178, &id, 1);
 }
 
-/* glTexGen as __glkonim_TexGen* sends it: 0x14 and nine words. */
+/* glTexGen as the IRIX client library sends it: 0x14 and nine words. */
 static void kona_tex_gen(QTestState *s, uint32_t coord, uint32_t pname,
                          const float *plane)
 {
