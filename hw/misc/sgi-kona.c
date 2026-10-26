@@ -1719,6 +1719,7 @@ static void sgi_kona_state_free(SGIKonaGLState *state)
     for (unsigned i = 0; i < SGI_KONA_GL_ATTRIB_DEPTH; i++) {
         sgi_gl_cleanup(&state->attrib[i]);
     }
+    g_free(state->parked_upload.pixels);
     g_free(state);
 }
 
@@ -1735,7 +1736,21 @@ static void sgi_kona_contexts_clear(SGIKonaState *s)
     }
     s->context_count = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
+    s->texture_upload_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_regs_context = SGI_KONA_CONTEXT_NONE;
+    sgi_kona_texture_set_owner(&s->textures, 0);
     s->context_page_pending = false;
+}
+
+/*
+ * The texture owner of context table entry `slot`: texture handles are each
+ * context's own (see SGI_KONA_TEXTURE_OWNERS), and 0 is no context.
+ */
+QEMU_BUILD_BUG_ON(SGI_KONA_CONTEXTS + 1 > SGI_KONA_TEXTURE_OWNERS);
+
+static uint32_t sgi_kona_texture_owner(unsigned slot)
+{
+    return slot + 1;
 }
 
 static SGIKonaGLState *sgi_kona_state_new(SGIKonaState *s, unsigned slot)
@@ -1795,6 +1810,8 @@ static void sgi_kona_gl_image_clear(SGIKonaState *s);
 static unsigned sgi_kona_gl_run_uploads(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
+static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot);
+static void sgi_kona_texture_regs_switch(SGIKonaState *s, int slot);
 
 static uint64_t sgi_kona_context_generation(SGIKonaState *s, int context)
 {
@@ -1878,6 +1895,9 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         }
         /* A context started afresh has no command of its own left open. */
         sgi_kona_saved_input_clear(&s->saved_input[slot]);
+        /* Nor any texture: its handles name none of a former one's. */
+        sgi_kona_texture_drop_owner(&s->textures,
+                                    sgi_kona_texture_owner(slot));
         if (s->x_pixel_remaining && s->x_pixel_owner == slot) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: context %d started"
                           " afresh with its X pixel write %" PRIu32
@@ -1898,6 +1918,12 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         }
         /* Rendering and return writes are synchronous under the big lock. */
         sgi_kona_renderer_stop(s);
+        if (s->texture_upload_context == slot) {
+            sgi_kona_texture_upload_clear(s);
+        }
+        if (s->texture_regs_context == slot) {
+            s->texture_regs_context = SGI_KONA_CONTEXT_NONE;
+        }
         sgi_kona_state_free(s->state[slot]);
         s->state[slot] = replacement;
         s->contexts[slot] = (SGIKonaContext) {
@@ -1933,13 +1959,11 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         (fresh || s->context_current != slot)) {
         s->gl_map_upload.refused = true;
     }
-    s->texture_associate_pending = false;
     s->texture_retire_pending = false;
-    if (fresh || s->context_current != slot) {
-        s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
-        s->texture_bind_generation = 0;
-    }
+    sgi_kona_texture_upload_switch(s, slot);
+    sgi_kona_texture_regs_switch(s, slot);
     s->context_current = slot;
+    sgi_kona_texture_set_owner(&s->textures, sgi_kona_texture_owner(slot));
     s->gl_grammar = true;
     s->context_page_pending = first;
     s->return_page_valid = c->return_page_valid;
@@ -2224,11 +2248,9 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     if (!(kept & SGI_KONA_RUN_MAP)) {
         s->gl_map_upload.refused = true;
     }
-    s->texture_associate_pending = false;
     s->texture_retire_pending = false;
-    s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
-    s->texture_bind_generation = 0;
     s->context_current = SGI_KONA_CONTEXT_NONE;
+    sgi_kona_texture_set_owner(&s->textures, 0);
     s->context_page_pending = false;
     sgi_kona_post_reason(s, SGI_KONA_CMD_CONTEXT_DEACTIVATE,
                          SGI_KONA_REASON_CONTEXT_DEACTIVATED);
@@ -4511,8 +4533,8 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
          s->state[s->context_current]->pipe.texture_rebind_refused) ||
         (!s->textures.bound && s->texture_bind_valid &&
          s->texture_bind[0] != UINT32_MAX &&
-         g_hash_table_lookup(s->textures.objects,
-                             GUINT_TO_POINTER(s->texture_bind[0])))) {
+         sgi_kona_texture_lookup(&s->textures, s->textures.owner,
+                                 s->texture_bind[0]))) {
         t->texture = &unsupported_texture;
     }
 }
@@ -4687,8 +4709,8 @@ static SGIRasterTextureResult sgi_kona_renderer_texture(
         }
         texture->wrap[axis] = mode;
     }
-    object = g_hash_table_lookup(s->textures.objects,
-                                 GUINT_TO_POINTER(s->textures.bound_handle));
+    object = sgi_kona_texture_lookup(&s->textures, s->textures.owner,
+                                     s->textures.bound_handle);
     if (!object || image != &object->image) {
         return SGI_RASTER_TEXTURE_UNSUPPORTED;
     }
@@ -9259,6 +9281,130 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
     g_free(s->texture_upload.pixels);
     s->texture_upload = (SGIKonaTextureUpload) { 0 };
     s->texture_dma_discard = false;
+    s->texture_upload_context = SGI_KONA_CONTEXT_NONE;
+}
+
+/*
+ * A texture level is loaded by 0x174 and its rows, and published by 0x176
+ * afterwards; the client library sends the two from the same context, but
+ * a context switch can fall between them, and the other context's own
+ * commands would then replace or clear the load. Each context's load is
+ * therefore its own once its rows are in, or while its rows are to come
+ * by DMA (atlantis's DMA load has been seen switched out before its DMA
+ * packet): when context `slot` becomes current, such a load another
+ * context made is set aside with that context, and one `slot` set aside
+ * comes back. A load still taking FIFO rows travels with the open command
+ * instead (sgi_kona_input_save()), and anything else is left as it was.
+ */
+static bool sgi_kona_texture_upload_parkable(const SGIKonaTextureUpload *u)
+{
+    return !u->draw_pixels &&
+           (u->complete || (u->count && u->header[6] == 1));
+}
+
+static void sgi_kona_texture_upload_switch(SGIKonaState *s, int slot)
+{
+    int owner = s->texture_upload_context;
+    SGIKonaGLState *state;
+
+    if (owner != SGI_KONA_CONTEXT_NONE && owner != slot &&
+        sgi_kona_texture_upload_parkable(&s->texture_upload) &&
+        !s->texture_dma_discard && !s->gl_data_remaining && s->state[owner]) {
+        state = s->state[owner];
+        g_free(state->parked_upload.pixels);
+        state->parked_upload = s->texture_upload;
+        s->texture_upload = (SGIKonaTextureUpload) { 0 };
+        s->texture_upload_context = SGI_KONA_CONTEXT_NONE;
+    }
+    state = slot != SGI_KONA_CONTEXT_NONE ? s->state[slot] : NULL;
+    if (state && sgi_kona_texture_upload_parkable(&state->parked_upload) &&
+        s->texture_upload_context == SGI_KONA_CONTEXT_NONE &&
+        !s->texture_upload.count && !s->texture_upload.complete) {
+        g_free(s->texture_upload.pixels);
+        s->texture_upload = state->parked_upload;
+        state->parked_upload = (SGIKonaTextureUpload) { 0 };
+        s->texture_upload_context = slot;
+    }
+}
+
+static void sgi_kona_texture_regs_store(const SGIKonaState *s,
+                                        SGIKonaTextureRegs *r)
+{
+    memcpy(r->bind, s->texture_bind, sizeof(r->bind));
+    memcpy(r->record, s->texture_record, sizeof(r->record));
+    r->record_token = s->texture_record_token;
+    memcpy(r->transform, s->texture_transform, sizeof(r->transform));
+    r->bind_valid = s->texture_bind_valid;
+    r->record_valid = s->texture_record_valid;
+}
+
+static void sgi_kona_texture_regs_load(SGIKonaState *s,
+                                       const SGIKonaTextureRegs *r)
+{
+    memcpy(s->texture_bind, r->bind, sizeof(s->texture_bind));
+    memcpy(s->texture_record, r->record, sizeof(s->texture_record));
+    s->texture_record_token = r->record_token;
+    memcpy(s->texture_transform, r->transform, sizeof(s->texture_transform));
+    s->texture_bind_valid = r->bind_valid;
+    s->texture_record_valid = r->record_valid;
+}
+
+/*
+ * The bind words are pipe state the client library sends in pieces: a
+ * bind, then its record, with 0x178 naming a texture between binds. A
+ * context switch can fall between the pieces (mirrors' 0x106 and its 0x179
+ * have been seen split by atlantis's own bind and 0x178), and the record
+ * must then complete this context's bind, not the other program's. So the
+ * words are each context's own, kept with it while another is current, as
+ * the textures they name are (sgi_kona_texture_set_owner()), along with
+ * whether a bind still waits for its record and the association that
+ * record would commit. A context that has none starts from the reset
+ * words, and one made current again keeps what it had.
+ */
+static void sgi_kona_texture_regs_switch(SGIKonaState *s, int slot)
+{
+    int owner = s->texture_regs_context;
+    SGIKonaGLState *state;
+
+    if (owner == slot) {
+        return;
+    }
+    if (owner != SGI_KONA_CONTEXT_NONE && s->state[owner]) {
+        SGIKonaTextureRegs *r = &s->state[owner]->texture_regs;
+
+        sgi_kona_texture_regs_store(s, r);
+        r->bind_pending = s->texture_bind_context == owner &&
+            sgi_kona_context_owner(s, owner, s->texture_bind_generation);
+        r->associate_pending = s->texture_associate_pending &&
+            s->texture_associate_context == owner &&
+            sgi_kona_context_owner(s, owner,
+                                   s->texture_associate_generation);
+        r->associate_slot = s->texture_associate_slot;
+        s->state[owner]->texture_regs_saved = true;
+    }
+    s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
+    s->texture_bind_generation = 0;
+    s->texture_associate_pending = false;
+    state = slot != SGI_KONA_CONTEXT_NONE ? s->state[slot] : NULL;
+    if (state && state->texture_regs_saved) {
+        const SGIKonaTextureRegs *r = &state->texture_regs;
+
+        sgi_kona_texture_regs_load(s, r);
+        if (r->bind_pending) {
+            s->texture_bind_context = slot;
+            s->texture_bind_generation = sgi_kona_context_generation(s, slot);
+        }
+        if (r->associate_pending) {
+            s->texture_associate_pending = true;
+            s->texture_associate_context = slot;
+            s->texture_associate_generation =
+                sgi_kona_context_generation(s, slot);
+            s->texture_associate_slot = r->associate_slot;
+        }
+    } else {
+        sgi_kona_texture_regs_load(s, &(SGIKonaTextureRegs) { 0 });
+    }
+    s->texture_regs_context = slot;
 }
 
 static uint32_t sgi_kona_texture_source_bytes(uint32_t format, uint32_t type)
@@ -11343,8 +11489,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D &&
             s->texture_associate_pending) {
             uint32_t handle = s->texture_bind[0];
-            SGIKonaTextureObject *object = g_hash_table_lookup(
-                s->textures.objects, GUINT_TO_POINTER(handle));
+            SGIKonaTextureObject *object = sgi_kona_texture_lookup(
+                &s->textures, s->textures.owner, handle);
 
             if (i == s->texture_associate_context &&
                 s->texture_record_valid && s->textures.bound &&
@@ -11404,6 +11550,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             sgi_kona_texture_association_forget(s, args[10]);
         }
         words = sgi_kona_gl_tex_load_words(s, i, args);
+        if (s->texture_upload.count) {
+            s->texture_upload_context = i;
+        }
         if (words) {
             sgi_kona_gl_data_open(s, selector, words);
         }
@@ -17226,12 +17375,8 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_kona_gl_image_clear(s);
     memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
     memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
-    memset(s->texture_bind, 0, sizeof(s->texture_bind));
-    memset(s->texture_record, 0, sizeof(s->texture_record));
-    s->texture_record_token = 0;
-    memset(s->texture_transform, 0, sizeof(s->texture_transform));
-    s->texture_bind_valid = false;
-    s->texture_record_valid = false;
+    sgi_kona_texture_regs_load(s, &(SGIKonaTextureRegs) { 0 });
+    s->texture_regs_context = SGI_KONA_CONTEXT_NONE;
     s->texture_state_used = false;
     s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
     s->texture_bind_generation = 0;
@@ -17807,9 +17952,9 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
         }
         for (unsigned slot = 0; slot < 2; slot++) {
             if (p->texture_assoc_valid & (1u << slot)) {
-                SGIKonaTextureObject *object = g_hash_table_lookup(
-                    s->textures.objects,
-                    GUINT_TO_POINTER(p->texture_assoc_handle[slot]));
+                SGIKonaTextureObject *object = sgi_kona_texture_lookup(
+                    &s->textures, sgi_kona_texture_owner(i),
+                    p->texture_assoc_handle[slot]);
 
                 if (!s->contexts[i].valid || !object || !object->native_count) {
                     return -EINVAL;
@@ -19721,6 +19866,71 @@ static const VMStateDescription vmstate_sgi_kona_gl_iris = {
     },
 };
 
+/* Only while the context has a texture load set aside. */
+static bool sgi_kona_gl_parked_upload_needed(void *opaque)
+{
+    return sgi_kona_texture_upload_parkable(
+        &((SGIKonaGLState *)opaque)->parked_upload);
+}
+
+static int sgi_kona_gl_parked_upload_post_load(void *opaque, int version_id)
+{
+    const SGIKonaTextureUpload *u = &((SGIKonaGLState *)opaque)->parked_upload;
+
+    return sgi_kona_texture_upload_parkable(u) ? 0 : -EINVAL;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_parked_upload = {
+    .name = TYPE_SGI_KONA "/logical-state/parked-texture-load",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_parked_upload_needed,
+    .post_load = sgi_kona_gl_parked_upload_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(parked_upload, SGIKonaGLState, 1,
+                       vmstate_sgi_kona_texture_upload, SGIKonaTextureUpload),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_gl_texture_regs_needed(void *opaque)
+{
+    return ((SGIKonaGLState *)opaque)->texture_regs_saved;
+}
+
+static int sgi_kona_gl_texture_regs_post_load(void *opaque, int version_id)
+{
+    const SGIKonaTextureRegs *r = &((SGIKonaGLState *)opaque)->texture_regs;
+
+    return (!r->associate_pending || r->associate_slot < 2) &&
+           (!r->record_valid ||
+            r->record_token == SGI_KONA_CMD_GL_TEX_BIND_2D ||
+            r->record_token == SGI_KONA_CMD_GL_TEX_BIND_VOLUME ||
+            r->record_token == SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT) ?
+           0 : -EINVAL;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_texture_regs = {
+    .name = TYPE_SGI_KONA "/logical-state/texture-binding",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_texture_regs_needed,
+    .post_load = sgi_kona_gl_texture_regs_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(texture_regs_saved, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(texture_regs.bind, SGIKonaGLState, 5),
+        VMSTATE_UINT32_ARRAY(texture_regs.record, SGIKonaGLState, 22),
+        VMSTATE_UINT32(texture_regs.record_token, SGIKonaGLState),
+        VMSTATE_UINT32_ARRAY(texture_regs.transform, SGIKonaGLState, 8),
+        VMSTATE_BOOL(texture_regs.bind_valid, SGIKonaGLState),
+        VMSTATE_BOOL(texture_regs.record_valid, SGIKonaGLState),
+        VMSTATE_BOOL(texture_regs.bind_pending, SGIKonaGLState),
+        VMSTATE_BOOL(texture_regs.associate_pending, SGIKonaGLState),
+        VMSTATE_UINT8(texture_regs.associate_slot, SGIKonaGLState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_state = {
     .name = TYPE_SGI_KONA "/logical-state",
     .version_id = 1,
@@ -19770,6 +19980,8 @@ static const VMStateDescription vmstate_sgi_kona_gl_state = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_gl_iris,
+        &vmstate_sgi_kona_gl_parked_upload,
+        &vmstate_sgi_kona_gl_texture_regs,
         NULL
     },
 };
@@ -20444,6 +20656,12 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
     const SGIKonaTextureUpload *u = &s->texture_upload;
 
     if (!s->texture_state_used || !sgi_kona_texture_upload_valid(u) ||
+        (s->texture_upload_context != SGI_KONA_CONTEXT_NONE &&
+         (s->texture_upload_context < 0 ||
+          s->texture_upload_context >= SGI_KONA_CONTEXTS)) ||
+        (s->texture_regs_context != SGI_KONA_CONTEXT_NONE &&
+         (s->texture_regs_context < 0 ||
+          s->texture_regs_context >= SGI_KONA_CONTEXTS)) ||
         (s->texture_record_valid &&
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D &&
          s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
@@ -20451,14 +20669,16 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
         (s->texture_bind_context != SGI_KONA_CONTEXT_NONE &&
          (s->texture_bind_context < 0 ||
           s->texture_bind_context >= SGI_KONA_CONTEXTS ||
-          s->texture_bind_context != s->context_current ||
+          (s->texture_bind_context != s->context_current &&
+           s->texture_bind_context != s->texture_regs_context) ||
           !sgi_kona_context_owner(s, s->texture_bind_context,
                                    s->texture_bind_generation))) ||
         (s->texture_associate_pending &&
          (s->texture_associate_context < 0 ||
           s->texture_associate_context >= SGI_KONA_CONTEXTS ||
           s->texture_associate_slot >= 2 ||
-         s->context_current != s->texture_associate_context ||
+          (s->texture_associate_context != s->context_current &&
+           s->texture_associate_context != s->texture_regs_context) ||
           !sgi_kona_context_owner(s, s->texture_associate_context,
                                    s->texture_associate_generation)))) {
         return -EINVAL;
@@ -20489,6 +20709,40 @@ static const VMStateDescription vmstate_sgi_kona_texture_discard = {
     .needed = sgi_kona_texture_discard_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(texture_dma_discard, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_texture_upload_context_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->texture_upload_context !=
+           SGI_KONA_CONTEXT_NONE;
+}
+
+static const VMStateDescription vmstate_sgi_kona_texture_upload_context = {
+    .name = TYPE_SGI_KONA "/textures/upload-context",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_texture_upload_context_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(texture_upload_context, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_texture_regs_context_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->texture_regs_context !=
+           SGI_KONA_CONTEXT_NONE;
+}
+
+static const VMStateDescription vmstate_sgi_kona_texture_regs_context = {
+    .name = TYPE_SGI_KONA "/textures/binding-context",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_texture_regs_context_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT32(texture_regs_context, SGIKonaState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -20538,6 +20792,8 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_texture_retire,
         &vmstate_sgi_kona_texture_discard,
+        &vmstate_sgi_kona_texture_upload_context,
+        &vmstate_sgi_kona_texture_regs_context,
         NULL
     },
 };

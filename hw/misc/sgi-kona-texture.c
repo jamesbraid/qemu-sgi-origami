@@ -118,6 +118,9 @@ void sgi_kona_texture_reset(SGIKonaTextureState *s)
     g_hash_table_remove_all(s->filter_curves);
     s->bound = false;
     s->bound_handle = 0;
+    s->owner = 0;
+    memset(s->owner_bound, 0, sizeof(s->owner_bound));
+    memset(s->owner_bound_handle, 0, sizeof(s->owner_bound_handle));
     s->detail_bound = false;
     memset(s->detail_args, 0, sizeof(s->detail_args));
     s->bytes = 0;
@@ -130,6 +133,32 @@ void sgi_kona_texture_cleanup(SGIKonaTextureState *s)
     g_clear_pointer(&s->filter_curves, g_hash_table_destroy);
 }
 
+QEMU_BUILD_BUG_ON(sizeof(gsize) < 8);
+
+static gpointer texture_key(uint32_t owner, uint32_t handle)
+{
+    return GSIZE_TO_POINTER((gsize)owner << 32 | handle);
+}
+
+void sgi_kona_texture_set_owner(SGIKonaTextureState *s, uint32_t owner)
+{
+    assert(owner < SGI_KONA_TEXTURE_OWNERS);
+    if (owner == s->owner) {
+        return;
+    }
+    s->owner_bound[s->owner] = s->bound;
+    s->owner_bound_handle[s->owner] = s->bound_handle;
+    s->owner = owner;
+    s->bound = s->owner_bound[owner];
+    s->bound_handle = s->owner_bound_handle[owner];
+}
+
+SGIKonaTextureObject *sgi_kona_texture_lookup(SGIKonaTextureState *s,
+                                              uint32_t owner, uint32_t handle)
+{
+    return g_hash_table_lookup(s->objects, texture_key(owner, handle));
+}
+
 static SGIKonaTextureObject *texture_object(SGIKonaTextureState *s,
                                             uint32_t handle, bool create)
 {
@@ -138,14 +167,15 @@ static SGIKonaTextureObject *texture_object(SGIKonaTextureState *s,
     if (handle == UINT32_MAX) {
         return NULL;
     }
-    o = g_hash_table_lookup(s->objects, GUINT_TO_POINTER(handle));
+    o = g_hash_table_lookup(s->objects, texture_key(s->owner, handle));
     if (!o && create &&
         TEXTURE_OBJECT_BYTES <= s->budget - s->bytes) {
         o = g_try_new0(SGIKonaTextureObject, 1);
         if (o) {
             o->handle = handle;
+            o->owner = s->owner;
             sgi_kona_texture_defaults(&o->params);
-            g_hash_table_insert(s->objects, GUINT_TO_POINTER(handle), o);
+            g_hash_table_insert(s->objects, texture_key(s->owner, handle), o);
             s->bytes += TEXTURE_OBJECT_BYTES;
         }
     }
@@ -317,6 +347,9 @@ unsigned sgi_kona_texture_find_native(SGIKonaTextureState *s, uint32_t target,
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         SGIKonaTextureObject *o = value;
 
+        if (o->owner != s->owner) {
+            continue;
+        }
         for (unsigned k = 0; k < o->native_count; k++) {
             const SGIKonaTextureNativeImage *n = &o->native[k];
 
@@ -513,7 +546,8 @@ bool sgi_kona_texture_find_table(SGIKonaTextureState *s,
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         const SGIKonaTextureObject *o = value;
 
-        if (texture_table_matches(o, table, volume, bank_one)) {
+        if (o->owner == s->owner &&
+            texture_table_matches(o, table, volume, bank_one)) {
             *handle = o->handle;
             matches++;
         }
@@ -742,22 +776,51 @@ bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+static void texture_object_drop(SGIKonaTextureState *s,
+                                SGIKonaTextureObject *o)
+{
+    for (unsigned k = 0; k < o->count; k++) {
+        s->bytes -= level_bytes(&o->levels[k]);
+    }
+    for (unsigned k = 0; k < o->native_count; k++) {
+        s->bytes -= native_bytes(&o->native[k]);
+    }
+    s->bytes -= TEXTURE_OBJECT_BYTES;
+    g_hash_table_remove(s->objects, texture_key(o->owner, o->handle));
+    texture_object_free(o);
+}
+
 void sgi_kona_texture_delete(SGIKonaTextureState *s, uint32_t handle)
 {
     SGIKonaTextureObject *o = texture_object(s, handle, false);
 
     if (o) {
-        for (unsigned k = 0; k < o->count; k++) {
-            s->bytes -= level_bytes(&o->levels[k]);
-        }
-        for (unsigned k = 0; k < o->native_count; k++) {
-            s->bytes -= native_bytes(&o->native[k]);
-        }
-        s->bytes -= TEXTURE_OBJECT_BYTES;
-        g_hash_table_remove(s->objects, GUINT_TO_POINTER(handle));
-        texture_object_free(o);
+        texture_object_drop(s, o);
     }
     if (s->bound && s->bound_handle == handle) {
+        s->bound = false;
+    }
+}
+
+void sgi_kona_texture_drop_owner(SGIKonaTextureState *s, uint32_t owner)
+{
+    GHashTableIter iter;
+    gpointer value;
+    GPtrArray *drop = g_ptr_array_new();
+
+    assert(owner < SGI_KONA_TEXTURE_OWNERS);
+    g_hash_table_iter_init(&iter, s->objects);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        if (((SGIKonaTextureObject *)value)->owner == owner) {
+            g_ptr_array_add(drop, value);
+        }
+    }
+    for (unsigned i = 0; i < drop->len; i++) {
+        texture_object_drop(s, g_ptr_array_index(drop, i));
+    }
+    g_ptr_array_free(drop, true);
+    s->owner_bound[owner] = false;
+    if (owner == s->owner) {
         s->bound = false;
     }
 }
@@ -1328,7 +1391,7 @@ static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p)
  * The layout marker the table's own stream starts with. Migration is
  * between identical builds only, so the loader takes this layout alone.
  */
-#define TEXTURE_STREAM_VERSION 9
+#define TEXTURE_STREAM_VERSION 10
 
 static bool texture_save(QEMUFile *f, void *pv, size_t size,
                           const VMStateField *field, JSONWriter *vmdesc,
@@ -1342,10 +1405,16 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
+    qemu_put_be32(f, s->owner);
+    for (unsigned k = 0; k < SGI_KONA_TEXTURE_OWNERS; k++) {
+        qemu_put_be32(f, s->owner_bound[k]);
+        qemu_put_be32(f, s->owner_bound_handle[k]);
+    }
     g_hash_table_iter_init(&iter, s->objects);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
         SGIKonaTextureObject *o = value;
 
+        qemu_put_be32(f, o->owner);
         qemu_put_be32(f, o->handle);
         qemu_put_be32(f, o->count);
         texture_params_save(f, &o->params);
@@ -1439,20 +1508,36 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     SGIKonaTextureState tmp;
     uint32_t version = qemu_get_be32(f), count = qemu_get_be32(f);
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
+    uint32_t owner = qemu_get_be32(f);
     uint32_t curves, detail_valid;
 
     sgi_kona_texture_init(&tmp);
     tmp.budget = s->budget;
+    for (unsigned k = 0; k < SGI_KONA_TEXTURE_OWNERS; k++) {
+        uint32_t b = qemu_get_be32(f);
+
+        tmp.owner_bound[k] = b;
+        tmp.owner_bound_handle[k] = qemu_get_be32(f);
+        if (b > 1) {
+            goto invalid;
+        }
+    }
     if (version != TEXTURE_STREAM_VERSION || bound > 1 ||
+        owner >= SGI_KONA_TEXTURE_OWNERS ||
         count > s->budget / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
     for (uint32_t i = 0; i < count; i++) {
+        uint32_t object_owner = qemu_get_be32(f);
         uint32_t id = qemu_get_be32(f), levels = qemu_get_be32(f);
         uint32_t valid, native_count;
         union { double d; uint64_t u; } scale_r, ambient;
         SGIKonaTextureObject *o;
 
+        if (object_owner >= SGI_KONA_TEXTURE_OWNERS) {
+            goto invalid;
+        }
+        tmp.owner = object_owner;
         if (levels > SGI_GL_TEX_LEVELS_MAX || id == UINT32_MAX ||
             texture_object(&tmp, id, false)) {
             goto invalid;
@@ -1688,6 +1773,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         goto invalid;
     }
     tmp.detail_bound = detail_valid;
+    tmp.owner = owner;
     if (qemu_file_get_error(f) ||
         (bound && !texture_object(&tmp, handle, false))) {
         goto invalid;

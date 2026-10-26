@@ -5651,6 +5651,214 @@ static void test_texture_rebind_contexts(void)
     qtest_quit(s);
 }
 
+/*
+ * Texture handles are each context's own: the client library numbers a
+ * context's textures from 0 and places them in that context's own
+ * texture-memory region, so two programs on one pipe use the same handles
+ * and the same region-relative level tables (mirrors and atlantis both
+ * load handle 0 at offset 0). A second context's handle 17 is another
+ * texture; binding 17 again in the first context, by handle or by its
+ * table, must find the first context's image.
+ */
+static void texture_upload_one(QTestState *s, uint32_t handle,
+                               uint32_t colour)
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = handle;
+    texture_native_bind(s, handle);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, colour);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { handle }, 1);
+}
+
+static void test_texture_contexts_own_handles(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_rebind_uploads(s, false);
+    texture_rebind_packet(s, 1, 17);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    return_context_deactivate(s);
+    attrib_context_fresh(s, SAVE_AREA + 0x20000);
+    texture_upload_one(s, 17, 0x12345678);
+    texture_rebind_packet(s, 1, 17);
+    assert_texture_pixel(s, 0, 0, 0x12345678);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    texture_rebind_packet(s, 1, 17);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    texture_rebind_packet(s, 1, UINT32_MAX);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA + 0x20000);
+    texture_rebind_packet(s, 1, UINT32_MAX);
+    assert_texture_pixel(s, 0, 0, 0x12345678);
+    qtest_quit(s);
+}
+
+/* The handles of the two contexts survive migration apart. */
+static void test_texture_contexts_own_handles_migration(void)
+{
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_rebind_uploads(from, false);
+    return_context_deactivate(from);
+    attrib_context_fresh(from, SAVE_AREA + 0x20000);
+    texture_upload_one(from, 17, 0x12345678);
+    dir = g_dir_make_tmp("sn0-kona-owner-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    texture_rebind_packet(to, 1, 17);
+    assert_texture_pixel(to, 0, 0, 0x12345678);
+    return_context_deactivate(to);
+    return_context_restore(to, SAVE_AREA);
+    texture_rebind_packet(to, 1, 17);
+    assert_texture_pixel(to, 0, 0, texture_source[0]);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+/*
+ * A context switch can fall between a texture's 0x174 load and its 0x176
+ * publication; the other context's own loads in between must leave the
+ * first context's finished load for it to publish.
+ */
+static void texture_load_then_switch(QTestState *s, uint32_t handle,
+                                     uint32_t colour)
+{
+    uint32_t h[20];
+
+    texture_rebind_uploads(s, false);
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = handle;
+    texture_native_bind(s, handle);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, colour);
+    }
+    return_context_deactivate(s);
+    attrib_context_fresh(s, SAVE_AREA + 0x20000);
+    texture_upload_one(s, 17, 0x12345678);
+    return_context_deactivate(s);
+}
+
+static void test_texture_load_survives_switch(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_load_then_switch(s, 21, 0x0a0b0c0d);
+    return_context_restore(s, SAVE_AREA);
+    kona_command(s, 0x176, (uint32_t[]) { 21 }, 1);
+    texture_rebind_packet(s, 1, 21);
+    assert_texture_pixel(s, 0, 0, 0x0a0b0c0d);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA + 0x20000);
+    texture_rebind_packet(s, 1, 17);
+    assert_texture_pixel(s, 0, 0, 0x12345678);
+    qtest_quit(s);
+}
+
+/* The set-aside load migrates with its context. */
+static void test_texture_load_survives_switch_migration(void)
+{
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_load_then_switch(from, 21, 0x0a0b0c0d);
+    dir = g_dir_make_tmp("sn0-kona-parked-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    return_context_restore(to, SAVE_AREA);
+    kona_command(to, 0x176, (uint32_t[]) { 21 }, 1);
+    texture_rebind_packet(to, 1, 21);
+    assert_texture_pixel(to, 0, 0, 0x0a0b0c0d);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+/*
+ * A rebind's 0x106 and its 0x179 record can be split by a context switch,
+ * and the other program's bind and 0x178 in between must not complete
+ * this context's bind.
+ */
+static void texture_bind_split(QTestState *s)
+{
+    texture_rebind_uploads(s, false);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    texture_rebind_packet(s, 1, 17);
+    kona_command(s, 0x178, (uint32_t[]) { 1 }, 1);
+    kona_command(s, 0x106,
+                 (uint32_t[]) { UINT32_MAX, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x11, 1 }, 5);
+    return_context_deactivate(s);
+    attrib_context_fresh(s, SAVE_AREA + 0x20000);
+    texture_upload_one(s, 0, 0x12345678);
+    texture_rebind_packet(s, 1, 0);
+    kona_command(s, 0x178, (uint32_t[]) { 0 }, 1);
+    return_context_deactivate(s);
+}
+
+static void texture_bind_split_finish(QTestState *s)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+
+    return_context_restore(s, SAVE_AREA);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA + 0x20000);
+    texture_rebind_packet(s, 1, 0);
+    assert_texture_pixel(s, 0, 0, 0x12345678);
+}
+
+static void test_texture_bind_split_by_switch(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_bind_split(s);
+    texture_bind_split_finish(s);
+    qtest_quit(s);
+}
+
+static void test_texture_bind_split_by_switch_migration(void)
+{
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_bind_split(from);
+    dir = g_dir_make_tmp("sn0-kona-bind-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    texture_bind_split_finish(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 static void test_texture_rebind_reset(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -7144,6 +7352,80 @@ static void texture_dma_packet(QTestState *s, uint64_t io, uint32_t total,
  * storage code refuses the header, posts nothing for the DMA, and the
  * kernel kills the pipe when the completion never comes.
  */
+/*
+ * A DMA load can be switched out before its DMA packet: atlantis's load
+ * was, with mirrors' own loads in between. The load is still the first
+ * context's when its packet and 0x176 come.
+ */
+static void texture_dma_load_then_switch(QTestState *s)
+{
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10, 0x23 };
+    uint8_t source[16];
+    uint32_t h[20];
+
+    gl_make_current(s);
+    kona_command(s, 0x1d5, (uint32_t[]) { 21, (2u << 28) | (31 << 12),
+                                        0x14 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+    for (unsigned k = 0; k < sizeof(source); k++) {
+        source[k] = 0x10 + k;
+    }
+    qtest_memwrite(s, 0x380000, source, sizeof(source));
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = 5;
+    h[4] = 1;
+    h[5] = 0;
+    h[6] = 1;
+    h[7] = 0;
+    h[9] = 0x14;
+    h[10] = 21;
+    h[16] = 0x23;
+    h[17] = 0x2204;
+    kona_command(s, 0x174, h, 20);
+    return_context_deactivate(s);
+    attrib_context_fresh(s, SAVE_AREA + 0x20000);
+    texture_upload_one(s, 17, 0x12345678);
+    return_context_deactivate(s);
+}
+
+static void texture_dma_load_finish(QTestState *s)
+{
+    return_context_restore(s, SAVE_AREA);
+    texture_dma_packet(s, 0, 16, 16, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    kona_command(s, 0x176, (uint32_t[]) { 21 }, 1);
+    assert_texture_pixel(s, 0, 0, 0x10111213);
+    assert_texture_pixel(s, 1, 1, 0x1c1d1e1f);
+}
+
+static void test_texture_dma_load_survives_switch(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    texture_dma_load_then_switch(s);
+    texture_dma_load_finish(s);
+    qtest_quit(s);
+}
+
+static void test_texture_dma_load_survives_switch_migration(void)
+{
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    texture_dma_load_then_switch(from);
+    dir = g_dir_make_tmp("sn0-kona-dma-park-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    texture_dma_load_finish(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 static void test_texture_rgb5_storage(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -18175,6 +18457,22 @@ int main(int argc, char **argv)
     add_case(
   "sn0/origin2000/kona-3d/texture/rebind-standalone-recovery",
   test_texture_rebind_standalone_recovery);
+    add_case("sn0/origin2000/kona-3d/texture/contexts-own-handles",
+             test_texture_contexts_own_handles);
+    add_case("sn0/origin2000/kona-3d/texture/contexts-own-handles-migration",
+             test_texture_contexts_own_handles_migration);
+    add_case("sn0/origin2000/kona-3d/texture/load-survives-switch",
+             test_texture_load_survives_switch);
+    add_case("sn0/origin2000/kona-3d/texture/load-survives-switch-migration",
+             test_texture_load_survives_switch_migration);
+    add_case("sn0/origin2000/kona-3d/texture/dma-load-switch",
+             test_texture_dma_load_survives_switch);
+    add_case("sn0/origin2000/kona-3d/texture/dma-load-switch-migration",
+             test_texture_dma_load_survives_switch_migration);
+    add_case("sn0/origin2000/kona-3d/texture/bind-split-by-switch",
+             test_texture_bind_split_by_switch);
+    add_case("sn0/origin2000/kona-3d/texture/bind-split-by-switch-migration",
+             test_texture_bind_split_by_switch_migration);
     add_case("sn0/origin2000/kona-3d/texture/rebind-contexts",
              test_texture_rebind_contexts);
     add_case("sn0/origin2000/kona-3d/texture/rebind-reset",

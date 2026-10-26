@@ -259,6 +259,12 @@ static void test_sampling(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+/*
+ * The stream header: marker, object count, bound flag and handle, the
+ * current owner, and each owner's bound flag and handle.
+ */
+#define HEADER (20 + SGI_KONA_TEXTURE_OWNERS * 8)
+
 static GByteArray *save(SGIKonaTextureState *s)
 {
     QIOChannelBuffer *b = qio_channel_buffer_new(4096);
@@ -328,8 +334,8 @@ static void test_migration(void)
     g_assert_cmphex(texel(&dst, 0, 0), ==, red[0]);
     g_assert_cmphex(texel(&dst, 1, 0), ==, green[0]);
     bytes = dst.bytes;
-    /* First level width: header16 + object8 + sampler136 + level id4. */
-    stl_be_p(a->data + 164, UINT32_MAX);
+    /* First level width: header + object12 + sampler136 + level id4. */
+    stl_be_p(a->data + HEADER + 152, UINT32_MAX);
     g_assert_false(load(a, &dst));
     g_assert_cmpuint(dst.bytes, ==, bytes);
     g_assert_cmphex(texel(&dst, 0, 0), ==, red[0]);
@@ -640,12 +646,12 @@ static void test_native_chunks(void)
     a = save(&src);
     g_assert_true(load(a, &dst));
     /* Missing texels and unused bitmap bits cannot carry forged state. */
-    stl_be_p(a->data + 332, 1);
+    stl_be_p(a->data + HEADER + 320, 1);
     g_assert_false(load(a, &dst));
-    stl_be_p(a->data + 332, 0);
-    a->data[348] |= 0x80;
+    stl_be_p(a->data + HEADER + 320, 0);
+    a->data[HEADER + 336] |= 0x80;
     g_assert_false(load(a, &dst));
-    a->data[348] = 0;
+    a->data[HEADER + 336] = 0;
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
@@ -809,8 +815,8 @@ static void test_native_migration(void)
     g_assert_true(load(a, &dst));
     assert_image(&dst, red, 1, 1);
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
-    /* Native width: header16 + object8 + sampler136 + map72 + header80. */
-    stl_be_p(a->data + 312, UINT32_MAX);
+    /* Native width: header + object12 + sampler136 + map72 + header80. */
+    stl_be_p(a->data + HEADER + 300, UINT32_MAX);
     g_assert_false(load(a, &dst));
     assert_image(&dst, red, 1, 1);
     g_byte_array_unref(a);
@@ -1336,7 +1342,7 @@ static void test_native_volume_slices(void)
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
     g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->pyramid->count, ==, 0);
     /* A nonzero uncovered voxel cannot be restored from a stream. */
-    stl_be_p(a->data + 332, 1);
+    stl_be_p(a->data + HEADER + 320, 1);
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     h[1] = 2;
@@ -1369,12 +1375,12 @@ static void test_native_volume_slices(void)
     a = save(&dst);
     g_assert_true(load(a, &src));
     g_assert_cmphex(native_voxel(&src, 0, 0, 0, 1), ==, red[0]);
-    stl_be_p(a->data + 328, UINT32_MAX);
+    stl_be_p(a->data + HEADER + 316, UINT32_MAX);
     g_assert_false(load(a, &src));
     g_assert_cmphex(native_voxel(&src, 0, 0, 0, 1), ==, red[0]);
     g_byte_array_unref(a);
     a = save(&dst);
-    stl_be_p(a->data + 292, 2);
+    stl_be_p(a->data + HEADER + 280, 2);
     g_assert_false(load(a, &src));
     g_byte_array_unref(a);
     a = save(&dst);
@@ -1986,9 +1992,9 @@ static void test_native_duplicate_transport_stream(void)
     g_assert_true(sgi_kona_texture_native_upload(&src, h, green,
                                                 SGI_GL_RGBA, SGI_GL_RGBA));
     a = save(&src);
-    /* First header232, then header80 + metadata20 + pixel4 + coverage1. */
-    stl_be_p(a->data + 337 + 16 * 4, 0x333);
-    stl_be_p(a->data + 337 + 17 * 4, 4);
+    /* First header + 220, then header80 + metadata20 + pixel4 + coverage1. */
+    stl_be_p(a->data + HEADER + 325 + 16 * 4, 0x333);
+    stl_be_p(a->data + HEADER + 325 + 17 * 4, 4);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(texel(&dst, 0, 0), ==, red[0]);
     g_byte_array_unref(a);
@@ -2686,19 +2692,19 @@ static void test_filter_curve_migration(void)
     g_assert_cmpfloat(sgi_kona_texture_curve(&dst, 13)[3], ==, -4);
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
     bytes = dst.bytes;
-    /* Header16, count4, slot4; each subsequent entry has 32 packed words. */
+    /* Header, count4, slot4; each subsequent entry has 32 packed words. */
     /* Words that are not a spline are slot state and arrive without one. */
-    stl_be_p(a->data + 28, 0x100);
+    stl_be_p(a->data + HEADER + 12, 0x100);
     g_assert_true(load(a, &dst));
     g_assert_null(sgi_kona_texture_curve(&dst, 13));
     g_assert_cmpuint(dst.bytes, ==, bytes);
     g_byte_array_unref(a);
     a = save(&src);
-    stl_be_p(a->data + 16, SGI_KONA_TEXTURE_CURVE_SLOTS + 1);
+    stl_be_p(a->data + HEADER, SGI_KONA_TEXTURE_CURVE_SLOTS + 1);
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     a = save(&src);
-    stl_be_p(a->data + 20, SGI_KONA_TEXTURE_CURVE_SLOTS);
+    stl_be_p(a->data + HEADER + 4, SGI_KONA_TEXTURE_CURVE_SLOTS);
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     a = save(&src);
@@ -2708,7 +2714,8 @@ static void test_filter_curve_migration(void)
     g_assert_true(sgi_kona_texture_curve_upload(&src, 14, words));
     a = save(&src);
     /* Duplicate slots cannot replace one another inside a migration stream. */
-    stl_be_p(a->data + 152, ldl_be_p(a->data + 20));
+    stl_be_p(a->data + HEADER + 136,
+             ldl_be_p(a->data + HEADER + 4));
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     sgi_kona_texture_reset(&src);
