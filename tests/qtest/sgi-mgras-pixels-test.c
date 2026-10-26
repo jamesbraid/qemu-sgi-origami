@@ -2073,6 +2073,32 @@ static void test_gl_list_flag_clear_keeps_its_order(void)
 }
 
 /*
+ * The kernel acknowledges a swap together with the retrace (0x401). Only
+ * the swap waits behind the list, since only queued work can raise it: a
+ * retrace that comes after the acknowledge reads pending at once, and
+ * stays pending once the list and the words behind it have run.
+ */
+#define GL_LIST_PENDING_RETRACE 0x00000001
+#define GL_LIST_PENDING_SWAP    0x00000400
+
+static void test_gl_list_ack_queues_only_the_swap(void)
+{
+    gl_list_execute_then_query();
+    qtest_writel(qts, REG_PENDING_ACK,
+                 GL_LIST_PENDING_SWAP | GL_LIST_PENDING_RETRACE);
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 30);
+    g_assert_true(gl_list_work_pending());
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & GL_LIST_PENDING_RETRACE,
+                    ==, GL_LIST_PENDING_RETRACE);
+    while (gl_list_work_pending()) {
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & GL_LIST_PENDING_RETRACE,
+                    ==, GL_LIST_PENDING_RETRACE);
+    gl_list_check_finished();
+}
+
+/*
  * The sync and idle bits read clear only for the first 500 ms of
  * continuous work, well inside the IRIX kernel's 2 s and 3 s waits on
  * them, and set after that even though the list is not finished.
@@ -6559,6 +6585,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-status-busy-is-bounded",
         test_gl_list_status_busy_is_bounded, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-ack-queues-only-the-swap",
+        test_gl_list_ack_queues_only_the_swap, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-page-on-another-node",
         test_gl_list_page_on_another_node, false);
