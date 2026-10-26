@@ -5958,7 +5958,7 @@ static void mgras_gl_vertex(SGIMgrasState *s, SGIGLOp op,
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
-    uint32_t word[4], rows[32];
+    uint32_t word[4];
 
     if (words != (header & 0xff) / sizeof(uint32_t)) {
         return;
@@ -5974,6 +5974,13 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     }
     if (header == MGRAS_GL_POLYGON_STIPPLE_UPLOAD) {
+        /*
+         * Scoped here: the build zeroes every automatic array where it is
+         * declared, and at the top of this function that cost every
+         * packet 128 bytes of stores.
+         */
+        uint32_t rows[32];
+
         /* The client reverses each row's bits, but keeps the row order. */
         for (int i = 0; i < ARRAY_SIZE(rows); i++) {
             rows[i] = mgras_gl_reverse32(payload[i]);

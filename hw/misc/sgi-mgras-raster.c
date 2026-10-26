@@ -2323,6 +2323,8 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
     uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
     bool overlay = mgras_overlay_target(s);
+    /* Not in the loop: the build zeroes it wherever it is declared. */
+    uint8_t did[SGI_MGRAS_MAX_WIDTH];
 
     if (overlay && d->guest_bpp != 1) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA read of %u-byte pixels "
@@ -2332,7 +2334,6 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
     }
 
     for (int32_t row = 0; row < d->h; row++) {
-        uint8_t did[SGI_MGRAS_MAX_WIDTH];
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int32_t y = d->y + (reverse_y ? -row : row);
 
