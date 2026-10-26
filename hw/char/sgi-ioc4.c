@@ -897,10 +897,38 @@ static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
     }
 }
 
+/*
+ * A timer already due is applied before a register access, not whenever the
+ * main loop next services it, so a guest that waits on the virtual clock and
+ * then reads sees the expiry it waited for. The IOC3 engine does the same.
+ */
+static void ioc4_catch_up(SGIIOC4State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned i;
+
+    for (i = 0; i < IOC4_PORTS; i++) {
+        SGIIOC4Port *p = &s->dma[i];
+
+        if (p->tx_timer && timer_pending(p->tx_timer) &&
+            timer_expire_time_ns(p->tx_timer) <= now) {
+            timer_del(p->tx_timer);
+            ioc4_tx_timeout(p);
+        }
+        if (p->rx_timer && timer_pending(p->rx_timer) &&
+            timer_expire_time_ns(p->rx_timer) <= now) {
+            timer_del(p->rx_timer);
+            ioc4_rx_timeout(p);
+        }
+    }
+}
+
 static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC4State *s = opaque;
     uint64_t dma_value;
+
+    ioc4_catch_up(s);
 
     if (addr <= 0x04) {
         return addr == 0 ? s->dma_error_low : s->dma_error_high;
@@ -938,7 +966,10 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
                        unsigned size)
 {
     SGIIOC4State *s = opaque;
-    uint64_t dma_value = ioc4_dma_register_read(s, addr);
+    uint64_t dma_value;
+
+    ioc4_catch_up(s);
+    dma_value = ioc4_dma_register_read(s, addr);
 
     if (addr <= 0x04) {
         qemu_log_mask(LOG_UNIMP,
