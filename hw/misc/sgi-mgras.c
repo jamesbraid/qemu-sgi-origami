@@ -22,6 +22,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
+#include "system/runstate.h"
 #include "ui/console.h"
 #include "trace.h"
 
@@ -911,11 +912,15 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * OpenGL client write 0xf200 before a DMA read into an unaligned
      * buffer, and the client 0x8f08 before a data-port read, then poll
      * until bit 0 is set. No IRIX 6.5.30 kernel, client or X server
-     * routine waits for it to clear, and commands execute synchronously,
-     * so it is approximated as always set; when the board clears it is
-     * unknown.
+     * routine waits for it to clear. Bit 1 is the idle bit the kernel's
+     * raster-idle wait (3 s) and the client's glFinish (unbounded) poll.
+     * Inferred: both read clear while a display list and the words
+     * behind it are still running (sgi-mgras-raster.c), so those waits
+     * wait for them; otherwise every command has finished and both read
+     * set. When the board clears either is unknown.
      */
-    case 0x020000: return 0x13;
+    case 0x020000:
+        return sgi_mgras_work_pending(s) ? 0x10 : 0x13;
     /* Commands execute synchronously, so modeled FIFO occupancy is zero. */
     case 0x020008: return 0;
     /* Bus and DMA activity are not modeled and report idle. */
@@ -1414,15 +1419,89 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
 }
 
 /*
+ * A display list can still be running when an access arrives, with
+ * command-FIFO words waiting behind it (sgi-mgras-raster.c). Those ports
+ * queue their words in order. Of the rest, most accesses wait for the
+ * work to finish: they read what it writes or change what it reads, and
+ * the model's results must not depend on how far it has got. These do
+ * not wait, and act on the board as it stands:
+ *
+ * - values the command stream neither reads nor writes: the FIFO and bus
+ *   status words the model keeps constant, the scheduler words, and the
+ *   XMAP index the IRIX kernel's retrace routine selects;
+ * - the completion and interrupt registers drivers poll and acknowledge
+ *   while the pipe works: the sync and idle bits, the HQ flags (the
+ *   OpenGL client polls flag 17 for a query's answer), the pending
+ *   sources and their enables;
+ * - the XMAP's display registers, which act on scanout at once, as the
+ *   kernel's swap at retrace expects. A DMA read still waiting reads
+ *   the bank the buffer select names when it runs, not when it was
+ *   queued: an approximation, as on the board the two race.
+ *
+ * Inferred from the drivers' use, not measured: on the board these are
+ * host-interface registers outside the command FIFO.
+ */
+static bool mgras_access_waits(SGIMgrasState *s, hwaddr addr, bool write)
+{
+    switch (addr) {
+    case MGRAS_CONTEXT_COMMAND:
+        return !write || !s->ready || s->protocol == 1;
+    case 0x020400:
+    case SGI_MGRAS_SCRATCH_COMMAND:
+        return !write;
+    case 0x020000:
+    case 0x020008:
+    case 0x020100:
+    case 0x011020:
+        return write;
+    case 0x011028:
+    case 0x011048:
+    case 0x071c88:
+    case SGI_MGRAS_XMAP_BUF_SELECT:
+    case SGI_MGRAS_XMAP_MAIN_MODE:
+    case SGI_MGRAS_XMAP_OVERLAY_MODE:
+        return !write;
+    case 0x011040:
+    case SGI_MGRAS_SCHED_ARG_1:
+    case SGI_MGRAS_SCHED_ARG_2:
+    case SGI_MGRAS_SCHED_ARG_3:
+    case SGI_MGRAS_SCHED_ARG_4:
+    case SGI_MGRAS_HQ_FLAGS:
+    case SGI_MGRAS_HQ_FLAGS_CLEAR:
+        return false;
+    default:
+        return true;
+    }
+}
+
+static void mgras_access_begin(SGIMgrasState *s, hwaddr addr, bool write)
+{
+    if (sgi_mgras_work_pending(s) && mgras_access_waits(s, addr, write)) {
+        sgi_mgras_work_drain(s, addr);
+    }
+}
+
+/*
  * Every path that changes what the frame resolves from runs inside an
  * access, so folding the change into the scanout's dirty lines here means
  * the next console update, a screendump included, sees it.
+ * A slice's draw that has let go of the big lock folds its own change
+ * once it has finished.
  */
+static void mgras_access_end(SGIMgrasState *s)
+{
+    if (!s->work_drawing) {
+        sgi_mgras_display_flush(s);
+    }
+}
+
 static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    uint64_t value = mgras_read(opaque, addr, size);
+    uint64_t value;
 
-    sgi_mgras_display_flush(opaque);
+    mgras_access_begin(opaque, addr, false);
+    value = mgras_read(opaque, addr, size);
+    mgras_access_end(opaque);
     return value;
 }
 
@@ -1464,11 +1543,12 @@ static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
 {
     bool counted = sgi_pi_gfx_store_counted();
 
+    mgras_access_begin(opaque, addr, true);
     mgras_write(opaque, addr, value, size);
     if (counted) {
         mgras_return_credit(opaque);
     }
-    sgi_mgras_display_flush(opaque);
+    mgras_access_end(opaque);
 }
 
 static const MemoryRegionOps mgras_ops = {
@@ -1487,6 +1567,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     if (mc->parent_phases.enter) {
         mc->parent_phases.enter(obj, type);
     }
+    sgi_mgras_work_reset(s);
     memset(s->front, 0, s->width * s->height * sizeof(*s->front));
     memset(s->back, 0, s->width * s->height * sizeof(*s->back));
     memset(s->front_alpha, 0, s->front_count * sizeof(*s->front_alpha));
@@ -1735,6 +1816,15 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     }
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
+    /*
+     * An access that must wait for display-list work sleeps inside its
+     * handler with the big lock let go (sgi_mgras_work_drain()), and a
+     * second processor's access then arrives while the first is still in
+     * the device. The guard would refuse it, which the Hub reports to
+     * IRIX as a read access error. Nothing else re-enters: the board's
+     * DMA reaches node memory only.
+     */
+    s->regs.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
     board->cpu_face = &s->regs;
@@ -1765,6 +1855,18 @@ static void mgras_unregister_cleanup(SGIMgrasState *s)
     if (s->gl_cleanup_registered) {
         unregister_savevm(NULL, MGRAS_LOAD_CLEANUP, s);
         s->gl_cleanup_registered = false;
+    }
+}
+
+/*
+ * Display-list work is finished before the machine stops, so a stopped
+ * machine, and any state saved from it, has none in progress. Finishing
+ * may write guest memory, which a migration then still sends.
+ */
+static void mgras_vm_state(void *opaque, bool running, RunState state)
+{
+    if (!running) {
+        sgi_mgras_work_drain(opaque, UINT64_MAX);
     }
 }
 
@@ -1815,6 +1917,8 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     }
     sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
     mgras_update_timing(s, false);
+    sgi_mgras_work_init(s);
+    s->work_vm_state = qemu_add_vm_change_state_handler(mgras_vm_state, s);
     device_cold_reset(dev);
     register_savevm_live(MGRAS_LOAD_CLEANUP, VMSTATE_INSTANCE_ID_ANY, 1,
                          &mgras_load_ops, s);
@@ -1828,6 +1932,11 @@ static void mgras_unrealize(DeviceState *dev)
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(dev);
 
     mgras_unregister_cleanup(s);
+    if (s->work_vm_state) {
+        qemu_del_vm_change_state_handler(s->work_vm_state);
+        s->work_vm_state = NULL;
+    }
+    sgi_mgras_work_cleanup(s);
     sgi_mgras_gl_cleanup(s);
     mc->parent_unrealize(dev);
     sgi_scanout_cleanup(&s->scanout);
@@ -1857,6 +1966,13 @@ static bool mgras_xmap_indices_valid(SGIMgrasState *s)
         }
     }
     return true;
+}
+
+/* The machine stopped first (mgras_vm_state); this only makes sure. */
+static int mgras_pre_save(void *opaque)
+{
+    sgi_mgras_work_drain(opaque, UINT64_MAX);
+    return 0;
 }
 
 static int mgras_pre_load(void *opaque)
@@ -2173,6 +2289,7 @@ static const VMStateDescription vmstate_sgi_mgras_clip_id = {
 
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 36, .minimum_version_id = 36,
+    .pre_save = mgras_pre_save,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2420,6 +2537,11 @@ static const Property mgras_properties[] = {
                        board_record_serial,
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
 };
+
+static bool mgras_test_get_work_pending(Object *obj, Error **errp)
+{
+    return sgi_mgras_work_pending(SGI_MGRAS(obj));
+}
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)
 {
@@ -2687,6 +2809,15 @@ static void mgras_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-pixel-count",
                                    &s->test_pixel_count,
                                    OBJ_PROP_FLAG_READWRITE);
+    /*
+     * Display-list work in slices of x-test-slice-words list words rather
+     * than of host time, and whether any is still waiting to run.
+     */
+    object_property_add_uint32_ptr(obj, "x-test-slice-words",
+                                   &s->test_slice_words,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_bool(obj, "x-test-work-pending",
+                             mgras_test_get_work_pending, NULL);
     object_property_add(obj, "x-test-pixel-row", "str",
                         mgras_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",
@@ -2747,6 +2878,11 @@ static void mgras_instance_finalize(Object *obj)
     SGIMgrasState *s = SGI_MGRAS(obj);
 
     mgras_unregister_cleanup(s);
+    if (s->work_vm_state) {
+        qemu_del_vm_change_state_handler(s->work_vm_state);
+        s->work_vm_state = NULL;
+    }
+    sgi_mgras_work_cleanup(s);
     sgi_mgras_gl_cleanup(s);
 }
 

@@ -18,6 +18,16 @@ void sgi_mgras_raster_pio_read_trigger(SGIMgrasState *s);
 bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value);
 void sgi_mgras_dma_map_write(SGIMgrasState *s, uint64_t value,
                               unsigned int size);
+/*
+ * Display-list work that outlasts the write that started it, and the
+ * command-FIFO words waiting behind it (sgi-mgras-raster.c).
+ */
+void sgi_mgras_work_init(SGIMgrasState *s);
+void sgi_mgras_work_cleanup(SGIMgrasState *s);
+bool sgi_mgras_work_pending(SGIMgrasState *s);
+/* Finish it all now, for an access at addr that must see the result. */
+void sgi_mgras_work_drain(SGIMgrasState *s, hwaddr addr);
+void sgi_mgras_work_reset(SGIMgrasState *s);
 uint64_t sgi_mgras_dma_map_slot_base(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_count(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_width(SGIMgrasState *s, unsigned int slot);

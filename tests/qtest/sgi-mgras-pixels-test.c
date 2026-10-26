@@ -1932,6 +1932,124 @@ static void test_gl_list_big_matches_the_reference(void)
 }
 
 /*
+ * A display list a processor executes keeps running after the execute
+ * returns, in slices on the machine clock, and the port words written
+ * meanwhile wait behind it (hw/misc/sgi-mgras-raster.c). The processor is
+ * then free to take its interrupts while the board draws: IRIX's
+ * scheduler clock on an Origin 2000 lost every tick for as long as one
+ * list took when the whole list ran inside the store. qtest has no
+ * processor, and an execute from outside one runs whole, so these cases
+ * cut the slices by list words with x-test-slice-words.
+ */
+#define GL_LIST_SLICE_WORDS   64
+#define GL_Q_CLEAR_BLUE       0xc0c
+
+static void gl_list_slice_words(uint32_t words)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': %u}}", MGRAS_QOM_PATH,
+        words);
+}
+
+static bool gl_list_work_pending(void)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-work-pending'}}", MGRAS_QOM_PATH);
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+/* The probe list, executed with a query for the clear colour's blue behind. */
+static void gl_list_execute_then_query(void)
+{
+    mgras_reset();
+    gl_list_frame(qts);
+    gl_list_probe_pool(qts);
+    gl_list_slice_words(GL_LIST_SLICE_WORDS);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_call_list(qts, 0, 0x3fa);
+    gl_word(qts, MGRAS_QUERY_TOKEN);
+    gl_word(qts, GL_Q_CLEAR_BLUE);
+    gl_word(qts, 0);
+    gl_word(qts, 1);
+    g_assert_true(gl_list_work_pending());
+}
+
+/* The whole probe list on the clear, and the query answered after it. */
+static void gl_list_check_finished(void)
+{
+    g_autofree uint32_t *rgb = NULL;
+
+    g_assert_false(gl_list_work_pending());
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, gl_bits(1));
+    rgb = mgras_screendump(qts);
+    gl_check_window_sha256(rgb, GL_LIST_SHA256);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    gl_list_slice_words(0);
+}
+
+/*
+ * The store returns with the list unfinished. Until the clock runs the
+ * rest, the sync and idle bits read clear and the query behind the list
+ * stays unanswered, as the client's polls expect; the polls themselves do
+ * not wait. The finished window is the one the list draws in one go.
+ */
+static void test_gl_list_runs_in_slices(void)
+{
+    unsigned int steps = 0;
+
+    gl_list_execute_then_query();
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x10);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+    g_assert_true(gl_list_work_pending());
+    while (gl_list_work_pending()) {
+        g_assert_cmpuint(++steps, <, 1000);
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    /* About 3,300 list words at 64 a slice. */
+    g_assert_cmpuint(steps, >, 40);
+    gl_list_check_finished();
+}
+
+/* A read whose answer the list's work decides finishes the work first. */
+static void test_gl_list_read_waits_for_slices(void)
+{
+    gl_list_execute_then_query();
+    g_assert_cmphex(qtest_readl(qts, REG_QUERY_ANSWER), ==, gl_bits(1));
+    gl_list_check_finished();
+}
+
+/* A machine that stops has finished the work: nothing is left to migrate. */
+static void test_gl_list_finishes_before_stop(void)
+{
+    gl_list_execute_then_query();
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    g_assert_false(gl_list_work_pending());
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    gl_list_check_finished();
+}
+
+/* Reset clears the FIFO and abandons the list, as it does the board. */
+static void test_gl_list_reset_abandons_slices(void)
+{
+    gl_list_execute_then_query();
+    qtest_system_reset(qts);
+    g_assert_false(gl_list_work_pending());
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    0);
+    gl_list_slice_words(0);
+}
+
+/*
  * A page-list entry is the page's whole frame number, node included. On
  * more than one node, as a captured run had four, a
  * pool page on node 1 is frame (1 << 20) | f: SN0's node number is
@@ -6378,6 +6496,18 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-big-matches-the-reference",
         test_gl_list_big_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-runs-in-slices",
+        test_gl_list_runs_in_slices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-read-waits-for-slices",
+        test_gl_list_read_waits_for_slices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-finishes-before-stop",
+        test_gl_list_finishes_before_stop, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-reset-abandons-slices",
+        test_gl_list_reset_abandons_slices, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-list-page-on-another-node",
         test_gl_list_page_on_another_node, false);

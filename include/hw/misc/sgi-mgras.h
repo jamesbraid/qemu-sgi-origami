@@ -731,10 +731,39 @@ struct SGIMgrasState {
     /* Host-only event ordering. Not guest state and not migrated. */
     uint64_t trace_sequence;
     /*
-     * The display list being executed, which lives only inside the port
-     * write that invoked it. Not guest state and not migrated.
+     * The display list being executed. A list longer than one slice of
+     * host time keeps running after the port write that invoked it
+     * returns, in slices on the machine clock, and the command-FIFO
+     * words written meanwhile wait in work_queue behind it
+     * (hw/misc/sgi-mgras-raster.c). The work is finished before the
+     * machine stops, so none of this is migrated.
      */
     SGICommandFetch list_fetch;
+    bool list_busy;             /* a list is mapped and not yet finished */
+    bool list_running;          /* a slice of it is decoding now */
+    uint32_t list_segment;      /* where the next slice starts */
+    uint32_t list_word;         /* 0: the segment's header not yet read */
+    SGIMgrasCmdParser list_parser;  /* the list's parser between slices */
+    GArray *work_queue;         /* FIFO words waiting behind the list */
+    bool work_replaying;        /* a queued word is being executed */
+    unsigned int work_insert;   /* where a word split by a new list goes */
+    QEMUTimer *work_timer;
+    VMChangeStateEntry *work_vm_state;
+    /*
+     * The thread that runs the slices the machine clock schedules, a
+     * slice is running, and whether its scalar draw has let go of the big
+     * lock (sgi-mgras-gl.c). Anything that would decode or abandon the
+     * work meanwhile waits on work_cond.
+     */
+    QemuThread work_thread;
+    QemuCond work_kick;
+    bool work_go;
+    bool work_exit;
+    bool work_slice;
+    bool work_drawing;
+    QemuCond work_cond;
+    /* Host-only: list words per slice, for qtest; 0 means host time. */
+    uint32_t test_slice_words;
     /*
      * Pixel-memory banks 0 and 1. The X server draws in bank 0; GL front
      * and back buffers map to either (hw/misc/sgi-mgras-gl.c), and bank 1

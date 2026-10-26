@@ -32,6 +32,7 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "hw/core/cpu.h"
 #include "system/runstate.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
@@ -4147,7 +4148,23 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
     }
     t.opaque = s;
     t.texture = sgi_mgras_texture_image(s, &image);
-    result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+    /*
+     * In a slice of display-list work on the board's thread the draw runs
+     * without the big lock, which a large one would otherwise hold for
+     * milliseconds, keeping the vCPUs from their interrupts. It reads
+     * and writes only the planes and the state the command stream sets;
+     * meanwhile an access that would touch either waits for the slice,
+     * and command-FIFO words queue (sgi-mgras-raster.c).
+     */
+    if (s->work_slice && !current_cpu) {
+        s->work_drawing = true;
+        bql_unlock();
+        result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+        bql_lock();
+        s->work_drawing = false;
+    } else {
+        result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
+    }
     s->dirty = true;
     return result;
 }
