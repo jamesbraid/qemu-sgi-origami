@@ -970,9 +970,10 @@ static void test_dma_loopback_shadow_reset(void)
     reg_write(qts, SDMA_SHADOW(0), 0x13000000);
     g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
 
+    /* The channel reset leaves the outputs, a setting, as they were. */
     reg_write(qts, SDMA_CONTROL(0), SSCR_RESET);
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
-                    ==, 0);
+                    ==, 0x13000000);
     g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
@@ -1479,6 +1480,29 @@ static void test_dma_tx_delay_sets_the_busy_bit(void)
     close(sv[0]);
 }
 
+/*
+ * The channel reset returns the indices and the engine's work in progress
+ * to the start and leaves the settings: the timer reload, the shadow's
+ * outputs and the control bits written with it, as on IOC3.
+ */
+static void test_dma_channel_reset_keeps_settings(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_RX_TIMER(0), 0x140);
+    reg_write(qts, SDMA_SHADOW(0), 0x03000000);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 0x40);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_RESET | SSCR_THRESHOLD(5));
+    g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_TIMER(0)) & 0xfff, ==, 0x140);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS, ==,
+                    0x03000000);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)), ==, SSCR_THRESHOLD(5));
+    qtest_quit(qts);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -1543,8 +1567,14 @@ static void test_dma_error_capture_and_reset(void)
     g_assert_cmphex(reg_read(qts, 0x0c) & DMA_ERROR(0), ==,
                     DMA_ERROR(0));
 
+    /*
+     * The channel reset recovers the port but leaves the pending source,
+     * which software acknowledges itself, as Linux's driver does.
+     */
     reg_write(qts, SDMA_CONTROL(0), SSCR_RESET);
     g_assert_cmphex(reg_read(qts, 0x00), ==, expected_low);
+    g_assert_cmphex(reg_read(qts, 0x0c) & DMA_ERROR(0), ==, DMA_ERROR(0));
+    reg_write(qts, 0x0c, DMA_ERROR(0));
     g_assert_cmphex(reg_read(qts, 0x0c) & DMA_ERROR(0), ==, 0);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
     g_assert_cmpint(write(sv[0], &rx_input, 1), ==, 1);
@@ -3018,6 +3048,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-channel-reset-keeps-settings",
+                   test_dma_channel_reset_keeps_settings);
     qtest_add_func("/sgi-ioc4/dma-tx-delay-sets-the-busy-bit",
                    test_dma_tx_delay_sets_the_busy_bit);
     qtest_add_func("/sgi-ioc4/dma-tx-control-decodes-type-and-bit5",
