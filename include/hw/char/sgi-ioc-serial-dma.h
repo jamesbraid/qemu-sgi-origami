@@ -156,6 +156,9 @@ typedef struct SGIIOCSerialDMAPort {
     /* Delivery sources fire per burst, not per entry. */
     bool delivered;
 
+    /* The receive timer's arm, kept apart from the consume pointer. */
+    bool armed;
+
     QEMUTimer *rx_timer;
     /* The receive timer's count while it is not running. */
     uint16_t rx_idle_count;
