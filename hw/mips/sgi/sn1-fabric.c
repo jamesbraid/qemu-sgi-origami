@@ -192,7 +192,12 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
     unsigned number = (address >> SN1_FABRIC_ADDRESS_SHIFT) & 0x7f;
     hwaddr canonical;
 
-    if (origin >= endpoint->processor_origins) {
+    /*
+     * The node's fabric view carries its own DMA and BTE requests. It is
+     * not a processor, so the node's processor count does not bound it.
+     */
+    if (origin != SN1_NODE_FABRIC_VIEW &&
+        origin >= endpoint->processor_origins) {
         return MEMTX_ACCESS_ERROR;
     }
     if (address >= (UINT64_C(1) << 42) ||

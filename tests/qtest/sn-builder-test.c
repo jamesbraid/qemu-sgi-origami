@@ -8189,6 +8189,74 @@ static void test_routed_cpu_ecc_store(void)
     g_unlink(prom);
 }
 
+/*
+ * A compute node's own I/O must reach its own memory, cabled expansion or
+ * not. A card behind node 0's XBridge head F writes through the direct
+ * window to RAM. Once the expansion carries its own NASID the node's I/O
+ * requests take the numbered fabric view, which is not a processor and so
+ * is not bounded by the node's processor count.
+ */
+static void test_expansion_compute_dma(const void *data)
+{
+    bool expansion = GPOINTER_TO_INT(data);
+    const uint64_t base = SPACE_IO + (0xfULL << 24);
+    const uint64_t bar = base + 0x600000;
+    const uint64_t target = 0x8000;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *drive = expansion ? g_strdup_printf(
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", image) :
+        g_strdup("");
+    QTestState *qts = qtest_initf(
+        "-M origin300%s -cpu R14000 -smp 2 -m 512M -S %s -bios %s "
+        "-device sgi-bridge-dma-test,bus=head-f.0,addr=2 "
+        "-nodefaults -display none", expansion ? ",topology="
+        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING :
+        "", drive, prom);
+    uint8_t bytes[8], expected[8], untouched[8];
+
+    if (expansion) {
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    }
+    stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, EXPANSION_LB_LOCAL + 0x780008,
+                                     bytes, sizeof(bytes)));
+    expansion_card_write(qts, base + 0x24,
+        (expansion_card_read(qts, base + 0x24, 4) & ~15U) | 0xf, 4);
+    expansion_card_write(qts, base + 0x22010, CARD_MMIO + 0x200000, 4);
+    expansion_card_write(qts, base + 0x22004, PCI_COMMAND_MEMORY_MASTER, 4);
+    expansion_card_write(qts, base + 0x214, 0x81012, 4);
+    /* The direct window lands at node 0's Hub, on the XBridge host port. */
+    expansion_card_write(qts, base + 0x84, 0xa00000, 4);
+    memset(untouched, 0xcc, sizeof(untouched));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, target, untouched,
+                                     sizeof(untouched)));
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x80008000, 4);
+    expansion_card_write(qts, bar + DMA_REG_LENGTH, sizeof(bytes), 4);
+    expansion_card_write(qts, bar + DMA_REG_SEED, 0x51, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        expected[i] = 0x51 + i;
+    }
+    g_assert_true(qtest_memread_cpu(qts, 0, target, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    /* And back: the card reads what it wrote into a second line. */
+    g_assert_true(qtest_memwrite_cpu(qts, 0, target + 0x200, untouched,
+                                     sizeof(untouched)));
+    expansion_card_write(qts, bar + DMA_REG_SOURCE, 0x80008000, 4);
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x80008200, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target + 0x200, bytes,
+                                    sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    qtest_quit(qts);
+    if (image) {
+        g_unlink(image);
+    }
+    g_unlink(prom);
+}
+
 static void test_routed_serial_refusals(void)
 {
     static const char *options[] = {
@@ -9557,6 +9625,10 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(3), test_routed_memory_cleanup);
     qtest_add_func("sn/builder/routed/compute-dma",
                    test_routed_compute_dma);
+    qtest_add_data_func("sn/builder/expansion/compute-dma/alone",
+                        GINT_TO_POINTER(false), test_expansion_compute_dma);
+    qtest_add_data_func("sn/builder/expansion/compute-dma/cabled",
+                        GINT_TO_POINTER(true), test_expansion_compute_dma);
     qtest_add_func("sn/builder/routed/serial-refusals",
                    test_routed_serial_refusals);
     qtest_add_data_func("sn/builder/expansion/controller-serial/override",
