@@ -80,6 +80,11 @@ typedef struct SGICommandPort {
     uint32_t args[SGI_COMMAND_PORT_MAX_ARGS];
 } SGICommandPort;
 
+/*
+ * The selector table must outlive the process, as a static const table
+ * does: the lookup index built for it is kept, keyed by its address and
+ * length, and a freed table whose address came back would find it.
+ */
 void sgi_command_port_init(SGICommandPort *p, const SGICommandPortOps *ops,
                             void *opaque, unsigned port_id,
                             const SGICommandPortSelector *selectors,
