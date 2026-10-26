@@ -4720,7 +4720,9 @@
           "required": true
         }
       ],
-      "install-media": [],
+      "install-media": [
+        "netboot"
+      ],
       "launch-recipe": "ip53-discovery",
       "machine-options": "onyx350,topology=onyx350-compat,nodes=1",
       "memory-per-node-mib": {
@@ -4730,7 +4732,7 @@
         "default": 8192
       },
       "needs-debug-leds-off": false,
-      "netboot-adapter": "unsupported",
+      "netboot-adapter": "bcm5701-ethernet",
       "networks": [],
       "nodes": 1,
       "overrides": [
