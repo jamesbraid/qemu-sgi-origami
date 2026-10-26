@@ -1430,7 +1430,11 @@ static void mgras_return_credit(SGIMgrasState *s)
         }
         return;
     }
-    sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, 1);
+    if (!s->pi_return_credits) {
+        sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, 1);
+        return;
+    }
+    s->pi_return_credits(s->pi, s->pi_widget, 1);
 }
 
 static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
@@ -1754,6 +1758,15 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
      * bus it already had.
      */
     s->nic_bus = onewire_create_bus(dev, "nic");
+    /*
+     * The link and the widget are settled by now. The node is a device,
+     * so its class carries interfaces, and every class cast to one walks
+     * them: done per store, that walk cost more than the credit itself.
+     */
+    if (s->pi) {
+        s->pi_return_credits = SGI_PI_GFX_GET_CLASS(s->pi)->return_credits;
+        s->pi_widget = board->slot;
+    }
     if (s->board_record) {
         char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
         SGIBoardRecord record = {
