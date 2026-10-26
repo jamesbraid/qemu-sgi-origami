@@ -156,6 +156,8 @@ struct SGIIOC4State {
     uint32_t uart_level;
     /* The receive threshold sources, a level per port. */
     uint32_t threshold_level;
+    /* The transmit-ring-empty sources, a level per port. */
+    uint32_t tx_empty_level;
     uint32_t clock_hz;
 };
 
@@ -219,6 +221,7 @@ static void ioc4_update_irq(SGIIOC4State *s)
                 !!((s->serial_pending & s->serial_enable) |
                    (s->uart_level & s->serial_enable) |
                    (s->threshold_level & s->serial_enable) |
+                   (s->tx_empty_level & s->serial_enable) |
                    (s->other_pending & s->other_enable)));
 }
 
@@ -374,11 +377,10 @@ static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value,
 static gboolean ioc4_tx_watch(void *opaque, GIOCondition condition,
                               void *data);
 
-static void ioc4_tx_run(SGIIOC4Port *p)
+static void ioc4_tx_walk(SGIIOC4Port *p)
 {
     SGIIOC4State *s = p->ioc4;
     uint32_t mask = ioc4_ring_mask(s, p->index);
-    bool was_queued = ioc4_tx_ring_queued(p);
 
     if (!s->serial_dma_experimental || p->halted || p->tx_waiting_rx ||
         ioc4_port_paused(p) ||
@@ -476,10 +478,31 @@ static void ioc4_tx_run(SGIIOC4Port *p)
         p->tx_slot = 0;
         p->tx_consume = (p->tx_consume + 8) & mask;
     }
-    if (was_queued && !ioc4_tx_ring_queued(p)) {
-        s->serial_pending |= 1u << (8 * p->index);
-        ioc4_update_irq(s);
+}
+
+/*
+ * Transmit-ring-empty is a level: set while ring DMA is on and nothing is
+ * left to send, in the ring or held by the engine, and a write cannot clear
+ * it. Linux's IOC3 driver treats the bit so, and IOC4 follows its sibling.
+ */
+static void ioc4_update_tx_empty(SGIIOC4Port *p)
+{
+    SGIIOC4State *s = p->ioc4;
+    uint32_t bit = 1u << (8 * p->index);
+
+    if ((p->control & IOC4_SSCR_DMA_EN) && !ioc4_tx_ring_queued(p) &&
+        !p->tx_timer_running) {
+        s->tx_empty_level |= bit;
+    } else {
+        s->tx_empty_level &= ~bit;
     }
+    ioc4_update_irq(s);
+}
+
+static void ioc4_tx_run(SGIIOC4Port *p)
+{
+    ioc4_tx_walk(p);
+    ioc4_update_tx_empty(p);
 }
 
 static gboolean ioc4_tx_watch(void *opaque, GIOCondition condition,
@@ -670,6 +693,7 @@ static void ioc4_port_reset(SGIIOC4Port *p)
     p->shadow &= ~IOC4_DMA_SHADOW_OUTPUTS;
     s->serial_pending &= ~((uint32_t)0xff << (8 * p->index));
     s->threshold_level &= ~(1u << (8 * p->index + 2));
+    s->tx_empty_level &= ~(1u << (8 * p->index));
     s->other_pending &= ~(1u << error_bit);
     ioc4_update_irq(s);
 }
@@ -1015,7 +1039,8 @@ static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
     }
     switch (addr) {
     case 0x08:
-        return s->serial_pending | s->uart_level | s->threshold_level;
+        return s->serial_pending | s->uart_level | s->threshold_level |
+               s->tx_empty_level;
     case 0x0c:
         return s->other_pending;
     case 0x10:
@@ -1049,6 +1074,10 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
     }
     if (dma_value != UINT64_MAX) {
         ioc4_dma_register_write(s, addr, val);
+        /* Enabling, a doorbell or a reset can change it without a walk. */
+        for (int i = 0; i < IOC4_PORTS; i++) {
+            ioc4_update_tx_empty(&s->dma[i]);
+        }
         return;
     }
     if (addr == 0x20 && s->serial_dma_experimental) {
@@ -1240,6 +1269,7 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->other_enable = 0;
     s->uart_level = 0;
     s->threshold_level = 0;
+    s->tx_empty_level = 0;
     s->ata_readback = 0;
     if (s->pci_status_compat) {
         pci_set_word(s->parent_obj.config + PCI_STATUS,
@@ -1318,6 +1348,7 @@ static int ioc4_post_load(void *opaque, int version_id)
 
     for (i = 0; i < IOC4_PORTS; i++) {
         ioc4_update_rx_threshold(&s->dma[i]);
+        ioc4_update_tx_empty(&s->dma[i]);
     }
     for (i = 0; i < IOC4_PORTS; i++) {
         SGIIOC4Port *p = &s->dma[i];
