@@ -316,11 +316,13 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     bool texture = !record && sgi_kona_texture_dma_waiting(s);
     bool pixels = !record && sgi_kona_pixels_dma_waiting(s);
     bool bitmap = !record && sgi_kona_bitmap_dma_waiting(s);
+    bool filter = !record && !texture && !pixels && !bitmap &&
+                  sgi_kona_filter_dma_waiting(s);
     /*
      * The packet after a refused DMA texture load is that load's source,
      * whether or not it is refused below, so selecting it spends the mark.
      */
-    bool discard = !record && !texture && !pixels && !bitmap &&
+    bool discard = !record && !texture && !pixels && !bitmap && !filter &&
                    sgi_kona_texture_dma_discard(s);
     uint32_t total = w[2], per_line = w[3], gap = w[4];
     uint64_t cookie = SGI_KONA_DMA_COOKIE_NONE;
@@ -351,7 +353,8 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     in_page = io & (SGI_KONA_DMA_PAGE_SIZE - 1);
 
     if (!per_line ||
-        (!texture && !pixels && !bitmap && !discard && per_line % 4) ||
+        (!texture && !pixels && !bitmap && !filter && !discard &&
+         per_line % 4) ||
         !total || total % per_line) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: dma of 0x%x bytes in lines of 0x%x is not "
@@ -399,6 +402,13 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
         /* Publish only after the complete source was read and staged. */
         if (sgi_kona_texture_image_dma(s, io, lines, per_line, pitch) &&
             cookie != SGI_KONA_DMA_COOKIE_NONE) {
+            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
+                             SGI_DONE_WRITTEN, cookie, total);
+        }
+    } else if (filter) {
+        /* A filter image's source completes whether or not it is kept. */
+        sgi_kona_filter_image_dma(s, io, lines, per_line, pitch);
+        if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
         }

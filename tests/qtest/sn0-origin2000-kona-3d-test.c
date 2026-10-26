@@ -7663,7 +7663,8 @@ static void test_draw_pixels(gconstpointer opaque)
     } else if (mode == 6) {
         kona_command(s, 0x30, (uint32_t[]) { 0x0d10, 0x3f800000 }, 2);
     } else if (mode == 7) {
-        kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+        /* GL_HISTOGRAM: an imaging stage the model does not apply. */
+        kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
     } else if (mode == 8) {
         kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
         kona_command(s, 0xd2, (uint32_t[]) { 0 }, 1);
@@ -13713,7 +13714,7 @@ static void test_texture_widths(void)
     }
     qtest_qmp_assert_success(s,
         "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
-        "'property':'x-test-gc-index','value':96}}");
+        "'property':'x-test-gc-index','value':256}}");
     QDict *reply = qtest_qmp(s,
         "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
         "'property':'x-test-gl-data-word'}}");
@@ -18014,6 +18015,340 @@ static void test_convolution_migration(void)
     g_rmdir(dir);
 }
 
+/*
+ * A filter of 2 by 2 RGB floats, (1, 1, 1) along its bottom row and 0
+ * above, whose image is twelve words: 0xf0 with format code 1 (RGB),
+ * format 4 (RGB) and type 6 (float), contiguous.
+ */
+static const float convolution_box[4][3] = {
+    { 1, 1, 1 }, { 1, 1, 1 }, { 0, 0, 0 }, { 0, 0, 0 },
+};
+
+static void convolution_box_filter(QTestState *s)
+{
+    uint32_t words[12];
+
+    memcpy(words, convolution_box, sizeof(words));
+    convolution_filter(s, 0xf0, (uint32_t[]){ 1, 2, 2, 4, 6, 0, 0, 0 }, 8,
+                       words, 12);
+}
+
+/*
+ * A 3 by 2 RGBA byte image at the window's centre: (0x40, 0, 0),
+ * (0, 0x40, 0) and (0, 0, 0x40) along the bottom row, `top` above.
+ * Filtered by the bottom-row box filter with the REDUCE border it is 2 by
+ * 1: the sums (0x40, 0x40, 0) and (0, 0x40, 0x40), at (64, 64) and
+ * (65, 64), and nothing at row 65.
+ */
+static void convolution_draw(QTestState *s, uint32_t top)
+{
+    static const uint32_t bottom[3] = { 0x400000ff, 0x004000ff, 0x000040ff };
+
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 3, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    for (unsigned k = 0; k < 3; k++) {
+        qtest_writel(s, REG_COMMAND, bottom[k]);
+    }
+    for (unsigned k = 0; k < 3; k++) {
+        qtest_writel(s, REG_COMMAND, top);
+    }
+}
+
+static void convolution_expected(QTestState *s, uint32_t left,
+                                 uint32_t right)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+    const uint32_t rgb[2] = { left, right };
+
+    expected_clear(e, 0x000000);
+    for (unsigned k = 0; k < 2; k++) {
+        unsigned at = ((127 - 64) * 128 + 64 + k) * 3;
+
+        e->rgb[at] = rgb[k] >> 16;
+        e->rgb[at + 1] = rgb[k] >> 8;
+        e->rgb[at + 2] = rgb[k];
+    }
+    assert_window_matches(s, e);
+}
+
+/* glEnable(GL_CONVOLUTION_2D) and a DrawPixels it filters. */
+static void test_convolution_2d_draw(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    convolution_box_filter(s);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    convolution_draw(s, 0xffffffff);
+    convolution_expected(s, 0x404000, 0x004040);
+    qtest_quit(s);
+}
+
+/*
+ * Enabled with no filter, and disabled with one, the image draws as it
+ * would without the imaging subset: every pixel where it was sent.
+ */
+static void test_convolution_off_draws_unchanged(void)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+    static const uint32_t rgb[6] = {
+        0x400000, 0x004000, 0x000040, 0x102030, 0x102030, 0x102030,
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    for (unsigned pass = 0; pass < 2; pass++) {
+        gl_window_cleared(s, 0, 0, 0);
+        if (pass) {
+            convolution_box_filter(s);
+            kona_command(s, 0x25, (uint32_t[]) { 0x8011 }, 1);
+        } else {
+            kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+        }
+        convolution_draw(s, 0x102030ff);
+        expected_clear(e, 0x000000);
+        for (unsigned k = 0; k < 6; k++) {
+            unsigned at = ((127 - (64 + k / 3)) * 128 + 64 + k % 3) * 3;
+
+            e->rgb[at] = rgb[k] >> 16;
+            e->rgb[at + 1] = rgb[k] >> 8;
+            e->rgb[at + 2] = rgb[k];
+        }
+        assert_window_matches(s, e);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * A separable filter: 0xf5 twice, the row (1, 1) with `which` 1 and the
+ * column (1, 0) with 2, each three floats a pixel; the same sums.
+ */
+static void test_convolution_separable_draw(void)
+{
+    static const float row[2][3] = { { 1, 1, 1 }, { 1, 1, 1 } };
+    static const float column[2][3] = { { 1, 1, 1 }, { 0, 0, 0 } };
+    uint32_t words[6];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(s, 0xf5, (uint32_t[]){ 1, 2, 2, 4, 6, 0, 1, 0, 0 }, 9);
+    memcpy(words, row, sizeof(words));
+    for (unsigned k = 0; k < 6; k++) {
+        qtest_writel(s, KONA_REG(0xc10000), words[k]);
+    }
+    kona_command(s, 0xf5, (uint32_t[]){ 1, 2, 2, 4, 6, 0, 2, 0, 0 }, 9);
+    memcpy(words, column, sizeof(words));
+    for (unsigned k = 0; k < 6; k++) {
+        qtest_writel(s, KONA_REG(0xc10000), words[k]);
+    }
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8012 }, 1);
+    convolution_draw(s, 0xffffffff);
+    convolution_expected(s, 0x404000, 0x004040);
+    qtest_quit(s);
+}
+
+/*
+ * The filter's own scale and bias (0xf9 target pname r g b a) apply to
+ * an image taken after them, and post-convolution scale and bias (0x30
+ * 0x801c..0x8023) to the convolved pixels: green scaled by 0.5 in the
+ * filter halves the green sums, red post-scaled by 0.5 halves red, and
+ * a blue post-bias of 0.25 adds 0x40 to every pixel the filter leaves.
+ */
+static void test_convolution_scale_bias(void)
+{
+    uint32_t half, quarter;
+    float h = 0.5, q = 0.25;
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    memcpy(&half, &h, sizeof(half));
+    memcpy(&quarter, &q, sizeof(quarter));
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0xf8, (uint32_t[]) { 0x8011, 0x8013, 0x8016 }, 3);
+    kona_command(s, 0xf9, (uint32_t[]) { 0x8011, 0x8014, 0x3f800000, half,
+                                         0x3f800000, 0x3f800000 }, 6);
+    convolution_box_filter(s);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    pixel_transfer_set(s, 0x801c, 0.5);
+    pixel_transfer_set(s, 0x8022, 0.25);
+    convolution_draw(s, 0xffffffff);
+    convolution_expected(s, 0x202040, 0x002080);
+    qtest_quit(s);
+}
+
+/*
+ * glGetConvolutionFilter: 0xf4 target format type, answered on the
+ * return page from offset 8 with the filter's pixels as RGBA floats, the
+ * alpha an RGB filter lacks as zero.
+ */
+static void test_convolution_get(void)
+{
+    float got[4][4];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    convolution_box_filter(s);
+    qtest_memset(s, RETURN_PAGE, 0, 0x100);
+    kona_command(s, 0xf4, (uint32_t[]) { 0x8011, 5, 6 }, 3);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), !=, 0);
+    for (unsigned k = 0; k < 16; k++) {
+        uint32_t bits = guest_word(s, RETURN_PAGE + 8 + 4 * k);
+
+        memcpy(&got[k / 4][k % 4], &bits, sizeof(bits));
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        for (unsigned c = 0; c < 3; c++) {
+            g_assert_cmpfloat(got[k][c], ==, convolution_box[k][c]);
+        }
+        g_assert_cmpfloat(got[k][3], ==, 0);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * glGetSeparableFilter: 0xf7 0x8012 format type, the row at offset 8 and
+ * the column five pixels on, for a filter of at most 5.
+ */
+static void test_convolution_get_separable(void)
+{
+    static const float row[2] = { 0.25, 0.5 }, column[2] = { 1, 0.75 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(s, 0xf5, (uint32_t[]){ 3, 2, 2, 6, 6, 0, 1, 0, 0 }, 9);
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t bits;
+
+        memcpy(&bits, &row[k], sizeof(bits));
+        qtest_writel(s, KONA_REG(0xc10000), bits);
+    }
+    kona_command(s, 0xf5, (uint32_t[]){ 3, 2, 2, 6, 6, 0, 2, 0, 0 }, 9);
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t bits;
+
+        memcpy(&bits, &column[k], sizeof(bits));
+        qtest_writel(s, KONA_REG(0xc10000), bits);
+    }
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+    qtest_memset(s, RETURN_PAGE, 0, 0x100);
+    kona_command(s, 0xf7, (uint32_t[]) { 0x8012, 6, 6 }, 3);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), !=, 0);
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t r = guest_word(s, RETURN_PAGE + 8 + 4 * k);
+        uint32_t c = guest_word(s, RETURN_PAGE + 8 + 4 * (5 + k));
+        float rf, cf;
+
+        memcpy(&rf, &r, sizeof(rf));
+        memcpy(&cf, &c, sizeof(cf));
+        g_assert_cmpfloat(rf, ==, row[k]);
+        g_assert_cmpfloat(cf, ==, column[k]);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * 0xf3 copies a 2D filter from the framebuffer: format code, x, y,
+ * width, height. A 2 by 1 copy of a white window is a bottom-row box
+ * filter, and the drawn image's rows above it then add nothing.
+ */
+static void test_convolution_copy(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 1, 1, 1);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(s, 0xf3, (uint32_t[]){ 1, 0, 0, 2, 1 }, 5);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 3, 1, 5, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, 0x400000ff);
+    qtest_writel(s, REG_COMMAND, 0x004000ff);
+    qtest_writel(s, REG_COMMAND, 0x000040ff);
+    convolution_expected(s, 0x404000, 0x004040);
+    qtest_quit(s);
+}
+
+/*
+ * A filter image by DMA (header word dma 1): no FIFO words; the next DMA
+ * packet carries it, and completes on the mailbox like any other.
+ */
+static void test_convolution_dma(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint8_t bytes[48];
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    for (unsigned k = 0; k < 12; k++) {
+        uint32_t bits;
+
+        memcpy(&bits, &convolution_box[k / 3][k % 3], sizeof(bits));
+        stl_be_p(bytes + 4 * k, bits);
+    }
+    qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0x40000000 }, 2);
+    kona_command(s, 0xf0, (uint32_t[]){ 1, 2, 2, 4, 6, 0, 1, 0 }, 8);
+    texture_dma_packet(s, 0, sizeof(bytes), sizeof(bytes), 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    kona_command(s, 0x111, (uint32_t[]){ 0x10, 0 }, 2);
+    kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    convolution_draw(s, 0xffffffff);
+    convolution_expected(s, 0x404000, 0x004040);
+    qtest_quit(s);
+}
+
+/*
+ * 0x116 and four words, the library's query before it splits a convolved
+ * image into strips: answered with one word at byte 8 of the return page,
+ * and the stream stays in step.
+ */
+static void test_convolution_strip_query(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    qtest_memset(qts, RETURN_PAGE, 0xa5, 0x10);
+    kona_command(qts, 0x116, (uint32_t[]){ 0x41, 6, 1, 0 }, 4);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE), !=, 0);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0);
+    convolution_filter(qts, 0xf0, (uint32_t[]){ 1, 0, 3, 6, 6, 0, 0, 0 }, 8,
+                       NULL, 0);
+    assert_convolution_in_step(qts);
+}
+
+/* The filter and its enable migrate with the context. */
+static void test_convolution_state_migration(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+
+    gl_make_current(from);
+    gl_window_cleared(from, 0, 0, 0);
+    convolution_box_filter(from);
+    kona_command(from, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    pixel_transfer_set(from, 0x801c, 0.5);
+    dir = g_dir_make_tmp("sn0-kona-filter-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    convolution_draw(to, 0xffffffff);
+    convolution_expected(to, 0x204000, 0x004040);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 14, 1, 0 };
@@ -18631,6 +18966,26 @@ int main(int argc, char **argv)
              test_convolution_1d_framed);
     add_case("sn0/origin2000/kona-3d/convolution/empty-and-copies",
              test_convolution_empty_and_copies);
+    add_case("sn0/origin2000/kona-3d/convolution/2d-draw",
+             test_convolution_2d_draw);
+    add_case("sn0/origin2000/kona-3d/convolution/off-draws-unchanged",
+             test_convolution_off_draws_unchanged);
+    add_case("sn0/origin2000/kona-3d/convolution/separable-draw",
+             test_convolution_separable_draw);
+    add_case("sn0/origin2000/kona-3d/convolution/scale-bias",
+             test_convolution_scale_bias);
+    add_case("sn0/origin2000/kona-3d/convolution/get",
+             test_convolution_get);
+    add_case("sn0/origin2000/kona-3d/convolution/get-separable",
+             test_convolution_get_separable);
+    add_case("sn0/origin2000/kona-3d/convolution/copy",
+             test_convolution_copy);
+    add_case("sn0/origin2000/kona-3d/convolution/dma",
+             test_convolution_dma);
+    add_case("sn0/origin2000/kona-3d/convolution/state-migration",
+             test_convolution_state_migration);
+    add_case("sn0/origin2000/kona-3d/convolution/strip-query",
+             test_convolution_strip_query);
     add_case("sn0/origin2000/kona-3d/convolution/migration",
              test_convolution_migration);
     add_case("sn0/origin2000/kona-3d/stencil/completion/"
