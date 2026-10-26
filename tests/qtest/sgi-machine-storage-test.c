@@ -845,13 +845,17 @@ static void test_module_nvram_refusals(void)
     g_assert_cmpint(g_unlink(small), ==, 0);
 }
 
-/* An Onyx 350 IO9 board's DS1742 and the clock record beside it. */
-#define ONYX350 "onyx350,topology=onyx350-compat"
-#define ONYX350_SIZE "R16000", "-smp", "4", "-m", "8G"
+/* The Tezro deskside trial retains the legacy DS1742 IO9 descriptor. */
+#define TEZRO_DS1742 \
+    "tezro,topology=tezro-deskside-700mhz-4mib-serial-trial," \
+    "ip53-experimental=on"
+#define TEZRO_DS1742_ARGS \
+    "-cpu R16000,r16000-experimental=on," \
+    "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000 " \
+    "-smp 4 -m 4G"
 #define DS1742_SIZE 2048
 #define DS1742_CLOCK_SIZE 16
 
-/* Both catalogue items bind the DS1742 the IO9 board builds. */
 static void test_ds1742_bound(void)
 {
     g_autofree char *prom = make_sn1_prom();
@@ -860,12 +864,37 @@ static void test_ds1742_bound(void)
     g_autofree char *data_node = blockdev("rtc", data);
     g_autofree char *clock_node = blockdev("rtc-clock", clock);
     QTestState *qts = qtest_initf(
-        "-M " ONYX350 ",ds1742-io9-data=rtc,ds1742-io9-clock=rtc-clock "
-        "-cpu R16000 -smp 4 -m 8G -bios %s -display none -S "
-        "-blockdev %s -blockdev %s", prom, data_node, clock_node);
+        "-M " TEZRO_DS1742 ",ds1742-io9-data=rtc,"
+        "ds1742-io9-clock=rtc-clock " TEZRO_DS1742_ARGS " -bios %s "
+        "-display none -S -blockdev %s -blockdev %s",
+        prom, data_node, clock_node);
 
     assert_attached_to(qts, "rtc", "/ds1742-io9");
     assert_attached_to(qts, "rtc-clock", "/ds1742-io9");
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(data), ==, 0);
+    g_assert_cmpint(g_unlink(clock), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/* Onyx 350 selects a DS1744-compatible IO9 timekeeper through nvram0. */
+#define ONYX350 "onyx350,topology=onyx350-compat"
+#define DS1744_SIZE 32768
+
+static void test_ds1744_bound(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *data = make_store("ds1744-data", DS1744_SIZE, 0);
+    g_autofree char *clock = make_store("ds1744-clock", DS1742_CLOCK_SIZE, 0);
+    g_autofree char *data_node = blockdev("rtc", data);
+    g_autofree char *clock_node = blockdev("rtc-clock", clock);
+    QTestState *qts = qtest_initf(
+        "-M " ONYX350 ",nvram0=rtc,nvram0-clock=rtc-clock "
+        "-cpu R16000 -smp 4 -m 8G -bios %s -display none -S "
+        "-blockdev %s -blockdev %s", prom, data_node, clock_node);
+
+    assert_attached_to(qts, "rtc", "/ds1744-io9");
+    assert_attached_to(qts, "rtc-clock", "/ds1744-io9");
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(data), ==, 0);
     g_assert_cmpint(g_unlink(clock), ==, 0);
@@ -881,26 +910,37 @@ static void test_ds1742_refusals(void)
     g_autofree char *legacy = g_strdup_printf(
         "if=none,id=sgi-ds1742-data-io9,file=%s,format=raw", clock);
     const char *half[] = {
-        qtest_qemu_binary(NULL), "-M", ONYX350 ",ds1742-io9-data=rtc",
-        "-cpu", ONYX350_SIZE, "-bios", prom, "-display", "none", "-S",
-        "-qmp", "stdio", "-blockdev", data_node, NULL,
+        qtest_qemu_binary(NULL), "-M",
+        TEZRO_DS1742 ",ds1742-io9-data=rtc",
+        "-cpu", "R16000,r16000-experimental=on,"
+        "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000",
+        "-smp", "4", "-m", "4G", "-bios", prom,
+        "-display", "none", "-S", "-qmp", "stdio",
+        "-blockdev", data_node, NULL,
     };
     const char *both[] = {
-        qtest_qemu_binary(NULL), "-M", ONYX350 ",ds1742-io9-data=rtc",
-        "-cpu", ONYX350_SIZE, "-bios", prom, "-display", "none", "-S",
-        "-qmp", "stdio", "-blockdev", data_node, "-drive", legacy, NULL,
+        qtest_qemu_binary(NULL), "-M",
+        TEZRO_DS1742 ",ds1742-io9-data=rtc",
+        "-cpu", "R16000,r16000-experimental=on,"
+        "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000",
+        "-smp", "4", "-m", "4G", "-bios", prom,
+        "-display", "none", "-S", "-qmp", "stdio",
+        "-blockdev", data_node, "-drive", legacy, NULL,
     };
     const char *neither[] = {
-        qtest_qemu_binary(NULL), "-M", ONYX350, "-cpu", ONYX350_SIZE,
-        "-bios", prom, "-display", "none", "-S", "-qmp", "stdio", NULL,
+        qtest_qemu_binary(NULL), "-M", TEZRO_DS1742,
+        "-cpu", "R16000,r16000-experimental=on,"
+        "r16000-reset-mode=0x009bad85,r16000-scache-bytes=0x400000",
+        "-smp", "4", "-m", "4G", "-bios", prom,
+        "-display", "none", "-S", "-qmp", "stdio", NULL,
     };
 
-    assert_launch_rejected(half, "onyx350: IO9 board 'io9' needs both "
+    assert_launch_rejected(half, "tezro: IO9 board 'io9' needs both "
                            "ds1742-io9-data and ds1742-io9-clock");
-    assert_launch_rejected(both, "onyx350: ds1742-io9-data and -drive "
+    assert_launch_rejected(both, "tezro: ds1742-io9-data and -drive "
                            "id=sgi-ds1742-data-io9 both back IO9 board "
                            "'io9''s DS1742");
-    assert_launch_rejected(neither, "onyx350: IO9 board 'io9' needs its "
+    assert_launch_rejected(neither, "tezro: IO9 board 'io9' needs its "
                            "DS1742 stores ds1742-io9-data and "
                            "ds1742-io9-clock");
     g_assert_cmpint(g_unlink(data), ==, 0);
@@ -1004,6 +1044,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-machine-storage/nvram/short-of-a-sector-refused",
                    test_nvram_short_of_a_sector_refused);
     qtest_add_func("/sgi-machine-storage/ds1742/bound", test_ds1742_bound);
+    qtest_add_func("/sgi-machine-storage/ds1744/bound", test_ds1744_bound);
     qtest_add_func("/sgi-machine-storage/ds1742/refusals",
                    test_ds1742_refusals);
     qtest_add_func("/sgi-machine-storage/expansion-flash/bound",
