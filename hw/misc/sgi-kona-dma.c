@@ -323,7 +323,8 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
      * whether or not it is refused below, so selecting it spends the mark.
      */
     bool discard = !record && !texture && !pixels && !bitmap && !filter &&
-                   sgi_kona_texture_dma_discard(s);
+                   (sgi_kona_texture_dma_discard(s) ||
+                    sgi_kona_image_dma_discard(s));
     uint32_t total = w[2], per_line = w[3], gap = w[4];
     uint64_t cookie = SGI_KONA_DMA_COOKIE_NONE;
     g_autofree uint64_t *pages = NULL;
@@ -386,29 +387,39 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
 
     if (record) {
         sgi_kona_dma_list(s, &pl, in_page, lines, total, cookie);
-    } else if (pixels) {
-        if (sgi_kona_pixels_image_dma(s, io, lines, per_line, pitch) &&
-            cookie != SGI_KONA_DMA_COOKIE_NONE) {
-            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
-                             SGI_DONE_WRITTEN, cookie, total);
+    } else if (pixels || bitmap || texture) {
+        /*
+         * The image's source completes after it is read and staged, and
+         * also when the image is refused or the packet does not frame it
+         * (logged where it is read): the kernel waits for the completion
+         * and kills the pipe when none comes (IRIX 6.5.30: "idma timed
+         * out", death reason 4), while the command was one the pipe
+         * accepts. What a pipe keeps of a refused image is the model's
+         * unsupported case; that the transfer completes is what any
+         * accepted DMA does. A source the map RAM cannot read is a bus
+         * fault, completed as failed like any other.
+         */
+        s->dma_read_fault = false;
+        if (pixels) {
+            sgi_kona_pixels_image_dma(s, io, lines, per_line, pitch);
+        } else if (bitmap) {
+            sgi_kona_bitmap_image_dma(s, io, lines, per_line, pitch);
+        } else {
+            sgi_kona_texture_image_dma(s, io, lines, per_line, pitch);
         }
-    } else if (bitmap) {
-        if (sgi_kona_bitmap_image_dma(s, io, lines, per_line, pitch) &&
-            cookie != SGI_KONA_DMA_COOKIE_NONE) {
-            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
-                             SGI_DONE_WRITTEN, cookie, total);
-        }
-    } else if (texture) {
-        /* Publish only after the complete source was read and staged. */
-        if (sgi_kona_texture_image_dma(s, io, lines, per_line, pitch) &&
-            cookie != SGI_KONA_DMA_COOKIE_NONE) {
+        if (s->dma_read_fault) {
+            sgi_kona_dma_refuse(s, cookie, SGI_FAIL_BUS);
+        } else if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
         }
     } else if (filter) {
         /* A filter image's source completes whether or not it is kept. */
+        s->dma_read_fault = false;
         sgi_kona_filter_image_dma(s, io, lines, per_line, pitch);
-        if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
+        if (s->dma_read_fault) {
+            sgi_kona_dma_refuse(s, cookie, SGI_FAIL_BUS);
+        } else if (cookie != SGI_KONA_DMA_COOKIE_NONE) {
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
         }

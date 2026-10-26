@@ -7508,6 +7508,57 @@ static void test_texture_refused_dma_completes(void)
 }
 
 /*
+ * A DrawPixels by DMA the model refuses still completes its source, as
+ * GLperf's pixel cases need: refused here for the histogram stage the
+ * model does not apply (mode 0), too large to stage (mode 1), and by a
+ * DMA packet that does not frame it (mode 2), migrated with the mark
+ * set between the header and its packet (mode 3), and a raw bitmap by
+ * DMA too wide to stage (mode 4). Before, IRIX logged
+ * "idma timed out" and killed the pipe (death reason 4).
+ */
+static void test_draw_pixels_refused_dma_completes(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t h[8] = { 2, 2, 5, 1, 0, 1, 0, 0 };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log), *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    if (mode == 0) {
+        kona_command(s, 0x24, (uint32_t[]) { 0x8024 }, 1);
+    } else if (mode == 1 || mode == 3) {
+        h[0] = h[1] = 8192;
+    }
+    if (mode == 4) {
+        kona_command(s, 0x6, (uint32_t[]) { 8200, 2, 0, 1, 0, 0, 0,
+                                            fbits(3), fbits(4) }, 9);
+    } else {
+        kona_command(s, 0x3a, h, 8);
+    }
+    if (mode == 3) {
+        dir = g_dir_make_tmp("sn0-kona-image-discard-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(s, uri);
+        qtest_quit(s);
+        s = to;
+    }
+    texture_dma_packet(s, 0, mode == 2 ? 32 : 16, 16, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    qtest_quit(s);
+    if (dir) {
+        g_rmdir(dir);
+    }
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "no list record"));
+}
+
+/*
  * The refused load's own packet can itself be refused before it is routed,
  * here for a zero line length. It still spends the mark, so the next
  * packet is not taken as that source and completed unread: with nothing
@@ -8009,7 +8060,11 @@ static void test_draw_pixels_native_dma(gconstpointer opaque)
     uint32_t h[] = { 2, 1, format, type, 1, 1, 0, 0 };
     uint32_t total = 2 * components * size, line = total, gap = 0;
     uint64_t io = 1;
-    bool refused = mode == 40 || mode == 41 || mode == 42 || mode == 44;
+    /*
+     * Modes 40, 41, 42 and 44 draw nothing. Their sources still complete,
+     * but 40's, past the mapped page, faults.
+     */
+    bool fault = mode == 40;
     bool migrate = mode == 36 || mode == 43;
     g_autofree uint8_t *bytes = g_malloc0(20000);
     g_autofree Expected *e = g_new(Expected, 1);
@@ -8172,10 +8227,10 @@ static void test_draw_pixels_native_dma(gconstpointer opaque)
                         ==, 0);
     }
     texture_dma_packet(s, io, total, line, gap);
-    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, fault ? 0 : 0x100);
     if (mode == 0 || mode == 41) {
         g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
-                        ==, refused ? 0 : INT_CAUSE_MAILBOX);
+                        ==, fault ? 0 : INT_CAUSE_MAILBOX);
     }
     assert_window_matches(s, e);
     if (mode == 47) {
@@ -8311,8 +8366,7 @@ static void test_native_raster_texture(gconstpointer opaque)
             qtest_writel(s, KONA_REG(0x100000), 0x20000380);
             qtest_memwrite(s, 0x380000, bytes, count);
             texture_dma_packet(s, 0, count, count, 0);
-            g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==,
-                           mode == 15 ? 0 : 0x100);
+            g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
         } else if (scalar) {
             for (unsigned c = 1; c < 4; c++) {
                 qtest_writel(s, REG_COMMAND, source[c]);
@@ -12713,6 +12767,11 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool refused = (mode >= 4 && mode < 16) || mode >= 23;
+    /*
+     * A refused image's source still completes; one the map RAM cannot
+     * read faults (modes 7 and 9), and modes 12 to 15 send no packet.
+     */
+    bool fault = mode == 7 || mode == 9;
     bool extended = mode >= 16;
     uint32_t h[] = { 32, 2, 0, 1, 0, 0, 0, fbits(3), fbits(4) };
     uint8_t bytes[12] = { 0x82, 0, 0, 0, 0x40, 0, 0, 0 };
@@ -12847,10 +12906,11 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
     if (mode < 12 || extended) {
         texture_dma_packet(s, io, total, line, gap);
     }
-    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==,
+                    fault || (mode >= 12 && mode < 16) ? 0 : 0x100);
     if (mode == 0 || mode == 5) {
         g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX,
-                        ==, refused ? 0 : INT_CAUSE_MAILBOX);
+                        ==, INT_CAUSE_MAILBOX);
     }
     expected_clear(e, 0);
     if (!refused) {
@@ -13546,7 +13606,12 @@ static void test_texture_native_dma(gconstpointer opaque)
     if (mode != 7 && mode != 16) {
         texture_dma_packet(s, io, total, per_line,
                            contiguous ? 0 : stride - row_bytes);
-        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+        /*
+         * A refused image's source still completes; an unreadable one
+         * faults, and after a reset nothing waits for the packet.
+         */
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==,
+                        fault || reset ? 0 : 0x100);
         assert_texture_pixel(s, 0, 0, 0);
     }
     if (migration) {
@@ -18960,6 +19025,18 @@ int main(int argc, char **argv)
              test_accum_medium_visual_reads);
     add_case("sn0/origin2000/kona-3d/accumulation/multisample-state",
              test_multisample_state);
+    for (unsigned mode = 0; mode < 5; mode++) {
+        static const char *const names[] = {
+            "refused", "unstaged", "misframed", "unstaged-migrates",
+            "bitmap-unstaged",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-pixels-dma-completes/%s",
+            names[mode]);
+
+        add_data_case(path, GUINT_TO_POINTER(mode),
+                      test_draw_pixels_refused_dma_completes);
+    }
     add_case("sn0/origin2000/kona-3d/convolution/2d-framed",
              test_convolution_2d_framed);
     add_case("sn0/origin2000/kona-3d/convolution/1d-framed",

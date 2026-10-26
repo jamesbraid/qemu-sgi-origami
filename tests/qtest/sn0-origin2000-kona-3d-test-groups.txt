@@ -24,6 +24,7 @@ draw /mips64/sn0/origin2000/kona-3d/depth-blend
 draw /mips64/sn0/origin2000/kona-3d/draw-arrays
 draw /mips64/sn0/origin2000/kona-3d/depth-boundaries
 draw /mips64/sn0/origin2000/kona-3d/draw-pixels
+draw /mips64/sn0/origin2000/kona-3d/draw-pixels-dma-completes
 draw /mips64/sn0/origin2000/kona-3d/draw-pixels-transfer
 draw /mips64/sn0/origin2000/kona-3d/draw-pixels-zoom
 draw /mips64/sn0/origin2000/kona-3d/image-transfer-refusal
