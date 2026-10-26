@@ -97,6 +97,9 @@ typedef struct SGIKonaTextureObject {
      */
     uint64_t coverage_tests;
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
+    /* The texture colour table for this draw (SGIKonaTextureState). */
+    void (*colour_lookup)(const void *table, double rgba[4]);
+    const void *colour_table;
 } SGIKonaTextureObject;
 
 /*
@@ -125,6 +128,14 @@ typedef struct SGIKonaTextureState {
     GHashTable *filter_curves;
     bool detail_bound;
     uint32_t detail_args[6];
+    /*
+     * The texture colour table (SGI_texture_color_table) the next draw
+     * applies after post-texture scale and bias, set by the family before
+     * sgi_kona_texture_resolve(): colour_lookup replaces the components
+     * colour_table names. NULL for none. Per draw, not migrated.
+     */
+    void (*colour_lookup)(const void *table, double rgba[4]);
+    const void *colour_table;
 } SGIKonaTextureState;
 
 void sgi_kona_texture_init(SGIKonaTextureState *s);
