@@ -7,7 +7,8 @@
  * default memory, with -nodefaults. A topology with graphics slots is
  * launched again with a pipe in its first slot, adding the graphics
  * record's machine-properties. Any input the machine needs that the
- * catalogue does not describe fails here, by topology.
+ * catalogue does not describe fails here, by topology, as does a SCSI
+ * adapter the machine builds and the offering does not list.
  */
 
 #include "qemu/osdep.h"
@@ -139,6 +140,40 @@ static int run_qemu(GPtrArray *args, const char *commands, char **out,
     return WEXITSTATUS(status);
 }
 
+/* The device tree, which names every SCSI bus the machine built. */
+#define QTREE "{\"execute\":\"human-monitor-command\",\"arguments\":" \
+    "{\"command-line\":\"info qtree\"}}\n"
+
+/*
+ * A launcher attaches disks only to the SCSI buses the offering lists, so
+ * each listed bus must exist, and a machine that builds a QLogic adapter
+ * must list at least one. @out holds the QTREE reply, whose text escapes
+ * each line end as \r\n.
+ */
+static void check_scsi_adapters(QDict *o, const char *machine,
+                                const char *out)
+{
+    QList *adapters = qdict_get_qlist(o, "scsi-adapters");
+    const QListEntry *e;
+
+    QLIST_FOREACH_ENTRY(adapters, e) {
+        QDict *adapter = qobject_to(QDict, qlist_entry_obj(e));
+        g_autofree char *line = g_strdup_printf(
+            "bus: %s\\r\\n", qdict_get_str(adapter, "bus"));
+
+        if (!strstr(out, line)) {
+            g_test_message("%s lists %s, which it does not build", machine,
+                           qdict_get_str(adapter, "bus"));
+        }
+        g_assert_nonnull(strstr(out, line));
+    }
+    if (strstr(out, "dev: qlogic-isp") && qlist_empty(adapters)) {
+        g_test_message("%s builds a QLogic SCSI adapter it does not list",
+                       machine);
+        g_assert_false(qlist_empty(adapters));
+    }
+}
+
 static void test_launch(const void *opaque)
 {
     const Launch *l = opaque;
@@ -219,7 +254,7 @@ static void test_launch(const void *opaque)
     status = run_qemu(args, mediaio ?
         "{\"execute\":\"qom-get\",\"arguments\":{\"path\":"
         "\"/machine/module0/io1/baseio/mio-ioc3/kbc\","
-        "\"property\":\"type\"}}\n" : "", &out, &err);
+        "\"property\":\"type\"}}\n" QTREE : QTREE, &out, &err);
     for (guint i = 0; i < files->len; i++) {
         unlink(g_ptr_array_index(files, i));
     }
@@ -232,6 +267,7 @@ static void test_launch(const void *opaque)
         g_test_message("%s refused: %s", machine->str, err);
     }
     g_assert_cmpint(status, ==, 0);
+    check_scsi_adapters(o, machine->str, out);
     /* The qom-get answers with the controller's type, not an error. */
     if (mediaio) {
         if (strstr(out, "\"error\"")) {

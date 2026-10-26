@@ -424,10 +424,13 @@ def _node_population(raw: dict) -> dict:
 # Target zero is reserved for the host initiator. The adapter kind sets the
 # target range. The two ISP1040 channels stay at the narrow bound because
 # their individual widths are unresolved. ISP12160 supports wide Ultra3.
-# These ranges are device constants shared by every configuration.
+# These ranges are device constants shared by every configuration. Keyed
+# by the catalogue's spelling of the kind (`_enum`), because the compiler
+# writes a Hub or Bedrock board's function kinds as `ISP12160` and an IO9's
+# as its hardware kind, `isp12160`.
 _SCSI_TARGETS = {
-    "ISP1040": list(range(1, 8)),
-    "ISP12160": list(range(1, 16)),
+    "isp1040": list(range(1, 8)),
+    "isp12160": list(range(1, 16)),
 }
 
 # The `-serial` line order a Hub-family launch places each backend on,
@@ -470,7 +473,7 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     adapters = []
     for board in topology["io_boards"]:
         for function in board["pci"]:
-            targets = _SCSI_TARGETS.get(function["kind"])
+            targets = _SCSI_TARGETS.get(_enum(function["kind"]))
             if targets is None:
                 continue
             adapters.append({

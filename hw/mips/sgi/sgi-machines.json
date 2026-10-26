@@ -4798,7 +4798,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -4969,7 +4991,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19034,7 +19078,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19211,7 +19277,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19383,7 +19471,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19560,7 +19670,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19737,7 +19869,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -19909,7 +20063,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -20086,7 +20262,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
@@ -20258,7 +20456,29 @@
           "size": 16777216
         }
       ],
-      "scsi-adapters": [],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
       "smdk": {
         "diagnostic-mac-bootarg": false,
         "discovery-prerequisites": [],
