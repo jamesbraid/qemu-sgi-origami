@@ -11,6 +11,7 @@
 #include "hw/misc/sgi-bedrock-ni.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-bedrock-xb.h"
+#include "hw/misc/sgi-pio-forward.h"
 
 #define TYPE_SGI_BEDROCK "sgi-bedrock"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
@@ -130,6 +131,8 @@ struct SGIBedrockState {
         unsigned int slot;
     } pi_path[SGI_BEDROCK_PROCESSORS];
     AddressSpace pi_view_as[SGI_BEDROCK_PROCESSORS];
+    /* The last page each view resolved to (sgi-pio-forward.h). */
+    SGIPioForward pi_forward[SGI_BEDROCK_PROCESSORS];
     MemoryRegion pi_io[SGI_BEDROCK_PROCESSORS];
     bool pi_io_ready[SGI_BEDROCK_PROCESSORS];
     /*

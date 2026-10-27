@@ -395,6 +395,7 @@ config SGI_BEDROCK_FLASH
 config SGI_BEDROCK
     bool
     select SGI_PI_GFX
+    select SGI_PIO_FORWARD
     select SGI_BEDROCK_IO
     select SGI_BEDROCK_MD
     default y if SGI_DEVICES

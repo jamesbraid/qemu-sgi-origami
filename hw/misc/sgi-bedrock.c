@@ -1142,6 +1142,11 @@ static bool bedrock_resolve_slot_processors(SGIBedrockState *s, Error **errp)
  * it. So a processor polling a pending bank (pi_read() in sgi-bedrock-pi.c)
  * reaches it without the lock. A write takes the lock for the credit count,
  * as it did before.
+ *
+ * The hand-on into the view goes through an SGIPioForward, as the Hub's
+ * does: it remembers the region the view's last page resolved to and calls
+ * that region's handlers directly, the ones address_space_write() would
+ * reach, in the same order, until the next topology change.
  */
 #define BEDROCK_IO_SPACE_SIZE   (1ULL << 40)
 
@@ -1159,9 +1164,9 @@ static MemTxResult bedrock_pi_io_read(void *opaque, hwaddr addr,
     bool previous;
 
     previous = sgi_pi_gfx_mark_store(false);
-    result = address_space_read(&s->pi_view_as[path->slot],
-                                s->io_space_base + addr, attrs,
-                                bytes + 8 - size, size);
+    result = sgi_pio_forward_read(&s->pi_forward[path->slot],
+                                  s->io_space_base + addr, attrs,
+                                  bytes + 8 - size, size);
     sgi_pi_gfx_unmark_store(previous);
     *data = ldq_be_p(bytes);
     return result;
@@ -1193,9 +1198,9 @@ static MemTxResult bedrock_pi_io_write(void *opaque, hwaddr addr,
     stq_be_p(bytes, data);
     /* Marked, so a head returns credit only for a counted store. */
     previous = sgi_pi_gfx_mark_store(counted);
-    result = address_space_write(&s->pi_view_as[path->slot],
-                                 s->io_space_base + addr, attrs,
-                                 bytes + 8 - size, size);
+    result = sgi_pio_forward_write(&s->pi_forward[path->slot],
+                                   s->io_space_base + addr, attrs,
+                                   bytes + 8 - size, size);
     sgi_pi_gfx_unmark_store(previous);
     return result;
 }
@@ -1223,6 +1228,8 @@ static void bedrock_init_processor_paths(SGIBedrockState *s)
         s->pi_path[slot].slot = slot;
         address_space_init(&s->pi_view_as[slot], s->cpu_sysmem[slot],
                            view_name);
+        sgi_pio_forward_init(&s->pi_forward[slot], &s->pi_view_as[slot],
+                             view_name);
         memory_region_init_io(&s->pi_io[slot], OBJECT(s), &bedrock_pi_io_ops,
                               &s->pi_path[slot], io_name,
                               BEDROCK_IO_SPACE_SIZE);
@@ -1984,6 +1991,7 @@ static void bedrock_unrealize(DeviceState *dev)
             memory_region_del_subregion(s->pi_io[slot].container,
                                         &s->pi_io[slot]);
         }
+        sgi_pio_forward_destroy(&s->pi_forward[slot]);
         address_space_destroy(&s->pi_view_as[slot]);
         s->pi_io_ready[slot] = false;
     }
