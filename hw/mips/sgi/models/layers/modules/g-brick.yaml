@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3000 G-brick: the 18U InfiniteReality enclosure, holding one or two
+# pipes and the Ktown2 board between them. The Ktown2's top connector serves
+# pipe 0, the rightmost board set seen from the rear, and its bottom
+# connector pipe 1, the leftmost. Each connector is one Crosstown2
+# connection, cabled to an I-, X- or N-brick, never to a C-brick directly.
+# A composition fits one layers/modules/g-brick-ir3-pipe.yaml instance per
+# pipe under this brick and binds each connector's placeholder bus to the
+# XIO bus of the I/O brick port it is cabled to. The Ktown2 is a link
+# extender with no widget identity a host can read, so the pipe's XG is the
+# widget on that bus.
+layer_version: 1
+layer:
+  kind: module
+  id: g-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: chassis
+        name: G-brick
+        kind: module
+        controller: absent
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 10 and 35: an 18U brick holding one or two InfiniteReality pipes, a Ktown2 board and an L1 controller", "007-4264-002 printed page 39: 11 rear board slots, six for pipe 0 on the right and four for pipe 1 on the left"]
+        notes: >-
+          The real brick has an L1 that reaches the L2 over USB. Its
+          identity, protocol and brick-type character are unknown, so the
+          model gives the brick no controller.
+      - id: ktown2
+        name: Ktown2 board
+        kind: board
+        hardware_kind: ktown2
+        provenance: vendor-document
+        parent: chassis
+        sources: ["108-0240-002 printed page 2-38: the Ktown2 board has two Crosstown2 connections, one per pipe", "007-4264-002 printed pages 39 and 62: Ktown2 sits between the two pipes, top connector pipe 0, bottom connector pipe 1"]
+        notes: >-
+          No Origin 3000 part number is captured. The model presents no
+          board record for it.
+      - id: ktown2-top
+        name: Ktown2 top connector, pipe 0
+        kind: connector
+        provenance: vendor-document
+        parent: ktown2
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: To an I-, X- or N-brick port. The composition says which.
+        sources: ["007-4264-002 printed page 62: the top Ktown2 connector connects pipe 0, the rightmost board set, to the I/O brick"]
+      - id: ktown2-bottom
+        name: Ktown2 bottom connector, pipe 1
+        kind: connector
+        provenance: vendor-document
+        parent: ktown2
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: To an I-, X- or N-brick port. The composition says which.
+        sources: ["007-4264-002 printed page 62: the bottom Ktown2 connector connects pipe 1, the leftmost board set, to the I/O brick"]
+    connections:
+      # pipe0-xio and pipe1-xio are the XIO buses of the I/O brick ports
+      # each connector is cabled to, which the composition binds.
+      - {component: ktown2-top, bus: pipe0-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 8 and 62: a G-brick connects to a C-brick only through an I-, X- or N-brick"]}
+      - {component: ktown2-bottom, bus: pipe1-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 8 and 62: a G-brick connects to a C-brick only through an I-, X- or N-brick"]}
