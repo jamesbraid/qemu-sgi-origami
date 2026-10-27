@@ -656,22 +656,79 @@ def _ip53_console_records(topology: dict, harness: dict,
     return projected
 
 
+# Each onboard Ethernet a board's PCI functions can carry, keyed by the
+# catalogue's spelling of the function kind (`_enum`): the offering kind,
+# the device type a `-net nic` binds by model= (QEMU's
+# qemu_configure_nic_device(), which also binds a `-net nic` naming no
+# model), and IRIX's interface prefix. An IOC3 fits a MAC only where its
+# compiled `ethernet` bit says so; a BaseIO-G MediaIO daughtercard's
+# second IOC3 does not.
+_ONBOARD_ETHERNETS = {
+    "ioc3": ("ioc3-ethernet", "sgi-ioc3-eth", "ef"),
+    "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg"),
+}
+# The board station address QEMU gives an onboard Ethernet when mac= is
+# not set (include/hw/mips/sgi/sgi-board-mac.h's SGI_BOARD_DEFAULT_MAC).
+_BOARD_DEFAULT_MAC = 0x080069123456
+# The address prefix the IP53 PROM's BCM5701 driver accepts: the PROM
+# rejects an address outside 08:00:69 and then can't open the interface.
+# The PROM enforces this, not QEMU.
+_REQUIRED_PREFIX = {"bcm5701": "08:00:69"}
+
+
+def _mac_text(value: int) -> str:
+    return ":".join(f"{(value >> shift) & 0xff:02x}"
+                    for shift in range(40, -8, -8))
+
+
 def _networks_for(topology: dict) -> list[dict]:
-    """One `ioc3-ethernet` entry per IOC3 that fits an Ethernet MAC. Most
-    IOC3s carry onboard Ethernet, but a BaseIO-G MediaIO daughtercard's
-    second IOC3 does not, so the offering follows the compiled `ethernet`
-    population bit rather than the bare IOC3 kind (`model_compile`'s
-    `_board_pci_population`). A launch wires the onboard adapter with no
-    explicit `-device` of its own, only a `-nic` or `-netdev` backend.
+    """Every onboard Ethernet the topology's I/O boards carry, in the order
+    QEMU builds them, which is the order its `-net nic` options bind in.
+    Each takes the machine's `mac` property plus the number of onboard
+    Ethernets before it as its station address (hw/mips/sgi/sn-machine.c's
+    sgi_machine_onboard_mac()), so one identity address serves them all
+    and no two collide, except an IOC3 on a board whose module L1 gives
+    it no address, which keeps whatever its `-net nic` names. The first
+    is the default a single-NIC launch wires; the others may be left
+    without a backend.
     """
     networks = []
+    per_kind: dict[str, int] = {}
     for board in topology["io_boards"]:
         for function in board["pci"]:
-            if function["kind"] == "IOC3" and function["ethernet"]:
-                networks.append({
-                    "kind": "ioc3-ethernet",
-                    "argument": f"-netdev ...,id=net{len(networks)}",
-                })
+            kind = _enum(function["kind"])
+            if kind not in _ONBOARD_ETHERNETS:
+                continue
+            if kind == "ioc3" and not function.get("ethernet"):
+                continue
+            offering_kind, nic_model, prefix = _ONBOARD_ETHERNETS[kind]
+            offset = len(networks)
+            unit = per_kind.get(kind, 0)
+            per_kind[kind] = unit + 1
+            # A Bedrock board whose IOC3 takes no address from its module
+            # L1 (mac-source none) leaves the NIC to its -net nic.
+            if board.get("mac_source") == "none":
+                mac = {"derived": False}
+            else:
+                mac = {
+                    "derived": True,
+                    "machine-property": "mac",
+                    "offset": offset,
+                    "default-address": _mac_text(_BOARD_DEFAULT_MAC + offset),
+                }
+            if kind in _REQUIRED_PREFIX:
+                mac["required-prefix"] = _REQUIRED_PREFIX[kind]
+            networks.append({
+                "kind": offering_kind,
+                "argument": f"-netdev ...,id=net{offset}",
+                "nic-model": nic_model,
+                "nic-mac-option": "macaddr",
+                "index": unit,
+                "interface": f"{prefix}{unit}",
+                "default": not networks,
+                "required": False,
+                "mac": mac,
+            })
     return networks
 
 

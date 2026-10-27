@@ -2151,19 +2151,101 @@
             'targets': ['uint32'] } }
 
 ##
+# @SGIModelNetworkMac:
+#
+# Where an onboard Ethernet's station address comes from.  A derived
+# NIC takes the machine property @machine-property plus @offset, so a
+# launcher sets one identity address for the machine and every derived
+# NIC follows it without colliding.  A launcher may also name the
+# address on the NIC itself, through the offering's @nic-mac-option,
+# but QEMU refuses one that differs from the derived address.  A NIC
+# that is not derived takes the address its `-net nic` names; with
+# none, it gets SGI's 08:00:69 prefix followed by the tail of the
+# address QEMU generates in creation order, which can collide with an
+# address another NIC was given, so a launcher should name a unique
+# one.
+#
+# @derived: whether the address follows the machine's identity
+#     address
+#
+# @machine-property: the `-M` property that sets the identity address
+#     (mac); present when @derived
+#
+# @offset: added to the identity address to give this NIC's address;
+#     0 for the first onboard Ethernet; present when @derived
+#
+# @default-address: this NIC's address when @machine-property is not
+#     set: SGI's 08:00:69:12:34:56 plus @offset; present when @derived
+#
+# @required-prefix: the address prefix the product's PROM accepts on
+#     this NIC; with any other the PROM does not bring the interface
+#     up.  The PROM enforces it, not QEMU, so a launcher should check
+#     an identity address against it.  Absent where no prefix is known
+#     to be required
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelNetworkMac',
+  'data': { 'derived': 'bool',
+            '*machine-property': 'str',
+            '*offset': 'uint32',
+            '*default-address': 'str',
+            '*required-prefix': 'str' } }
+
+##
 # @SGIModelNetworkOffering:
 #
-# One network adapter an offering's I/O boards carry.
+# One onboard Ethernet an offering's I/O boards carry, in the order
+# QEMU builds them.  A launcher binds a backend to it with
+# `-netdev <backend>,id=<ID> -net nic,model=<nic-model>,netdev=<ID>`;
+# a `-net nic` naming no model binds the next unbound onboard
+# Ethernet in this order.
 #
-# @kind: adapter kind (ioc3-ethernet)
+# @kind: adapter kind: ioc3-ethernet (an IOC3's Fast Ethernet) or
+#     bcm5701-ethernet (an IO9's Broadcom BCM5701)
 #
-# @argument: the QEMU argument form this adapter becomes
+# @argument: the backend form this adapter takes, not runnable as
+#     written: the launcher supplies the backend type and options.
+#     Its id ends in the adapter's position among all the offering's
+#     networks, which equals @index while every network shares one
+#     @nic-model
+#
+# @nic-model: the `model=` value that binds a `-net nic` to this
+#     adapter
+#
+# @nic-mac-option: the `-net nic` option naming an address
+#     (macaddr; the `-nic` form spells it mac); for a derived address
+#     optional, and refused unless it equals the derived address in
+#     @mac
+#
+# @index: this adapter's position among the offering's adapters of
+#     the same @nic-model
+#
+# @interface: the interface name IRIX gives it (ef0, tg0, ...)
+#
+# @default: whether this is the adapter a launch wiring one network
+#     binds.  It is the one a netboot launch uses where the offering
+#     supports netboot; an offering whose @netboot-adapter is
+#     unsupported still marks its first network as the default
+#
+# @required: whether a launch must bind a backend to it.  An unbound
+#     onboard Ethernet makes QEMU warn that the NIC has no peer; the
+#     guest sees an interface with no traffic
+#
+# @mac: where its station address comes from
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelNetworkOffering',
   'data': { 'kind': 'str',
-            'argument': 'str' } }
+            'argument': 'str',
+            'nic-model': 'str',
+            'nic-mac-option': 'str',
+            'index': 'uint32',
+            'interface': 'str',
+            'default': 'bool',
+            'required': 'bool',
+            'mac': 'SGIModelNetworkMac' } }
 
 ##
 # @SGIModelMemoryPopulation:
@@ -2328,7 +2410,9 @@
 #
 # @disk-bus: default disk bus a launcher attaches a boot disk to
 #
-# @netboot-adapter: adapter kind a netboot launch uses
+# @netboot-adapter: adapter kind a netboot launch uses: the @kind of
+#     the @networks entry whose @default is true, or unsupported where
+#     netboot is not offered
 #
 # @identity-inputs: named identity/SPD inputs this offering accepts
 #

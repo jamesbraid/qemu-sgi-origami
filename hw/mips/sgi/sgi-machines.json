@@ -65,7 +65,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -256,7 +268,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -469,7 +493,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -686,7 +722,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -897,7 +945,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -1108,7 +1168,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -1317,7 +1389,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -1520,7 +1604,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -1729,7 +1825,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -1956,7 +2064,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -2183,7 +2303,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -2410,7 +2542,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -2637,7 +2781,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -2862,7 +3018,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -3081,7 +3249,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -3300,7 +3480,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -3519,7 +3711,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -3736,7 +3940,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -3947,7 +4163,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -4158,7 +4386,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -4367,7 +4607,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -4570,7 +4822,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -4733,7 +4997,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -4914,7 +5196,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "unsupported",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -5106,11 +5406,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -5330,11 +5654,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -5558,11 +5906,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -5786,11 +6158,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -6024,7 +6420,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -6192,7 +6600,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -6360,7 +6780,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -6528,7 +6960,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -6700,7 +7144,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -6872,7 +7328,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7061,7 +7529,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7240,7 +7720,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7419,7 +7911,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7598,7 +8102,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7781,7 +8297,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -7964,7 +8492,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -8154,7 +8694,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -8322,7 +8874,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -8490,7 +9054,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -8658,7 +9234,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -8830,7 +9418,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -9002,7 +9602,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -9224,7 +9836,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -9455,7 +10079,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -9686,7 +10322,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -9917,7 +10565,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -10148,7 +10808,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -10377,7 +11049,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -10600,7 +11284,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -10823,7 +11519,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -11046,7 +11754,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -11267,7 +11987,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -11482,7 +12214,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -11697,7 +12441,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -11910,7 +12666,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -12117,7 +12885,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -12330,7 +13110,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -12561,7 +13353,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -12792,7 +13596,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -13023,7 +13839,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -13254,7 +14082,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 4,
@@ -13483,7 +14323,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -13706,7 +14558,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -13929,7 +14793,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -14152,7 +15028,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 3,
@@ -14373,7 +15261,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -14588,7 +15488,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -14803,7 +15715,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -15016,7 +15940,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -15223,7 +16159,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -15376,11 +16324,29 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -15607,11 +16573,29 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -15838,11 +16822,29 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -16069,11 +17071,29 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -16292,7 +17312,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -16472,7 +17504,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -16660,11 +17704,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -16885,11 +17953,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -17110,11 +18202,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -17335,11 +18451,35 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         },
         {
           "argument": "-netdev ...,id=net1",
-          "kind": "ioc3-ethernet"
+          "default": false,
+          "index": 1,
+          "interface": "ef1",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:57",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 1
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 2,
@@ -17552,7 +18692,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -17726,7 +18878,19 @@
       "networks": [
         {
           "argument": "-netdev ...,id=net0",
-          "kind": "ioc3-ethernet"
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
         }
       ],
       "nodes": 1,
@@ -17921,7 +19085,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "unsupported",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -18103,7 +19285,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -18285,7 +19485,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -18472,7 +19690,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -18659,7 +19895,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -18841,7 +20095,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
@@ -19028,7 +20300,25 @@
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "bcm5701-ethernet",
-      "networks": [],
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "tg0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:12:34:56",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0,
+            "required-prefix": "08:00:69"
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
       "nodes": 1,
       "overrides": [
         {
