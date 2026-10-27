@@ -58,11 +58,12 @@
  * The fifth increment turns those interrupt registers into an actual
  * delivery. XIO interrupts on this platform are crosstalk packets,
  * not a sysbus line: each edge of (intr_flags & intr_enable) sends an
- * interrupt-modify write to the destination int_dest_upper/int_dest_lower
- * program, over a machine-supplied fabric link to the host's inbound
- * window. The destination decode -- widget in bits 19:16, vector in bits
- * 31:24 of int_dest_upper -- reuses hw/misc/sgi-mgras.c's own reviewed
- * widget-error delivery rather than re-deriving it independently.
+ * interrupt-modify write, over a machine-supplied fabric link to the
+ * host's inbound window, to the routed destination 0x1044/0x104c with the
+ * flag vector from the low byte of the routed vector table 0x1054
+ * (odyssey_deliver_routed()). The crosstalk widget destination
+ * int_dest_upper/int_dest_lower belongs to the driver's crosstalk error
+ * handler; the model posts no crosstalk error, so it carries nothing.
  *
  * The sixth increment turns the 0x400000 write port into the counted
  * word-stream parser it really is and gives the back end its colour lookup
