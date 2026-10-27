@@ -650,7 +650,8 @@ static unsigned int mgras_xmap_write_targets(SGIMgrasState *s)
 /*
  * The kernel and the IDE select one RE for direct reads by writing its
  * number to RSS register 0x112, bits 1:0. Bit 2 and bits 11:3 mean something
- * else and are ignored here.
+ * else and are ignored here; sgi-mgras-raster.c reads bit 3 of the same
+ * register, OpenBSD's CONFIG, as the PROM's row order (MGRAS_RSS_CONFIG).
  */
 #define MGRAS_RSS_RE_SELECT 0x112
 

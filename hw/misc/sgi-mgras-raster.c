@@ -223,6 +223,45 @@
 #define MGRAS_FILLMODE_BYTE_XFER 0x10c00000
 
 /*
+ * The IP30 PROM's graphical console (an Octane SI with a fresh NVRAM,
+ * traced through the main port) draws with two more FILLMODE values, each
+ * started by an execute of register 0x013 with the value 0x18, the value
+ * OpenBSD's impact(4) and the IRIX X server execute IR_ALIAS (0x045) with:
+ *
+ * - 0x00018000: a block of BLOCKXYSTARTI..BLOCKXYENDI in the glyph ink.
+ *   The PROM paints its backdrop one-row blocks at a time, stepping only
+ *   RED between them, so the ink is RED >> 12 under CI8 as for a glyph.
+ * - 0x00418008: a glyph. The 0x013 execute starts the block; each CHAR_H
+ *   execute that follows paints one row, as under MGRAS_FILLMODE_GLYPH_ROW.
+ *
+ * Inferred from that command stream alone: no public source names
+ * register 0x013 or these FILLMODE values, and what either does under
+ * other state is unknown. A board capture of the PROM menu would settle
+ * them.
+ */
+#define MGRAS_RSS_PROM_BLOCK 0x013
+
+/*
+ * CONFIG (0x112, OpenBSD's name) bit 3 clear: block rows count up from the
+ * bottom of the screen. The X server draws under CONFIG 0xcac, and for its
+ * pixel reads writes 0xca4 and gives the box in bottom-up hardware rows
+ * (established, a captured run; see the pixel-read comment below). The
+ * PROM draws under CONFIG 4: taken top-down, its logo and text come out
+ * upside down. That bit 3 is the switch is inferred from those two
+ * callers. Applying it to the PROM's two modes only is an approximation:
+ * the board presumably honours it for every draw, but the model's other
+ * draw paths take rows top-down and its pixel-read path flips rows
+ * whatever CONFIG holds, because the qtests and replays that pin them
+ * leave CONFIG at its reset value of 0, itself the model's choice.
+ * sgi-mgras.c reads bits 1:0 of the same register as the RE select
+ * (MGRAS_RSS_RE_SELECT).
+ */
+#define MGRAS_RSS_CONFIG 0x112
+#define MGRAS_CONFIG_TOP_DOWN 0x8
+#define MGRAS_FILLMODE_PROM_INK_FILL 0x00018000
+#define MGRAS_FILLMODE_PROM_GLYPH 0x00418008
+
+/*
  * Byte-transfer mode's own register 0x159 picks which of two guest-side
  * packings a CHAR_L execute uses. Bit 7 (0x0080) selects two indexed
  * pixels per execute (the xdm chooser's own icons, see
@@ -1255,9 +1294,10 @@ static void mgras_draw_fill(SGIMgrasState *s)
  * never indexes past column 31 in that case, so no stale bit is ever
  * painted. Only a set bit paints, its ink RED>>12 (CI8) or PACKEDCOLOR
  * (RGB); a clear bit leaves the pixel untouched rather than painting a
- * background colour.
+ * background colour. With hw_rows the rows count up from the bottom of the
+ * screen (see mgras_hw_rows()).
  */
-static void mgras_draw_glyph_row(SGIMgrasState *s)
+static void mgras_draw_glyph_row(SGIMgrasState *s, bool hw_rows)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
@@ -1282,6 +1322,9 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     s->glyph_row++;
     if (y > y1 || y >= s->height) {
         return;
+    }
+    if (hw_rows) {
+        y = s->height - 1 - y;
     }
     width = MIN(x1 - x0 + 1, 64);
     /* The row's clip, settled once for its columns. */
@@ -1472,13 +1515,65 @@ static void mgras_draw_byte_row(SGIMgrasState *s)
     }
 }
 
+static bool mgras_hw_rows(SGIMgrasState *s)
+{
+    return !(s->rss[MGRAS_RSS_CONFIG] & MGRAS_CONFIG_TOP_DOWN);
+}
+
+/*
+ * A register 0x013 execute (MGRAS_RSS_PROM_BLOCK): fill the block in the
+ * glyph ink, or start a glyph whose rows CHAR_H then paints. BLOCKXYSTARTI
+ * has already reset the glyph row.
+ */
+static void mgras_prom_block_execute(SGIMgrasState *s)
+{
+    uint32_t mode = s->rss[MGRAS_RSS_FILLMODE];
+    uint8_t format = mgras_pixel_format(s);
+
+    if (mode == MGRAS_FILLMODE_PROM_INK_FILL) {
+        uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+        uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
+
+        if (mgras_hw_rows(s)) {
+            uint32_t y0 = xy0 & 0xffff, y1 = xy1 & 0xffff;
+
+            /* Rows past the top of the screen clip, as top-down ones do. */
+            if (MIN(y0, y1) >= s->height) {
+                return;
+            }
+            y0 = s->height - 1 - MIN(y0, s->height - 1);
+            y1 = s->height - 1 - MIN(y1, s->height - 1);
+            xy0 = (xy0 & 0xffff0000) | y0;
+            xy1 = (xy1 & 0xffff0000) | y1;
+        }
+        mgras_fill_rect(s, xy0, xy1,
+                        mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
+                            mgras_rgb_from_pixel_word(
+                                s->rss[MGRAS_RSS_PACKEDCOLOR])),
+                        mgras_pp1_op(s),
+                        s->rss[MGRAS_RSS_COLORMASKLSBSA], format);
+        s->dirty = true;
+        return;
+    }
+    if (mode == MGRAS_FILLMODE_PROM_GLYPH) {
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented register 0x%03x "
+                  "execute, fillmode 0x%08x\n", MGRAS_RSS_PROM_BLOCK, mode);
+}
+
 /* Route a CHAR_H/CHAR_L execute by FILLMODE; anything else stays inert. */
 static void mgras_char_execute(SGIMgrasState *s, uint32_t reg)
 {
     uint32_t mode = s->rss[MGRAS_RSS_FILLMODE];
 
     if (mode == MGRAS_FILLMODE_GLYPH_ROW) {
-        mgras_draw_glyph_row(s);
+        mgras_draw_glyph_row(s, false);
+        s->dirty = true;
+        return;
+    }
+    if (mode == MGRAS_FILLMODE_PROM_GLYPH && reg == MGRAS_RSS_CHAR_H) {
+        mgras_draw_glyph_row(s, mgras_hw_rows(s));
         s->dirty = true;
         return;
     }
@@ -2153,6 +2248,9 @@ static void mgras_raster_command_execute(
     case MGRAS_RSS_CHAR_H:
     case MGRAS_RSS_CHAR_L:
         mgras_char_execute(s, submission->reg);
+        return;
+    case MGRAS_RSS_PROM_BLOCK:
+        mgras_prom_block_execute(s);
         return;
     case MGRAS_RSS_BKGRD_BA:
         mgras_draw_pio_pixel_pair(s);
