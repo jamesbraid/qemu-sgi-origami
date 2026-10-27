@@ -42,7 +42,7 @@ if tg_perf.base.QemuSystemTest is not None:
         VM_NAME = 'irix_io9_tg_perf'
         BACKGROUND_TCP_RECEIVER = True
         # The prepared IP35 disk starts tg0 on this subnet. Keep usernet on
-        # that subnet so ifconfig updates the primary address, not an alias.
+        # that subnet and preserve the connected route installed at boot.
         GUEST_ADDR = '192.0.2.15'
         GATEWAY = '192.0.2.2'
         USERNET_OPTIONS = (
@@ -51,6 +51,20 @@ if tg_perf.base.QemuSystemTest is not None:
         ASSET_FIRMWARE = LocalAsset(FIRMWARE_REL, FIRMWARE_SHA256)
         ASSET_DISK = LocalAsset(DISK_REL, DISK_SHA256)
         TG_SLOT = 4
+
+        def _configure_interface(self, con, iface):
+            # Reassigning this disk's existing address removes its connected
+            # route in IRIX. Bring the interface up without replacing it.
+            status = con.run(f'ifconfig {iface} up', 'ifup', timeout=60)
+            self.assertEqual(status, 0, 'could not bring tg0 up')
+            addr_mask = con.capture_value(
+                f'ifconfig {iface}', 'io9_address',
+                rb'inet ([0-9.]+ netmask 0x[0-9a-fA-F]+)', timeout=60)
+            ip, mask = addr_mask.split(' netmask ')
+            self.assertEqual(ip, self.GUEST_ADDR,
+                             'the installed IP35 address changed')
+            self.assertEqual(mask, '0xffffff00',
+                             'the installed IP35 netmask changed')
 
         def _configure_machine(self, vm, prom, disk, _elsc):
             machine_state = self.scratch_file('origin350-machine-state')
