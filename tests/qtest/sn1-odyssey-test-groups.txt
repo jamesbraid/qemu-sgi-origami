@@ -76,7 +76,8 @@ fifo /mips64/sn1/odyssey/command-fifo-lowater-interrupt
 fifo /mips64/sn1/odyssey/command-work-runs-in-slices
 fifo /mips64/sn1/odyssey/command-work-orders-context-switch
 fifo /mips64/sn1/odyssey/command-work-read-waits
-fifo /mips64/sn1/odyssey/command-work-intr-clear-keeps-order
+fifo /mips64/sn1/odyssey/command-work-status-shows-waiting-stores
+fifo /mips64/sn1/odyssey/command-work-low-water-after-drain
 fifo /mips64/sn1/odyssey/command-work-stop-and-reset
 fifo /mips64/sn1/odyssey/command-work-draws-on-board-thread
 fifo /mips64/sn1/odyssey/command-fifo-selftest

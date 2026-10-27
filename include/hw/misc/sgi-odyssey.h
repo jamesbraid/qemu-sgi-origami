@@ -361,8 +361,6 @@ struct SGIOdysseyState {
     int64_t work_queued_until;
     /* Scalar draws run without the big lock, for the qtest. */
     uint32_t work_unlocked_draws;
-    /* Interrupt flags a clear still in the queue will remove. */
-    uint32_t work_intr_clears;
     VMChangeStateEntry *work_vm_state;
 
     /*
