@@ -147,6 +147,14 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4365-002/pdf/007-4365-002.pdf
+  007-4426-001:
+    title: "Partitioning Guide for Systems That Contain Cx-bricks"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4426-001/pdf/007-4426-001.pdf
   007-4480-001:
     title: "Silicon Graphics Fuel Visual Workstation Hardware User's Guide"
     publisher: Silicon Graphics
@@ -187,6 +195,14 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4566-001/pdf/007-4566-001.pdf
+  007-4572-001:
+    title: "Cx-brick Addendum"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf
   007-4632-001:
     title: "SGI Onyx 350 Visualization System User's Guide"
     publisher: Silicon Graphics

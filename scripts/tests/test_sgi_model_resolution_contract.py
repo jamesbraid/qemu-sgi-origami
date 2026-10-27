@@ -3224,5 +3224,168 @@ class Origin3000BrickTests(unittest.TestCase):
             compile_model(self.resolve(self.ORIGIN3200_XBRICK))
 
 
+class Origin3900Tests(unittest.TestCase):
+    """The Cx-brick layer and the Origin 3900 reference composition."""
+
+    ORIGIN3900 = INPUTS / "origin3900.yaml"
+    NODES = range(4)
+
+    def resolve(self):
+        return _resolver.load_system_model(self.ORIGIN3900)
+
+    def components(self, model):
+        return {item["id"]: item for item in model["components"]}
+
+    def attachments(self, model):
+        return {(item["component"], item["bus"], item["role"])
+                for item in model["connections"]}
+
+    def test_cxbrick_holds_four_bedrock_nodes_in_one_module(self):
+        model = self.resolve()
+        components = self.components(model)
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "node-asic"),
+            [f"cx0-node{n}-bedrock" for n in self.NODES])
+        # One module, the brick: the four node boards are boards in it,
+        # not modules of their own.
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "module"),
+            ["cx0-chassis", "ibrick-brick"])
+        for n in self.NODES:
+            self.assertEqual(components[f"cx0-node{n}-board"]["parent"],
+                             "cx0-chassis")
+            self.assertEqual(
+                sorted(cid for cid, item in components.items()
+                       if item["kind"] == "cpu"
+                       and item["parent"] == f"cx0-node{n}-bedrock"),
+                [f"cx0-node{n}-cpu{slot}" for slot in range(4)])
+        # The L1's type character for a Cx-brick is unknown.
+        self.assertNotIn("brick_type", components["cx0-chassis"])
+
+    def test_cxbrick_router_has_four_external_numalink_ports(self):
+        model = self.resolve()
+        components = self.components(model)
+        router = components["cx0-router"]
+        self.assertEqual(router["router_asic"]["port_count"], 8)
+        self.assertEqual(
+            [components[f"cx0-numalink-{port}"]["name"]
+             for port in ("a", "h", "g", "f")],
+            ["NUMAlink 1 Port A", "NUMAlink 8 Port H",
+             "NUMAlink 7 Port G", "NUMAlink 6 Port F"])
+        buses = {item["id"]: item for item in model["buses"]}
+        for port in "afgh":
+            bus = buses[f"cx0-numalink-{port}-link"]
+            self.assertEqual((bus["kind"], bus["master"]),
+                             ("fabric", "cx0-router"))
+            self.assertIn((f"cx0-numalink-{port}", bus["id"], "endpoint"),
+                          self.attachments(model))
+
+    def test_each_node_reaches_the_router_on_an_unnumbered_link(self):
+        model = self.resolve()
+        buses = {item["id"]: item for item in model["buses"]}
+        for n in self.NODES:
+            bus = buses[f"cx0-node{n}-router-link"]
+            self.assertEqual((bus["kind"], bus["master"], bus["link"]),
+                             ("fabric", "cx0-router", {"kind": "midplane"}))
+            ends = [item for item in model["connections"]
+                    if item["bus"] == bus["id"]]
+            self.assertEqual(
+                sorted((item["component"], item["role"]) for item in ends),
+                [("cx0-node%d-bedrock" % n, "endpoint"),
+                 ("cx0-router", "master")])
+            # Which router link a node board uses is unknown, so no end
+            # names a router port.
+            self.assertTrue(all("fabric_port" not in item for item in ends))
+
+    def test_xio_connector_n_belongs_to_node_board_n(self):
+        model = self.resolve()
+        components = self.components(model)
+        buses = {item["id"]: item for item in model["buses"]}
+        for n in self.NODES:
+            connector = components[f"cx0-xio-{n}-connector"]
+            self.assertEqual(connector["name"], f"XIO {n} connector")
+            self.assertEqual(connector["connector"]["interface"],
+                             "Crosstown2")
+            bus = buses[f"cx0-node{n}-xio-ii"]
+            self.assertEqual((bus["kind"], bus["master"]),
+                             ("xio", f"cx0-node{n}-bedrock"))
+            self.assertIn((connector["id"], bus["id"], "endpoint"),
+                          self.attachments(model))
+
+    def test_origin3900_cables_the_ibrick_to_node_0(self):
+        model = self.resolve()
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in model["xio_cables"]],
+            [("cx0-to-ibrick", ["cx0-xio-0-connector", "ibrick-port-a"])])
+        self.assertIn(("ibrick-xbridge-crossbar", "cx0-node0-xio-ii",
+                       "bridge-upstream"), self.attachments(model))
+
+    def resolve_with(self, change):
+        composition = yaml.safe_load(self.ORIGIN3900.read_text())
+        change(composition)
+        return _resolver.resolve_system_model(self.ORIGIN3900, composition)
+
+    def test_origin3900_refuses_brick_sets_outside_its_configuration(self):
+        def without_ibrick(composition):
+            composition["module_instances"].pop()
+
+        def with_rbrick(composition):
+            composition["module_instances"].append({
+                "model": "layers/modules/r-brick.yaml", "prefix": "rbrick-",
+                "parent": "rack",
+                "bus_bindings": {"c-brick-cable": "cx0-numalink-g-link"}})
+
+        def two_cxbricks(composition):
+            first = composition["module_instances"][0]
+            composition["module_instances"].append(dict(first, prefix="cx1-"))
+
+        for name, change, message in (
+                ("no I-brick", without_ibrick,
+                 "requires at least one i-brick among"),
+                ("an R-brick", with_rbrick,
+                 "allows at most 0 of r-brick, got 1"),
+                ("two Cx-bricks", two_cxbricks,
+                 "allows at most 1 of cx-brick, got 2"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"product 'origin3900' {message}"):
+                self.resolve_with(change)
+
+    def check_population(self, counts):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True)
+            product = root / "layers/products/origin3900.yaml"
+            document = yaml.safe_load(product.read_text())
+            document["layer"]["population"]["cpus_per_node"] = counts
+            product.write_text(yaml.safe_dump(document, sort_keys=False))
+            return _resolver.load_system_model(root / "origin3900.yaml")
+
+    def test_cx_node_board_carries_zero_or_four_processors(self):
+        model = self.check_population([4, 4, 4, 0])
+        self.assertEqual(model["composition"]["population"]["cpus_per_node"],
+                         [4, 4, 4, 0])
+        for counts, node, count in (([4, 2, 4, 4], 1, 2),
+                                    ([4, 4, 4, 3], 3, 3)):
+            with self.subTest(counts=counts), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"node {node} populates {count} CPUs, but product "
+                    "'origin3900' fits 0 or 4 per node"):
+                self.check_population(counts)
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "product 'origin3900' population has no node with "
+                "processors"):
+            self.check_population([0, 0, 0, 0])
+
+    def test_origin3900_still_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

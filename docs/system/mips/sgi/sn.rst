@@ -321,6 +321,37 @@ The Origin 300 NUMAlink module guide (007-4498-002, printed pages
 raw type response. A binary type-query capture from a matching
 controller would settle that byte.
 
+.. _sgi-sn-family-cxbrick:
+
+Origin 3900 Cx-brick
+--------------------
+
+The Cx-brick holds one to four IP53 node boards, one router board and a
+power entry module. Each node board carries one Bedrock, zero or four
+processors and up to eight DIMMs; a board with no processors serves as
+a memory node (established, *Cx-brick Addendum*, 007-4572-001, printed
+pages 1 and 3-4). The router board's router ASIC is the R-brick's, with
+four internal NUMAlink 3 links, one per node board, and four external
+connectors labelled NUMAlink 1 Port A, NUMAlink 8 Port H, NUMAlink 7
+Port G and NUMAlink 6 Port F (printed pages 4-5 and 11). Each external
+XIO connector serves one node board: XIO 0 to node 0, and so on
+(printed page 10). The *Partitioning Guide for Systems That Contain
+Cx-bricks* (007-4426-001, printed pages xi, 3, 6 and 18) covers the
+Origin 3900 and gives a partition of one Cx-brick with an I- or
+IX-brick.
+
+The ``cx-brick`` layer and the ``origin3900`` reference composition
+record these facts: one module with four Bedrock nodes, an eight-port
+router linked to each node over a midplane link, and each node's XIO
+connector on its own Bedrock's ``xio-ii`` bus. The product accepts zero
+or four processors per node and at least one node with processors.
+The composition cables an I-brick to node board 0's XIO connector at
+its port A, a choice of the composition. It is a reference only and
+never compiles, because these are unknown: which router port each node
+board and each connector uses, the brick's NASIDs and widget numbers,
+the L1's type character and how one L1 serves four Bedrocks, and the
+processors' clock and part.
+
 .. _sgi-sn-family-origin350:
 
 Origin 350 compute module

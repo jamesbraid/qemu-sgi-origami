@@ -1393,6 +1393,13 @@
               },
               "description": "The per-node memory bank rows this composition accepts. Resolution refuses a node whose bank row matches none."
             },
+            "node_cpu_counts": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "integer", "minimum": 0 },
+              "description": "The processor counts one node board may carry, when the product fits them only in fixed counts. Every node of the population carries one of them, and at least one node carries processors."
+            },
             "node_populations": {
               "type": "array",
               "minItems": 1,
