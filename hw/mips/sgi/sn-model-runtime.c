@@ -21,6 +21,9 @@
     nth_->value;                                                        \
 })
 
+static bool sgi_model_check_xio_cables(const SGIModelTopology *t,
+                                       Error **errp);
+
 bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
 {
     const SGIModelIoAssemblyList *entry;
@@ -37,6 +40,9 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
     g_autofree bool *node_connected = g_new0(bool, MAX(nodes, 1));
 
+    if (!sgi_model_check_xio_cables(t, errp)) {
+        return false;
+    }
     for (const SGIModelIoBoardList *board = t->io_boards; board;
          board = board->next) {
         vbrick |= board->value->populated &&

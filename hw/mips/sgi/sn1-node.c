@@ -12,7 +12,9 @@
  * (hw/mips/sgi/xio-link.c) before either realizes. The IO-8's fixed devices
  * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
  * machine places on the chip's head F, through sn1_node_xbridge_pci_bus()
- * below.
+ * below. An IP35 board has no XBridge: the machine may hand its node one
+ * in another brick (sn1_node_supply_xbridge()), which the node joins
+ * the same way at the port the cable meets.
  *
  * Node strides, window splits and unit offsets are Bedrock hardware facts,
  * not configuration, so the addresses below are constants here rather than
@@ -2138,6 +2140,12 @@ static void sn1_option_intx_connect(SN1NodeState *node)
     }
 }
 
+static bool sn1_node_is_ip35(const SN1NodeState *node)
+{
+    return node->model_node && node->model_node->has_board_kind &&
+           node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP35;
+}
+
 static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
 {
     size_t i;
@@ -2272,6 +2280,74 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
     }
 
     return true;
+}
+
+/*
+ * The IP35 path: join the XBridge an XIO cable reaches in another brick.
+ * The machine created that chip in its brick's module and set its
+ * host-port to the port the cable meets, its other Crosstown2 port as
+ * its xio-port, and its bus prefix, so the node writes none of them. It
+ * keeps the IP45 path's link, realize and widget decode, with the cable's
+ * port in place of SN1_XBRIDGE_HOST_PORT. Nothing here is IP45 riser or
+ * IO-8 wiring, and no Bedrock widget is linked to the chip's other
+ * Crosstown2 port: a port the cables leave empty decodes nothing.
+ */
+static bool sn1_node_join_supplied_xbridge(SN1NodeState *node, Error **errp)
+{
+    DeviceState *xbridge = node->supplied_xbridge;
+    unsigned int host_port = object_property_get_uint(OBJECT(xbridge),
+                                                      "host-port",
+                                                      &error_abort);
+    g_autofree char *host_port_property = g_strdup_printf("widget-%u",
+                                                          host_port);
+    size_t i;
+
+    sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
+                      OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
+                      OBJECT(xbridge), host_port);
+    if (!sgi_xio_link_connect(&node->xbridge_link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(xbridge), errp)) {
+        return false;
+    }
+    for (i = 0; i < node->xbridge_widget_count; i++) {
+        g_autofree char *property =
+            g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
+        MemoryRegion *face = sgi_xio_port_cpu_face(OBJECT(xbridge),
+                                                   node->xbridge_widgets[i]);
+
+        if (!face) {
+            error_setg(errp, "XBridge widget %u has no XIO face",
+                       node->xbridge_widgets[i]);
+            return false;
+        }
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(face), &error_abort);
+    }
+    object_property_set_link(
+        OBJECT(node->bedrock), host_port_property,
+        OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(xbridge), 0)),
+        &error_abort);
+    return true;
+}
+
+bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
+                             Error **errp)
+{
+    if (qdev_is_realized(DEVICE(node)) || node->supplied_xbridge) {
+        error_setg(errp, "an XBridge is supplied once, before the node "
+                   "realizes");
+        return false;
+    }
+    /*
+     * Added here rather than with the class's properties: an IP45 node's
+     * own XBridge is its child of the same name.
+     */
+    object_property_add_link(OBJECT(node), "xbridge", TYPE_SGI_XBRIDGE,
+                             (Object **)&node->supplied_xbridge,
+                             qdev_prop_allow_set_link_before_realize,
+                             OBJ_PROP_LINK_STRONG);
+    return object_property_set_link(OBJECT(node), "xbridge",
+                                    OBJECT(xbridge), errp);
 }
 
 static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
@@ -2446,8 +2522,13 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                 qdev_get_gpio_in_named(DEVICE(node),
                                                        "bedrock-reset", 0));
 
-    if (!node->ip53_assembly_validated &&
-        !sn1_node_create_ip45_xbridge(node, errp)) {
+    if (node->supplied_xbridge) {
+        if (!sn1_node_join_supplied_xbridge(node, errp)) {
+            return false;
+        }
+    } else if (!node->ip53_assembly_validated &&
+               !sn1_node_is_ip35(node) &&
+               !sn1_node_create_ip45_xbridge(node, errp)) {
         return false;
     }
 
@@ -2766,6 +2847,19 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
         (!ip53 || node->model_node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK)) {
         error_setg(errp, "sgi-sn1-node requires machine validation for an "
                    "IP53 assembly");
+        return;
+    }
+    /* An IP35 board has no XBridge, so none of its riser or IO-8 wiring. */
+    if (node->supplied_xbridge && !sn1_node_is_ip35(node)) {
+        error_setg(errp, "sgi-sn1-node takes a supplied XBridge only on "
+                   "board kind 'ip35'");
+        return;
+    }
+    if (sn1_node_is_ip35(node) &&
+        (node->io_board_part || node->option_intx_selected || node->ni_route ||
+         node->xbridge_xio_port != SGI_XBRIDGE_XIO_PORT_DEFAULT)) {
+        error_setg(errp, "sgi-sn1-node board kind 'ip35' takes no IO-8, "
+                   "option slot, routed XBridge or external port settings");
         return;
     }
     if (!sn1_node_validate_processors(node, machine, errp)) {

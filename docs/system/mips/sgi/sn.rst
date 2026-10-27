@@ -1176,6 +1176,19 @@ brings the link alive. ``origin200`` and ``origin300`` have no Crossbow on
 the node -- each places its one Base I/O instance directly on its node's
 XIO port, as above.
 
+An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
+its Bedrock to port A or B of the XBridge in an I/O brick. The builder
+creates that chip as ``/machine/module<M>/xbridge``, gives it the cable's
+port as its host port and its module's catalogue id as its bus prefix,
+and hands it to the cabled node through the node's ``xbridge`` link; the
+node joins and realizes it as an Origin 300 node does its own. The
+node's Bedrock decodes the chip at the cable's port and at each of the
+chip's heads the node hosts, and nothing at the chip's other Crosstown2
+port. A second node cabled to that port is refused, since whether one
+XBridge serves two hosts at once is unknown, and so are a host also
+cabled to a router, chained crossbars and a cable from a crossbar port
+to a board, none of which this builder makes yet.
+
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
 crossbar port, a Bridge, and a board's own widget

@@ -414,6 +414,11 @@ struct SGIMachineState {
      */
     DeviceState **bedrock_nodes;
     DeviceState **pic_hosts;
+    /*
+     * The XBridge each crossbar record builds in its brick's module, in
+     * t->crossbars order: an I/O brick's chip, reached over an XIO cable.
+     */
+    DeviceState **enclosure_xbridges;
     SGIXioLink *pic_links;
     size_t pic_host_count;
     SGIMachineNodeConfig *node_config;
@@ -1404,10 +1409,9 @@ static bool sgi_machine_ip53_normal_tuple(
 
 /*
  * Refuse catalogue records this builder cannot build yet, before anything
- * is created: an XIO cable between bricks, a C-brick's IP35 board, a
- * memory-only node, a module with no controller or one that owns its L1
- * for its nodes, a module's catalogued L1 brick type and the I-brick's
- * IO7. Building any of them as the nearest existing shape would show the
+ * is created: a memory-only node, a module that owns its L1 for its
+ * nodes, a module's catalogued L1 brick type and the I-brick's IO7.
+ * Building any of them as the nearest existing shape would show the
  * guest hardware the topology does not describe.
  */
 static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
@@ -1418,19 +1422,9 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     const SGIModelControllerList *controller;
     const SGIModelIoBoardList *board;
 
-    if (t->has_xio_cables) {
-        error_setg(errp, "topology '%s': XIO cables are not built yet",
-                   t->name);
-        return false;
-    }
     for (node = t->nodes; node; node = node->next) {
         const SGIModelNode *n = node->value;
 
-        if (n->has_board_kind && n->board_kind == SGI_MODEL_BOARD_KIND_IP35) {
-            error_setg(errp, "topology '%s' node '%s' selects board kind "
-                       "'ip35', which is not built yet", t->name, n->id);
-            return false;
-        }
         if (n->has_role && n->role == SGI_MODEL_NODE_ROLE_MEMORY) {
             error_setg(errp, "topology '%s' node '%s' is a memory node; "
                        "memory nodes are not built yet", t->name, n->id);
@@ -1445,12 +1439,6 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     for (module = t->modules; module; module = module->next) {
         const SGIModelModule *m = module->value;
 
-        if (m->has_controller) {
-            error_setg(errp, "topology '%s' module '%s' has no controller; "
-                       "modules without a controller are not built yet",
-                       t->name, m->id);
-            return false;
-        }
         if (m->brick_type) {
             error_setg(errp, "topology '%s' module '%s' names L1 brick type "
                        "'%s'; brick types from the catalogue are not built "
@@ -1481,6 +1469,348 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
 }
 
 /*
+ * Tell apart the two readings of a module with no controller record. -1
+ * with no controller field keeps its Origin 200 meaning, each node
+ * carrying its own controller, which only the SN0 builder reads; every
+ * SN1 node's L1 is registered under its module's controller. A module
+ * marked absent has no controller at all, which only the SN1 builder
+ * builds, and only for a module with no node or I/O peer to answer for.
+ */
+static bool sgi_machine_validate_module_controllers(const SGIModelTopology *t,
+                                                    Error **errp)
+{
+    const SGIModelModuleList *entry;
+
+    for (entry = t->modules; entry; entry = entry->next) {
+        const SGIModelModule *m = entry->value;
+
+        if (m->has_controller) {
+            if (t->generation != SGI_MODEL_GENERATION_SN1) {
+                error_setg(errp, "topology '%s' module '%s' has controller: "
+                           "absent, which only an SN1 topology builds",
+                           t->name, m->id);
+                return false;
+            }
+            if (m->nodes || m->io_peers) {
+                error_setg(errp, "topology '%s' module '%s' has controller: "
+                           "absent but lists a node or I/O peer", t->name,
+                           m->id);
+                return false;
+            }
+            if (m->controller_index != -1) {
+                error_setg(errp, "topology '%s' module '%s' has controller: "
+                           "absent but controller index %" PRId64, t->name,
+                           m->id, m->controller_index);
+                return false;
+            }
+        } else if (t->generation == SGI_MODEL_GENERATION_SN1 &&
+                   m->controller_index < 0) {
+            error_setg(errp, "topology '%s' module '%s' has controller index "
+                       "-1 and no controller record; an SN1 module has a "
+                       "controller or is marked absent", t->name, m->id);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool sgi_machine_node_is_ip35(const SGIModelNode *node)
+{
+    return node->has_board_kind &&
+           node->board_kind == SGI_MODEL_BOARD_KIND_IP35;
+}
+
+/* The node an enclosure crossbar's XIO cable comes from, and its port. */
+static bool sgi_machine_crossbar_host(const SGIModelTopology *t,
+                                      unsigned int crossbar,
+                                      unsigned int *node, uint8_t *port)
+{
+    const SGIModelXioCableList *entry;
+
+    for (entry = t->xio_cables; entry; entry = entry->next) {
+        const SGIModelXioEnd *ends[2] = {
+            entry->value->ends->value,
+            entry->value->ends->next->value,
+        };
+
+        for (unsigned int side = 0; side < 2; side++) {
+            if (ends[side]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR &&
+                ends[side]->index == crossbar &&
+                ends[side ^ 1]->kind == SGI_MODEL_XIO_END_KIND_NODE) {
+                *node = ends[side ^ 1]->index;
+                *port = ends[side]->port;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/*
+ * Check the XIO cables before any device exists. A cable joins an IP35
+ * node's II to port A or B of an XBridge in another brick; that node
+ * hosts the chip, and every attachment on the chip names it. Ranges and
+ * end counts were checked with the runtime endpoints. The checks also
+ * refuse what this builder cannot build honestly yet: a second host
+ * node on one XBridge, since whether one chip serves hosts on A and B at
+ * once is unknown; a host cabled to a router, which no Origin 3000 rule
+ * covers; a crossbar port cabled to a board; and chained crossbars, for
+ * which no contract gives the downstream chips' mode.
+ */
+static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
+                                            Error **errp)
+{
+    g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree bool *node_cabled = NULL;
+    g_autofree bool *port_cabled = NULL;
+    g_autofree bool *chained = NULL;
+    g_autofree int64_t *host = NULL;
+    const SGIModelXioCable *chain = NULL;
+    const SGIModelXioCable *to_board = NULL;
+    unsigned int board_index = 0;
+    bool ip53 = false;
+    const SGIModelXioCableList *entry;
+    size_t node_count, crossbar_count, attachment_count, board_count, i;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    if (t->generation != SGI_MODEL_GENERATION_SN1) {
+        if (t->xio_cables) {
+            error_setg(errp, "topology '%s' has XIO cables, which only an "
+                       "SN1 topology builds", t->name);
+            return false;
+        }
+        return true;
+    }
+    node_cabled = g_new0(bool, MAX(node_count, 1));
+    port_cabled = g_new0(bool, MAX(crossbar_count, 1) * SGI_XIO_WIDGETS);
+    chained = g_new0(bool, MAX(crossbar_count, 1));
+    host = g_new(int64_t, MAX(crossbar_count, 1));
+    for (i = 0; i < MAX(crossbar_count, 1); i++) {
+        host[i] = -1;
+    }
+
+    for (entry = t->xio_cables; entry; entry = entry->next) {
+        const SGIModelXioCable *cable = entry->value;
+        const SGIModelXioEnd *ends[2] = {
+            cable->ends->value, cable->ends->next->value,
+        };
+        const SGIModelXioEnd *node_end = NULL, *peer_end = NULL;
+
+        for (unsigned int side = 0; side < 2; side++) {
+            const SGIModelXioEnd *end = ends[side];
+
+            if (end->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
+                bool *used;
+
+                if (end->port >= SGI_XIO_WIDGETS) {
+                    error_setg(errp, "topology '%s' XIO cable '%s' names "
+                               "crossbar port 0x%x, past a crossbar's ports",
+                               t->name, cable->name, end->port);
+                    return false;
+                }
+                used = &port_cabled[end->index * SGI_XIO_WIDGETS + end->port];
+                if (*used) {
+                    error_setg(errp, "topology '%s' crossbar '%s' port 0x%x "
+                               "carries more than one XIO cable", t->name,
+                               crossbars[end->index]->id, end->port);
+                    return false;
+                }
+                *used = true;
+            } else if (end->kind == SGI_MODEL_XIO_END_KIND_NODE) {
+                if (node_cabled[end->index]) {
+                    error_setg(errp, "topology '%s' node '%s' carries more "
+                               "than one XIO cable", t->name,
+                               nodes[end->index]->id);
+                    return false;
+                }
+                node_cabled[end->index] = true;
+                if (!node_end) {
+                    node_end = end;
+                    peer_end = ends[side ^ 1];
+                }
+            }
+        }
+        if (node_end) {
+            const SGIModelNode *node = nodes[node_end->index];
+
+            switch (peer_end->kind) {
+            case SGI_MODEL_XIO_END_KIND_NODE:
+                error_setg(errp, "topology '%s' XIO cable '%s' joins node "
+                           "'%s' to node '%s'; a node's cable meets an "
+                           "XBridge port A or B", t->name, cable->name,
+                           node->id, nodes[peer_end->index]->id);
+                return false;
+            case SGI_MODEL_XIO_END_KIND_IO_BOARD:
+                error_setg(errp, "topology '%s' XIO cable '%s' joins node "
+                           "'%s' to I/O board '%s'; a node's cable meets an "
+                           "XBridge port A or B", t->name, cable->name,
+                           node->id, boards[peer_end->index]->id);
+                return false;
+            default:
+                break;
+            }
+            if (!sgi_machine_node_is_ip35(node)) {
+                error_setg(errp, "topology '%s' node '%s' has an XBridge on "
+                           "its own board; only an IP35 node takes an XIO "
+                           "cable", t->name, node->id);
+                return false;
+            }
+            if (peer_end->port != 0xa && peer_end->port != 0xb) {
+                error_setg(errp, "topology '%s' XIO cable '%s' meets crossbar "
+                           "'%s' at port 0x%x; a node's cable meets port A "
+                           "or B", t->name, cable->name,
+                           crossbars[peer_end->index]->id, peer_end->port);
+                return false;
+            }
+            if (host[peer_end->index] >= 0) {
+                error_setg(errp, "topology '%s' XBridge '%s' takes one host "
+                           "node; node '%s' on port 0x%x would be a second",
+                           t->name, crossbars[peer_end->index]->id, node->id,
+                           peer_end->port);
+                return false;
+            }
+            host[peer_end->index] = node_end->index;
+        } else if (ends[0]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR &&
+                   ends[1]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
+            chain = chain ? chain : cable;
+            chained[ends[0]->index] = chained[ends[1]->index] = true;
+        } else if (ends[0]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR ||
+                   ends[1]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
+            if (!to_board) {
+                to_board = cable;
+                board_index = ends[ends[0]->kind ==
+                                   SGI_MODEL_XIO_END_KIND_CROSSBAR]->index;
+            }
+        } else {
+            error_setg(errp, "topology '%s' XIO cable '%s' joins two I/O "
+                       "boards", t->name, cable->name);
+            return false;
+        }
+    }
+
+    /* An IP53 topology's crossbar records are refused by its own rules. */
+    for (i = 0; i < node_count; i++) {
+        ip53 |= nodes[i]->has_board_kind &&
+                nodes[i]->board_kind == SGI_MODEL_BOARD_KIND_IP53;
+    }
+    for (i = 0; !ip53 && i < crossbar_count; i++) {
+        bool attached = false;
+
+        for (size_t a = 0; a < attachment_count; a++) {
+            attached |= attachments[a]->crossbar_index == (int64_t)i;
+        }
+        if (crossbars[i]->kind != SGI_MODEL_CROSSBAR_KIND_XBRIDGE) {
+            error_setg(errp, "topology '%s' crossbar '%s' is not an XBridge; "
+                       "an SN1 crossbar record is an I/O brick's XBridge",
+                       t->name, crossbars[i]->id);
+            return false;
+        }
+        if (host[i] < 0 && !chained[i]) {
+            error_setg(errp, "topology '%s' crossbar '%s' has %sno XIO cable "
+                       "from a node", t->name, crossbars[i]->id,
+                       attached ? "XIO attachments and " : "");
+            return false;
+        }
+    }
+    for (i = 0; i < attachment_count; i++) {
+        const SGIModelXioAttachment *a = attachments[i];
+
+        if (a->crossbar_index < 0) {
+            if (a->node_index < node_count &&
+                sgi_machine_node_is_ip35(nodes[a->node_index])) {
+                error_setg(errp, "topology '%s' IP35 node '%s' has an XIO "
+                           "attachment on its own board; an IP35 board has "
+                           "no XBridge", t->name, nodes[a->node_index]->id);
+                return false;
+            }
+            continue;
+        }
+        if (ip53) {
+            continue;
+        }
+        if ((size_t)a->crossbar_index >= crossbar_count ||
+            a->node_index >= node_count) {
+            error_setg(errp, "topology '%s' XIO attachment %zu names a "
+                       "crossbar or node out of range", t->name, i);
+            return false;
+        }
+        if (host[a->crossbar_index] != a->node_index) {
+            error_setg(errp, "topology '%s' XIO attachment on crossbar '%s' "
+                       "names node '%s', which no XIO cable joins to it",
+                       t->name, crossbars[a->crossbar_index]->id,
+                       nodes[a->node_index]->id);
+            return false;
+        }
+    }
+    for (i = 0; i < node_count; i++) {
+        if (sgi_machine_node_is_ip35(nodes[i]) &&
+            nodes[i]->has_option_intx_map) {
+            error_setg(errp, "topology '%s' IP35 node '%s' selects an option "
+                       "INTx map; an IP35 board has no option slots",
+                       t->name, nodes[i]->id);
+            return false;
+        }
+    }
+    for (i = 0; i < crossbar_count; i++) {
+        const SGIModelCableList *cable;
+
+        if (host[i] < 0) {
+            continue;
+        }
+        for (cable = t->cables; cable; cable = cable->next) {
+            const SGIModelLinkEndList *ends = cable->value->ends;
+
+            if (QAPI_LIST_LENGTH(ends) != 2) {
+                continue;
+            }
+            for (unsigned int side = 0; side < 2; side++) {
+                const SGIModelLinkEnd *own = side ? ends->next->value :
+                                                    ends->value;
+                const SGIModelLinkEnd *peer = side ? ends->value :
+                                                     ends->next->value;
+
+                if (own->kind == SGI_MODEL_LINK_END_KIND_NODE &&
+                    own->index == host[i] &&
+                    peer->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
+                    error_setg(errp, "topology '%s' node '%s' hosts XBridge "
+                               "'%s' and is cabled to a router; there is no "
+                               "Origin 3000 rule for a routed host yet",
+                               t->name, nodes[host[i]]->id, crossbars[i]->id);
+                    return false;
+                }
+            }
+        }
+    }
+    for (i = 0; t->xio_cables && i < board_count; i++) {
+        if (boards[i]->populated &&
+            boards[i]->preset == SGI_MODEL_IO_BOARD_PRESET_VBRICK) {
+            error_setg(errp, "the experimental vbrick preset is Origin "
+                       "300-only, and topology '%s' has XIO cables", t->name);
+            return false;
+        }
+    }
+    if (chain) {
+        error_setg(errp, "topology '%s' XIO cable '%s': no reviewed contract "
+                   "for chained crossbars", t->name, chain->name);
+        return false;
+    }
+    if (to_board) {
+        error_setg(errp, "topology '%s' XIO cable '%s' to I/O board '%s' is "
+                   "not built yet", t->name, to_board->name,
+                   boards[board_index]->id);
+        return false;
+    }
+    return true;
+}
+
+/*
  * The topology this machine builds: the chassis topology= names, with
  * the node-population row nodes= selects, or its largest by default. A
  * row resting on unsettled evidence is refused, not built on a guess.
@@ -1500,6 +1830,8 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
     }
     if (!sgi_model_check_runtime_endpoints(chassis, errp) ||
         !sgi_machine_refuse_unbuilt_records(chassis, errp) ||
+        !sgi_machine_validate_module_controllers(chassis, errp) ||
+        !sgi_machine_validate_xio_cables(chassis, errp) ||
         !sgi_machine_ip53_experiment_policy(
             s, smc, chassis, &allow_ip53_experiment, errp)) {
         return NULL;
@@ -3420,6 +3752,85 @@ static bool sgi_machine_instantiate_io_board(
                   "preset for this family", t->name, board_index);
         return false;
     }
+}
+
+/*
+ * Create each I/O brick's XBridge in its brick's module and hand it to
+ * the node whose XIO cable reaches it. The chip is left unrealized: the
+ * Bedrock's widget links are fixed when the Bedrock realizes, inside node
+ * realize, and a widget face exists only once the chip has realized, so
+ * the node joins and realizes it there. The machine owns every chip
+ * property: the host port is the one the cable meets, and the model's
+ * external port, which must differ from it, is the other Crosstown2 port,
+ * to which no Bedrock widget is linked. PCI sections are named from their
+ * bus, so each chip's buses take its module's id as their prefix.
+ */
+static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
+                                                  const SGIModelTopology *t,
+                                                  Error **errp)
+{
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t crossbar_count, module_count, i;
+
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    modules = sgi_model_module_array(t->modules, &module_count);
+    s->enclosure_xbridges = g_new0(DeviceState *, MAX(crossbar_count, 1));
+    for (i = 0; i < crossbar_count; i++) {
+        const SGIModelCrossbar *record = crossbars[i];
+        g_autofree char *module_name = NULL;
+        g_autofree char *prefix = NULL;
+        Object *container;
+        DeviceState *xbridge;
+        unsigned int node;
+        uint64_t revision;
+        uint8_t port;
+        bool hosted;
+
+        /* Validation left only crossbars a node's cable reaches. */
+        hosted = sgi_machine_crossbar_host(t, i, &node, &port);
+        g_assert(hosted && record->module_index < module_count);
+        for (size_t other = 0; other < i; other++) {
+            if (crossbars[other]->module_index == record->module_index) {
+                error_setg(errp, "topology '%s' module '%s' holds crossbars "
+                           "'%s' and '%s'; several crossbars in one brick are "
+                           "not built yet", t->name,
+                           modules[record->module_index]->id,
+                           crossbars[other]->id, record->id);
+                return false;
+            }
+        }
+        module_name = g_strdup_printf("module%u", record->module_index);
+        container = object_resolve_path_component(OBJECT(s), module_name);
+        g_assert(container);
+        xbridge = qdev_new(TYPE_SGI_XBRIDGE);
+        object_property_add_child(container, "xbridge", OBJECT(xbridge));
+        object_unref(OBJECT(xbridge));
+        /*
+         * The crossbar section's revision is fixed by the device model;
+         * a record naming another cannot be presented.
+         */
+        revision = object_property_get_uint(
+            object_resolve_path_component(OBJECT(xbridge), "xbow"),
+            "revision", &error_abort);
+        if (revision != record->widget_revision) {
+            error_setg(errp, "topology '%s' crossbar '%s' names revision %u; "
+                       "the XBridge model presents revision %" PRIu64,
+                       t->name, record->id, record->widget_revision,
+                       revision);
+            return false;
+        }
+        qdev_prop_set_uint8(xbridge, "host-port", port);
+        qdev_prop_set_uint8(xbridge, "xio-port", port == 0xa ? 0xb : 0xa);
+        prefix = g_strdup_printf("%s-", modules[record->module_index]->id);
+        qdev_prop_set_string(xbridge, "bus-prefix", prefix);
+        if (!sn1_node_supply_xbridge(SN1_NODE(s->bedrock_nodes[node]),
+                                     xbridge, errp)) {
+            return false;
+        }
+        s->enclosure_xbridges[i] = xbridge;
+    }
+    return true;
 }
 
 static bool sgi_machine_create_pic_hosts(SGIMachineState *s,
@@ -7576,7 +7987,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     if (kind != SGI_MODEL_ASIC_KIND_HUB &&
-        !sgi_machine_create_pic_hosts(s, t, errp)) {
+        (!sgi_machine_create_pic_hosts(s, t, errp) ||
+         !sgi_machine_create_enclosure_xbridges(s, t, errp))) {
         return false;
     }
     if (s->ip53_fingerprint_enabled) {
@@ -7629,6 +8041,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             bool found_board = false;
             bool ip53 = nodes[node_index]->has_board_kind &&
                 nodes[node_index]->board_kind == SGI_MODEL_BOARD_KIND_IP53;
+            bool ip35 = sgi_machine_node_is_ip35(nodes[node_index]);
 
             /*
              * Widget zero is the crossbar's own local view; the rest come
@@ -7652,6 +8065,13 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 if (!sn1_node_set_ip53_assembly_validated(node, errp)) {
                     return false;
                 }
+            } else if (ip35) {
+                /*
+                 * No I/O of its own: a cabled XBridge decodes this node's
+                 * attachments in the other brick.
+                 */
+                node->xbridge_widgets = g_steal_pointer(&widgets);
+                node->xbridge_widget_count = widget_count;
             } else {
             for (const SGIModelCableList *entry = t->cables; entry;
                  entry = entry->next) {
@@ -9419,6 +9839,7 @@ static void sgi_machine_instance_finalize(Object *obj)
         g_free(s->pic_links[i].name);
     }
     g_free(s->pic_hosts);
+    g_free(s->enclosure_xbridges);
     g_free(s->pic_links);
     g_free(s->controllers);
     g_free(s->controller_bics);

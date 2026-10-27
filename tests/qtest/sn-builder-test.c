@@ -9043,15 +9043,9 @@ typedef struct UnbuiltRecordCase {
 } UnbuiltRecordCase;
 
 static const UnbuiltRecordCase unbuilt_record_cases[] = {
-    { "unbuilt-xio-cable", "XIO cables are not built yet" },
-    { "unbuilt-board-kind-ip35",
-      "node 'n1' selects board kind 'ip35', which is not built yet" },
     { "unbuilt-memory-node",
       "node 'n1' is a memory node; memory nodes are not built yet" },
     { "unbuilt-no-flash", "node 'n1' has no boot flash" },
-    { "unbuilt-controller-absent",
-      "module 'module-n1' has no controller; modules without a controller "
-      "are not built yet" },
     { "unbuilt-brick-type",
       "module 'module-n1' names L1 brick type 'C'; brick types from the "
       "catalogue are not built yet" },
@@ -9071,6 +9065,226 @@ static void test_unbuilt_record_refused(const void *data)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", machine,
         "-cpu", "R14000", "-smp", "2,sockets=2,cores=1,threads=1",
+        "-m", "128", "-bios", "/dev/null", "-nodefaults",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, c->message);
+}
+
+/*
+ * The C-brick fixture (sn-builder-fault-test.c): two IP35 nodes and an
+ * I-brick module whose XBridge an XIO cable joins to c0's II.
+ */
+#define CBRICK_IO_SPACE UINT64_C(0x20000000000)
+#define CBRICK_WIDGET(w) (CBRICK_IO_SPACE + ((uint64_t)(w) << 24))
+#define CBRICK_XBRIDGE "/machine/module2/xbridge"
+
+static char *cbrick_blank_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(0x100000);
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn-builder-cbrick-prom-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, 0x100000), ==, 0x100000);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static QTestState *cbrick_start(const char *fault, const char *prom,
+                                const char *extra)
+{
+    return qtest_initf("-M sn-builder-bedrock-test,construction-fault=%s "
+                       "-cpu R14000 -smp 2,sockets=2,cores=1,threads=1 "
+                       "-m 128 -bios %s -nodefaults -display none %s",
+                       fault, prom, extra);
+}
+
+static bool cbrick_bedrock_links(QTestState *qts, const char *node,
+                                 unsigned int widget)
+{
+    g_autofree char *bedrock = g_strdup_printf("/machine/%s/bedrock", node);
+    g_autofree char *property = g_strdup_printf("widget-%u", widget);
+    g_autofree char *target = qom_get_str(qts, bedrock, property);
+
+    return target[0] != '\0';
+}
+
+/*
+ * The I-brick's XBridge is built in the I-brick's module, not on either
+ * C-brick node, and keeps the host port its cable gives it and its
+ * module's bus prefix. c0's Bedrock decodes the chip at that port and
+ * nothing at the other Crosstown2 port; c1, with no cable, decodes none.
+ */
+static void test_cbrick_xbridge_in_its_brick(const void *data)
+{
+    unsigned int host_port = GPOINTER_TO_UINT(data);
+    unsigned int other_port = host_port == 0xa ? 0xb : 0xa;
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *fault = g_strdup_printf("cbrick-port-%c",
+                                             host_port == 0xa ? 'a' : 'b');
+    QTestState *qts = cbrick_start(fault, prom, "");
+    g_autofree char *chip = qom_child_type(qts, "/machine/module2",
+                                           "xbridge");
+    g_autofree char *c0_child = qom_child_type(qts, "/machine/node0",
+                                               "xbridge");
+    g_autofree char *c1_child = qom_child_type(qts, "/machine/node1",
+                                               "xbridge");
+    g_autofree char *linked = qom_get_str(qts, "/machine/node0", "xbridge");
+    g_autofree char *prefix = qom_get_str(qts, CBRICK_XBRIDGE, "bus-prefix");
+    uint32_t identity = 0;
+
+    g_assert_cmpstr(chip, ==, "sgi-xbridge");
+    g_assert_null(c0_child);
+    g_assert_null(c1_child);
+    g_assert_cmpstr(linked, ==, CBRICK_XBRIDGE);
+    g_assert_cmpuint(qom_get_uint(qts, CBRICK_XBRIDGE, "host-port"), ==,
+                     host_port);
+    g_assert_cmpuint(qom_get_uint(qts, CBRICK_XBRIDGE, "xio-port"), ==,
+                     other_port);
+    g_assert_cmpstr(prefix, ==, "ibrick-");
+
+    g_assert_true(cbrick_bedrock_links(qts, "node0", host_port));
+    g_assert_false(cbrick_bedrock_links(qts, "node0", other_port));
+    g_assert_true(cbrick_bedrock_links(qts, "node0", 14));
+    g_assert_true(cbrick_bedrock_links(qts, "node0", 15));
+    for (unsigned int widget = 0; widget < 16; widget++) {
+        g_assert_false(cbrick_bedrock_links(qts, "node1", widget));
+    }
+
+    /* The crossbar's own identity, seen through c0 at the cabled port. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(host_port) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd000);
+    g_assert_cmpuint(identity >> 28, ==, 2);
+    g_assert_cmpuint(identity & 1, ==, 1);
+    /* Its PCI heads, through the attachments c0 hosts. */
+    g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(15) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd002);
+    g_assert_false(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(other_port) + 4,
+                                        &identity));
+    /* c1's II has nothing cabled, so the same reads fault there. */
+    g_assert_false(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(host_port) + 4,
+                                        &identity));
+    g_assert_false(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(15) + 4,
+                                        &identity));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* Head state on the I-brick's XBridge survives a save and restore. */
+static void test_cbrick_save_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-cbrick-migrate-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    /* Head F's interrupt enable, the low word of its doubleword. */
+    const uint64_t enable = CBRICK_WIDGET(15) + 0x10c;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = cbrick_start("cbrick-port-a", prom, "-S");
+    to = cbrick_start("cbrick-port-a", prom, "-S -incoming defer");
+
+    qtest_writel(from, enable, 0x30);
+    g_assert_cmphex(qtest_readl(from, enable), ==, 0x30);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readl(to, enable), ==, 0x30);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(prom);
+    g_rmdir(dir);
+}
+
+typedef struct CbrickRefusalCase {
+    const char *machine;
+    const char *message;
+} CbrickRefusalCase;
+
+#define CBRICK_FIXTURE(fault) \
+    "sn-builder-bedrock-test,activate=on,construction-fault=cbrick-" fault
+
+static const CbrickRefusalCase cbrick_refusal_cases[] = {
+    { CBRICK_FIXTURE("cable-out-of-range"),
+      "XIO cable 'c0-to-ibrick' names an end out of range" },
+    { CBRICK_FIXTURE("node-cabled-twice"),
+      "node 'c0' carries more than one XIO cable" },
+    { CBRICK_FIXTURE("port-cabled-twice"),
+      "crossbar 'ibrick-xbridge' port 0xa carries more than one XIO cable" },
+    { CBRICK_FIXTURE("second-host-node"),
+      "XBridge 'ibrick-xbridge' takes one host node; node 'c1' on port 0xb "
+      "would be a second" },
+    { CBRICK_FIXTURE("node-off-crosstown"),
+      "XIO cable 'c0-to-ibrick' meets crossbar 'ibrick-xbridge' at port 0x8; "
+      "a node's cable meets port A or B" },
+    { CBRICK_FIXTURE("node-to-node"),
+      "XIO cable 'c0-to-ibrick' joins node 'c0' to node 'c1'; a node's "
+      "cable meets an XBridge port A or B" },
+    { CBRICK_FIXTURE("attachments-without-cable"),
+      "crossbar 'ibrick-xbridge' has XIO attachments and no XIO cable from "
+      "a node" },
+    { CBRICK_FIXTURE("attachment-names-other-node"),
+      "XIO attachment on crossbar 'ibrick-xbridge' names node 'c1', which "
+      "no XIO cable joins to it" },
+    { CBRICK_FIXTURE("chained-crossbars"),
+      "XIO cable 'first-to-second': no reviewed contract for chained "
+      "crossbars" },
+    { CBRICK_FIXTURE("board-cable"),
+      "XIO cable 'port-b-to-board' to I/O board 'port-b-board' is not built "
+      "yet" },
+    { CBRICK_FIXTURE("onboard-xbridge-node"),
+      "node 'c0' has an XBridge on its own board; only an IP35 node takes "
+      "an XIO cable" },
+    { CBRICK_FIXTURE("routed-host"),
+      "node 'c0' hosts XBridge 'ibrick-xbridge' and is cabled to a router; "
+      "there is no Origin 3000 rule for a routed host yet" },
+    { CBRICK_FIXTURE("io8-on-host"),
+      "IP35 node 'c0' has an XIO attachment on its own board; an IP35 board "
+      "has no XBridge" },
+    { CBRICK_FIXTURE("option-intx-on-host"),
+      "IP35 node 'c0' selects an option INTx map; an IP35 board has no "
+      "option slots" },
+    { CBRICK_FIXTURE("vbrick-with-cables"),
+      "the experimental vbrick preset is Origin 300-only, and topology "
+      "'sn-builder-bedrock-test' has XIO cables" },
+    { CBRICK_FIXTURE("module-without-controller-record"),
+      "module 'ibrick' has controller index -1 and no controller record; "
+      "an SN1 module has a controller or is marked absent" },
+    { CBRICK_FIXTURE("absent-controller-with-node"),
+      "module 'cbrick-c1' has controller: absent but lists a node or I/O "
+      "peer" },
+    { CBRICK_FIXTURE("absent-controller-with-index"),
+      "module 'ibrick' has controller: absent but controller index 1" },
+    { CBRICK_FIXTURE("revision-mismatch"),
+      "crossbar 'ibrick-xbridge' names revision 3; the XBridge model "
+      "presents revision 2" },
+    { "sn-builder-console-test,construction-fault=controller-absent",
+      "module 'node1-cpu-module' has controller: absent, which only an SN1 "
+      "topology builds" },
+};
+
+static void test_cbrick_refused(const void *data)
+{
+    const CbrickRefusalCase *c = data;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", c->machine,
+        "-cpu", g_str_has_prefix(c->machine, "sn-builder-console-test") ?
+        "R10000" : "R14000", "-smp", "2,sockets=2,cores=1,threads=1",
         "-m", "128", "-bios", "/dev/null", "-nodefaults",
         "-display", "none", NULL
     };
@@ -10006,6 +10220,23 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, &unbuilt_record_cases[i],
                             test_unbuilt_record_refused);
+    }
+    qtest_add_data_func("sn/builder/cbrick/xbridge-in-its-brick/port-a",
+                        GUINT_TO_POINTER(0xa),
+                        test_cbrick_xbridge_in_its_brick);
+    qtest_add_data_func("sn/builder/cbrick/xbridge-in-its-brick/port-b",
+                        GUINT_TO_POINTER(0xb),
+                        test_cbrick_xbridge_in_its_brick);
+    qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
+    for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
+        const char *fault = strstr(cbrick_refusal_cases[i].machine,
+                                   "construction-fault=") +
+                            strlen("construction-fault=");
+        g_autofree char *path = g_strdup_printf("sn/builder/cbrick/refused/%s",
+                                                fault);
+
+        qtest_add_data_func(path, &cbrick_refusal_cases[i],
+                            test_cbrick_refused);
     }
     qtest_add_data_func("sn/builder/origin300-two-chassis-l1s-are-peers",
                         NULL, test_origin300_two_chassis_l1s_are_peers);

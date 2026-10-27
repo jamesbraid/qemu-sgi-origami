@@ -119,7 +119,12 @@ typedef struct SN1NodeState {
     SN1PicWidget *pic_widgets;
     size_t pic_widget_count;
 
-    /* The Bedrock's I/O interface linked to the IP45 XBridge host port. */
+    /*
+     * An IP35 node's XBridge in another brick, which the machine supplies
+     * (sn1_node_supply_xbridge()); NULL on every other board.
+     */
+    DeviceState *supplied_xbridge;
+    /* The Bedrock's I/O interface linked to the XBridge host port. */
     SGIXioLink xbridge_link;
 
     Clock *cpuclk;
@@ -289,6 +294,14 @@ PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
 bool sn1_node_set_option_intx_map(SN1NodeState *node,
                                  const uint8_t map[SGI_PCI_INTX_MAP_SIZE],
                                  Error **errp);
+
+/*
+ * Hand an IP35 node the XBridge its XIO cable reaches, before the node
+ * realizes; the node joins and realizes it. Adds the node's "xbridge"
+ * link.
+ */
+bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
+                             Error **errp);
 
 /* The node-owned Bedrock I/O endpoint, available after node realization. */
 SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node);
