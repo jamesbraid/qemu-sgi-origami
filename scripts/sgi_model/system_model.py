@@ -1152,7 +1152,7 @@ def resolve_system_model(
         raise ResolutionError(f"composition '{path}' has no supported configuration_version")
     unknown = sorted(set(composition) - {
         "configuration_version", "layers", "module_instances",
-        "connector_population", "links", "xio_cables",
+        "connector_population", "links", "xio_cables", "model_role",
     })
     if unknown:
         raise ResolutionError(f"composition '{path}' has unsupported field '{unknown[0]}'")
@@ -1207,6 +1207,16 @@ def resolve_system_model(
             model_graphics.resolve_graphics(
                 selected["product"]["id"], graphics,
                 model_graphics.load_graphics_products(path.parent)))
+    # A composition may keep a product's emulation target as a reference
+    # of its own: another brick set on the same product rules, which the
+    # emulator does not build. It carries no emulation choices then.
+    if "model_role" in composition:
+        if composition["model_role"] != "reference":
+            raise ResolutionError(
+                f"composition '{path}' may set model_role reference only")
+        resolved.setdefault("machine", {})["model_role"] = "reference"
+        resolved["machine"].pop("emulation", None)
+        resolved["machine"].pop("harness", None)
     machine = resolved.get("machine", {})
     routed = model_composition.reject_routed_firmware_graphs(resolved)
     population = selected["product"]["population"]

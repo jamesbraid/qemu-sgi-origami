@@ -3082,6 +3082,29 @@ class Origin3000BrickTests(unittest.TestCase):
                 "compiled yet"):
             compile_model(self.resolve())
 
+    def test_composition_may_keep_the_product_as_a_reference(self):
+        for path in (INPUTS / "origin3200-xbrick.yaml",
+                     INPUTS / "origin3200-pbrick.yaml"):
+            with self.subTest(path=path.name):
+                machine = self.resolve(path)["machine"]
+                self.assertEqual(machine["model_role"], "reference")
+                self.assertNotIn("emulation", machine)
+                self.assertNotIn("harness", machine)
+
+    def test_composition_sets_only_the_reference_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("*.json"))
+            shutil.copy(INPUTS / "system-model.schema.json", root)
+            path = root / "origin3200-xbrick.yaml"
+            path.write_text(path.read_text().replace(
+                "model_role: reference", "model_role: emulation-target"))
+            with self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "may set model_role reference only"):
+                _resolver.load_system_model(path)
+
     ORIGIN3200_XBRICK = INPUTS / "origin3200-xbrick.yaml"
 
     def test_xbrick_layer_puts_four_slots_on_crosstalk_ports(self):

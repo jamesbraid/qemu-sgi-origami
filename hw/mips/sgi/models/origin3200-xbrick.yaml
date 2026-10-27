@@ -3,6 +3,9 @@
 # bundle, its I-brick on the first C-brick, and an X-brick on the second.
 # Resolve before validation or generation.
 configuration_version: 1
+# A reference on the Origin 3200 rules: the emulator builds no X- or
+# P-brick yet.
+model_role: reference
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip35.yaml
