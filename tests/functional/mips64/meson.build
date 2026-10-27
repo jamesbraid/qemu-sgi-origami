@@ -237,6 +237,9 @@ test_mips64_timeouts = {
   # Same boot, then bulk transfers on top of it: throughput needs the traffic
   # to run long enough to be worth timing.
   'irix_tg_perf' : 2700,
+  # The same TCP and UDP workload on the BCM5701 built into the Origin 350
+  # IO9, using its machine-created network device.
+  'irix_io9_tg_perf' : 2700,
   # Boot to the POD prompt plus sixteen immediate commands; BOOT_TIMEOUT
   # in test_prom_pod.py keeps the usual 60s margin under this.
   'prom_pod' : 900,
@@ -381,6 +384,7 @@ tests_mips64_system_thorough = [
   'irix_ef',
   'irix_tg',
   'irix_tg_perf',
+  'irix_io9_tg_perf',
   'linux_kernel',
   'linux_multiuser',
   'openbsd_net_transfer',

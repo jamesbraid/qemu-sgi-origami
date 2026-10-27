@@ -159,14 +159,14 @@ VERIFY_BYTES = 1024 * 1024                # byte-checked TCP payload
 TCP_TX_BYTES = 65536
 
 
-def _usernet_hostport(vm, proto, guest_port):
+def _usernet_hostport(vm, proto, guest_port, guest_addr=base.GUEST_ADDR):
     """Host port SLIRP assigned to a hostfwd rule, from 'info usernet'. The
     row is 'PROTO[HOST_FORWARD] <fd> 127.0.0.1 <hostport> <guestip> <gport>'
     (same shape qemu.utils.get_info_usernet_hostfwd_port matches for TCP),
     generalized here to a given protocol and guest port."""
     out = vm.cmd('human-monitor-command', command_line='info usernet')
     rx = re.compile(r'%s.HOST_FORWARD.*127\.0\.0\.1\s+(\d+)\s+%s\s+%d\b'
-                    % (proto.upper(), re.escape(base.GUEST_ADDR), guest_port))
+                    % (proto.upper(), re.escape(guest_addr), guest_port))
     for line in re.split(r'\r?\n', out):
         m = rx.search(line)
         if m:
@@ -174,18 +174,24 @@ def _usernet_hostport(vm, proto, guest_port):
     return None
 
 
-def _tcp_stream(host_port, data):
+def _tcp_stream(host_port, data, after_connect=None):
     """Connect to the forwarded TCP port, send data, close. Returns the
-    host-side elapsed seconds."""
+    host-side elapsed seconds. after_connect runs after the hostfwd accepts
+    the socket and before any payload is sent."""
     s = socket.create_connection(("127.0.0.1", host_port), timeout=30)
     # The guest drains at emulated speed, so the send blocks for as long as the
     # transfer takes; the connect timeout above would cut a bulk one short.
     s.settimeout(SEND_TIMEOUT_SECONDS)
-    t0 = time.monotonic()
     try:
+        if after_connect is not None:
+            after_connect()
+        t0 = time.monotonic()
         s.sendall(data)
     finally:
-        s.shutdown(socket.SHUT_WR)
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
         # drain any trailing bytes so the guest sees a clean close
         s.settimeout(30)
         try:
@@ -336,38 +342,22 @@ if base.QemuSystemTest is not None:
             base.DISK_REL,
             '15b4bc1992845b6242948a9e944ce39682b7decdaee1e5474579418fb3a19c12')
 
-        def _netstat_counter(self, con, proto, pattern, tag):
-            try:
-                return int(con.capture_value(
-                    f"netstat -s -p {proto} | " +
-                    "awk '/" + pattern + "/ {print \"N=\" $1; exit}'",
-                    tag, rb"N=(\d+)", timeout=60))
-            except base.HarnessError:
-                return None
+        VM_NAME = 'irix_tg_perf'
+        PROM_SHA256 = base.PROM_SHA256
+        TG_SLOT = base.TG_ADDR
+        GUEST_ADDR = base.GUEST_ADDR
+        GATEWAY = base.GATEWAY
+        USERNET_OPTIONS = ''
+        BACKGROUND_TCP_RECEIVER = False
+        TCP_RECEIVER_SCRIPT = '/tmp/qemu-tg-tcp-rx.sh'
+        TCP_RECEIVER_PID = '/tmp/qemu-tg-tcp-rx.pid'
+        TCP_RECEIVER_STATUS = '/tmp/qemu-tg-tcp-rx.status'
+        TCP_RECEIVER_READY_ATTEMPTS = 30
 
-        @base.skipBigDataTest()
-        @base.skipSlowTest()
-        @base.skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
-        def test_irix_tg_perf(self):
-            prom = self.ASSET_FIRMWARE.fetch()
-            disk = self.ASSET_DISK.fetch()
-            if base.file_sha256(prom) != base.PROM_SHA256:
-                self.fail('6.5.30 PROM SHA-256 mismatch')
-            self.require_netdev('user')
-
-            served_dir = self.scratch_file('served')
-            os.makedirs(served_dir, exist_ok=True)
-
-            pcap = self.log_file('tg-perf-wire.pcap')
-            vm = self.get_vm(name='irix_tg_perf')
+        def _configure_machine(self, vm, prom, disk, elsc):
+            """Configure the Origin 200 and its installed-IRIX drives."""
             vm.set_machine(base.MACHINES['origin200'])
             vm.set_console()
-            elsc = self.log_file('elsc-aux.log')
-            netdev = ('user,id=tgnet,tftp=%s'
-                      ',hostfwd=tcp:127.0.0.1:0-%s:%d'
-                      ',hostfwd=udp:127.0.0.1:0-%s:%d'
-                      % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
-                         base.GUEST_ADDR, UDP_GUEST_PORT))
             vm.add_args(
                 '-accel', base.IRIX_ACCEL,
                 '-cpu', 'R10000', '-smp', base.IRIX_SMP,
@@ -377,16 +367,80 @@ if base.QemuSystemTest is not None:
                 '-serial', 'none', '-serial', 'chardev:elsc',
                 '-drive', f'if=none,id=disk0,file={disk},format=qcow2',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
-                '-snapshot', '-nic', 'none',
-                '-d', 'guest_errors',
-                '-D', self.log_file('qemu-dbg.log'),
+                '-snapshot', '-d', 'guest_errors',
+                '-D', self.log_file('qemu-dbg.log'))
+
+        def _configure_network(self, vm, netdev, pcap):
+            """Attach a test card on the Origin 200's option PCI bus."""
+            vm.add_args(
+                '-nic', 'none',
                 '-netdev', netdev,
-                '-device', f'bcm570x,netdev=tgnet,addr={base.TG_ADDR},mac={base.TG_MAC}',
+                '-device',
+                f'bcm570x,netdev=tgnet,addr={base.TG_ADDR},mac={base.TG_MAC}',
                 '-object', f'filter-dump,id=tgcap,netdev=tgnet,file={pcap}')
+
+        def _interface(self, con):
+            return base.irix_interface_at_pci_slot(con, 'tg', self.TG_SLOT)
+
+        def _netstat_counter(self, con, proto, pattern, tag):
+            try:
+                return int(con.capture_value(
+                    f"netstat -s -p {proto} | " +
+                    "awk '/" + pattern + "/ {print \"N=\" $1; exit}'",
+                    tag, rb"N=(\d+)", timeout=60))
+            except base.HarnessError:
+                return None
+
+        def _capture_network_diagnostics(self, con, iface, tag,
+                                         receiver=False):
+            commands = [
+                f'ifconfig {iface}', 'netstat -rn', 'netstat -in', 'arp -an',
+                'netstat -s -p ip', 'netstat -s -p tcp',
+            ]
+            if receiver:
+                commands.extend((
+                    'netstat -an', "ps -ef | grep '[t]tcp'",
+                    'ls -l /tmp/rx.bin'))
+            try:
+                return con.run('; '.join(commands), tag, timeout=60)
+            except (base.HarnessError, OSError) as error:
+                return {'error': str(error)}
+
+        @base.skipBigDataTest()
+        @base.skipSlowTest()
+        @base.skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+        def test_irix_tg_perf(self):
+            self._run_tg_perf()
+
+        def _run_tg_perf(self):
+            prom = self.ASSET_FIRMWARE.fetch()
+            disk = self.ASSET_DISK.fetch()
+            if base.file_sha256(prom) != self.PROM_SHA256:
+                self.fail('6.5.30 PROM SHA-256 mismatch')
+            self.require_netdev('user')
+
+            served_dir = self.scratch_file('served')
+            os.makedirs(served_dir, exist_ok=True)
+
+            pcap = self.log_file('tg-perf-wire.pcap')
+            vm = self.get_vm(name=self.VM_NAME)
+            elsc = self.log_file('elsc-aux.log')
+            netdev = 'user,id=tgnet'
+            if self.USERNET_OPTIONS:
+                netdev += ',' + self.USERNET_OPTIONS
+            netdev += (',tftp=%s'
+                      ',hostfwd=tcp:127.0.0.1:0-%s:%d'
+                      ',hostfwd=udp:127.0.0.1:0-%s:%d'
+                      % (served_dir, self.GUEST_ADDR, TCP_GUEST_PORT,
+                         self.GUEST_ADDR, UDP_GUEST_PORT))
+            self._configure_machine(vm, prom, disk, elsc)
+            self._configure_network(vm, netdev, pcap)
             launch_paused(vm)
 
-            tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT)
-            udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT)
+            tcp_hp = _usernet_hostport(vm, 'tcp', TCP_GUEST_PORT,
+                                       self.GUEST_ADDR)
+            udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT,
+                                       self.GUEST_ADDR)
 
             log_path = self.log_file('irix-tg-perf.log')
             con = base.IrixConsole(vm.console_socket, log_path,
@@ -405,12 +459,18 @@ if base.QemuSystemTest is not None:
             tcp_tx_ready = threading.Event()
             tcp_tx_port = []
             tcp_tx_chunks, tcp_tx_errors = [], []
+            iface = None
+            seg_before = None
+            foreground_ttcp = None
+            receiver_pid = None
+            receiver_supervisor_pid = None
             try:
                 base.drive_irix_to_shell(con, base.LOGIN_BUDGET_SECONDS)
                 login = True
-                iface = base.irix_interface_at_pci_slot(con, "tg",
-                                                        base.TG_ADDR)
-                con.run(f"ifconfig {iface} inet {base.GUEST_ADDR} "
+                con.run('uname -a; id; date; hinv -mvv',
+                        'machine_inventory', timeout=180)
+                iface = self._interface(con)
+                con.run(f"ifconfig {iface} inet {self.GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
                     con.capture_value("ifconfig " + iface, "ifs",
@@ -419,6 +479,9 @@ if base.QemuSystemTest is not None:
                 except base.HarnessError:
                     pass
 
+                results['network_state_before'] = (
+                    self._capture_network_diagnostics(
+                        con, iface, 'network_state_before'))
                 seg_before = self._netstat_counter(
                     con, "tcp", "packets received", "segb")
 
@@ -430,12 +493,159 @@ if base.QemuSystemTest is not None:
                 host_crc, host_bytes = base._host_cksum(verify_file)
                 with open(verify_file, 'rb') as vf:
                     verify_bytes = vf.read()
-                # ttcp -r without -s writes the received stream to stdout.
-                con.send(f"ttcp -r -p {TCP_GUEST_PORT} -l 65536 "
-                         ">/tmp/rx.bin 2>/dev/null; echo \"RX\"\"DONE\"")
-                time.sleep(3)
-                _tcp_stream(tcp_hp, verify_bytes)
-                con.expect(rb"RXDONE", 300, what="ttcp receive to finish")
+                if self.BACKGROUND_TCP_RECEIVER:
+                    rx_script = "\n".join((
+                        '#!/bin/sh',
+                        f'rm -f {self.TCP_RECEIVER_PID} '
+                        f'{self.TCP_RECEIVER_STATUS} /tmp/rx.bin',
+                        f'ttcp -r -p {TCP_GUEST_PORT} -l 65536 > /tmp/rx.bin &',
+                        'rx_pid=$!',
+                        f'echo $rx_pid > {self.TCP_RECEIVER_PID}',
+                        'attempt=0',
+                        (f'while [ $attempt -lt '
+                         f'{self.TCP_RECEIVER_READY_ATTEMPTS} ]; do'),
+                        (f"    listening=`/usr/etc/netstat -an | "
+                         f"grep '[.*]{TCP_GUEST_PORT} .*LISTEN'`"),
+                        '    if [ -n "$listening" ]; then',
+                        '        echo RXREADY',
+                        '        echo "$listening"',
+                        '        wait $rx_pid',
+                        '        status=$?',
+                        f'        echo $status > {self.TCP_RECEIVER_STATUS}',
+                        '        echo "RX""DONE"',
+                        '        exit $status',
+                        '    fi',
+                        '    sleep 1',
+                        '    attempt=`expr $attempt + 1`',
+                        'done',
+                        'echo RXFAILED',
+                        'kill -TERM $rx_pid 2>/dev/null',
+                        'wait $rx_pid',
+                        'status=$?',
+                        f'echo $status > {self.TCP_RECEIVER_STATUS}',
+                        'echo "RX""DONE"',
+                        'exit 124',
+                        ''))
+                    script_bytes = rx_script.encode('ascii')
+                    if con.run(f'rm -f {self.TCP_RECEIVER_SCRIPT}',
+                               'rx_script_rm', timeout=60) != 0:
+                        raise base.HarnessError('could not remove the old ttcp script')
+                    for offset in range(0, len(script_bytes), 40):
+                        encoded = script_bytes[offset:offset + 40].hex()
+                        write_command = (
+                            f'''perl -e 'print pack("H*","{encoded}")' >> '''
+                            f'{self.TCP_RECEIVER_SCRIPT}')
+                        if con.run(write_command, f'rx_script_{offset}',
+                                   timeout=60) != 0:
+                            raise base.HarnessError(
+                                f'could not write ttcp script at byte {offset}')
+                    if con.run(f'chmod 700 {self.TCP_RECEIVER_SCRIPT}',
+                               'rx_script_chmod', timeout=60) != 0:
+                        raise base.HarnessError('could not chmod the ttcp script')
+
+                    ready_start = len(con.buf)
+                    con.send(f'/bin/sh {self.TCP_RECEIVER_SCRIPT} &')
+                    receiver_supervisor_pid = int(con.capture_value(
+                        'echo RX_SUPERVISOR=$!', 'rx_supervisor',
+                        rb'RX_SUPERVISOR=(\d+)', timeout=30))
+                    results['tcp_receiver_supervisor_pid'] = (
+                        receiver_supervisor_pid)
+                    receiver_event = con.expect(
+                        rb'RXREADY|RXFAILED',
+                        self.TCP_RECEIVER_READY_ATTEMPTS + 5,
+                        what='the ttcp receiver to report its listen state',
+                        start=ready_start)
+                    receiver_pid = int(con.capture_value(
+                        f"cat {self.TCP_RECEIVER_PID} | sed 's/^/RXPID=/'",
+                        'rx_pid', rb'RXPID=(\d+)', timeout=30))
+                    results['tcp_receiver_pid'] = receiver_pid
+                    if receiver_event.group(0) != b'RXREADY':
+                        results['tcp_receiver_ready'] = False
+                        raise base.HarnessError(
+                            f'ttcp receiver did not listen on TCP port '
+                            f'{TCP_GUEST_PORT} within '
+                            f'{self.TCP_RECEIVER_READY_ATTEMPTS} seconds')
+                    results['tcp_receiver_ready'] = True
+
+                    results['network_state_before_syn'] = (
+                        self._capture_network_diagnostics(
+                            con, iface, 'network_state_before_syn',
+                            receiver=True))
+                    # Preserve the current neighbor table above, then clear
+                    # only the gateway entry before testing its reply path.
+                    results['gateway_neighbor_reset_status'] = con.run(
+                        f'/usr/etc/arp -d {self.GATEWAY} '
+                        '>/dev/null 2>&1 || :',
+                        'clear_gateway_neighbor', timeout=60)
+                    receiver_finished = con.run(
+                        f'test -f {self.TCP_RECEIVER_STATUS}',
+                        'rx_status_before_syn', timeout=10)
+                    if receiver_finished == 0:
+                        receiver_status = int(con.capture_value(
+                            f"cat {self.TCP_RECEIVER_STATUS} | "
+                            "sed 's/^/STATUS=/'", 'rx_status_before_syn_read',
+                            rb'STATUS=(\d+)', timeout=10))
+                        results['tcp_receiver_status_before_syn'] = (
+                            receiver_status)
+                        raise base.HarnessError(
+                            'ttcp receiver exited after LISTEN before the host '
+                            f'connection (status {receiver_status})')
+                    seg_before_syn = self._netstat_counter(
+                        con, 'tcp', 'packets received', 'segbefore_syn')
+                    results['tcp_segments_before_syn'] = seg_before_syn
+
+                    def capture_after_syn():
+                        results['network_state_after_syn'] = (
+                            self._capture_network_diagnostics(
+                                con, iface, 'network_state_after_syn',
+                                receiver=True))
+                        seg_after_syn = self._netstat_counter(
+                            con, 'tcp', 'packets received', 'segafter_syn')
+                        results['tcp_segments_after_syn'] = seg_after_syn
+                        if seg_before_syn is not None and seg_after_syn is not None:
+                            results['tcp_segments_syn_delta'] = (
+                                seg_after_syn - seg_before_syn)
+                        if con.run(
+                                f'test -f {self.TCP_RECEIVER_STATUS}',
+                                'rx_status_after_syn', timeout=10) == 0:
+                            receiver_status = int(con.capture_value(
+                                f"cat {self.TCP_RECEIVER_STATUS} | "
+                                "sed 's/^/STATUS=/'", 'rx_status_after_syn_read',
+                                rb'STATUS=(\d+)', timeout=10))
+                            results['tcp_receiver_status_after_syn'] = (
+                                receiver_status)
+                            raise base.HarnessError(
+                                'ttcp receiver exited after the host SYN '
+                                f'(status {receiver_status})')
+
+                    rx_done_start = len(con.buf)
+                    _tcp_stream(tcp_hp, verify_bytes,
+                                after_connect=capture_after_syn)
+                    con.expect(rb"RXDONE", 300, what="ttcp receive to finish",
+                               start=rx_done_start)
+                    receiver_status = int(con.capture_value(
+                        f"cat {self.TCP_RECEIVER_STATUS} | sed 's/^/STATUS=/'",
+                        'rx_status', rb'STATUS=(\d+)', timeout=30))
+                    results['tcp_receiver_status'] = receiver_status
+                    results['tcp_receiver_supervisor_status'] = con.run(
+                        f'wait {receiver_supervisor_pid}', 'rx_supervisor_wait',
+                        timeout=30)
+                    results['tcp_receiver_files_cleanup_status'] = con.run(
+                        f'rm -f {self.TCP_RECEIVER_PID} '
+                        f'{self.TCP_RECEIVER_STATUS} '
+                        f'{self.TCP_RECEIVER_SCRIPT}',
+                        'rx_files_cleanup', timeout=30)
+                    receiver_pid = None
+                    receiver_supervisor_pid = None
+                else:
+                    # ttcp -r without -s writes the received stream to stdout.
+                    foreground_ttcp = 'TCP byte-check receiver'
+                    con.send(f"ttcp -r -p {TCP_GUEST_PORT} -l 65536 "
+                             ">/tmp/rx.bin; echo \"RX\"\"DONE\"")
+                    time.sleep(3)
+                    _tcp_stream(tcp_hp, verify_bytes)
+                    con.expect(rb"RXDONE", 300, what="ttcp receive to finish")
+                    foreground_ttcp = None
                 # ttcp appends its own report to the same stream, so checksum
                 # exactly the payload rather than whatever else landed after it.
                 # Tagged, because the echoed command line carries two numbers of
@@ -445,6 +655,9 @@ if base.QemuSystemTest is not None:
                     "dd if=/tmp/rx.bin bs=8192 count=%d 2>/dev/null | cksum | "
                     "sed 's/^/CK=/'" % (VERIFY_BYTES // 8192), "vfy",
                     rb"CK=(\d+)\s+(\d+)", timeout=180)
+                if self.BACKGROUND_TCP_RECEIVER:
+                    results['tcp_rx_file_cleanup_status'] = con.run(
+                        'rm -f /tmp/rx.bin', 'rx_data_cleanup', timeout=30)
                 results["tcp_verify"] = {
                     "host_cksum": host_crc, "host_bytes": host_bytes,
                     "guest_cksum": gcrc, "guest_bytes": gbytes}
@@ -454,23 +667,27 @@ if base.QemuSystemTest is not None:
                 # byte to stdout, which here is the serial console: megabytes
                 # through an emulated uart, and the rate measured would be the
                 # console's rather than the interface's.
+                foreground_ttcp = 'TCP throughput receiver'
                 con.send(f"ttcp -r -s -p {TCP_GUEST_PORT} -l 65536 2>&1; "
                          "echo \"TCP\"\"TP-$?\"")
                 time.sleep(3)
                 _tcp_stream(tcp_hp, os.urandom(TCP_THROUGHPUT_BYTES))
                 con.expect(rb"TCPTP-\d+", 240, what="ttcp TCP to finish")
+                foreground_ttcp = None
                 tcp_out = con.buf.decode("utf-8", "replace")
                 mbps, _, _ = _parse_ttcp_rate(
                     tcp_out)
                 results["tcp_mbps"] = mbps
 
                 # --- UDP throughput (ttcp -u -r) ---
+                foreground_ttcp = 'UDP throughput receiver'
                 con.send(f"ttcp -u -r -s -p {UDP_GUEST_PORT} -l {UDP_BUFLEN} "
                          "2>&1; echo \"UDP\"\"TP-$?\"")
                 time.sleep(3)
                 self.assertIsNotNone(udp_hp, "no UDP hostfwd port")
                 _udp_ttcp_stream(udp_hp, UDP_BUFLEN, UDP_BUFS)
                 con.expect(rb"UDPTP-\d+", 240, what="ttcp UDP to finish")
+                foreground_ttcp = None
                 udp_out = con.buf.decode("utf-8", "replace")
                 umbps, ubytes, _ = _parse_ttcp_rate(
                     udp_out)
@@ -490,10 +707,12 @@ if base.QemuSystemTest is not None:
                 self.assertTrue(udp_tx_ready.wait(30),
                                 "host UDP sink did not start")
                 self.assertTrue(udp_tx_port, "host UDP sink has no port")
+                foreground_ttcp = 'guest-to-host UDP sender'
                 udp_tx_rc = con.run(
                     "dd if=/dev/zero bs=1024 count=8 2>/dev/null "
                     f"| ttcp -u -t -l 1024 -n 8 -p {udp_tx_port[0]} "
-                    f"{base.GATEWAY}", "udp_tx", 180)
+                    f"{self.GATEWAY}", "udp_tx", 180)
+                foreground_ttcp = None
                 self.assertEqual(udp_tx_rc, 0, "guest UDP transmit failed")
                 udp_tx_thread.join(30)
                 udp_tx_timed_out = udp_tx_thread.is_alive()
@@ -516,13 +735,15 @@ if base.QemuSystemTest is not None:
                 self.assertTrue(tcp_tx_ready.wait(30),
                                 "host TCP sink did not start")
                 self.assertTrue(tcp_tx_port, "host TCP sink has no port")
+                foreground_ttcp = 'guest-to-host TCP sender'
                 tx_rc = con.run(
                     "awk 'BEGIN { for (i = 0; i < 65536; i++) "
                     "printf \"%c\", (i * 37 + 11) % 256 }' "
                     "> /tmp/tg-tx.bin; "
                     "dd if=/tmp/tg-tx.bin bs=8192 count=8 2>/dev/null "
                     f"| ttcp -t -l 8192 -n 8 -p {tcp_tx_port[0]} "
-                    f"{base.GATEWAY}", "tcp_tx", 180)
+                    f"{self.GATEWAY}", "tcp_tx", 180)
+                foreground_ttcp = None
                 self.assertEqual(tx_rc, 0, "guest TCP transmit failed")
                 tcp_tx_thread.join(30)
                 tcp_tx_timed_out = tcp_tx_thread.is_alive()
@@ -547,6 +768,38 @@ if base.QemuSystemTest is not None:
                 con._pump()
             except base.HarnessError as e:
                 results["error"] = str(e)
+                shell_resumed = True
+                if foreground_ttcp is not None:
+                    results['foreground_ttcp'] = foreground_ttcp
+                    try:
+                        # Use the installed-disk diagnostic's existing shell
+                        # resync pattern, limited to a foreground ttcp this
+                        # test started.
+                        con.sock.sendall(b'\x03\n')
+                        recovery_rc = con.run(
+                            'true', 'ttcp_resync', timeout=30)
+                        shell_resumed = recovery_rc == 0
+                        results['ttcp_recovery'] = {
+                            'shell_resumed': shell_resumed,
+                            'exit_status': recovery_rc,
+                        }
+                    except (base.HarnessError, OSError) as recovery_error:
+                        shell_resumed = False
+                        results['ttcp_recovery'] = {
+                            'shell_resumed': False,
+                            'error': str(recovery_error),
+                        }
+                if shell_resumed and iface is not None:
+                    results['network_state_after_error'] = (
+                        self._capture_network_diagnostics(
+                            con, iface, 'network_state_after_error',
+                            receiver=True))
+                    seg_after_error = self._netstat_counter(
+                        con, 'tcp', 'packets received', 'sega_after_error')
+                    results['tcp_segments_after_error'] = seg_after_error
+                    if seg_before is not None and seg_after_error is not None:
+                        results['tcp_segments_delta'] = (
+                            seg_after_error - seg_before)
                 # Drain the console so a guest panic dump is captured before
                 # the VM is torn down.
                 for _ in range(25):
@@ -562,6 +815,47 @@ if base.QemuSystemTest is not None:
                     udp_tx_thread.join(1)
                 if tcp_tx_thread is not None:
                     tcp_tx_thread.join(1)
+                if receiver_supervisor_pid is not None:
+                    try:
+                        if receiver_pid is None:
+                            try:
+                                receiver_pid = int(con.capture_value(
+                                    f"cat {self.TCP_RECEIVER_PID} | "
+                                    "sed 's/^/RXPID=/'", 'rx_pid_finally',
+                                    rb'RXPID=(\d+)', timeout=10))
+                                results['tcp_receiver_pid_finally'] = (
+                                    receiver_pid)
+                            except base.HarnessError:
+                                pass
+                        status_exists = con.run(
+                            f'test -f {self.TCP_RECEIVER_STATUS}',
+                            'rx_status_finally', timeout=10) == 0
+                        if not status_exists and receiver_pid is not None:
+                            results['tcp_receiver_kill_status_finally'] = (
+                                con.run(
+                                    f'kill -TERM {receiver_pid} 2>/dev/null',
+                                    'rx_stop_finally', timeout=10))
+                        results['tcp_receiver_supervisor_status_finally'] = (
+                            con.run(f'wait {receiver_supervisor_pid}',
+                                    'rx_wait_finally', timeout=30))
+                        try:
+                            results['tcp_receiver_status_finally'] = int(
+                                con.capture_value(
+                                    f"cat {self.TCP_RECEIVER_STATUS} | "
+                                    "sed 's/^/STATUS=/'", 'rx_status_read_finally',
+                                    rb'STATUS=(\d+)', timeout=10))
+                        except base.HarnessError as status_error:
+                            results['tcp_receiver_status_error_finally'] = (
+                                str(status_error))
+                        results['tcp_receiver_files_cleanup_finally'] = (
+                            con.run(
+                                f'rm -f {self.TCP_RECEIVER_PID} '
+                                f'{self.TCP_RECEIVER_STATUS} '
+                                f'{self.TCP_RECEIVER_SCRIPT} /tmp/rx.bin',
+                                'rx_files_finally', timeout=30))
+                    except (base.HarnessError, OSError) as cleanup_error:
+                        results['tcp_receiver_cleanup_error_finally'] = (
+                            str(cleanup_error))
                 transcript = con.buf.decode("utf-8", errors="replace")
                 con.close()
                 vm.shutdown(hard=vm.exitcode() is not None)
