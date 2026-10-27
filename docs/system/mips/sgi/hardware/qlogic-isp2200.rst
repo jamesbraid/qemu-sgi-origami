@@ -236,8 +236,7 @@ is a model constant, not a vendor release, and the attributes report
 expanded-LUN addressing only.
 
 Abort device (``0x16``), bus reset (``0x18``), target reset
-(``0x66``), get retry count (``0x22``), resource counts (``0x42``),
-stop firmware (``0x14``) and the SCSI parts' queue setup (``0x10``,
+(``0x66``), resource counts (``0x42``), stop firmware (``0x14``) and the SCSI parts' queue setup (``0x10``,
 ``0x11``) answer ``0x4001`` and are logged as unimplemented; neither
 driver issues the first three. The loop and recovery commands are under
 `Private loop`_.
@@ -419,6 +418,10 @@ Command    Name                   Model
                                   (private loop), m7 0. Not ready:
                                   ``0x4005`` with m1 7, the value Linux
                                   reads as a loop in transition
+``0x22``   Get retry count        m1 the control block's retry count
+                                  (byte 10), m2 its retry delay (byte
+                                  11), m3 200, in any loop state;
+                                  ``0x4005`` before initialise-firmware
 ``0x62``   Initiate LIP           ``0x4000`` and the loop comes up again;
 ``0x72``   Full login LIP         ``0x4005`` before a loop exists
 ``0x63``   Position map           Mapping D, 128 bytes: the port count
@@ -470,10 +473,22 @@ bytes 12-19 the node name and 20-27 the port name, in wire order; byte
 service parameter word 3; and bytes 80-81 the loop ID, little-endian.
 Byte 0 (options) is 0, class 3 only.
 
+Get retry count reads m1 and m2 as Linux and NetBSD do; that the
+firmware echoes the control block's two bytes, rather than values of
+its own, is inferred, and the unit of the delay is unknown. No public
+source gives m3, so 200 is a model constant: Linux halves it into a
+retry timeout in tenths of a second, and 200 gives the 10-second
+minimum it sets anyway. A later initialise-firmware replaces the pair;
+a reset drops it. IRIX 6.5.30 scans its loop at attach only when this
+command completes.
+
 The enhanced port database (``0x47``), the login, logout, name-server,
 link-status and loop-port commands (``0x40``, ``0x41``, ``0x6b``,
-``0x6e``, ``0x6f``, ``0x71``, ``0x74``) answer ``0x4001`` and are
-logged as unimplemented. Linux's request-ring mailbox entry
+``0x6e``, ``0x6f``, ``0x71``, ``0x74``), get port queue parameters
+(``0x29``), set retry count (``0x32``) and reset link status
+(``0x52``) answer ``0x4001`` and are logged as unimplemented. Set
+retry count stores nothing. No public source settles what any of
+these returns on this part. Linux's request-ring mailbox entry
 (``0x39``) is an unknown type and returns with entry status bit 2.
 
 Commands on the loop

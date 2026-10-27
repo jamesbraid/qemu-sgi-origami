@@ -123,6 +123,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MBOX_ABORT_TARGET       0x0017
 #define ISP2200_MBOX_FIRMWARE_STATUS    0x001f
 #define ISP2200_MBOX_GET_ADAPTER_ID     0x0020
+#define ISP2200_MBOX_GET_RETRY_COUNT    0x0022
 #define ISP2200_MBOX_ENHANCED_PORT_DB   0x0047
 #define ISP2200_MBOX_INITIATE_LIP       0x0062
 #define ISP2200_MBOX_POSITION_MAP       0x0063
@@ -183,6 +184,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MAX_LOOP_ID         0x7d
 #define ISP2200_MAX_LUN             255
 
+/*
+ * Get Retry Count m3. No public source gives what the firmware returns
+ * and the control block carries nothing for it. Linux halves it into
+ * its R_A_TOV in tenths of a second, and 200 then gives the 10-second
+ * minimum Linux already sets, leaving its state as it was.
+ */
+#define ISP2200_RETRY_TIMEOUT       200
+
 /* Get Adapter ID m1 while the loop is down: Linux's "loop in transition". */
 #define ISP2200_ADAPTER_ID_NOT_READY 7
 
@@ -196,6 +205,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_ICB_VERSION         1
 #define ISP2200_ICB_OFF_VERSION     0
 #define ISP2200_ICB_OFF_OPTIONS     2
+#define ISP2200_ICB_OFF_RETRY_COUNT 10
+#define ISP2200_ICB_OFF_RETRY_DELAY 11
 #define ISP2200_ICB_OFF_HARD_ADDR   20
 #define ISP2200_ICB_OFF_XOPTIONS    64
 #define ISP2200_ICB_OFF_RQST_LEN    36
@@ -1764,6 +1775,22 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
         isp2200_bringup(s, false);
         return ISP2200_MBOX_COMPLETE;
 
+    /*
+     * The control block's retry count and delay, the order Linux and
+     * NetBSD read them in; that the firmware echoes the bytes rather
+     * than keeping values of its own is inferred. IRIX 6.5.30 scans
+     * its loop at attach only when this completes. The pair comes from
+     * the control block, not the loop, so it answers in any loop state.
+     */
+    case ISP2200_MBOX_GET_RETRY_COUNT:
+        if (!s->queues_init) {
+            return ISP2200_MBOX_COMMAND_ERROR;
+        }
+        out[1] = s->icb[ISP2200_ICB_OFF_RETRY_COUNT];
+        out[2] = s->icb[ISP2200_ICB_OFF_RETRY_DELAY];
+        out[3] = ISP2200_RETRY_TIMEOUT;
+        return ISP2200_MBOX_COMPLETE;
+
     default:
         qemu_log_mask(LOG_UNIMP,
                       "qlogic-isp2200: loop command 0x%04x not modelled\n",
@@ -1775,10 +1802,11 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
 static bool isp2200_fc_owned(uint16_t cmd)
 {
     switch (cmd) {
-    case 0x0015: case 0x0017: case 0x0020: case 0x0040: case 0x0041:
-    case 0x0047: case 0x0062: case 0x0063: case 0x0064: case 0x006a:
-    case 0x006b: case 0x006c: case 0x006e: case 0x006f: case 0x0071:
-    case 0x0072: case 0x0074: case 0x0075: case 0x007c: case 0x007e:
+    case 0x0015: case 0x0017: case 0x0020: case 0x0022: case 0x0029:
+    case 0x0032: case 0x0040: case 0x0041: case 0x0047: case 0x0052:
+    case 0x0062: case 0x0063: case 0x0064: case 0x006a: case 0x006b:
+    case 0x006c: case 0x006e: case 0x006f: case 0x0071: case 0x0072:
+    case 0x0074: case 0x0075: case 0x007c: case 0x007e:
         return true;
     default:
         return false;
@@ -1787,13 +1815,13 @@ static bool isp2200_fc_owned(uint16_t cmd)
 
 /*
  * Abort device, bus reset and target reset, which no supported driver
- * issues; queue setup the SCSI parts use; retry and resource counts.
+ * issues; queue setup the SCSI parts use; resource counts.
  */
 static bool isp2200_deferred(uint16_t cmd)
 {
     switch (cmd) {
     case 0x0010: case 0x0011: case 0x0014: case 0x0016: case 0x0018:
-    case 0x0022: case 0x0042: case 0x0066:
+    case 0x0042: case 0x0066:
         return true;
     default:
         return false;
