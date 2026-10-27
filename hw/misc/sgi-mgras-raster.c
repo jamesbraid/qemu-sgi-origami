@@ -232,7 +232,14 @@
  *   The PROM paints its backdrop one-row blocks at a time, stepping only
  *   RED between them, so the ink is RED >> 12 under CI8 as for a glyph.
  * - 0x00418008: a glyph. The 0x013 execute starts the block; each CHAR_H
- *   execute that follows paints one row, as under MGRAS_FILLMODE_GLYPH_ROW.
+ *   or CHAR_L execute that follows paints one row, as under
+ *   MGRAS_FILLMODE_GLYPH_ROW: CHAR_H bits 31:0 are columns 0-31 and CHAR_L
+ *   bits 31:0 columns 32-63, MSB first, and bits past the block's right
+ *   edge are dropped. Of the 247 glyph blocks the PROM draws for its menu,
+ *   the 241 at most 32 columns wide execute CHAR_H once per row; the six
+ *   menu-icon blocks 34 to 38 wide only write CHAR_H and execute CHAR_L
+ *   once per row. OpenBSD's impact(4) splits narrow and wide glyph rows
+ *   the same way.
  *
  * Inferred from that command stream alone: no public source names
  * register 0x013 or these FILLMODE values, and what either does under
@@ -1572,7 +1579,7 @@ static void mgras_char_execute(SGIMgrasState *s, uint32_t reg)
         s->dirty = true;
         return;
     }
-    if (mode == MGRAS_FILLMODE_PROM_GLYPH && reg == MGRAS_RSS_CHAR_H) {
+    if (mode == MGRAS_FILLMODE_PROM_GLYPH) {
         mgras_draw_glyph_row(s, mgras_hw_rows(s));
         s->dirty = true;
         return;
