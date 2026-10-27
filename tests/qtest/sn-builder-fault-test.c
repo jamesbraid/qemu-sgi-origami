@@ -1490,6 +1490,50 @@ static void bedrock_test_install_cbrick_board(uint8_t port)
 }
 
 /*
+ * The Origin 3200 X-brick composition, origin3200-xbrick.yaml in the
+ * model catalogue: the C-brick fixture's I-brick on c0's XIO cable, and
+ * an X-brick cabled
+ * to c1 at port A of its XBridge. Boards sit in slots 1, 2 and 4, which
+ * 108-0240-002 Figure 2-25 (printed page 2-33) puts on the chip's ports
+ * 8, 9 and D; slot 3, on port C, is left empty. The boards are the
+ * fixture's Origin 2000 PCI carrier stand-ins in the X-brick's module,
+ * each attached for c1, the chip's host.
+ */
+static void bedrock_test_install_origin3200_xbrick(void)
+{
+    static const char *const board_ids[] = {
+        "xbrick-slot-1", "xbrick-slot-2", "xbrick-slot-4",
+    };
+    static const char *const cable_ids[] = {
+        "xbrick-to-slot-1", "xbrick-to-slot-2", "xbrick-to-slot-4",
+    };
+    static const uint8_t slot_ports[] = { 8, 9, 0xd };
+
+    bedrock_test_install_cbrick_descriptor(0xa);
+    cbrick_test_modules[3] = (SGIModelModule) {
+        .id = (char *)"xbrick", .controller_index = -1,
+        .has_controller = true,
+        .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+    };
+    cbrick_test_crossbars[1] = (SGIModelCrossbar) {
+        .id = (char *)"xbrick-xbridge", .module_index = 3,
+        .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 2,
+    };
+    for (unsigned int i = 0; i < ARRAY_SIZE(slot_ports); i++) {
+        cbrick_test_fit_board(i, board_ids[i], 3, 1, slot_ports[i], 1, 2 + i);
+    }
+    cbrick_test_publish(4, 2, 2 + ARRAY_SIZE(slot_ports),
+                        ARRAY_SIZE(slot_ports));
+    cbrick_test_add_xio_cable("c1-to-xbrick", cbrick_node_end(1),
+                              cbrick_crossbar_end(1, 0xa));
+    for (unsigned int i = 0; i < ARRAY_SIZE(slot_ports); i++) {
+        cbrick_test_add_xio_cable(cable_ids[i],
+                                  cbrick_crossbar_end(1, slot_ports[i]),
+                                  cbrick_board_end(i));
+    }
+}
+
+/*
  * An N-brick-shaped module: four C-bricks c0..c3 and one module holding
  * four XBridges, each with neither PCI nor head attachment. Chip k takes
  * ck's cable on one Crosstown2 port, A for even k and B for odd, and a
@@ -1746,6 +1790,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {
         bedrock_test_install_cbrick_board(0xb);
+    } else if (!strcmp(value, "cbrick-origin3200-xbrick")) {
+        bedrock_test_install_origin3200_xbrick();
     } else if (g_str_has_prefix(value, "cbrick-")) {
         if (!bedrock_test_install_cbrick_fault(value + strlen("cbrick-"))) {
             error_setg(errp, "unknown sn-builder-bedrock-test construction "

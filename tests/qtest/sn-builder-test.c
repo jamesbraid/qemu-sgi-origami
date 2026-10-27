@@ -9286,6 +9286,82 @@ static void test_cbrick_board_on_crossbar_port(const void *data)
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
+/* The X-brick slots the Origin 3200 X-brick fixture fills, by port. */
+static const struct {
+    unsigned int port;
+    const char *board;
+} origin3200_xbrick_slots[] = {
+    { 8, "xbrick-slot-1" }, { 9, "xbrick-slot-2" }, { 0xd, "xbrick-slot-4" },
+};
+
+/*
+ * The Origin 3200 X-brick composition: c0 carries the I-brick and c1 the
+ * X-brick, whose four XIO slots sit on its XBridge's ports 8, 9, C and D
+ * (108-0240-002 Figure 2-25). Each board answers c1 at its slot's port as
+ * its own widget: a value written through one slot reads back there and
+ * nowhere else. Slot 3, port C, is empty, and c1 decodes nothing there.
+ * c0 reaches its I-brick and none of the X-brick's widgets.
+ */
+static void test_origin3200_xbrick_slots_reach_their_cbrick(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-origin3200-xbrick", prom, "");
+    g_autofree char *chip_type = qom_child_type(qts, "/machine/module3",
+                                                "xbridge");
+    g_autofree char *linked = qom_get_str(qts, "/machine/node1", "xbridge");
+    uint32_t identity = 0;
+
+    g_assert_cmpstr(chip_type, ==, "sgi-xbridge");
+    g_assert_cmpstr(linked, ==, "/machine/module3/xbridge");
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module3/xbridge",
+                                  "host-port"), ==, 0xa);
+    g_assert_true(cbrick_bedrock_links(qts, "node1", 0xa));
+    g_assert_false(cbrick_bedrock_links(qts, "node1", 0xc));
+    g_assert_false(cbrick_bedrock_links(qts, "node1", 14));
+    g_assert_false(cbrick_bedrock_links(qts, "node1", 15));
+
+    /* Both crossbars answer their own host at port A. */
+    for (unsigned int node = 0; node < 2; node++) {
+        g_assert_true(nasid_test_cpu_readl(qts, node, CBRICK_WIDGET(0xa) + 4,
+                                           &identity));
+        g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd000);
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(origin3200_xbrick_slots); i++) {
+        unsigned int port = origin3200_xbrick_slots[i].port;
+        g_autofree char *type = qom_child_type(
+            qts, "/machine/module3", origin3200_xbrick_slots[i].board);
+        uint8_t bytes[4];
+
+        g_assert_cmpstr(type, ==, "sgi-pci-carrier");
+        g_assert_true(cbrick_bedrock_links(qts, "node1", port));
+        g_assert_false(cbrick_bedrock_links(qts, "node0", port));
+        g_assert_true(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(port) + 4,
+                                           &identity));
+        g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc002);
+        stl_be_p(bytes, 1u << i);
+        g_assert_true(qtest_memwrite_cpu(qts, 1, CBRICK_WIDGET(port) +
+                                         NBRICK_INT_ENABLE,
+                                         bytes, sizeof(bytes)));
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(origin3200_xbrick_slots); i++) {
+        uint32_t enable = 0;
+
+        g_assert_true(nasid_test_cpu_readl(
+            qts, 1, CBRICK_WIDGET(origin3200_xbrick_slots[i].port) +
+            NBRICK_INT_ENABLE, &enable));
+        g_assert_cmphex(enable, ==, 1u << i);
+    }
+    g_assert_false(nasid_test_cpu_readl(qts, 1, CBRICK_WIDGET(0xc) + 4,
+                                        &identity));
+    g_assert_false(nasid_test_cpu_readl(qts, 0, CBRICK_WIDGET(8) + 4,
+                                        &identity));
+    /* c0's I-brick still answers at its head F. */
+    g_assert_true(cbrick_bedrock_links(qts, "node0", 15));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 static QTestState *nbrick_start(const char *prom, const char *extra)
 {
     return qtest_initf("-M sn-builder-bedrock-test,"
@@ -10459,6 +10535,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/cbrick/board-on-crossbar-port/b",
                         GUINT_TO_POINTER(0xb),
                         test_cbrick_board_on_crossbar_port);
+    qtest_add_func("sn/builder/cbrick/origin3200-xbrick-slots",
+                   test_origin3200_xbrick_slots_reach_their_cbrick);
     qtest_add_func("sn/builder/cbrick/nbrick-own-boards",
                    test_nbrick_each_node_reaches_its_own_board);
     qtest_add_func("sn/builder/cbrick/nbrick-save-restore",
