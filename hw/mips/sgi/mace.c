@@ -1199,6 +1199,7 @@ static void mace_init(Object *obj)
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
     sgi_mace_eth_set_irq_handlers(&s->eth, s, mace_eth_request,
                                   mace_eth_reset_irq);
+    s->eth.defer_post_load = true;
     memory_region_init(&s->eth_dma, obj, "sgi-mace-eth-dma", 1ULL << 32);
     memory_region_init(&s->peripheral_dma, obj, "sgi-mace-peripheral-dma",
                        1ULL << 32);
