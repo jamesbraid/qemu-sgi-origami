@@ -12,6 +12,13 @@
 #define TYPE_SGI_MACE_ETH "sgi-mace-eth"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMACEEthState, SGI_MACE_ETH)
 
+typedef void (*SGIMACEEthIRQRequest)(void *opaque, uint32_t value);
+typedef void (*SGIMACEEthResetIRQ)(void *opaque);
+
+void sgi_mace_eth_set_irq_handlers(SGIMACEEthState *s, void *opaque,
+                                   SGIMACEEthIRQRequest request,
+                                   SGIMACEEthResetIRQ reset);
+
 struct SGIMACEEthState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
@@ -25,6 +32,10 @@ struct SGIMACEEthState {
     uint8_t rx_threshold_retirement;
     uint64_t tx_base;
     uint32_t int_status;
+    uint64_t tx_vector;
+    void *irq_opaque;
+    SGIMACEEthIRQRequest irq_request;
+    SGIMACEEthResetIRQ irq_reset;
     uint16_t tx_read;
     uint16_t tx_write;
     uint8_t tx_reinit_seen;

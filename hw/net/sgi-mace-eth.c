@@ -20,6 +20,7 @@
 #define MACE_ETH_DMA_CONTROL 0x10
 #define MACE_ETH_STATION 0xa0
 #define MACE_ETH_INT_STATUS 0x08
+#define MACE_ETH_INTERRUPT_REQUEST 0x58
 #define MACE_ETH_RX_DELAY 0x18
 #define MACE_ETH_TX_INT_ALIAS 0x20
 #define MACE_ETH_RX_INT_ALIAS 0x28
@@ -521,6 +522,7 @@ static bool sgi_mace_eth_tx_one(SGIMACEEthState *s)
     }
     qemu_send_packet(qemu_get_queue(s->nic), frame, total);
     vector = MACE_ETH_TX_STATUS_DONE | MACE_ETH_TX_STATUS_SUCCESS | total;
+    s->tx_vector = vector;
     stq_be_p(status, vector);
     fault_address = address;
     result = dma_memory_write(&s->dma_as, address, status, sizeof(status),
@@ -632,6 +634,8 @@ static uint64_t sgi_mace_eth_read(void *opaque, hwaddr offset, unsigned size)
             return ((uint64_t)s->tx_read << 16) | s->tx_write;
         case MACE_ETH_TX_BASE:
             return s->tx_base;
+        case MACE_ETH_INTERRUPT_REQUEST:
+            return s->tx_vector;
         case MACE_ETH_STATION:
             return s->station;
         case MACE_ETH_SECONDARY_STATION:
@@ -756,6 +760,20 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             s->int_status &= ~(value & 0xff);
             sgi_mace_eth_update_irq(s);
             return;
+        case MACE_ETH_INTERRUPT_REQUEST:
+            if (offset & 7) {
+                break;
+            }
+            if (value >> 32) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace-eth: interrupt request upper bits "
+                              "are unsupported\n");
+                return;
+            }
+            if (s->irq_request) {
+                s->irq_request(s->irq_opaque, value);
+            }
+            return;
         case MACE_ETH_TX_POINTER:
         case MACE_ETH_TX_POINTER_ALIAS:
             if ((value & 0x1ff) >=
@@ -859,6 +877,7 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->rx_stopped = false;
     s->rx_reinit_seen = 0;
     s->int_status = 0;
+    s->tx_vector = 0;
     s->rx_read = 0;
     s->rx_write = 0;
     s->rx_count = 0;
@@ -866,6 +885,9 @@ static void sgi_mace_eth_reset_hold(Object *obj, ResetType type)
     s->rx_read_generation = false;
     s->rx_write_generation = false;
     qemu_set_irq(s->irq, 0);
+    if (s->irq_reset) {
+        s->irq_reset(s->irq_opaque);
+    }
     if (s->flush_bh) {
         qemu_bh_cancel(s->flush_bh);
     }
@@ -907,6 +929,7 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_TIMER_PTR(rx_timer, SGIMACEEthState),
         VMSTATE_UINT64(tx_base, SGIMACEEthState),
         VMSTATE_UINT32(int_status, SGIMACEEthState),
+        VMSTATE_UINT64(tx_vector, SGIMACEEthState),
         VMSTATE_UINT16(tx_read, SGIMACEEthState),
         VMSTATE_UINT16(tx_write, SGIMACEEthState),
         VMSTATE_UINT8(tx_reinit_seen, SGIMACEEthState),
@@ -929,6 +952,15 @@ static const VMStateDescription vmstate_sgi_mace_eth = {
         VMSTATE_END_OF_LIST()
     }
 };
+
+void sgi_mace_eth_set_irq_handlers(SGIMACEEthState *s, void *opaque,
+                                   SGIMACEEthIRQRequest request,
+                                   SGIMACEEthResetIRQ reset)
+{
+    s->irq_opaque = opaque;
+    s->irq_request = request;
+    s->irq_reset = reset;
+}
 
 static void sgi_mace_eth_init(Object *obj)
 {
