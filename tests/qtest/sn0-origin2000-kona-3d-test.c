@@ -19045,8 +19045,8 @@ static void test_colour_matrix_texture(void)
  * feedback pass sends: glInitNames 0x10c 0, glPushName 0xc3 n,
  * glLoadName 0x10d n, glPopName 0xc2 0, glFeedbackBuffer's 0x17 type and
  * glPassThrough's 0xc1 value. Before they were framed they reached the
- * textport as stray words, and their arguments with them. The records
- * are logged as not modelled.
+ * textport as stray words, and their arguments with them. Feedback
+ * records are logged as not modelled.
  */
 static void test_render_mode(void)
 {
@@ -19070,7 +19070,7 @@ static void test_render_mode(void)
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_null(strstr(found, "expected a sync word"));
-    g_assert_cmpuint(count_occurrences(found, "render mode 0x1c02"), ==, 1);
+    g_assert_null(strstr(found, "render mode 0x1c02"));
     g_assert_cmpuint(count_occurrences(found, "render mode 0x1c01"), ==, 1);
 }
 
@@ -19097,43 +19097,164 @@ static void test_render_mode_draws_nothing(gconstpointer opaque)
 }
 
 /*
- * A selection or feedback pass's select feed: the library enters the
- * mode, opens the feed (0x1f5 and a six-word descriptor), draws, leaves
- * the mode and finishes the feed (0x1f6 0x100 and the context index),
- * then the kernel sleeps until the pipe posts reason 0x100, or kills the
- * pipe at its timeout (death reason 5). The model writes no records, so
- * the completion reports none written: word 2, the bytes left unwritten,
- * is the descriptor's total and word 3 has no overflow. Before, the
- * finish posted nothing. Mode 2 migrates in the middle of the pass.
+ * A selection or feedback pass's select feed. The library enters the
+ * mode, opens the feed (0x1f5 and a six-word descriptor, here 256 bytes
+ * at device page 0, which maps to 0x380000), draws, leaves the mode and
+ * finishes the feed (0x1f6 0x100 and the context index). The kernel then
+ * sleeps until the pipe posts reason 0x100, or kills the pipe at its
+ * timeout (death reason 5). Word 2 of the completion is the bytes left
+ * unwritten and bit 0x800 of word 3 an overflow.
+ */
+#define SELECT_FEED_TARGET 0x380000
+#define SELECT_FEED_REASON 0x300000
+
+static void select_feed_open(QTestState *s, uint32_t mode, uint32_t total)
+{
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command_kicked(s, 0x1f1,
+        (uint32_t[]) { physical_page_word(SELECT_FEED_REASON),
+                       tagged_offset_word(SELECT_FEED_REASON), 0x4000 }, 3);
+    read_dma_clear_notifications(s, SELECT_FEED_REASON);
+    qtest_writel(s, KONA_REG(0x100000),
+                 0x20000000 | (SELECT_FEED_TARGET >> 12));
+    qtest_memset(s, SELECT_FEED_TARGET, 0xa5, 0x200);
+    kona_command(s, 0x19, (uint32_t[]) { mode }, 1);
+    kona_command(s, 0x1f5, (uint32_t[]) { 0, 0x9000, total, total, 0, 0 },
+                 6);
+}
+
+static void select_feed_finish(QTestState *s, uint32_t unwritten,
+                               uint32_t flags)
+{
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x1234 }, 2);
+    g_assert_cmphex(guest_word(s, SELECT_FEED_REASON), ==, 0x100);
+    g_assert_cmphex(guest_word(s, SELECT_FEED_REASON + 4), ==, 0x1234);
+    g_assert_cmphex(guest_word(s, SELECT_FEED_REASON + 8), ==, unwritten);
+    g_assert_cmphex(guest_word(s, SELECT_FEED_REASON + 12), ==, flags);
+}
+
+static void select_triangle(QTestState *s, float z)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    gl_triangle_z(s, tri, z);
+}
+
+/* The target's first n words are want's, and the word after is unwritten. */
+static void assert_select_records(QTestState *s, const uint32_t *want,
+                                  unsigned n)
+{
+    for (unsigned k = 0; k < n; k++) {
+        g_assert_cmphex(guest_word(s, SELECT_FEED_TARGET + 4 * k), ==,
+                        want[k]);
+    }
+    g_assert_cmphex(guest_word(s, SELECT_FEED_TARGET + 4 * n), ==,
+                    0xa5a5a5a5);
+}
+
+/*
+ * The feed completes. A selection pass whose one triangle, at depth 0 and
+ * so window depth 0.5, hit under name 7 writes one record of five words
+ * ([tag 1, 1 name, 0x80000000, 0x80000000, 7]); a feedback pass, whose
+ * records the model does not write, completes with none written. Before,
+ * the finish posted nothing. Mode 2 migrates with the hit pending.
  */
 static void test_render_mode_feed_completes(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    const uint64_t reason = 0x300000;
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
     g_autofree char *dir = NULL;
 
-    gl_make_current(s);
-    gl_window_cleared(s, 0, 0, 1);
-    kona_command_kicked(s, 0x1f1,
-        (uint32_t[]) { physical_page_word(reason),
-                       tagged_offset_word(reason), 0x4000 }, 3);
-    read_dma_clear_notifications(s, reason);
-    kona_command(s, 0x19, (uint32_t[]) { mode == 1 ? 0x1c01 : 0x1c02 }, 1);
-    kona_command(s, 0x1f5, (uint32_t[]) { 0x380, 0x9000, 256, 256, 0, 0 },
-                 6);
+    select_feed_open(s, mode == 1 ? 0x1c01 : 0x1c02, 256);
     kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
     kona_command(s, 0xc3, (uint32_t[]) { 7 }, 1);
+    select_triangle(s, 0);
     if (mode == 2) {
         read_dma_migrate(from, &s, &to, &dir);
     }
-    stencil_triangle(s);
-    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
-    kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x1234 }, 2);
-    g_assert_cmphex(guest_word(s, reason), ==, 0x100);
-    g_assert_cmphex(guest_word(s, reason + 4), ==, 0x1234);
-    g_assert_cmphex(guest_word(s, reason + 8), ==, 256);
-    g_assert_cmphex(guest_word(s, reason + 12), ==, 0);
+    if (mode == 1) {
+        select_feed_finish(s, 256, 0);
+        assert_select_records(s, NULL, 0);
+    } else {
+        select_feed_finish(s, 256 - 20, 0);
+        assert_select_records(s, (uint32_t[]) {
+            1, 1, 0x80000000, 0x80000000, 7,
+        }, 5);
+    }
+    assert_stencil_colour(s, 0x0000ff);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+/*
+ * Selection hit records, one per name-stack change that followed a hit
+ * (OpenGL 1.2.1, section 5.2). With identity matrices object depth z is
+ * window depth (z + 1) / 2, carried as round(depth * (2^32 - 1)): 0.5 is
+ * 0xbfffffff and -0.5 0x40000000.
+ * 0: names 11 and 22 over triangles at 0.5 and -0.5, two records.
+ * 1: two triangles under name 33, one record spanning both depths.
+ * 2: a triangle wholly beyond the far plane, no record.
+ * 3: a 16-byte target, too small for the record: overflow, nothing
+ *    written.
+ * 4: as 0, migrating between the two names, with the first hit pending.
+ */
+static void test_selection_records(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    select_feed_open(s, 0x1c02, mode == 3 ? 16 : 256);
+    kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xc3, (uint32_t[]) { 0 }, 1);
+    switch (mode) {
+    case 0:
+    case 4:
+        kona_command(s, 0x10d, (uint32_t[]) { 11 }, 1);
+        select_triangle(s, 0.5);
+        if (mode == 4) {
+            read_dma_migrate(from, &s, &to, &dir);
+        }
+        kona_command(s, 0x10d, (uint32_t[]) { 22 }, 1);
+        select_triangle(s, -0.5);
+        select_feed_finish(s, 256 - 40, 0);
+        assert_select_records(s, (uint32_t[]) {
+            1, 1, 0xbfffffff, 0xbfffffff, 11,
+            2, 1, 0x40000000, 0x40000000, 22,
+        }, 10);
+        break;
+    case 1:
+        kona_command(s, 0x10d, (uint32_t[]) { 33 }, 1);
+        select_triangle(s, 0.5);
+        select_triangle(s, -0.5);
+        select_feed_finish(s, 256 - 20, 0);
+        assert_select_records(s, (uint32_t[]) {
+            1, 1, 0x40000000, 0xbfffffff, 33,
+        }, 5);
+        break;
+    case 2:
+        kona_command(s, 0x10d, (uint32_t[]) { 44 }, 1);
+        select_triangle(s, 3);
+        select_feed_finish(s, 256, 0);
+        assert_select_records(s, NULL, 0);
+        break;
+    case 3:
+        kona_command(s, 0x10d, (uint32_t[]) { 55 }, 1);
+        select_triangle(s, 0);
+        select_feed_finish(s, 16, 0x800);
+        assert_select_records(s, NULL, 0);
+        break;
+    }
     assert_stencil_colour(s, 0x0000ff);
     if (to) {
         qtest_quit(to);
@@ -19978,6 +20099,16 @@ int main(int argc, char **argv)
              test_name_stack_errors);
     add_case("sn0/origin2000/kona-3d/render-mode-name-stack-depth",
              test_name_stack_depth_query);
+    add_data_case("sn0/origin2000/kona-3d/selection-two-names",
+                  GUINT_TO_POINTER(0), test_selection_records);
+    add_data_case("sn0/origin2000/kona-3d/selection-one-name",
+                  GUINT_TO_POINTER(1), test_selection_records);
+    add_data_case("sn0/origin2000/kona-3d/selection-clipped",
+                  GUINT_TO_POINTER(2), test_selection_records);
+    add_data_case("sn0/origin2000/kona-3d/selection-overflow",
+                  GUINT_TO_POINTER(3), test_selection_records);
+    add_data_case("sn0/origin2000/kona-3d/selection-migrates",
+                  GUINT_TO_POINTER(4), test_selection_records);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
     add_case("sn0/origin2000/kona-3d/stencil-visual/copy",

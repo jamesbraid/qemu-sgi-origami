@@ -31,6 +31,7 @@
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/display/sgi/gl-select.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/x-gc.h"
 #include "hw/mips/sgi/pi-gfx.h"
@@ -6266,12 +6267,65 @@ static void sgi_kona_gl_raster_nothing(void *opaque, const SGIRasterOp *op)
 }
 
 /*
+ * A window depth as a hit record carries it, round(z * (2^32 - 1)), the
+ * scaling OpenGL gives selection depths (the rounding is the model's
+ * choice; the pipe's is unknown).
+ */
+static uint32_t sgi_kona_gl_select_depth(double z)
+{
+    return llround(MIN(MAX(z, 0.0), 1.0) * (double)UINT32_MAX);
+}
+
+/*
+ * A primitive that hit in selection mode: the current context's pending
+ * hit takes in its depths, until the name stack next changes and
+ * sgi_kona_gl_select_flush() writes it out.
+ */
+static void sgi_kona_gl_select_hit(void *opaque, double minimum,
+                                   double maximum)
+{
+    SGIKonaState *s = opaque;
+    SGIKonaGLRenderMode *r = &s->state[s->context_current]->render;
+    uint32_t low = sgi_kona_gl_select_depth(minimum);
+    uint32_t high = sgi_kona_gl_select_depth(maximum);
+
+    r->hit_min = r->hit ? MIN(r->hit_min, low) : low;
+    r->hit_max = r->hit ? MAX(r->hit_max, high) : high;
+    r->hit = true;
+}
+
+static SGIGLDrawResult sgi_kona_gl_select_draw_checked(void *opaque,
+                                                       const SGIGLDraw *d)
+{
+    switch (sgi_gl_select_draw(d, sgi_kona_gl_select_hit, opaque)) {
+    case SGI_GL_SELECT_UNSUPPORTED_STATE:
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: selection ignores unsupported "
+                      "GL geometry state\n");
+        break;
+    case SGI_GL_SELECT_UNSUPPORTED_MODE:
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: selection ignores unsupported "
+                      "primitive mode 0x%x\n", d->mode);
+        break;
+    case SGI_GL_SELECT_OK:
+        break;
+    }
+    return SGI_GL_DRAW_OK;
+}
+
+static void sgi_kona_gl_select_draw(void *opaque, const SGIGLDraw *d)
+{
+    sgi_kona_gl_select_draw_checked(opaque, d);
+}
+
+/*
  * The current context's sink. In feedback and selection modes no
  * fragment reaches the framebuffer (OpenGL 1.2.1, sections 5.2 and 5.3),
  * so every draw, pixel and bitmap goes nowhere. So does a clear, which
  * the specification does not name; Mesa skips it the same way (model
  * choice; what a real pipe does with a clear in these modes is unknown).
- * The fence still answers glFinish.
+ * In selection mode a primitive's draw finds its hit instead.
+ * Limitation: a bitmap or a pixel rectangle at a valid raster position
+ * makes no hit, as OpenGL has it do. The fence still answers glFinish.
  */
 static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
 {
@@ -6286,9 +6340,13 @@ static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
     };
     if (i != SGI_KONA_CONTEXT_NONE &&
         s->state[i]->render.mode != SGI_KONA_GL_RENDER) {
-        sink->draw = sgi_kona_gl_draw_nothing;
+        bool select = s->state[i]->render.mode == SGI_KONA_GL_SELECT;
+
+        sink->draw = select ? sgi_kona_gl_select_draw :
+                              sgi_kona_gl_draw_nothing;
         sink->raster = sgi_kona_gl_raster_nothing;
-        sink->draw_checked = sgi_kona_gl_draw_checked_nothing;
+        sink->draw_checked = select ? sgi_kona_gl_select_draw_checked :
+                                      sgi_kona_gl_draw_checked_nothing;
     }
 }
 
@@ -8970,11 +9028,11 @@ static bool sgi_kona_device_write(SGIKonaState *s, uint64_t device,
                                    bool validate);
 
 /*
- * The finish of a feedback or selection pass's select feed: nothing was
- * read inside it, and the model writes no records, so it completes with
- * none written. Word 2 of the completion is the bytes left unwritten,
+ * The finish of a feedback or selection pass's select feed, with nothing
+ * read inside it. Word 2 of the completion is the bytes left unwritten,
  * since the kernel returns (total - word 2) / 4 as the word count, and
- * bit 0x800 of word 3, overflow, stays clear.
+ * bit 0x800 of word 3 reports that a hit record did not fit. A feedback
+ * pass, whose records the model does not write, completes with none.
  */
 static bool sgi_kona_gl_render_feed_finish(SGIKonaState *s,
                                            const uint32_t *a)
@@ -8990,7 +9048,8 @@ static bool sgi_kona_gl_render_feed_finish(SGIKonaState *s,
     }
     sgi_kona_post_reason_words(s, SGI_KONA_CMD_SELECT_FEED_FINISH,
                                (uint32_t[]){ 0x100, a[1],
-                                             d->descriptor[2], 0 }, 4);
+                                             d->descriptor[2] - d->written,
+                                             d->overflow ? 0x800 : 0 }, 4);
     sgi_kona_gl_read_dma_clear(s);
     return true;
 }
@@ -11738,14 +11797,87 @@ static void sgi_kona_gl_convolution_get(SGIKonaState *s, int i,
                                         const uint32_t *args);
 
 /*
+ * Write a selection pass's pending hit into its select feed, as the
+ * record [tag, n, minimum depth, maximum depth, n names]: the names on
+ * the stack, bottom first, and the depths as unsigned fractions of 2^32
+ * - 1. Inferred from the library's reading of the feed: it takes records
+ * of that shape, skips a leading 0 or 0x2bad2d00 as a pad word, merges a
+ * record whose tag repeats the one before it, and copies the depths
+ * unchanged, so the pipe must scale them. The model gives each record a
+ * tag of its own, counting from 1 at each entry to selection mode and
+ * passing over the pad values, writes no pads, and so leaves the library
+ * nothing to merge: a hit per name-stack change, as OpenGL 1.2.1 section
+ * 5.2 defines one. When a record does not fit in the rest of the target
+ * nothing more is written and the completion reports an overflow (the
+ * model's choice; the library then reports -1, as OpenGL requires).
+ */
+static void sgi_kona_gl_select_flush(SGIKonaState *s, int i)
+{
+    SGIKonaGLRenderMode *r = &s->state[i]->render;
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    uint32_t words = 4 + r->name_count;
+    uint8_t record[(4 + SGI_KONA_GL_NAME_STACK_DEPTH) * 4];
+    uint64_t io, pitch;
+    uint32_t lines;
+
+    if (!r->hit) {
+        return;
+    }
+    r->hit = false;
+    if (!d->active || d->refused || d->context != i ||
+        d->render_mode != SGI_KONA_GL_SELECT ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: selection hit with no "
+                      "select feed open for it; dropped\n");
+        return;
+    }
+    if (d->overflow || words * 4 > d->descriptor[2] - d->written) {
+        d->overflow = true;
+        return;
+    }
+    stl_be_p(record, r->next_tag);
+    stl_be_p(record + 4, r->name_count);
+    stl_be_p(record + 8, r->hit_min);
+    stl_be_p(record + 12, r->hit_max);
+    for (uint32_t k = 0; k < r->name_count; k++) {
+        stl_be_p(record + 16 + 4 * k, r->names[k]);
+    }
+    for (bool validate = true;; validate = false) {
+        for (uint32_t done = 0; done < words * 4;) {
+            uint32_t at = d->written + done;
+            uint32_t line = at / d->descriptor[3];
+            uint32_t column = at % d->descriptor[3];
+            uint32_t len = MIN(words * 4 - done, d->descriptor[3] - column);
+
+            if (!sgi_kona_device_write(s, io + line * pitch + column,
+                                       validate ? NULL : record + done,
+                                       len, validate)) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: selection record "
+                              "target not mapped; record dropped\n");
+                return;
+            }
+            done += len;
+        }
+        if (!validate) {
+            break;
+        }
+    }
+    d->written += words * 4;
+    do {
+        r->next_tag++;
+    } while (!r->next_tag || r->next_tag == 0x2bad2d00);
+}
+
+/*
  * glRenderMode's 0x19. The library sends the new mode before it acts on
  * it: entering feedback or selection, it opens a select feed (0x1f5) for
  * the pass's records; leaving, it finishes the feed (0x1f6) and waits for
  * the pipe to complete it (sgi_kona_gl_read_dma_finish()). Nothing is
- * drawn in either mode (sgi_kona_gl_sink()). The model writes no records
- * yet, so a selection pass reports no hits and a feedback pass no values.
- * Each mode change empties the name stack (inferred: the library sends
- * glInitNames before it names anything).
+ * drawn in either mode (sgi_kona_gl_sink()). Leaving selection writes
+ * the last hit out; the model writes no feedback records, so a feedback
+ * pass reports no values. Each mode change empties the name stack
+ * (inferred: the library sends glInitNames before it names anything).
  */
 static void sgi_kona_gl_render_mode(SGIKonaState *s, int i, uint32_t mode)
 {
@@ -11755,15 +11887,21 @@ static void sgi_kona_gl_render_mode(SGIKonaState *s, int i, uint32_t mode)
                       " is not a mode; ignored\n", mode);
         return;
     }
-    if (mode != SGI_KONA_GL_RENDER) {
+    if (mode == SGI_KONA_GL_FEEDBACK) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: render mode 0x%" PRIx32
-                      ": %s records are not modelled; the pass returns"
-                      " none\n", mode,
-                      mode == SGI_KONA_GL_SELECT ? "selection" : "feedback");
+                      ": feedback records are not modelled; the pass returns"
+                      " none\n", mode);
     }
     if (i != SGI_KONA_CONTEXT_NONE) {
-        s->state[i]->render.mode = mode;
-        s->state[i]->render.name_count = 0;
+        SGIKonaGLRenderMode *r = &s->state[i]->render;
+
+        if (r->mode == SGI_KONA_GL_SELECT) {
+            sgi_kona_gl_select_flush(s, i);
+        }
+        r->mode = mode;
+        r->name_count = 0;
+        r->hit = false;
+        r->next_tag = 1;
     }
 }
 
@@ -11788,6 +11926,11 @@ static void sgi_kona_gl_name_stack(SGIKonaState *s, int i, uint32_t selector,
     if (r->mode != SGI_KONA_GL_SELECT) {
         return;
     }
+    /*
+     * The pending hit goes out before this command's own error check, as
+     * Mesa writes it, so a push or pop that fails still ends the hit.
+     */
+    sgi_kona_gl_select_flush(s, i);
     switch (selector) {
     case SGI_KONA_CMD_GL_INIT_NAMES:
         r->name_count = 0;
@@ -22954,7 +23097,7 @@ static bool sgi_kona_gl_render_needed(void *opaque)
     const SGIKonaGLRenderMode *r = &((SGIKonaGLState *)opaque)->render;
 
     return r->mode != SGI_KONA_GL_RENDER || r->feedback_type ||
-           r->name_count;
+           r->name_count || r->hit || r->next_tag;
 }
 
 static bool sgi_kona_gl_render_mode_valid(uint32_t mode)
@@ -22969,6 +23112,7 @@ static int sgi_kona_gl_render_post_load(void *opaque, int version_id)
 
     if (!sgi_kona_gl_render_mode_valid(r->mode) ||
         r->name_count > SGI_KONA_GL_NAME_STACK_DEPTH ||
+        (r->hit && r->hit_min > r->hit_max) ||
         (r->feedback_type &&
          (r->feedback_type < 0x600 || r->feedback_type > 0x604))) {
         return -EINVAL;
@@ -22978,8 +23122,8 @@ static int sgi_kona_gl_render_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_render = {
     .name = TYPE_SGI_KONA "/logical-state/render-mode",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .needed = sgi_kona_gl_render_needed,
     .post_load = sgi_kona_gl_render_post_load,
     .fields = (const VMStateField[]) {
@@ -22988,6 +23132,10 @@ static const VMStateDescription vmstate_sgi_kona_gl_render = {
         VMSTATE_UINT32(render.name_count, SGIKonaGLState),
         VMSTATE_UINT32_ARRAY(render.names, SGIKonaGLState,
                              SGI_KONA_GL_NAME_STACK_DEPTH),
+        VMSTATE_BOOL(render.hit, SGIKonaGLState),
+        VMSTATE_UINT32(render.hit_min, SGIKonaGLState),
+        VMSTATE_UINT32(render.hit_max, SGIKonaGLState),
+        VMSTATE_UINT32(render.next_tag, SGIKonaGLState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -23217,7 +23365,10 @@ static bool sgi_kona_gl_read_dma_valid(const SGIKonaGLReadDMA *d)
     uint64_t io, pitch;
     uint32_t lines;
 
-    if (!sgi_kona_gl_render_mode_valid(d->render_mode)) {
+    if (!sgi_kona_gl_render_mode_valid(d->render_mode) ||
+        d->written % 4 || d->written > d->descriptor[2] ||
+        ((d->written || d->overflow) &&
+         d->render_mode != SGI_KONA_GL_SELECT)) {
         return false;
     }
     if (d->refused) {
@@ -23249,6 +23400,8 @@ static bool sgi_kona_gl_read_dma_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_be64(f, d->generation);
     qemu_put_byte(f, d->refused);
     qemu_put_be32(f, d->render_mode);
+    qemu_put_be32(f, d->written);
+    qemu_put_byte(f, d->overflow);
     qemu_put_be32(f, d->count);
     if (d->count) {
         qemu_put_buffer(f, d->data, d->count);
@@ -23264,7 +23417,7 @@ static bool sgi_kona_gl_read_dma_load(QEMUFile *f, void *pv, size_t size,
                                       const VMStateField *field, Error **errp)
 {
     SGIKonaGLReadDMA *d = pv, tmp = { .active = true };
-    unsigned refused;
+    unsigned refused, overflow;
 
     for (unsigned k = 0; k < 6; k++) {
         tmp.descriptor[k] = qemu_get_be32(f);
@@ -23278,8 +23431,11 @@ static bool sgi_kona_gl_read_dma_load(QEMUFile *f, void *pv, size_t size,
     refused = qemu_get_byte(f);
     tmp.refused = refused;
     tmp.render_mode = qemu_get_be32(f);
+    tmp.written = qemu_get_be32(f);
+    overflow = qemu_get_byte(f);
+    tmp.overflow = overflow;
     tmp.count = qemu_get_be32(f);
-    if (refused > 1 || !sgi_kona_gl_read_dma_valid(&tmp) ||
+    if (refused > 1 || overflow > 1 || !sgi_kona_gl_read_dma_valid(&tmp) ||
         qemu_file_get_error(f)) {
         goto invalid;
     }
@@ -23324,8 +23480,8 @@ static int sgi_kona_gl_read_dma_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_read_dma = {
     .name = TYPE_SGI_KONA "/gl-read-dma",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .needed = sgi_kona_gl_read_dma_needed,
     .post_load = sgi_kona_gl_read_dma_post_load,
     .fields = (const VMStateField[]) {

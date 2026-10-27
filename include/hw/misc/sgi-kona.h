@@ -628,6 +628,10 @@ typedef struct SGIKonaGLHistogram {
  * the mode 0x19 last gave, the feedback type 0x17 last gave, and the name
  * stack. The stack holds 64 names: the client library sets that limit
  * when it creates a context and answers it for GL_MAX_NAME_STACK_DEPTH.
+ * In selection mode, hit is set once a primitive has hit since the name
+ * stack last changed, with the least and greatest window depth it
+ * reached, as a hit record carries them, and next_tag is the tag the next
+ * hit record carries (see sgi_kona_gl_select_flush()).
  */
 #define SGI_KONA_GL_RENDER          0x1c00
 #define SGI_KONA_GL_FEEDBACK        0x1c01
@@ -639,6 +643,9 @@ typedef struct SGIKonaGLRenderMode {
     uint32_t feedback_type;     /* 0: none given yet */
     uint32_t name_count;
     uint32_t names[SGI_KONA_GL_NAME_STACK_DEPTH];
+    bool hit;
+    uint32_t hit_min, hit_max;
+    uint32_t next_tag;
 } SGIKonaGLRenderMode;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
@@ -1132,7 +1139,9 @@ typedef struct SGIKonaGLBitmapUpload {
  * One context-owned select-feed bracket, with dense output staged at read.
  * render_mode is the context's render mode when the bracket opened: a
  * feedback or selection pass's bracket, which the library opens on
- * entering the mode, has no read inside it.
+ * entering the mode, has no read inside it. A selection pass writes its
+ * hit records into the target as they are made: written counts their
+ * bytes, and overflow is set once a record did not fit.
  */
 typedef struct SGIKonaGLReadDMA {
     bool active, refused;
@@ -1142,6 +1151,8 @@ typedef struct SGIKonaGLReadDMA {
     uint32_t selector;
     uint32_t count;
     uint32_t render_mode;
+    uint32_t written;
+    bool overflow;
     uint8_t *data;
 } SGIKonaGLReadDMA;
 
