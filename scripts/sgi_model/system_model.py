@@ -229,7 +229,7 @@ KNOWN_KINDS = REQUIRED_KINDS | {"module"}
 MODULE_GRAPH_FIELDS = (
     "components", "buses", "connections", "interrupts", "open_questions"
 )
-OPTIONAL_MODULE_GRAPH_FIELDS = ("links",)
+OPTIONAL_MODULE_GRAPH_FIELDS = ("links", "xio_cables")
 MODULE_INSTANCE_FIELDS = {
     "model", "prefix", "parent", "omit_buses",
     "observed_hardware", "module_role", "physical_slot", "bus_bindings",
@@ -485,6 +485,9 @@ def _refuse_outside_references(
     for component in graph["components"]:
         for region in component.get("regions", []):
             check(region.get("relative_to"))
+    for cable in graph.get("xio_cables", []):
+        for end in cable.get("ends", []):
+            check(end)
 
 
 def _instantiate_module_graph(
@@ -530,11 +533,18 @@ def _instantiate_module_graph(
                 f"module contract field '{field}' must be a list"
             )
         graph[field] = copy.deepcopy(values)
-    if "links" in contract:
-        links = contract["links"]
-        if not isinstance(links, list):
-            raise ResolutionError("module contract field 'links' must be a list")
-        graph["links"] = copy.deepcopy(links)
+    for field in OPTIONAL_MODULE_GRAPH_FIELDS:
+        if field in contract:
+            values = contract[field]
+            if not isinstance(values, list):
+                raise ResolutionError(
+                    f"module contract field '{field}' must be a list")
+            graph[field] = copy.deepcopy(values)
+    for cable in graph.get("xio_cables", []):
+        if (not isinstance(cable, dict) or
+                not isinstance(cable.get("ends"), list)):
+            raise ResolutionError(
+                "module XIO cable must be a mapping with ends")
 
     basis = _validate_observed_hardware_basis(observed_hardware)
     if contains_observed_hardware(graph):
@@ -588,6 +598,11 @@ def _instantiate_module_graph(
                 continue
             retained_links.append(link)
         graph["links"] = retained_links
+    if "xio_cables" in graph:
+        graph["xio_cables"] = [
+            cable for cable in graph["xio_cables"]
+            if not set(cable["ends"]) & omitted_components
+        ]
     buses = graph["buses"]
     component_ids = {
         item.get("id") for item in components if isinstance(item, dict)
@@ -716,6 +731,12 @@ def _instantiate_module_graph(
             if component_id in component_ids:
                 link[endpoint] = _renamed(component_id)
 
+    for cable in graph.get("xio_cables", []):
+        ident = cable.get("id")
+        if isinstance(ident, str):
+            cable["id"] = _renamed(ident)
+        cable["ends"] = [_renamed(end) for end in cable["ends"]]
+
     for interrupt in graph["interrupts"]:
         ident = interrupt.get("id")
         if isinstance(ident, str):
@@ -759,14 +780,16 @@ def _expand_nested_module_instances(
     graph: dict[str, list[Any]] = {
         field: copy.deepcopy(data.get(field, [])) for field in MODULE_GRAPH_FIELDS
     }
-    if "links" in data:
-        if not isinstance(data["links"], list):
-            raise ResolutionError("module contract field 'links' must be a list")
-        graph["links"] = copy.deepcopy(data["links"])
+    for field in OPTIONAL_MODULE_GRAPH_FIELDS:
+        if field in data:
+            if not isinstance(data[field], list):
+                raise ResolutionError(
+                    f"module contract field '{field}' must be a list")
+            graph[field] = copy.deepcopy(data[field])
     seen_ids: dict[str, set[str]] = {
-        field: {item.get("id") for item in graph[field]
+        field: {item.get("id") for item in graph.get(field, [])
                 if isinstance(item, dict) and isinstance(item.get("id"), str)}
-        for field in MODULE_GRAPH_FIELDS
+        for field in (*MODULE_GRAPH_FIELDS, "xio_cables")
     }
     for index, declaration in enumerate(declarations):
         label = f"module '{path}' module_instances entry {index}"
@@ -821,7 +844,9 @@ def _expand_nested_module_instances(
             )
         root["physical_slot"] = copy.deepcopy(physical_slot)
 
-        for field in MODULE_GRAPH_FIELDS:
+        for field in (*MODULE_GRAPH_FIELDS, "xio_cables"):
+            if field not in instance:
+                continue
             for item in instance[field]:
                 ident = item.get("id") if isinstance(item, dict) else None
                 if isinstance(ident, str):
@@ -830,7 +855,7 @@ def _expand_nested_module_instances(
                             f"{label} collides with {field[:-1]} id '{ident}'"
                         )
                     seen_ids[field].add(ident)
-            graph[field].extend(instance[field])
+            graph.setdefault(field, []).extend(instance[field])
         if "links" in instance:
             graph.setdefault("links", []).extend(instance["links"])
 
@@ -855,7 +880,8 @@ def _merge_module_instances(
         if isinstance(component, dict)
     )
     seen_ids: dict[str, set[str]] = {}
-    for field in ("components", "buses", "interrupts", "open_questions"):
+    for field in ("components", "buses", "interrupts", "open_questions",
+                  "xio_cables"):
         seen_ids[field] = {
             item.get("id") for item in resolved.get(field, [])
             if isinstance(item, dict) and isinstance(item.get("id"), str)

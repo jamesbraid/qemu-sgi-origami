@@ -1133,6 +1133,28 @@
       }
     },
 
+    "xio_cables": {
+      "type": "array",
+      "description": "XIO cables, each one link between two connectors: a node's XIO (II) connector and a crossbar port, or two crossbar ports. Two links between the same two chips are two cables on distinct ports. A cable records only which connectors it joins; the buses its ends share carry the data relationship.",
+      "items": {
+        "type": "object",
+        "required": ["id", "ends", "provenance", "sources"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/identifier" },
+          "ends": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "$ref": "#/$defs/identifier" }
+          },
+          "provenance": { "$ref": "#/$defs/fact-provenance" },
+          "sources": { "$ref": "#/$defs/sources" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+
     "open_questions": {
       "type": "array",
       "description": "Things the sources do not settle. Recorded rather than resolved, because a model that guesses is worse than one that admits a gap — and once a generator consumes it, a guess becomes false machine behavior. Each names the candidates and what argues for them.",

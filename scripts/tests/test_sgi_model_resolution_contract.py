@@ -2643,6 +2643,64 @@ class Origin3000BrickTests(unittest.TestCase):
                     contract, prefix="brick-", parent="chassis",
                     omit_buses=[])
 
+    TWO_CROSSBARS = {
+        "components": [
+            {"id": "brick", "name": "Brick", "kind": "chassis"},
+            {"id": "u0", "name": "U0", "kind": "crossbar", "parent": "brick",
+             "crossbar": {"kind": "xbridge"}},
+            {"id": "u1", "name": "U1", "kind": "crossbar", "parent": "brick",
+             "crossbar": {"kind": "xbridge"}},
+            *({"id": f"{chip}-port-{port:x}", "name": f"{chip} port {port:x}",
+               "kind": "connector", "parent": chip,
+               "connector": {"interface": "Crosstalk", "occupancy": "opaque",
+                             "port": port}}
+              for chip, port in (("u0", 9), ("u0", 8), ("u1", 8), ("u1", 0xd))),
+        ],
+        "buses": [
+            {"id": "link-9", "name": "U0 9 to U1 8", "kind": "xio",
+             "master": "u0"},
+            {"id": "link-8", "name": "U0 8 to U1 D", "kind": "xio",
+             "master": "u0"},
+        ],
+        "connections": [
+            {"component": "u0-port-9", "bus": "link-9", "role": "endpoint"},
+            {"component": "u1-port-8", "bus": "link-9", "role": "endpoint"},
+            {"component": "u0-port-8", "bus": "link-8", "role": "endpoint"},
+            {"component": "u1-port-d", "bus": "link-8", "role": "endpoint"},
+        ],
+        "xio_cables": [
+            {"id": "first", "ends": ["u0-port-9", "u1-port-8"]},
+            {"id": "second", "ends": ["u0-port-8", "u1-port-d"]},
+        ],
+    }
+
+    def test_module_xio_cables_are_prefixed_with_their_instance(self):
+        graph = _resolver._instantiate_module_graph(
+            copy.deepcopy(self.TWO_CROSSBARS), prefix="p-", parent="rack",
+            omit_buses=[])
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in graph["xio_cables"]],
+            [("p-first", ["p-u0-port-9", "p-u1-port-8"]),
+             ("p-second", ["p-u0-port-8", "p-u1-port-d"])])
+
+    def test_two_cables_between_two_chips_on_distinct_ports_resolve(self):
+        graph = _resolver._instantiate_module_graph(
+            copy.deepcopy(self.TWO_CROSSBARS), prefix="p-", parent="rack",
+            omit_buses=[])
+        model = {"components": graph["components"], "buses": graph["buses"],
+                 "connections": graph["connections"],
+                 "xio_cables": graph["xio_cables"]}
+        _resolver.model_composition.validate_xio_cables(model)
+
+    def test_module_xio_cable_naming_an_outside_connector_is_refused(self):
+        contract = copy.deepcopy(self.TWO_CROSSBARS)
+        contract["xio_cables"][0]["ends"][1] = "c0-xio-ii-connector"
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "names component 'c0-xio-ii-connector' outside"):
+            _resolver._instantiate_module_graph(
+                contract, prefix="p-", parent="rack", omit_buses=[])
+
 
 if __name__ == "__main__":
     unittest.main()
