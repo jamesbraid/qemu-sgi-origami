@@ -82,7 +82,7 @@ remain outside this legacy selection.
 .. _sgi-ip53-ds1744:
 
 DS1744-compatible timekeeper resource
-====================================
+=====================================
 
 The serial IO9 profiles select a 32 KiB DS1744-compatible geometry through
 the board's standard system-timekeeper record. IOC4 maps the child's complete
@@ -133,16 +133,16 @@ measure a processor reset pin, PROM image fitted to a board, or PCI wiring on
 the named product. The physical inventory facts cited by the catalogue have
 separate public capture or manual references.
 
-============================  =======================  ========  ===========  ============
-Profile                       Processors               Memory    Cache each   Reset mode
-============================  =======================  ========  ===========  ============
-Origin 350                    four 700 MHz R16000       2 GiB     8 MiB        0x009cad85
-Onyx 350 captured module      four 800 MHz R16000       8 GiB     8 MiB        0x009caf85
-Tezro tower, one CPU          one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
-Tezro tower, four CPUs        four 700 MHz R16000       4 GiB     4 MiB        0x009bad85
-Tezro rack, first enclosure  one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
-Onyx 4 host candidate        four 1 GHz R16000         8 GiB     16 MiB       0x009dad85
-============================  =======================  ========  ===========  ============
+===========================  ===================  ======  ==========  ==========
+Profile                      Processors           Memory  Cache each  Reset mode
+===========================  ===================  ======  ==========  ==========
+Origin 350                   four 700 MHz R16000  2 GiB   8 MiB       0x009cad85
+Onyx 350 captured module     four 800 MHz R16000  8 GiB   8 MiB       0x009caf85
+Tezro tower, one CPU         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
+Tezro tower, four CPUs       four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
+Tezro rack, first enclosure  one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
+Onyx 4 host candidate        four 1 GHz R16000    8 GiB   16 MiB      0x009dad85
+===========================  ===================  ======  ==========  ==========
 
 The six listed compositions select the same internal R16000 experiment
 properties with or without the ``ip53-experimental`` machine option.
