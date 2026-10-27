@@ -12001,6 +12001,47 @@ static const MemoryRegionOps odyssey_ops = {
 };
 
 /*
+ * The two command-FIFO pages, as their own regions over the aperture so
+ * their stores can be posted (memory_region_enable_posted_writes()): a FIFO
+ * word never changes the memory map or the storing processor's state, and
+ * what it raises (low water, a finished DMA) reaches the processor as an
+ * interrupt. Each page dispatches exactly as the aperture does.
+ */
+#define ODSY_FIFO_PAGE 0x1000
+
+static const hwaddr odyssey_fifo_page_base[2] = {
+    ODSY_USER_CMD_FIFO, ODSY_CMD_FIFO,
+};
+
+static uint64_t odyssey_fifo_page_read(void *opaque, hwaddr addr,
+                                       unsigned size)
+{
+    MemoryRegion *mr = opaque;
+    SGIOdysseyState *s = SGI_ODYSSEY(mr->owner);
+
+    return odyssey_read(s, odyssey_fifo_page_base[mr - s->fifo_page] + addr,
+                        size);
+}
+
+static void odyssey_fifo_page_write(void *opaque, hwaddr addr,
+                                    uint64_t value, unsigned size)
+{
+    MemoryRegion *mr = opaque;
+    SGIOdysseyState *s = SGI_ODYSSEY(mr->owner);
+
+    odyssey_write(s, odyssey_fifo_page_base[mr - s->fifo_page] + addr, value,
+                  size);
+}
+
+static const MemoryRegionOps odyssey_fifo_page_ops = {
+    .read = odyssey_fifo_page_read,
+    .write = odyssey_fifo_page_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+/*
  * The board-identity record. Its field spelling is the one this project
  * captured off real SGI firmware, and the prologue -- a format byte, four
  * spaces and a semicolon, so a scanning reader meets ";Name:" and a
@@ -12500,6 +12541,9 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
         error_propagate(errp, local_err);
         return;
     }
+    for (unsigned i = 0; s->posted_fifo && i < ARRAY_SIZE(s->fifo_page); i++) {
+        memory_region_enable_posted_writes(&s->fifo_page[i]);
+    }
     if (!s->fabric) {
         error_setg(errp, "sgi-odyssey needs the fabric its interrupt "
                   "packets travel");
@@ -12903,6 +12947,13 @@ static void odyssey_instance_init(Object *obj)
 
     memory_region_init_io(&s->regs, obj, &odyssey_ops, s, "sgi-odyssey.regs",
                           ODSY_APERTURE);
+    for (unsigned i = 0; i < ARRAY_SIZE(s->fifo_page); i++) {
+        memory_region_init_io(&s->fifo_page[i], obj, &odyssey_fifo_page_ops,
+                              &s->fifo_page[i], "sgi-odyssey.fifo-page",
+                              ODSY_FIFO_PAGE);
+        memory_region_add_subregion(&s->regs, odyssey_fifo_page_base[i],
+                                    &s->fifo_page[i]);
+    }
     s->obj_index = g_hash_table_new(g_direct_hash, g_direct_equal);
     /* The fixed part of the drawable odyssey_gl_bind() hands over. */
     s->gl_bind_drawable.bound = true;
@@ -13005,6 +13056,8 @@ static const Property odyssey_properties[] = {
      */
     DEFINE_PROP_UINT32("x-test-raster-band-pixels", SGIOdysseyState,
                        raster_band_pixels, 0),
+    /* Off only to compare against the unposted path in a test. */
+    DEFINE_PROP_BOOL("x-posted-fifo", SGIOdysseyState, posted_fifo, true),
     DEFINE_PROP_LINK("fabric", SGIOdysseyState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
 };

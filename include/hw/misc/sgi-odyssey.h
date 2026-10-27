@@ -95,6 +95,8 @@ struct SGIOdysseyState {
     SGIXioBoardState parent_obj;
 
     MemoryRegion regs;
+    /* The kernel and user command-FIFO pages, whose stores are posted. */
+    MemoryRegion fifo_page[2];
     /*
      * The crosstalk fabric this board's interrupt packets travel: the
      * host's own inbound window, reached through whichever machine glue
@@ -120,6 +122,8 @@ struct SGIOdysseyState {
     char *nic_record;
     /* Host selector; source and destination must match for migration. */
     bool mesa_renderer_enabled;
+    /* Whether the FIFO pages' stores are posted (x-posted-fifo). */
+    bool posted_fifo;
 
     /* Composed at realize from the properties above. */
     const char *product_record; /* the product's record, if nic-record unset */
