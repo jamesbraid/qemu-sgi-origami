@@ -302,7 +302,8 @@ Main control block
      - 32
      - ``0``
      - RW
-     - Stores bits 0-18. Bit 22, arbiter idle, always reads one.
+     - Stores bits 0-18. Bit 22, arbiter idle, reads clear only inside a
+       serial DMA transfer.
    * - ``0x2c``
      - Interrupt output
      - 32
@@ -381,7 +382,8 @@ either register and on every source change.
      - Level: set while ring DMA is on and nothing is left to send
    * - 1, 10
      - Receive ring full
-     - Latched
+     - Level: set while ring DMA is on and an entry waits that the ring
+       had no room for
    * - 2, 11
      - Receive high water
      - Level against the waiting-entry count
@@ -424,11 +426,11 @@ either register and on every source change.
 
 The source assignment is Linux's and OpenBSD's, *software expectation*.
 Writing ones to the status register clears latched bits. It does not
-clear the level bits: 0, 2, 6, 9, 11, 15 and 18. Linux installs a level
+clear the level bits: 0, 1, 2, 6, 9, 10, 11, 15 and 18. Linux installs a level
 handler for bits 6 and 15 and an edge handler for the rest
 (``drivers/mfd/ioc3.c``), which makes the two pass-throughs levels and the
 keyboard bit a latch, *software expectation*. The parallel service bit
-and the high-water and transmit-empty bits as levels are
+and the high-water, receive-full and transmit-empty bits as levels are
 *approximations*. The IRIX 6.5.30 ring console enables high water and
 never acknowledges it, so a latched bit would keep its service loop
 running, *software expectation*. Linux's ring driver re-reads
@@ -455,9 +457,16 @@ nothing. The Origin 300 IO-8 board diagnostic zeroes both fields, then
 drives port B through its byte window with B's ring DMA still enabled and
 expects the character to stay in the 16550. What the chip's engine does
 at another offset is *unknown*. Bit 0 (SuperIO reset) and bits 15-18
-(byte-bus strobe length) are stored and have no effect. Bit 22 reads as
-arbiter idle in every state, because the IRIX console setup waits for
-it, *software expectation*.
+(byte-bus strobe length) are stored and have no effect.
+
+Bit 22 (PCI arbiter idle) is read-only. It reads clear only while the
+serial DMA engine is inside a transfer, the rule IOC4's serial idle bit
+shares (:ref:`sgi-ioc4-serial-dma`), an *approximation*. QEMU completes
+each transfer before the access that started it returns, so software
+always reads the bit set. That is what the IRIX console setup needs: it
+waits for the bit to read idle, *software expectation*. Whether the
+hardware also clears the bit for Ethernet or parallel-port DMA is
+*unknown*, and the model does not.
 
 Interrupt output
 ----------------
@@ -567,12 +576,19 @@ a blocking record backend stalls the transmit path it records. A
 character written to the transmit holding register while the
 transmitter is full is lost on the wire but still appears in the record.
 
+.. _sgi-ioc3-serial-dma:
+
 Serial ring DMA
 ===============
 
 Each port has an engine that moves characters between its 16550 and two
 rings in memory, so a driver can run the port without touching the byte
-window. The layout below follows Linux's ring drivers
+window. The engine is the same code for IOC3 and IOC4
+(``hw/char/sgi-ioc-serial-dma.c``): the per-port registers, ring format,
+transmit walk, receive packer, timers and loopback described here apply
+to both chips. The chip supplies the register window, the interrupt
+status bits and the UARTs. :ref:`sgi-ioc4-serial-dma` lists where IOC4
+differs. The layout below follows Linux's ring drivers
 (``ioc3_serial.c`` and ``ioc4_serial.c`` at ``v4.19``) and ``ioc3.h``,
 *software expectation*. The firmware, Linux and OpenBSD consoles use the
 byte windows. The firmware's base I/O diagnostic and the IRIX ring
@@ -650,19 +666,21 @@ Transmit
 
     Outside loopback the 16550 core takes each character at once. A
     port with no backend completes it, as a line with nothing attached
-    would; a backend that cannot take it holds the walk for at most two
-    seconds before the core gives the character up. That bound is the
-    core's approximation, not a hardware value.
+    would. A backend that cannot take the character holds the walk for at
+    most two seconds before the core gives it up and treats the line as
+    disconnected. The bound is not a hardware value, an *approximation*.
 
     In loopback a full receive ring does not stop the transmit walk.
-    The looped-back character the ring cannot take overruns the 16550,
-    as it would arriving off a line, and the overrun bit reaches the
-    status byte of the next character posted. Whether hardware flow
-    control changes this is not known. Characters arriving from the
-    backend while the port is in loopback are discarded on arrival and
-    logged as a guest error, because loopback disconnects the receiver
-    from the line; discarding at arrival rather than at the exact moment
-    the modem-control write lands is an approximation.
+    The looped-back character the ring cannot take stays in the 16550
+    and overruns it, as a character arriving off a line would, and the
+    overrun bit reaches the status byte of the next character posted. The
+    walk's independence from ring space is an *approximation*; whether
+    hardware flow control changes it is *unknown*. Characters arriving
+    from the backend while the port is in loopback are discarded on
+    arrival and logged as ``LOG_GUEST_ERROR``, because loopback
+    disconnects the receiver from the line, a 16550 property. Discarding
+    at arrival rather than at the exact moment the modem-control write
+    lands is an *approximation*.
 
 Receive
     Characters pack four to an entry. Each status byte carries
@@ -671,6 +689,14 @@ Receive
     when its fourth character arrives. Fewer wait in the packer until the
     receive timer expires or software drains, as Linux's ring driver
     comment describes. Unfilled slots carry no valid flag.
+
+    Receive-ring-full is a level, a model choice and so an
+    *approximation*; what the part does is *unknown*. The source is set
+    while ring DMA is on and a complete or drained entry waits that the
+    ring had no room for. It falls as soon as the consumer makes room,
+    whether or not the held entry has posted yet. A ring filled exactly,
+    with nothing waiting, does not raise it. A write that acknowledges
+    the source is ignored.
 
 Receive timer
 -------------
@@ -697,8 +723,9 @@ Commands, pause and errors
   ring is full, as Linux's ring driver expects.
 - Pause (bit 29) stops the walk, reads back bit 30, and freezes the
   receive timer and any delay where they stand, an *approximation*.
-- A full receive ring raises receive-full and keeps the characters in the
-  packer and the 16550 FIFO, which stops the backend feeding more.
+- A full receive ring raises receive-full (a level, see Receive above)
+  and keeps the characters in the packer and the 16550 FIFO, which
+  stops the backend feeding more.
 - A ring access the fabric refuses raises the port's DMA error source. A
   refused transmit fetch leaves the consume index on that entry. A
   refused receive write leaves the produce index unchanged.
@@ -1099,8 +1126,8 @@ ECP register file
      - Stored.
    * - ``0x20151``
      - Status
-     - Reads ``0x08``: no fault, nothing else. Writes log
-       ``LOG_GUEST_ERROR``.
+     - Follows the backend: ``0x78`` for a bare connector, ``0xd8`` for a
+       ready printer. Writes log ``LOG_GUEST_ERROR``.
    * - ``0x20152``
      - Control
      - Stored as written.
@@ -1114,9 +1141,7 @@ ECP register file
      - Extended control
      - Stores bits 2-7; bits 0 and 1 read FIFO empty and full.
 
-Any other offset in the file logs ``LOG_UNIMP``. A status of ``0x08``
-says no fault and never busy, so a driver waiting on the printer never
-waits. Outside test mode the FIFO is bottomless: empty always reads set
+Any other offset in the file logs ``LOG_UNIMP``. Outside test mode the FIFO is bottomless: empty always reads set
 and full never does. A FIFO read outside test or configuration mode
 returns zero with ``LOG_GUEST_ERROR``, as does a test-mode read with
 nothing queued. Every extended-control write clears the service source
@@ -1128,6 +1153,30 @@ Test mode (mode 6) keeps a FIFO whose depth is the ``fifo-depth``
 property, zero by default. Writes queue and reads return the oldest byte;
 the empty and full flags follow its occupancy. Entering mode 0 or 1
 empties it. Generic parts drop a write to a full FIFO with ``LOG_UNIMP``.
+
+Status register
+---------------
+
+The status register reads the lines behind the port's backend. Bit 7 is
+the inverse of the Busy pin. Bits 6 to 3 are nAck, PError, Select and
+nFault as the pins stand, and nAck and nFault are active low. Bit
+positions and polarity follow the fitted TL16PIR552's published status
+register (:src:`ti-tl16pir552-slls222a p. 40-45`), Linux's ``parport``
+and OpenBSD's ``lpt``, *software expectation*.
+
+- A bare connector reads ``0x78``: all five inputs high and so bit 7
+  clear. This covers a port with no ``-parallel`` option, which the
+  machine gives a null backend, an explicit null backend and
+  ``-parallel none``. That pull-ups hold the inputs high on the real
+  boards is *inferred*: no source measures an unplugged SGI port.
+- A real backend, such as a file, pty or socket, reads as a ready
+  printer, ``0xd8``: Busy low, nAck, Select and nFault high, no paper
+  error. Taking every host backend as a printer that always accepts
+  data is an *approximation*: a file never holds Busy.
+- Bit 2, the part's PRINT indicator, is not modelled and reads clear.
+
+The two values differ so that a guest that reads the lines can tell no
+peripheral from a ready one. The register is read-only.
 
 TL16PIR552
 ----------
@@ -1276,7 +1325,7 @@ Model limits
   random seed, the receive barrier and buffer-RAM frame staging have no
   effect. The checksum offload recomputes the whole checksum.
 - The parallel port moves no data from the peripheral, implements no
-  cable handshake, and models neither service thresholds nor interrupt
+  cable handshake beyond the two status values above, and models neither service thresholds nor interrupt
   polarity.
 - The Origin 200 IP29 port is the generic one although a photographed
   IP29 board carries a TL16PIR552; its configuration bytes, 16-byte test
@@ -1294,7 +1343,8 @@ Tests
 
 - ``tests/qtest/sn0-ioc3-test.c``: configuration space, board
   population and its validation, the interrupt status and enable aliases,
-  the second interrupt reaching Bridge pin 3, chip control, the
+  the second interrupt reaching Bridge pin 3, chip control including the
+  arbiter-idle bit reading clear from inside a serial DMA transfer, the
   interrupt output in every mode, pin control and pin registers, the
   one-wire engine and station-address part, the Ethernet filter,
   transmit, checksum, threshold, timer, reset and PHY scan, buffer RAM
@@ -1302,7 +1352,10 @@ Tests
 - ``tests/qtest/sn0-ioc3-serial-test.c``: the 16550 extras and the
   pre-divider, the transmit record, ring geometry and both alias pages,
   transmit entry types, the receive packer, timer and drain, pause,
-  loopback timing, the shadow and migration.
+  loopback timing, the loopback overrun reaching the status byte,
+  discarded outside input in loopback, the blocked backend, the
+  receive-ring-full level, undefined control bits, DMA errors, the
+  shadow and migration.
 - ``tests/qtest/sgi-ioc3-eth-test.c``: Ethernet ring wrap, descriptor
   bounds, receive delivery and its arrival latency, refused DMA, the
   stopped-MAC counter and buffer-index storage, the DMA swap controls,
@@ -1310,8 +1363,11 @@ Tests
   ICS1890 fitted. ``tests/qtest/ics1890-test.c`` drives the ICS1890
   through this chip's MII registers.
 - ``tests/qtest/sn0-ioc3-parallel-test.c``: both parallel register
-  blocks, the DMA engine, the status and FIFO flags, the test FIFO, the
-  TL16PIR552 variant and save and restore of the FIFO.
+  blocks, the DMA engine, the status and FIFO flags, the status
+  register's bare-connector and ready-printer values on the Origin 200
+  and the Fuel, the test FIFO, the TL16PIR552 variant and save and
+  restore of the FIFO. ``tests/qtest/octane-test.c`` checks the same
+  two values on the Octane.
 - ``tests/qtest/sn0-ioc3-kbc-routing-test.c``: the
   ``activate-keyboard`` property.
 - ``tests/qtest/ioc3-release-fixture.c`` is a helper device for a
