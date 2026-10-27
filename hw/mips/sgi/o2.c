@@ -1871,6 +1871,8 @@ static void o2_init(MachineState *machine)
     if (blk_by_name("nvram0-clock")) {
         qdev_prop_set_drive(mace, "clock-drive", blk_by_name("nvram0-clock"));
     }
+    object_property_set_link(OBJECT(mace), "crime-device", OBJECT(crime),
+                             &error_fatal);
     qdev_prop_set_bit(mace, "password-clear-input",
                       s->password_clear_input &&
                       !strcmp(s->password_clear_input, "1"));
@@ -1912,11 +1914,6 @@ static void o2_init(MachineState *machine)
     sysbus_mmio_map(SYS_BUS_DEVICE(mace), 0, O2_MACE_BASE);
     sysbus_mmio_map(SYS_BUS_DEVICE(mace), 1, O2_AIC_PCI_VIEW);
     sysbus_mmio_map(SYS_BUS_DEVICE(mace), 2, O2_PCI_HIGH_VIEW);
-    for (unsigned cause = 0; cause < 16; cause++) {
-        qdev_connect_gpio_out_named(mace, "crime", cause,
-                                    qdev_get_gpio_in_named(crime, "mace",
-                                                           cause));
-    }
     s->pci_bus = PCI_HOST_BRIDGE(mace)->bus;
     if (s->mace_bank_dma_fixture) {
         s->mace_dma_card = pci_new(PCI_DEVFN(3, 0), "sgi-bridge-dma-test");

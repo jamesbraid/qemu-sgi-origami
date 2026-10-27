@@ -7,6 +7,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/mace.h"
+#include "hw/mips/sgi/crime.h"
 #include "hw/mips/sgi/mace-id.h"
 #include "hw/mips/sgi/mace-ps2.h"
 #include "hw/net/sgi-mace-eth.h"
@@ -52,6 +53,7 @@
 #define MACE_TIMER_NS      960
 #define MACE_TIMER_BIT(i)  (1U << (13 + (i)))
 #define MACE_RING_WRITABLE 0xffff8001U
+#define MACE_IRQ_MASK UINT16_MAX
 
 typedef struct MACEUARTPort {
     SGIMACEState *mace;
@@ -97,7 +99,9 @@ struct SGIMACEState {
     SerialState uart[2];
     MACEUARTPort uart_port[2];
     MACEUARTPort serial_dma_port[2];
+    DeviceState *crime_device;
     qemu_irq crime[16];
+    uint16_t crime_normal;
     qemu_irq isa_reset;
     QEMUTimer *timer;
     int64_t epoch_ns;
@@ -150,13 +154,34 @@ static uint64_t mace_elapsed_ticks(SGIMACEState *s)
     return elapsed > 0 ? elapsed / MACE_TIMER_NS : 0;
 }
 
+static void mace_publish_normal(SGIMACEState *s, uint16_t mask,
+                                uint16_t value, bool force)
+{
+    uint16_t changed = force ? mask : (s->crime_normal ^ value) & mask;
+
+    s->crime_normal = (s->crime_normal & ~mask) | (value & mask);
+    if (!changed) {
+        return;
+    }
+    if (s->crime_device) {
+        sgi_crime_update_mace_inputs(s->crime_device, changed, value);
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        if (changed & (1U << i)) {
+            qemu_set_irq(s->crime[i], (value >> i) & 1);
+        }
+    }
+}
+
 static void mace_update_irqs(SGIMACEState *s)
 {
     uint32_t active = s->istat & s->imask;
+    uint16_t levels = ((active & 0xffff0000U) != 0 ? 1U << 4 : 0) |
+                      ((active & 0x0000eb00U) != 0 ? 1U << 5 : 0) |
+                      ((active & 0x000000ffU) != 0 ? 1U << 6 : 0);
 
-    qemu_set_irq(s->crime[4], (active & 0xffff0000U) != 0);
-    qemu_set_irq(s->crime[5], (active & 0x0000eb00U) != 0);
-    qemu_set_irq(s->crime[6], (active & 0x000000ffU) != 0);
+    mace_publish_normal(s, (1U << 4) | (1U << 5) | (1U << 6), levels,
+                        false);
 }
 
 static uint32_t mace_audio_ust(void *opaque, int64_t event_ns)
@@ -208,7 +233,28 @@ static void mace_eth_irq(void *opaque, int n, int level)
 {
     SGIMACEState *s = opaque;
 
-    qemu_set_irq(s->crime[3], level);
+    mace_publish_normal(s, 1U << 3, level ? 1U << 3 : 0, false);
+}
+
+static void mace_eth_request(void *opaque, uint32_t request)
+{
+    SGIMACEState *s = opaque;
+    uint16_t mask = request >> 16;
+
+    if (s->crime_device) {
+        sgi_crime_update_mace_inputs(s->crime_device, mask, request);
+    } else {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mace: Ethernet interrupt request has no CRIME "
+                      "controller\n");
+    }
+}
+
+static void mace_eth_reset_irq(void *opaque)
+{
+    SGIMACEState *s = opaque;
+
+    mace_publish_normal(s, 1U << 3, 0, true);
 }
 
 static void mace_ps2_irq(void *opaque, int n, int level)
@@ -287,17 +333,16 @@ static void mace_uart_irq(void *opaque, int n, int level)
 
 static void mace_update_pci_irqs(SGIMACEState *s)
 {
-    unsigned i;
+    uint16_t levels = (s->pci_error_flags & s->pci_control &
+                       MACE_PCI_MASTER_ABORT) ? 1U << 7 : 0;
 
-    qemu_set_irq(s->crime[7],
-                 (s->pci_error_flags & s->pci_control &
-                  MACE_PCI_MASTER_ABORT) != 0);
-    for (i = 0; i < 8; i++) {
-        bool level = ((s->pci_wire_level | s->pci_bus_level) & (1U << i)) &&
-                     (s->pci_control & (1U << i));
-
-        qemu_set_irq(s->crime[8 + i], level);
+    for (unsigned i = 0; i < 8; i++) {
+        if (((s->pci_wire_level | s->pci_bus_level) & (1U << i)) &&
+            (s->pci_control & (1U << i))) {
+            levels |= 1U << (8 + i);
+        }
     }
+    mace_publish_normal(s, (uint16_t)(1U << 7 | 0xff00), levels, false);
 }
 
 static void mace_pci_wire_irq(void *opaque, int n, int level)
@@ -994,7 +1039,11 @@ static void mace_reset_hold(Object *obj, ResetType type)
     }
     memset(s->compare_programmed, 0, sizeof(s->compare_programmed));
     timer_del(s->timer);
-    for (i = 0; i < ARRAY_SIZE(s->crime); i++) {
+    s->crime_normal = 0;
+    if (s->crime_device) {
+        sgi_crime_update_mace_inputs(s->crime_device, MACE_IRQ_MASK, 0);
+    }
+    for (i = 0; i < 16; i++) {
         qemu_set_irq(s->crime[i], 0);
     }
     serial_set_rx_discard(&s->uart[0], true);
@@ -1032,6 +1081,9 @@ static int mace_post_load(void *opaque, int version_id)
                   s->saved_elapsed_ns;
     mace_update_irqs(s);
     mace_update_pci_irqs(s);
+    for (unsigned i = 0; i < 16; i++) {
+        qemu_set_irq(s->crime[i], (s->crime_normal >> i) & 1);
+    }
     serial_set_rx_discard(&s->uart[0], s->ring_base & 1);
     serial_set_rx_discard(&s->uart[1], s->ring_base & 1);
     qemu_set_irq(s->isa_reset, s->ring_base & 1);
@@ -1055,6 +1107,7 @@ static const VMStateDescription vmstate_mace = {
         VMSTATE_UINT32(istat, SGIMACEState),
         VMSTATE_UINT32(imask, SGIMACEState),
         VMSTATE_UINT8(uart_irq_level, SGIMACEState),
+        VMSTATE_UINT16(crime_normal, SGIMACEState),
         VMSTATE_UINT32_ARRAY(compare, SGIMACEState, 3),
         VMSTATE_UINT64_ARRAY(compare_due, SGIMACEState, 3),
         VMSTATE_BOOL_ARRAY(compare_programmed, SGIMACEState, 3),
@@ -1104,6 +1157,8 @@ static void mace_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), mace_audio_feedthrough,
                             "audio-pdmnft", 1);
     object_initialize_child(obj, "eth", &s->eth, TYPE_SGI_MACE_ETH);
+    sgi_mace_eth_set_irq_handlers(&s->eth, s, mace_eth_request,
+                                  mace_eth_reset_irq);
     memory_region_init(&s->eth_dma, obj, "sgi-mace-eth-dma", 1ULL << 32);
     memory_region_init(&s->peripheral_dma, obj, "sgi-mace-peripheral-dma",
                        1ULL << 32);
@@ -1460,6 +1515,8 @@ static const Property mace_properties[] = {
                      password_clear_input, false),
     DEFINE_PROP_LINK("ram", SGIMACEState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("crime-device", SGIMACEState, crime_device,
+                     TYPE_SGI_CRIME, DeviceState *),
     DEFINE_PROP_BOOL("aic-pci-diagnostic", SGIMACEState,
                      aic_pci_diagnostic, false),
     DEFINE_PROP_BOOL("o2-storage-diagnostic", SGIMACEState,

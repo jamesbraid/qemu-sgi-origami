@@ -31,6 +31,7 @@
 #define RX_FIFO_PORT 0x100
 #define CRIME_STATUS UINT64_C(0x14000010)
 #define CRIME_ENABLE UINT64_C(0x14000018)
+#define CRIME_SOFTWARE UINT64_C(0x14000020)
 #define RAM_FULL UINT64_C(0x40000000)
 #define RAM_NO_ECC UINT64_C(0x80000000)
 #define RX_REINIT_OLD_BASE (RAM_FULL + 0x80000)
@@ -97,6 +98,92 @@ static void test_selected_word_control_mdio(void)
     qtest_writel(qts, ETH_BASE + MDIO_READ + 4, 0);
     qtest_clock_step(qts, 1000);
     g_assert_cmphex(qtest_readl(qts, ETH_BASE + MDIO_DATA + 4), ==, 0xffff);
+    qtest_quit(qts);
+}
+
+static void test_interrupt_request_port(void)
+{
+    QTestState *qts = qtest_init("-M o2-test -nic none");
+
+    qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+    qtest_writeq(qts, CRIME_ENABLE, UINT64_C(0x000fffff));
+    qtest_writeq(qts, CRIME_SOFTWARE, UINT64_C(1) << 28);
+    for (unsigned cause = 0; cause < 16; cause++) {
+        uint64_t mask = UINT64_C(1) << cause;
+
+        qtest_writeq(qts, ETH_BASE + 0x58, (mask << 16) | mask);
+        g_assert_true(qtest_readq(qts, CRIME_STATUS) & mask);
+        g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 28));
+        qtest_writeq(qts, ETH_BASE + 0x58, mask << 16);
+        g_assert_false(qtest_readq(qts, CRIME_STATUS) & mask);
+        g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 28));
+    }
+
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280020));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 5));
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 3));
+    g_assert_true(qtest_get_irq(qts, 0));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00280008));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 3));
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 5));
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00100010));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 4));
+    qtest_writeq(qts, ETH_REPEAT + 0x58, UINT64_C(0x00100000));
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 4));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00100010));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00000000));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 4));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 3));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0xffff0000));
+    g_assert_cmphex(qtest_readq(qts, CRIME_STATUS) & 0xffff, ==, 0);
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & (UINT64_C(1) << 28));
+    qtest_writeq(qts, CRIME_SOFTWARE, 0);
+    qtest_quit(qts);
+}
+
+static void test_interrupt_request_preserves_normal_baseline(void)
+{
+    const uint64_t rx_active = (1U << 15) | (1U << 9) | (1U << 4);
+    const uint64_t rx_masked = (1U << 15) | (1U << 4);
+    QTestState *qts = qtest_init("-M o2-test -nic none");
+
+    qtest_irq_intercept_out_named(qts, "/machine/crime", "cpu-ip");
+    qtest_writeq(qts, CRIME_ENABLE, 8);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_active);
+    g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & (1U << 5));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
+    g_assert_true(qtest_get_irq(qts, 0));
+
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080000));
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & 8);
+    g_assert_false(qtest_get_irq(qts, 0));
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_readq(qts, ETH_BASE + INT_STATUS);
+        qtest_readq(qts, ETH_BASE + RX_FIFO_INFO);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_active);
+        g_assert_false(qtest_readq(qts, CRIME_STATUS) & 8);
+    }
+    g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & (1U << 5));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + DMA_CONTROL), ==, rx_active);
+
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_masked);
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & 8);
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_readq(qts, ETH_BASE + INT_STATUS);
+        qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_masked);
+        g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
+    }
+
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_active);
+    g_assert_true(qtest_readq(qts, CRIME_STATUS) & 8);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_masked);
+    g_assert_false(qtest_readq(qts, CRIME_STATUS) & 8);
     qtest_quit(qts);
 }
 
@@ -264,6 +351,11 @@ static void test_selected_width_refusals(void)
     g_assert_cmphex(qtest_readl(qts, ETH_BASE + INT_STATUS + 4), ==, 0);
     g_assert_cmphex(qtest_readw(qts, ETH_BASE + TX_POINTER + 6), ==, 0);
     g_assert_cmphex(qtest_readb(qts, ETH_BASE + RX_FIFO_INFO + 5), ==, 0);
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x0000000100080000));
+    qtest_writel(qts, ETH_BASE + 0x58, UINT32_C(0x00080008));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==, 0);
+    qtest_readl(qts, ETH_BASE + 0x58);
     qtest_writel(qts, ETH_BASE + 0x7c, 0x1234);
     qtest_writeq(qts, ETH_BASE + 0x78, 0x0456);
     qtest_quit(qts);
@@ -274,6 +366,12 @@ static void test_selected_width_refusals(void)
                             "unsupported write at 0x7fe04 size 4"));
     g_assert_nonnull(strstr(log_text,
                             "unsupported read at 0xc size 4"));
+    g_assert_nonnull(strstr(log_text,
+                            "interrupt request upper bits are unsupported"));
+    g_assert_nonnull(strstr(log_text,
+                            "unsupported write at 0x58 size 4"));
+    g_assert_nonnull(strstr(log_text,
+                            "unsupported read at 0x58 size 4"));
     g_assert_nonnull(strstr(log_text,
                             "collision backoff seed 0x234"));
     g_assert_nonnull(strstr(log_text,
@@ -346,11 +444,14 @@ static void test_tx_inline_raw(void)
     static const uint8_t status[8] = {
         0x80, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x3c
     };
+    g_autofree char *dir = g_dir_make_tmp("mace-tx-vector-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     uint8_t frame[60], got[60], landed[8];
     uint32_t wire_length;
     const uint64_t descriptor = RAM_FULL + 0x4000;
-    QTestState *qts;
-    int sv[2];
+    QTestState *qts, *to;
+    int sv[2], dest_sv[2];
 
     for (unsigned i = 0; i < sizeof(frame); i++) {
         frame[i] = i * 7 + 3;
@@ -360,6 +461,7 @@ static void test_tx_inline_raw(void)
     qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
                       "mac=02:a1:4c:73:95:e6", sv[1]);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==, 0);
     mdio_write(qts, 8, 0, 0x2100);
     qtest_memwrite(qts, descriptor, command, sizeof(command));
     qtest_memwrite(qts, descriptor + 68, frame, sizeof(frame));
@@ -376,9 +478,39 @@ static void test_tx_inline_raw(void)
     g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
     qtest_memread(qts, descriptor, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), status, sizeof(status));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 1);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + 0x58, UINT64_C(0x00080008));
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    to = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 -S "
+                     "-incoming defer "
+                     "-nic socket,id=n0,fd=%d,model=sgi-mace-eth,"
+                     "mac=02:a1:4c:73:95:e6", dest_sv[1]);
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(qts, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    g_assert_cmphex(qtest_readq(to, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(to, ETH_BASE + 0x58), ==, 0);
+    qtest_quit(to);
     qtest_quit(qts);
     close(sv[0]);
     close(sv[1]);
+    close(dest_sv[0]);
+    close(dest_sv[1]);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 static void test_tx_concat_cross_page(void)
@@ -2726,6 +2858,24 @@ static void test_tx_reserved_descriptor(void)
     qts = qtest_initf("-M o2-test,phy-ics1890=on,phy-address=8 "
                       "-nic socket,id=n0,fd=%d,model=sgi-mace-eth", sv[1]);
     mdio_write(qts, 8, 0, 0x2100);
+    memset(descriptor, 0x37, sizeof(descriptor));
+    store_be64(descriptor, (68U << 16) | 59);
+    qtest_memwrite(qts, base, descriptor, sizeof(descriptor));
+    qtest_writeq(qts, ETH_BASE + MAC_CONTROL, 0);
+    qtest_writeq(qts, ETH_BASE + TX_BASE, base);
+    qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
+    qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
+    {
+        uint32_t length;
+
+        g_assert_cmpint(recv(sv[0], &length, sizeof(length), MSG_WAITALL), ==,
+                        sizeof(length));
+        g_assert_cmpuint(ntohl(length), ==, 60);
+        g_assert_cmpint(recv(sv[0], got, 60, MSG_WAITALL), ==, 60);
+        g_assert_cmpmem(got, 60, descriptor + 68, 60);
+    }
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
     for (unsigned mode = 0; mode < 9; mode++) {
         uint64_t command = (1U << 25) | 59;
         uint64_t pointer = (UINT64_C(59) << 32) | payload;
@@ -2775,6 +2925,8 @@ static void test_tx_reserved_descriptor(void)
         qtest_writeq(qts, ETH_BASE + INT_STATUS, 0xff);
         qtest_writeq(qts, ETH_BASE + TX_POINTER, 1);
         g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & 2);
+        g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                        UINT64_C(0x800000000080003c));
         g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0x18, ==, 16);
         g_assert_cmpint(recv(sv[0], got, sizeof(got), MSG_DONTWAIT), ==, -1);
         g_assert_cmpint(errno, ==, EAGAIN);
@@ -3031,6 +3183,8 @@ static void test_tx_status_fault(void)
     g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
     g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & 2);
     g_assert_true(qtest_readq(qts, ETH_BASE + INT_STATUS) & 8);
+    g_assert_cmphex(qtest_readq(qts, ETH_BASE + 0x58), ==,
+                    UINT64_C(0x800000000080003c));
     fault_set(qts, "fault-mode", 0);
     qtest_writeq(qts, ETH_BASE + INT_STATUS, 8);
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 3);
@@ -4526,6 +4680,10 @@ int main(int argc, char **argv)
                    test_register_reset_and_alias);
     qtest_add_func("/sgi/mace/ethernet/selected-word-control-mdio",
                    test_selected_word_control_mdio);
+    qtest_add_func("/sgi/mace/ethernet/interrupt-request-port",
+                   test_interrupt_request_port);
+    qtest_add_func("/sgi/mace/ethernet/interrupt-request-normal-baseline",
+                   test_interrupt_request_preserves_normal_baseline);
     qtest_add_func("/sgi/mace/ethernet/selected-word-status-ack",
                    test_selected_word_status_ack);
     qtest_add_func("/sgi/mace/ethernet/selected-pointer-fifo-pio",

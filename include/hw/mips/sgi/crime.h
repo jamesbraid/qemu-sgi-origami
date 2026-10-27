@@ -10,6 +10,9 @@
 #define SGI_CRIME_BANK_COUNT 8
 OBJECT_DECLARE_SIMPLE_TYPE(SGICrimeState, SGI_CRIME)
 
+void sgi_crime_update_mace_inputs(DeviceState *dev, uint16_t mask,
+                                  uint16_t value);
+
 typedef struct CrimeMigrationState {
     uint32_t hardware;
     uint32_t enable;

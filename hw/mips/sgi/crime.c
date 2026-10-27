@@ -1591,6 +1591,15 @@ static void crime_update_hardware(SGICrimeState *s)
     crime_update_irq(s);
 }
 
+void sgi_crime_update_mace_inputs(DeviceState *dev, uint16_t mask,
+                                  uint16_t value)
+{
+    SGICrimeState *s = SGI_CRIME(dev);
+
+    s->inputs = (s->inputs & ~(uint32_t)mask) | (value & mask);
+    crime_update_hardware(s);
+}
+
 static void crime_mace_input(void *opaque, int n, int level)
 {
     SGICrimeState *s = opaque;
