@@ -395,6 +395,31 @@ static void sdma_receive(SGIIOCSerialDMAPort *p, int64_t since)
 }
 
 /*
+ * The type field and bit 5 decide what a slot does; the low five bits have
+ * no defined meaning and are reported, not obeyed. Report them once, when
+ * the entry is fetched, for the slots up to the one that ends it.
+ */
+static void sdma_check_entry(SGIIOCSerialDMAPort *p, const uint8_t *entry)
+{
+    uint8_t undefined = 0;
+    unsigned i;
+
+    for (i = 0; i < SGI_IOC_SDMA_ENTRY_CHARS; i++) {
+        uint8_t control = entry[SGI_IOC_SDMA_ENTRY_CHARS + i];
+
+        undefined |= control & SGI_IOC_SDMA_TX_UNDEFINED;
+        if ((control & SGI_IOC_SDMA_TX_TYPE) == SGI_IOC_SDMA_TX_NOTHING) {
+            break;
+        }
+    }
+    if (undefined) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc-serial-dma: undefined TX control bits 0x%02x "
+                      "in an entry on port %u\n", undefined, p->index);
+    }
+}
+
+/*
  * Each control byte types its data byte; the empty type ends the entry, and
  * sending past it puts memory garbage on the wire.
  */
@@ -430,6 +455,7 @@ static void sdma_transmit(SGIIOCSerialDMAPort *p, int64_t since)
                 break;
             }
             p->tx_fetched = true;
+            sdma_check_entry(p, entry);
         }
 
         for (i = p->tx_slot; i < SGI_IOC_SDMA_ENTRY_CHARS; i++) {

@@ -1735,6 +1735,40 @@ static void test_transmit_empty_follows_the_ring(const void *data)
 }
 
 /*
+ * A control byte's low five bits have no defined meaning: the engine acts on
+ * the type field and bit 5 and reports the rest as a guest error, once per
+ * entry however many walks it takes to send.
+ */
+static void test_undefined_control_bits_are_logged(const void *data)
+{
+    g_autofree char *dir = g_dir_make_tmp("sn0-ioc3-log-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *contents = NULL;
+    const uint8_t out[4] = { 'u', 'v', 0, 0 };
+    const uint8_t control[4] = { TX_CHARACTER | 0x10, TX_CHARACTER | 0x01,
+                                 TX_EMPTY | 0x02, TX_EMPTY };
+    QTestState *qts = qtest_initf("-M origin200 -d guest_errors -D %s", log);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    /* In loopback the walk stops after each character and resumes. */
+    carry_on_the_line(qts, 2);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8, ==, 8);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    g_assert_nonnull(strstr(contents, "undefined TX control bits 0x13"));
+    g_assert_null(strstr(strstr(contents, "undefined TX control bits") + 1,
+                         "undefined TX control bits"));
+    unlink(log);
+    rmdir(dir);
+}
+
+/*
  * A delay-typed byte holds the slots behind it for that many milliseconds,
  * with the control register's transmit-timer bit set while it runs; an
  * explicit interrupt asked of the delay comes when it ends. Both Linux
@@ -3893,6 +3927,8 @@ int main(int argc, char **argv)
                         NULL, test_a_pause_at_time_zero_holds_a_delay);
     qtest_add_data_func("sn0/ioc3-serial/transmit-empty-follows-the-ring", NULL,
                         test_transmit_empty_follows_the_ring);
+    qtest_add_data_func("sn0/ioc3-serial/undefined-control-bits-are-logged",
+                        NULL, test_undefined_control_bits_are_logged);
     qtest_add_data_func("sn0/ioc3-serial/delay-entry-holds-the-line", NULL,
                         test_a_delay_entry_holds_the_line);
     qtest_add_data_func("sn0/ioc3-serial/modem-entry-reaches-modem-register",
