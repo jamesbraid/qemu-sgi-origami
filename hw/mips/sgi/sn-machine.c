@@ -55,6 +55,7 @@
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "chardev/char.h"
+#include "hw/char/sgi-ioc3-parallel.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "hw/misc/sgi-hub.h"
@@ -2106,24 +2107,12 @@ static bool sgi_machine_index_xio_attachments(
     return true;
 }
 
-/*
- * The backend id for board @index's parallel port: the user's -parallel,
- * else a null backend. The machine opts out of QEMU's default parallel
- * port (see sgi_machine_class_init()) because that is a text console, so
- * an empty slot gets its own backend here. The port reads a null backend
- * as nothing plugged in.
- */
+/* The backend id for board @index's parallel port; see the helper. */
 static const char *sgi_machine_parallel_label(unsigned int index)
 {
-    if (index >= MAX_PARALLEL_PORTS) {
-        return NULL;
-    }
-    if (!parallel_hds[index]) {
-        g_autofree char *id = g_strdup_printf("sgi-parallel-null%u", index);
+    Chardev *chr = sgi_ioc3_parallel_host_backend(index);
 
-        parallel_hds[index] = qemu_chr_new(id, "null", NULL);
-    }
-    return parallel_hds[index] ? parallel_hds[index]->label : NULL;
+    return chr ? chr->label : NULL;
 }
 
 /*
@@ -2734,8 +2723,8 @@ static bool sgi_machine_instantiate_baseio_card(
     /*
      * The MediaIO daughtercard's parallel port, by board index the way
      * sgi_machine_instantiate_ip29_io() binds the Origin 200's. The plain
-     * card has no parallel port, and QEMU's default "-parallel" backend
-     * exists whether or not one was asked for, so only io6g takes it.
+     * card has no parallel port, and an empty slot has a null backend
+     * whether or not -parallel was given, so only io6g takes it.
      */
     if (g_str_equal(preset, "io6g")) {
         const char *parallel_id = sgi_machine_parallel_label(board_index);

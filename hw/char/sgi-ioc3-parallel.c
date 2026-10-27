@@ -24,6 +24,7 @@
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
+#include "system/system.h"
 
 #define TL16_CNFGA_IMPLEMENTATION_ID (1u << 4)
 #define TL16_CNFGA_RESERVED          0x0fu
@@ -64,6 +65,24 @@ static bool sgi_ioc3_parallel_peripheral_attached(SGIIOC3ParallelState *s)
     Chardev *chr = qemu_chr_fe_get_driver(&s->chr);
 
     return chr && !object_dynamic_cast(OBJECT(chr), TYPE_CHARDEV_NULL);
+}
+
+Chardev *sgi_ioc3_parallel_host_backend(unsigned int index)
+{
+    static Chardev *empty[MAX_PARALLEL_PORTS];
+
+    if (index >= MAX_PARALLEL_PORTS) {
+        return NULL;
+    }
+    if (parallel_hds[index]) {
+        return parallel_hds[index];
+    }
+    if (!empty[index]) {
+        g_autofree char *id = g_strdup_printf("sgi-parallel-null%u", index);
+
+        empty[index] = qemu_chr_new(id, "null", NULL);
+    }
+    return empty[index];
 }
 
 /* Synchronous transfers leave the read-only busy flags clear. */
