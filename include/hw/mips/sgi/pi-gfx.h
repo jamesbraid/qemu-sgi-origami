@@ -64,6 +64,13 @@ typedef struct SGIPIGfx {
     bool starved[SGI_PI_GFX_SLOTS];
     /* Host-only: the zero-length stall has been logged for this slot. */
     bool stall_logged[SGI_PI_GFX_SLOTS];
+    /*
+     * Bedrock: a counted store left the counter below the bias, and the
+     * slot's next counted store waits until the processor has taken the
+     * graphics interrupt or the counter has risen above the bias
+     * (sgi_bedrock_pi_gfx_store()). The Hub does not use it.
+     */
+    bool stopped[SGI_PI_GFX_SLOTS];
 } SGIPIGfx;
 
 /* Every register zero, every page disabled (the model's choice). */
@@ -76,6 +83,9 @@ void sgi_pi_gfx_reset(SGIPIGfx *g);
  */
 uint64_t sgi_pi_gfx_read(const SGIPIGfx *g, unsigned int n);
 void sgi_pi_gfx_write(SGIPIGfx *g, unsigned int n, uint64_t value);
+
+/* Whether the slot's page is enabled and covers physical address 'addr'. */
+bool sgi_pi_gfx_covers(const SGIPIGfx *g, unsigned int slot, hwaddr addr);
 
 /*
  * An uncached I/O store by the processor in 'slot' reached physical
@@ -91,8 +101,10 @@ bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
  * pending bit 1 + slot) must be raised now. True once when the counter has
  * fallen below the bias; the counter rising above the bias again, by
  * returned credits or a write, re-arms it. The processor interface raises
- * the bit. The stall that accompanies it on the chip is modelled as zero
- * length, and the interrupt counter and compare are not modelled.
+ * the bit. The Hub uses this: the stall that accompanies it on the chip is
+ * modelled there as zero length, and the interrupt counter and compare are
+ * not modelled. The Bedrock raises the bit on every counted store below
+ * the bias and stops the slot instead (sgi_bedrock_pi_gfx_store()).
  */
 bool sgi_pi_gfx_take_starved(SGIPIGfx *g, unsigned int slot,
                              const char *who);

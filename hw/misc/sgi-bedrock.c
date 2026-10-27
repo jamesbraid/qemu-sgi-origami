@@ -1141,7 +1141,8 @@ static bool bedrock_resolve_slot_processors(SGIBedrockState *s, Error **errp)
  * address_space_read(), where whatever answers takes the lock if it needs
  * it. So a processor polling a pending bank (pi_read() in sgi-bedrock-pi.c)
  * reaches it without the lock. A write takes the lock for the credit count,
- * as it did before.
+ * and a store into a stopped slot's page waits there, with the lock let
+ * go, for the board's credits (sgi_bedrock_pi_gfx_store()).
  *
  * The hand-on into the view goes through an SGIPioForward, as the Hub's
  * does: it remembers the region the view's last page resolved to and calls
@@ -1184,17 +1185,10 @@ static MemTxResult bedrock_pi_io_write(void *opaque, hwaddr addr,
 
     BQL_LOCK_GUARD();
 
-    counted = sgi_pi_gfx_count_store(
-        &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
-        path->slot % SGI_BEDROCK_PI_PROCESSORS, addr, "sgi-bedrock");
-    /* Below the bias: the processor's graphics interrupt, bit 1 + slot. */
-    if (counted && sgi_pi_gfx_take_starved(
-            &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
-            path->slot % SGI_BEDROCK_PI_PROCESSORS, "sgi-bedrock")) {
-        sgi_bedrock_pi_set_pending(
-            &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS], 0,
-            1 + path->slot % SGI_BEDROCK_PI_PROCESSORS);
-    }
+    /* May wait for credits while the slot is stopped below its bias. */
+    counted = sgi_bedrock_pi_gfx_store(
+        &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS],
+        path->slot % SGI_BEDROCK_PI_PROCESSORS, addr);
     stq_be_p(bytes, data);
     /* Marked, so a head returns credit only for a counted store. */
     previous = sgi_pi_gfx_mark_store(counted);
@@ -1285,8 +1279,7 @@ static void bedrock_return_gfx_credits(Object *obj, unsigned int widget,
                       "Bedrock carries\n", credits, widget, route.node);
         return;
     }
-    sgi_pi_gfx_add_credits(&target->pi[route.pi].gfx, route.slot, credits,
-                           "sgi-bedrock");
+    sgi_bedrock_pi_gfx_return(&target->pi[route.pi], route.slot, credits);
 }
 
 static void bedrock_realize(DeviceState *dev, Error **errp)

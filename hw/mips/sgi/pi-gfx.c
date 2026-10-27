@@ -69,15 +69,20 @@ void sgi_pi_gfx_write(SGIPIGfx *g, unsigned int n, uint64_t value)
     }
 }
 
-bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
-                            const char *who)
+bool sgi_pi_gfx_covers(const SGIPIGfx *g, unsigned int slot, hwaddr addr)
 {
     uint64_t page;
 
     g_assert(slot < SGI_PI_GFX_SLOTS);
     page = g->page[slot];
-    if (!(page & SGI_PI_GFX_PAGE_ENABLE) ||
-        (addr & SGI_PI_GFX_PAGE_ADDRESS) != (page & SGI_PI_GFX_PAGE_ADDRESS)) {
+    return (page & SGI_PI_GFX_PAGE_ENABLE) &&
+           (addr & SGI_PI_GFX_PAGE_ADDRESS) == (page & SGI_PI_GFX_PAGE_ADDRESS);
+}
+
+bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
+                            const char *who)
+{
+    if (!sgi_pi_gfx_covers(g, slot, addr)) {
         return false;
     }
 

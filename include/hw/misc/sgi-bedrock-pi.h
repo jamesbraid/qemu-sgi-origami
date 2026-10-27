@@ -6,6 +6,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "qemu/notify.h"
+#include "qemu/thread.h"
 #include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_PI "sgi-bedrock-pi"
@@ -103,6 +104,8 @@ struct SGIBedrockPIState {
      */
     SGIPIGfx gfx;
     uint8_t gfx_credit_mode;
+    /* Broadcast when a stopped graphics slot is released. */
+    QemuCond gfx_cond;
     bool lb_error;
     bool ni_error;
     bool xb_error;
@@ -138,6 +141,19 @@ void sgi_bedrock_pi_set_level_source(SGIBedrockPIState *s, unsigned source,
 */
 void sgi_bedrock_pi_set_memory_uncorrectable(SGIBedrockPIState *s);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
+
+/*
+ * Graphics flow control on this interface. sgi_bedrock_pi_gfx_store(): a
+ * processor in 'slot' made an uncached I/O store at physical address
+ * 'addr'; charges a credit when the slot's page covers it and returns
+ * whether it did. It may wait, with the big lock let go, while the slot
+ * is stopped below its bias. sgi_bedrock_pi_gfx_return(): 'credits'
+ * returned to 'slot'. Both are called with the big lock held.
+ */
+bool sgi_bedrock_pi_gfx_store(SGIBedrockPIState *s, unsigned slot,
+                              hwaddr addr);
+void sgi_bedrock_pi_gfx_return(SGIBedrockPIState *s, unsigned slot,
+                               uint32_t credits);
 /*
  * An I/O-issued write to the interrupt-pending-modify register from a
  * requester in @region. Applied like a processor write when I/O protect

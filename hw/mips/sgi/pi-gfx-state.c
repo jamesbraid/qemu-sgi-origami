@@ -46,6 +46,30 @@ static const VMStateDescription vmstate_sgi_pi_gfx_starved = {
     },
 };
 
+static bool sgi_pi_gfx_stopped_needed(void *opaque)
+{
+    const SGIPIGfx *g = opaque;
+
+    for (unsigned int i = 0; i < SGI_PI_GFX_SLOTS; i++) {
+        if (g->stopped[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Only while a Bedrock slot's next counted store must wait. */
+static const VMStateDescription vmstate_sgi_pi_gfx_stopped = {
+    .name = "sgi-pi-gfx/stopped",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_pi_gfx_stopped_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL_ARRAY(stopped, SGIPIGfx, SGI_PI_GFX_SLOTS),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* The stall log flag is host-only and starts clear on the destination. */
 const VMStateDescription vmstate_sgi_pi_gfx = {
     .name = "sgi-pi-gfx",
@@ -62,6 +86,7 @@ const VMStateDescription vmstate_sgi_pi_gfx = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_pi_gfx_starved,
+        &vmstate_sgi_pi_gfx_stopped,
         NULL
     },
 };
