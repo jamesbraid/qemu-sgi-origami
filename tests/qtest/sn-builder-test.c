@@ -9594,6 +9594,100 @@ static void test_rbrick_router_on_a_cbrick_port(void)
     g_unlink(prom);
 }
 
+#define RBRICK_NI_LOCAL_ROUTE(n) (UINT64_C(0x681000) + 8 * (n))
+#define RBRICK_NODE(n) ((uint64_t)(n) << NASID_TEST_NODE_ADDRESS_SHIFT)
+#define RBRICK_PROBE UINT64_C(0x1000)
+
+static uint64_t rbrick_marker(unsigned int node)
+{
+    return UINT64_C(0x5242000000000000) | node;
+}
+
+/*
+ * Each C-brick reaches every other C-brick's memory through the router,
+ * and nothing else answers for it. Each node configures its own memory
+ * unit, takes its own index as its node number and leaves a marker in
+ * its memory. For each other node the reader then tries all sixteen
+ * values of its network interface's local routing entry for that node:
+ * exactly one reaches it, through the router, and returns its marker,
+ * and a write by that route lands where the owner reads it. Which value
+ * that is follows the model's own router encoding, which no R-brick
+ * register contract fixes, so the test does not name it. Moving the
+ * C-bricks between ports 2 to 5 changes nothing that it checks. Reads
+ * go through the monitor, which reports an address nothing answers; a
+ * qtest read returns zeros there instead.
+ */
+static void test_rbrick_nodes_reach_remote_memory(const void *data)
+{
+    const char *fixture = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = rbrick_start(fixture, prom);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'query-cpus-fast' }");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QListEntry *entry;
+    unsigned int cpu = 0;
+
+    /* cpu i is node i's processor. */
+    g_assert_cmpuint(qlist_size(cpus), ==, 4);
+    QLIST_FOREACH_ENTRY(cpus, entry) {
+        QDict *record = qobject_to(QDict, qlist_entry_obj(entry));
+        g_autofree char *prefix = g_strdup_printf("/machine/node%u/", cpu++);
+
+        g_assert_true(g_str_has_prefix(qdict_get_str(record, "qom-path"),
+                                       prefix));
+    }
+    for (unsigned int node = 0; node < 4; node++) {
+        uint64_t revision;
+
+        ip53_memory_writeq_cpu(qts, node, MEMORY_NODE_LB_LOCAL +
+                               MEMORY_NODE_MD_CONFIG, MEMORY_NODE_MD_SELECT2);
+        revision = ip53_memory_readq_cpu(qts, node, MEMORY_NODE_LB_LOCAL +
+                                         MEMORY_NODE_LB_REVISION);
+        ip53_memory_writeq_cpu(qts, node, MEMORY_NODE_LB_LOCAL +
+                               MEMORY_NODE_LB_REVISION,
+                               (revision & ~(UINT64_C(0xff) << 32)) |
+                               ((uint64_t)node << 32));
+        ip53_memory_writeq_cpu(qts, node, RBRICK_NODE(node) + RBRICK_PROBE,
+                               rbrick_marker(node));
+    }
+    for (unsigned int from = 0; from < 4; from++) {
+        for (unsigned int to = 0; to < 4; to++) {
+            uint64_t route = RBRICK_NI_LOCAL_ROUTE(to);
+            uint64_t target = RBRICK_NODE(to) + RBRICK_PROBE;
+            unsigned int reached = 0, found = 0;
+            uint64_t written = rbrick_marker(to) | ((uint64_t)from << 8);
+
+            if (from == to) {
+                continue;
+            }
+            for (unsigned int value = 0; value < 16; value++) {
+                uint64_t read;
+
+                ip53_memory_writeq_cpu(qts, from,
+                                       MEMORY_NODE_LB_LOCAL + route, value);
+                if (nasid_test_cpu_readq(qts, from, target, &read)) {
+                    g_assert_cmphex(read, ==, rbrick_marker(to));
+                    reached++;
+                    found = value;
+                }
+            }
+            g_assert_cmpuint(reached, ==, 1);
+            ip53_memory_writeq_cpu(qts, from, MEMORY_NODE_LB_LOCAL + route,
+                                   found);
+            ip53_memory_writeq_cpu(qts, from, target + 8, written);
+            g_assert_cmphex(ip53_memory_readq_cpu(qts, to, target + 8), ==,
+                            written);
+            g_test_message("node %u (port %u) reaches node %u (port %u) "
+                           "through the router", from,
+                           rbrick_port_of(fixture, from), to,
+                           rbrick_port_of(fixture, to));
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -11200,6 +11294,11 @@ int main(int argc, char **argv)
                         test_rbrick_takes_cbricks_on_ports_2_to_5);
     qtest_add_func("sn/builder/cbrick/rbrick-router-on-a-cbrick-port",
                    test_rbrick_router_on_a_cbrick_port);
+    qtest_add_data_func("sn/builder/cbrick/rbrick-remote-memory/in-order",
+                        "rbrick-four", test_rbrick_nodes_reach_remote_memory);
+    qtest_add_data_func("sn/builder/cbrick/rbrick-remote-memory/reversed",
+                        "rbrick-four-reversed",
+                        test_rbrick_nodes_reach_remote_memory);
     qtest_add_func("sn/builder/cbrick/module-owned-l1",
                    test_module_owned_l1_for_one_node);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
