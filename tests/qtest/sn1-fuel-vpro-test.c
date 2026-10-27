@@ -215,6 +215,34 @@ static void test_interrupt_reaches_bedrock(void)
     qtest_quit(qts);
 }
 
+/*
+ * A screendump that names the graphics head must find the head's console.
+ * QEMU's default parallel port is a text console, and the lookup by
+ * device walks every console, so that text console used to abort QEMU.
+ * The machine gives the port a null backend instead.
+ */
+static void test_screendump_names_the_graphics_head(void)
+{
+    /*
+     * Name every serial line the IOC3 claims so only the default parallel
+     * port is left to open a text console, as in a harness run.
+     */
+    QTestState *qts = fuel_start("-serial null -serial null -serial null "
+                                 "-serial null -serial null");
+    g_autoptr(QDict) response = NULL;
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("sn1-fuel-vpro-screendump-XXXXXX.ppm", &path,
+                             NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    response = qtest_qmp(qts, "{'execute':'screendump','arguments':"
+                         "{'filename':%s,'device':'graphics-slot'}}", path);
+    g_assert_true(qdict_haskey(response, "return"));
+    unlink(path);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -232,6 +260,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/fuel-vpro/widget-identity", test_widget_identity);
     qtest_add_func("sn1/fuel-vpro/headless-fuel-has-no-board",
                    test_headless_fuel_has_no_board);
+    qtest_add_func("sn1/fuel-vpro/screendump-names-the-graphics-head",
+                   test_screendump_names_the_graphics_head);
     qtest_add_func("sn1/fuel-vpro/interrupt-reaches-bedrock",
                    test_interrupt_reaches_bedrock);
     ret = g_test_run();
