@@ -171,6 +171,8 @@ typedef struct SGIIOCSerialDMAPort {
     /* A ring entry under construction, and its held count. */
     uint8_t packer[SGI_IOC_SDMA_ENTRY_SIZE];
     uint8_t packed;
+    /* The last post was turned away for lack of ring room. */
+    bool post_refused;
 
     /* The receive timer's arm, kept apart from the consume pointer. */
     bool armed;

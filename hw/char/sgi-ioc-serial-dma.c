@@ -146,7 +146,7 @@ static bool sdma_post(SGIIOCSerialDMAPort *p, uint32_t *produce,
 
     /* Full: refuse; the characters keep in the packer and the FIFO. */
     if (next == (*consume & mask)) {
-        sdma_raise(p, SGI_IOC_SDMA_SRC_RX_FULL);
+        p->post_refused = true;
         return false;
     }
 
@@ -158,6 +158,7 @@ static bool sdma_post(SGIIOCSerialDMAPort *p, uint32_t *produce,
         return false;
     }
     *produce = next;
+    p->post_refused = false;
     p->packed = 0;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
     return true;
@@ -309,6 +310,20 @@ static void sdma_update_high_water(SGIIOCSerialDMAPort *p)
 
     sdma_set_level(p, SGI_IOC_SDMA_SRC_RX_HIGH,
                    high_water && waiting >= high_water);
+
+    /*
+     * Receive-ring-full is a level too: set while ring DMA is on and an
+     * entry waits, turned away for lack of ring room. It does not come back
+     * with every refused retry after software has acknowledged it, and it
+     * falls once the consumer makes room, whether or not the held entry has
+     * posted yet. A ring filled exactly, with nothing waiting, does not
+     * raise it. A model choice; what the part does is not known.
+     */
+    if (((*produce + SGI_IOC_SDMA_ENTRY_SIZE) & mask) != (*consume & mask)) {
+        p->post_refused = false;
+    }
+    sdma_set_level(p, SGI_IOC_SDMA_SRC_RX_FULL,
+                   (sdma_control(p) & SGI_IOC_SDMA_ENABLE) && p->post_refused);
 }
 
 /*
@@ -593,6 +608,7 @@ static void sdma_reset_port(SGIIOCSerialDMAPort *p)
     p->armed = false;
     p->drain_pending = false;
     p->packed = 0;
+    p->post_refused = false;
     memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
     p->tx_slot = 0;
     p->tx_fetched = false;
@@ -844,6 +860,7 @@ void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
     sdma_port_write(d, port, offset, val);
     /* Enabling, a doorbell or a reset can change it without a walk. */
     sdma_update_tx_empty(&d->port[port]);
+    sdma_update_high_water(&d->port[port]);
 }
 
 uint32_t sgi_ioc_sdma_base_read(SGIIOCSerialDMA *d, unsigned pair, bool high)
@@ -934,6 +951,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         p->paused_at = 0;
         p->rx_frozen_due = 0;
         p->packed = 0;
+        p->post_refused = false;
         memset(p->packer, 0, SGI_IOC_SDMA_ENTRY_SIZE);
         p->armed = false;
         p->drain_pending = false;
@@ -1009,6 +1027,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_UINT8_ARRAY(packer, SGIIOCSerialDMAPort,
                             SGI_IOC_SDMA_ENTRY_SIZE),
         VMSTATE_UINT8(packed, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(post_refused, SGIIOCSerialDMAPort),
         VMSTATE_TIMER_PTR(rx_timer, SGIIOCSerialDMAPort),
         VMSTATE_UINT16(rx_idle_count, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(armed, SGIIOCSerialDMAPort),
