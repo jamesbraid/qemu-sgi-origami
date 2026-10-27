@@ -30,7 +30,7 @@ layer:
       banks: [1024, 1024, 512, 512, 512, 512]
       bank_positions: [0, 1, 2, 3, 4, 5]
       provenance: derived
-      sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected logical bank placement for Tezro"]
+      sources: ["qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected logical bank placement for Tezro"]
       notes: >-
         The bank sizes match one observed Tezro population, from a
         four-processor 700 MHz machine; other observed populations differ.

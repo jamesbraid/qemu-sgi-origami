@@ -193,8 +193,8 @@ registers, memory and display.
    * - ``onyx350-compat``, ``tezro-tower-multi``
      - PIC widget 12
      - none
-     - Optional, ``slot=widget-12``. The IP35 page takes widget 12
-       from published Tezro and Onyx 350 inventories (:ref:`sgi-ip35`);
+     - Optional, ``slot=widget-12``. The IP53 page takes widget 12
+       from published Tezro and Onyx 350 inventories (:ref:`sgi-ip53`);
        none is in the source registry, so here it is a model choice
        (*approximation*).
 
@@ -863,7 +863,7 @@ Crossbow widget 11 on the ``octane`` and ``octane2`` machines. ``tests/qtest/sn1
 does the same at XBridge widget 13 on the Fuel, and that a headless Fuel
 has no board. ``tests/qtest/sgi-graphics-pipes-test.c`` checks the
 catalogue's VPro offers and refusals and the widget 12 board on the
-IP35 profiles. ``tests/qtest/sgi-migration-roundtrip-test.c`` migrates
+IP53 profiles. ``tests/qtest/sgi-migration-roundtrip-test.c`` migrates
 the stored registers on a Fuel. ``tests/qtest/sn1-pi-gfx-test.c``
 covers the counted-store credit return.
 

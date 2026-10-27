@@ -46,6 +46,7 @@ hardware does.
    ip30
    ip32
    ip35
+   ip53
    measured-machines
    prom-image
    vocabulary
