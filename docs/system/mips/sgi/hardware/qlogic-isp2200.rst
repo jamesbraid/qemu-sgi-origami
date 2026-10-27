@@ -218,10 +218,12 @@ algorithm is unknown; this follows the SCSI parts. The firmware version
 is a model constant, not a vendor release, and the attributes report
 expanded-LUN addressing only.
 
-Abort, device and bus reset (``0x15``-``0x18``), get retry count
-(``0x22``), resource counts (``0x42``), stop firmware (``0x14``) and the
-SCSI parts' queue setup (``0x10``, ``0x11``) answer ``0x4001`` and are
-logged as unimplemented. The loop commands are under `Private loop`_.
+Abort device (``0x16``), bus reset (``0x18``), target reset
+(``0x66``), get retry count (``0x22``), resource counts (``0x42``),
+stop firmware (``0x14``) and the SCSI parts' queue setup (``0x10``,
+``0x11``) answer ``0x4001`` and are logged as unimplemented; neither
+driver issues the first three. The loop and recovery commands are under
+`Private loop`_.
 Unknown commands answer ``0x4001`` and are logged as guest errors.
 
 Initialisation control block
@@ -473,6 +475,60 @@ commands to a target until a marker arrives. Commands to present ports
 run while the loop is coming up. A refused data DMA is logged and leaves
 the command outstanding: no completion code for it is known.
 
+Recovery and disconnect
+-----------------------
+
+The recovery commands mark every command they select with the completion
+it owes, cancel each, and post that completion with the command's own
+handle, whether the cancellation or the device finishes it. The
+completions are the public definitions and the reset semantics follow
+the SCSI parts' (see :doc:`/system/mips/sgi/hardware/qlogic-isp`); what
+a real ISP2200 does, including any frames it sends the target, is
+unknown. Each result posts before the entries its command retired.
+
+=========  =====================  ======================================
+Command    Name                   Model
+=========  =====================  ======================================
+``0x15``   Abort command          m1 loop ID in its high byte, m3:m2 the
+                                  handle, m6 the LUN: that one command
+                                  completes ``0x0005``. ``0x4005`` when
+                                  none matches
+``0x17``   Abort target           m1 loop ID in its high byte: every
+                                  command there completes ``0x0004`` and
+                                  every LUN there is reset
+``0x7e``   LUN reset              m1 loop ID in its high byte, m2 the
+                                  LUN: as abort target, for that LUN
+``0x6c``   LIP reset              m1 loop ID in its high byte, ``0xff``
+                                  for all: as abort target, then the
+                                  loop comes up again; ``0x4005`` before
+                                  a loop exists
+=========  =====================  ======================================
+
+Abort reads the handle bytes of each command entry as a little-endian
+word, like the entry's other fields, and compares it with m3:m2, the
+halves Linux passes. A big-endian Linux guest stores its handle most
+significant byte first, so its aborts match nothing and fail; how real
+firmware compares the two is unknown. A reset device reports the reset
+as a unit attention on its next command.
+
+A LIP reset's bring-up posts no LIP occurred event. With bit 1 of the
+set-firmware-options m1 set it posts LIP reset ``0x8013`` in its
+place; without it, only loop up and, with option ``0x0100``, port
+database changed. That bit's meaning comes from the OpenBSD macro name
+alone, and what real firmware reports here is unknown.
+
+A port leaving the loop is not a device leaving a SCSI bus: both
+drivers expect its commands to complete. Unplugging a device first
+completes every command on it with ``0x0029`` (port logged out). If
+that was the port's last LUN the port leaves the loop, which comes up
+again without it, and later commands to the loop ID are port
+unavailable; another LUN's unplug runs no bring-up.
+
+A soft reset, PCI reset or system reset cancels every command without
+status and resets the loop's devices; an HCCR RISC reset cancels them
+without resetting the devices. Each also drops the loop: state 0, no
+loop ID, the bring-up stopped and its events gone.
+
 Migration
 ---------
 
@@ -486,6 +542,8 @@ ID one of them holds fails.
 Limitations
 ===========
 
+- Abort matching assumes a little-endian handle, so a big-endian
+  mainline Linux abort never matches.
 - The loop is an approximation shaped by two public drivers, not a
   model of ISP2200 firmware. No frames, logins, fabric, point-to-point,
   link speed or link timing; no initiators or failing ports; no loop

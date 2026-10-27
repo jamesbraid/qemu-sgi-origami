@@ -119,15 +119,22 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MBOX_ABOUT_FIRMWARE     0x0008
 #define ISP2200_MBOX_LOAD_RAM           0x0009
 #define ISP2200_MBOX_LOAD_RAM_EXTENDED  0x000b
+#define ISP2200_MBOX_ABORT_COMMAND      0x0015
+#define ISP2200_MBOX_ABORT_TARGET       0x0017
 #define ISP2200_MBOX_FIRMWARE_STATUS    0x001f
 #define ISP2200_MBOX_GET_ADAPTER_ID     0x0020
 #define ISP2200_MBOX_ENHANCED_PORT_DB   0x0047
 #define ISP2200_MBOX_INITIATE_LIP       0x0062
 #define ISP2200_MBOX_POSITION_MAP       0x0063
 #define ISP2200_MBOX_GET_PORT_DB        0x0064
+#define ISP2200_MBOX_LIP_RESET          0x006c
 #define ISP2200_MBOX_FULL_LOGIN_LIP     0x0072
 #define ISP2200_MBOX_PORT_NAME_LIST     0x0075
 #define ISP2200_MBOX_GET_ID_LIST        0x007c
+#define ISP2200_MBOX_LUN_RESET          0x007e
+
+/* LIP reset's m1 high byte for every loop ID. */
+#define ISP2200_LIP_RESET_ALL           0xff
 #define ISP2200_MBOX_GET_FW_OPTIONS     0x0028
 #define ISP2200_MBOX_SET_FW_OPTIONS     0x0038
 #define ISP2200_MBOX_INIT_FIRMWARE      0x0060
@@ -284,8 +291,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_SCSI_STATUS_RESID_UNDER 0x0800
 
 #define ISP2200_COMPLETION_COMPLETE         0x0000
+#define ISP2200_COMPLETION_RESET            0x0004
+#define ISP2200_COMPLETION_ABORTED          0x0005
 #define ISP2200_COMPLETION_UNDERRUN         0x0015
 #define ISP2200_COMPLETION_PORT_UNAVAILABLE 0x0028
+#define ISP2200_COMPLETION_LOGGED_OUT       0x0029
 
 /*
  * Events waiting for the host to release the result before them. No
@@ -332,6 +342,14 @@ typedef struct ISP2200Request {
     uint64_t sg_offset;
     uint32_t sg_index;
     uint32_t handle;
+    /*
+     * A recovery retires this request: it owes the host retire_completion
+     * whether the backend finishes it or the cancellation does. Transient,
+     * set and cleared inside one recovery.
+     */
+    bool retiring;
+    bool cancel_issued;
+    uint16_t retire_completion;
     QTAILQ_ENTRY(ISP2200Request) next;
 } ISP2200Request;
 
@@ -789,7 +807,10 @@ static void isp2200_complete(QLogicISP2200State *s, uint32_t handle,
     stl_le_p(entry + ISP2200_STATUS_OFF_RESIDUAL, residual);
 
     isp2200_hold_entry(s, entry);
-    isp2200_service_posts(s);
+    /* A recovery's retirements post once it is over, after its result. */
+    if (!s->recovering) {
+        isp2200_service_posts(s);
+    }
 }
 
 /* A malformed request goes back as itself, its entry status flagged. */
@@ -1195,6 +1216,14 @@ static void isp2200_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint64_t unused;
     int sense_len = 0;
 
+    /* Finished while a recovery was retiring it: it still owes that. */
+    if (req->retiring) {
+        completion = req->retire_completion;
+        isp2200_free_request(req);
+        isp2200_complete(s, handle, 0, completion, 0, NULL, 0);
+        return;
+    }
+
     /*
      * A buffered transfer counts successful DMA; a direct one, offered
      * only for a write shorter than its command, leaves the count to the
@@ -1230,14 +1259,162 @@ static void isp2200_scsi_complete(SCSIRequest *sreq, size_t resid)
                      MIN(unused, UINT32_MAX), sense, sense_len);
 }
 
-/* A cancellation posts nothing: whoever cancelled owes the host nothing. */
+/*
+ * A retired request posts the completion its recovery owes, with its own
+ * handle. Any other cancellation -- a reset, a purge by the SCSI layer --
+ * is not one the host asked for and posts nothing.
+ */
 static void isp2200_scsi_cancel(SCSIRequest *sreq)
 {
     ISP2200Request *req = sreq->hba_private;
+    QLogicISP2200State *s;
+    uint32_t handle;
+    uint16_t completion;
 
-    if (req != NULL) {
-        isp2200_free_request(req);
+    if (req == NULL) {
+        return;
     }
+    s = req->dev;
+    handle = req->handle;
+    completion = req->retiring ? req->retire_completion : 0;
+    isp2200_free_request(req);
+    if (completion) {
+        isp2200_complete(s, handle, 0, completion, 0, NULL, 0);
+    }
+}
+
+/*
+ * Retires every request the selector names with @completion: -1 matches
+ * any loop ID, LUN or handle, and a non-NULL @sdev only that device's.
+ * All are marked first, so one finishing in another's cancellation wait
+ * still posts what it owes; then each is cancelled, the head taken afresh
+ * because the wait may free others. Entries post once the caller's
+ * recovery ends. Mirrors qlogic-isp's retirement, with the marking first.
+ */
+static unsigned isp2200_retire(QLogicISP2200State *s, int loop_id, int lun,
+                               int64_t handle, SCSIDevice *sdev,
+                               uint16_t completion)
+{
+    ISP2200Request *req;
+    unsigned retired = 0;
+    bool again = true;
+
+    assert(s->recovering);
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        if (req->retiring ||
+            (loop_id >= 0 && req->sreq->dev->id != loop_id) ||
+            (lun >= 0 && req->sreq->lun != lun) ||
+            (handle >= 0 && req->handle != (uint32_t)handle) ||
+            (sdev && req->sreq->dev != sdev)) {
+            continue;
+        }
+        req->retiring = true;
+        req->retire_completion = completion;
+        retired++;
+    }
+
+    while (again) {
+        again = false;
+        QTAILQ_FOREACH(req, &s->requests, next) {
+            if (!req->retiring || req->cancel_issued) {
+                continue;
+            }
+            req->cancel_issued = true;
+            trace_qlogic_isp2200_request_retired(req->handle, completion);
+            if (req->sreq->enqueued) {
+                scsi_req_cancel(req->sreq);
+            } else {
+                uint32_t h = req->handle;
+
+                isp2200_free_request(req);
+                isp2200_complete(s, h, 0, completion, 0, NULL, 0);
+            }
+            again = true;
+            break;
+        }
+    }
+    return retired;
+}
+
+/* Resets the devices at @loop_id: every LUN, or only @lun. */
+static void isp2200_reset_devices(QLogicISP2200State *s, int loop_id, int lun)
+{
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        SCSIDevice *sdev = SCSI_DEVICE(kid->child);
+
+        if ((loop_id < 0 || sdev->id == loop_id) &&
+            (lun < 0 || sdev->lun == lun)) {
+            device_cold_reset(DEVICE(sdev));
+        }
+    }
+}
+
+/*
+ * The recovery commands: abort one command, abort a target, reset one
+ * LUN, LIP reset. The completions they post are the public definitions
+ * and the reset semantics follow qlogic-isp's; what a real ISP2200 does,
+ * including any frames it sends the target, is unknown.
+ */
+static uint16_t isp2200_recovery(QLogicISP2200State *s, uint16_t cmd,
+                                 const uint16_t *in)
+{
+    bool was_recovering = s->recovering;
+    int loop_id = in[1] >> 8;
+    uint16_t status = ISP2200_MBOX_COMPLETE;
+    unsigned retired;
+
+    if (cmd == ISP2200_MBOX_LIP_RESET && !s->loop_active) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+
+    s->recovering = true;
+    switch (cmd) {
+    /*
+     * The entry's handle bytes are read as a little-endian word, like the
+     * entry's other fields, and compared with m3:m2, the halves Linux
+     * passes. How real firmware compares them is unknown.
+     */
+    case ISP2200_MBOX_ABORT_COMMAND:
+        retired = isp2200_retire(s, loop_id, in[6],
+                                 ((uint32_t)in[3] << 16) | in[2], NULL,
+                                 ISP2200_COMPLETION_ABORTED);
+        if (!retired) {
+            status = ISP2200_MBOX_COMMAND_ERROR;
+        }
+        break;
+
+    case ISP2200_MBOX_ABORT_TARGET:
+        retired = isp2200_retire(s, loop_id, -1, -1, NULL,
+                                 ISP2200_COMPLETION_RESET);
+        isp2200_reset_devices(s, loop_id, -1);
+        break;
+
+    case ISP2200_MBOX_LUN_RESET:
+        retired = isp2200_retire(s, loop_id, in[2], -1, NULL,
+                                 ISP2200_COMPLETION_RESET);
+        isp2200_reset_devices(s, loop_id, in[2]);
+        break;
+
+    case ISP2200_MBOX_LIP_RESET:
+        if (loop_id == ISP2200_LIP_RESET_ALL) {
+            loop_id = -1;
+        }
+        retired = isp2200_retire(s, loop_id, -1, -1, NULL,
+                                 ISP2200_COMPLETION_RESET);
+        isp2200_reset_devices(s, loop_id, -1);
+        isp2200_bringup(s, true);
+        break;
+
+    default:
+        g_assert_not_reached();
+    }
+    trace_qlogic_isp2200_recovery(cmd, in[1] >> 8, retired);
+
+    /* The ring resumes, and the retirements post, after the result. */
+    s->recovering = was_recovering;
+    return status;
 }
 
 static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
@@ -1462,6 +1639,12 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
     case ISP2200_MBOX_POSITION_MAP:
         return isp2200_position_map(s, in);
 
+    case ISP2200_MBOX_ABORT_COMMAND:
+    case ISP2200_MBOX_ABORT_TARGET:
+    case ISP2200_MBOX_LUN_RESET:
+    case ISP2200_MBOX_LIP_RESET:
+        return isp2200_recovery(s, cmd, in);
+
     case ISP2200_MBOX_INITIATE_LIP:
     case ISP2200_MBOX_FULL_LOGIN_LIP:
         if (!s->loop_active) {
@@ -1481,22 +1664,25 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
 static bool isp2200_fc_owned(uint16_t cmd)
 {
     switch (cmd) {
-    case 0x0020: case 0x0040: case 0x0041: case 0x0047: case 0x0062:
-    case 0x0063: case 0x0064: case 0x006a: case 0x006b: case 0x006c:
-    case 0x006e: case 0x006f: case 0x0071: case 0x0072: case 0x0074:
-    case 0x0075: case 0x007c:
+    case 0x0015: case 0x0017: case 0x0020: case 0x0040: case 0x0041:
+    case 0x0047: case 0x0062: case 0x0063: case 0x0064: case 0x006a:
+    case 0x006b: case 0x006c: case 0x006e: case 0x006f: case 0x0071:
+    case 0x0072: case 0x0074: case 0x0075: case 0x007c: case 0x007e:
         return true;
     default:
         return false;
     }
 }
 
-/* Error recovery and SCSI-part queue setup, not yet in the contract. */
+/*
+ * Abort device, bus reset and target reset, which no supported driver
+ * issues; queue setup the SCSI parts use; retry and resource counts.
+ */
 static bool isp2200_deferred(uint16_t cmd)
 {
     switch (cmd) {
-    case 0x0010: case 0x0011: case 0x0014: case 0x0015: case 0x0016:
-    case 0x0017: case 0x0018: case 0x0022: case 0x0042:
+    case 0x0010: case 0x0011: case 0x0014: case 0x0016: case 0x0018:
+    case 0x0022: case 0x0042: case 0x0066:
         return true;
     default:
         return false;
@@ -1753,6 +1939,7 @@ static void isp2200_mailbox_command(QLogicISP2200State *s)
 
     s->completion_held = true;
     isp2200_service_posts(s);
+    isp2200_end_recovery(s, s->recovering);
 }
 
 /*
@@ -2457,10 +2644,12 @@ static void isp2200_plug(const HotplugHandler *hotplug_dev, DeviceState *dev,
 }
 
 /*
- * Removing a device purges its requests and drains its backend; a command
- * finishing on another port in that drain must not start the request
- * ring while the purge is under way. Removing a port's last LUN takes the
- * port off the loop, which comes up again without it.
+ * A port leaving the loop is not a device leaving a SCSI bus: both drivers
+ * expect firmware to complete its commands "port logged out" and then
+ * announce the change. Its requests are retired so before it goes. The
+ * purge and drain that follow must not let a command finishing on another
+ * port start the request ring part-way. Removing a port's last LUN takes
+ * the port off the loop, which comes up again without it.
  */
 static void isp2200_unplug(const HotplugHandler *hotplug_dev,
                            DeviceState *dev, Error **errp)
@@ -2470,6 +2659,8 @@ static void isp2200_unplug(const HotplugHandler *hotplug_dev,
     int id = SCSI_DEVICE(dev)->id;
 
     s->recovering = true;
+    isp2200_retire(s, -1, -1, -1, SCSI_DEVICE(dev),
+                   ISP2200_COMPLETION_LOGGED_OUT);
     qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
     if (!isp2200_port(s, id)) {
         isp2200_bringup(s, false);

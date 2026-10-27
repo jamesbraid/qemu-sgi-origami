@@ -968,8 +968,9 @@ static void test_semaphore_write_one(void *obj, void *data,
 
 /*
  * Approximation: unknown and deferred commands answer 0x4001 and leave
- * the running firmware alone, as do the loop commands the loop service
- * does not model: login, enhanced port database, retry count.
+ * the running firmware alone, as do the commands the loop service does
+ * not model: abort device, bus reset, target reset, login, enhanced port
+ * database, retry count.
  */
 static void test_unknown_commands(void *obj, void *data,
                                   QGuestAllocator *alloc)
@@ -979,8 +980,9 @@ static void test_unknown_commands(void *obj, void *data,
     isp_open(&t, obj, alloc);
     isp_start(&t);
     g_assert_cmphex(isp_call_ack(&t, 0x00ee, 0, 0, 0), ==, MBOX_INVALID);
-    g_assert_cmphex(isp_call_ack(&t, CMD_ABORT_IOCB, 0, 0, 0), ==,
-                    MBOX_INVALID);
+    g_assert_cmphex(isp_call_ack(&t, 0x0016, 0, 0, 0), ==, MBOX_INVALID);
+    g_assert_cmphex(isp_call_ack(&t, 0x0018, 0, 0, 0), ==, MBOX_INVALID);
+    g_assert_cmphex(isp_call_ack(&t, 0x0066, 0, 0, 0), ==, MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, CMD_RESOURCE_COUNTS, 0, 0, 0), ==,
                     MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, 0x006f, 0, 0, 0), ==, MBOX_INVALID);
@@ -2338,6 +2340,7 @@ static void test_window_openbsd_interleave_response(void *obj, void *data,
 typedef enum LoopBacking {
     LOOP_ZEROES,    /* null-co, reads zeroes, completes at once. */
     LOOP_FILE,      /* A writable raw file the test can read back. */
+    LOOP_SLOW,      /* null-co, reads zeroes after a second. */
 } LoopBacking;
 
 typedef struct LoopDisk {
@@ -2406,7 +2409,9 @@ static void *loop_test_setup(GString *cmd_line, void *arg)
         } else {
             g_string_append_printf(cmd_line,
                                    " -drive id=disk%u,if=none,format=raw,"
-                                   "file=null-co://,file.read-zeroes=on", i);
+                                   "file=null-co://,file.read-zeroes=on%s",
+                                   i, d->backing == LOOP_SLOW ?
+                                   ",file.latency-ns=1000000000" : "");
         }
         g_string_append_printf(cmd_line,
                                " -device scsi-hd,bus=isp0.0,drive=disk%u,"
@@ -3368,6 +3373,340 @@ static void test_loop_plug(void *obj, void *data, QGuestAllocator *alloc)
     isp_close(&t);
 }
 
+/*
+ * Three ports' worth of disks whose reads take a second, so a command is
+ * still in flight when the test acts on it. A cancellation waits for the
+ * backend, so a recovery here takes up to that second too.
+ */
+static const LoopDisk slow_disks[] = {
+    { 5, 0, WWN_PORT(5), WWN_NODE(5), NULL, LOOP_SLOW },
+    { 5, 1, WWN_PORT(5), WWN_NODE(5), NULL, LOOP_SLOW },
+    { 1, 0, WWN_PORT(1), WWN_NODE(1), NULL, LOOP_SLOW },
+};
+
+static const LoopConfig slow_config = {
+    .disks = slow_disks,
+    .ndisks = ARRAY_SIZE(slow_disks),
+};
+
+#define CMD_ABORT_TARGET    0x0017
+#define CMD_LIP_RESET       0x006c
+#define CMD_LUN_RESET       0x007e
+
+#define COMPLETION_RESET        0x0004
+#define COMPLETION_ABORTED      0x0005
+#define COMPLETION_LOGGED_OUT   0x0029
+
+/* A one-block READ, published and left in flight. */
+static void isp_submit_read(Isp *t, uint32_t handle, uint8_t loop_id,
+                            uint16_t lun, uint64_t buf)
+{
+    uint8_t e[ENTRY_SIZE], cdb[10];
+
+    cdb_rw10(cdb, 0x28, 0, 1);
+    entry_command(e, ENTRY_CMD64, handle, loop_id, lun, 0x28);
+    memcpy(e + 20, cdb, sizeof(cdb));
+    stw_le_p(e + 12, 0x20);
+    stl_le_p(e + 36, 512);
+    stw_le_p(e + 18, 1);
+    put_seg64(e + 40, buf, 512);
+    isp_publish(t, e);
+}
+
+typedef struct Expect {
+    uint32_t handle;
+    uint16_t completion;
+} Expect;
+
+/*
+ * Status entries until each of @want has come, with its completion, and
+ * nothing else; each batch is consumed as it arrives. Order is not
+ * checked: a command elsewhere finishes while a recovery waits on its
+ * own cancellation, so which posts first depends on the backends.
+ */
+static void isp_collect(Isp *t, const Expect *want, unsigned n)
+{
+    bool seen[8] = { false };
+    unsigned got = 0, i, j;
+
+    g_assert_cmpuint(n, <=, ARRAY_SIZE(seen));
+    while (got < n) {
+        uint16_t in;
+
+        for (i = 0; i < 10000 && !(rd(t, REG_ISR) & ISR_RISC); i++) {
+            g_usleep(1000);
+        }
+        g_assert_cmphex(rd(t, REG_ISR) & ISR_RISC, ==, ISR_RISC);
+        g_assert_cmphex(rd(t, REG_SEMAPHORE), ==, 0);
+        in = rd(t, REG_RESPONSE);
+        while (t->rs_next != in) {
+            uint8_t e[ENTRY_SIZE];
+            uint32_t handle;
+
+            isp_response(t, t->rs_next, e);
+            g_assert_cmphex(e[0], ==, ENTRY_STATUS);
+            handle = ldl_le_p(e + 4);
+            for (j = 0; j < n && (seen[j] || want[j].handle != handle); j++) {
+                ;
+            }
+            if (j == n) {
+                g_test_message("unexpected handle 0x%08x", handle);
+            }
+            g_assert_cmpuint(j, <, n);
+            g_assert_cmphex(lduw_le_p(e + 10), ==, want[j].completion);
+            g_assert_cmphex(lduw_le_p(e + 8), ==, 0);
+            seen[j] = true;
+            got++;
+            t->rs_next = (t->rs_next + 1) % t->rslen;
+        }
+        wr(t, REG_RESPONSE, t->rs_next);
+        wr(t, REG_HCCR, HCCR_CLEAR_RISC);
+    }
+}
+
+/* What a TUR on the port finds: 0 good, else the sense key. */
+static int isp_tur_sense(Isp *t, uint8_t loop_id, uint16_t lun)
+{
+    ScsiResult r;
+
+    isp_scsi(t, 0x7e00, loop_id, lun, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0,
+             &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    return r.scsi_status ? r.sense[2] & 0x0f : 0;
+}
+
+static uint16_t isp_abort(Isp *t, uint8_t loop_id, uint16_t lun,
+                          uint32_t handle)
+{
+    const uint16_t in[] = {
+        CMD_ABORT_IOCB, loop_id << 8, handle & 0xffff, handle >> 16, 0, 0,
+        lun,
+    };
+    uint16_t status = isp_mbox(t, in, ARRAY_SIZE(in));
+
+    isp_ack(t);
+    return status;
+}
+
+/*
+ * Approximation: abort matches the entry's handle bytes read as a
+ * little-endian word against m3:m2, and the loop ID and LUN. A handle
+ * stored most significant byte first does not match a small m2; one
+ * stored least significant first does, and completes "aborted" with its
+ * own four bytes. The other command finishes normally.
+ */
+static void test_abort_command(void *obj, void *data, QGuestAllocator *alloc)
+{
+    static const Expect want[] = {
+        { 0x00000005, COMPLETION_ABORTED },
+        { 0x05000000, COMPLETION_COMPLETE },
+    };
+    uint64_t buf = guest_alloc(alloc, 1024);
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+
+    /* Entry bytes 00 00 00 05, then 05 00 00 00. */
+    isp_submit_read(&t, 0x05000000, 5, 0, buf);
+    isp_submit_read(&t, 0x00000005, 5, 0, buf + 512);
+    isp_expect_no_event(&t);
+
+    /* The right handle at the wrong LUN or loop ID matches nothing. */
+    g_assert_cmphex(isp_abort(&t, 5, 1, 5), ==, MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_abort(&t, 1, 0, 5), ==, MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_abort(&t, 5, 0, 0x00050000), ==, MBOX_COMMAND_ERROR);
+
+    /* The mailbox result posts before any entry. */
+    g_assert_cmphex(isp_abort(&t, 5, 0, 5), ==, MBOX_COMPLETE);
+    isp_collect(&t, want, ARRAY_SIZE(want));
+
+    /* Gone now: a second abort finds nothing. */
+    g_assert_cmphex(isp_abort(&t, 5, 0, 5), ==, MBOX_COMMAND_ERROR);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: abort target retires every command at the loop ID with
+ * "reset" and resets every LUN there; LUN reset does the same for one
+ * LUN. Each leaves the other ports alone, and the reset devices report it
+ * as a unit attention.
+ */
+static void test_target_and_lun_reset(void *obj, void *data,
+                                      QGuestAllocator *alloc)
+{
+    static const Expect target_want[] = {
+        { 0xa0, COMPLETION_RESET },
+        { 0xa1, COMPLETION_RESET },
+        { 0xa2, COMPLETION_COMPLETE },
+    };
+    static const Expect lun_want[] = {
+        { 0xb1, COMPLETION_RESET },
+        { 0xb0, COMPLETION_COMPLETE },
+    };
+    uint64_t buf = guest_alloc(alloc, 2048);
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+
+    isp_submit_read(&t, 0xa0, 5, 0, buf);
+    isp_submit_read(&t, 0xa1, 5, 1, buf + 512);
+    isp_submit_read(&t, 0xa2, 1, 0, buf + 1024);
+    g_assert_cmphex(isp_call_ack(&t, CMD_ABORT_TARGET, 5 << 8, 0, 0), ==,
+                    MBOX_COMPLETE);
+    isp_collect(&t, target_want, ARRAY_SIZE(target_want));
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 1), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0);
+
+    isp_submit_read(&t, 0xb0, 5, 0, buf);
+    isp_submit_read(&t, 0xb1, 5, 1, buf + 512);
+    g_assert_cmphex(isp_call_ack(&t, CMD_LUN_RESET, 5 << 8, 1, 0), ==,
+                    MBOX_COMPLETE);
+    isp_collect(&t, lun_want, ARRAY_SIZE(lun_want));
+    g_assert_cmpint(isp_tur_sense(&t, 5, 1), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0);
+
+    /* An empty loop ID: nothing to retire, still complete. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_ABORT_TARGET, 7 << 8, 0, 0), ==,
+                    MBOX_COMPLETE);
+    isp_expect_no_event(&t);
+    isp_close(&t);
+}
+
+static const uint16_t lip_reset_quiet_events[] = {
+    ASYNC_LOOP_UP, ASYNC_PORT_DB,
+};
+
+static const uint16_t lip_reset_events[] = {
+    ASYNC_LIP_RESET, ASYNC_LOOP_UP, ASYNC_PORT_DB,
+};
+
+/*
+ * LIP reset retires the named loop ID's commands, or every port's for
+ * 0xff, resets those targets and brings the loop up again. Approximation:
+ * with set-firmware-options bit 1 clear it posts loop up and port
+ * database changed but no LIP event; with it set, LIP reset first.
+ */
+static void test_lip_reset(void *obj, void *data, QGuestAllocator *alloc)
+{
+    static const Expect want[] = {
+        { 0xc5, COMPLETION_RESET },
+        { 0xc1, COMPLETION_COMPLETE },
+    };
+    uint64_t buf = guest_alloc(alloc, 1024);
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    g_assert_cmphex(isp_call_ack(&t, CMD_LIP_RESET, 0xff00, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+
+    isp_submit_read(&t, 0xc5, 5, 0, buf);
+    isp_submit_read(&t, 0xc1, 1, 0, buf + 512);
+    g_assert_cmphex(isp_call_ack(&t, CMD_LIP_RESET, 5 << 8, 0, 0), ==,
+                    MBOX_COMPLETE);
+    isp_collect(&t, want, ARRAY_SIZE(want));
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, lip_reset_quiet_events,
+                      ARRAY_SIZE(lip_reset_quiet_events));
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0);
+
+    g_assert_cmphex(isp_call_ack(&t, CMD_SET_FW_OPTIONS, 0x0002, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(isp_call_ack(&t, CMD_LIP_RESET, 0xff00, 0, 0), ==,
+                    MBOX_COMPLETE);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, lip_reset_events, ARRAY_SIZE(lip_reset_events));
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 1), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0x06);
+    isp_close(&t);
+}
+
+/*
+ * A port leaving the loop completes its commands "port logged out"
+ * before it goes. Unplugging one LUN of two retires only that LUN's
+ * commands and runs no bring-up; unplugging the last runs one, and the
+ * loop ID is then unavailable. Other ports' commands finish normally.
+ */
+static void test_unplug_disconnect(void *obj, void *data,
+                                   QGuestAllocator *alloc)
+{
+    static const Expect lun0_want[] = {
+        { 0xd0, COMPLETION_LOGGED_OUT },
+        { 0xd1, COMPLETION_LOGGED_OUT },
+        { 0xd3, COMPLETION_COMPLETE },
+    };
+    static const Expect lun1_want[] = {
+        { 0xd2, COMPLETION_LOGGED_OUT },
+    };
+    uint64_t buf = guest_alloc(alloc, 2048);
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+
+    isp_submit_read(&t, 0xd0, 5, 0, buf);
+    isp_submit_read(&t, 0xd1, 5, 0, buf + 512);
+    isp_submit_read(&t, 0xd3, 1, 0, buf + 1536);
+    qtest_qmp_device_del(t.qts, "port0");
+    isp_collect(&t, lun0_want, ARRAY_SIZE(lun0_want));
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+    assert_id_list(&t, "e8:1 e0:5");
+
+    isp_submit_read(&t, 0xd2, 5, 1, buf + 1024);
+    qtest_qmp_device_del(t.qts, "port1");
+    isp_collect(&t, lun1_want, ARRAY_SIZE(lun1_want));
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 3);
+    assert_id_list(&t, "e8:1");
+    isp_scsi(&t, 0xd4, 5, 0, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_PORT_UNAVAILABLE);
+
+    qos_invalidate_command_line();
+    isp_close(&t);
+}
+
+/*
+ * A soft reset cancels every command in flight without a status and
+ * resets the loop's devices with the adapter.
+ */
+static void test_soft_reset_cancels(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 1024);
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+
+    isp_submit_read(&t, 0xe5, 5, 0, buf);
+    isp_submit_read(&t, 0xe1, 1, 0, buf + 512);
+    isp_soft_reset(&t);
+    g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 1), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0x06);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0);
+    isp_close(&t);
+}
+
 static void isp2200_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -3380,6 +3719,10 @@ static void isp2200_register_nodes(void)
     QOSGraphTestOptions plug_opts = {
         .before = loop_test_setup,
         .arg = (void *)&plug_config,
+    };
+    QOSGraphTestOptions slow_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&slow_config,
     };
     QOSGraphTestOptions low_opts = {
         .before = loop_test_setup,
@@ -3496,6 +3839,15 @@ static void isp2200_register_nodes(void)
                  test_scsi_check_condition, &loop_opts);
     qos_add_test("scsi-unavailable", "qlogic-isp2200", test_scsi_unavailable,
                  &loop_opts);
+    qos_add_test("abort-command", "qlogic-isp2200", test_abort_command,
+                 &slow_opts);
+    qos_add_test("target-and-lun-reset", "qlogic-isp2200",
+                 test_target_and_lun_reset, &slow_opts);
+    qos_add_test("lip-reset", "qlogic-isp2200", test_lip_reset, &slow_opts);
+    qos_add_test("unplug-disconnect", "qlogic-isp2200",
+                 test_unplug_disconnect, &slow_opts);
+    qos_add_test("soft-reset-cancels", "qlogic-isp2200",
+                 test_soft_reset_cancels, &slow_opts);
 }
 
 libqos_init(isp2200_register_nodes);

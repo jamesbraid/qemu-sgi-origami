@@ -434,6 +434,8 @@ qlogic_isp2200_request(uint16_t index, uint8_t type, uint8_t count) "entry %u ty
 qlogic_isp2200_submit(uint32_t handle, uint8_t loop_id, uint16_t lun, uint8_t opcode, uint32_t nsegs) "handle 0x%08x loop %u lun %u opcode 0x%02x segments %u"
 qlogic_isp2200_complete(uint32_t handle, uint16_t scsi_status, uint16_t completion) "handle 0x%08x scsi 0x%04x completion 0x%04x"
 qlogic_isp2200_request_cancelled(uint32_t handle) "handle 0x%08x"
+qlogic_isp2200_request_retired(uint32_t handle, uint16_t completion) "handle 0x%08x completion 0x%04x"
+qlogic_isp2200_recovery(uint16_t cmd, uint8_t loop_id, unsigned retired) "cmd 0x%04x loop id %u retired %u"
 qlogic_isp2200_bringup(bool lip_reset) "lip reset %d"
 qlogic_isp2200_loop_ready(uint8_t loop_id) "adapter loop id %u"
 qlogic_isp2200_loop_full(void) ""
