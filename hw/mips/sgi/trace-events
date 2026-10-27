@@ -28,3 +28,8 @@ sn0_backdoor_absent(int cpu, unsigned int node, const char *window, uint64_t pc,
 
 # sn-machine.c
 sgi_machine_module_start(unsigned int module, bool whole_machine) "module %u whole machine %d"
+
+# mace-ps2.c
+mace_ps2_receive(void *child, unsigned int port, uint8_t data, bool accepted, uint8_t rx, uint8_t errors, bool rx_full) "child %p port %u data 0x%02x accepted %d rx 0x%02x errors 0x%02x rx_full %d"
+mace_ps2_read(unsigned int port, uint64_t value, bool had_full, bool rx_full, uint8_t errors) "port %u value 0x%" PRIx64 " had_full %d rx_full %d errors 0x%02x"
+mace_ps2_outputs(unsigned int port, uint8_t control, bool tx_pending, bool rx_full, bool ready, bool irq, bool poll) "port %u control 0x%02x tx_pending %d rx_full %d ready %d irq %d poll %d"
