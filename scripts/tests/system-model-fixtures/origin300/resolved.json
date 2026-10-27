@@ -1580,6 +1580,24 @@
   ],
   "processors": [
     {
+      "part": "r12000",
+      "provenance": "observed-hardware",
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, the CPU 0 to 7 and Scache lines",
+        "108-0240-002 printed page 2-4: a PIMM carries R12000 processors at 360 MHz or R12000A at 400 MHz with a 4 or 8 MB secondary cache",
+        "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 76 and 229: R12000 implementation and revision mask"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 266,
+          "cache_mib": 8,
+          "clock_mhz": 400,
+          "notes": "The Origin 3200 C-brick's selected fit. Established: a posted Origin 3200 inventory reports four 400 MHz R12000s per C-brick at revision 3.5, each with an 8 MB secondary cache at 266 MHz. Inferred: the PRId, from that printed revision and the R12000 implementation number. The FPU identification and the reset-mode word are not established for this part on an IP35 board, so neither is carried.",
+          "processor_identification": "0x0e35"
+        }
+      ]
+    },
+    {
       "part": "r14000",
       "provenance": "observed-hardware",
       "sources": [

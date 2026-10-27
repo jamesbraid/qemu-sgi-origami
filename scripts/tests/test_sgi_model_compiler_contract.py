@@ -4338,7 +4338,7 @@ def _origin3200_fixture(*, ibrick_io: bool = False) -> dict:
             model["components"][index] = dict(
                 copy.deepcopy(components["master-cpu0"]),
                 id=component["id"], parent=component["parent"],
-                processor_slice="AB"[int(component["id"][-1])])
+                processor_slice=component["processor_slice"])
     for brick in ("c0", "c1"):
         model["components"].append(dict(
             copy.deepcopy(components["master-l1"]), id=f"{brick}-l1",

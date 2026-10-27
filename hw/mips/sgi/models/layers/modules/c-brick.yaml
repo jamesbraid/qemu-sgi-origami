@@ -22,27 +22,55 @@ layer:
         identity: {widget_part: "0xc110", widget_mfg: "0x036", hardware_revision: 2, clock_mhz: 200}
         provenance: observed-hardware
         parent: chassis
+      # Two PIMMs of two processors each. The product's cpu_selection
+      # supplies the clock and cache; which PIMM carries which slice is
+      # not stated by any held source.
       - id: cpu0
-        name: R12000-family CPU
+        name: R12000
         kind: cpu
+        processor_slice: A
         hardware_kind: r12000
-        provenance: derived
+        provenance: observed-hardware
         parent: chassis
-        notes: >-
-          The closure record names R12000 360 MHz and R12000A 400 MHz for this
-          board without a cache size; no clock or cache identity is asserted.
+        description: Processor A, the first slot of processor interface 0.
+        sources: &cbrick-cpu-sources ["web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1", "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
       - id: cpu1
-        name: R12000-family CPU
+        name: R12000
         kind: cpu
+        processor_slice: B
         hardware_kind: r12000
-        provenance: derived
+        provenance: observed-hardware
         parent: chassis
+        description: Processor B, the second slot of processor interface 0.
+        sources: *cbrick-cpu-sources
+      - id: cpu2
+        name: R12000
+        kind: cpu
+        processor_slice: C
+        hardware_kind: r12000
+        provenance: observed-hardware
+        parent: chassis
+        description: Processor C, the first slot of processor interface 1.
+        sources: *cbrick-cpu-sources
+      - id: cpu3
+        name: R12000
+        kind: cpu
+        processor_slice: D
+        hardware_kind: r12000
+        provenance: observed-hardware
+        parent: chassis
+        description: Processor D, the second slot of processor interface 1.
+        sources: *cbrick-cpu-sources
       - id: node-memory
         name: node memory
         kind: memory
-        provenance: derived
+        provenance: vendor-document
         parent: chassis
-        description: Eight DIMM slots, banks 0-7, 512 MB to 8 GB.
+        description: >-
+          Eight DIMM slots as four pairs. Banks 2n and 2n+1 sit on pair n,
+          both DIMMs of a pair match, and pairs may differ: 512 MB to 8 GB
+          per C-brick.
+        sources: ["108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 reside on DIMM pair n, the DIMMs of a pair match, eight 512 MB banks give 4 GB"]
       - id: xio-ii-connector
         name: XIO (II) connector
         kind: connector
@@ -59,9 +87,13 @@ layer:
         sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {id: sysad1, name: "SysAD, processor interface 1", kind: sysad, master: cpu2, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {id: xio-ii, name: "XIO, the Bedrock's I/O interface", kind: xio, master: bedrock, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]}
     connections:
       - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: cpu2, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: cpu3, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: bedrock, bus: sysad1, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {component: xio-ii-connector, bus: xio-ii, role: endpoint, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"]}

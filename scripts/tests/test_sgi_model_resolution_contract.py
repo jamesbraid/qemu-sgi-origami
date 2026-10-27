@@ -2923,6 +2923,156 @@ class Origin3000BrickTests(unittest.TestCase):
                     f"product 'origin3200' {message}"):
                 self.resolve_origin3200_with(instances)
 
+    def load_origin3200_with(self, changes):
+        """Resolve the Origin 3200 from a copy whose layers @changes edit."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("*.json"))
+            shutil.copy(INPUTS / "system-model.schema.json", root)
+            for relative, mutate in changes:
+                path = root / relative
+                document = yaml.safe_load(path.read_text())
+                mutate(document)
+                path.write_text(yaml.safe_dump(document, sort_keys=False))
+            return _resolver.load_system_model(root / "origin3200.yaml")
+
+    def test_cbrick_carries_two_two_processor_interfaces(self):
+        model = self.resolve()
+        components = {item["id"]: item for item in model["components"]}
+        self.assertEqual(
+            [(cid, components[cid]["processor_slice"])
+             for cid in ("c0-cpu0", "c0-cpu1", "c0-cpu2", "c0-cpu3")],
+            [("c0-cpu0", "A"), ("c0-cpu1", "B"), ("c0-cpu2", "C"),
+             ("c0-cpu3", "D")])
+        attached = {(item["component"], item["bus"], item["role"])
+                    for item in model["connections"]
+                    if item["bus"] in ("c0-sysad0", "c0-sysad1")}
+        self.assertEqual(attached, {
+            ("c0-cpu0", "c0-sysad0", "master"),
+            ("c0-cpu1", "c0-sysad0", "master"),
+            ("c0-cpu2", "c0-sysad1", "master"),
+            ("c0-cpu3", "c0-sysad1", "master"),
+            ("c0-bedrock", "c0-sysad0", "endpoint"),
+            ("c0-bedrock", "c0-sysad1", "endpoint")})
+
+    def test_origin3200_carries_the_cbrick_selected_fit(self):
+        model = self.resolve()
+        cpus = [item for item in model["components"] if item["kind"] == "cpu"]
+        self.assertEqual(len(cpus), 8)
+        for cpu in cpus:
+            with self.subTest(cpu=cpu["id"]):
+                self.assertEqual(cpu["hardware_kind"], "r12000")
+                self.assertEqual(
+                    {field: cpu["identity"][field] for field in (
+                        "clock_mhz", "cache_mib", "cache_clock_mhz",
+                        "processor_identification")},
+                    {"clock_mhz": 400, "cache_mib": 8, "cache_clock_mhz": 266,
+                     "processor_identification": "0x0e35"})
+                self.assertNotIn("fpu_identification", cpu["identity"])
+        population = model["composition"]["population"]
+        self.assertEqual(population["cpus_per_node"], [4, 4])
+        self.assertEqual(population["dimms_per_node"], [8, 8])
+        self.assertEqual(population["memory_mib_per_node"], [4096, 4096])
+        self.assertEqual(population["memory_bank_mib_per_node"],
+                         [[512] * 8, [512] * 8])
+
+    def test_origin3200_refuses_a_fit_outside_the_selected_fit(self):
+        product = "layers/products/origin3200.yaml"
+
+        def default(clock_mhz, cache_mib):
+            def change(document):
+                document["layer"]["cpu_selection"]["default"] = {
+                    "clock_mhz": clock_mhz, "cache_mib": cache_mib}
+            return change
+
+        def catalogue(part, clock_mhz, cache_mib):
+            def change(document):
+                entries = document["layer"]["data"]["processors"]
+                entry = next(item for item in entries if item["part"] == part)
+                entry["variants"].append(
+                    {"clock_mhz": clock_mhz, "cache_mib": cache_mib})
+            return change
+
+        def cbrick_part(part):
+            def change(document):
+                for component in document["layer"]["data"]["components"]:
+                    if component["kind"] == "cpu":
+                        component["hardware_kind"] = part
+            return change
+
+        def two_processors(document):
+            document["layer"]["population"]["cpus_per_node"] = [2, 2]
+
+        def half_memory(document):
+            document["layer"]["memory_kits_per_node"] = [
+                "kit-2048-four-512-banks"] * 2
+
+        def four_bank_kit(document):
+            document["layer"]["memory_kits"].append(
+                {"id": "kit-2048-four-512-banks", "dimms": 4, "dimm_mib": 512,
+                 "banks": [512] * 4, "provenance": "derived",
+                 "sources": ["Synthetic resolver fixture."]})
+
+        sn1 = "layers/architectures/sn1.yaml"
+        ip35 = "layers/assemblies/ip35.yaml"
+        cbrick = "layers/modules/c-brick.yaml"
+        for name, changes, message in (
+                ("a 360 MHz, 4 MiB R12000",
+                 [(sn1, catalogue("r12000", 360, 4)),
+                  (product, default(360, 4))],
+                 "does not support CPU 'c0-cpu0', r12000 at 360 MHz with "
+                 "4 MiB of cache"),
+                ("the 500 MHz R14000 PIMM option",
+                 [(sn1, catalogue("r14000", 500, 8)),
+                  (cbrick, cbrick_part("r14000")),
+                  (product, default(500, 8))],
+                 "does not support CPU 'c0-cpu0', r14000 at 500 MHz with "
+                 "8 MiB of cache"),
+                ("two processors per C-brick", [(product, two_processors)],
+                 r"selected CPU population \[2, 2\] is not supported"),
+                ("2 GiB per C-brick",
+                 [(ip35, four_bank_kit), (product, half_memory)],
+                 r"product 'origin3200' does not support node 0 memory banks "
+                 r"\[512, 512, 512, 512, 0, 0, 0, 0\]"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                self.load_origin3200_with(changes)
+
+    def test_ip35_banks_on_one_dimm_pair_are_fitted_alike(self):
+        ip35 = "layers/assemblies/ip35.yaml"
+        product = "layers/products/origin3200.yaml"
+
+        def kit_banks(banks):
+            def change(document):
+                kit = document["layer"]["memory_kits"][0]
+                kit.update(banks=banks, dimms=len(banks))
+            return change
+
+        def any_rows(document):
+            del document["layer"]["topology"]["supported_bank_mib_per_node"]
+
+        for banks, message in (
+                ([1024, 512] + [512] * 6,
+                 "node 0 banks 0 to 1 share DIMM pair 0 and must be fitted "
+                 "alike"),
+                ([512] * 7,
+                 "node 0 banks 6 to 7 share DIMM pair 3 and must be fitted "
+                 "alike"),
+        ):
+            with self.subTest(banks=banks), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                self.load_origin3200_with(
+                    [(ip35, kit_banks(banks)), (product, any_rows)])
+        # Pairs may differ from each other.
+        mixed = [1024, 1024] + [512] * 6
+        model = self.load_origin3200_with(
+            [(ip35, kit_banks(mixed)), (product, any_rows)])
+        self.assertEqual(
+            model["composition"]["population"]["memory_bank_mib_per_node"],
+            [mixed, mixed])
+
     def test_origin3200_still_never_compiles(self):
         from sgi_model.model_compile import CompileError, compile_model
         with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
