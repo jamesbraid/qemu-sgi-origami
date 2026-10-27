@@ -116,7 +116,9 @@ IMPACT SI board (MGRAS, HQ4)
 Board population
 ----------------
 
-The first modelled population is one textureless SI board: one HQ4 host
+The ``product`` property selects the board: ``si``, ``si-t``, ``ssi``,
+``mxi``, ``esi``, ``esi-t``, ``essi`` or ``emxi``, with each board's chip
+counts in ``hw/misc/sgi-mgras.c``. The smallest, the textureless SI, has one HQ4 host
 interface, one geometry engine (GE11), one raster engine (RE4), two pixel
 processors (PP1), 12 MiB of pixel memory, no texture memory and one display
 path. OpenBSD's ImpactSR driver names the HQ4 (``impact.c`` lines 34, 78 and
@@ -221,14 +223,14 @@ not a silent generic V12.
 
 The device (``hw/misc/sgi-odyssey.c``) takes widget revision 10, 128 MB and
 four banks by default, the values a measured V12 answers, and accepts a memory
-size and bank count. Its ``profile`` property selects one marketed board. The
+size and bank count. Its ``product`` property selects one marketed board. The
 IRIX 6.5.30 kernel turns revisions 1 to 3 into BUZZ A and 9 to 15 into BUZZ B,
 ``gfxinfo`` prints the minor number as the offset less one, and ``hinv`` names
 the board from the generation and the size (established from those shipped
 binaries):
 
 ======= ======== ====== ===== ===== ================ ===================
-Profile Revision Memory Banks PB&J  ``gfxinfo`` BUZZ Identity record
+Product Revision Memory Banks PB&J  ``gfxinfo`` BUZZ Identity record
 ======= ======== ====== ===== ===== ================ ===================
 v6      2        32 MB  2     1     A.1              ``ODY32``
 v8      2        128 MB 4     1     A.1              ``ODY128``

@@ -138,17 +138,17 @@ Profile                       Processors               Memory    Cache each   Re
 ============================  =======================  ========  ===========  ============
 Origin 350                    four 700 MHz R16000       2 GiB     8 MiB        0x009cad85
 Onyx 350 captured module      four 800 MHz R16000       8 GiB     8 MiB        0x009caf85
-Tezro deskside, one CPU       one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
-Tezro deskside, four CPUs     four 700 MHz R16000       4 GiB     4 MiB        0x009bad85
+Tezro tower, one CPU          one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
+Tezro tower, four CPUs        four 700 MHz R16000       4 GiB     4 MiB        0x009bad85
 Tezro rack, first enclosure  one 700 MHz R16000        4 GiB     4 MiB        0x009bad85
 Onyx 4 host candidate        four 1 GHz R16000         8 GiB     16 MiB       0x009dad85
 ============================  =======================  ========  ===========  ============
 
 The six listed compositions select the same internal R16000 experiment
-properties with or without the legacy ``ip53-experimental`` machine option.
+properties with or without the ``ip53-experimental`` machine option.
 The machine checks the resolved processor population, fitted socket count,
 memory, clock, cache and reset word before enabling the profile. Other
-already-admitted experimental populations still require the legacy option and
+already-admitted experimental populations still require that option and
 explicit CPU properties. These are software inputs, not measured silicon
 values. The Onyx 350 and Onyx 4 rows project a captured module into a
 single-module host. The
@@ -161,14 +161,14 @@ widget register identities remain unmeasured.
 
 The Origin 350, Onyx 350 and Onyx 4 host profiles each select one PIC at XIO
 widget 15. Tezro selects two PIC widgets, 11 and 15, and places the modeled
-IO9 behind widget 15. The one-CPU and four-CPU Tezro deskside profiles share
+IO9 behind widget 15. The one-CPU and four-CPU Tezro tower profiles share
 the same selected board, memory and I/O construction. The rack profile models
 only the first enclosure. The four-CPU Tezro tower and Onyx 350 profiles
 take an optional V12 in graphics slot ``widget-12``
 (``-device sgi-odyssey,slot=widget-12,product=v12``). Both default to no
-graphics. The widget position follows the public close-bug Tezro and
-vocal-stag Onyx 350 inventories respectively; the latter is an alternative to
-the living-raptor InfiniteReality configuration. The pipe links to that port
+graphics. The widget position follows published Tezro and Onyx 350 inventories
+respectively; on the Onyx 350 it is an alternative to an InfiniteReality
+configuration. The pipe links to that port
 of the PXBOW of the PIC that owns widget 0, reuses Odyssey and Bedrock PI
 credit handling, and is marked alive and routed once it has realized. No profile attaches a G2/G2N brick or a NUMAlink peer.
 Direct-link XIO and the PIC interrupt and DMA settings are emulator choices
@@ -176,12 +176,12 @@ where physical routing remains unknown.
 
 These profiles select an IP35 PROM 6.210 payload and a profile-specific flash
 seed. Flash read and write cycle inputs are both 16, and the machine-type
-input is 0 for the six standard profiles. The legacy Tezro trial retains its
-previous inputs. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
+input is 0 for the six standard profiles. The ``tezro-deskside-700mhz-4mib-serial-trial`` topology keeps
+its own inputs. The Origin 350 and Onyx 350 profiles select a 33,333,333 Hz IOC4
 clock; Tezro selects 66,666,667 Hz. The linked clock resource uses a 1968
 fresh-year base. Platform identity ``0x2001`` is a selected software input.
 Origin 350, Onyx 350 and the Onyx 4 host select L1 type ``0x37``. The Tezro
-deskside and rack profiles select ``0x39`` and ``0x51`` respectively, following
+tower and rack profiles select ``0x39`` and ``0x51`` respectively, following
 the published Linux IP35 machine-name mapping. Physical L1 type replies
 remain unmeasured. The public captures do not establish the selected clocks,
 an installed flash image, or the complete PIC and IO9 interrupt wiring.
