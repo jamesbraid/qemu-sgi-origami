@@ -4801,6 +4801,22 @@ static void assert_texture_staging(QTestState *s, const uint32_t *v,
     }
 }
 
+/*
+ * Bind texture handle with a record whose first level is in bank one
+ * (bit 28 of the record's third word) or bank zero.
+ */
+static void texture_native_bind_bank(QTestState *s, uint32_t handle,
+                                     bool bank_one)
+{
+    uint32_t record[22] = { 0x43, 0x101010,
+                            (256u << 10) | (bank_one ? 1u << 28 : 0) };
+
+    kona_command(s, 0x1d5,
+                 (uint32_t[]) { handle, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x11, 1 }, 5);
+    kona_command(s, 0x179, record, 22);
+}
+
 static void texture_native_bind(QTestState *s, uint32_t handle)
 {
     uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
@@ -4906,11 +4922,20 @@ static void test_texture_native_publication(void)
  * a storage code other than the 0x28 the library was seen to use (here
  * 0x30, the texture's own): the model writes no bytes and logs the
  * storage it refused.
+ *
+ * The readback names the bank by bit 28 of its word 13, the bind's third
+ * word, not by word 15, whose 0x43 is the bind record's format and
+ * layout byte. GLperf's mipmapped TexImage case loaded a 256x256 level in
+ * bank one (load word 17 bit 3) and read it back with word 13 0x138c0024
+ * and word 15 0x43. The model looked in bank zero, found nothing, and the
+ * select feed timed out: the pipe died (death reason 5) and every later
+ * GLperf case failed. Mode 3 is that readback; mode 4 names bank zero for
+ * the same bank-one texture, which matches nothing.
  */
 static void test_texture_readback(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool unknown = mode != 0;
+    bool unknown = mode != 0 && mode != 3;
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
     QTestState *s = kona_init_logged(&log);
@@ -4924,8 +4949,12 @@ static void test_texture_readback(gconstpointer opaque)
 
     memcpy(h, texture_header, sizeof(h));
     h[10] = 0x21;
+    if (mode >= 3) {
+        h[17] |= 8;
+        readback[13] |= mode == 3 ? 0x10000000 : 0;
+    }
     gl_make_current(s);
-    texture_native_bind(s, h[10]);
+    texture_native_bind_bank(s, h[10], mode >= 3);
     kona_command(s, 0x174, h, 20);
     for (unsigned k = 0; k < 4; k++) {
         qtest_writel(s, REG_COMMAND, texture_source[k]);
@@ -4959,9 +4988,14 @@ static void test_texture_readback(gconstpointer opaque)
         g_assert_cmphex(qtest_readl(s, reason_page + 4), ==, 7);
     }
     g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
-    /* The stream frames on: the texture still samples its texels. */
-    assert_texture_pixel(s, 1, 1, texture_source[3]);
-    if (!unknown) {
+    /*
+     * The stream frames on: the texture still samples its texels. (Bank
+     * one is only looked up here, not sampled.)
+     */
+    if (mode < 3) {
+        assert_texture_pixel(s, 1, 1, texture_source[3]);
+    }
+    if (mode == 0) {
         /*
          * The library loads the copy back in the readback's own codes,
          * format 7, type 3, storage 0x28, into whichever cache entry the
@@ -19798,6 +19832,10 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(1), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/readback-other-storage",
                   GUINT_TO_POINTER(2), test_texture_readback);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-bank-one",
+                  GUINT_TO_POINTER(3), test_texture_readback);
+    add_data_case("sn0/origin2000/kona-3d/texture/readback-wrong-bank",
+                  GUINT_TO_POINTER(4), test_texture_readback);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-a-b-a",
                   GUINT_TO_POINTER(0), test_texture_rebind_control);
     add_data_case("sn0/origin2000/kona-3d/texture/rebind-reverse-upload",
