@@ -9544,7 +9544,7 @@ static const struct {
 #define ORIGIN3200_II_LINK_STATUS \
     (CBRICK_IO_SPACE + UINT64_C(0x1000000) + UINT64_C(0x400128))
 
-static QTestState *origin3200_start(char **prom)
+static QTestState *origin3200_start_with(char **prom, const char *extra)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
@@ -9556,7 +9556,12 @@ static QTestState *origin3200_start(char **prom)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     return qtest_initf("-M origin3000 -cpu R12000 -smp 8 -m 8192 -bios %s "
-                       "-nodefaults -display none", *prom);
+                       "-nodefaults -display none %s", *prom, extra);
+}
+
+static QTestState *origin3200_start(char **prom)
+{
+    return origin3200_start_with(prom, "");
 }
 
 /* Each brick's L1 runs its brick's profile and reaches its neighbours. */
@@ -9629,6 +9634,109 @@ static void test_origin3200_io7_without_ieee1394(void)
     g_assert_cmphex(value, ==, identity[4]);
     g_assert_false(nasid_test_cpu_readl(qts, 4, CBRICK_CONFIG(15, 4),
                                         &value));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The I-brick's Fibre Channel card, outside the IO7, at head F device 1
+ * where both retained inventories print it. Its register window is the
+ * head's second 2 MiB slot window; halfword accesses flip PCI offset bits
+ * 1:0 there, as on the IO-8's head F.
+ */
+#define ORIGIN3200_FC_DEVICE 1
+#define ORIGIN3200_FC_WINDOW (CBRICK_WIDGET(15) + 0x400000)
+#define ORIGIN3200_FC_MMIO 0x10000000
+#define ORIGIN3200_FC_HALFWORD(offset) (((offset) & ~3u) | \
+                                        (((offset) & 3u) ^ 2u))
+#define ORIGIN3200_XBRIDGE_REG(offset) (CBRICK_WIDGET(15) + (offset) + 4)
+#define ORIGIN3200_XBRIDGE_INT_STATUS 0x100
+#define ORIGIN3200_XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
+#define ORIGIN3200_XBRIDGE_DEVICE_MEMORY (1u << 12)
+
+#define ISP2200_REG_ICR 0x08
+#define ISP2200_REG_SEMAPHORE 0x0c
+#define ISP2200_REG_MAILBOX0 0x10
+#define ISP2200_REG_HCCR 0xc0
+#define ISP2200_ICR_ENABLE 0x8008
+#define ISP2200_HCCR_SET_HOST 0x5000
+#define ISP2200_HCCR_CLEAR_RISC 0x7000
+#define ISP2200_MBOX_NOP 0x0000
+#define ISP2200_MBOX_COMPLETE 0x4000
+
+static void origin3200_fc_writew(QTestState *qts, unsigned int offset,
+                                 uint16_t value)
+{
+    qtest_writew(qts, ORIGIN3200_FC_WINDOW + ORIGIN3200_FC_HALFWORD(offset),
+                 value);
+}
+
+static uint16_t origin3200_fc_readw(QTestState *qts, unsigned int offset)
+{
+    return qtest_readw(qts,
+                       ORIGIN3200_FC_WINDOW + ORIGIN3200_FC_HALFWORD(offset));
+}
+
+static unsigned int origin3200_head_f_pin(QTestState *qts, unsigned int pin)
+{
+    return (qtest_readl(qts, ORIGIN3200_XBRIDGE_REG(
+                ORIGIN3200_XBRIDGE_INT_STATUS)) >> pin) & 1;
+}
+
+/*
+ * The card answers with its own identity at head F device 1, and a
+ * completed mailbox command raises its pin A on head F pin 1, the
+ * XBridge's default mapping for device 1. Releasing the result drops it.
+ */
+static void test_origin3200_fibre_channel_card(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    g_autofree char *card = qom_child_type(qts, "/machine/module2/io7",
+                                           "fibre-channel");
+    uint64_t config = CBRICK_CONFIG(15, ORIGIN3200_FC_DEVICE);
+
+    g_assert_cmpstr(card, ==, "qlogic-isp2200");
+    g_assert_cmphex(qtest_readl(qts, config), ==, 0x22001077);
+
+    qtest_writel(qts, config + PCI_BASE_ADDRESS_1, ORIGIN3200_FC_MMIO);
+    qtest_writel(qts, config + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, ORIGIN3200_XBRIDGE_REG(
+                     ORIGIN3200_XBRIDGE_DEVICE(ORIGIN3200_FC_DEVICE)),
+                 ORIGIN3200_XBRIDGE_DEVICE_MEMORY |
+                 (ORIGIN3200_FC_MMIO >> 20));
+
+    origin3200_fc_writew(qts, ISP2200_REG_ICR, ISP2200_ICR_ENABLE);
+    g_assert_cmpuint(origin3200_head_f_pin(qts, ORIGIN3200_FC_DEVICE), ==, 0);
+    origin3200_fc_writew(qts, ISP2200_REG_MAILBOX0, ISP2200_MBOX_NOP);
+    origin3200_fc_writew(qts, ISP2200_REG_HCCR, ISP2200_HCCR_SET_HOST);
+    g_assert_cmphex(origin3200_fc_readw(qts, ISP2200_REG_MAILBOX0), ==,
+                    ISP2200_MBOX_COMPLETE);
+    g_assert_cmpuint(origin3200_head_f_pin(qts, ORIGIN3200_FC_DEVICE), ==, 1);
+
+    origin3200_fc_writew(qts, ISP2200_REG_HCCR, ISP2200_HCCR_CLEAR_RISC);
+    origin3200_fc_writew(qts, ISP2200_REG_SEMAPHORE, 0);
+    g_assert_cmpuint(origin3200_head_f_pin(qts, ORIGIN3200_FC_DEVICE), ==, 0);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The catalogue's boot disk bus, scsi.0, is the card's loop: a disk named
+ * by its port and node names joins it as a loop port.
+ */
+static void test_origin3200_loop_disk(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start_with(
+        &prom, "-drive if=none,id=loop0,driver=null-co,read-zeroes=on "
+        "-device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=loop0,"
+        "id=loopdisk,port_wwn=0x2100000000000001,wwn=0x2000000000000001");
+    g_autofree char *bus = qom_get_str(qts, "/machine/peripheral/loopdisk",
+                                       "parent_bus");
+
+    g_assert_cmpstr(bus, ==, "/machine/module2/io7/fibre-channel/scsi.0");
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -10908,6 +11016,10 @@ int main(int argc, char **argv)
                    test_origin3200_brick_l1s);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
+    qtest_add_func("sn/builder/origin3200/fibre-channel-card",
+                   test_origin3200_fibre_channel_card);
+    qtest_add_func("sn/builder/origin3200/loop-disk",
+                   test_origin3200_loop_disk);
     qtest_add_func("sn/builder/origin3200/uncabled-ii-link-reads-down",
                    test_origin3200_uncabled_ii_link_reads_down);
     qtest_add_func("sn/builder/cbrick/origin3200-xbrick-slots",

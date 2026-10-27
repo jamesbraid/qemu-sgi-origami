@@ -317,6 +317,8 @@ def _io_board(raw: dict) -> dict:
         board["ds1742"] = True
     if raw.get("ieee1394_absent") is True:
         board["ieee1394-absent"] = True
+    if raw.get("fibre_channel") is True:
+        board["fibre-channel"] = True
     if "ds1742_fresh_year_base" in raw:
         board["ds1742-fresh-year-base"] = raw["ds1742_fresh_year_base"]
 
@@ -458,7 +460,12 @@ def _node_population(raw: dict) -> dict:
 _SCSI_TARGETS = {
     "isp1040": list(range(1, 8)),
     "isp12160": list(range(1, 16)),
+    # A loop disk's target is its loop ID, any loop port address.
+    "qlogic-isp2200": list(range(0, 0x7e)),
 }
+# Adapters whose bus is not plain SCSI. A disk on a Fibre Channel private
+# loop is a loop port and needs the port_wwn and wwn names that port has.
+_SCSI_BUS_TYPES = {"qlogic-isp2200": "fc-loop"}
 
 # The `-serial` line order a Hub-family launch places each backend on,
 # structurally: ioc3_a (also the primary console), ioc3_b, elsc (the
@@ -501,11 +508,13 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
     adapters = []
     for board in topology["io_boards"]:
         for function in board["pci"]:
-            targets = _SCSI_TARGETS.get(_enum(function["kind"]))
+            kind = _enum(function["kind"])
+            targets = _SCSI_TARGETS.get(kind)
             if targets is None:
                 continue
             adapters.append({
-                "type": "scsi", "bus": f"scsi.{len(adapters)}",
+                "type": _SCSI_BUS_TYPES.get(kind, "scsi"),
+                "bus": f"scsi.{len(adapters)}",
                 "targets": list(targets),
             })
     return adapters

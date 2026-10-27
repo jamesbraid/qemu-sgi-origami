@@ -1253,6 +1253,10 @@
 #     out, a stated limitation of a topology whose guest would wait on
 #     the controller's unmodelled PHY and bus; absent means fitted
 #
+# @fibre-channel: the I-brick's QLogic ISP2200 Fibre Channel card is
+#     fitted at device 1 of the io7 board's head; absent means not
+#     fitted
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelIoBoard',
@@ -1276,7 +1280,8 @@
             '*pci-functions': ['SGIModelPciFunction'],
             '*ioc3-subsystem-id': 'uint16',
             '*mac-source': 'SGIModelMacSource',
-            '*ieee1394-absent': 'bool' } }
+            '*ieee1394-absent': 'bool',
+            '*fibre-channel': 'bool' } }
 
 ##
 # @SGIModelControllerKind:
@@ -2289,7 +2294,9 @@
 #
 # One SCSI host adapter an offering's I/O boards carry.
 #
-# @type: bus protocol (scsi)
+# @type: bus protocol: scsi, or fc-loop for a Fibre Channel private
+#     loop, whose every target is a loop port a launcher names with
+#     scsi-hd's port_wwn and wwn
 #
 # @bus: QEMU generic-SCSI bus id this adapter answers on
 #

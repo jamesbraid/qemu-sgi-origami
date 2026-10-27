@@ -2315,6 +2315,9 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
 # (108-0240-002 printed page 2-28; owners' inventories print the same
 # three): what the `io7` preset builds.
 _IO7_FUNCTIONS = [(4, "IOC3"), (5, "LUCENT_OHCI"), (6, "TI_TSB12LV22")]
+# The I-brick's Fibre Channel card shares head F with the IO7, at the PCI
+# slot both retained inventories print (docs/system/mips/sgi/sn.rst).
+_IBRICK_FC_DEVICE = 1
 _BRICK_HEAD_PCI_KINDS = {"ioc3": "IOC3", "lucent-ohci": "LUCENT_OHCI",
                          "ti-tsb12lv22": "TI_TSB12LV22",
                          "qlogic-isp2200": "QLOGIC_ISP2200"}
@@ -2330,9 +2333,8 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
     Each head is an `SGIModelXioAttachment` on the brick's crossbar,
     hosted by that node. A head carrying the IO7's parts becomes the
     `io7` board the machine places on it. The Fibre Channel card beside
-    the IO7 on head F has no builder yet, so it is left out here and the
-    machine fits none; the catalogue documents that limitation. Any
-    other population on a head has no preset and is refused.
+    the IO7 on head F is fitted with it, at device 1 only. Any other
+    population on a head has no preset and is refused.
     """
     node_index = {entry["id"]: index
                   for index, entry in enumerate(graph["nodes"])}
@@ -2371,12 +2373,23 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
             functions = _brick_head_functions(model, components, head["id"])
             configured = model["machine"]["emulation"].get(
                 "io_boards", {}).get(head["id"], {})
-            absent = {"QLOGIC_ISP2200"}
+            absent = set()
             if configured.get("ieee1394_absent"):
                 absent.add("TI_TSB12LV22")
+            fibre_channel = [device for device, kind, _cid in functions
+                             if kind == "QLOGIC_ISP2200"]
+            if fibre_channel not in ([], [_IBRICK_FC_DEVICE]):
+                raise CompileError(
+                    f"I/O brick head '{head['id']}' carries a Fibre Channel "
+                    f"card at device {fibre_channel}; the I-brick's is at "
+                    f"device {_IBRICK_FC_DEVICE}")
             fitted = [(device, kind) for device, kind, _cid in functions
-                      if kind not in absent]
+                      if kind not in absent and kind != "QLOGIC_ISP2200"]
             if not fitted:
+                if fibre_channel:
+                    raise CompileError(
+                        f"I/O brick head '{head['id']}' carries a Fibre "
+                        "Channel card without the IO7 it shares a head with")
                 continue
             if configured.get("ieee1394_absent"):
                 fitted = sorted([*fitted, (6, "TI_TSB12LV22")])
@@ -2413,6 +2426,8 @@ def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
             }
             if configured.get("ieee1394_absent"):
                 board["ieee1394_absent"] = True
+            if fibre_channel:
+                board["fibre_channel"] = True
             selected = model["machine"]["emulation"].get(
                 "system_timekeepers", {}).get(head["id"])
             if selected is not None:

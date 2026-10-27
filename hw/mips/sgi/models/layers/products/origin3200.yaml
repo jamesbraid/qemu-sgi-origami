@@ -62,7 +62,9 @@ layer:
         device numbers are the provisional placements the module layers
         already carry. The C-brick's board-identification word, FPU
         identification and reset mode are model choices recorded with their
-        values, and the Fibre Channel card is not built.
+        values. The Fibre Channel card is fitted at head F device 1; no
+        internal disk is, so disks join its loop only as a launcher
+        attaches them.
       emulation:
         bedrock_nodes:
           c0-bedrock: &cbrick-bedrock
@@ -183,9 +185,9 @@ layer:
         console: l1-uart
         prom_dialogue: ip35-l1-prompt
         default_cpu_model: R12000
-        # No boot disk bus is built yet: the I-brick's Fibre Channel card
-        # has no builder, so the harness boots this product over the network.
-        disk_bus: none
+        # The I-brick's Fibre Channel card's private loop: a boot disk
+        # there is a loop port, named by the launcher's port_wwn and wwn.
+        disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: origin3200
         supported_guests: [irix]

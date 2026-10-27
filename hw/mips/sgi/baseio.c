@@ -57,7 +57,9 @@
  *     head mapping, pin A of device d on head pin d, with the IOC3's
  *     SuperIO event on pin 0 as on the io8 (inferred; no source
  *     examines the IO7's wiring). The Fibre Channel card at device 1 is
- *     not part of the IO7 and is not fitted here.
+ *     not part of the IO7, but shares its head: where the record fits
+ *     it, a QLogic ISP2200 sits at device 1, where owners' inventories
+ *     print it, its pin A on head pin 1 by the same default mapping.
  *   - menet: the MENET XIO board, Bridge revision 4, board part
  *     "030-0873-003", board revision J, name MENET. Four IOC3s at devices
  *     0-3, revision 1, no Timekeeper: devices 0-2 carry Ethernet, both
@@ -135,6 +137,8 @@ struct SGIBaseioState {
     char *ioc3_mac;
     /* io7 only: leave the IEEE 1394 link controller out. */
     bool ieee1394_absent;
+    /* io7 only: fit the I-brick's Fibre Channel card beside the IO7. */
+    bool fibre_channel;
     char *nvram_drive_id;
     char *nvram_clock_drive_id;
     char *chardev_a_id;
@@ -750,6 +754,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
                              SGI_IOC3_POPULATION_SERIAL_A)
 #define IO7_USB_DEVICE      5
 #define IO7_1394_DEVICE     6
+#define IBRICK_FC_DEVICE    1
 
 static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
 {
@@ -788,6 +793,17 @@ static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
         return false;
     }
     baseio_wire_xbridge_intx(chip, IO7_USB_DEVICE, IO7_USB_DEVICE);
+
+    if (s->fibre_channel) {
+        PCIDevice *fc = pci_new(PCI_DEVFN(IBRICK_FC_DEVICE, 0),
+                                "qlogic-isp2200");
+
+        object_property_add_child(OBJECT(s), "fibre-channel", OBJECT(fc));
+        if (!pci_realize_and_unref(fc, s->pci_bus, errp)) {
+            return false;
+        }
+        baseio_wire_xbridge_intx(chip, IBRICK_FC_DEVICE, IBRICK_FC_DEVICE);
+    }
 
     if (s->ieee1394_absent) {
         return true;
@@ -1109,6 +1125,11 @@ static void baseio_realize(DeviceState *dev, Error **errp)
                    "preset only");
         return;
     }
+    if (s->fibre_channel && strcmp(preset->name, "io7")) {
+        error_setg(errp, "sgi-baseio: fibre-channel-fitted applies to the io7 "
+                   "preset only");
+        return;
+    }
     if (!s->pci_bus) {
         error_setg(errp, "sgi-baseio requires the PCI bus its preset "
                   "populates");
@@ -1210,6 +1231,8 @@ static const Property baseio_properties[] = {
                        ioc3_subsystem_id, UINT32_MAX),
     DEFINE_PROP_STRING("ioc3-mac", SGIBaseioState, ioc3_mac),
     DEFINE_PROP_BOOL("ieee1394-absent", SGIBaseioState, ieee1394_absent,
+                     false),
+    DEFINE_PROP_BOOL("fibre-channel-fitted", SGIBaseioState, fibre_channel,
                      false),
     DEFINE_PROP_UINT32("scsi-revision", SGIBaseioState, scsi_revision,
                        UINT32_MAX),

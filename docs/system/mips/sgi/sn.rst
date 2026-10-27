@@ -195,10 +195,18 @@ is ``/machine/module2/xbridge``; its heads E and F are widgets 14 and
 15 of c0, and its IO7 is ``/machine/module2/io7`` on head F. The
 I-brick's L1 is ``/machine/module2/l1``, the ``ibrick`` profile named
 001i14, reached from c0's L1 over the XIO cable as an in-process call;
-it holds the IO7's Ethernet address, the machine's ``mac``.
+it holds the IO7's Ethernet address, the machine's ``mac``. The
+I-brick's Fibre Channel card is ``/machine/module2/io7/fibre-channel``,
+a ``qlogic-isp2200`` at head F device 1 with its pin A on head pin 1.
+Its private loop is the SCSI bus ``scsi.0``, the boot disk bus; each
+disk there is a loop port at the loop ID its ``scsi-id`` gives and
+needs the ``port_wwn`` and ``wwn`` names that port has, which the
+launcher chooses.
 
-Stated limitations: the Fibre Channel card at head F device 1 is not
-fitted, so the machine has no disk; the IO7's IEEE 1394 link controller
+Stated limitations: no internal FC disk is built with the machine;
+disks join the loop only as the launcher attaches them, and which of
+the brick's two drive bays a disk stands for is unknown. The IO7's
+IEEE 1394 link controller
 is left out, because its model has no PHY or bus and the stock PROM's
 probe waits on them; the IO7 has no Timekeeper, its part being
 unidentified; head E's PCI slots are empty; the I-brick's XBridge
@@ -1636,7 +1644,8 @@ Disk bus and other hints
 
 The disk bus is the QEMU SCSI bus id a launcher attaches the boot disk
 to: ``scsi.0`` is the first onboard SCSI controller's bus on every SN
-product. The netboot adapter names the device the stock PROM's netboot
+product. On the Origin 3200 it is the I-brick's Fibre Channel loop,
+which ``scsi-adapters`` lists as type ``fc-loop``. The netboot adapter names the device the stock PROM's netboot
 has been confirmed to drive on the model; ``unsupported`` means the
 offering names none. The Origin 200 offering also
 asks launchers without a display to pass ``debug-leds=off``. Origin 300

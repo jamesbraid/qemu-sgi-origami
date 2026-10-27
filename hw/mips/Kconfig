@@ -122,6 +122,7 @@ config SGI_SN1
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES
+    select QLOGIC_ISP2200_PCI
     select QLOGIC_ISP_SCSI_PCI
     select SGI_BASEIO
     select SGI_BEDROCK
