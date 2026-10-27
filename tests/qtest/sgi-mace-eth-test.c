@@ -579,7 +579,6 @@ static void wait_rx_status(QTestState *qts, uint64_t address)
     sgi_wait_start(&wait, "MACE RX valid status");
     while (!(eth_status(qts, address) & (UINT64_C(1) << 63))) {
         sgi_wait_pause(&wait, 1000);
-        qtest_clock_step(qts, 0);
     }
 }
 
@@ -810,8 +809,6 @@ static void test_rx_gather_offset_change(void)
     uint8_t frame[1514] = { 0 }, sentinel[8192], guard[32];
     int sv[2];
     QTestState *qts = rx_interval_start(sv, 8, true);
-    SgiWait wait;
-
     memset(sentinel, 0x55, sizeof(sentinel));
     qtest_memwrite(qts, RAM_FULL + 0x8000, sentinel, sizeof(sentinel));
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
@@ -824,11 +821,9 @@ static void test_rx_gather_offset_change(void)
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
                  (1U << 15) | (1U << 11) | (7U << 12) | (8U << 4));
     socket_send_frame(sv[0], frame, sizeof(frame));
-    sgi_wait_start(&wait, "MACE receive after live offset change");
-    while (((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31) != 11) {
-        sgi_wait_pause(&wait, 1000);
-        qtest_clock_step(qts, 0);
-    }
+    sgi_wait_socket_read(sv[0]);
+    g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
+                     ==, 11);
     g_assert_true(eth_status(qts, RAM_FULL + 0x9000) & (UINT64_C(1) << 63));
     g_assert_cmpuint(qtest_readq(qts, ETH_BASE + RX_FIFO_INFO) & 31, ==, 6);
     qtest_memread(qts, RAM_FULL + 0x8fe0, guard, sizeof(guard));
@@ -2871,7 +2866,6 @@ static void test_rx_dma_faults(void)
         uint8_t frame[60] = { 0 }, sentinel[512], landed[512];
         int sv[2];
         QTestState *qts = fault_eth_start(sv);
-        SgiWait wait;
         uint64_t first;
 
         memset(sentinel, 0x5a, sizeof(sentinel));
@@ -2892,11 +2886,8 @@ static void test_rx_dma_faults(void)
                   phase == 1 ? 0x8107 : 0x8163);
         fault_set(qts, "fault-mode", 2);
         socket_send_frame(sv[0], frame, sizeof(frame));
-        sgi_wait_start(&wait, "MACE RX fault stops DMA");
-        while (qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
-            sgi_wait_pause(&wait, 1000);
-            qtest_clock_step(qts, 0);
-        }
+        sgi_wait_socket_read(sv[0]);
+        g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
         fault_set(qts, "fault-mode", 0);
         qtest_memread(qts, FAULT_MEMORY + 0x8000, landed, sizeof(landed));
         g_assert_cmphex(eth_status(qts, FAULT_MEMORY + 0x8000), ==, first);
@@ -2964,7 +2955,6 @@ static void test_rx_fault_migration(void)
     int sv[2], dest_sv[2];
     QTestState *from = fault_eth_start(sv);
     QTestState *to = fault_eth_start_full(dest_sv, true);
-    SgiWait wait;
     int64_t clock;
 
     for (unsigned i = 0; i < 8; i++) {
@@ -2981,11 +2971,8 @@ static void test_rx_fault_migration(void)
     fault_set(from, "fault-end", 0x8107);
     fault_set(from, "fault-mode", 2);
     socket_send_frame(sv[0], frame, sizeof(frame));
-    sgi_wait_start(&wait, "MACE RX status fault before migration");
-    while (qtest_readq(from, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
-        sgi_wait_pause(&wait, 1000);
-        qtest_clock_step(from, 0);
-    }
+    sgi_wait_socket_read(sv[0]);
+    g_assert_false(qtest_readq(from, ETH_BASE + DMA_CONTROL) & (1U << 15));
     fault_set(from, "fault-mode", 0);
     clock = qtest_clock_step(from, 1);
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
@@ -3858,6 +3845,7 @@ static void test_rx_host_gather_admission(void)
         for (unsigned i = 0; i <= consumed; i++) {
             rx_host_offer(sv[0], i);
         }
+        sgi_wait_socket_read(sv[0]);
         for (unsigned i = 0; i < consumed; i++) {
             unsigned offset = delayed && i < 10 ? 0x8000 + i * 256 :
                               0x8000 + (delayed ? i - 9 : i) * 4096;
@@ -3866,7 +3854,6 @@ static void test_rx_host_gather_admission(void)
         }
         wait_fifo_count(qts, 0);
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
-        qtest_clock_step(qts, 0);
         g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
                          ==, consumed);
         g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xc0, ==, 0);
@@ -3901,7 +3888,6 @@ static void test_rx_host_nonpacket_drops(void)
         sgi_wait_socket_read(sv[0]);
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL,
                      rx_retirement_control(0, false));
-        qtest_clock_step(qts, 0);
         g_assert_cmpuint((qtest_readq(qts, ETH_BASE + INT_STATUS) >> 25) & 31,
                          ==, 0);
         g_assert_cmphex(qtest_readq(qts, ETH_BASE + INT_STATUS) & 0xc0, ==, 0);
@@ -3934,7 +3920,6 @@ static void test_rx_host_control_transitions(void)
         rx_host_offer(sv[0], 1);
         sgi_wait_socket_read(sv[0]);
         qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
-        qtest_clock_step(qts, 0);
 
         if (mode == 0) {
             qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
@@ -3957,7 +3942,6 @@ static void test_rx_host_control_transitions(void)
             close(sv[1]);
             continue;
         }
-        qtest_clock_step(qts, 0);
         qtest_memread(qts, FAULT_MEMORY + 0x9000, landed, sizeof(landed));
         g_assert_cmpmem(landed, sizeof(landed), guard, sizeof(guard));
         if (mode == 2) {
@@ -3995,7 +3979,6 @@ static void test_rx_host_dma_fault(void)
     sgi_wait_start(&wait, "MACE deferred offer reaches RX DMA fault");
     while (qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
         sgi_wait_pause(&wait, 1000);
-        qtest_clock_step(qts, 0);
     }
     fault_set(qts, "fault-mode", 0);
     qtest_memread(qts, FAULT_MEMORY + 0x9000, partial, sizeof(partial));
@@ -4005,7 +3988,6 @@ static void test_rx_host_dma_fault(void)
     rx_host_offer(sv[0], 1);
     sgi_wait_socket_read(sv[0]);
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
-    qtest_clock_step(qts, 0);
     qtest_memread(qts, FAULT_MEMORY + 0x9000, after, sizeof(after));
     g_assert_cmpmem(after, sizeof(after), partial, sizeof(partial));
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, 0);
@@ -4329,8 +4311,6 @@ static void test_rx_threshold_fault_retirement(void)
     int sv[2];
     QTestState *qts = rx_retirement_start(sv, 8, 0, false);
     uint8_t before[4096], after[sizeof(before)], frame[60] = { 0 };
-    SgiWait wait;
-
     rx_retirement_packet(qts, sv[0], 0x8000, 0);
     qtest_writeq(qts, ETH_BASE + RX_DELAY, 2);
     qtest_writeq(qts, ETH_BASE + DMA_CONTROL, rx_retirement_control(8, true));
@@ -4345,11 +4325,8 @@ static void test_rx_threshold_fault_retirement(void)
     fault_set(qts, "fault-end", 0x9107);
     fault_set(qts, "fault-mode", 2);
     socket_send_frame(sv[0], frame, sizeof(frame));
-    sgi_wait_start(&wait, "legacy RX threshold status fault");
-    while (qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15)) {
-        sgi_wait_pause(&wait, 1000);
-        qtest_clock_step(qts, 0);
-    }
+    sgi_wait_socket_read(sv[0]);
+    g_assert_false(qtest_readq(qts, ETH_BASE + DMA_CONTROL) & (1U << 15));
     fault_set(qts, "fault-mode", 0);
     g_assert_cmphex(eth_status(qts, FAULT_MEMORY + 0x9100) >> 63, ==, 0);
     qtest_writeq(qts, ETH_BASE + RX_INT_ALIAS, (7U << 4) | (1U << 9));
@@ -4388,13 +4365,12 @@ static void test_rx_threshold_migration(void)
         qtest_irq_intercept_out_named(to, "/machine/peripheral/mace", "crime");
         rx_retirement_packet(from, sv[0], 0x8000, 0);
         if (mode < 2) {
-            qtest_clock_step(from, 61380);
+            clock = qtest_clock_step(from, 61380);
             g_assert_true(rx_threshold_event(from));
             if (mode == 1) {
                 qtest_writeq(from, ETH_BASE + RX_FIFO_PORT, RAM_FULL + 0x8000);
                 g_assert_false(rx_threshold_event(from));
             }
-            clock = qtest_clock_step(from, 0);
         } else {
             if (mode == 3) {
                 qtest_writeq(from, ETH_BASE + RX_INT_ALIAS, 8U << 4);
