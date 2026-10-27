@@ -19,7 +19,7 @@ profile /mips64/sn1/odyssey/profile-names-its-board
 board /mips64/sn1/odyssey/interrupt-registers
 board /mips64/sn1/odyssey/interrupt-enable-set-and-clear
 board /mips64/sn1/odyssey/interrupt-clear-acknowledges-flags
-board /mips64/sn1/odyssey/interrupt-flags-write-is-accepted
+board /mips64/sn1/odyssey/interrupt-flags-take-written-value
 board /mips64/sn1/odyssey/lowater-not-raised-while-disabled
 board /mips64/sn1/odyssey/board-status-reports-fifo-ready
 board /mips64/sn1/odyssey/interrupt-packet-composition
