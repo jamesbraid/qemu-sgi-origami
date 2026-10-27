@@ -26,6 +26,7 @@
 #include "qemu/log.h"
 #include "qemu/host-utils.h"
 #include "qemu/notify.h"
+#include "qemu/rcu.h"
 #include "qemu/thread.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/x-gc.h"
@@ -168,6 +169,12 @@ static void *sgi_soft_band_worker(void *opaque)
     unsigned band = (uintptr_t)opaque;
     uint64_t seen = 0;
 
+    /*
+     * A band can log (qemu_log_mask()), which reads the log file under
+     * rcu_read_lock(); synchronize_rcu() waits only for registered
+     * threads, so an unregistered worker could see the file freed.
+     */
+    rcu_register_thread();
     qemu_mutex_lock(&sgi_soft_pool.lock);
     for (;;) {
         SGISoftBandFn *fn;
@@ -191,6 +198,7 @@ static void *sgi_soft_band_worker(void *opaque)
             qemu_cond_signal(&sgi_soft_pool.done);
         }
     }
+    rcu_unregister_thread();
     return NULL;
 }
 
