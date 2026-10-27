@@ -7,7 +7,7 @@ IOC3-bearing I/O boards and the MENET board
 ===========================================
 
 The IOC3 is one chip that SGI fitted to many boards, each wiring a
-different subset of its functions (:doc:`sgi-ioc3`). This page lists
+different subset of its functions (:doc:`/system/mips/sgi/hardware/ioc3`). This page lists
 the IOC3-bearing boards of the ``sgi-sn`` machines, how guests decide each
 chip's population, and specifies the MENET XIO board (a Bridge and four
 IOC3s giving a module four Fast Ethernet ports and six serial ports) and
@@ -123,13 +123,13 @@ Board catalogue
    * - Origin 2000 BaseIO (IO6), BaseIO-G, MediaIO
      - presets ``io6``, ``io6g``
      - Device 2, pin 4; MediaIO IOC3 at device 6, pin 6
-       (:doc:`sgi-baseio`).
+       (:doc:`/system/mips/sgi/hardware/baseio`).
    * - MENET
      - preset ``menet``
      - Devices 0 to 3 (below).
    * - Cad Duo and dual-serial PCI cards
      - ``sgi-pci-shoehorn`` ``cad-duo-slot``, ``sio-slot``
-     - The card's slot (:doc:`sgi-pci-expansion`).
+     - The card's slot (:doc:`/system/mips/sgi/hardware/pci-expansion`).
    * - Origin 300 IO8, Origin 3000 I-brick IO7, Fuel
      - ``io8`` preset; I-brick and Fuel board record layers
      - Device 4 on the XBridge (Linux ``bridge_setup_io8``, ``_io7``,
@@ -137,7 +137,7 @@ Board catalogue
        board.
    * - Octane IP30 system board
      - built by the ``octane`` machine, not a ``sgi-baseio`` preset
-       (:doc:`sgi-ip30`)
+       (:doc:`/system/mips/sgi/ip30`)
      - Device 2, pin 4 (Linux ``bridge_setup_ip30_sysboard``); out of
        family.
 

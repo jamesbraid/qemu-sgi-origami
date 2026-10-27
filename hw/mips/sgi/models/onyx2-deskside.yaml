@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
 # IO1 (Crossbow widget F) and one InfiniteReality pipe on XIO4 (widget 8)
-# with no Ktown (docs/specs/sgi-onyx2.rst, Deskside). Launch it with
+# with no Ktown (docs/system/mips/sgi/ip27.rst, Deskside). Launch it with
 # QEMU: -M onyx2,topology=onyx2-deskside.
 #
 # Each node board's physical_slot carries the Hub slot bits this midplane
 # drives: 3 in node slot 1 and 2 in node slot 2, which firmware and IRIX
-# decode as the deskside's n1 and n2 (docs/specs/sgi-onyx2.rst, Node slot
+# decode as the deskside's n1 and n2 (docs/system/mips/sgi/ip27.rst, Node slot
 # codes).
 configuration_version: 1
 sources:
-  deskside-graphics: qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-deskside-slots
+  deskside-graphics: qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-deskside-slots
 layers:
   - layers/architectures/sn0.yaml
   - layers/assemblies/ip27.yaml
@@ -45,7 +45,7 @@ connector_population:
     reason: Fit the one InfiniteReality pipe the deskside carries.
     provenance: derived
     sources: [deskside-graphics]
-  - {component: xio-slot-2, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-  - {component: xio-slot-3, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-  - {component: xio-slot-5, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-  - {component: xio-slot-6, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-2, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-3, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-5, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+  - {component: xio-slot-6, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}

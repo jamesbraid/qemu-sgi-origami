@@ -11,7 +11,7 @@ hw/mips/sgi/models/references.yaml or this tree:
     <tree>:<commit> <path> [lines]     linux:db2ddb871435 arch/mips/...
     web:<key> <locator>                web:dmesgd-8994 the onewire0 line
     firmware:<key> <locator>           firmware:ip27-prom-6.156 string "..."
-    qemu:<path>[#label]                qemu:docs/specs/sgi-ip27.rst#label
+    qemu:<path>[#label]                qemu:docs/system/mips/sgi/ip27.rst#label
 
 The check fails on every class of finding except two informational ones:
 a citation of a stock firmware image, and of a source a reader can obtain

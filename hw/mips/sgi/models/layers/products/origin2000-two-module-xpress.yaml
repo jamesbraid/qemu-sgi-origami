@@ -9,7 +9,7 @@ layer:
     min_nodes: 8
     max_nodes: 8
     provenance: vendor-document
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin2000-xpress]
   population:
     nodes: 8
     cpus_per_node: [2, 2, 2, 2, 2, 2, 2, 2]
@@ -20,9 +20,9 @@ layer:
         does not state an installed memory population for a two-module reference
         pairing; no fitted-memory value is asserted here.
       provenance: derived
-      sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin2000-xpress]
     provenance: vendor-document
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin2000-xpress]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin2000-xpress]
   cpu_selection:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,

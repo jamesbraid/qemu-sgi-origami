@@ -14,7 +14,7 @@ layer:
     - [2, 2, 2, 2]
     # One row per fitted node count, in SGI's fill order. Every row keeps
     # the module's two Standard Routers but the one-node row, which needs
-    # none; docs/specs/sgi-origin2000-module.rst, Router fit, grades each
+    # none; docs/system/mips/sgi/ip27.rst, Router fit, grades each
     # fact.
     node_populations:
     - node_slots: [1]
@@ -34,14 +34,14 @@ layer:
       xio_slots: {pci-expansion: 1, xio-slot-3: 1, xio-slot-4: 1, xio-slot-5: 1, xio-slot-6: 1, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
       grade: established
-      sources: ["web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers"]
+      sources: ["web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12", "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers"]
     - node_slots: [1, 2, 3]
       routers: [router-1, router-2]
       fabric_links: [r1-node1, r1-node2, r1-r2, r2-node3]
       xio_slots: {pci-expansion: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 2, xio-slot-9: 2, xio-slot-10: 2, xio-slot-11: 2, xio-slot-12: 2}
       supported_cpu_populations: [[2, 2, 2], [1, 1, 1], [2, 1, 1], [2, 2, 1]]
       grade: inferred
-      sources: ["qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"]
+      sources: ["qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"]
       notes: >-
         Which node controls IO8, IO10 and IO12 with node board 4 absent
         is inferred: node 2 is the only Hub on Crossbow 1.
@@ -51,7 +51,7 @@ layer:
       xio_slots: {pci-expansion: 3, xio-slot-3: 1, xio-slot-4: 3, xio-slot-5: 1, xio-slot-6: 3, xio-slot-7: 2, xio-slot-8: 4, xio-slot-9: 2, xio-slot-10: 4, xio-slot-11: 2, xio-slot-12: 4}
       supported_cpu_populations: [[2, 2, 2, 2], [1, 1, 1, 1], [2, 1, 1, 1], [2, 2, 1, 1], [2, 2, 2, 1]]
       grade: established
-      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants", "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers"]
+      sources: ["108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified", "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants", "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers"]
   population:
     nodes: 4
     cpus_per_node:
@@ -68,7 +68,7 @@ layer:
   memory_kits_per_node: [kit-256, kit-256, kit-256, kit-256]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -132,7 +132,7 @@ layer:
         flash_read_cycles: 8
         flash_write_cycles: 1
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface]
+        sources: ["qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-reset-mode", qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-processor-interface]
       emulation:
         machine_name: origin2000
         display_description: SGI Origin 2000 rack module
@@ -235,5 +235,5 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image, netboot]
         provenance: derived
-        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", qemu:docs/specs/sgi-sn.rst#sgi-sn-firmware-supply, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
+        sources: ["query-sgi-machines: the node<N>-flash storage items, one per node board, that qemu-sgi-machine-init creates and a launch binds", qemu:docs/system/mips/sgi/sn.rst#sgi-sn-firmware-supply, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict

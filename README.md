@@ -16,17 +16,17 @@ which adds a CLI for machines, disks, consoles and IRIX network installs.
 Each family's model covers its topologies, CPUs, memory sizes and boards.
 
 - **Origin 200, Origin 2000, Onyx2** (IP27): one or two Origin 200 chassis, GIGAchannel, deskside and rack. Boots IRIX 6.5, Linux and OpenBSD.
-  [Spec](docs/specs/sgi-sn.rst), [Onyx2](docs/specs/sgi-onyx2.rst).
+  [Spec](docs/system/mips/sgi/ip27.rst).
 - **Octane, Octane2** (IP30): Boots IRIX 6.5 with IMPACT or VPro graphics. 
-  [Spec](docs/specs/sgi-ip30.rst).
+  [Spec](docs/system/mips/sgi/ip30.rst).
 - **Origin 300, Fuel** (IP35): Boots IRIX 6.5 with VPro graphics.
-  [Spec](docs/specs/sgi-sn.rst), [Bedrock](docs/specs/sgi-bedrock.rst).
+  [Spec](docs/system/mips/sgi/ip35.rst), [Bedrock](docs/system/mips/sgi/hardware/bedrock.rst).
 - **Origin 350, Onyx 350, Tezro, Onyx4** (IP53): Boots IRIX 6.5 with VPro graphics.
-  [Spec](docs/specs/sgi-ip53.rst).
+  [Spec](docs/system/mips/sgi/ip35.rst).
 - **O2** (IP32): WIP - boots IRIX 6.5.
 
 Graphics boards are IMPACT (MGRAS), InfiniteReality (KONA), VPro (Odyssey)
-and the PsiTech RAD4. The [graphics spec](docs/specs/sgi-graphics.rst) says
+and the PsiTech RAD4. The [graphics spec](docs/system/mips/sgi/hardware/graphics.rst) says
 which machines take which.
 
 There is a flexible configuration model to allow different configurations of

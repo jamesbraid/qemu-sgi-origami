@@ -53,11 +53,11 @@ layer:
         parent: chassis
         connector: {interface: xio, location: "0xB", occupancy: opaque, notes: One of two host ports an I-brick or other expansion brick attaches to.}
     buses:
-      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
+      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: host-port-a, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick], notes: Widget 0xA; opaque unless module_instances wires an attached brick.}
-      - {component: host-port-b, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick], notes: Widget 0xB; opaque unless module_instances wires an attached brick.}
+      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: host-port-a, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick], notes: Widget 0xA; opaque unless module_instances wires an attached brick.}
+      - {component: host-port-b, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick], notes: Widget 0xB; opaque unless module_instances wires an attached brick.}

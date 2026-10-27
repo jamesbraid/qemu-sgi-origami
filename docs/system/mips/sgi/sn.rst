@@ -854,7 +854,7 @@ Firmware supply
 ===============
 
 ``-bios`` accepts a raw PROM image or SGI's own distribution container,
-decoded as :doc:`sgi-prom-image` describes; the machine uses the decoded
+decoded as :doc:`/system/mips/sgi/prom-image` describes; the machine uses the decoded
 payload either way.
 
 ``origin200`` and ``origin2000`` take ``-bios`` to supply one PROM
@@ -1284,7 +1284,7 @@ still waiting for its processors, is part of that stream and is carried out
 once the destination runs.
 
 A Hub port reset with bit 0 set restarts the whole machine, not a node
-(:doc:`sgi-hub`): every processor stops at the write, and the machine then
+(:doc:`/system/mips/sgi/hardware/hub`): every processor stops at the write, and the machine then
 cold-starts every module that has power together, the same way a single
 module is started: each module's parts are reset, the I/O its nodes host
 included, and the processors run again. The standby controllers are not
@@ -1307,7 +1307,7 @@ took a bus error reading it.
 The machine's own reset, ``system_reset``, is an AC cycle: every module and
 every controller starts over, and a controller's start powers its module up.
 Once every module's power is off with no power-up to come the machine powers
-down (:doc:`sgi-elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
+down (:doc:`/system/mips/sgi/hardware/elsc` says when it decides this); IRIX 6.5.30 sends ``pwr d
 1`` to every module at ``shutdown -p``.
 
 Unpowered parts are inert. While a module is off:
@@ -1354,7 +1354,7 @@ In the model an operator reaches an off Origin 2000 module's controller
 through its serial line, and an off Origin 200 slave's through its master:
 the slave has no connector of its own, and a ``pwr u`` the master accepts
 while it is itself off powers the master up, whose forward then starts the
-slave (`Master and slave` in :doc:`sgi-elsc`). A ``pwr u`` sent to a master
+slave (:ref:`sgi-elsc-master-slave`). A ``pwr u`` sent to a master
 that is already on has nothing to power up and forwards nothing, so the
 model has no way to start only the slave from a peer's bus.
 
@@ -1619,6 +1619,6 @@ Devices
 =======
 
 The node ASICs, bridges, controllers and I/O chips this family builds
-from have their own pages: :doc:`sgi-hub`, :doc:`sgi-bridge`,
-:doc:`sgi-elsc`, :doc:`sgi-ioc3`, :doc:`sgi-qlogic-isp`,
-:doc:`sgi-xbridge`.
+from have their own pages: :doc:`/system/mips/sgi/hardware/hub`, :doc:`/system/mips/sgi/hardware/bridge`,
+:doc:`/system/mips/sgi/hardware/elsc`, :doc:`/system/mips/sgi/hardware/ioc3`, :doc:`/system/mips/sgi/hardware/qlogic-isp`,
+:doc:`/system/mips/sgi/hardware/xbridge`.

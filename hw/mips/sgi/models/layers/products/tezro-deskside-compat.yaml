@@ -2,7 +2,7 @@
 # Software compatibility composition for the selected Tezro deskside inputs.
 layer_version: 1
 sources:
-  tezro-deskside-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro deskside software choices and unresolved physical behavior"
+  tezro-deskside-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro deskside software choices and unresolved physical behavior"
 layer:
   kind: product
   id: tezro-deskside-compat

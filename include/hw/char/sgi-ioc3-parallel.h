@@ -2,7 +2,7 @@
 /* SGI IOC3 parallel port register and device definitions. */
 /*
  * IOC3 maps the DMA and byte-wide ECP regions separately.
- * The register contract is documented in docs/specs/sgi-ioc3.rst.
+ * The register contract is documented in docs/system/mips/sgi/hardware/ioc3.rst.
  */
 
 #ifndef HW_CHAR_SGI_IOC3_PARALLEL_H

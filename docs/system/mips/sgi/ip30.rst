@@ -775,7 +775,7 @@ This is an open question. What is known:
 - The Bridge ASIC provides two 2 MiB flash regions, at widget offsets
   ``0xc00000`` and ``0xe00000``, and a strap input chooses which chip
   select appears at the lower region (established for the ASIC; the
-  public Bridge specification is described in :doc:`sgi-bridge`).
+  public Bridge specification is described in :doc:`/system/mips/sgi/hardware/bridge`).
 - OpenBSD names the same two apertures (``ip30.h`` lines 49-55).
 - Two IP30 board families exist, ``030-0887`` and ``030-1467`` (the
   inventories; the SGIStuff page describes the board change). Neither

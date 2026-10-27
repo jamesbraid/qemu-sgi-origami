@@ -1130,7 +1130,7 @@ static void l1_console_send(int fd, const char *text)
  * Bedrock's per-processor NMI inputs: the two processors of a two-processor
  * Origin 300 sit in slots 0 and 2, so lines 0 and 2 pulse once and the
  * empty slots stay quiet. The command does nothing once the node is off.
- * An approximation: see docs/specs/sgi-bedrock.rst.
+ * An approximation: see docs/system/mips/sgi/hardware/bedrock.rst.
  */
 static void test_l1_nmi_reaches_processors(const void *data)
 {

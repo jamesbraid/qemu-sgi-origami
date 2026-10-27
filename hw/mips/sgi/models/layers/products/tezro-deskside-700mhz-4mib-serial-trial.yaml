@@ -2,8 +2,8 @@
 # Explicit software-only Tezro deskside serial trial.
 layer_version: 1
 sources:
-  tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
 layer:
   kind: product
@@ -130,24 +130,24 @@ layer:
     components:
       - {id: chassis, name: Tezro deskside, kind: chassis, provenance: vendor-document, sources: [tezro-deskside-trial]}
       - {id: ip53-board, name: IP53 four-processor board, kind: board, hardware_kind: ip53, parent: chassis, identity: {part: "030-1868-001-C"}, provenance: vendor-document, sources: [tezro-deskside-trial]}
-      - {id: bedrock, name: Bedrock, kind: node-asic, hardware_kind: bedrock, datasheet_contracts: [qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb], parent: ip53-board, node_asic: {processor_interfaces: 2, cpus_per_interface: 2}, identity: {ni_revision: 2, widget_revision: 2, clock_mhz: 200}, provenance: derived, sources: [tezro-deskside-trial]}
+      - {id: bedrock, name: Bedrock, kind: node-asic, hardware_kind: bedrock, datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb], parent: ip53-board, node_asic: {processor_interfaces: 2, cpus_per_interface: 2}, identity: {ni_revision: 2, widget_revision: 2, clock_mhz: 200}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: bedrock, identity: {cache_clock_mhz: 350, r16000_reset_mode: 0x009bad85, r16000_scache_bytes: 4194304, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: cpu1, name: R16000, kind: cpu, hardware_kind: r16000, parent: bedrock, identity: {cache_clock_mhz: 350, r16000_reset_mode: 0x009bad85, r16000_scache_bytes: 4194304, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: cpu2, name: R16000, kind: cpu, hardware_kind: r16000, parent: bedrock, identity: {cache_clock_mhz: 350, r16000_reset_mode: 0x009bad85, r16000_scache_bytes: 4194304, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: cpu3, name: R16000, kind: cpu, hardware_kind: r16000, parent: bedrock, identity: {cache_clock_mhz: 350, r16000_reset_mode: 0x009bad85, r16000_scache_bytes: 4194304, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: memory, name: node memory, kind: memory, parent: bedrock, provenance: derived, sources: [tezro-deskside-trial]}
-      - {id: l1, name: L1 system controller, kind: system-controller, hardware_kind: l1, datasheet_contracts: [qemu:docs/specs/sgi-l1.rst], system_controller: {kind: l1}, provenance: derived, sources: [tezro-deskside-trial]}
+      - {id: l1, name: L1 system controller, kind: system-controller, hardware_kind: l1, datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst], system_controller: {kind: l1}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: pic-board-b, name: PIC board at widget 11, kind: board, parent: chassis, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: pic-board-f, name: PIC board at widget 15, kind: board, parent: chassis, provenance: derived, sources: [tezro-deskside-trial]}
-      - {id: pic-xio-b, name: PIC at widget 11, kind: pci-host-bridge, hardware_kind: pic, datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic], parent: pic-board-b, pci_host_bridge: {heads: 2}, provenance: derived, sources: [tezro-deskside-trial]}
-      - {id: pic-xio-f, name: PIC at widget 15, kind: pci-host-bridge, hardware_kind: pic, datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic], parent: pic-board-f, pci_host_bridge: {heads: 2}, provenance: derived, sources: [tezro-deskside-trial]}
+      - {id: pic-xio-b, name: PIC at widget 11, kind: pci-host-bridge, hardware_kind: pic, datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic], parent: pic-board-b, pci_host_bridge: {heads: 2}, provenance: derived, sources: [tezro-deskside-trial]}
+      - {id: pic-xio-f, name: PIC at widget 15, kind: pci-host-bridge, hardware_kind: pic, datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic], parent: pic-board-f, pci_host_bridge: {heads: 2}, provenance: derived, sources: [tezro-deskside-trial]}
       - {id: io9, name: IO9 card, kind: board, hardware_kind: io9, parent: chassis, identity: {part: "030-1771-005-A"}, provenance: derived, sources: [tezro-deskside-trial]}
-      - {id: ioc4, name: IOC4, kind: io-controller, hardware_kind: ioc4, datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4], parent: io9, identity: {pci_revision: 83}, ioc4: {clock_hz: 66666667, serial_dma_experimental: true}, provenance: derived, sources: [tezro-deskside-trial, tezro-deskside-trial-review]}
+      - {id: ioc4, name: IOC4, kind: io-controller, hardware_kind: ioc4, datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4], parent: io9, identity: {pci_revision: 83}, ioc4: {clock_hz: 66666667, serial_dma_experimental: true}, provenance: derived, sources: [tezro-deskside-trial, tezro-deskside-trial-review]}
       - id: ds1742
         name: DS1742-compatible clock resource
         kind: rtc
         hardware_kind: ds1742
-        datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1742]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1742]
         parent: io9
         ds1742_fresh_year_base: 1968
         provenance: derived

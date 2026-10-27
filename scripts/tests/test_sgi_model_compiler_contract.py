@@ -2012,7 +2012,7 @@ class RecordShapeTests(unittest.TestCase):
             {"id": "io-bedrock", "name": "Test I/O-only Bedrock",
              "kind": "bus-controller", "hardware_kind": "bedrock",
              "parent": "io-enclosure", "identity": {"hardware_revision": 1},
-             "datasheet_contracts": ["qemu:docs/specs/sgi-hub.rst"]},
+             "datasheet_contracts": ["qemu:docs/system/mips/sgi/hardware/hub.rst"]},
         ])
         model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
             "component": "io-bedrock", "kind": "bedrock", "serial": "0x51454d554e05",
@@ -2061,7 +2061,7 @@ class RecordShapeTests(unittest.TestCase):
             {"id": "io-bedrock", "name": "Synthetic I/O-only Bedrock",
              "kind": "bus-controller", "hardware_kind": "bedrock",
              "parent": "io-enclosure", "identity": {"hardware_revision": 1},
-             "datasheet_contracts": ["qemu:docs/specs/sgi-hub.rst"]},
+             "datasheet_contracts": ["qemu:docs/system/mips/sgi/hardware/hub.rst"]},
         ])
         model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
             "component": "io-bedrock", "kind": "bedrock", "serial": "0x51454d554e05",
@@ -2407,7 +2407,7 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(node["hub-slot-bits"], 3)
 
     def test_onyx2_deskside_and_rack_place_the_pipe_by_chassis(self):
-        # docs/specs/sgi-onyx2.rst: the deskside's midplane drives Hub slot
+        # docs/system/mips/sgi/ip27.rst: the deskside's midplane drives Hub slot
         # bits 3 and 2, puts the BaseIO-G at widget F and the pipe at
         # widget 8 with no Ktown on its chain; the rack's pipe answers at
         # IO3, Crossbow 0 widget F, with the Ktown record after the

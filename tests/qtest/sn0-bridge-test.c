@@ -2326,7 +2326,7 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
  * puts it in memory: bytes 0-15, which cover the common widget block's
  * identification slot at 4, land in RAM and never reach the Hub's own
  * widget registers (the check on raw memory address four in
- * docs/specs/sgi-hub.rst).
+ * docs/system/mips/sgi/hardware/hub.rst).
  */
 static void test_dma_to_address_four_is_memory(const void *data)
 {

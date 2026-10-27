@@ -4,7 +4,7 @@
 # half-size, fitted in XIO slot 2 (007-3456-003 printed pages 34 and 98).
 # That it is the product SGI's kernels call the PCI "shoebox" is an
 # inference, not a naming fact the manual states: see
-# qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-carrier. A composition fits it into the IO2
+# qemu:docs/system/mips/sgi/hardware/pci-expansion.rst#sgi-pci-expansion-carrier. A composition fits it into the IO2
 # connector the way it fits the shoehorn. The slots are empty; a user fits cards with -device.
 layer_version: 1
 layer:
@@ -27,7 +27,7 @@ layer:
             rev C, name PCI-XIO. The owner's guide names no part for the
             carrier, so that the carrier is this cardcage is an inference.
         provenance: vendor-document
-        datasheet_contracts: [qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-carrier]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/pci-expansion.rst#sgi-pci-expansion-carrier]
         sources: ["007-3456-003 PCI Carrier Assembly and Figure 2-11 printed page 34 PDF page 54; XIO Board Slots printed page 98 PDF page 118", "web:irixnet-post-32252 real IP27 hinv: PCI-XIO Board part 030-1062-002 rev C at io2, Origin PCI XIO board module 1 slot 2 Revision 3", "web:sgi-pca-numbers 030-1062-002 Origin 2000 PCI cardcage, PCI_XIO"]
       - id: bridge
         name: Bridge
@@ -44,7 +44,7 @@ layer:
             forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html).
             Whether every one does is unknown. The model implements Bridge D behavior and only
             reports this revision in the widget identification register.
-        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/bridge.rst]
         provenance: derived
         parent: pci-carrier
       - {id: slot-1, name: PCI slot 1 (full size), kind: connector, provenance: vendor-document, parent: pci-carrier, connector: {interface: PCI, location: carrier slot 1, occupancy: empty}, sources: ["007-3456-003 PCI Carrier Assembly printed page 34 PDF page 54, two full-size slots and one half-size slot"]}

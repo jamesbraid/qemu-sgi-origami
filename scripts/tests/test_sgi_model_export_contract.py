@@ -176,7 +176,7 @@ class ExportTests(unittest.TestCase):
         """The Origin 2000 rack model selects Hub NI revision 5.
 
         The Hub's network-interface status is described in
-        docs/specs/sgi-hub.rst. All four node-board Hubs in the rack model
+        docs/system/mips/sgi/hardware/hub.rst. All four node-board Hubs in the rack model
         must compile to revision 5. Origin 200's Hubs use the same
         node-board model and retain the baseline revision 3.
         """

@@ -83,15 +83,13 @@ The Loongson-3 virtual platform emulation supports:
 -  GPEX and virtio as peripheral devices
 
 The SGI machines boot only through their own stock PROM image, given
-with ``-bios``; there is no direct kernel boot. Each family has its own
-page covering its topologies, processor and memory population, and
-boards:
+with ``-bios``; there is no direct kernel boot. Their pages cover each
+platform's topologies, processor and memory population, and boards:
 
--  Origin 200, Origin 2000, Onyx2, Origin 300 and Fuel:
-   :doc:`../specs/sgi-sn`
--  Octane and Octane2: :doc:`../specs/sgi-ip30`
--  Origin 350, Onyx 350, Tezro and Onyx4: :doc:`../specs/sgi-ip53`
--  Graphics boards for all of them: :doc:`../specs/sgi-graphics`
+.. toctree::
+   :maxdepth: 2
+
+   mips/sgi/index
 
 .. include:: cpu-models-mips.rst.inc
 

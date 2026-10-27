@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The GE16-4 geometry board of an InfiniteReality pipe, with its one-wire
 # record, part 030-1398-001 in the real rack capture web:nekonomicon-16285
-# (docs/specs/sgi-onyx2.rst, One-wire records). A composition fits it beside
+# (docs/system/mips/sgi/ip27.rst, One-wire records). A composition fits it beside
 # or under a layers/modules/kona-pipe.yaml instance and binds the
 # placeholder `pipe-one-wire` bus to that pipe's one-wire bus, before any
 # other record joins the chain. QEMU's sgi-kona stores this part in its
@@ -20,7 +20,7 @@ layer:
         kind: board
         hardware_kind: geometry-board
         provenance: datasheet
-        sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire]
+        sources: [qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire]
         notes: The XG ASIC the host reaches sits on this board; the pipe layer carries it.
 
       - id: geometry-identity
@@ -37,5 +37,5 @@ layer:
         bus: pipe-one-wire
         role: endpoint
         provenance: datasheet
-        sources: [qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-one-wire]
+        sources: [qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-one-wire]
         notes: A placeholder the composition binds to its pipe's own one-wire bus.

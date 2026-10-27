@@ -24,7 +24,7 @@ layer:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu0, base-cpu1]
     # Every processor module this board takes: SGI fitted these to real
-    # Origin 200s (docs/specs/sgi-sn.rst, Origin 200 processor options).
+    # Origin 200s (docs/system/mips/sgi/sn.rst, Origin 200 processor options).
     # processors_per_node lists the PIMM sizes a real machine shows.
     offered:
       - {part: r10000, clock_mhz: 180, cache_mib: 1, processors_per_node: [1, 2]}
@@ -34,7 +34,7 @@ layer:
   memory_kits_per_node: [kit-128]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -82,7 +82,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
+        sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-config-block, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/system/mips/sgi/prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)
@@ -149,7 +149,7 @@ layer:
           the IP29 record under io1/MotherBoard. That it answers on the IP29
           Bridge's own one-wire line is inferred from that grouping, the way
           the BaseIO-G's MIO record shares its Bridge's line.
-        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
+        sources: [qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-identity, qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-firmware-view]
       - id: base-cpu1
         name: R10000
         kind: cpu
@@ -176,7 +176,7 @@ layer:
             as the Origin 2000 module does; no GIGAchannel capture prints the
             cabinet Crossbow's revision. The part 0x0000 is the whole of the
             IP27 PROM's cabinet detection.
-        datasheet_contracts: [qemu:docs/specs/sgi-xbow.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbow.rst]
         provenance: vendor-document
         parent: gigachannel-chassis
         description: >-
@@ -200,7 +200,7 @@ layer:
           shows the Bridge on the interface board or on the visible part of
           the PCI backplane. The board record firmware reads through this
           Bridge names the interface board instead (gigachannel-identity).
-        sources: ["007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted", qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-composition]
+        sources: ["007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted", qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-composition]
       - id: gigachannel-bridge
         name: Bridge
         kind: pci-host-bridge
@@ -217,7 +217,7 @@ layer:
           widget_part: "0xc002"
           widget_mfg: "0x036"
           widget_revision: 4
-        datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/bridge.rst]
         sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]
       - id: gigachannel-identity
         name: cabinet board-identity NIC
@@ -231,7 +231,7 @@ layer:
           INTERFACE board, which firmware reports at io7. Which one-wire line
           carries it is not established; this model presents it on the
           cabinet Bridge's own line, the one the firmware names io7 from.
-        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-identity, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
+        sources: [qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-identity, qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-firmware-view]
       - {id: xio-slot-11, name: XIO slot 11, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 11, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
       - {id: xio-slot-12, name: XIO slot 12, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 12, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
       - {id: xio-slot-13, name: XIO slot 13, kind: connector, provenance: vendor-document, parent: gigachannel-chassis, connector: {interface: XIO, location: slot 13, occupancy: opaque}, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
@@ -273,7 +273,7 @@ layer:
         kind: one-wire
         master: gigachannel-bridge
         provenance: derived
-        sources: [qemu:docs/specs/sgi-bridge.rst, qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
+        sources: [qemu:docs/system/mips/sgi/hardware/bridge.rst, qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-firmware-view]
       - {id: gigachannel-pci, name: GIGAchannel PCI, kind: pci, master: gigachannel-bridge, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
     connections:
       - {component: base-cpu1, bus: base-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"]}
@@ -328,17 +328,17 @@ layer:
       - {component: pci-slot-2, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
       - {component: pci-slot-3, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
       - {component: pci-slot-4, bus: gigachannel-pci, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted", "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"], notes: Physical slot label only; no installed PCI card is selected.}
-      - {component: gigachannel-bridge, bus: gigachannel-bridge-one-wire, role: master, provenance: derived, sources: [qemu:docs/specs/sgi-bridge.rst]}
+      - {component: gigachannel-bridge, bus: gigachannel-bridge-one-wire, role: master, provenance: derived, sources: [qemu:docs/system/mips/sgi/hardware/bridge.rst]}
       - component: gigachannel-identity
         bus: gigachannel-bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-record-wiring]
+        sources: [qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-record-wiring]
       - component: crosstown-identity
         bus: base-bridge-one-wire
         role: endpoint
         provenance: derived
-        sources: [qemu:docs/specs/sgi-gigachannel.rst#sgi-gigachannel-firmware-view]
+        sources: [qemu:docs/system/mips/sgi/hardware/gigachannel.rst#sgi-gigachannel-firmware-view]
     interrupts:
       - id: gigachannel-bridge-error
         source: gigachannel-bridge

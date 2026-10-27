@@ -13,7 +13,7 @@ layer:
       kind: board
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-products
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-products
       hardware_kind: ip30
       identity:
         part: 030-0887-003
@@ -22,7 +22,7 @@ layer:
       kind: cpu
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-processors
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-processors
       parent: ip30-board
       hardware_kind: r10000
       identity:
@@ -30,10 +30,10 @@ layer:
     - id: heart
       name: heart
       kind: node-asic
-      datasheet_contracts: [qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: heart
       identity:
@@ -45,15 +45,15 @@ layer:
       kind: memory
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-memory
       parent: ip30-board
     - id: crossbow
       name: crossbow
       kind: crossbar
-      datasheet_contracts: [qemu:docs/specs/sgi-xbow.rst]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbow.rst]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: xbow
       crossbar:
@@ -63,10 +63,10 @@ layer:
     - id: bridge
       name: bridge
       kind: pci-host-bridge
-      datasheet_contracts: [qemu:docs/specs/sgi-bridge.rst]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/bridge.rst]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: bridge
       identity:
@@ -77,28 +77,28 @@ layer:
     - id: isp1040-internal
       name: isp1040-internal
       kind: storage-hba
-      datasheet_contracts: [qemu:docs/specs/sgi-ip30.rst#sgi-ip30-storage]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-storage]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: isp1040
     - id: isp1040-external
       name: isp1040-external
       kind: storage-hba
-      datasheet_contracts: [qemu:docs/specs/sgi-ip30.rst#sgi-ip30-storage]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-storage]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: isp1040
     - id: ioc3
       name: ioc3
       kind: io-controller
-      datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: ioc3
       identity:
@@ -108,25 +108,25 @@ layer:
       kind: subfunction
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ioc3
       hardware_kind: ioc3-ethernet
     - id: rtc
       name: rtc
       kind: rtc
-      datasheet_contracts: [qemu:docs/specs/sgi-ip30.rst#sgi-ip30-timekeeper]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-timekeeper]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ioc3
       hardware_kind: ds1685
     - id: rad
       name: rad
       kind: io-controller
-      datasheet_contracts: [qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components]
+      datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components]
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       parent: ip30-board
       hardware_kind: rad1
     - id: record-0
@@ -134,7 +134,7 @@ layer:
       kind: identity
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-board-identity
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-board-identity
       parent: ip30-board
       board_record:
         role: processor
@@ -148,7 +148,7 @@ layer:
       kind: identity
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-board-identity
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-board-identity
       parent: ip30-board
       board_record:
         role: system-board
@@ -162,7 +162,7 @@ layer:
       kind: identity
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-board-identity
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-board-identity
       parent: ip30-board
       board_record:
         role: frontplane
@@ -176,7 +176,7 @@ layer:
       kind: identity
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-board-identity
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-board-identity
       parent: ip30-board
       board_record:
         role: power-supply
@@ -191,21 +191,21 @@ layer:
       master: cpu0
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       name: sysad
     - id: xio
       kind: xio
       master: crossbow
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       name: xio
     - id: pci
       kind: pci
       master: bridge
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
       name: pci
     connections:
     - component: cpu0
@@ -213,20 +213,20 @@ layer:
       role: master
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: heart
       bus: sysad
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: heart
       bus: xio
       widget: 8
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: bridge
       bus: xio
       widget: 15
@@ -234,7 +234,7 @@ layer:
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: isp1040-internal
       bus: pci
       pci_device: 0
@@ -242,7 +242,7 @@ layer:
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: isp1040-external
       bus: pci
       pci_device: 1
@@ -250,7 +250,7 @@ layer:
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: ioc3
       bus: pci
       pci_device: 2
@@ -258,7 +258,7 @@ layer:
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components
     - component: rad
       bus: pci
       pci_device: 3
@@ -266,4 +266,4 @@ layer:
       role: endpoint
       provenance: derived
       sources:
-      - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-components
+      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components

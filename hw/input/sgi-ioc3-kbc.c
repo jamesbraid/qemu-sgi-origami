@@ -17,7 +17,7 @@
  * the holdings are what this controller
  * has actually received.
  *
- * See docs/specs/sgi-ioc3.rst for the IOC3 register contract.
+ * See docs/system/mips/sgi/hardware/ioc3.rst for the IOC3 register contract.
  */
 
 #include "qemu/osdep.h"

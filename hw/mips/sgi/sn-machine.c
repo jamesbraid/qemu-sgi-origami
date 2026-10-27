@@ -3,7 +3,7 @@
  * The abstract SGI Scalable Node family machine and its builder over an
  * SGIModelTopology from the compiled catalogue (qapi/sgi-machines.json,
  * embedded and parsed by hw/mips/sgi/sgi-machines.c). Origin 200 is the
- * first product on this base; see docs/specs/sgi-sn.rst.
+ * first product on this base; see docs/system/mips/sgi/sn.rst.
  *
  * Fixed here rather than carried in the descriptor, because they are Hub
  * hardware facts rather than per-configuration data: the Hub's physical
@@ -326,7 +326,7 @@ struct SGIMachineState {
     Notifier machine_done;
 
     /*
-     * Graphics pipes (docs/specs/sgi-sn.rst, Graphics pipes). Every pipe
+     * Graphics pipes (docs/system/mips/sgi/sn.rst, Graphics pipes). Every pipe
      * is a -device the catalogue checks before it realizes, or the
      * topology's default pipe, created at init and realized by
      * sgi_machine_done() once no -device turned out to be a pipe.

@@ -87,7 +87,7 @@ An XIO board that turns one crosstalk slot into three PCI slots.
 The model reports widget revision 3 but implements Bridge D behaviour;
 no difference a guest exercises on this board is known. The identity
 record is the PCI_XIO part above with a placeholder barcode, on the
-Bridge's one-wire line (:doc:`sgi-bridge`). The Octane PCI shoebox and
+Bridge's one-wire line (:doc:`/system/mips/sgi/hardware/bridge`). The Octane PCI shoebox and
 the GIGAchannel XBOX are different products and are not covered.
 
 .. _sgi-pci-expansion-shoehorn:
@@ -174,10 +174,10 @@ entry that way (established). A real card reports record name
 (established, ``web:mimgfx-origin2000-inventory``, ``PCI_ENET Board:
 barcode HKV898 part 030-1155-002 rev D`` at
 ``/hw/module/1/slot/io3/xtalk_pci/pci/1``). The record is read from the
-card's own IOC3 one-wire bus, not the adapter's Bridge line (:doc:`sgi-ioc3-boards`).
+card's own IOC3 one-wire bus, not the adapter's Bridge line (:doc:`/system/mips/sgi/hardware/ioc3-boards`).
 The card's PCI subsystem identity, physical connectors and bill of
 materials are unknown; the model uses a placeholder subsystem id and the
-IOC3 revision 1 of :doc:`sgi-ioc3`.
+IOC3 revision 1 of :doc:`/system/mips/sgi/hardware/ioc3`.
 
 .. _sgi-pci-expansion-origin300:
 
@@ -245,7 +245,7 @@ noted; page numbers are printed pages.
        mode.
      - approximation
      - Chosen so the public wiring and widget set are reproduced; the
-       XBridge page (:doc:`sgi-xbridge`) states both modes. The BIC's
+       XBridge page (:doc:`/system/mips/sgi/hardware/xbridge`) states both modes. The BIC's
        Bedrock revision, silicon identity and reset values are
        unknown; a revision-matched capture would settle them.
    * - A serial ID EEPROM on the board carries component information;

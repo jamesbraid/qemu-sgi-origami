@@ -13,14 +13,14 @@ layer:
     - - 1
     provenance: derived
     sources:
-    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-topology
+    - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-topology
   population:
     nodes: 1
     cpus_per_node:
     - 1
     provenance: derived
     sources:
-    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-topology
+    - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-topology
   cpu_selection:
     default:
       clock_mhz: 360
@@ -31,7 +31,7 @@ layer:
   - kit-256
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -80,7 +80,7 @@ layer:
         display_description: SGI Octane2 (IP30)
         lifecycle: implemented
         profile: serial
-        # The fitted part, its select and the strap are unknown (docs/specs/sgi-ip30.rst,
+        # The fitted part, its select and the strap are unknown (docs/system/mips/sgi/ip30.rst,
         # Boot flash wiring). Select 0 with the strap low is
         # the compatibility default every launch has used.
         boot_flash_wiring:
@@ -88,7 +88,7 @@ layer:
           strap: false
           provenance: unsourced
           sources:
-          - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-flash-wiring
+          - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-flash-wiring
           notes: Unknown wiring; the compatibility default, not a measured board.
         system_timekeepers:
           ip30-board:
@@ -96,13 +96,13 @@ layer:
             initial_ip27_fixture: false
             provenance: derived
             sources:
-            - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-timekeeper
+            - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-timekeeper
             - hw/mips/sgi/octane.c
             notes: The board's IOC3 drives a DS1685-family clock, whose 512-byte NVRAM and the model's 24-byte clock record a new machine starts zeroed; the part treats an all-zero image as fresh.
         emulator_constraints:
           # The Octane2 guide (007-4207-002, printed page 47): 64 MiB to 2 GiB a
           # bank, banks filled from bank 1 without a gap, highest density first
-          # (docs/specs/sgi-ip30.rst, Memory kits and capacity).
+          # (docs/system/mips/sgi/ip30.rst, Memory kits and capacity).
           accepted_bank_sizes_mib:
           - 64
           - 128
@@ -125,7 +125,7 @@ layer:
         disk_bus: scsi
         netboot_adapter: ioc3-ethernet
         default_topology: octane2
-        # The candidate part's 1 MiB array (docs/specs/sgi-ip30.rst,
+        # The candidate part's 1 MiB array (docs/system/mips/sgi/ip30.rst,
         # Boot flash wiring), which the reviewed CFI01 boot flash
         # ("hw/mips/sgi: use CFI01 for Octane boot flash") implements and
         # octane.c sizes from this catalogue entry. The fitted physical
@@ -138,4 +138,4 @@ layer:
         provenance: derived
         sources:
         - hw/mips/sgi/octane.c
-        - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-launch
+        - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-launch

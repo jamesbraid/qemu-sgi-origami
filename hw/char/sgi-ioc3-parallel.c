@@ -2,7 +2,7 @@
 /* SGI IOC3 parallel port registers, DMA, and character backend. */
 /*
  * IOC3 maps the DMA block and byte-wide ECP registers separately. See
- * docs/specs/sgi-ioc3.rst for the register contract.
+ * docs/system/mips/sgi/hardware/ioc3.rst for the register contract.
  *
  * Output drains synchronously to a character backend; reverse transfers have
  * no peripheral and remain armed. Test mode uses the selected FIFO capacity.

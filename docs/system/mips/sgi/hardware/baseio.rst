@@ -13,7 +13,7 @@ daughtercard. QEMU builds both from the shared Bridge, IOC3 and ISP1040
 models (``hw/mips/sgi/baseio.c``); the ``io6`` preset builds the plain
 board and ``io6g`` builds BaseIO-G. ``preset`` has no default. The Origin 200 has an integrated
 system board, not this card, and its population and wiring must not be
-read from here (:doc:`sgi-sn`). Ratings follow :ref:`sgi-ip30`.
+read from here (:doc:`/system/mips/sgi/sn`). Ratings follow :ref:`sgi-ip30`.
 
 Sources: *Origin and Onyx2 Theory of Operations* (007-3439-002), BaseIO
 functions on printed page 67 (PDF 81), Figures 2-24 and 2-25 on printed
@@ -64,7 +64,7 @@ Board composition
    * - The Bridge identifies itself as part 0xc002, manufacturer 0x36,
        with the board's PCI devices behind it.
      - established
-     - Bridge page (:doc:`sgi-bridge`); revision selection is
+     - Bridge page (:doc:`/system/mips/sgi/hardware/bridge`); revision selection is
        described there.
    * - The two SCSI controllers are the QLogic ISP10x0 family,
        ``0x1077:0x1020``, and report single-ended. Figure 2-25 still
@@ -79,7 +79,7 @@ Board composition
    * - The ISP1040 revision modelled is an ISP1040C-compatible part
        (revision 6, 60 MHz clock, PCI revision 5).
      - approximation
-     - Emulator choice recorded on :doc:`sgi-qlogic-isp`; no historical
+     - Emulator choice recorded on :doc:`/system/mips/sgi/hardware/qlogic-isp`; no historical
        package identification is known.
    * - The board's real-time interrupt input reaches the Bridge's
        ``INT_IN`` through an opto-isolator and the Bridge drives the
@@ -166,10 +166,10 @@ part-number table also lists ``030-0734-001`` as an io6g base board and
 ``030-0880-003`` as the MediaIO card (``web:sgi-pca-numbers``). The
 plain board's record is ``030-1124-002`` revision J (``web:usenet-9uhh6o``).
 Barcodes are per-unit and are placeholders in the model; the record
-layout is on :doc:`sgi-bridge`. The RAD1 audio ASIC's revision, the division of the audio paths between it
+layout is on :doc:`/system/mips/sgi/hardware/bridge`. The RAD1 audio ASIC's revision, the division of the audio paths between it
 and the codec parts, and the MediaIO's Mach5 part number have no source
 cited here and are unknown for this page; the board's PCI identity and
-IOC3 population are on :doc:`sgi-ioc3`.
+IOC3 population are on :doc:`/system/mips/sgi/hardware/ioc3`.
 
 .. _sgi-baseio-flash:
 
@@ -178,7 +178,7 @@ Bridge flash
 
 The Bridge's external flash port is sixteen bits wide and takes a
 sector-erasable 256K by 16 or 512K by 16 part; the board diagram draws
-1 MB, so the part is 512K by 16 (established, :doc:`sgi-bridge` and 007-3439-002 Figure 2-25; the part is
+1 MB, so the part is 512K by 16 (established, :doc:`/system/mips/sgi/hardware/bridge` and 007-3439-002 Figure 2-25; the part is
 not named).
 The IP27 PROM accepts the AMD ``0x01``/``0x22da``, ST ``0x20``/``0xd7``
 and Fujitsu ``0x04``/``0x22da`` identities for a sixteen-bit part here

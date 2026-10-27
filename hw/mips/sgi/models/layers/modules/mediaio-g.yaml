@@ -2,7 +2,7 @@
 # The BaseIO-G MediaIO daughtercard: a second IOC3 fitted only to the
 # BaseIO-G board variant, carrying the PS/2 keyboard and mouse controller a
 # plain BaseIO's own IOC3 lacks. The "BaseIO-G and MediaIO" section of
-# docs/specs/sgi-baseio.rst is the contract this module follows: a real
+# docs/system/mips/sgi/hardware/baseio.rst is the contract this module follows: a real
 # owner's `hinv -v` places the BaseIO-G's two IOC3s at PCI devices 2 and 6,
 # and the MediaIO IOC3 at device 6 is the one that fits the keyboard and
 # mouse pair. A board whose IOC3 population includes a keyboard-mouse
@@ -33,7 +33,7 @@ layer:
         identity:
           pci_revision: 1
           notes: "The MediaIO daughtercard's own IOC3."
-        datasheet_contracts: [qemu:docs/specs/sgi-baseio.rst#sgi-baseio-g, qemu:docs/specs/sgi-ioc3.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/baseio.rst#sgi-baseio-g, qemu:docs/system/mips/sgi/hardware/ioc3.rst]
         provenance: datasheet
 
       - id: keyboard-mouse
@@ -50,7 +50,7 @@ layer:
         pci_device: 6
         pci_function: 0
         provenance: datasheet
-        sources: ["qemu:docs/specs/sgi-baseio.rst#sgi-baseio-pci"]
+        sources: ["qemu:docs/system/mips/sgi/hardware/baseio.rst#sgi-baseio-pci"]
         notes: >-
           A placeholder each instance binds to its own product's BaseIO PCI
           bus (bus_bindings). A real owner's hinv -v places the BaseIO-G's

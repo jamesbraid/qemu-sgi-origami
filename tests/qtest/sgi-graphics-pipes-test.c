@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SGI graphics pipes against the machine catalogue (docs/specs/sgi-sn.rst,
+ * SGI graphics pipes against the machine catalogue (docs/system/mips/sgi/sn.rst,
  * Graphics pipes): one -device per pipe, product= and the product's
  * settings, each machine's default pipe, -vga none, and every refusal the
  * catalogue's records give a reason for.

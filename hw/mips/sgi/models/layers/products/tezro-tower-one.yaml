@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 sources:
-  tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
     processor populations and PCI/IO9 location'
-  tezro-software-choice-limit: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
   id: tezro-tower-one

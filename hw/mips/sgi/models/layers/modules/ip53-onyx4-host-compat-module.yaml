@@ -2,9 +2,9 @@
 # Onyx 4 host serial trial using the IP53 runtime compatibility path.
 layer_version: 1
 sources:
-  ip53-host-compatibility-mapping: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected IP53 guest-board mapping for the Onyx 4 host candidate"
+  ip53-host-compatibility-mapping: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected IP53 guest-board mapping for the Onyx 4 host candidate"
   onyx4-host-hinv: "web:irixnet-thread-2263  module 001c01 IP59_4CPU, widget 15 carrier, IO9 and HUB inventory in the Onyx 350-labelled system"
-  sn-family-closure-origin350: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 module topology and explicit physical limits"
+  sn-family-closure-origin350: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 module topology and explicit physical limits"
 layer:
   kind: module
   id: ip53-onyx4-host-compat-module
@@ -16,18 +16,18 @@ layer:
         kind: node-asic
         hardware_kind: bedrock
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-hub
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-address-map-hub
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         parent: ip53-board
         identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
         provenance: derived
-        sources: [onyx4-host-hinv, "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  inherited Bedrock identity for the IP59 host compatibility mapping"]
+        sources: [onyx4-host-hinv, "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  inherited Bedrock identity for the IP59 host compatibility mapping"]
         notes: >-
           The public inventory reports HUB revision 2 at 200 MHz for module
           001c01. Mapping that report to Bedrock revision 2 is a compatibility
@@ -50,7 +50,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
         notes: >-
           The clock, secondary-cache capacity, reset mode and required QOM
           properties are software experiment inputs from the selected runtime
@@ -62,7 +62,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: cpu2
         name: R16000
         kind: cpu
@@ -70,7 +70,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: cpu3
         name: R16000
         kind: cpu
@@ -78,7 +78,7 @@ layer:
         parent: bedrock
         identity: {r16000_reset_mode: 0x009dad85, r16000_scache_bytes: 0x1000000, required_properties: [r16000-experimental, r16000-reset-mode, r16000-scache-bytes]}
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
       - id: node-memory
         name: node memory
         kind: memory
@@ -117,7 +117,7 @@ layer:
         kind: pci-host-bridge
         hardware_kind: pic
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
         pci_host_bridge: {heads: 2}
         parent: pic-board
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
@@ -129,7 +129,7 @@ layer:
         kind: io-controller
         hardware_kind: ioc4
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4
         parent: io9
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
         ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
@@ -144,7 +144,7 @@ layer:
         name: QLogic ISP12160
         kind: storage-hba
         hardware_kind: isp12160
-        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst]
         parent: io9
         identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
         provenance: derived
@@ -156,7 +156,7 @@ layer:
         name: BCM5701
         kind: io-controller
         hardware_kind: bcm5701
-        datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-bcm570x]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-bcm570x]
         parent: io9
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
         provenance: derived
@@ -170,11 +170,11 @@ layer:
         kind: rtc
         hardware_kind: ds1744
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1744
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1744
         parent: io9
         provenance: derived
         fresh_year_base: 1968
-        sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
+        sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]
         notes: >-
           Synthetic 32 KiB timekeeper geometry selected for this software
           profile. The fitted IO9 part and physical address wiring remain
@@ -184,7 +184,7 @@ layer:
         name: L1 system controller
         kind: system-controller
         hardware_kind: l1
-        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         system_controller: {kind: l1}
         provenance: vendor-document
         sources: [sn-family-closure-origin350]
@@ -203,10 +203,10 @@ layer:
       - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-origin350], notes: Cabled to nothing on a single compute module.}
       - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [sn-family-closure-origin350]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
-      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
-      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu2, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
+      - {component: cpu3, bus: sysad0, role: master, provenance: derived, sources: ["qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host software inputs"]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
       - {component: bedrock, bus: xio, role: master, widget: 10, provenance: derived, sources: [ip53-host-compatibility-mapping], notes: "Widget 10 is an explicit Bedrock XIO master choice; the physical Bedrock-to-PIC route remains unknown."}
       - component: pic

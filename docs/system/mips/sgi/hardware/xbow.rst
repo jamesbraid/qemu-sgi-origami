@@ -230,7 +230,7 @@ Emulator choices and unknowns
        travels unchanged.
      - established
      - Spec PDF pages 63 and 99 (switch description); byte swapping
-       belongs to the Bridge's per-device control (:doc:`sgi-bridge`).
+       belongs to the Bridge's per-device control (:doc:`/system/mips/sgi/hardware/bridge`).
    * - A destination other than widgets 0 and 8 to 15 is an
        illegal-destination error on the receiving port (status bit
        17, repeat sets bit 18); a legal port whose link is down drops

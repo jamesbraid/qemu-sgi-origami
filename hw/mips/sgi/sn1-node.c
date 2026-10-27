@@ -2509,7 +2509,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * composite's "pi-nmi" inputs, the same path a processor interface's NMI
      * store takes. Whether the real L1 interrupts all processors or only
      * enabled ones, and whether it goes through the processor interface at
-     * all, is not established; docs/specs/sgi-bedrock.rst records this as an
+     * all, is not established; docs/system/mips/sgi/hardware/bedrock.rst records this as an
      * approximation. The L1 gates the output on node power itself.
      */
     if (node->nr_cpus) {

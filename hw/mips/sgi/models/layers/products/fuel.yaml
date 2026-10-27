@@ -23,7 +23,7 @@ layer:
   memory_kits_per_node: [fuel-512-test-map]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -92,7 +92,7 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
             provenance: derived
-            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", qemu:hw/mips/sgi/sn1-node.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
+            sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
             notes: >-
               The board-identification word is the established Fuel
               product code with the PIMM speed code of the fitted 500 MHz,
@@ -132,12 +132,12 @@ layer:
           scsi:
             revision: 6
             provenance: derived
-            sources: [qemu:hw/scsi/qlogic-isp.c, qemu:docs/specs/sgi-qlogic-isp.rst]
+            sources: [qemu:hw/scsi/qlogic-isp.c, qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst]
             notes: Preserves the implemented ISP12160 class revision. The Fuel silicon revision is unverified.
           ioc3:
             revision: 1
             provenance: derived
-            sources: [qemu:include/hw/misc/sgi-ioc3.h, qemu:docs/specs/sgi-ioc3.rst]
+            sources: [qemu:include/hw/misc/sgi-ioc3.h, qemu:docs/system/mips/sgi/hardware/ioc3.rst]
             notes: Preserves the implemented IOC3 class revision. The Fuel silicon revision is unverified.
         system_timekeepers:
           ip34-system-board:
@@ -176,7 +176,7 @@ layer:
             - {name: node-zero remote Hub-special boot view, address: "0x100_38000000", payload_offset: "0x0", size: "0x1686a8"}
           second_selection: {address: "0x100_1a000000", size: "0x0080_0000"}
           provenance: derived
-          sources: ["qemu:hw/mips/sgi/models/layers/products/origin300.yaml existing bounded IP35 PROM compatibility carrier", qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views]
+          sources: ["qemu:hw/mips/sgi/models/layers/products/origin300.yaml existing bounded IP35 PROM compatibility carrier", qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
           notes: >-
             This boot spike reuses the Origin 300 emulator's bounded views of
             the operator-supplied IP35 PROM payload. The physical Fuel reset
@@ -222,4 +222,4 @@ layer:
         supported_guests: []
         install_media: [disk-image, netboot]
         provenance: derived
-        sources: ["web:tingo-fuel-irix-console raw HTML lines 139 to 146: IP34 node board inventory", "web:tingo-fuel-irix-console raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-console]
+        sources: ["web:tingo-fuel-irix-console raw HTML lines 139 to 146: IP34 node board inventory", "web:tingo-fuel-irix-console raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-console]

@@ -75,7 +75,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-topology
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
           slave-bedrock:
@@ -88,7 +88,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-topology
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:
@@ -101,7 +101,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-serial-order
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
           slave-l1:
@@ -113,7 +113,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-serial-order
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         io_boards:
@@ -123,7 +123,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/baseio.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices
             notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
               field remains explicit.
           slave-xbridge-bridge-f:
@@ -132,7 +132,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/baseio.c
-            - qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices
+            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices
             notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
               field remains explicit.
         system_timekeepers:
@@ -190,8 +190,8 @@ layer:
           provenance: derived
           sources:
           - 'firmware:ip35-prom-6.210 payload SHA-256'
-          - 'qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier'
-          - 'qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views'
+          - 'qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier'
+          - 'qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views'
           notes: 'The one-chassis product''s payload and views, carried by each chassis''s own node: both
             servers run the same stock IP35 PROM, and each node''s flash answers at its own node''s window.
             Emulator compatibility policy, as on one chassis; no fitted flash part or physical reset decoder
@@ -399,12 +399,12 @@ layer:
         hardware_revision: 1
         chip_inputs: 0
       datasheet_contracts:
-      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
       provenance: derived
       sources:
       - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/bedrock.h lines 19-20: router chip identity 0x3017'
       - 'web:nekonomicon-16727514 lines 390-409 and 1860-1869: software-reported router Revision 1'
-      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
       notes: Chip revision one is an inference from the software-reported revision, not a measurement
         of fitted silicon. Zero chip inputs are an emulator configuration policy.
     - id: router-l1
@@ -417,10 +417,10 @@ layer:
       provenance: derived
       sources:
       - 'linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/ksys/l1.h line 266: router type R (0x52)'
-      - qemu:docs/specs/sgi-sn.rst#sgi-sn-family-rbrick
+      - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-rbrick
       notes: Explicit noncompute router controller profile through its own UART, with no firmware revision selected.
       datasheet_contracts:
-      - qemu:docs/specs/sgi-l1.rst#sgi-l1-role
+      - qemu:docs/system/mips/sgi/hardware/l1.rst#sgi-l1-role
     - id: router-port-1
       name: NUMAlink router port 1
       kind: connector

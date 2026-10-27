@@ -20,7 +20,7 @@ layer:
     default: {clock_mhz: 180, cache_mib: 1}
     slots: [cpu0]
     # Every processor module this board takes: SGI fitted these to real
-    # Origin 200s (docs/specs/sgi-sn.rst, Origin 200 processor options).
+    # Origin 200s (docs/system/mips/sgi/sn.rst, Origin 200 processor options).
     # processors_per_node lists the PIMM sizes a real machine shows.
     offered:
       - {part: r10000, clock_mhz: 180, cache_mib: 1, processors_per_node: [1, 2]}
@@ -30,7 +30,7 @@ layer:
   memory_kits_per_node: [kit-64]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -61,7 +61,7 @@ layer:
         flash_read_cycles: 15
         flash_write_cycles: 4
         provenance: derived
-        sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/specs/sgi-prom-image.rst]
+        sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-config-block, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip27-values, qemu:docs/system/mips/sgi/prom-image.rst]
       emulation:
         machine_name: origin200
         display_description: SGI Origin 200 (IP29)

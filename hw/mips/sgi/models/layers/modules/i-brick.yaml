@@ -72,9 +72,9 @@ layer:
           outside the I-brick. Host port A, one of the two the closure record
           establishes; which port a boot I-brick actually uses is unknown.
     connections:
-      - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
-      - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
-      - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
-      - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]}
+      - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
+      - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
+      - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
+      - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: bedrock, bus: host-port-a-attach, role: master, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
       - {component: xbridge-crossbar, bus: host-port-a-attach, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"], notes: "Host port A, widget 0xA (10 decimal)."}

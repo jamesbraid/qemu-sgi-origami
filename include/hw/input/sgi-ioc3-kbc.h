@@ -5,7 +5,7 @@
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The block is a
  * bit-level PS/2 line engine, not an 8042 clone; it wraps two generic ps2
  * devices and presents SGI's five-register interface. The project tree's
- * IOC3 datasheet is the specification. See docs/specs/sgi-ioc3.rst.
+ * IOC3 datasheet is the specification. See docs/system/mips/sgi/hardware/ioc3.rst.
  *
  * Host key events without a console binding reach whichever keyboard
  * registered first, so a machine with two of these controllers (the

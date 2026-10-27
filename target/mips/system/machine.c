@@ -57,7 +57,7 @@ static int cpu_pre_load(void *opaque)
      * The Count-sample window is deliberately not migrated: the virtual
      * clock is frozen while the machine is stopped, so dropping an open
      * window costs at most one tick, and only if a host stall after the
-     * resume crosses its target (docs/specs/sgi-ip30.rst).
+     * resume crosses its target (docs/system/mips/sgi/ip30.rst).
      */
     cpu->env.timer_window_pending = false;
     mips_r10k_profile_pre_load(opaque);

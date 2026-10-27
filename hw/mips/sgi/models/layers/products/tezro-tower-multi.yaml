@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 sources:
-  tezro-deskside-trial: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-deskside-trial-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-deskside-trial: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-deskside-trial-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported processor populations and PCI/IO9 location'
-  tezro-software-choice-limit: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro tower and rack software limits"
 layer:
   kind: product
   id: tezro-tower-multi
@@ -42,7 +42,7 @@ layer:
     - cpu3
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes). The V12 is optional and fitted by -device only.
   graphics:
     max_pipes: 1
@@ -201,12 +201,12 @@ layer:
       kind: node-asic
       hardware_kind: bedrock
       datasheet_contracts:
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
-      - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+      - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
       parent: ip53-board
       node_asic:
         processor_interfaces: 2
@@ -294,7 +294,7 @@ layer:
       kind: system-controller
       hardware_kind: l1
       datasheet_contracts:
-      - qemu:docs/specs/sgi-l1.rst
+      - qemu:docs/system/mips/sgi/hardware/l1.rst
       system_controller:
         kind: l1
       provenance: derived
@@ -319,7 +319,7 @@ layer:
       kind: pci-host-bridge
       hardware_kind: pic
       datasheet_contracts:
-      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
       parent: pic-board-b
       pci_host_bridge:
         heads: 2
@@ -331,7 +331,7 @@ layer:
       kind: pci-host-bridge
       hardware_kind: pic
       datasheet_contracts:
-      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
       parent: pic-board-f
       pci_host_bridge:
         heads: 2
@@ -354,7 +354,7 @@ layer:
       kind: io-controller
       hardware_kind: ioc4
       datasheet_contracts:
-      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4
       parent: io9
       identity:
         pci_revision: 83
@@ -370,7 +370,7 @@ layer:
       kind: rtc
       hardware_kind: ds1744
       datasheet_contracts:
-      - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1744
+      - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1744
       parent: io9
       fresh_year_base: 1968
       provenance: derived

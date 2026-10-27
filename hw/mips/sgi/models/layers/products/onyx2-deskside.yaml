@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
-# IO1 and one InfiniteReality pipe on XIO4 (docs/specs/sgi-onyx2.rst,
+# IO1 and one InfiniteReality pipe on XIO4 (docs/system/mips/sgi/ip27.rst,
 # Deskside). layers/modules/onyx2-deskside-module.yaml holds the chassis.
 layer_version: 1
 layer:
@@ -15,7 +15,7 @@ layer:
     - [2, 2]
     provenance: vendor-document
     sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors", "SGI Onyx2 remanufactured product guide 1073 (6/99) printed page 3 PDF page 3: every Onyx2 deskside and single-rack system lists 256MB as the smallest system RAM; the node card minimum is 256MB (1068 printed page 7), the Onyx2 using the same node board"]
-    # One or two node boards, node slot 1 first (docs/specs/sgi-onyx2.rst,
+    # One or two node boards, node slot 1 first (docs/system/mips/sgi/ip27.rst,
     # Node-board populations). The deskside's one Crossbow carries every
     # XIO slot, so a single node board controls all of them.
     node_populations:
@@ -50,7 +50,7 @@ layer:
   memory_kits_per_node: [kit-256, kit-256]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes).
   graphics:
     max_pipes: 1
@@ -136,7 +136,7 @@ layer:
         flash_read_cycles: 8
         flash_write_cycles: 1
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode", qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface, qemu:docs/specs/sgi-onyx2.rst#sgi-onyx2-node-slot-codes]
+        sources: ["qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-reset-mode", qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-processor-interface, qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-node-slot-codes]
       emulation:
         machine_name: onyx2
         display_description: SGI Onyx2 deskside, one InfiniteReality pipe on XIO4

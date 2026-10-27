@@ -2,7 +2,7 @@
 /*
  * SGI PROM image decoder. The accepted container subset, measured from
  * the processor and I/O PROMs distributed with IRIX 6.5 and 6.5.30, is
- * described in docs/specs/sgi-prom-image.rst; anything else carrying the
+ * described in docs/system/mips/sgi/prom-image.rst; anything else carrying the
  * container signature is refused rather than copied as a raw image.
  *
  * Copyright (c) 2026 James Braid
