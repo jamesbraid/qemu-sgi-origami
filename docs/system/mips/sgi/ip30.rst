@@ -2,9 +2,9 @@
 
 .. _sgi-ip30:
 
-================================
-SGI Octane and Octane2 (IP30)
-================================
+============================
+SGI IP30: Octane and Octane2
+============================
 
 The ``octane`` and ``octane2`` machines (``hw/mips/sgi/octane.c``) each
 build one IP30 board with one processor, a serial console and the
@@ -84,212 +84,18 @@ physical Octane2 took for this work, recorded in
 :ref:`sgi-ip30-octane2-inventory`. Facts resting on them cite the
 sub-section that holds the read.
 
-.. _sgi-ip30-octane2-inventory:
+.. _sgi-ip30-machines:
 
-Octane2 owner measurements
-==========================
+Machines
+========
 
-These are the measurements the owner of one physical Octane2 took for
-this project. The machine ran IRIX 6.5.30m, reached over the network
-shell for the IRIX commands, and its PROM Command Monitor for the
-``dump`` reads; the V12 graphics board was fitted. Commands and returned
-values are reproduced exactly. Board barcodes, Laser IDs, serial numbers
-and MAC addresses are left out. The owner ran the PROM-monitor sessions
-and supplied their full output. No read is a reset value: each shows what
-this one machine answered at the stated moment.
-
-.. _sgi-ip30-octane2-hinv:
-
-Inventory (``hinv -mvv``, ``uname -R``), 2026-09-26
----------------------------------------------------
-
-``uname -R`` printed ``6.5 6.5.30m``. A repeated ``hinv -mvv`` agreed with
-the first. The inventory reports:
-
-.. list-table::
-   :header-rows: 1
-
-   * - Component
-     - Reported value
-   * - Processor
-     - one 360 MHz IP30 R12000, chip revision 3.5, 2 MiB secondary cache
-   * - HEART
-     - revision F
-   * - IP30 board
-     - ``030-1467-001``, revision B
-   * - Frontplane
-     - ``FP1``, ``030-0891-003``, revision H
-   * - Power supply
-     - ``PWR.SPPLY.ER``, ``060-0035-002``, revision A, under
-       ``/hw/node/xtalk/15/pci/2``
-   * - Memory
-     - 256 MiB total (one 256 MiB bank was later seen configured)
-   * - Crossbow
-     - ASIC revision 1.4
-   * - Processor module
-     - ``PM10360MHZ``, ``030-1590-002``, revision B
-   * - SCSI
-     - two integral QL1040B controllers, revision 2; the disk is unit 1
-       on controller 0
-   * - Onboard I/O
-     - IOC3 serial ports ``tty1`` and ``tty2``, parallel ``plp1``,
-       Ethernet ``ef0``, RAD audio revision 12.0
-   * - Graphics
-     - V12 board at widget 11
-
-The inventory shows neither which bay holds the disk nor how controller 0
-maps to a PCI device number, and it reports no register values.
-
-.. _sgi-ip30-octane2-graph:
-
-Hardware graph, 2026-09-26
---------------------------
-
-A read-only ``ls -l`` of the running hardware graph showed SCSI links under
-``/hw/node/xtalk/15/pci/0`` and ``/hw/node/xtalk/15/pci/1``. The first
-resolves to ``/hw/node/xtalk/15/pci/0/scsi_ctlr/0``, whose ``target``
-directory holds ``1``, whose ``lun`` directory holds ``0``; that LUN holds
-a ``disk`` directory and a ``scsi`` device node. The installed disk is
-therefore PCI device 0, SCSI target 1, LUN 0 as the kernel names it. This
-is kernel bookkeeping, not an electrical measurement. No device node was
-opened.
-
-.. _sgi-ip30-octane2-prom-header:
-
-PROM headers, 2026-09-27
-------------------------
-
-``/usr/sbin/flash -V`` exited zero and printed the loaded primary PROM
-header as version ``4.17``, length ``682448`` bytes, programmed
-``2026-08-16 23:59:56 GMT``, ``7`` reloads; the recovery header reads
-version ``4.9``, length ``147198`` bytes, same time and count.
-``/usr/sbin/flash -d`` exited zero with no output. The flash contents
-were not dumped or hashed.
-
-.. _sgi-ip30-octane2-xbow-id:
-
-Crossbow widget identification, 2026-09-28
-------------------------------------------
-
-.. code-block:: text
-
-   >> dump -w -x 0x9000000010000004#1
-   0x9000000010000004:   50000001
-
-One 32-bit read of the Crossbow widget-zero identification word. Bits
-31:28 give raw revision code 5 (established for this board at PROM
-time).
-
-.. _sgi-ip30-octane2-heart-id:
-
-HEART widget identification and low memory, 2026-09-29
-------------------------------------------------------
-
-.. code-block:: text
-
-   >> dump -d -x 0x9000000018000000#1
-   0x9000000018000000:           6c00106d
-   >> dump -d -x 0x9000000000002000#1
-   0x9000000000002000:                  0
-
-The first is one 64-bit read of the HEART widget identification word,
-``0x000000006c00106d`` (revision 6, part ``0xc001``, manufacturer
-``0x36``) on a HEART revision F machine. The second is one 64-bit read at
-physical ``0x2000`` and returned zero. Both returned without an
-exception.
-
-.. _sgi-ip30-octane2-heart-status:
-
-HEART widget status, 2026-09-29
--------------------------------
-
-.. code-block:: text
-
-   >> dump -d -x 0x9000000018000008#1
-   0x9000000018000008:                 60
-
-One 64-bit read of physical ``0x18000008``, the HEART widget status slot:
-``0x0000000000000060``. It is not a power-on value, and a single read
-shows neither read side effects nor what the status bits mean.
-
-.. _sgi-ip30-octane2-heart-bank:
-
-HEART bank, 2026-09-27
-----------------------
-
-.. code-block:: text
-
-   >> dump -w -x 0xffffffffaff00020#4
-   0xffffffffaff00020:   81470000          0          0          0
-
-Four 32-bit words from the HEART memory bank descriptor area. The first
-decodes as valid, size code 7 (256 MiB), density code 5, base code 0
-(physical ``0x20000000``) under the public HEART field definitions; the
-other three are zero. This agrees with the 256 MiB inventory total and
-shows one configured bank at monitor time. It does not identify DIMM
-sockets or a reset value.
-
-.. _sgi-ip30-octane2-alt-flash:
-
-Alternate flash aperture, 2026-09-27
-------------------------------------
-
-.. code-block:: text
-
-   >> dump -h -x 0xffffffffbfe00000#1
-   0xffffffffbfe00000:   ffff
-
-One 16-bit read at physical ``0x1fe00000``, Bridge widget 15's alternate
-flash aperture at offset ``0xe00000``, on IP30 revision B with HEART
-revision F during the PROM monitor. It names no fitted chip and says
-nothing about other bytes of the aperture.
-
-.. _sgi-ip30-octane2-heart-widget:
-
-HEART widget registers, 2026-09-27
-----------------------------------
-
-.. code-block:: text
-
-   >> dump -d -x 0x9000000018000060#2
-   0x9000000018000060:                  0           3ff7fc0f
-
-Two consecutive 64-bit words in the HEART widget window: offset ``0x60``
-returned zero and ``0x68`` returned ``0x3ff7fc0f``, during the PROM
-session, with no register writes.
-
-.. _sgi-ip30-octane2-heart-timeout:
-
-HEART request timeout, 2026-09-27
----------------------------------
-
-.. code-block:: text
-
-   >>dump -d -x 0x9000000018000028#1
-   0x9000000018000028:                 28
-
-One 64-bit read of the widget request-timeout slot at offset ``0x28``:
-``0x28`` after PROM startup. It is not a cold-reset value.
-
-.. _sgi-ip30-octane2-rad:
-
-Onboard RAD class and revision, 2026-09-30
-------------------------------------------
-
-.. code-block:: text
-
-   >> dump -w -x 0x900000001f023008#1
-   0x900000001f023008:         c0
-
-An aligned 32-bit read of Bridge device 3, function 0, configuration
-register ``0x08`` (not BAR0 memory). The word ``0x000000c0`` gives PCI
-class ``0x000000`` and revision ``0xc0``, at PROM time on IP30 revision B
-with HEART revision F. It does not show cold reset or write masks.
+Each machine builds one IP30 board with one processor. The two names
+select two fitted populations of the same board family.
 
 .. _sgi-ip30-products:
 
 Products
-========
+--------
 
 .. list-table::
    :header-rows: 1
@@ -327,10 +133,218 @@ the inventory reports one 360 MHz R12000 chip revision 3.5 with 2 MiB secondary 
 ASIC revision 1.4. Its V12 graphics board at widget 11 is the
 ``octane2`` machine's default pipe (:ref:`sgi-ip30-graphics`).
 
+.. _sgi-ip30-processors:
+
+Processors
+----------
+
+``octane`` fits an R10000 at 195 MHz with 1 MiB secondary cache
+(established, :ref:`sgi-ip30-products`). Its processor identification
+word ``0x927`` is inferred: Linux ``cpu.h`` gives the R10000
+implementation code ``0x09``, and the published inventory reports chip
+revision 2.7. No raw PRId read was published.
+
+``octane2`` fits an R12000 at 360 MHz with 2 MiB secondary cache
+(established, :ref:`sgi-ip30-octane2-hinv`).
+
+.. _sgi-ip30-scheduler-clock:
+
+Scheduler clock
+~~~~~~~~~~~~~~~
+
+CP0 Count advances every other processor clock (R10000 manual, version
+2.0, section 14.8): 97.5 MHz on ``octane`` and 180 MHz on ``octane2``.
+A 32-bit wrap therefore takes 44.05 s and 23.86 s.
+
+The IRIX 6.5.30 IP30 kernel drives its scheduler tick from CP0 Count and
+Compare and arms it in two places, both with interrupts masked. The
+rearm routine reads Compare and Count and then takes one of two
+branches. When the deadline has passed, it writes Count zero and, up to
+eight register instructions later, Compare with a target of at least
+1000 ticks (5.6 us at 180 MHz). When it has not, it writes the Count it
+read back and either leaves Compare alone or writes Compare to the
+larger of the interval and 1000 as an absolute value, which need not be
+1000 ticks past that Count. A second routine that pulls the deadline in
+reads Count and, at most seventeen instructions later (a Compare read
+and register arithmetic), writes Compare at least 1000 ticks ahead of
+the value read. This is how the IRIX 6.5.30 kernel behaves, a software
+expectation rather than a hardware measurement. On the
+processor those instructions take a few cycles. Without instruction
+counting, QEMU's virtual clock follows the host, and a vCPU held between
+the sample and the write leaves the target behind Count. A strict
+equality comparator then defers the tick a full wrap, and IRIX reports
+that CPU 0 "hasn't seen a scheduler clock interrupt"; each missed tick
+costs 23.9 s on the ``octane2``.
+
+Both machines therefore set the CPU's ``count-sample-window`` property.
+Every guest Count read or write records the value and the virtual
+clock. The next Compare write raises the timer interrupt when its target
+lies less than half the counter range ahead of the latest recorded
+value and Count has already reached it. A target behind that value is a
+disarm or a deliberate long wait and keeps the ordinary rule: the
+read-Count-minus-one disarm public drivers use, and the kernel's
+Count=1/Compare=0 pair, and a target equal to it. In the rearm
+routine's not-expired branch the sample is the Count written back, so an
+absolute target behind it keeps the ordinary rule and one ahead of it is
+recovered only once Count has really passed it. Exception or interrupt
+entry and reset close the window, and a later Count read or write starts
+a new one. Nothing else ends it: the window has no limit on how many
+instructions separate the sample from the Compare write, only the limit of half the counter range on elapsed ticks. (The
+condition that the target lies less than half the range ahead follows
+from that limit and is not a separate bound.) This is an approximation of a host artefact, not processor
+behaviour: after a delayed arm the model raises IP7 at the Compare
+write, where silicon would not have been late. A window open when the
+machine is migrated is dropped, and the destination applies the
+ordinary rule to that one write. This is deliberate, unlike the adjacent
+rule, which migrates its pending state: the virtual clock is frozen
+while the machine is stopped, so a window open across a migration or
+snapshot loses nothing unless a host stall after the resume crosses the
+target, at a cost of one tick. The SN machines do not set the
+property and keep the adjacent-write rule alone.
+``tests/qtest/octane-timer-test.c`` pins the recovery and its controls.
+
+.. _sgi-ip30-r12000-defaults:
+
+R12000 catalogue defaults
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``octane2`` catalogue supplies every R12000 input, so ``-M octane2``
+starts without CPU options. Each one can be overridden by the CPU
+property named:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Value
+     - Property
+     - Rating
+   * - PRId ``0x0e35``
+     - ``r12000-prid``
+     - inferred: Linux ``cpu.h`` gives the R12000 implementation code
+       ``0x0e`` and the owner's inventory reports chip revision 3.5
+       (:ref:`sgi-ip30-octane2-hinv`). No raw PRId read of this word is
+       recorded.
+   * - FPU identification ``0x0900``
+     - ``r12000-fpu-id``
+     - approximation: no recorded measurement gives this word; the
+       inventory prints no FPU revision for the Octane2
+   * - Reset mode word ``0x001aa683``
+     - ``reset-mode``
+     - approximation: big-endian, secondary-cache size code ``010``
+       (2 MiB), 32-word secondary-cache blocks, Kseg0 algorithm 3, and
+       other divisor and mode fields chosen only to be valid encodings.
+       The NEC manual (pages 184-185) says cold reset loads these bits
+       from SysAD, and page 366 gives the R12000 divider encodings, but
+       no source gives the word this board drives.
+   * - Secondary cache 2 MiB
+     - the reset word's SS field
+     - established by the inventory (:ref:`sgi-ip30-octane2-hinv`); the
+       model derives it from the reset word
+   * - Secondary-cache block 32 words
+     - the reset word's SB field
+     - approximation: derived from the chosen reset word; the fitted
+       block size is unknown
+
+.. _sgi-ip30-memory:
+
+Memory kits and capacity
+------------------------
+
+Both owner's guides describe four DIMM banks of two sockets each. Bank 1
+must be filled, banks fill in order without gaps, and each populated
+bank holds two DIMMs of the same capacity and type (established:
+007-3435-004 page 54, 007-4207-002 page 47).
+
+- Octane (007-3435-004 pages 54-55): 32, 64, 128 and 256 MB DIMMs, so
+  64 to 512 MiB a bank and at most 2 GiB. The guide sets no order of
+  bank sizes.
+- Octane2 (007-4207-002 page 47): DIMMs from 32 MB to 1 GB, so 64 MiB
+  to 2 GiB a bank and at most 8 GiB, highest-density DIMMs in bank 1
+  and the rest in descending order.
+
+Public posts agree with the split by board: an SGI engineer wrote in
+2000 that the older IP30 board stops at 2 GB and that board
+``030-1467-001``, which the ``octane2`` profile carries, takes 2 GB
+memory kits (message ``<39B750E0.CA1E23C4@brussels.sgi.com>``).
+Published ``hinv`` captures report totals, among them 320 and 640 MiB
+on R10000 Octanes, which need more than one bank size, and 2048 MiB on
+a dual 250 MHz R10000 Octane. They report totals, never the fitted
+sockets.
+
+The catalogue carries each product's rule as ``accepted_bank_sizes_mib``
+(64 to 512 on ``octane``, 64 to 2048 on ``octane2``) and, for
+``octane2``, ``bank_order: descending``. The generator emits the bank
+sizes, the order rule and every total one to four banks make (27 totals
+on ``octane``, 79 on ``octane2``). ``-m`` alone fills the fewest banks,
+largest first: ``-m 3072`` on ``octane2`` is 2048+1024. ``bank<N>-size``
+selects a layout explicitly; setting any bank leaves the unset ones
+empty, and the banks must hold exactly ``-m``. Anything else is
+refused with the rule it breaks.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Kit
+     - DIMMs
+     - Bank
+     - Default of
+   * - ``kit-128``
+     - two 64 MiB
+     - one 128 MiB bank
+     - ``octane``
+   * - ``kit-256``
+     - two 128 MiB
+     - one 256 MiB bank
+     - ``octane2``
+
+The default kits are model choices (approximation): the profiles'
+inventories report only their totals. The guides number physical banks
+1 to 4; public software indexes HEART bank descriptors 0 to 3. Treating
+them as the same positions is inferred, not a measured board wiring fact.
+
+The stock 6.5.30 PROM sizes each bank itself under a temporary 2 GiB
+descriptor and writes the final descriptors; the IRIX 6.5.30 kernel
+only reads them. The model's response to that probe is a functional
+projection chosen so the PROM's own table names the fitted capacity on
+both of its HEART revision paths; it is not a measured HEART address
+decoder. With it, the PROM writes density code 4 for 64 and 128 MiB
+banks, 5 for 256 and 512 MiB and 6 for 1 and 2 GiB, the code an
+Octane2 PROM was seen writing for a 256 MiB bank
+(:ref:`sgi-ip30-octane2-heart-bank`). What the density code does to
+HEART's address decoding is unknown.
+
+.. _sgi-ip30-topology:
+
+Topology and population
+-----------------------
+
+Each product has one node (the IP30 board), one processor and no
+fabric. Dual-processor Octanes exist (Technical Report page 7-1) but are
+not modelled; the
+capacity notes restrict both machines to the single-processor profile.
+This is a scope limit, not a hardware claim.
+
+.. _sgi-ip30-devices:
+
+Supported devices
+=================
+
+The onboard parts and the pages that describe them:
+
+- Crossbow: :doc:`hardware/xbow`
+- onboard Bridge: :doc:`hardware/bridge`
+- two QLogic SCSI controllers: :doc:`hardware/qlogic-isp`
+- IOC3 with serial, parallel, keyboard and mouse: :doc:`hardware/ioc3`
+- ICS1890 Ethernet transceiver: :doc:`hardware/ics1890`
+- graphics boards: :doc:`hardware/graphics`
+
+HEART, the DS1685 timekeeper and the RAD1 audio controller are described
+on this page until their own pages exist.
+
 .. _sgi-ip30-components:
 
 Components and connections
-==========================
+--------------------------
 
 .. list-table::
    :header-rows: 1
@@ -418,7 +432,7 @@ driver expectation (inferred); the electrical wiring is unknown.
 .. _sgi-ip30-address-map:
 
 Processor address map
-=====================
+---------------------
 
 Established from OpenBSD ``ip30.h`` and ``ip30_machdep.c``, with Linux
 ``ip30-xtalk.c`` and ``mach-ip30/spaces.h`` agreeing on the widget
@@ -445,7 +459,7 @@ windows and the memory offset:
 .. _sgi-ip30-space-selection:
 
 Address-space selection
------------------------
+~~~~~~~~~~~~~~~~~~~~~~~
 
 The architecture layer records the selector as a two-bit processor
 attribute in virtual-address bits 58:57, giving four spaces. The
@@ -455,238 +469,10 @@ documents its use on Hub systems. That HEART decodes it the same way is
 inferred from the shared processor family, not established; no public
 HEART specification describes it.
 
-.. _sgi-ip30-processors:
-
-Processors
-==========
-
-``octane`` fits an R10000 at 195 MHz with 1 MiB secondary cache
-(established, :ref:`sgi-ip30-products`). Its processor identification
-word ``0x927`` is inferred: Linux ``cpu.h`` gives the R10000
-implementation code ``0x09``, and the published inventory reports chip
-revision 2.7. No raw PRId read was published.
-
-``octane2`` fits an R12000 at 360 MHz with 2 MiB secondary cache
-(established, :ref:`sgi-ip30-octane2-hinv`).
-
-.. _sgi-ip30-scheduler-clock:
-
-Scheduler clock
----------------
-
-CP0 Count advances every other processor clock (R10000 manual, version
-2.0, section 14.8): 97.5 MHz on ``octane`` and 180 MHz on ``octane2``.
-A 32-bit wrap therefore takes 44.05 s and 23.86 s.
-
-The IRIX 6.5.30 IP30 kernel drives its scheduler tick from CP0 Count and
-Compare and arms it in two places, both with interrupts masked. The
-rearm routine reads Compare and Count and then takes one of two
-branches. When the deadline has passed, it writes Count zero and, up to
-eight register instructions later, Compare with a target of at least
-1000 ticks (5.6 us at 180 MHz). When it has not, it writes the Count it
-read back and either leaves Compare alone or writes Compare to the
-larger of the interval and 1000 as an absolute value, which need not be
-1000 ticks past that Count. A second routine that pulls the deadline in
-reads Count and, at most seventeen instructions later (a Compare read
-and register arithmetic), writes Compare at least 1000 ticks ahead of
-the value read. These are from our disassembly of the shipped
-``kernel.o``, whose only Compare writes are these and two adjacent
-Count/Compare pairs; they are not hardware measurements. On the
-processor those instructions take a few cycles. Without instruction
-counting, QEMU's virtual clock follows the host, and a vCPU held between
-the sample and the write leaves the target behind Count. A strict
-equality comparator then defers the tick a full wrap, and IRIX reports
-that CPU 0 "hasn't seen a scheduler clock interrupt". A traced
-wall-clock Octane2 boot rearmed 16,114 times in 549 virtual seconds;
-twelve rearms crossed their target, each costing 23.9 s, and the desktop
-never appeared. Recovering only the Count-write form reached the greeter
-but still lost six ticks in three minutes to the Count-read form.
-
-Both machines therefore set the CPU's ``count-sample-window`` property.
-Every guest Count read or write records the value and the virtual
-clock. The next Compare write raises the timer interrupt when its target
-lies less than half the counter range ahead of the latest recorded
-value and Count has already reached it. A target behind that value is a
-disarm or a deliberate long wait and keeps the ordinary rule: the
-read-Count-minus-one disarm public drivers use, and the kernel's
-Count=1/Compare=0 pair, and a target equal to it. In the rearm
-routine's not-expired branch the sample is the Count written back, so an
-absolute target behind it keeps the ordinary rule and one ahead of it is
-recovered only once Count has really passed it. Exception or interrupt
-entry and reset close the window, and a later Count read or write starts
-a new one. Nothing else ends it: the window has no limit on how many
-instructions separate the sample from the Compare write, only the limit of half the counter range on elapsed ticks. (The
-condition that the target lies less than half the range ahead follows
-from that limit and is not a separate bound.) This is an approximation of a host artefact, not processor
-behaviour: after a delayed arm the model raises IP7 at the Compare
-write, where silicon would not have been late. A window open when the
-machine is migrated is dropped, and the destination applies the
-ordinary rule to that one write. This is deliberate, unlike the adjacent
-rule, which migrates its pending state: the virtual clock is frozen
-while the machine is stopped, so a window open across a migration or
-snapshot loses nothing unless a host stall after the resume crosses the
-target, at a cost of one tick. The SN machines do not set the
-property and keep the adjacent-write rule alone.
-``tests/qtest/octane-timer-test.c`` pins the recovery and its controls.
-
-.. _sgi-ip30-r12000-defaults:
-
-R12000 catalogue defaults
--------------------------
-
-The ``octane2`` catalogue supplies every R12000 input, so ``-M octane2``
-starts without CPU options. Each one can be overridden by the CPU
-property named:
-
-.. list-table::
-   :header-rows: 1
-
-   * - Value
-     - Property
-     - Rating
-   * - PRId ``0x0e35``
-     - ``r12000-prid``
-     - inferred: Linux ``cpu.h`` gives the R12000 implementation code
-       ``0x0e`` and the owner's inventory reports chip revision 3.5
-       (:ref:`sgi-ip30-octane2-hinv`). No raw PRId read of this word is
-       recorded.
-   * - FPU identification ``0x0900``
-     - ``r12000-fpu-id``
-     - approximation: no recorded measurement gives this word; the
-       inventory prints no FPU revision for the Octane2
-   * - Reset mode word ``0x001aa683``
-     - ``reset-mode``
-     - approximation: big-endian, secondary-cache size code ``010``
-       (2 MiB), 32-word secondary-cache blocks, Kseg0 algorithm 3, and
-       other divisor and mode fields chosen only to be valid encodings.
-       The NEC manual (pages 184-185) says cold reset loads these bits
-       from SysAD, and page 366 gives the R12000 divider encodings, but
-       no source gives the word this board drives.
-   * - Secondary cache 2 MiB
-     - the reset word's SS field
-     - established by the inventory (:ref:`sgi-ip30-octane2-hinv`); the
-       model derives it from the reset word
-   * - Secondary-cache block 32 words
-     - the reset word's SB field
-     - approximation: derived from the chosen reset word; the fitted
-       block size is unknown
-
-.. _sgi-ip30-memory:
-
-Memory kits and capacity
-========================
-
-Both owner's guides describe four DIMM banks of two sockets each. Bank 1
-must be filled, banks fill in order without gaps, and each populated
-bank holds two DIMMs of the same capacity and type (established:
-007-3435-004 page 54, 007-4207-002 page 47).
-
-- Octane (007-3435-004 pages 54-55): 32, 64, 128 and 256 MB DIMMs, so
-  64 to 512 MiB a bank and at most 2 GiB. The guide sets no order of
-  bank sizes.
-- Octane2 (007-4207-002 page 47): DIMMs from 32 MB to 1 GB, so 64 MiB
-  to 2 GiB a bank and at most 8 GiB, highest-density DIMMs in bank 1
-  and the rest in descending order.
-
-Public posts agree with the split by board: an SGI engineer wrote in
-2000 that the older IP30 board stops at 2 GB and that board
-``030-1467-001``, which the ``octane2`` profile carries, takes 2 GB
-memory kits (Library mail ``39B750E0.CA1E23C4@brussels.sgi.com``).
-Published ``hinv`` captures report totals, among them 320 and 640 MiB
-on R10000 Octanes, which need more than one bank size, and 2048 MiB on
-a dual 250 MHz R10000 Octane. They report totals, never the fitted
-sockets.
-
-The catalogue carries each product's rule as ``accepted_bank_sizes_mib``
-(64 to 512 on ``octane``, 64 to 2048 on ``octane2``) and, for
-``octane2``, ``bank_order: descending``. The generator emits the bank
-sizes, the order rule and every total one to four banks make (27 totals
-on ``octane``, 79 on ``octane2``). ``-m`` alone fills the fewest banks,
-largest first: ``-m 3072`` on ``octane2`` is 2048+1024. ``bank<N>-size``
-selects a layout explicitly; setting any bank leaves the unset ones
-empty, and the banks must hold exactly ``-m``. Anything else is
-refused with the rule it breaks.
-
-.. list-table::
-   :header-rows: 1
-
-   * - Kit
-     - DIMMs
-     - Bank
-     - Default of
-   * - ``kit-128``
-     - two 64 MiB
-     - one 128 MiB bank
-     - ``octane``
-   * - ``kit-256``
-     - two 128 MiB
-     - one 256 MiB bank
-     - ``octane2``
-
-The default kits are model choices (approximation): the profiles'
-inventories report only their totals. The guides number physical banks
-1 to 4; public software indexes HEART bank descriptors 0 to 3. Treating
-them as the same positions is inferred, not a measured board wiring fact.
-
-The stock 6.5.30 PROM sizes each bank itself under a temporary 2 GiB
-descriptor and writes the final descriptors; the IRIX 6.5.30 kernel
-only reads them (the HEART memory configuration in the Origami HEART
-datasheet). The model's response to that probe is a functional
-projection chosen so the PROM's own table names the fitted capacity on
-both of its HEART revision paths; it is not a measured HEART address
-decoder. With it, the PROM writes density code 4 for 64 and 128 MiB
-banks, 5 for 256 and 512 MiB and 6 for 1 and 2 GiB, the code an
-Octane2 PROM was seen writing for a 256 MiB bank
-(:ref:`sgi-ip30-octane2-heart-bank`). What the density code does to
-HEART's address decoding is unknown.
-
-.. _sgi-ip30-topology:
-
-Topology and population
-=======================
-
-Each product has one node (the IP30 board), one processor and no
-fabric. Dual-processor Octanes exist (Technical Report page 7-1) but are
-not modelled; the
-capacity notes restrict both machines to the single-processor profile.
-This is a scope limit, not a hardware claim.
-
-.. _sgi-ip30-graphics:
-
-Graphics ports
-==============
-
-A graphics pipe is a ``-device sgi-mgras`` or ``-device sgi-odyssey``
-in one of the four Crossbow ports the Octane gives graphics boards,
-named ``slot=widget-9`` to ``slot=widget-12``, checked against the
-catalogue as every SGI machine's pipes are (:ref:`sgi-sn-graphics-pipes`).
-Published inventories show IMPACT boards at widgets 10, 11 and 12, the
-stock IDE probes 9 to 12, and the Octane2 inventory above shows its V12
-at 11 (established). The default pipe is an SI at ``widget-11`` on
-``octane`` and a V12 there on ``octane2``; that SGI shipped either
-machine with no graphics is unknown, and both accept ``-vga none``.
-The catalogue offers every IMPACT product in every port and the V12 only
-at ``widget-11`` on ``octane2``; on ``octane`` it refuses VPro with the
-upgrade guide's conditions (007-4210-003, preface), Crossbow 1.4 and the
-ER supply, which this model's Crossbow revision code 4 and SR supply do
-not meet.
-
-A port starts empty, its presence clear, as it is with no board. A board
-claims its port when it realizes: it takes its fabric from the port's
-link, attaches to the realized Crossbow, and maps its 64 GiB long window
-at widget times 64 GiB of physical space, through HEART's port with the
-widget number in address bits 51:48. The machine's init-done notifier
-then brings the link alive with the same pre-reset health restore the
-HEART and Bridge links get. On an IMPACT board the machine sets the
-serial-number record the PROM names the board by, whose barcode and ROM
-serial are the marked synthetic ``EMUG00``, and 32-bit DMA page-list
-entries, which IRIX 6.5.30's X server and kernel and the Linux IMPACTSR
-driver write.
-
 .. _sgi-ip30-board-identity:
 
 Board identity records
-======================
+----------------------
 
 The model fits four one-wire board records per machine: the processor
 module on HEART's one-wire master, the system board on the onboard
@@ -765,10 +551,30 @@ rest of each record is not:
 - Physical ROM serials, page checksums, padding and unused memory on real
   IP30 boards are unknown.
 
+.. _sgi-ip30-missing:
+
+Missing devices
+===============
+
+- The second processor of dual-processor Octanes. Both machines are
+  single-processor (:ref:`sgi-ip30-topology`).
+- The expansion Bridge and its four PCI slots. Its widget number is
+  unknown, so no slot is offered.
+- The front-panel LEDs on IOC3 general-purpose pins; writes reach no
+  device.
+
+.. _sgi-ip30-firmware:
+
+Firmware and boot
+=================
+
+The machines boot only a stock IP30 PROM, given with ``-bios`` or bound
+as ``node0-flash``. ``-kernel`` is refused.
+
 .. _sgi-ip30-flash-wiring:
 
 Boot flash wiring
-=================
+-----------------
 
 This is an open question. What is known:
 
@@ -807,7 +613,7 @@ The model's choices, all approximations:
 .. _sgi-ip30-storage:
 
 Storage items
-=============
+-------------
 
 Each machine lists three writable stores in its catalogue offering,
 bound through the machine property of the same name:
@@ -832,7 +638,7 @@ bound through the machine property of the same name:
 .. _sgi-ip30-timekeeper:
 
 Timekeeper
-----------
+~~~~~~~~~~
 
 The clock behind IOC3 is a DS1685-family part (the OpenBSD capture
 reports a DS1687; established). The model keeps 512 bytes of its NVRAM
@@ -840,10 +646,24 @@ and a 24-byte clock record beside it, both starting zeroed; the part
 treats an all-zero image as fresh. The store sizes and zero start are
 emulator choices (approximation).
 
+.. _sgi-ip30-running:
+
+Running
+=======
+
+::
+
+   qemu-system-mips64 -M octane2 -vga none -bios IP30prom.bin -nographic
+
+With no disk attached the PROM reports its SCSI diagnostic as failed and
+waits for a key; the next key reaches the System Maintenance Menu. Attach
+a disk with ``-drive file=disk.img,format=raw``: a ``-drive`` with no
+``if=`` lands on the internal SCSI bus.
+
 .. _sgi-ip30-launch:
 
 Launch metadata
-===============
+---------------
 
 These are emulator choices for launchers, not hardware facts.
 
@@ -860,12 +680,44 @@ These are emulator choices for launchers, not hardware facts.
 - Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
   media ``disk-image`` and ``netboot``. The stock PROM's "Install System
   Software" netbooted the IRIX 6.5.30 miniroot through it on the model,
-  and complete installs on an Octane with SI and an Octane2 with V12 on
-  2026-10-24 reached the installed system's login prompt
+  and complete installs on an Octane with SI and an Octane2 with V12
+  reach the installed system's login prompt
   (:ref:`sgi-sn-launch-disk-bus`). The physical PROM's network install
   rests on the IRIX 6.5.30 ``prom(1M)`` page, not on a measurement of
   this board. Supported guest ``irix``; default CPU model R10000 or
   R12000.
+
+.. _sgi-ip30-graphics:
+
+Graphics
+========
+
+A graphics pipe is a ``-device sgi-mgras`` or ``-device sgi-odyssey``
+in one of the four Crossbow ports the Octane gives graphics boards,
+named ``slot=widget-9`` to ``slot=widget-12``, checked against the
+catalogue as every SGI machine's pipes are (:ref:`sgi-sn-graphics-pipes`).
+Published inventories show IMPACT boards at widgets 10, 11 and 12, the
+stock IDE probes 9 to 12, and the Octane2 inventory above shows its V12
+at 11 (established). The default pipe is an SI at ``widget-11`` on
+``octane`` and a V12 there on ``octane2``; that SGI shipped either
+machine with no graphics is unknown, and both accept ``-vga none``.
+The catalogue offers every IMPACT product in every port and the V12 only
+at ``widget-11`` on ``octane2``; on ``octane`` it refuses VPro with the
+upgrade guide's conditions (007-4210-003, preface), Crossbow 1.4 and the
+ER supply, which this model's Crossbow revision code 4 and SR supply do
+not meet.
+
+A port starts empty, its presence clear, as it is with no board. A board
+claims its port when it realizes: it takes its fabric from the port's
+link, attaches to the realized Crossbow, and maps its 64 GiB long window
+at widget times 64 GiB of physical space, through HEART's port with the
+widget number in address bits 51:48. The machine's init-done notifier
+then brings the link alive with the same pre-reset health restore the
+HEART and Bridge links get. On an IMPACT board the machine sets the
+serial-number record the PROM names the board by, whose barcode and ROM
+serial are the marked synthetic ``EMUG00``, and 32-bit DMA page-list
+entries, which IRIX 6.5.30's X server and kernel and the Linux IMPACTSR
+driver write.
 
 .. _sgi-ip30-unknowns:
 
@@ -883,3 +735,206 @@ Open questions
 - The expansion Bridge's widget number.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
   public source establishes it, and this page does not state it.
+
+
+.. _sgi-ip30-octane2-inventory:
+
+Measurements of a physical Octane2
+==================================
+
+These are the measurements the owner of one physical Octane2 took for
+this project. The machine ran IRIX 6.5.30m, reached over the network
+shell for the IRIX commands, and its PROM Command Monitor for the
+``dump`` reads; the V12 graphics board was fitted. Commands and returned
+values are reproduced exactly. Board barcodes, Laser IDs, serial numbers
+and MAC addresses are left out. The owner ran the PROM-monitor sessions
+and supplied their full output. No read is a reset value: each shows what
+this one machine answered at the stated moment.
+
+.. _sgi-ip30-octane2-hinv:
+
+Inventory (``hinv -mvv``, ``uname -R``)
+---------------------------------------
+
+``uname -R`` printed ``6.5 6.5.30m``. A repeated ``hinv -mvv`` agreed with
+the first. The inventory reports:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Component
+     - Reported value
+   * - Processor
+     - one 360 MHz IP30 R12000, chip revision 3.5, 2 MiB secondary cache
+   * - HEART
+     - revision F
+   * - IP30 board
+     - ``030-1467-001``, revision B
+   * - Frontplane
+     - ``FP1``, ``030-0891-003``, revision H
+   * - Power supply
+     - ``PWR.SPPLY.ER``, ``060-0035-002``, revision A, under
+       ``/hw/node/xtalk/15/pci/2``
+   * - Memory
+     - 256 MiB total (one 256 MiB bank was later seen configured)
+   * - Crossbow
+     - ASIC revision 1.4
+   * - Processor module
+     - ``PM10360MHZ``, ``030-1590-002``, revision B
+   * - SCSI
+     - two integral QL1040B controllers, revision 2; the disk is unit 1
+       on controller 0
+   * - Onboard I/O
+     - IOC3 serial ports ``tty1`` and ``tty2``, parallel ``plp1``,
+       Ethernet ``ef0``, RAD audio revision 12.0
+   * - Graphics
+     - V12 board at widget 11
+
+The inventory shows neither which bay holds the disk nor how controller 0
+maps to a PCI device number, and it reports no register values.
+
+.. _sgi-ip30-octane2-graph:
+
+Hardware graph
+--------------
+
+A read-only ``ls -l`` of the running hardware graph showed SCSI links under
+``/hw/node/xtalk/15/pci/0`` and ``/hw/node/xtalk/15/pci/1``. The first
+resolves to ``/hw/node/xtalk/15/pci/0/scsi_ctlr/0``, whose ``target``
+directory holds ``1``, whose ``lun`` directory holds ``0``; that LUN holds
+a ``disk`` directory and a ``scsi`` device node. The installed disk is
+therefore PCI device 0, SCSI target 1, LUN 0 as the kernel names it. This
+is kernel bookkeeping, not an electrical measurement. No device node was
+opened.
+
+.. _sgi-ip30-octane2-prom-header:
+
+PROM headers
+------------
+
+``/usr/sbin/flash -V`` exited zero and printed the loaded primary PROM
+header as version ``4.17``, length ``682448`` bytes, programmed
+``2026-08-16 23:59:56 GMT``, ``7`` reloads; the recovery header reads
+version ``4.9``, length ``147198`` bytes, same time and count.
+``/usr/sbin/flash -d`` exited zero with no output. The flash contents
+were not dumped or hashed.
+
+.. _sgi-ip30-octane2-xbow-id:
+
+Crossbow widget identification
+------------------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0x9000000010000004#1
+   0x9000000010000004:   50000001
+
+One 32-bit read of the Crossbow widget-zero identification word. Bits
+31:28 give raw revision code 5 (established for this board at PROM
+time).
+
+.. _sgi-ip30-octane2-heart-id:
+
+HEART widget identification and low memory
+------------------------------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000000#1
+   0x9000000018000000:           6c00106d
+   >> dump -d -x 0x9000000000002000#1
+   0x9000000000002000:                  0
+
+The first is one 64-bit read of the HEART widget identification word,
+``0x000000006c00106d`` (revision 6, part ``0xc001``, manufacturer
+``0x36``) on a HEART revision F machine. The second is one 64-bit read at
+physical ``0x2000`` and returned zero. Both returned without an
+exception.
+
+.. _sgi-ip30-octane2-heart-status:
+
+HEART widget status
+-------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000008#1
+   0x9000000018000008:                 60
+
+One 64-bit read of physical ``0x18000008``, the HEART widget status slot:
+``0x0000000000000060``. It is not a power-on value, and a single read
+shows neither read side effects nor what the status bits mean.
+
+.. _sgi-ip30-octane2-heart-bank:
+
+HEART bank
+----------
+
+.. code-block:: text
+
+   >> dump -w -x 0xffffffffaff00020#4
+   0xffffffffaff00020:   81470000          0          0          0
+
+Four 32-bit words from the HEART memory bank descriptor area. The first
+decodes as valid, size code 7 (256 MiB), density code 5, base code 0
+(physical ``0x20000000``) under the public HEART field definitions; the
+other three are zero. This agrees with the 256 MiB inventory total and
+shows one configured bank at monitor time. It does not identify DIMM
+sockets or a reset value.
+
+.. _sgi-ip30-octane2-alt-flash:
+
+Alternate flash aperture
+------------------------
+
+.. code-block:: text
+
+   >> dump -h -x 0xffffffffbfe00000#1
+   0xffffffffbfe00000:   ffff
+
+One 16-bit read at physical ``0x1fe00000``, Bridge widget 15's alternate
+flash aperture at offset ``0xe00000``, on IP30 revision B with HEART
+revision F during the PROM monitor. It names no fitted chip and says
+nothing about other bytes of the aperture.
+
+.. _sgi-ip30-octane2-heart-widget:
+
+HEART widget registers
+----------------------
+
+.. code-block:: text
+
+   >> dump -d -x 0x9000000018000060#2
+   0x9000000018000060:                  0           3ff7fc0f
+
+Two consecutive 64-bit words in the HEART widget window: offset ``0x60``
+returned zero and ``0x68`` returned ``0x3ff7fc0f``, during the PROM
+session, with no register writes.
+
+.. _sgi-ip30-octane2-heart-timeout:
+
+HEART request timeout
+---------------------
+
+.. code-block:: text
+
+   >>dump -d -x 0x9000000018000028#1
+   0x9000000018000028:                 28
+
+One 64-bit read of the widget request-timeout slot at offset ``0x28``:
+``0x28`` after PROM startup. It is not a cold-reset value.
+
+.. _sgi-ip30-octane2-rad:
+
+Onboard RAD class and revision
+------------------------------
+
+.. code-block:: text
+
+   >> dump -w -x 0x900000001f023008#1
+   0x900000001f023008:         c0
+
+An aligned 32-bit read of Bridge device 3, function 0, configuration
+register ``0x08`` (not BAR0 memory). The word ``0x000000c0`` gives PCI
+class ``0x000000`` and revision ``0xc0``, at PROM time on IP30 revision B
+with HEART revision F. It does not show cold reset or write masks.
