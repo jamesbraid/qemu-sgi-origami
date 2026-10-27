@@ -1155,6 +1155,18 @@ static void test_pp1_format_field_5_is_ci8(void)
 }
 
 /*
+ * PP1FILLMODE bit 25 makes a paint replace the destination whatever the
+ * op bits hold: the PROM console draws under 0x02006500, whose op bits
+ * read CLEAR. Without bit 25 those bits still CLEAR.
+ */
+static void test_pp1_bit_25_replaces(void)
+{
+    g_assert_cmphex(mgras_glyph_row_under_pp1(0x02004500), ==, 0x30);
+    g_assert_cmphex(mgras_glyph_row_under_pp1(
+                        (MGRAS_LOGIC_OP_CLEAR << 26) | 0x4500), ==, 0);
+}
+
+/*
  * A row up to 32 columns wide executes entirely on CHAR_H; CHAR_L is never
  * written. Markers sit at columns 0, 15, 16 and 19 to exercise both CHAR_H
  * halfwords and the row's last column. A second CHAR_H execute paints a
@@ -3996,6 +4008,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/pp1-format-field-5-is-ci8",
         test_pp1_format_field_5_is_ci8, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pp1-bit-25-replaces",
+        test_pp1_bit_25_replaces, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/direct-glyph-row-char-h-only",
         test_direct_glyph_row_char_h_only, true);
