@@ -9,13 +9,48 @@ controller and covers the IP35 platform: the Origin 300, Fuel, Origin
 350, Onyx 350, Tezro and Onyx 4 host (:doc:`ip35`). QEMU builds both from
 one machine base, ``sgi-sn`` (``TYPE_SGI_SN_MACHINE``,
 ``hw/mips/sgi/sn-machine.c``). This page describes what the two
-generations share: the topology catalogue that decides which boards a
-machine fits, how boards and graphics pipes are composed, the firmware
-and storage a launch supplies, the serial-line order and the launch
-metadata. Machine-specific content is on the platform pages and on the
-part pages listed under :ref:`sgi-sn-devices`.
+generations share: the address model and PROM format, the catalogue that
+decides which boards a machine fits, how boards and graphics pipes are
+composed, the firmware and storage a launch supplies, the serial-line
+order and the launch metadata. Machine-specific content is on the
+platform pages and on the part pages listed under :ref:`sgi-sn-devices`.
 
 Facts are rated as described in :ref:`sgi-ratings`.
+
+.. _sgi-sn-shared-model:
+
+What the generations share
+==========================
+
+Both generations use a flat physical address space striped by node. Two
+attribute bits above the node number select the cached, uncached or
+special-space window. The address maps are on :ref:`sgi-ip27-address-map`
+and :ref:`sgi-ip35-address-map`, each with its own ratings and sources.
+Both boot a stock PROM in the same container format, with the same entry
+points and configuration block (:doc:`prom-image`).
+
+.. _sgi-sn-catalogue:
+
+The catalogue
+-------------
+
+The catalogue is ``hw/mips/sgi/sgi-machines.json``, embedded in the
+emulator and parsed on first use by ``hw/mips/sgi/sgi-machines.c``. The
+``query-sgi-machines`` QMP command returns the embedded copy verbatim
+(``SGIMachines`` in ``qapi/sgi-machines.json``), so a package build can
+read the catalogue from the binary it ships. The document has two
+sections:
+
+- ``topologies`` are what the builder reads. Each names every node,
+  module, fabric link, I/O board and controller of one configuration.
+- ``offerings`` are what only launch tools read. An offering is one
+  accepted population a launcher may select. It carries the ``-M`` value
+  that selects it (``machine-options``), every writable store the machine
+  has (``storage``, with each store's size and starting contents) and the
+  firmware images that initial content is built from (``init-inputs``).
+
+A topology is a wiring. An offering is a launchable choice of one
+topology and one population of it. The machine never reads an offering.
 
 .. _sgi-sn-product-family:
 
@@ -63,14 +98,16 @@ product (:ref:`sgi-ip35-ip53`). The IP35 machine classes parent
 ``sgi-sn`` like the IP27 ones and take the same ``topology=`` contract
 and compiled catalogue. Only the node device is product-specific.
 
-A Hub carries two processors on one processor interface. A Bedrock
-carries up to four on two interfaces (*established*; :doc:`hardware/hub`,
-:doc:`hardware/bedrock`). IP27 I/O is a Bridge, behind a Crossbow where
+A Hub carries two processors on one processor interface
+(*established*, :src:`007-3439-002 Figure 2-1`). A Bedrock carries up to
+four on two interfaces (*established*, :src:`108-0240-002 p. 2-12`).
+The node controller pages are :doc:`hardware/hub` and
+:doc:`hardware/bedrock`. IP27 I/O is a Bridge, behind a Crossbow where
 the module has one. IP35 I/O is an XBridge, or a PIC on the IP53 board
 (:doc:`hardware/bridge`, :doc:`hardware/xbow`, :doc:`hardware/xbridge`,
 :doc:`hardware/pic`). The system controller is the ELSC or the module
 system controller on IP27 (:doc:`hardware/elsc`) and an L1 over a UART
-on IP35 (:doc:`hardware/l1`).
+on IP35 (:doc:`hardware/l1`). Those pages rate and cite each part.
 
 The subsections below hold the brick and product facts that the model
 catalogue cites on this page. The platform pages and :doc:`hardware/bricks`
@@ -81,13 +118,13 @@ own the rest of each product's description.
 Origin 2000 two-module racks and Xpress links
 ---------------------------------------------
 
-A rack holds two modules (*established*, :src:`007-3439-002`). Within and
-between modules, Link 1 runs vertically between the upper and lower
-Routers of the same letter, and Link 2 is the Xpress link, which must
-cross. Xpress links are only used in systems of 16 or 32 processors
-(*established*, :src:`007-3439-002 p. 59`). SGI's field-service manual,
-document 108-0174-001, draws the cabling on printed pages 6-35 to 6-48.
-The ``origin2000-two-module-xpress`` layer records that wiring as a
+A rack holds two modules. Within and between modules, Link 1 runs
+vertically between the upper and lower Routers of the same letter, and
+Link 2 is the Xpress link, which must cross. Xpress links are only used
+in systems of 16 or 32 processors (*established*,
+:src:`007-3439-002 p. 59`). No source cited here draws the full
+cable-by-cable wiring, and which SGI document does is *unknown*. The
+``origin2000-two-module-xpress`` layer records the link rule as a
 reference configuration. No machine builds it, and its fitted memory is
 a model choice (*approximation*).
 
@@ -233,8 +270,8 @@ devices (*established*, :src:`108-0240-002 pp. 2-26 to 2-29`;
 
 Inventories of an Onyx 3000, an Origin 3200 and an Origin 3400 print the
 same base I/O bus at ``/hw/module/<c>/Ibrick/xtalk/15`` (*observed*,
-three identified machines; Nekonomicon forum 14, threads 16719632,
-16723604 and 16720581):
+three identified machines; :src:`nekonomicon-16719632`,
+:src:`nekonomicon-16723604` and :src:`nekonomicon-16720581`):
 
 .. list-table::
    :header-rows: 1
@@ -544,7 +581,7 @@ are:
 - An L1 controller with a display, and an L2 only with a NUMAlink module
   (*established*, :src:`007-4566-001 pp. 68-75`).
 - A PIC with two PCI-X heads on one widget, the second head's registers
-  ``0x800000`` above the first (*established*: OpenBSD
+  ``0x800000`` above the first (*software expectation*: OpenBSD
   ``sys/arch/sgi/xbow/xbridgereg.h`` lines 24-28 and ``xbowdevs``, part
   ``0xd102``, second head ``0xd112``, manufacturer ``0x024``, at
   ``2df91d80c104636deeef8124252ddd5951b55fbf``). Widget 15 is *observed*
@@ -557,13 +594,15 @@ are:
   internal slots plus one (OpenBSD ``xbridge.c``), so the PCI ids IRIX
   prints are OpenBSD's devices plus one (*inferred*).
 
-The Origin 350's widget identity words for Bedrock and PIC, and the
-widget at which Bedrock enters the crossbar on an Origin 350 compute
-module, are *unknown*. No published trace is attributed to an Origin
-350. The PROM trace on the graphica Origin 350 notes page that attaches a
-Bedrock at widget ``0xb`` (lines 949-952) lists an ODYSSEY graphics
-assembly and the same module id as that page's Fuel, so it reads as a
-Fuel (:src:`graphica-o350-chimera-notes`).
+The Origin 350's widget identity words for Bedrock and PIC are
+*unknown*. One published PROM trace from an Onyx 350 module (an IP53
+graphics blade with four processors and 8 GiB) attaches the Bedrock at
+widget ``0xb`` (:src:`graphica-o350-chimera-notes lines 949-952`),
+*observed*. No trace from an Origin 350 server is published, and that the
+server board enters at the same widget is *inferred* from the shared IP53
+board. The model enters the crossbar at widget ``0xa``
+(``SN1_XBRIDGE_HOST_PORT`` in ``hw/mips/sgi/sn1-node.c``), an
+*approximation* that disagrees with the observed trace.
 
 .. _sgi-sn-family-bedrock:
 
@@ -616,14 +655,17 @@ flash.
 ``-smp`` and ``-m`` choose the population:
 
 - Every processor is its own single-core socket. ``-smp N`` alone names
-  the count, and ``cores=`` or ``threads=`` is refused.
-- The topology accepts a set of per-node processor counts. ``-smp N``
-  picks the accepted population whose total is N. A total that two
-  populations make is refused until ``population=`` names one, as
-  per-node counts in node order such as ``4:2``.
-- A topology with more than one node splits ``-smp`` evenly across its
-  nodes when no explicit socket count is given. Naming sockets explicitly
-  must still match one of the topology's accepted populations.
+  the count, and ``cores=`` or ``threads=`` is refused. A ``sockets=``
+  that differs from ``maxcpus`` is refused. ``-smp N,maxcpus=M`` is
+  accepted.
+- The topology accepts a set of per-node processor counts, its accepted
+  populations. ``-smp N`` picks the one accepted population whose total is
+  N (``sgi_machine_find_population_by_total()``). Nothing splits N evenly.
+  On a two-node ``origin2000-rack``, ``-smp 3`` builds 2:1, the only
+  population of 3. A total that two populations make is refused until
+  ``population=`` names one, as per-node counts in node order such as
+  ``4:2``. A total no population makes is refused with the totals that
+  exist.
 - ``-smp`` keeps the product's default, which fits its most node boards.
   The machine cannot tell a default from an explicit value, so a launch
   with fewer node boards names it.
@@ -678,8 +720,9 @@ Scalable Node machines and on ``octane`` and ``octane2``:
 ``sgi-mgras`` (IMPACT), ``sgi-odyssey`` (VPro), ``sgi-kona``
 (InfiniteReality) and ``psitech-rad4`` (PsiTech RAD4). It is placed with
 the properties QEMU already has for it. ``slot=`` names an XIO slot by
-its label (``io6``) or an IP30 or IP35 Crossbow port (``widget-11``),
-and a PsiTech card is a PCI card placed with ``bus=`` and ``addr=``.
+its label (``io6``) or a crossbar port (``widget-11`` on an Octane,
+``widget-13`` on a Fuel, ``widget-12`` on an IP53 machine), and a
+PsiTech card is a PCI card placed with ``bus=`` and ``addr=``.
 ``product=`` names the product, and an InfiniteReality pipe takes its
 further settings, ``geometry``, ``rm-type``, ``rm-count``,
 ``texture-mb`` and ``display``, as properties of the same names::
@@ -774,6 +817,10 @@ own text, given where a refusal matches:
      - ``<machine>: <device> needs slot= naming one of the graphics slots
        of topology '<t>': <slot> (<placement>), ...``, or ``bus= and
        addr=`` for a PCI card
+   * - PCI card off every slot
+     - ``<machine>: topology '<t>' has no graphics slot at
+       bus=<b>,addr=<n>; its graphics slots are <slot> (<placement>),
+       ...``
    * - Slot not in the record
      - ``<machine>: topology '<t>' has no graphics slot <slot>; its
        graphics slots are <slot> (<placement>), ...``
@@ -787,6 +834,14 @@ own text, given where a refusal matches:
      - ``<machine>: graphics slot <slot> of topology '<t>' does not offer
        <device> product=<p> with <setting>=<value>; it offers
        <values>[: <reason>]``
+   * - Product setting the slot offers no choice for
+     - ``<machine>: graphics slot <slot> of topology '<t>' offers
+       <device> product=<p> no <setting> choice, so <setting>=<value> does
+       not fit[: <reason>]``
+   * - Combination the catalogue refuses
+     - ``<machine>: graphics slot <slot> of topology '<t>' does not take
+       this <device>: <reason>``, for a combination whose every value is
+       offered
    * - Slot the node count does not fit
      - ``<machine>: graphics slot <slot> of topology '<t>' exists from
        nodes=<n>, and this machine fits <m>``
@@ -826,11 +881,12 @@ The two generations differ when no image is given:
   vector. A default template answers the flash's command interface with a
   spin-in-place loop, a plausible configuration block and a factory-fresh
   environment log, the shape a real chip ships pre-formatted in rather
-  than merely erased. The machine patches the three fields a stock PROM's
-  configuration block carries for the product (two flash timings and its
-  machine-type word) into whichever block is present, preserving every
-  other field and the stored checksum. The values come from the
-  topology's ``ip27-firmware`` record in ``query-sgi-machines``
+  than merely erased. The machine patches five fields into any block
+  that carries the IP27 configuration magic: the module's mode word and
+  clock, and the product's two flash timings and machine-type word.
+  Every other field and the block's byte sum are kept, with the checksum
+  field adjusted to hold the sum. The product values come from the topology's
+  ``ip27-firmware`` record in ``query-sgi-machines``
   (:ref:`sgi-prom-image-ip27-values`).
 - On IP35, no template exists. Every node needs a real image or a bound
   flash, and the PROM's writes to a flash that is only filled from
@@ -878,7 +934,8 @@ and a backing whose size is not the item's size.
        its NVRAM bound too. An NVRAM bound alone restores its calendar
        with no time added. The part is M48T35-compatible on IP27 and on
        the Origin 300 and Fuel, and DS1744-compatible on the IO9 of the
-       IP53 machines (:doc:`hardware/timekeepers`).
+       IP53 machines (:doc:`hardware/timekeepers`). The IP53 machines
+       require both stores and accept neither deprecated form below.
    * - ``module<N>-nvram``
      - IP27
      - The 2048-byte configuration NVRAM of a module's system controller
@@ -890,7 +947,7 @@ and a backing whose size is not the item's size.
    * - ``<module>-flash``
      - ``origin300`` PCI expansion topologies
      - The 16 MiB configuration storage of expansion module
-       ``<module>`` (:doc:`hardware/pci-expansion`). A new machine's
+       ``<module>`` (:ref:`sgi-pci-expansion-storage`). A new machine's
        starts blank.
 
 The older forms still work but are deprecated, and giving both forms for
@@ -900,8 +957,9 @@ flash. For a BASEIO PROM flash, ``-drive if=none,id=sgi-baseio-flash<B>``
 ``id=sgi-gigachannel-flash<C>`` (C the cabinet). For a Timekeeper,
 ``-drive if=mtd,index=I`` or ``-drive if=none,id=sgi-nvram<I>`` with its
 ``sgi-nvram<I>-clock`` partner, I the I/O board index on IP27 and the
-node on IP35. For an expansion module's configuration storage,
-``expansion-storage=<module>=<drive>``.
+node on the Origin 300 and Fuel. For an expansion module's configuration
+storage, ``expansion-storage=<module>=<drive>``
+(:ref:`sgi-pci-expansion-storage`).
 
 .. _sgi-sn-serial-order:
 
@@ -923,7 +981,9 @@ stops reading somewhere to send bytes without blocking the port they
 mirror.
 
 IP35 machines assign lines in a fixed block of five per Bedrock node, in
-node order: the node's L1 UART first, which is the system console, then
+node order: the node's L1 UART first, which is the system console and
+which the L1 forwards to and from the processor's serial channel once
+boot hands off (:ref:`sgi-l1-console`), then
 four lines of the node's I/O (``sgi_sn1_serial_line()`` in
 ``include/hw/mips/sgi/sn-machine.h``). On the Origin 300 and Fuel those
 are IOC3 port A, port B and the two record lines. On the IP53 machines
@@ -938,7 +998,8 @@ to IP27 machines. ``debug-leds`` stays inert on IP35, which has no
 counterpart of the Hub's trace event. The identification records an
 L1 serves come from ``chassis-eeprom``, ``board-eeprom`` and
 ``spd-eeprom``, each a list of files holding one record per file
-(:doc:`hardware/l1`).
+(:doc:`hardware/l1`). Expansion module controllers take their own
+inputs (:ref:`sgi-pci-expansion-controller-inputs`).
 
 .. _sgi-sn-board-devices:
 
@@ -971,9 +1032,11 @@ widget-facing device, then re-parents the board under
 puts it.
 
 A topology's catalogue places its own boards: the BaseIO in every Origin
-2000 and Onyx2, the KONA pipe in the ``onyx2`` topologies
-(:ref:`sgi-onyx2-graphics-module`) and the GIGAchannel's cabinet Bridge.
-Every other XIO slot a topology names is empty, and a board is fitted
+2000 and Onyx2 and the GIGAchannel's cabinet Bridge. The ``onyx2``
+topologies also record the KONA pipe's slot
+(:ref:`sgi-onyx2-graphics-module`), but that slot starts empty and the
+pipe is fitted as a graphics pipe (:ref:`sgi-sn-graphics-pipes`). Every
+other XIO slot a topology names is empty, and a board is fitted
 there at launch by name::
 
   -M origin2000 -device sgi-mgras,slot=io3
@@ -1017,8 +1080,9 @@ launch by slot name realizes after that. Its realize claims the empty
 slot from the machine, takes the link to that slot's Crossbow port, and
 as its last step attaches its widget to the already realized Crossbow,
 which brings the link alive. ``origin200`` and ``origin300`` have no
-Crossbow on the node. Each places its one Base I/O instance directly on
-its node's XIO port, as above.
+Crossbow on the node. The ``origin200`` node places its one Base I/O
+instance directly on its XIO port, and the ``origin300`` node on its
+XBridge head, as above.
 
 An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
 its Bedrock to port A or B of the XBridge in an I/O brick. The builder
@@ -1145,12 +1209,27 @@ waiting for its processors, is part of that stream and is carried out
 once the destination runs.
 
 The module start also resets every Crossbow the module's nodes reach and
-the boards behind them. On hardware a node's reset plausibly leaves a
-Crossbow and its boards to the firmware's own warm reset down the XIO
-link, which the PROM sends on every cold entry (*inferred*). That reset
-does not reach the Bridge's PCI side in the model, and a PROM started
-over a Bridge that kept IRIX's configuration took a bus error reading
-it.
+the boards behind them. Whether a module reset reaches the Crossbows and
+XIO boards on hardware is *unknown*. A midplane schematic or a register
+capture across a module reset would settle it. The stock IP27 PROM sends
+a warm reset down each XIO link on every cold entry (*software
+expectation*), and a Crossbow treats one as a power-on reset of its core
+(*established*, :src:`crossbow-asic-spec-12.0 pp. 132-133`). The firmware
+therefore resets them either way. The model resets them at module start
+as well, because the PROM's warm reset does not reach a Bridge's PCI
+side, and the stock PROM cannot read a Bridge that kept a running
+kernel's PCI setup.
+
+While a module is off its ports read disabled to their peers, the state a
+cable marked down already has. A peer Hub reads link-up zero with the
+down reason clear, which Linux ``hubni.h`` defines as a link that failed
+(*software expectation*). Treating a lost peer as failed and not as never
+reset is an *approximation*. A peer Router reads the port not working.
+Whether a Router port facing a lost peer reads reset-failed is *unknown*,
+and the model leaves it clear. Power returning brings the links up
+through the normal flood after the module's parts have reset and before
+its processors run. An off module keeps its register state until the
+reset that comes first at power-up.
 
 Power state is derived from the controllers' power, which migrates, so
 none of it does. It is applied when a machine starts running and after
@@ -1160,11 +1239,15 @@ the destination is paused.
 
 The Hub's I2C adapter window is the one register window that keeps
 answering while its module is off, and only from the off module's own
-view. A peer module's access to it fails like the rest of the Hub. On
-hardware the adapter shares the node's supply, so no host could use it
-(*inferred*). The model keeps it so the host side of the standby
-controller stays reachable over the module's own bus, which the
-controller tests and the Origin 200 controller's grants rely on. In the
+view. A peer module's access to it fails like the rest of the Hub. The
+adapter is a Hub register window, and the Hub is in the module's switched
+power domain (*established* for the Origin 200,
+:src:`007-3708-002 p. 97`, and for the Origin 2000 rails,
+:src:`007-3456-003 p. 113`). On hardware the adapter is therefore off
+with the module and no host could use it (*inferred*). Keeping it
+answering is an *approximation*. It keeps the host side of the standby
+controller reachable over the module's own bus, which the controller
+tests and the Origin 200 controller's grants rely on. In the
 model an operator reaches an off Origin 2000 module's controller through
 its serial line, and an off Origin 200 slave's through its master. The
 slave has no connector of its own, and a ``pwr u`` the master accepts
@@ -1204,7 +1287,8 @@ content is built from, described under :ref:`sgi-sn-storage`.
      - ``ip27-menu``
      - ``scsi.0``
      - ``ioc3-ethernet``
-     - R10000
+     - R10000, or R12000 with ``processor=r12000-270mhz-4mb`` on
+       ``origin200``
    * - ``origin300`` and its variants, ``fuel``
      - ``l1-uart``
      - ``ip35-l1-prompt``
@@ -1221,8 +1305,8 @@ content is built from, described under :ref:`sgi-sn-storage`.
      - ``l1-uart``
      - ``none``
      - ``scsi.0``
-     - ``bcm5701-ethernet`` (``onyx350-compat``, ``tezro-tower-multi``),
-       ``unsupported`` (the others)
+     - ``bcm5701-ethernet`` (``onyx350``, ``tezro``), ``unsupported``
+       (``origin350``, ``onyx4-host``)
      - R16000
 
 .. _sgi-sn-launch-console:
@@ -1257,13 +1341,11 @@ The disk bus is the QEMU SCSI bus id a launcher attaches the boot disk
 to. ``scsi.0`` is the first onboard SCSI controller's bus on every
 Scalable Node machine, and ``scsi`` is the Octane's. On the Origin 3200
 it is the I-brick's Fibre Channel loop, which ``scsi-adapters`` lists as
-type ``fc-loop``. The netboot adapter
-names the device the stock PROM's netboot has been confirmed to drive on
-the model. ``unsupported`` means the offering names none. The Origin 200
+type ``fc-loop``. The netboot adapter names the device a launcher uses
+for the stock PROM's netboot. ``unsupported`` means the offering names
+none. The Origin 200
 offering also asks launchers without a display to pass
-``debug-leds=off``. Origin 300 launchers support booting an installed
-IRIX disk and netboot but not an IRIX installation run, which is a
-harness limit and not a machine one. The Onyx2 offerings reuse the
+``debug-leds=off``. The Onyx2 offerings reuse the
 Origin 2000 module's dialogue, console and disk bus, since they are
 built on the same IP27 node boards and stock PROM.
 
@@ -1271,13 +1353,11 @@ The install media list ``netboot`` where the harness installs IRIX by
 booting the miniroot over the netboot adapter from an install server,
 the PROM's "Install System Software" from a remote directory. The IRIX
 6.5.30 ``prom(1M)`` page documents that menu choice and its network
-source for SGI PROMs generally. Complete IRIX 6.5.30 installs this way
-reach the installed system's login prompt on the Origin 2000 with an SI
-board, the Onyx2 rack, the Octane with SI and the Octane2 with V12. The
-Onyx2 deskside has reached the miniroot's first question, not a
-complete install. The Origin 2000 deskside and two-module offerings
-inherit the entry from the module layer. Fuel lists ``netboot`` for its
-serial installation. ``disk-image`` means a launcher can boot an
+source for SGI PROMs generally. Every offering of the IP27 products, the
+Octane, the Octane2, the Origin 300 and the Fuel lists both
+``disk-image`` and ``netboot``. The ``onyx350`` and ``tezro`` offerings
+list ``netboot`` alone, and the ``origin350`` and ``onyx4-host``
+offerings list none. ``disk-image`` means a launcher can boot an
 installed disk image.
 
 The Origin 300 offering lists identity inputs a launcher may supply: raw
@@ -1292,46 +1372,17 @@ Fuel onboard interrupt routing
 ==============================
 
 The ``fuel`` machine wires the four interrupt sources on its widget-15
-XBridge head (head F) to XBridge head F inputs 1 (ISP12160 SCSI, PCI
-device 1), 0 (IOC3 SuperIO output, device 4), 4 (IOC3 Ethernet, device 4)
-and 5 (OHCI USB, device 5). The routing is an *approximation* of board
-wiring. :ref:`sgi-ip35-fuel-interrupts` has the table and the reasoning.
-The physical traces on any Fuel board revision, including the modelled
-revision G board ``030-1707-003``, are *unknown*. A board schematic or an
-interrupt trace on an identified revision G Fuel would settle them.
+XBridge head (head F) to head F inputs 1, 0, 4 and 5. The routing is an
+*approximation* of board wiring, and the physical traces on any Fuel
+board revision are *unknown*. :ref:`sgi-ip35-fuel-interrupts` has the
+table, the evidence, the path to the Bedrock and the tests.
 
 .. _sgi-sn-fuel-interrupts-evidence:
 
 Evidence
 --------
 
-- An OpenBSD 4.5-current boot on a Fuel of unstated board revision
-  reports XBridge revision 2 at widget 15, ``isp0`` at device 1 with
-  ``irq 1``, ``ioc0`` at device 4 with ``superio irq 0, ethernet irq 4``
-  and ``ohci0`` at device 5 with ``irq 5``
-  (:src:`miod-openbsd-sgi-story lines 5676-5695`), *observed*. These are
-  the bridge interrupt indices OpenBSD registered handlers on, not
-  measured pins. An earlier boot on the same page (lines 5530-5552)
-  reports SuperIO ``irq 6`` and a lost serial transmit interrupt, so the
-  SuperIO index was not fixed across boots.
-- OpenBSD/sgi at ``2df91d80c104636deeef8124252ddd5951b55fbf``,
-  ``sys/arch/sgi/xbow/xbridge.c`` lines 204-213 and 1220-1288: PCI pin A
-  or C maps to the device number, pin B or D to the device number XOR 4,
-  and a synthetic onboard-IOC3 pin D selects the first empty slot.
-  ``sys/arch/sgi/pci/ioc.c`` lines 391-456 requests pin A for Ethernet
-  and that synthetic pin for SuperIO. This explains devices 1, 4 and 5
-  mapping to inputs 1, 4 and 5 as driver policy, and SuperIO's index 0 as
-  the first empty slot when slot 0 is empty (*software expectation*).
-
-Together these are a public software mapping and one machine's handler
-report. They are not a measured Fuel trace or proof of interrupt
-delivery, so the routing is an inference from those two sources.
-``tests/qtest/sn1-fuel-test.c`` raises each source on its own and checks
-that only its selected head F interrupt bit is set and that the
-interrupt reaches Bedrock (``fuel/scsi-interrupt``,
-``fuel/ioc3-superio-interrupt``, ``fuel/ioc3-ethernet-interrupt`` and
-``fuel/ohci-interrupt``). It checks the model against the table, not the
-table against a physical board.
+The evidence for the routing is on :ref:`sgi-ip35-fuel-interrupts`.
 
 .. _sgi-sn-devices:
 

@@ -260,9 +260,16 @@ The Origin 300 has four DIMM slots as two pairs, 512 MB to 4 GB a
 chassis, and the pairs may differ (:src:`007-4365-002 p. 11`). The Fuel
 takes four DDR sockets in equal pairs, pair 1 in sockets 0 and 2, up to
 4 GiB (:src:`007-4480-001 p. 60`). The Origin 350 has eight DIMM slots
-as four pairs, 1 to 8 GB (:src:`007-4566-001 p. 114, 116`). All
-*established*. Larger and unequal populations are not offered. The
-Bedrock's memory banks are described on :doc:`hardware/bedrock`.
+as four pairs of 512 MB or 1 GB DIMMs, 1 to 8 GB, and a NUMAlink module
+takes a system to 4 to 32 processors (:src:`007-4566-001 p. 69`;
+:src:`007-4566-001 p. 114, 116`). All *established*. Larger and unequal
+populations are not offered. The Bedrock's memory banks are described on
+:doc:`hardware/bedrock`.
+
+A fixed IP53 profile may give its nodes different bank totals
+(:ref:`sgi-sn-topology`). QOM bank values and address-map checks do not establish the stock PROM's memory
+configuration entries for such a layout, so an unequal-memory IP53
+profile needs a full-composition boot before its memory is trusted.
 
 .. _sgi-ip35-devices:
 
@@ -306,7 +313,9 @@ Components and connections
      - both processor interfaces; enters the crossbar at widget ``0xa``
      - Origin 300: *approximation*; the model uses ``0xa`` as on the
        Fuel. Fuel: *observed* (:src:`graphica-o350-chimera-notes`). IP53:
-       *approximation*
+       *observed* at ``0xb`` in an Onyx 350 trace
+       (:src:`graphica-o350-chimera-notes lines 949-952`), and the model
+       uses ``0xa``, an *approximation*
    * - XBridge (Origin 300, Fuel)
      - crossbar at widget 0, PCI heads at widgets 14 (head E) and 15
        (head F)
@@ -893,6 +902,17 @@ explains all four indices as driver policy. The traces on the modelled
 revision G board are *unknown*. A schematic or an interrupt trace on an
 identified revision G Fuel would settle them.
 
+Past the head F inputs the XBridge sends the interrupt write the guest
+programmed, and the crossbar routes it to the Bedrock host port, widget
+``0xa`` in the model. ``tests/qtest/sn1-fuel-test.c`` raises each source
+on its own and checks that only its selected head F interrupt bit is set
+and that the interrupt reaches the Bedrock (``fuel/scsi-interrupt``,
+``fuel/ioc3-superio-interrupt``, ``fuel/ioc3-ethernet-interrupt`` and
+``fuel/ohci-interrupt``). ``fuel/ioc3-superio-interrupt-reset`` and
+``fuel/ioc3-superio-interrupt-migration`` cover reset and migration of
+the SuperIO line. The tests check the model against this table, not the
+table against a physical board.
+
 .. _sgi-ip35-numalink:
 
 Origin 300 NUMAlink module and routed topologies
@@ -1046,8 +1066,12 @@ The profile's four 700 MHz R16000 with 8 MiB of secondary cache each
 are the catalogue's choice, an *approximation*; the cache fitted to each
 processor option is *unknown*. Its 2 GiB in two banks is not a captured
 population, also an *approximation*.
-The Bedrock's entry widget on an Origin 350 is *unknown*; the model uses
-``0xa``. The profile names no netboot adapter.
+The Bedrock's entry widget on an Origin 350 server is *unknown*. A
+published PROM trace from an Onyx 350 module of the same IP53 board
+attaches the Bedrock at widget ``0xb``
+(:src:`graphica-o350-chimera-notes lines 949-952`), *observed*. The model
+uses ``0xa`` (``SN1_XBRIDGE_HOST_PORT``), an *approximation* that
+disagrees with that trace. The profile names no netboot adapter.
 
 .. _sgi-ip35-onyx350:
 
@@ -1060,7 +1084,10 @@ other modules. The capture reports board ``IP53_4CPU`` ``030-2013-001``
 revision D, four 800 MHz R16000 revision 3.0 with 8 MiB caches, Bedrock
 revision 2 at 200 MHz, 8 GiB in eight logical 1 GiB banks, a
 ``2U_INT_53`` carrier ``030-1809-006`` revision D at widget 15 and IO9
-``030-1771-006`` revision A, *observed*. The capture does not show the
+``030-1771-006`` revision A, *observed*. A published PROM trace of an
+Onyx 350 module attaches the Bedrock at widget ``0xb``
+(:src:`graphica-o350-chimera-notes lines 949-952`), *observed*. The
+model enters at ``0xa``, an *approximation* that disagrees with it. The capture does not show the
 module booting alone, and it reports PROM 6.211 where the model runs
 6.210. The guide describes the base module's factory disk, four-port USB
 card, IO9 and serial daughtercard (:src:`007-4632-001 p. 47, 50, 53`),

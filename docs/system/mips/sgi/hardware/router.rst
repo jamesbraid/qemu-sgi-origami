@@ -729,6 +729,10 @@ Model limits
 - The model has no micropackets, credits, virtual channels, age, arbitration
   or buffers. Node-addressed accesses are table walks.
 - Per-port reset masks and reset permits are stored only.
+- A BIST run resets this Router's links but does not retrain its
+  neighbours' links, which a warm reset does. Whether a real self-test
+  disturbs the neighbours is *unknown*; a capture across a Router
+  self-test would settle it.
 - Histogram selectors other than utilisation, and absolute mode, log
   ``LOG_UNIMP``. In a machine, utilisation buckets 0 to 2 never count.
 - The local error bits, the sequence-number and retry counters and the

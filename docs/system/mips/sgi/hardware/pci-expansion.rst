@@ -380,7 +380,7 @@ The module adds six PCI buses to an Origin 300 over NUMAlink. QEMU builds
 it as ``sgi-origin300-pci-expansion-module``. The type is not
 user-creatable. The ``origin300`` machine builds it from its
 ``origin300-pci-expansion`` and ``origin300-numalink-pci-expansion``
-topologies (:doc:`/system/mips/sgi/sn`). Page
+topologies (:ref:`sgi-ip35-numalink`). Page
 numbers below are printed pages.
 
 .. list-table::
@@ -482,8 +482,15 @@ and reset values on this board are *unknown*. A revision-matched capture
 would settle them. The module refuses to realize unless both revisions are
 2, the placement and node number are below 128 and ``bus-prefix`` is set.
 The prefix names the buses ``<prefix>u<n>-head-e`` and
-``<prefix>u<n>-head-f``. The BIC accepts inbound traffic only from widgets
-8, 9, 12, 13, 14 and 15.
+``<prefix>u<n>-head-f``, each a PCI bus named in QEMU's ``<name>.0``
+child-bus idiom. The machine sets the prefix to ``expansion<k>-``, where
+*k* counts the expansion modules in the topology. The first module's
+buses are ``expansion0-u0-head-e.0``, ``expansion0-u0-head-f.0``,
+``expansion0-u1-head-e.0``, ``expansion0-u1-head-f.0``,
+``expansion0-u2-head-e.0`` and ``expansion0-u2-head-f.0``. They hold no
+card unless a ``-device`` places one. Which physical slot and PCI device
+number each bus position corresponds to is *unknown*. The BIC accepts
+inbound traffic only from widgets 8, 9, 12, 13, 14 and 15.
 
 Slot width and speed
 --------------------
@@ -550,7 +557,19 @@ through the registers described in :ref:`sgi-bedrock-pi-presence`. When the
 machine selects it, those two words are readable through the BIC's remote
 register window as eight-byte aligned accesses. Whether a real BIC answers
 the same values is *unknown*, and a revision-matched register capture would
-settle it. Other processor-interface registers return a decode error.
+settle it. The topology's ``bic-functional-experiment`` controller-startup
+selection enables this view, and both shipped expansion topologies carry
+it. Without it the processor-interface registers keep their access
+refusal. Only the CPU-present A and B words of each interface, at offsets
+``0x40``, ``0x48``, ``0x200040`` and ``0x200048``, are reachable, and only
+as aligned eight-byte reads or writes through the addressed BIC's remote
+I/O register window. Reads use the Bedrock's own handlers with zero
+configured processors. A write to a CPU-present word is ignored, as it is
+for the hardware-set register it models. Other processor-interface
+registers and the Hub-special window return a decode error. The view adds
+no processor, memory or local interrupt sink. Node-number resolution,
+direct-link reachability and completed main power still control access,
+and migration requires the same selection.
 
 A second selection exposes a bounded set of processor-interface registers
 (offsets ``0x10``, ``0x90``, ``0x98``, ``0xa0`` and ``0x180`` of each
@@ -570,6 +589,50 @@ as selected, reach it. Without the selection, the window returns a decode
 error. No source says a real BIC carries a UART, so this is an
 *approximation* with no data path.
 
+.. _sgi-pci-expansion-controller-inputs:
+
+Expansion controller inputs
+---------------------------
+
+The module's L1 takes three machine properties, each a list whose entries
+begin with the zero-based index of the controller in the selected
+topology. They apply to expansion controllers only, and an index that
+names a compute controller is refused, except for the brick serial in
+the routed topologies. A malformed entry, an index beyond the topology and a
+second entry for the same controller (and component) are refused.
+
+``controller-brick-serial.N=<index>=<serial>``
+  Sets the controller's ``brick-serial`` before it realizes. The serial
+  is 1 to 32 bytes. Everything after the first ``=`` is kept, including
+  further ``=`` characters. An entry beats ``-global
+  sgi-l1.brick-serial``, and only for its controller. Without an entry or
+  a global value the serial is absent, except in a topology with
+  routers, where each controller left without one gets
+  ``model-module-<index>``. Two controllers of a routed topology with
+  equal serials are refused, so such a launch gives each its own. Outside
+  that case equal serials on different controllers are allowed.
+
+``controller-board-eeprom.N=<index>/<component>=<path>``
+  Gives the controller a board identification record from a file.
+  *Component* is 0 to 3, so a controller takes up to four records, and an
+  absent component stays empty. A path that another entry or a compute
+  record input already uses is refused.
+
+``controller-chardev.N=<index>=<chardev-id>``
+  Attaches the controller's host console to an existing chardev. A
+  chardev id that does not exist, or that another entry already uses, is
+  refused.
+
+These are launch inputs. The serial and record values they carry are
+synthetic unless the caller supplies real ones. An example that sets a
+serial:
+
+.. code-block:: shell
+
+   -M origin300,topology=origin300-pci-expansion,controller-brick-serial.0=1=EXP-A
+
+.. _sgi-pci-expansion-storage:
+
 Configuration storage
 ---------------------
 
@@ -581,8 +644,35 @@ unfiltered raw file of exactly 16 MiB, and the module keeps it reserved.
 Reads of 1, 2, 4 and 8 bytes work. Only 8-byte writes work, and any other
 size logs ``LOG_GUEST_ERROR`` and fails. With no image the window returns
 a decode error. The model supplies no image and no contents. No source says
-a BIC carries flash or gives its size. The machine page describes the
-launch option (:doc:`/system/mips/sgi/sn`).
+a BIC carries flash or gives its size.
+
+The image is bound with the machine property named ``<module>-flash``,
+which is ``expansion-enclosure-flash`` for the shipped topologies
+(:ref:`sgi-sn-storage`)::
+
+  -blockdev driver=raw,node-name=cfg,file.driver=file,file.filename=cfg.raw \
+  -M origin300,topology=origin300-pci-expansion,expansion-enclosure-flash=cfg
+
+The deprecated ``expansion-storage=<module-id>=<drive-id>`` form binds the
+same image. Giving both is refused, as are an empty field, an extra
+separator, a module the topology does not select and a missing backend.
+The backend must be unused, writable and a regular file opened through a
+raw driver directly over a file, of exactly 16 MiB. An explicit raw
+offset or size, a filter, a snapshot and any other protocol are refused.
+The module keeps the backend reserved, and two raw slices of it give the
+two flash positions their own state. The binding creates no image and no
+default contents.
+
+The flash keeps its state as follows. A whole-machine reset returns it
+to array mode and erases nothing. A reset of the module's controller by
+itself leaves its state alone. A change of main power keeps its command
+state. While main power is off, guest accesses fail, but a flash timer
+that was already running continues. These are an *approximation*: they
+claim no rail or reset timing for the part.
+
+Migration requires the same storage selection and geometry. It also
+compares the module identity and the controller identity the storage was
+bound under, and refuses a destination that differs.
 
 Main power
 ----------
