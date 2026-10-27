@@ -6,6 +6,7 @@ README.md
 docs/devel/sgi-byte-order.rst
 docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
+docs/sphinx/sgiref.py
 docs/system/mips/sgi/index.rst
 docs/system/mips/sgi/hardware/baseio.rst
 docs/system/mips/sgi/hardware/bedrock.rst
