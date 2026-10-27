@@ -1593,6 +1593,144 @@ static void bedrock_test_install_nbrick(void)
 }
 
 /*
+ * Fit V12 pipe record @board, @id, in V-brick module @module, at @port
+ * of its XBridge, crossbar 1, for @node through attachment @attachment.
+ * A pipe claims it by its id.
+ */
+static void vbrick_test_fit_v12(unsigned int board, const char *id,
+                                unsigned int module, uint8_t port,
+                                unsigned int node, unsigned int attachment)
+{
+    cbrick_test_xio[attachment] = (SGIModelXioAttachment) {
+        .crossbar_index = 1, .widget = port, .node_index = node,
+    };
+    cbrick_test_io_boards[board] = (SGIModelIoBoard) {
+        .id = (char *)id, .module_index = module, .populated = true,
+        .preset = SGI_MODEL_IO_BOARD_PRESET_ODYSSEY,
+        .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+        .has_attachment = true, .attachment = attachment,
+    };
+}
+
+/*
+ * The V12 pipe record's graphics slot, named for the record so that
+ * -device sgi-odyssey,slot=vbrick-v12 claims it. The fidelity is a
+ * fixture value.
+ */
+static SGIModelGraphicsProperty vbrick_test_placement = {
+    .name = (char *)"slot", .value = (char *)"vbrick-v12",
+};
+static SGIModelGraphicsPropertyList vbrick_test_placements = {
+    .value = &vbrick_test_placement,
+};
+static SGIModelGraphicsProduct vbrick_test_v12 = {
+    .product = (char *)"v12", .name = (char *)"VPro V12",
+    .description = (char *)"fixture product",
+    .fidelity = SGI_MODEL_GRAPHICS_FIDELITY_IMPLEMENTED,
+};
+static SGIModelGraphicsProductList vbrick_test_products = {
+    .value = &vbrick_test_v12,
+};
+static SGIModelGraphicsFamily vbrick_test_family = {
+    .family = SGI_MODEL_GRAPHICS_FAMILY_KIND_ODYSSEY,
+    .device = (char *)"sgi-odyssey", .name = (char *)"VPro",
+    .products = &vbrick_test_products,
+};
+static SGIModelGraphicsFamilyList vbrick_test_families = {
+    .value = &vbrick_test_family,
+};
+static SGIModelGraphicsSlot vbrick_test_slot = {
+    .name = (char *)"vbrick-v12",
+    .description = (char *)"the V-brick fixture's V12",
+    .placement = &vbrick_test_placements, .changeable = true,
+    .families = &vbrick_test_families,
+};
+static SGIModelGraphicsSlotList vbrick_test_slots = {
+    .value = &vbrick_test_slot,
+};
+static SGIModelGraphics vbrick_test_graphics = {
+    .max_pipes = 1, .headless = true, .slots = &vbrick_test_slots,
+};
+
+/* The V-brick's midplane XBridge, crossbar 1, in module @module. */
+static void vbrick_test_add_module(unsigned int module)
+{
+    cbrick_test_modules[module] = (SGIModelModule) {
+        .id = (char *)"vbrick", .controller_index = -1,
+        .has_controller = true,
+        .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+    };
+    cbrick_test_crossbars[1] = (SGIModelCrossbar) {
+        .id = (char *)"vbrick-xbridge", .module_index = module,
+        .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 2,
+    };
+}
+
+/*
+ * An Onyx 3000 with a V-brick, arranged as the V-brick datasheet's
+ * one-pipe attachment: the C-brick fixture's I-brick on c0, and c1's XIO
+ * cable on port A of the V-brick's midplane XBridge, with one V12 on
+ * Crosstalk port 8. The V-brick has no L1 in the model. Which Crosstalk
+ * port a V12 sits on, and which of A and B the cable meets, are unknown
+ * (007-4264-002 printed pages 52 to 56 draw the slots and ports but number
+ * neither), so both are fixture values.
+ */
+static void bedrock_test_install_vbrick(void)
+{
+    bedrock_test_install_cbrick_descriptor(0xa);
+    vbrick_test_add_module(3);
+    vbrick_test_fit_v12(0, "vbrick-v12", 3, 8, 1, 2);
+    cbrick_test_publish(4, 2, 3, 1);
+    cbrick_test_add_xio_cable("c1-to-vbrick", cbrick_node_end(1),
+                              cbrick_crossbar_end(1, 0xa));
+    cbrick_test_add_xio_cable("vbrick-to-v12", cbrick_crossbar_end(1, 8),
+                              cbrick_board_end(0));
+    bedrock_test_topology.graphics = &vbrick_test_graphics;
+}
+
+/*
+ * The two-pipe V-brick: four C-bricks, c0 on the I-brick, and, since
+ * each pipe needs its own C-brick (007-4264-002 printed page 19), c1 on
+ * the V-brick's port A for a V12 on port 8 and c2 on port B for a V12 on
+ * port 0xc. Whether one XBridge serves hosts on A and B at once is
+ * unknown, so the builder must refuse the second host.
+ */
+static void bedrock_test_install_vbrick_two_pipes(void)
+{
+    cbrick_test_install_nodes(CBRICK_TEST_MAX_NODES);
+    cbrick_test_modules[4] = (SGIModelModule) {
+        .id = (char *)"ibrick", .controller_index = -1,
+        .has_controller = true,
+        .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+    };
+    cbrick_test_crossbars[0] = (SGIModelCrossbar) {
+        .id = (char *)"ibrick-xbridge", .module_index = 4,
+        .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 2,
+    };
+    cbrick_test_xio[0] = (SGIModelXioAttachment) {
+        .crossbar_index = 0, .widget = 14, .node_index = 0,
+    };
+    cbrick_test_xio[1] = (SGIModelXioAttachment) {
+        .crossbar_index = 0, .widget = 15, .node_index = 0,
+    };
+    vbrick_test_add_module(5);
+    vbrick_test_fit_v12(0, "vbrick-v12", 5, 8, 1, 2);
+    vbrick_test_fit_v12(1, "vbrick-v12-second", 5, 0xc, 2, 3);
+    cbrick_test_publish(6, 2, 4, 2);
+    cbrick_test_add_xio_cable("c0-to-ibrick", cbrick_node_end(0),
+                              cbrick_crossbar_end(0, 0xa));
+    cbrick_test_add_xio_cable("c1-to-vbrick", cbrick_node_end(1),
+                              cbrick_crossbar_end(1, 0xa));
+    cbrick_test_add_xio_cable("c2-to-vbrick", cbrick_node_end(2),
+                              cbrick_crossbar_end(1, 0xb));
+    cbrick_test_add_xio_cable("vbrick-to-v12", cbrick_crossbar_end(1, 8),
+                              cbrick_board_end(0));
+    cbrick_test_add_xio_cable("vbrick-to-v12-second",
+                              cbrick_crossbar_end(1, 0xc),
+                              cbrick_board_end(1));
+}
+
+/*
  * A P-brick-shaped module: c0 cabled to port A of U0, and the four links
  * of 108-0240-002 Figure 2-24 (printed page 2-31) from U0 to U1 and U2,
  * two per downstream chip on distinct ports. No contract gives the
@@ -1923,7 +2061,7 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         cbrick_test_xio_cable_list[0].next = NULL;
     } else if (!strcmp(fault, "board-preset-unbuilt")) {
         bedrock_test_install_cbrick_board(8);
-        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_ODYSSEY;
+        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_KONA;
     } else if (!strcmp(fault, "memory-node-console")) {
         bedrock_test_install_memory_node();
         bedrock_test_topology.console = 1;
@@ -2089,6 +2227,10 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (g_str_has_prefix(value, "cbrick-rbrick") &&
                bedrock_test_install_rbrick_fixture(value + strlen("cbrick-"))) {
         /* Installed by name. */
+    } else if (!strcmp(value, "cbrick-vbrick")) {
+        bedrock_test_install_vbrick();
+    } else if (!strcmp(value, "cbrick-vbrick-two-pipes")) {
+        bedrock_test_install_vbrick_two_pipes();
     } else if (!strcmp(value, "cbrick-board-port-8")) {
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {

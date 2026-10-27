@@ -1405,8 +1405,15 @@ chip's host node, whose Bedrock decodes the board's widget there. The
 builder creates the board as ``/machine/module<M>/<board id>`` in the
 board's own module and joins it to the port with one XIO link once the
 nodes have realized. Only the XIO cards ``pci-carrier``,
-``pci-shoehorn``, ``menet`` and ``mscsi`` are built at such a port; a
-graphics pipe or BaseIO card cabled there is refused.
+``pci-shoehorn``, ``menet`` and ``mscsi``, and the V-brick's VPro V12,
+are built at such a port; any other graphics pipe or a BaseIO card
+cabled there is refused. A V12 record cabled to a crossbar port is a
+graphics slot named by the record's catalogue id: ``-device
+sgi-odyssey,slot=<id>`` fits the pipe there, it is built in the
+record's module, and the chip's host node reaches it at that port. The
+V-brick's midplane XBridge takes one host, so a two-pipe V-brick, whose
+second pipe needs a second C-brick on the other Crosstown2 port, is
+refused like any second host.
 
 An SN1 router is built as ``/machine/module<M>/router`` beside its
 module's L1 and that L1's UART, whether or not the topology carries the
