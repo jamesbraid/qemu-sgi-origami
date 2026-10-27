@@ -192,10 +192,12 @@
     (uint32_t)BEDROCK_PACKET_PI_PENDING_MODIFY
 #define ODSY_TEST_RETRACE_VECTOR 7
 #define ODSY_TEST_DMA_VECTOR 6
+/* The flag source, low water among it, takes the low byte. */
 #define ODSY_TEST_ROUTE_VECTORS \
     ((ODSY_TEST_SOFTSYNC_VECTOR << ODSY_ROUTE_VECTOR_SOFTSYNC_SHIFT) | \
      (ODSY_TEST_RETRACE_VECTOR << ODSY_ROUTE_VECTOR_RETRACE_SHIFT) | \
-     (ODSY_TEST_DMA_VECTOR << ODSY_ROUTE_VECTOR_DMA_SHIFT))
+     (ODSY_TEST_DMA_VECTOR << ODSY_ROUTE_VECTOR_DMA_SHIFT) | \
+     ODSY_TEST_VECTOR)
 
 /*
  * The command-FIFO grammar's recognized words, redeclared here at the
@@ -561,6 +563,18 @@ static void reg_write(QTestState *qts, uint64_t off, uint32_t value)
 {
     qtest_writel(qts, WIDGET + off, value);
 }
+
+/*
+ * Where the flag source's interrupt goes: the routed destination, with the
+ * flag vector in the low byte of the vector table.
+ */
+static void flag_dest_program(QTestState *qts)
+{
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
+}
+
 
 /* The indexed register file's write port: (selector << 32) | data. */
 static void i2c_push(QTestState *qts, uint32_t selector, uint32_t data)
@@ -1302,8 +1316,8 @@ static void test_profile_names_its_board(void)
  * The flag, enable and acknowledge trio, and the rule that an enable on
  * its own raises nothing unless a source is already pending. There is no
  * sysbus IRQ line to intercept any more: a transition sends a crosstalk
- * interrupt-packet to whatever destination int_dest_upper/int_dest_lower
- * name (test_interrupt_packet_composition and
+ * interrupt-packet to the routed destination with the flag source's vector
+ * (test_interrupt_packet_composition and
  * test_interrupt_packet_reaches_bedrock_pending below pin that packet's
  * shape and delivery), and x-test-last-interrupt-value's
  * ODSY_HUB_INT_MODIFY_SET bit is this test's stand-in for "asserted".
@@ -1313,8 +1327,7 @@ static void test_interrupt_registers(void)
     QTestState *qts = board_start("");
 
     /* A destination programmed once, as real firmware would before enabling. */
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
 
     /* The empty FIFO leaves the low-water interrupt pending out of reset. */
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS), ==,
@@ -1359,8 +1372,7 @@ static void test_interrupt_enable_set_and_clear(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
 
     /* The driver's initial mask leaves low water off: no level. */
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_INIT_MASK);
@@ -1405,8 +1417,7 @@ static void test_interrupt_clear_acknowledges_flags(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
@@ -1437,8 +1448,7 @@ static void test_interrupt_flags_write_is_accepted(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
     reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
 
@@ -1459,8 +1469,7 @@ static void test_lowater_not_raised_while_disabled(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
     reg_write(qts, ODSY_INTR_ENABLE_SET,
               ODSY_INTR_INIT_MASK | ODSY_INTR_FIFO_LOW_WATER);
 
@@ -1517,8 +1526,7 @@ static void test_command_fifo_lowater_interrupt(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
 
     /* Pending out of reset (empty FIFO): enabling the source asserts. */
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
@@ -1563,13 +1571,17 @@ static void test_interrupt_packet_composition(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==,
                     0);
 
-    /* Programming the destination alone sends nothing without a new edge. */
+    /*
+     * The crosstalk error destination reads back and carries nothing; the
+     * routed destination alone sends nothing without a new edge.
+     */
     reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
     reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
     g_assert_cmphex(reg_read(qts, ODSY_INT_DEST_UPPER), ==,
                     ODSY_TEST_INT_DEST_UPPER);
     g_assert_cmphex(reg_read(qts, ODSY_INT_DEST_LOWER), ==,
                     ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==,
                     0);
 
@@ -1608,8 +1620,7 @@ static void test_interrupt_packet_reaches_bedrock_pending(void)
 {
     QTestState *qts = board_start("");
 
-    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
-    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    flag_dest_program(qts);
 
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) &
                     (UINT64_C(1) << ODSY_TEST_VECTOR), ==, 0);
@@ -1626,6 +1637,34 @@ static void test_interrupt_packet_reaches_bedrock_pending(void)
     reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) &
                     (UINT64_C(1) << ODSY_TEST_VECTOR), ==, 0);
+
+    board_quit(qts);
+}
+
+/*
+ * The kernel driver gives the routed table's low byte to its flag handler,
+ * which runs its low-water handler, and the crosstalk error destination to
+ * its crosstalk error handler, which reads only the widget status's error
+ * bits and otherwise reports an unknown interrupt. So low water goes
+ * through the routed destination with the flag vector, not the error
+ * destination.
+ */
+static void test_flag_interrupt_uses_routed_vector(void)
+{
+    QTestState *qts = board_start("");
+
+    reg_write(qts, ODSY_INT_DEST_UPPER, ODSY_TEST_INT_DEST_UPPER);
+    reg_write(qts, ODSY_INT_DEST_LOWER, ODSY_TEST_INT_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_DEST_UPPER, ODSY_TEST_ROUTE_DEST_UPPER);
+    reg_write(qts, ODSY_ROUTE_DEST_LOWER, ODSY_TEST_ROUTE_DEST_LOWER);
+    reg_write(qts, ODSY_ROUTE_VECTORS, (ODSY_TEST_ROUTE_VECTORS & ~0xffu) | 4);
+
+    reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    4 | ODSY_HUB_INT_MODIFY_SET);
+    reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    4);
 
     board_quit(qts);
 }
@@ -21563,6 +21602,8 @@ int main(int argc, char **argv)
                    test_command_fifo_lowater_interrupt);
     add_fresh_case("sn1/odyssey/interrupt-packet-composition",
                    test_interrupt_packet_composition);
+    add_fresh_case("sn1/odyssey/flag-interrupt-uses-routed-vector",
+                   test_flag_interrupt_uses_routed_vector);
     add_fresh_case("sn1/odyssey/interrupt-packet-reaches-bedrock-pending",
                    test_interrupt_packet_reaches_bedrock_pending);
     add_fresh_case("sn1/odyssey/baseio-prom-diagnostic-registers",

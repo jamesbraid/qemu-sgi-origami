@@ -24,6 +24,7 @@ board /mips64/sn1/odyssey/lowater-not-raised-while-disabled
 board /mips64/sn1/odyssey/board-status-reports-fifo-ready
 board /mips64/sn1/odyssey/interrupt-packet-composition
 board /mips64/sn1/odyssey/interrupt-packet-reaches-bedrock-pending
+board /mips64/sn1/odyssey/flag-interrupt-uses-routed-vector
 board /mips64/sn1/odyssey/baseio-prom-diagnostic-registers
 board /mips64/sn1/odyssey/unmodeled-offsets-are-visible
 board /mips64/sn1/odyssey/reset-restores-documented-values
