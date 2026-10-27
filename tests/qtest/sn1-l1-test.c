@@ -2967,9 +2967,9 @@ static bool qom_set_refused(QTestState *s, const char *path,
 }
 
 /*
- * A controller has a second peer slot beside the first: it holds a
- * different controller, never the controller itself, can be cleared, and
- * leaves the first slot and the pair's behaviour alone.
+ * A controller has a second peer slot beside the first. It never holds the
+ * controller itself or the first slot's controller, and an Origin 300
+ * controller takes nothing in it: the slot is for the C-brick profile.
  */
 static void test_io_peer_slot(void)
 {
@@ -2982,27 +2982,17 @@ static void test_io_peer_slot(void)
 
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     link_peers(s);
-    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
-        "{'path':%s,'property':'io-peer','value':'/machine/peripheral/l1e'}}",
-        L1);
-    g_assert_cmpstr(qom_link_value(s, L1, "io-peer", &value), ==,
-                    "/machine/peripheral/l1e");
-    g_free(value);
-    g_assert_cmpstr(qom_link_value(s, L1, "peer", &value), ==, PEER);
-
-    /* The two slots hold different controllers, and neither is itself. */
     g_assert_true(qom_set_refused(s, L1, "io-peer", PEER));
     g_assert_true(qom_set_refused(s, L1, "io-peer", L1));
+    g_assert_true(qom_set_refused(s, L1, "io-peer",
+                                  "/machine/peripheral/l1e"));
+    g_assert_cmpstr(qom_link_value(s, L1, "io-peer", &value), ==, "");
+    g_assert_true(qom_set_refused(s, L1, "peer", L1));
 
     /* The first slot still routes as before. */
     set_destination(request, (1 << 18) | (2 << 12) | 6);
     send_frame(s, request, sizeof(request), false);
     expect_identity(s, 18, 0x42);
-
-    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
-        "{'path':%s,'property':'io-peer','value':''}}", L1);
-    g_free(value);
-    g_assert_cmpstr(qom_link_value(s, L1, "io-peer", &value), ==, "");
     qtest_quit(s);
 }
 
