@@ -388,6 +388,63 @@ static void test_ii_follows_a_bridge_window_switch(void)
     qtest_quit(qts);
 }
 
+/*
+ * Program the test device and aim window 0 at PCI I/O space, then make
+ * processor stores through it, so the I/O interface's cache holds the
+ * window page as the Bridge's I/O window.
+ */
+static QTestState *start_with_io_window_cached(void)
+{
+    QTestState *qts = start_with(SHOEHORN);
+
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_BAR0), TESTDEV_PCI);
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_BAR1), TESTDEV_PCI);
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_COMMAND),
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    aim_window0(qts, false);
+    select_test_zero(qts);
+    return qts;
+}
+
+/*
+ * The next two cases change the widget view with no access through the
+ * I/O interface's cache, so only its commit listener can drop the window
+ * page. They observe a stale entry through the qtest-only check in
+ * sgi_pio_forward_lookup(), which stops QEMU when a hit no longer matches
+ * the page's resolution. What the store reaches afterwards is otherwise
+ * the same either way: nothing answers there once the Bridge is reset.
+ *
+ * A system reset puts Device(0) back in memory space and re-aims window 0.
+ */
+static void test_ii_follows_a_system_reset(void)
+{
+    QTestState *qts = start_with_io_window_cached();
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_false(guest_store_byte(qts, WINDOW0(0), 0));
+    g_assert_false(guest_store_byte(qts, WINDOW0(1), 0));
+    qtest_quit(qts);
+}
+
+/*
+ * The processor resets the XBridge crossbar's link to widget 13 through the
+ * crossbar's own registers, at widget 0. The link reset reaches the Bridge
+ * on the other end, which resets and re-aims window 0. None of it goes
+ * through widget 13's cache.
+ */
+#define XBRIDGE_LINK_RESET(w)   (0x100 + ((w) - 8) * 0x40 + 0x30 + 4)
+
+static void test_ii_follows_an_xio_link_reset(void)
+{
+    QTestState *qts = start_with_io_window_cached();
+
+    g_assert_false(guest_store(qts, XBRIDGE_LINK_RESET(VPRO_WIDGET), 0));
+    g_assert_false(guest_store_byte(qts, WINDOW0(0), 0));
+    g_assert_false(guest_store_byte(qts, WINDOW0(1), 0));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -402,5 +459,9 @@ int main(int argc, char **argv)
                    test_alias_rooted_widget_view);
     qtest_add_func("/sn1-pio-forward/ii-follows-a-bridge-window-switch",
                    test_ii_follows_a_bridge_window_switch);
+    qtest_add_func("/sn1-pio-forward/ii-follows-a-system-reset",
+                   test_ii_follows_a_system_reset);
+    qtest_add_func("/sn1-pio-forward/ii-follows-an-xio-link-reset",
+                   test_ii_follows_an_xio_link_reset);
     return g_test_run();
 }
