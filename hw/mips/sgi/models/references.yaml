@@ -888,6 +888,42 @@ web:
     obtain:
       url: https://datasheet.octopart.com/USS312TC-Lucent-datasheet-180610558.pdf
       sha256: 5e4b19ced7d90480afcc1d6b8eea663f100f85b3321d98eaaf078c411bd53a45
+  ics1890-rev-g:
+    title: "ICS1890 10Base-T/100Base-TX Integrated PHYceiver, revision G, 1997-10-21"
+    publisher: "Integrated Circuit Systems"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.datasheetarchive.com/datasheet/ICS1890/Integrated-Circuit-Systems?term=ics1890&version=1
+      sha256: 382e7b14076bec05bb9a7f7b118738903c1f7278071159bee73a1d580e812653
+  lore-seufer-octane-2005:
+    title: "Octane boot log with the IOC3 PHY probe (Thiemo Seufer, 2005-07-09)"
+    publisher: "linux-mips mailing list"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://lore.kernel.org/linux-mips/20050709093403.GB1586@hattusa.textio/
+      message_id: "<20050709093403.GB1586@hattusa.textio>"
+  lore-walker-octane-2005:
+    title: "IP30 boot log with the IOC3 PHY probe (Aaron Walker, 2005-08-11)"
+    publisher: "linux-mips mailing list"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://lore.kernel.org/linux-mips/42FB71D4.9040408@gentoo.org/
+      message_id: "<42FB71D4.9040408@gentoo.org>"
+  lore-kinard-octane-2019:
+    title: "Dual R14000 Octane dmesg with the IOC3 PHY probe (Joshua Kinard, 2019-06-26)"
+    publisher: "linux-mips mailing list"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://lore.kernel.org/linux-mips/060345a6-bef2-ec17-e264-eccda29f5c8b@gentoo.org/
+      message_id: "<060345a6-bef2-ec17-e264-eccda29f5c8b@gentoo.org>"
   galles-spider-1997:
     title: "Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)"
     publisher: "IEEE Computer Society"

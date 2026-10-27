@@ -262,6 +262,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``hmm-408-b``
    *HMM-408-B Illustrated Parts Catalog for Origin 2000, Onyx2, Cray Origin 2000 and MetaRouter*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/HMM-408-B.pdf>`__ SHA-256 ``abc06bc37773997eebdc31c369549c784af41057ac814592b1bd9b3545fd4a03``. Published; may be quoted.
 
+.. _sgi-ref-web-ics1890-rev-g:
+
+``ics1890-rev-g``
+   *ICS1890 10Base-T/100Base-TX Integrated PHYceiver, revision G, 1997-10-21*. Integrated Circuit Systems. Part datasheet, cited by page. `<https://www.datasheetarchive.com/datasheet/ICS1890/Integrated-Circuit-Systems?term=ics1890&version=1>`__ SHA-256 ``382e7b14076bec05bb9a7f7b118738903c1f7278071159bee73a1d580e812653``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-web-ip35-patch-sg0007149:
 
 ``ip35-patch-sg0007149``
@@ -286,6 +291,21 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``lore-kaloz-ip35-35``
    *[PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01)*. linux-mips mailing list. Web post, cited by hunk. `<https://lore.kernel.org/r/d4ea8cf57059fa4544c7be577c6a8033d65ced9a.1790857966.git.kaloz@kernel.org>`__ Public web page; may be quoted.
+
+.. _sgi-ref-web-lore-kinard-octane-2019:
+
+``lore-kinard-octane-2019``
+   *Dual R14000 Octane dmesg with the IOC3 PHY probe (Joshua Kinard, 2019-06-26)*. linux-mips mailing list. Capture, cited by line. `<https://lore.kernel.org/linux-mips/060345a6-bef2-ec17-e264-eccda29f5c8b@gentoo.org/>`__ Message-ID ``<060345a6-bef2-ec17-e264-eccda29f5c8b@gentoo.org>``. Public web page; may be quoted.
+
+.. _sgi-ref-web-lore-seufer-octane-2005:
+
+``lore-seufer-octane-2005``
+   *Octane boot log with the IOC3 PHY probe (Thiemo Seufer, 2005-07-09)*. linux-mips mailing list. Capture, cited by line. `<https://lore.kernel.org/linux-mips/20050709093403.GB1586@hattusa.textio/>`__ Message-ID ``<20050709093403.GB1586@hattusa.textio>``. Public web page; may be quoted.
+
+.. _sgi-ref-web-lore-walker-octane-2005:
+
+``lore-walker-octane-2005``
+   *IP30 boot log with the IOC3 PHY probe (Aaron Walker, 2005-08-11)*. linux-mips mailing list. Capture, cited by line. `<https://lore.kernel.org/linux-mips/42FB71D4.9040408@gentoo.org/>`__ Message-ID ``<42FB71D4.9040408@gentoo.org>``. Public web page; may be quoted.
 
 .. _sgi-ref-web-lucent-uss312-ds:
 

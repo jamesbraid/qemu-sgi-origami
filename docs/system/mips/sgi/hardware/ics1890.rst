@@ -1,0 +1,247 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-ics1890:
+
+==========================================
+ICS1890 Ethernet transceiver (Octane PHY)
+==========================================
+
+The ICS1890 is the 10/100 Mb/s Ethernet transceiver on the Octane and
+Octane2 system boards, behind the IOC3's MII management interface. QEMU
+models revision 3 as ``hw/net/ics1890.c``. The ``octane`` and ``octane2``
+machines select it on the onboard IOC3 with ``phy-ics1890=on`` at MII
+address 1; other boards keep their own PHY (:doc:`ioc3`).
+
+Facts below are rated *established* (the manufacturer's datasheet),
+*observed* (a published capture), *inferred* or *approximation* (a model
+choice where the datasheet leaves the behaviour open).
+
+.. _sgi-ics1890-sources:
+
+Sources
+=======
+
+- :ref:`ics1890-rev-g <sgi-ref-web-ics1890-rev-g>`, the ICS1890 datasheet,
+  revision G. Page numbers on this page refer to it.
+- Three published Octane boot logs, :ref:`lore-seufer-octane-2005
+  <sgi-ref-web-lore-seufer-octane-2005>`, :ref:`lore-walker-octane-2005
+  <sgi-ref-web-lore-walker-octane-2005>` and :ref:`lore-kinard-octane-2019
+  <sgi-ref-web-lore-kinard-octane-2019>`. Each reports one PHY at address 1
+  with vendor ``0x15f42``, model 2, revision 3. The 2019 log comes from a
+  HEART F, Bridge D board.
+- Linux ``drivers/net/ethernet/sgi/ioc3-eth.c`` and OpenBSD
+  ``sys/dev/mii/icsphy.c`` and ``icsphyreg.h``, as software expectations.
+
+Identity and address
+====================
+
+The datasheet's identity tables give words ``0x0015`` and ``0xf423``;
+model 2 is the ICS1890 and revision 3 is the J release or later (p. 23-24),
+*established*. The three boot logs decode to the same words at address 1,
+*observed* on Octanes from 2005 and 2019. That the Octane2 board QEMU
+models carries the same part at the same address is *inferred* from the
+newer capture; no revision-matched measurement of that board exists.
+
+The chip answers only its strapped five-bit address and implements
+registers 0-6 and 16-19 (p. 17). The model answers address 1. At any other
+address the IOC3 returns ``0xffff`` and drops writes.
+
+Register map
+============
+
+Register numbers are MII word addresses; each register is 16 bits. The
+masks come from the per-bit tables on the pages listed, *established*.
+"Override" bits are writable only after command override is armed (see
+below).
+
+.. list-table::
+   :header-rows: 1
+
+   * - Reg
+     - Name
+     - Reset
+     - Writable
+     - Override
+     - Notes
+     - Pages
+   * - ``0x00``
+     - Control (BMCR)
+     - ``0x3000``
+     - ``0xff80``
+     - none
+     - Bits 6-0 read zero. Address zero also isolates the MII at reset.
+     - 19-20
+   * - ``0x01``
+     - Status (BMSR)
+     - ``0x7809``
+     - none
+     - ``0x7f80``
+     - Link latches low, fault and jabber latch high.
+     - 21-22
+   * - ``0x02``
+     - Identity 1
+     - ``0x0015``
+     - none
+     - ``0xffff``
+     -
+     - 23
+   * - ``0x03``
+     - Identity 2
+     - ``0xf423``
+     - none
+     - ``0xffff``
+     -
+     - 24
+   * - ``0x04``
+     - Advertisement
+     - ``0x01e1``
+     - ``0x21e0``
+     - ``0x1c1f``
+     - Bits ``0xc200`` read zero. No 100BASE-T4.
+     - 25-26
+   * - ``0x05``
+     - Partner ability
+     - ``0``
+     - none
+     - none
+     - Valid after negotiation completes.
+     - 27
+   * - ``0x06``
+     - Expansion
+     - ``0``
+     - none
+     - ``0xffe0``
+     - Bits 4 and 1 latch high.
+     - 28
+   * - ``0x10``
+     - Extended control
+     - ``0x0058``
+     - ``0x802d``
+     - none
+     - Address in bits 10-6, read-only. Bit 15 arms override.
+     - 29
+   * - ``0x11``
+     - Quick Poll status
+     - see below
+     - none
+     - none
+     - Live and latched link, speed, duplex and progress.
+     - 30-31
+   * - ``0x12``
+     - 10BASE-T operations
+     - ``0x0010``
+     - ``0x002f``
+     - none
+     - Bit 14 latches polarity reversal. Bit 4 must be written one.
+     - 32-33
+   * - ``0x13``
+     - Extended control 2
+     - ``0x4001``
+     - ``0x0011``
+     - none
+     - Bits 15-13 come from straps. Bit 10 mirrors transmitted fault.
+     - 34-35
+
+The reset values for extended control, 10BASE-T operations and extended
+control 2 depend on the board's straps and on reserved bits the datasheet
+leaves unspecified. The model's values are explained under
+:ref:`sgi-ics1890-limits`.
+
+Command override
+================
+
+Setting extended-control bit 15 arms override. The next write to any
+register at this address may then change that register's override bits,
+and consumes the override; reads do not (p. 29), *established*. Address
+bits and read-only fields stay protected. A write to extended control
+that arrives while override is armed and itself sets bit 15 consumes the
+old override without arming a new one, an *approximation*: the datasheet
+does not order the two effects.
+
+Reset, power-down and loopback
+==============================
+
+BMCR bit 15 is a self-clearing software reset that restores defaults
+within 500 ms (p. 19), *established*. The model completes it at once,
+cancels any pending negotiation and discards latched events and command
+override.
+
+Bit 14 loops MII transmit back to MII receive and isolates the external
+path (p. 19). The model delivers looped frames through the IOC3's own
+receive path at either speed, whatever the backend's link state, and never
+sends them to the network backend. Isolate (bit 10) and power-down (bit 11)
+both stop external and looped traffic while management access keeps
+working, *established* (p. 19-20).
+
+Entering power-down clears the latching status fields: BMSR ``0x0016``,
+expansion ``0x0012``, Quick Poll ``0x3fe7`` and 10BASE-T polarity
+``0x4000`` (p. 3, 9, 21-32), *established*. While powered down no
+negotiation completes and the link stays down. On release the datasheet
+says only that error conditions reset (p. 20). The model clears fault and
+jabber history in BMSR (``0x0012``), parallel-detection fault in expansion
+(``0x0010``) and receive-error, jabber and remote-fault history in Quick
+Poll (``0x07e6``), an *approximation*. An enabled negotiation then starts
+afresh.
+
+Link and negotiation
+====================
+
+Negotiation picks the highest common mode in the order 100BASE-TX full
+duplex, 100BASE-TX half duplex, 10BASE-T full duplex, 10BASE-T half duplex
+(p. 8-9, 27), *established*. Quick Poll reports completion in bit 4,
+duplex in bit 14 and speed in bit 15. Its progress field, bits 13-11, keeps
+the furthest progress until read; a completed negotiation shows 7
+(p. 30-31).
+
+A packet backend has no link partner, so the model supplies one, an
+*approximation*: it advertises ``0x01e1`` with no faults and no next page,
+and negotiation completes 100 ms of virtual time after reset release or an
+enabled restart, provided the backend link is up and the two advertisements
+share a mode. The datasheet calls usual negotiation shorter than half a
+second; it does not give this delay. Status reads never start, finish or
+delay negotiation. Backend link-down clears the live link; recovery starts
+a new negotiation. With negotiation disabled, the configured speed and
+duplex are reported without partner abilities.
+
+Driver disagreements
+====================
+
+OpenBSD's shared ICS189x header calls register ``0x12`` bit 4 a loopback
+control. On the ICS1890 it is reserved and must be written one (p. 32); the
+model does not loop on it. OpenBSD also names register ``0x13`` bits 1 and
+2; the ICS1890 reserves them and requires zero (p. 34). The datasheet's
+register 6 table marks bits 15-5 override-writable while its prose calls
+them zero; the model follows the table. The datasheet's own cross-references
+put Quick Poll speed at bit 14 (p. 20), completion at bit 5 (p. 31) and
+transmitted remote fault at advertisement bit 15 (p. 35); the register tables,
+the public drivers and the model use bits 15, 4 and 13.
+
+.. _sgi-ics1890-limits:
+
+Model limits
+============
+
+- The two mode straps, node mode and software-configuration priority, are
+  model choices; the board's real strapping is unmeasured. They give
+  extended control 2 the value ``0x4001``.
+- Reserved bits whose read value the datasheet leaves open read zero,
+  except extended-control bit 4, which reads one in every state and cannot
+  be written. The stock IP30 diagnostic expects that one. Together with
+  address 1 and bit 3 this gives extended control ``0x0058`` after reset.
+- 10BASE-T operations bit 4 reads one, its table default; its read value
+  is otherwise unspecified.
+- Register ``0x13`` bit 10 keeps its derived status on writes.
+- Electrical tests, polarity, squelch, symbol and jabber generation have
+  no packet-level equivalent. Selecting one logs ``LOG_UNIMP``; reserved
+  write-zero bits written as one log ``LOG_GUEST_ERROR``. Reads of
+  unimplemented registers log ``LOG_UNIMP``.
+- Migration works only between identical builds.
+
+Tests
+=====
+
+``tests/qtest/ics1890-test.c`` covers the identity scan at all 32
+addresses, the access masks with and without override, both reset paths,
+loopback at both speeds, isolate and power-down, the latch masks,
+negotiation timing and migration. ``tests/qtest/sgi-ioc3-eth-test.c``
+repeats the IOC3 checks with this PHY fitted.
