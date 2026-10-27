@@ -59,6 +59,7 @@
 #define IOC3_PAR_BUFFER_LO_A (IOC3 + 0x084)
 #define IOC3_PAR_COUNT_A (IOC3 + 0x088)
 #define IOC3_PAR_ECP_DATA (IOC3 + 0x20150)
+#define IOC3_PAR_ECP_STATUS (IOC3 + 0x20151)
 #define IOC3_PAR_ECP_FIFO (IOC3 + 0x20158)
 #define IOC3_PAR_ECP_CONFIG_B (IOC3 + 0x20159)
 #define IOC3_PAR_ECP_EXTENDED (IOC3 + 0x2015a)
@@ -972,6 +973,99 @@ static void test_ioc3_parallel_chardev(gconstpointer data)
         "{'path': '/machine/ioc3/parallel', 'property': 'chardev'}}");
 
     g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "printer");
+    qtest_quit(qts);
+}
+
+/*
+ * The port's status lines follow what is behind its backend. With no
+ * -parallel the machine gives the port a null backend, and a null backend
+ * or none reads as a bare connector, every input high: 0x78. A real
+ * backend reads 0x08, no fault and nothing else.
+ */
+#define PAR_STATUS_EMPTY 0x78
+#define PAR_STATUS_PERIPHERAL 0x08
+
+static void ioc3_map(QTestState *qts)
+{
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+}
+
+static void test_ioc3_parallel_status_empty(gconstpointer data)
+{
+    static const char *const extras[] = {
+        "", "-parallel null", "-parallel none",
+    };
+    bool octane2 = GPOINTER_TO_INT(data);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(extras); i++) {
+        QTestState *qts = octane2 ? octane2_start_args(extras[i]) :
+                                    octane_start_args(extras[i]);
+
+        ioc3_map(qts);
+        g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_STATUS), ==,
+                        PAR_STATUS_EMPTY);
+        qtest_quit(qts);
+    }
+}
+
+static void test_ioc3_parallel_status_peripheral(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *extra = "-chardev file,id=printer,path=/dev/null "
+                        "-parallel chardev:printer";
+    QTestState *qts = octane2 ? octane2_start_args(extra) :
+                                octane_start_args(extra);
+
+    ioc3_map(qts);
+    g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_STATUS), ==,
+                    PAR_STATUS_PERIPHERAL);
+    qtest_quit(qts);
+}
+
+/*
+ * With every serial line named, the default parallel port is the only
+ * thing that could open a text console. A screendump by device name walks
+ * every console and aborts on one with no device, so each console must be
+ * a graphic one.
+ */
+static void test_no_text_console(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *extra = "-serial null -serial null -serial null "
+                        "-serial null";
+    QTestState *qts = octane2 ? octane2_start_args(extra) :
+                                octane_start_args(extra);
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute': 'qom-list', 'arguments': {'path': '/backend'}}");
+    QList *list = qdict_get_qlist(reply, "return");
+    QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(list, entry) {
+        const char *name = qdict_get_str(qobject_to(QDict, entry->value),
+                                         "name");
+        g_autofree char *path = NULL;
+        g_autoptr(QDict) props = NULL;
+        QList *plist;
+        QListEntry *entry2;
+        bool graphic = false;
+
+        if (!g_str_has_prefix(name, "console[")) {
+            continue;
+        }
+        path = g_strdup_printf("/backend/%s", name);
+        props = qtest_qmp(qts, "{'execute': 'qom-list', 'arguments': "
+                          "{'path': %s}}", path);
+        plist = qdict_get_qlist(props, "return");
+        QLIST_FOREACH_ENTRY(plist, entry2) {
+            if (g_str_equal(qdict_get_str(qobject_to(QDict, entry2->value),
+                                          "name"), "device")) {
+                graphic = true;
+            }
+        }
+        g_assert_true(graphic);
+    }
     qtest_quit(qts);
 }
 
@@ -4922,6 +5016,19 @@ int main(int argc, char **argv)
                         test_ioc3_parallel_chardev);
     qtest_add_data_func("/octane2/ioc3-parallel-chardev", GINT_TO_POINTER(1),
                         test_ioc3_parallel_chardev);
+    for (unsigned i = 0; i < 2; i++) {
+        const char *machine = i ? "octane2" : "octane";
+        g_autofree char *path = NULL;
+
+        path = g_strdup_printf("/%s/ioc3-parallel-status-empty", machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(i),
+                            test_ioc3_parallel_status_empty);
+        path = g_strdup_printf("/%s/ioc3-parallel-status-peripheral", machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(i),
+                            test_ioc3_parallel_status_peripheral);
+        path = g_strdup_printf("/%s/no-text-console", machine);
+        qtest_add_data_func(path, GINT_TO_POINTER(i), test_no_text_console);
+    }
     qtest_add_func("/octane/ioc3-record-lines", test_ioc3_record_lines);
     qtest_add_data_func("/octane/ioc3-keyboard", GINT_TO_POINTER(0),
                         test_ioc3_keyboard);

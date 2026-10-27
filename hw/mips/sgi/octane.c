@@ -7,6 +7,7 @@
  * not establish additional physical behavior.
  */
 #include "qemu/osdep.h"
+#include "hw/char/sgi-ioc3-parallel.h"
 #include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
@@ -389,6 +390,7 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         s->model->io_boards->value : NULL;
     g_autofree char *mac = sgi_board_mac(s->mac, 0, errp);
     PCIDevice *pci;
+    Chardev *parallel_chr;
 
     if (!mac) {
         return false;
@@ -475,8 +477,9 @@ static bool octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
         qdev_prop_set_chr(DEVICE(pci), "record-b", serial_hd(3));
     }
     /* The populated TL16PIR552 port takes -parallel, as on the SN boards. */
-    if (parallel_hds[0]) {
-        qdev_prop_set_chr(DEVICE(pci), "parallel-chardev", parallel_hds[0]);
+    parallel_chr = sgi_ioc3_parallel_host_backend(0);
+    if (parallel_chr) {
+        qdev_prop_set_chr(DEVICE(pci), "parallel-chardev", parallel_chr);
     }
     if (!pci_realize_and_unref(pci, bus, errp) ||
         !octane_attach_record(s, OBJECT(pci), "frontplane-record",
@@ -1250,6 +1253,11 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     /* -nic and an unqualified -drive reach the onboard IOC3 and ISP. */
     mc->default_nic = "sgi-ioc3-eth";
     mc->block_default_type = IF_SCSI;
+    /*
+     * QEMU's default parallel backend is a text console nothing reads; the
+     * IOC3's port gets a null backend from sgi_ioc3_parallel_host_backend().
+     */
+    mc->no_parallel = true;
     mc->no_floppy = true;
     mc->no_cdrom = true;
     /* A graphics pipe is a -device in one of the four graphics ports. */

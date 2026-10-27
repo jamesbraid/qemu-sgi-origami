@@ -161,4 +161,14 @@ struct SGIIOC3ParallelState {
     Fifo8 test_fifo;
 };
 
+/*
+ * The host backend for parallel port @index: the user's -parallel, else a
+ * null backend made here. The SGI machines opt out of QEMU's default
+ * parallel port, which is a text console nothing reads and which a
+ * screendump by device name trips over, so an empty slot is filled in
+ * with this instead. The port reads a null backend as an empty connector.
+ * NULL only for an index past the ports QEMU has.
+ */
+Chardev *sgi_ioc3_parallel_host_backend(unsigned int index);
+
 #endif /* HW_CHAR_SGI_IOC3_PARALLEL_H */
