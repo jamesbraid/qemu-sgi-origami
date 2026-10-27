@@ -2233,7 +2233,7 @@ static void test_dma_tx_refusing_backend_holds_then_completes(void)
     g_assert_nonnull(contents);
 }
 
-static void test_serial_idle_status_backend_backpressure(void)
+static void test_serial_idle_status_no_backend(void)
 {
     g_autofree char *log = ioc4_log_file_new();
     const uint8_t tx_data[4] = { 0x41, 0x42, 0x43, 0x44 };
@@ -3540,8 +3540,8 @@ int main(int argc, char **argv)
                     test_serial_idle_status);
     qtest_add_func("/sgi-ioc4/serial-idle-status-default-pio",
                     test_serial_idle_status_default_pio);
-    qtest_add_func("/sgi-ioc4/serial-idle-status-backend-backpressure",
-                    test_serial_idle_status_backend_backpressure);
+    qtest_add_func("/sgi-ioc4/serial-idle-status-no-backend",
+                    test_serial_idle_status_no_backend);
     qtest_add_func("/sgi-ioc4/dma-tx-refusing-backend-holds-then-completes",
                    test_dma_tx_refusing_backend_holds_then_completes);
     qtest_add_func("/sgi-ioc4/serial-idle-status-dma-callbacks",
