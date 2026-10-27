@@ -27,6 +27,8 @@
 typedef struct SGIPioForward {
     AddressSpace *as;
     MemoryListener listener;
+    /* The listener's name: a caller may pass one it frees after init. */
+    char *name;
     /* The cached page's region, or NULL when nothing is cached. */
     MemoryRegion *mr;
     hwaddr page;

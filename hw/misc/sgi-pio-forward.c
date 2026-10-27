@@ -137,11 +137,12 @@ void sgi_pio_forward_init(SGIPioForward *f, AddressSpace *as,
     assert(!as->root->container);
     *f = (SGIPioForward) {
         .as = as,
+        .name = g_strdup(name),
         .listener = {
-            .name = name,
             .commit = sgi_pio_forward_commit,
         },
     };
+    f->listener.name = f->name;
     memory_listener_register(&f->listener, as);
 }
 
@@ -151,5 +152,7 @@ void sgi_pio_forward_destroy(SGIPioForward *f)
         memory_listener_unregister(&f->listener);
         sgi_pio_forward_forget(f);
         f->as = NULL;
+        g_free(f->name);
+        f->name = NULL;
     }
 }
