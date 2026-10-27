@@ -53,11 +53,13 @@ Identity and placement
 ======================
 
 The chip is a Dallas/Maxim DS1685 die. The DS1687 package adds a crystal and
-lithium cell, and its crystal-select bit is inert :src:`maxim-ds1685-ds1687-rev-10-12 p. 3, 22`, *established*. The published Octane boot log names the part as a
-DS1687 :src:`miod-openbsd-sgi-story-4 Octane boot log`, *observed* on a
-175 MHz Octane. That the Octane2 board carries the same part is *inferred*
-from the shared board design. No revision-matched measurement of an Octane2
-clock exists.
+lithium cell, and its crystal-select bit is inert
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 3, 22`, *established*. The published
+Octane boot log names the part as a DS1687
+:src:`miod-openbsd-sgi-story-4 Octane boot log`, *observed* on a 175 MHz
+Octane. That the Octane2 board carries the same part is *inferred* from the
+shared board design. No revision-matched measurement of an Octane2 clock
+exists.
 
 The chip has a multiplexed address and data bus. The IOC3 reaches it with two
 byte-wide ports, *established* by Linux ``drivers/mfd/ioc3.c`` and OpenBSD
@@ -270,12 +272,13 @@ selected ``-rtc`` clock as UTC fields. The model has no time zone. Setting
 calendar-set sequence expects.
 
 ``UIP`` is computed. It reads one for the 244 microseconds before the next
-update while the counter runs and ``SET`` is clear :src:`maxim-ds1685-ds1687-rev-10-12 p. 16`, *established*. Bank-1 ``INCR`` always reads zero, because an update
-is one atomic step here. Linux spins on ``INCR`` with no timeout in probe
-and on every time read, so an ``INCR`` that read one would hang the guest
-before the clock is named. That is a driver expectation, *established* by
-``rtc-ds1685.c``; the model's choice is an *approximation* of the 122
-microsecond window the datasheet describes.
+update while the counter runs and ``SET`` is clear
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 16`, *established*. Bank-1 ``INCR``
+always reads zero, because an update is one atomic step here. Linux spins on
+``INCR`` with no timeout in probe and on every time read, so an ``INCR``
+that read one would hang the guest before the clock is named. That is a
+driver expectation, *established* by ``rtc-ds1685.c``; the model's choice is
+an *approximation* of the 122 microsecond window the datasheet describes.
 
 ``DM`` and ``24/12`` do not convert stored bytes. Software must rewrite the
 fields after changing either, as the datasheet requires
@@ -302,9 +305,10 @@ Six sources drive one level-sensitive output: ``PF``, ``AF`` and ``UF`` from
 register C, with their enables in register B, and ``RF``, ``WF`` and ``KF``
 from register 4A, with their enables in register 4B
 :src:`maxim-ds1685-ds1687-rev-10-12 p. 14`, *established*. The model
-recomputes the output after every write that can change a flag or an
-enable, a register C read, every timer event, reset and a migration load. Flags set regardless of their enables. Enabling an already-set flag
-asserts the output at once.
+recomputes the output after every write that can change a flag or an enable,
+a register C read, every timer event, reset and a migration load. Flags set
+regardless of their enables. Enabling an already-set flag asserts the output
+at once.
 
 Only the update cycle sets ``UF``, ``AF`` and ``WF``. Only the periodic timer
 sets ``PF``. Nothing in the model sets ``KF`` (no kickstart pin) or ``RF`` (no
@@ -323,14 +327,16 @@ Power control
 =============
 
 ``PAB`` in register 4A is the power-off control: one in the bit puts the
-``PWR`` pin in its high-impedance state :src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. Linux's power-off path writes ``PAB`` and spins. The
-model treats a write that leaves ``PAB`` set as a guest power-off request
-(``SHUTDOWN_CAUSE_GUEST_SHUTDOWN``).
+``PWR`` pin in its high-impedance state
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. Linux's power-off
+path writes ``PAB`` and spins. The model treats a write that leaves ``PAB``
+set as a guest power-off request (``SHUTDOWN_CAUSE_GUEST_SHUTDOWN``).
 
 The part will not hold the supply off while an enabled wake-up or kickstart
-asks for it on. After any write or flag change, if ``WF`` and ``WIE`` or ``KF``
-and ``KSE`` are both set, the model clears ``PAB`` :src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. A write of ``PAB`` while one of those pairs is set
-therefore requests no shutdown.
+asks for it on. After any write or flag change, if ``WF`` and ``WIE`` or
+``KF`` and ``KSE`` are both set, the model clears ``PAB``
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. A write of
+``PAB`` while one of those pairs is set therefore requests no shutdown.
 
 That the Octane's kickstart pin is the front power button rests on two
 drivers, Linux and OpenBSD, and no vendor document, *inferred*. The model
@@ -472,10 +478,10 @@ Migration
 =========
 
 The migration stream carries the index latch, all four register arrays, the
-counter state, the next update time, the periodic period and both timers (device
-version 2). A load recomputes the interrupt output. A load into a running
-machine and a migration that completes then write the backing stores.
-Migration works only between identical builds.
+counter state, the next update time, the periodic period and both timers
+(device version 2). A load recomputes the interrupt output. A load into a
+running machine and a migration that completes then write the backing
+stores. Migration works only between identical builds.
 
 .. _sgi-ds1685-direct:
 
@@ -540,14 +546,14 @@ Tests
 
 ``tests/qtest/sn0-ds1685-test.c`` drives the Octane IOC3 population and
 covers the initial calendar and mode writes, address-latch persistence and
-seven-bit masking, bank switching of only ``40h``-``7Fh``, the common
-low half, the model byte, read-only and fixed-zero bits, reserved
-locations, register C and extended-flag clearing, the level interrupt,
-extended RAM addressing, the three RAM regions, ``INCR`` reading clear,
-reset behaviour, the ``PAB`` shutdown and wake-up rule, counter hold,
-IOC3 populations with and without the part, migration, and the whole
-persistence path: image restore cases, rejected backends, write errors,
-snapshots, migration with storage and process restart.
-``tests/qtest/octane-test.c`` covers the ``nvram0`` and ``nvram0-clock``
-bindings, the older drive names and the refusals. ``tests/qtest/sn0-ioc3-test.c``
-checks which IOC3 boards carry the part.
+seven-bit masking, bank switching of only ``40h``-``7Fh``, the common low
+half, the model byte, read-only and fixed-zero bits, reserved locations,
+register C and extended-flag clearing, the level interrupt, extended RAM
+addressing, the three RAM regions, ``INCR`` reading clear, reset behaviour,
+the ``PAB`` shutdown and wake-up rule, counter hold, IOC3 populations with
+and without the part, migration, and the whole persistence path: image
+restore cases, rejected backends, write errors, snapshots, migration with
+storage and process restart. ``tests/qtest/octane-test.c`` covers the
+``nvram0`` and ``nvram0-clock`` bindings, the older drive names and the
+refusals. ``tests/qtest/sn0-ioc3-test.c`` checks which IOC3 boards carry the
+part.

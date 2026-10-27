@@ -33,17 +33,18 @@ Sources
 Identity and address
 ====================
 
-The datasheet's identity tables give words ``0x0015`` and ``0xf423``;
-model 2 is the ICS1890 and revision 3 is the J release or later :src:`ics1890-rev-g p. 23-24`,
-*established*. The three boot logs decode to the same words at address 1,
-*observed* on Octanes from 2005 and 2019 (:src:`lore-seufer-octane-2005 PHY
-probe`, :src:`lore-kinard-octane-2019 attached dmesg`). That the Octane2 board QEMU
+The datasheet's identity tables give words ``0x0015`` and ``0xf423``; model
+2 is the ICS1890 and revision 3 is the J release or later
+:src:`ics1890-rev-g p. 23-24`, *established*. The three boot logs decode to
+the same words at address 1, *observed* on Octanes from 2005 and 2019
+(:src:`lore-seufer-octane-2005 PHY probe`,
+:src:`lore-kinard-octane-2019 attached dmesg`). That the Octane2 board QEMU
 models carries the same part at the same address is *inferred* from the
 newer capture; no revision-matched measurement of that board exists.
 
-The chip answers only its strapped five-bit address and implements
-registers 0-6 and 16-19 :src:`ics1890-rev-g p. 17`. The model answers address 1. At any other
-address the IOC3 returns ``0xffff`` and drops writes.
+The chip answers only its strapped five-bit address and implements registers
+0-6 and 16-19 :src:`ics1890-rev-g p. 17`. The model answers address 1. At
+any other address the IOC3 returns ``0xffff`` and drops writes.
 
 Register map
 ============
@@ -150,47 +151,47 @@ Command override
 ================
 
 Setting extended-control bit 15 arms override. The next write to any
-register at this address may then change that register's override bits,
-and consumes the override; reads do not :src:`ics1890-rev-g p. 29`, *established*. Address
-bits and read-only fields stay protected. A write to extended control
-that arrives while override is armed and itself sets bit 15 consumes the
-old override without arming a new one, an *approximation*: the datasheet
-does not order the two effects.
+register at this address may then change that register's override bits, and
+consumes the override; reads do not :src:`ics1890-rev-g p. 29`,
+*established*. Address bits and read-only fields stay protected. A write to
+extended control that arrives while override is armed and itself sets bit 15
+consumes the old override without arming a new one, an *approximation*: the
+datasheet does not order the two effects.
 
 Reset, power-down and loopback
 ==============================
 
-BMCR bit 15 is a self-clearing software reset that restores defaults
-within 500 ms :src:`ics1890-rev-g p. 19`, *established*. The model completes it at once,
-cancels any pending negotiation and discards latched events and command
-override.
+BMCR bit 15 is a self-clearing software reset that restores defaults within
+500 ms :src:`ics1890-rev-g p. 19`, *established*. The model completes it at
+once, cancels any pending negotiation and discards latched events and
+command override.
 
-Bit 14 loops MII transmit back to MII receive and isolates the external
-path :src:`ics1890-rev-g p. 19`. The model delivers looped frames through the IOC3's own
-receive path at either speed, whatever the backend's link state, and never
-sends them to the network backend. Isolate (bit 10) and power-down (bit 11)
-both stop external and looped traffic while management access keeps
+Bit 14 loops MII transmit back to MII receive and isolates the external path
+:src:`ics1890-rev-g p. 19`. The model delivers looped frames through the
+IOC3's own receive path at either speed, whatever the backend's link state,
+and never sends them to the network backend. Isolate (bit 10) and power-down
+(bit 11) both stop external and looped traffic while management access keeps
 working, *established* :src:`ics1890-rev-g p. 19-20`.
 
 Entering power-down clears the latching status fields: BMSR ``0x0016``,
-expansion ``0x0012``, Quick Poll ``0x3fe7`` and 10BASE-T polarity
-``0x4000`` :src:`ics1890-rev-g p. 3, 9, 21-32`, *established*. While powered down no
-negotiation completes and the link stays down. On release the datasheet
-says only that error conditions reset :src:`ics1890-rev-g p. 20`. The model clears fault and
-jabber history in BMSR (``0x0012``), parallel-detection fault in expansion
-(``0x0010``) and receive-error, jabber and remote-fault history in Quick
-Poll (``0x07e6``), an *approximation*. An enabled negotiation then starts
-afresh.
+expansion ``0x0012``, Quick Poll ``0x3fe7`` and 10BASE-T polarity ``0x4000``
+:src:`ics1890-rev-g p. 3, 9, 21-32`, *established*. While powered down no
+negotiation completes and the link stays down. On release the datasheet says
+only that error conditions reset :src:`ics1890-rev-g p. 20`. The model
+clears fault and jabber history in BMSR (``0x0012``), parallel-detection
+fault in expansion (``0x0010``) and receive-error, jabber and remote-fault
+history in Quick Poll (``0x07e6``), an *approximation*. An enabled
+negotiation then starts afresh.
 
 Link and negotiation
 ====================
 
 Negotiation picks the highest common mode in the order 100BASE-TX full
 duplex, 100BASE-TX half duplex, 10BASE-T full duplex, 10BASE-T half duplex
-:src:`ics1890-rev-g p. 8-9, 27`, *established*. Quick Poll reports completion in bit 4,
-duplex in bit 14 and speed in bit 15. Its progress field, bits 13-11, keeps
-the furthest progress until read; a completed negotiation shows 7
-:src:`ics1890-rev-g p. 30-31`.
+:src:`ics1890-rev-g p. 8-9, 27`, *established*. Quick Poll reports
+completion in bit 4, duplex in bit 14 and speed in bit 15. Its progress
+field, bits 13-11, keeps the furthest progress until read; a completed
+negotiation shows 7 :src:`ics1890-rev-g p. 30-31`.
 
 A packet backend has no link partner, so the model supplies one, an
 *approximation*: it advertises ``0x01e1`` with no faults and no next page,
@@ -206,14 +207,16 @@ Driver disagreements
 ====================
 
 OpenBSD's shared ICS189x header calls register ``0x12`` bit 4 a loopback
-control. On the ICS1890 it is reserved and must be written one :src:`ics1890-rev-g p. 32`; the
-model does not loop on it. OpenBSD also names register ``0x13`` bits 1 and
-2; the ICS1890 reserves them and requires zero :src:`ics1890-rev-g p. 34`. The datasheet's
-register 6 table marks bits 15-5 override-writable while its prose calls
-them zero; the model follows the table. The datasheet's own cross-references
-put Quick Poll speed at bit 14 :src:`ics1890-rev-g p. 20`, completion at bit 5 :src:`ics1890-rev-g p. 31` and
-transmitted remote fault at advertisement bit 15 :src:`ics1890-rev-g p. 35`; the register tables,
-the public drivers and the model use bits 15, 4 and 13.
+control. On the ICS1890 it is reserved and must be written one
+:src:`ics1890-rev-g p. 32`; the model does not loop on it. OpenBSD also
+names register ``0x13`` bits 1 and 2; the ICS1890 reserves them and requires
+zero :src:`ics1890-rev-g p. 34`. The datasheet's register 6 table marks bits
+15-5 override-writable while its prose calls them zero; the model follows
+the table. The datasheet's own cross-references put Quick Poll speed at bit
+14 :src:`ics1890-rev-g p. 20`, completion at bit 5
+:src:`ics1890-rev-g p. 31` and transmitted remote fault at advertisement bit
+15 :src:`ics1890-rev-g p. 35`; the register tables, the public drivers and
+the model use bits 15, 4 and 13.
 
 .. _sgi-ics1890-limits:
 

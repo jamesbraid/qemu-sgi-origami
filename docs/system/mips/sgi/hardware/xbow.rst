@@ -16,13 +16,14 @@ and answers, itself, as logical widget 0. QEMU models it in
 what the model chose where the sources are silent, and where each
 statement comes from.
 
-Ratings follow :ref:`sgi-ip30`: established, observed, software
-expectation, inferred, approximation or unknown. The sources are the *Crossbow ASIC Specification*, revision
-12.0, 18 November 1996 (:src:`crossbow-asic-spec-12.0`; printed and PDF
-page numbers agree, and the page given is the PDF page), the *Origin2000
-Theory of Operations* (007-3439-002), SGI's *Hardware Quick-reference
-Booklet* (:src:`origin-onyx2-quick-reference-booklet`) and public
-OpenBSD sgi sources.
+Ratings follow :ref:`sgi-ip30`: established, observed, software expectation,
+inferred, approximation or unknown. The sources are the *Crossbow ASIC
+Specification*, revision 12.0, 18 November 1996
+(:src:`crossbow-asic-spec-12.0`; printed and PDF page numbers agree, and the
+page given is the PDF page), the *Origin2000 Theory of Operations*
+(007-3439-002), SGI's *Hardware Quick-reference Booklet*
+(:src:`origin-onyx2-quick-reference-booklet`) and public OpenBSD sgi
+sources.
 
 .. _sgi-xbow-role:
 
@@ -274,10 +275,8 @@ revision code 5; the inventory prints ASIC revision 1.4.
    * - Widget 0 fence ``0x0078`` and the widget 11 link fence
      - 32-bit
      - bit 3 clear in both
-     - PROM monitor, after the PROM's warm reset of widget 11
-     - The fences exist on revision 5. That bit 3 is clear after the
-       reset is consistent with the model's choice that a warm reset
-       leaves fences as programmed; the read alone does not show it.
+     - PROM monitor
+     - The fences exist on revision 5.
    * - Resource lock ``0x00c0``
      - 32-bit
      - zero
