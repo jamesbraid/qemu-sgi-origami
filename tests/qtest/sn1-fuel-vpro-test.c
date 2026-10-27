@@ -20,8 +20,10 @@
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_STATUS 0x000c
 #define ODSY_CONTROL 0x0024
-#define ODSY_INT_DEST_UPPER 0x0034
-#define ODSY_INT_DEST_LOWER 0x003c
+/* The routed destination and vector table; the flag source has byte 7:0. */
+#define ODSY_ROUTE_DEST_UPPER 0x1044
+#define ODSY_ROUTE_DEST_LOWER 0x104c
+#define ODSY_ROUTE_VECTORS 0x1054
 #define ODSY_INTR_CLEAR 0x101c
 #define ODSY_INTR_ENABLE_SET 0x1034
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
@@ -53,10 +55,9 @@
     ((UINT64_C(1) << 47) | UINT64_C(0x1800000) | PI_PENDING_MODIFY)
 #define DEST_WIDGET 0xa
 #define TEST_VECTOR 5
-#define INT_DEST_UPPER \
-    (((uint32_t)TEST_VECTOR << 24) | (DEST_WIDGET << 16) | \
-     (uint32_t)(BEDROCK_PACKET_PI_PENDING_MODIFY >> 32))
-#define INT_DEST_LOWER ((uint32_t)BEDROCK_PACKET_PI_PENDING_MODIFY)
+#define ROUTE_DEST_UPPER \
+    ((DEST_WIDGET << 25) | (uint32_t)(BEDROCK_PACKET_PI_PENDING_MODIFY >> 32))
+#define ROUTE_DEST_LOWER ((uint32_t)BEDROCK_PACKET_PI_PENDING_MODIFY)
 
 static char *prom_path;
 
@@ -165,8 +166,9 @@ static void test_profile_identity_and_routing(gconstpointer data)
                                 XBOW_LINK_STATUS(FUEL_VPRO_WIDGET)) &
                     XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
 
-    qtest_writel(qts, VPRO + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
-    qtest_writel(qts, VPRO + ODSY_INT_DEST_LOWER, INT_DEST_LOWER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_DEST_UPPER, ROUTE_DEST_UPPER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_DEST_LOWER, ROUTE_DEST_LOWER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_VECTORS, TEST_VECTOR);
     qtest_writel(qts, VPRO + ODSY_INTR_ENABLE_SET,
                  ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) & bit,
@@ -199,8 +201,9 @@ static void test_interrupt_reaches_bedrock(void)
     QTestState *qts = fuel_start("");
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
 
-    qtest_writel(qts, VPRO + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
-    qtest_writel(qts, VPRO + ODSY_INT_DEST_LOWER, INT_DEST_LOWER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_DEST_UPPER, ROUTE_DEST_UPPER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_DEST_LOWER, ROUTE_DEST_LOWER);
+    qtest_writel(qts, VPRO + ODSY_ROUTE_VECTORS, TEST_VECTOR);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) & bit,
                     ==, 0);
 

@@ -207,17 +207,14 @@
 #define ODSY_ERROR_COMMAND 0x40
 
 /*
- * int_dest_upper/int_dest_lower's own decode: widget in bits 19:16, the
- * 48-bit destination address split 15:0 of int_dest_upper (high) and all
- * of int_dest_lower (low), and the delivered vector in bits 31:24 of
- * int_dest_upper. Data bit 8 of the interrupt-modify write itself selects
- * assertion versus deassertion. Carried over from hw/misc/sgi-mgras.c's
- * own reviewed decode of the same destination-register shape, not
- * independently re-derived from this board's own datasheet.
+ * int_dest_upper/int_dest_lower: the crosstalk error interrupt's
+ * destination, which the kernel driver gives its crosstalk error handler.
+ * The model posts no crosstalk error, so it stores the pair and sends
+ * nothing through it. Its widget field is four bits wide (bits 19:16),
+ * as is the routed destination's (ODSY_ROUTE_DEST_WIDGET_SHIFT). Data bit
+ * 8 of an interrupt-modify write selects assertion versus deassertion.
  */
-#define ODSY_INT_DEST_WIDGET_SHIFT 16
 #define ODSY_INT_DEST_WIDGET_BITS 4
-#define ODSY_INT_DEST_VECTOR_SHIFT 24
 
 /*
  * The driver's six-write memory-reset sequence, the first before any
@@ -306,13 +303,18 @@
  * interrupts #4..#1 into bytes 31:24..7:0; the top byte is bound to the
  * softsync ISR and byte 23:16 to the kernel driver's vertical-retrace
  * handler (the binding the guest driver programs), and byte 15:8 to the
- * kernel driver's DMA-done interrupt handler. Byte 7:0 (the flag source)
- * is stored but nothing here raises through it.
+ * kernel driver's DMA-done interrupt handler. Byte 7:0 is the flag
+ * source's: the driver binds it to its flag handler, which reads the flags
+ * and enables and runs its low-water handler for the low-water bit, and
+ * gives int_dest_upper/int_dest_lower to its crosstalk error handler,
+ * which reads only the widget status's error bits (both from the IRIX
+ * driver's interrupt setup).
  */
 #define ODSY_ROUTE_DEST_WIDGET_SHIFT 25
 #define ODSY_ROUTE_VECTOR_SOFTSYNC_SHIFT 24
 #define ODSY_ROUTE_VECTOR_RETRACE_SHIFT 16
 #define ODSY_ROUTE_VECTOR_DMA_SHIFT 8
+#define ODSY_ROUTE_VECTOR_FLAG_SHIFT 0
 
 /*
  * The "Buzz registers" the stock IP35 BaseIO PROM's graphics diagnostic
@@ -2279,40 +2281,20 @@ static bool odyssey_xio_compose(SGIOdysseyState *s, unsigned int widget,
     return sgi_xio_compose("sgi-odyssey", widget, address, fabric);
 }
 
-/* The one modeled source uses the generic destination and its own vector. */
-static void odyssey_deliver_interrupt(SGIOdysseyState *s, bool set)
-{
-    unsigned int widget = (s->int_dest_upper >> ODSY_INT_DEST_WIDGET_SHIFT) &
-                          ((1u << ODSY_INT_DEST_WIDGET_BITS) - 1);
-    uint64_t addr = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
-                    s->int_dest_lower;
-    uint8_t vector = s->int_dest_upper >> ODSY_INT_DEST_VECTOR_SHIFT;
-    hwaddr where;
-
-    if (!s->int_dest_upper && !s->int_dest_lower) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: interrupt %s with no "
-                      "destination programmed; no packet sent\n",
-                      set ? "raised" : "lowered");
-        return;
-    }
-    if (!odyssey_xio_compose(s, widget, addr, &where)) {
-        return;
-    }
-    odyssey_send_packet(s, where, vector, set);
-}
-
 /*
- * One routed source's interrupt: a single set pulse, not a level the guest
- * clears through ODSY_INTR_CLEAR like the one source
- * odyssey_deliver_interrupt() above delivers -- the routed handlers ack
- * nothing, so there is no matching "clear" call. Every routed source shares
- * one destination, ODSY_ROUTE_DEST_UPPER/_LOWER, distinct from
- * int_dest_upper/int_dest_lower above; the sources differ only in their byte
- * of ODSY_ROUTE_VECTORS. The vectors are whatever the hub allocator handed
- * the driver, so they are read from the register, never assumed.
+ * One routed source's interrupt. Every routed source shares one
+ * destination, ODSY_ROUTE_DEST_UPPER/_LOWER, distinct from
+ * int_dest_upper/int_dest_lower, which the kernel driver gives its
+ * crosstalk error handler; the sources differ only in their byte of
+ * ODSY_ROUTE_VECTORS. The vectors are whatever the hub allocator handed
+ * the driver, so they are read from the register, never assumed. The
+ * flag source is a level the guest clears through ODSY_INTR_CLEAR, so it
+ * sends a clearing packet as it falls (odyssey_update_irq()); the softsync,
+ * retrace and DMA-done handlers ack nothing, and those sources send a
+ * single set pulse.
  */
 static void odyssey_deliver_routed(SGIOdysseyState *s, unsigned int shift,
-                                   const char *what)
+                                   const char *what, bool set)
 {
     unsigned int widget = (s->route_dest_upper >>
                            ODSY_ROUTE_DEST_WIDGET_SHIFT) &
@@ -2323,20 +2305,22 @@ static void odyssey_deliver_routed(SGIOdysseyState *s, unsigned int shift,
     hwaddr where;
 
     if (!s->route_dest_upper && !s->route_dest_lower) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: %s interrupt with "
-                      "no destination programmed; no packet sent\n", what);
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: %s interrupt %s with "
+                      "no destination programmed; no packet sent\n", what,
+                      set ? "raised" : "lowered");
         return;
     }
     if (!odyssey_xio_compose(s, widget, addr, &where)) {
         return;
     }
-    odyssey_send_packet(s, where, vector, true);
+    odyssey_send_packet(s, where, vector, set);
 }
 
 /* The softsync source ODSY_REG_HOST_WRITE (0x0a5a) raises. */
 static void odyssey_deliver_softsync(SGIOdysseyState *s)
 {
-    odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_SOFTSYNC_SHIFT, "softsync");
+    odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_SOFTSYNC_SHIFT, "softsync",
+                           true);
 }
 
 static void odyssey_update_irq(SGIOdysseyState *s)
@@ -2345,7 +2329,7 @@ static void odyssey_update_irq(SGIOdysseyState *s)
 
     if (level != s->interrupt_asserted) {
         s->interrupt_asserted = level;
-        odyssey_deliver_interrupt(s, level);
+        odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_FLAG_SHIFT, "flag", level);
     }
 }
 
@@ -3678,7 +3662,8 @@ static void odyssey_retrace(void *opaque)
         sgi_scanout_invalidate_all(&s->scanout);
     }
     if (s->route_dest_upper || s->route_dest_lower) {
-        odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_RETRACE_SHIFT, "retrace");
+        odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_RETRACE_SHIFT, "retrace",
+                               true);
     }
 }
 
@@ -8769,7 +8754,8 @@ static uint64_t odyssey_dma_table_address(uint32_t w1, uint32_t w3)
 static void odyssey_dma_done(SGIOdysseyState *s)
 {
     if (s->route_dest_upper || s->route_dest_lower) {
-        odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_DMA_SHIFT, "DMA-done");
+        odyssey_deliver_routed(s, ODSY_ROUTE_VECTOR_DMA_SHIFT, "DMA-done",
+                               true);
     }
 }
 

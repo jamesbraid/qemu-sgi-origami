@@ -25,8 +25,10 @@
 #define ODSY_IDENTITY 0x0004
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_CONTROL 0x0024
-#define ODSY_INT_DEST_UPPER 0x0034
-#define ODSY_INT_DEST_LOWER 0x003c
+/* The routed destination and vector table; the flag source has byte 7:0. */
+#define ODSY_ROUTE_DEST_UPPER 0x1044
+#define ODSY_ROUTE_DEST_LOWER 0x104c
+#define ODSY_ROUTE_VECTORS 0x1054
 #define ODSY_INTR_CLEAR 0x101c
 #define ODSY_INTR_ENABLE_SET 0x1034
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
@@ -45,7 +47,7 @@
 #define HEART_WIDGET 8
 #define HEART_PACKET 0x80
 #define TEST_VECTOR 18
-#define INT_DEST_UPPER (((uint32_t)TEST_VECTOR << 24) | (HEART_WIDGET << 16))
+#define ROUTE_DEST_UPPER (HEART_WIDGET << 25)
 
 static char *flash_path;
 
@@ -137,8 +139,9 @@ static void test_profile_identity_and_routing(gconstpointer data)
     g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
                     XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
 
-    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
-    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_LOWER, HEART_PACKET);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_DEST_UPPER, ROUTE_DEST_UPPER);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_DEST_LOWER, HEART_PACKET);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_VECTORS, TEST_VECTOR);
     qtest_writel(qts, VPRO_SHORT + ODSY_INTR_ENABLE_SET,
                  ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(qtest_readq(qts, HEART + HEART_PENDING) & bit, ==, bit);
@@ -167,8 +170,9 @@ static void test_interrupt_reaches_heart(gconstpointer data)
     QTestState *qts = start(GPOINTER_TO_INT(data), "v12");
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
 
-    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
-    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_LOWER, HEART_PACKET);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_DEST_UPPER, ROUTE_DEST_UPPER);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_DEST_LOWER, HEART_PACKET);
+    qtest_writel(qts, VPRO_SHORT + ODSY_ROUTE_VECTORS, TEST_VECTOR);
     g_assert_cmphex(qtest_readq(qts, HEART + HEART_PENDING) & bit, ==, 0);
 
     /* The FIFO is empty, so its low-water flag is already pending. */

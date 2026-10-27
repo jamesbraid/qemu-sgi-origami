@@ -877,13 +877,15 @@ static void test_ip53_v12(void)
                                         SPACE_IO + IP53_XBOW_LINK_STATUS(12)) &
                             IP53_XBOW_LINK_ALIVE, ==, IP53_XBOW_LINK_ALIVE);
         }
-        qtest_writel(qts, vpro + 0x0034,
-                     (5u << 24) | (10u << 16) |
+        /* The flag source raises through the routed destination, vector 5. */
+        qtest_writel(qts, vpro + 0x1044,
+                     (10u << 25) |
                      (uint32_t)(((UINT64_C(1) << 47) |
                                  UINT64_C(0x01800000) | 0x90) >> 32));
-        qtest_writel(qts, vpro + 0x003c,
+        qtest_writel(qts, vpro + 0x104c,
                      (uint32_t)((UINT64_C(1) << 47) |
                                 UINT64_C(0x01800000) | 0x90));
+        qtest_writel(qts, vpro + 0x1054, 5);
         g_assert_cmphex(qtest_readq(qts, bedrock + 0x98) & bit, ==, 0);
         qtest_writel(qts, vpro + 0x1034, 0x200);
         g_assert_cmphex(qtest_readq(qts, bedrock + 0x98) & bit, ==, bit);
