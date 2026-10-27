@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The fresh IP27 image of an M48T35-class Timekeeper. The layout and the
- * checksum are the Origami project's Timekeeper datasheet's, in its
- * sections on the IRIX leap-cycle record and the fixture for a new
- * machine.
+ * The fresh IP27 image of an M48T35-class Timekeeper.
+ * docs/system/mips/sgi/hardware/timekeepers.rst describes the layout, the
+ * checksum and the IRIX leap-cycle record.
  */
 
 #include "qemu/osdep.h"

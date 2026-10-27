@@ -897,8 +897,7 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * model lights a vertex whose colour came after the last normal with
  * ambient, diffuse and specular (0, 0, 0, 1) on both faces and the
  * current colour as both emissions, then restores the materials. That
- * is what the Octane2 VPro library does in software for the same rule
- * (the Origami odyssey datasheet, "IRIS GL colour after a normal").
+ * is what the Octane2 VPro library does in software for the same rule.
  * Approximated: how the GE carries out the rule is unknown; the two
  * differ from leaving the vertex unlit only in its alpha, which the wrap
  * makes 1. A colour-index context is lit as before: what the rule does

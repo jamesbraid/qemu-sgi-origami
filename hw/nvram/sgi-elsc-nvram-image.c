@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The image a new SGI module system controller configuration NVRAM starts
- * with. The layout is the Origami project's PCF8584 and ELSC datasheet's, in
- * its configuration NVRAM section.
+ * with. docs/system/mips/sgi/hardware/elsc.rst, Configuration NVRAM,
+ * describes the layout.
  */
 
 #include "qemu/osdep.h"

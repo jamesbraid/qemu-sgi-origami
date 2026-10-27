@@ -2,8 +2,8 @@
 /*
  * SGI module system controller configuration NVRAM: one 2048-byte store
  * answering eight consecutive I2C addresses, each a 256-byte block reached
- * with a one-byte word address. The contract is the Origami project's
- * PCF8584 and ELSC datasheet, configuration NVRAM section.
+ * with a one-byte word address. docs/system/mips/sgi/hardware/elsc.rst,
+ * Configuration NVRAM, describes it.
  *
  * One device rather than eight 256-byte EEPROMs, so that a caller's 2 KiB
  * raw file backs the whole store and one image holds the controller's
