@@ -107,14 +107,17 @@ Reset and RISC control
 ======================
 
 No source states the RISC or mailbox state after any reset; every row
-of this table is a model choice consistent with the three drivers, each
-of which follows a soft reset with an explicit RISC reset and release.
+of this table is a model choice. The three public drivers follow a soft
+reset with an explicit RISC reset and release and read nothing in
+between. The IRIX 6.5.30 driver instead reads HCCR until bit 6 clears,
+then mailbox 0, before it resets and releases the RISC, so the soft
+reset has to end on its own.
 
 ================================  ===========  ======================
 Event                             RISC         Mailboxes
 ================================  ===========  ======================
 Device reset (power-on, PCI)      Running ROM  Product-ID image
-Soft reset (CSR bit 0)            Held         m0 ``0x0004``, rest 0
+Soft reset (CSR bit 0)            Running ROM  Product-ID image
 HCCR reset (``0x1000``)           Held         m0 ``0x0004``, rest 0
 HCCR release from reset           Running ROM  Product-ID image
 HCCR pause (``0x2000``)           Paused       m0 ``0x0004``, rest kept
@@ -127,13 +130,18 @@ and m7 = ``0x0004``, the ROM revision Linux treats as the ISP2200A;
 every other mailbox reads 0. OpenBSD reads the image at attach before
 it resets anything, so a device reset leaves it showing.
 
-Both resets that hold the RISC also discard the downloaded firmware,
+A soft reset ends at the first register read after it, or at an HCCR
+write. That first read still reports the reset: CSR bit 0 if it reads
+CSR, HCCR bit 6 if it reads HCCR. From the next access the RISC runs ROM
+code. The one-read window is not a timing claim: what a real part shows
+there, and for how long, is unknown.
+
+Soft reset and HCCR reset also discard the downloaded firmware,
 the stored firmware options, both rings and everything waiting to be
 posted. Every supported driver downloads again after a reset; a guest
 that expects firmware to survive one is not supported. A soft reset
 also clears interrupt control, the semaphore, the NVRAM port and both
-interrupt latches. The CSR reset bit reads set on the next register
-read and clear after it.
+interrupt latches.
 
 The host command register takes a command in bits 15:12. ``0x5000``
 rings the doorbell and sets the host-interrupt bit (bit 7) until
@@ -141,7 +149,7 @@ rings the doorbell and sets the host-interrupt bit (bit 7) until
 ``0x4000`` and ``0x4001``, which OpenBSD, NetBSD and Linux write between
 reset and release, are logged and change nothing, nor do the parity,
 breakpoint, BIOS and test commands. A read returns bit 7, bit 6 (held
-in reset) and bit 5 (paused). The model never pauses on its own.
+in reset, or a soft reset still in progress) and bit 5 (paused). The model never pauses on its own.
 
 Mailboxes and the command window
 ================================
