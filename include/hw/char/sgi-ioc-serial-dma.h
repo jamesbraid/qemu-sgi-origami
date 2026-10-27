@@ -160,9 +160,10 @@ typedef struct SGIIOCSerialDMAPort {
     QEMUTimer *tx_delay_timer;
 
     /*
-     * When a pause began, or 0 when not paused, and when the receive timer
-     * it froze would have run out.
+     * Whether a pause holds the timers, when it began, and when the receive
+     * timer it froze would have run out.
      */
+    bool paused;
     int64_t paused_at;
     int64_t rx_frozen_due;
 

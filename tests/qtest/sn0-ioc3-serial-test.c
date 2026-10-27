@@ -1662,6 +1662,35 @@ static void test_a_reset_returns_the_channels_to_the_start(const void *data)
 }
 
 /*
+ * A pause holds a transmit delay even when it comes at the very start of the
+ * virtual clock: the pause is a state of its own, not a nonzero start time.
+ */
+static void test_a_pause_at_time_zero_holds_a_delay(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const uint8_t out[4] = { 2, 0, 0, 0 };
+    const uint8_t control[4] = {
+        TX_DELAY | TX_INTERRUPT, TX_EMPTY, TX_EMPTY, TX_EMPTY,
+    };
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    enable_dma(qts, 0);
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE | CTRL_PAUSE);
+
+    qtest_clock_step(qts, 5 * 1000 * 1000);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    qtest_clock_step(qts, 2 * 1000 * 1000);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, SOURCE(0, SRC_TX_DONE));
+    qtest_quit(qts);
+}
+
+/*
  * Transmit-ring-empty follows the ring: set while ring DMA is on and nothing
  * is left to send, clear while an entry is still going out, and deaf to an
  * acknowledgement. Linux's IOC3 ring driver says a write can clear it
@@ -3821,6 +3850,8 @@ int main(int argc, char **argv)
                         test_a_pause_is_acknowledged_and_stops_the_walk);
     qtest_add_data_func("sn0/ioc3-serial/reset-returns-to-the-start", NULL,
                         test_a_reset_returns_the_channels_to_the_start);
+    qtest_add_data_func("sn0/ioc3-serial/pause-at-time-zero-holds-a-delay",
+                        NULL, test_a_pause_at_time_zero_holds_a_delay);
     qtest_add_data_func("sn0/ioc3-serial/transmit-empty-follows-the-ring", NULL,
                         test_transmit_empty_follows_the_ring);
     qtest_add_data_func("sn0/ioc3-serial/delay-entry-holds-the-line", NULL,

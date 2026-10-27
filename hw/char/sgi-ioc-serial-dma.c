@@ -176,7 +176,7 @@ static void sdma_rx_timer_start(SGIIOCSerialDMAPort *p, int64_t since)
     p->rx_idle_count = 0;
 
     /* Started while paused, it waits frozen at its full count. */
-    if (p->paused_at) {
+    if (p->paused) {
         p->rx_frozen_due = p->paused_at +
                            (int64_t)reload * SGI_IOC_SDMA_TIMER_TICK_NS;
         return;
@@ -272,7 +272,7 @@ void sgi_ioc_sdma_catch_up(SGIIOCSerialDMA *d)
     for (i = 0; i < d->nports; i++) {
         SGIIOCSerialDMAPort *p = &d->port[i];
 
-        if (p->tx_delay_due && !p->paused_at && p->tx_delay_due <= now) {
+        if (p->tx_delay_due && !p->paused && p->tx_delay_due <= now) {
             sdma_tx_delay_ended(p);
         }
 
@@ -679,7 +679,7 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
     if (offset == SGI_IOC_SDMA_RX_TIMER) {
         uint32_t ticks = p->rx_idle_count;
 
-        if (p->paused_at && p->rx_frozen_due) {
+        if (p->paused && p->rx_frozen_due) {
             ticks = MIN((p->rx_frozen_due - p->paused_at) /
                         SGI_IOC_SDMA_TIMER_TICK_NS,
                         SGI_IOC_SDMA_TIMER_RELOAD);
@@ -703,6 +703,7 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
  */
 static void sdma_freeze(SGIIOCSerialDMAPort *p, int64_t now)
 {
+    p->paused = true;
     p->paused_at = now;
     p->rx_frozen_due = 0;
     if (timer_pending(p->rx_timer)) {
@@ -716,6 +717,7 @@ static void sdma_thaw(SGIIOCSerialDMAPort *p, int64_t now)
 {
     int64_t held = now - p->paused_at;
 
+    p->paused = false;
     p->paused_at = 0;
     if (p->rx_frozen_due) {
         timer_mod(p->rx_timer, p->rx_frozen_due + held);
@@ -747,9 +749,9 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
         if (val & SGI_IOC_SDMA_RX_TO_MEMORY) {
             p->drain_pending = true;
         }
-        if ((val & SGI_IOC_SDMA_PAUSE) && !p->paused_at) {
+        if ((val & SGI_IOC_SDMA_PAUSE) && !p->paused) {
             sdma_freeze(p, now);
-        } else if (!(val & SGI_IOC_SDMA_PAUSE) && p->paused_at) {
+        } else if (!(val & SGI_IOC_SDMA_PAUSE) && p->paused) {
             sdma_thaw(p, now);
         }
         if (!(val & SGI_IOC_SDMA_ENABLE)) {
@@ -900,6 +902,7 @@ void sgi_ioc_sdma_reset(SGIIOCSerialDMA *d)
         timer_del(p->tx_delay_timer);
         p->tx_delay_due = 0;
         p->tx_delay_irq = false;
+        p->paused = false;
         p->paused_at = 0;
         p->rx_frozen_due = 0;
         p->packed = 0;
@@ -923,7 +926,7 @@ static int sdma_port_post_load(void *opaque, int version_id)
 {
     SGIIOCSerialDMAPort *p = opaque;
 
-    if (p->tx_delay_due && !p->paused_at) {
+    if (p->tx_delay_due && !p->paused) {
         timer_mod(p->tx_delay_timer, p->tx_delay_due);
     } else {
         timer_del(p->tx_delay_timer);
@@ -984,6 +987,7 @@ static const VMStateDescription vmstate_sgi_ioc_sdma_port = {
         VMSTATE_BOOL(drain_pending, SGIIOCSerialDMAPort),
         VMSTATE_INT64(tx_delay_due, SGIIOCSerialDMAPort),
         VMSTATE_BOOL(tx_delay_irq, SGIIOCSerialDMAPort),
+        VMSTATE_BOOL(paused, SGIIOCSerialDMAPort),
         VMSTATE_INT64(paused_at, SGIIOCSerialDMAPort),
         VMSTATE_INT64(rx_frozen_due, SGIIOCSerialDMAPort),
         VMSTATE_END_OF_LIST()
