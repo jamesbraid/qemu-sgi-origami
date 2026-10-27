@@ -20914,7 +20914,8 @@ static void test_readback_failures(void)
  * values 1, 2, 0, 1 in columns 0 to 3, and its plane is 3 under columns 0 to
  * 2 and 0 from column 3 on, so along that row the cursor shows colour word
  * 1, word 2, word 0, then nothing over a glyph value of 1. Word 1 holds a
- * ten-bit green of 0x155, which shows as its top eight bits, 0x55.
+ * ten-bit green of 0x2c4, which shows as its top eight bits, 0xb1; its low
+ * eight bits, 0xc4, would tell a wrong truncation apart.
  */
 #define ODSY_CURSOR_GLYPH 0x2500
 #define ODSY_CURSOR_POSITION 0x2580
@@ -20922,7 +20923,7 @@ static void test_readback_failures(void)
 #define ODSY_CURSOR_COLOURS 0x2590
 #define ODSY_CURSOR_PLANE 0x25c0
 #define ODSY_CURSOR_WORD0_RGB 0xff0000u
-#define ODSY_CURSOR_WORD1_RGB 0x005500u
+#define ODSY_CURSOR_WORD1_RGB 0x00b100u
 #define ODSY_CURSOR_WORD2_RGB 0x0000ffu
 #define ODSY_CURSOR_BACKGROUND 0x406080ffu
 
@@ -20960,7 +20961,7 @@ static void cursor_load(QTestState *qts, uint32_t x, uint32_t y)
     }
     backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_COLOURS, 15));
     backend_push32(qts, 0x3ffu << 20);
-    backend_push32(qts, 0x155u << 10);
+    backend_push32(qts, 0x2c4u << 10);
     backend_push32(qts, 0x3ffu);
     for (unsigned i = 3; i < 15; i++) {
         backend_push32(qts, 0);
@@ -21006,7 +21007,7 @@ static void test_cursor_glyph_and_plane(void)
     g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_GLYPH), ==, 0x1021);
     g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_PLANE), ==, 0x3f);
     g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_COLOURS + 1), ==,
-                    0x155u << 10);
+                    0x2c4u << 10);
     g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_POSITION), ==,
                     0x00020003);
     g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_CONTROL), ==, 1);
@@ -21045,12 +21046,26 @@ static void test_cursor_moves_and_clips(void)
     g_assert_cmphex(odsy_test_display_pixel(qts, 3, 3), ==, bg);
 
     /*
+     * y = -2: glyph row 2 lands on display line 0. Read unsigned, 0xfffe
+     * would put the whole cursor below the raster and draw nothing.
+     */
+    cursor_entry(qts, ODSY_CURSOR_GLYPH + 2 * 4, 0x1);
+    cursor_entry(qts, ODSY_CURSOR_PLANE + 2 * 2, 0x3);
+    cursor_entry(qts, ODSY_CURSOR_POSITION, 0x0002fffe);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 0), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 0), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 1), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 0, 5), ==, bg);
+
+    /*
      * The PROM's first position after its enable, x 1280 y 0: the first
      * column right of the raster, which draws nothing.
      */
     cursor_entry(qts, ODSY_CURSOR_POSITION, 0x05000000);
     g_assert_cmphex(odsy_test_display_pixel(qts, 0, 5), ==, bg);
     g_assert_cmphex(odsy_test_display_pixel(qts, 1, 5), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 0), ==, bg);
     g_assert_cmphex(odsy_test_display_pixel(qts, 1279, 0), ==, 0);
     board_quit(qts);
 }
@@ -21086,9 +21101,43 @@ static void test_cursor_crosshair(void)
     /* No glyph: the glyph's word 2 pixel beside the point stays clear. */
     g_assert_cmphex(odsy_test_display_pixel(qts, 3, 4), ==, bg);
 
+    /* On the second display channel the crosshair draws nothing either. */
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 0x25);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 9, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 6), ==, bg);
+
     cursor_entry(qts, ODSY_CURSOR_CONTROL, 4);
     g_assert_cmphex(odsy_test_display_pixel(qts, 9, 3), ==, bg);
     g_assert_cmphex(odsy_test_display_pixel(qts, 2, 6), ==, bg);
+    board_quit(qts);
+}
+
+/*
+ * The cursor is drawn over a shown overlay pixel too, and where it is
+ * transparent the overlay still shows.
+ */
+static void test_cursor_over_overlay(void)
+{
+    QTestState *qts = board_start("");
+
+    dispmode_write(qts, 1, ODSY_DISPMODE_GROUP17);
+    lut_write(qts, 0x1105, ODSY_LUT_RED);
+    id_plane_write(qts, 1, 0xf8, 100, 100, 140, 140);
+    colour_index_fill(qts, 5, 100, 100, 140, 140);
+    aux_write(qts, 5, 0x07, 0x3, 100, 100, 140, 140);
+    aux_write(qts, 0x30, 0xff, 0xc, 100, 100, 120, 140);
+    lut_write(qts, 0x2925, 0xb1);
+    lut_write(qts, 0x1630, ODSY_LUT_BLUE);
+    g_assert_cmphex(odsy_shown(qts, 110, 110), ==, 0x0000ffffu);
+
+    cursor_load(qts, 110, 110);
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 110, 110), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 112, 110), ==,
+                    ODSY_CURSOR_WORD0_RGB);
+    /* Column 4 is under plane 0: the overlay's blue shows. */
+    g_assert_cmphex(odsy_test_display_pixel(qts, 114, 110), ==, 0x0000ff);
     board_quit(qts);
 }
 
@@ -21369,6 +21418,7 @@ int main(int argc, char **argv)
     add_case("sn1/odyssey/cursor/moves-and-clips",
              test_cursor_moves_and_clips);
     add_case("sn1/odyssey/cursor/crosshair", test_cursor_crosshair);
+    add_case("sn1/odyssey/cursor/over-overlay", test_cursor_over_overlay);
     add_case("sn1/odyssey/cursor/reset-leaves-it-off",
              test_cursor_reset_leaves_it_off);
     add_fresh_case("sn1/odyssey/cursor/unknowns-reported-once",
