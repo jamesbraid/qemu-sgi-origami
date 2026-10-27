@@ -43,13 +43,6 @@ config SERIAL_PCI_MULTI
     depends on PCI
     select SERIAL
 
-config SGI_IOC4
-    bool
-    depends on PCI
-    select SERIAL
-    select SGI_IOC3_KBC
-    select SGI_IOC_SERIAL_DMA
-
 config SGI_IOC3_PARALLEL
     bool
 

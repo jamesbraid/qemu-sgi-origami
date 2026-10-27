@@ -43,6 +43,7 @@ system_ss.add(when: 'CONFIG_SGI_PIO_FORWARD', if_true: files('sgi-pio-forward.c'
 system_ss.add(when: 'CONFIG_SGI_BOARD_RECORD',
               if_true: files('sgi-board-record.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
+system_ss.add(when: 'CONFIG_SGI_IOC4', if_true: files('sgi-ioc4.c'))
 system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
 system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER', if_true: files('sgi-sn1-router.c'))
 system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER_TEST', if_true: files('sgi-sn1-router-test.c'))

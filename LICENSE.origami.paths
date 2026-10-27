@@ -39,7 +39,6 @@ hw/1wire/meson.build
 hw/1wire/trace-events
 hw/audio/sgi-rad1-audio.c
 hw/char/sgi-ioc3-parallel.c
-hw/char/sgi-ioc4.c
 hw/display/psitech-rad1.c
 hw/display/psitech-rad4-modes-fixture.h
 hw/display/psitech-rad4.c
@@ -225,6 +224,7 @@ hw/misc/sgi-elsc.c
 hw/misc/sgi-heart.c
 hw/misc/sgi-hub.c
 hw/misc/sgi-ioc3.c
+hw/misc/sgi-ioc4.c
 hw/misc/sgi-kona-dma.c
 hw/misc/sgi-kona-gl-decode.c
 hw/misc/sgi-kona-gl-selectors.c.inc
@@ -319,6 +319,7 @@ include/hw/misc/sgi-elsc.h
 include/hw/misc/sgi-heart.h
 include/hw/misc/sgi-hub.h
 include/hw/misc/sgi-ioc3.h
+include/hw/misc/sgi-ioc4.h
 include/hw/misc/sgi-kona-dma.h
 include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
