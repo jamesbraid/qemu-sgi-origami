@@ -11701,7 +11701,11 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         s->texture_bind_context = SGI_KONA_CONTEXT_NONE;
         s->texture_bind_generation = 0;
     }
-    /* Histogram, minmax, the three colour tables and the texture one. */
+    /*
+     * Histogram, minmax, the three colour tables and the texture one. KONA
+     * applies these stages itself; the shared GL context has no state for
+     * them, so the enable stops here.
+     */
     if (i != SGI_KONA_CONTEXT_NONE && !s->state[i]->gl.in_begin &&
         (selector == 0x24 || selector == 0x25)) {
         static const uint32_t caps[] = {
@@ -11709,11 +11713,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         };
 
         for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
-            if (args[0] == caps[k] && selector == 0x24) {
+            if (args[0] != caps[k]) {
+                continue;
+            }
+            if (selector == 0x24) {
                 s->state[i]->imaging.stages |= 1u << k;
-            } else if (args[0] == caps[k]) {
+            } else {
                 s->state[i]->imaging.stages &= ~(1u << k);
             }
+            trace_sgi_kona_gl_command(selector, i);
+            return;
         }
     }
     if (i != SGI_KONA_CONTEXT_NONE &&
