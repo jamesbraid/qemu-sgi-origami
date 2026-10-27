@@ -7634,6 +7634,31 @@ static void add_data_case(const char *path, gconstpointer data,
 #define TRIANGLE_DRAW 0x00400078U
 #define TRIANGLE_COLOR 0x1234abcdU
 
+
+static void triangle_irq_levels(QTestState *s, unsigned levels)
+{
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmpint(qtest_get_irq(s, i), ==, !!(levels & (1U << i)));
+    }
+}
+
+static void triangle_irq_baseline(QTestState *s)
+{
+    qtest_writeq(s, CRIME + 0x18, 1U << 4);
+    qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 0);
+    qtest_set_irq_in(s, "/machine/peripheral/crime", "mace", 4, 1);
+    triangle_irq_levels(s, 1);
+}
+
+static QTestState *triangle_start(const char *extra)
+{
+    QTestState *s = start_options(extra);
+
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(s);
+    return s;
+}
+
 static uint32_t triangle_raw(int units)
 {
     g_assert_cmpint(units, >=, -262144);
@@ -7704,7 +7729,7 @@ static const uint8_t triangle_empty[8];
 
 static void test_triangle_packet(void)
 {
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
     Shape c;
 
     native_parameters(s, true, false);
@@ -7736,12 +7761,15 @@ static void test_triangle_packet(void)
     triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
     qtest_writel(s, DE + 0x1f0, UINT32_MAX);
     qtest_writel(s, DE + 0x1f8, 0);
-    assert_idle(s);
+    g_assert_cmphex(qtest_readl(s, STATUS), ==, 0x1e000000);
+    g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, 1U << 4);
+    triangle_irq_levels(s, 1);
     triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
     shape_memory(s, &c, NULL);
     qtest_writel(s, DE + 0xd0, TRIANGLE_COLOR);
     g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0xdeadbeef), ==, MEMTX_OK);
     triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 6, UINT32_MAX);
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
 }
 
@@ -7763,7 +7791,7 @@ static void test_triangle_coverage(void)
         { { {64, 64}, {320, 320}, {192, 192} }, { 0 } },
         { { {64, 64}, {64, 64}, {64, 64} }, { 0 } },
     };
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
 
     for (unsigned n = 0; n < ARRAY_SIZE(cases); n++) {
         for (unsigned order = 0; order < ARRAY_SIZE(orders); order++) {
@@ -7829,6 +7857,7 @@ static void test_triangle_coverage(void)
                         ==, MEMTX_OK);
         triangle_pixels(s, &c, rows, TRIANGLE_COLOR, 3, UINT32_MAX);
     }
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
 }
 
@@ -7845,7 +7874,7 @@ static void test_triangle_neighbors(void)
         { {0, 1, 6}, {1, 7, 6}, {6, 7, 3}, {7, 2, 3} },
     };
     const uint8_t square[8] = { 0, 0x1e, 0x1e, 0x1e, 0x1e };
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
 
     for (unsigned mesh = 0; mesh < ARRAY_SIZE(meshes); mesh++) {
         for (unsigned direction = 0; direction < 4; direction++) {
@@ -7870,6 +7899,7 @@ static void test_triangle_neighbors(void)
             triangle_pixels(s, &c, square, TRIANGLE_COLOR, 6, UINT32_MAX);
         }
     }
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
 }
 
@@ -7877,7 +7907,7 @@ static void test_triangle_pipeline(void)
 {
     const uint32_t planes[] = { 0, 0x00ff3c5a, UINT32_MAX };
     const unsigned lanes[] = { 0, 1, 2, 4, 8, 15 };
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
 
     for (unsigned bank = 0; bank < 3; bank++) {
         for (unsigned op = 0; op < 16; op++) {
@@ -7935,6 +7965,7 @@ static void test_triangle_pipeline(void)
         triangle_pixels(s, &c, empty ? triangle_empty : rows,
                           TRIANGLE_COLOR, 3, UINT32_MAX);
     }
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
 }
 
@@ -7967,7 +7998,7 @@ static void test_triangle_admission(void)
     };
     g_autofree char *dir = g_dir_make_tmp("crime-triangle-fail-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
 
     for (unsigned word = 0; word < 6; word++) {
         for (unsigned n = 0; n < ARRAY_SIZE(invalid); n++) {
@@ -8018,6 +8049,7 @@ static void test_triangle_admission(void)
         }
         triangle_failure(s, &c, path, DE + 0x8d0, TRIANGLE_COLOR, 4);
     }
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
     g_unlink(path);
     g_rmdir(dir);
@@ -8027,7 +8059,7 @@ static void test_triangle_transactions(void)
 {
     g_autofree char *dir = g_dir_make_tmp("crime-triangle-state-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *s = start();
+    QTestState *s = triangle_start("");
     uint64_t words[RENDER_WORDS], value;
 
     for (unsigned n = 0; n < 3; n++) {
@@ -8106,6 +8138,7 @@ static void test_triangle_transactions(void)
         triangle_failure(s, &c, path, DE + 0x9f0, 0, 8);
 
     }
+    triangle_irq_levels(s, 1);
     qtest_quit(s);
     g_unlink(path);
     g_rmdir(dir);
@@ -8115,6 +8148,9 @@ static void test_triangle_tiles(void)
 {
     ValidityLog v = validity_start(false, "");
     g_autofree char *path = g_build_filename(v.directory, "state", NULL);
+
+    qtest_irq_intercept_out_named(v.q, "/machine/peripheral/crime", "cpu-ip");
+    triangle_irq_baseline(v.q);
 
     for (unsigned bank = 0; bank < 3; bank++) {
         Shape c = triangle_prepare(v.q, bank, 125, 125);
@@ -8193,6 +8229,7 @@ static void test_triangle_tiles(void)
                         ==, MEMTX_OK);
         triangle_pixels(v.q, &c, triangle_empty, 0, 3, UINT32_MAX);
     }
+    triangle_irq_levels(v.q, 1);
     validity_finish(&v);
 }
 
@@ -8203,7 +8240,8 @@ static void test_triangle_migration(void)
     g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", sock);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
-    QTestState *from = start(), *to = start_options("-incoming defer");
+    QTestState *from = triangle_start("");
+    QTestState *to = triangle_start("-incoming defer");
     Shape c = triangle_prepare(from, 0, 0, 0);
     uint64_t before[RENDER_WORDS], after[RENDER_WORDS];
 
@@ -8232,6 +8270,8 @@ static void test_triangle_migration(void)
     for (unsigned i = 0; i < 6; i++) {
         g_assert_cmphex(after[192 + (0x80 + i * 4) / 4], ==, 0);
     }
+    triangle_irq_levels(from, 1);
+    triangle_irq_levels(to, 0);
     qtest_quit(from);
     qtest_quit(to);
     g_unlink(sock);
