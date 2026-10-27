@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3200 minimum configuration: one two-processor C-brick, one I-brick.
+# Origin 3200: two C-bricks cabled LINK (NI) to LINK (NI), and an I-brick
+# on the first C-brick's XIO (II) connector.
 layer_version: 1
 sources:
   007-4311-002-ranges: "007-4311-002 printed page 10, Tables 2-1 and 2-2: the minimum system is one two-processor node brick and one I-brick; the Origin 3200 holds 2 to 8 processors and at most two I/O bricks in a short rack"
   007-4311-002-3200: "007-4311-002 printed page 87, Appendix A: an Origin 3200 has one or two C-bricks, at most two I/O bricks of which one must be an I-brick, and no R-brick"
   007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: an Origin 3200 C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+  007-4311-002-bundle: "007-4311-002 printed page 75: the 4 processor (dual C-bricks) bundle, two 2-processor C-bricks and one I-brick in one short rack"
+  007-4311-002-bundle-memory: "007-4311-002 printed pages 75 and 76: the 4 processor (dual C-bricks) bundle ships its C-bricks without memory, and memory DIMMs are selected to complete it"
   007-4311-002-rack: "007-4311-002 printed page 87, Appendix A: an Origin 3200 is housed in a single 17-U high short rack"
   007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+  007-4240-002-link: "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick, as in the Origin 3200"
   108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
 layer:
   kind: product
@@ -14,34 +18,46 @@ layer:
   requires: {assembly: ip35}
   topology:
     min_nodes: 1
-    max_nodes: 1
+    max_nodes: 2
     provenance: vendor-document
     sources: [007-4311-002-ranges, 007-4311-002-3200]
   population:
-    nodes: 1
-    cpus_per_node: [2]
+    nodes: 2
+    cpus_per_node: [2, 2]
     fitted_memory:
       status: unknown
-      reason: The guide gives the C-brick's bank sizes and the system's memory range but no installed memory for this configuration.
-      provenance: derived
-      sources: [007-4311-002-3200]
+      reason: >-
+        The bundle ships its C-bricks without memory and the customer selects
+        DIMMs; this composition selects none.
+      provenance: vendor-document
+      sources: [007-4311-002-bundle-memory]
     provenance: vendor-document
-    sources: [007-4311-002-ranges, 007-4311-002-3200, 007-4311-002-pimm]
+    sources: [007-4311-002-bundle, 007-4311-002-pimm]
+  composition_rules:
+    counts:
+      - {bricks: [c-brick], min: 1, max: 2}
+      - {bricks: [r-brick], max: 0}
+      - {bricks: [i-brick, p-brick, x-brick], max: 2, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4311-002-3200]
   data:
     machine:
       name: Origin 3200
       model_role: reference
       notes: >-
-        The smallest Origin 3200 the configuration guide allows: one C-brick
-        with two processors (one PIMM) and one I-brick in a short rack, with
-        no R-brick, which the Origin 3200 does not support. A second C-brick,
-        a second PIMM per C-brick and a second I/O brick are documented
-        expansions this composition does not show. Processor clock and cache
-        are not asserted: the closure record names R12000 360 MHz and R12000A
-        400 MHz for the C-brick without a cache size. The I-brick's host port,
-        XBridge head and PCI device numbers are the provisional placements the
-        module layers already carry. This configuration never compiles: no
-        QEMU consumer for the Origin 3000 family exists.
+        The Origin 3200's 4 processor (dual C-bricks) bundle: two
+        2-processor C-bricks, one PIMM each, and one I-brick in a short
+        rack. The C-bricks join LINK (NI) to LINK (NI), with no R-brick,
+        which the Origin 3200 does not support, and the I-brick hangs off
+        the first C-brick's XIO (II) connector at its XBridge port A. Port
+        A is the documented compute-node port; which port a boot I-brick
+        uses is unknown. A second PIMM per C-brick and a second I/O brick
+        are documented expansions this composition does not show.
+        Processor clock and cache are not asserted. The I-brick's XBridge head and PCI device numbers are
+        the provisional placements the module layers already carry. The
+        C-brick layer carries no L1 and no memory or clock fit, so this
+        configuration does not yet describe the C-bricks' controllers or a
+        fitted memory and never compiles.
     evidence_policy: strict
     components:
       - id: rack
@@ -49,7 +65,22 @@ layer:
         kind: chassis
         provenance: vendor-document
         description: The 17U short rack that holds the whole system.
-        sources: [007-4311-002-rack]
+        sources: [007-4311-002-rack, 007-4311-002-bundle]
+    buses:
+      - id: ni-cable
+        name: NUMAlink 3 cable, C-brick 0 LINK (NI) to C-brick 1 LINK (NI)
+        kind: fabric
+        master: c0-bedrock
+        link: {kind: cable}
+        provenance: vendor-document
+        sources: [007-4240-002-link]
+        notes: >-
+          The direct Bedrock-to-Bedrock form, with no router. The same
+          connector also carries the two C-bricks' L1 traffic (007-4240-002
+          printed page 121), which is not a bus here.
+    connections:
+      - {component: c0-bedrock, bus: ni-cable, role: master, provenance: vendor-document, sources: [007-4240-002-link]}
+      - {component: c1-bedrock, bus: ni-cable, role: endpoint, provenance: vendor-document, sources: [007-4240-002-link]}
     xio_cables:
       - id: c0-to-ibrick
         ends: [c0-xio-ii-connector, ibrick-port-a]

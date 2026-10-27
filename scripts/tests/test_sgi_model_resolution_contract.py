@@ -2780,5 +2780,72 @@ class Origin3000BrickTests(unittest.TestCase):
                 _resolver.load_system_model(root / "origin3200.yaml")
 
 
+    def test_origin3200_resolves_two_cbricks_and_an_ibrick(self):
+        model = self.resolve()
+        components = {item["id"]: item for item in model["components"]}
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "node-asic"),
+            ["c0-bedrock", "c1-bedrock"])
+        self.assertEqual(components["c0-chassis"]["brick_type"], "C")
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in model["xio_cables"]],
+            [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"])])
+        attachments = {(item["component"], item["bus"], item["role"])
+                       for item in model["connections"]}
+        self.assertIn(("ibrick-xbridge-crossbar", "c0-xio-ii",
+                       "bridge-upstream"), attachments)
+        self.assertTrue({("c0-bedrock", "ni-cable", "master"),
+                         ("c1-bedrock", "ni-cable", "endpoint")}
+                        <= attachments)
+
+    def resolve_origin3200_with(self, instances):
+        composition = yaml.safe_load(self.ORIGIN3200.read_text())
+        composition["module_instances"] = instances(
+            composition["module_instances"])
+        return _resolver.resolve_system_model(self.ORIGIN3200, composition)
+
+    def test_origin3200_refuses_brick_sets_outside_its_configuration(self):
+        def third_cbrick(instances):
+            return instances + [dict(instances[1], prefix="c2-")]
+
+        def without_ibrick(instances):
+            return instances[:2]
+
+        def three_ibricks(instances):
+            extra = [dict(instances[2], prefix=prefix,
+                          bus_bindings={"host-port-a-xio": "c1-xio-ii"})
+                     for prefix in ("ib1-", "ib2-")]
+            return instances + extra
+
+        def cbrick_rbrick_ibrick(instances):
+            # One C-brick, one R-brick on the only NUMAlink cable this
+            # product declares, and one I-brick.
+            rbrick = {"model": "layers/modules/r-brick.yaml",
+                      "prefix": "rbrick-", "parent": "rack",
+                      "bus_bindings": {"c-brick-cable": "ni-cable"}}
+            return [instances[0], rbrick, instances[2]]
+
+        for name, instances, message in (
+                ("three C-bricks", third_cbrick,
+                 "allows at most 2 of c-brick, got 3"),
+                ("no I-brick", without_ibrick,
+                 "requires at least one i-brick among"),
+                ("three I/O bricks", three_ibricks,
+                 "allows at most 2 of i-brick, p-brick, x-brick, got 3"),
+                ("one C-brick, one R-brick and one I-brick",
+                 cbrick_rbrick_ibrick, "allows at most 0 of r-brick, got 1"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"product 'origin3200' {message}"):
+                self.resolve_origin3200_with(instances)
+
+    def test_origin3200_still_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

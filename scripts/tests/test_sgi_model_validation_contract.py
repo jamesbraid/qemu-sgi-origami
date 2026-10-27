@@ -1947,7 +1947,7 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.assertEqual(
             [item["id"] for item in model["components"]
              if "brick_type" in item],
-            ["c0-chassis"])
+            ["c0-chassis", "c1-chassis"])
 
     def test_brick_type_outside_the_established_set_is_refused(self):
         for letter in ("I", "R", "c", "6"):
