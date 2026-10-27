@@ -15,7 +15,7 @@ the network interface (``sgi-bedrock-ni.c``, ``sgi-bedrock-ni-regs.c``),
 the I/O interface (``sgi-bedrock-io.c``), the memory and directory
 interface (``sgi-bedrock-md.c``) and the internal crossbar
 (``sgi-bedrock-xb.c``). Where each unit sits in the address space is on
-:doc:`/system/mips/sgi/ip35`. Ratings follow :ref:`sgi-ip30`.
+:doc:`/system/mips/sgi/ip35`. Ratings follow :ref:`sgi-ratings`.
 
 Every register offset and field below comes from SGI's own generated Linux
 SN1 headers, ``linux-history:7570df54ef8c`` (tag v2.5.40,

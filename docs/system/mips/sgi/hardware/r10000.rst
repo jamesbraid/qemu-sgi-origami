@@ -21,7 +21,7 @@ R12000 in full and the R14000 and R16000 only where they share that code.
 No single chip revision is modelled: each machine selects the identity
 and reset inputs of the part it fits.
 
-Facts below carry the ratings defined on :ref:`sgi-ip30`: *established*,
+Facts below carry the ratings in :ref:`sgi-ratings`: *established*,
 *observed*, *software expectation*, *inferred*, *approximation* or
 *unknown*.
 

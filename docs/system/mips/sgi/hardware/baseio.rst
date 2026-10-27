@@ -13,7 +13,7 @@ daughtercard. QEMU builds both from the shared Bridge, IOC3 and ISP1040
 models (``hw/mips/sgi/baseio.c``); the ``io6`` preset builds the plain
 board and ``io6g`` builds BaseIO-G. ``preset`` has no default. The Origin 200 has an integrated
 system board, not this card, and its population and wiring must not be
-read from here (:doc:`/system/mips/sgi/sn`). Ratings follow :ref:`sgi-ip30`.
+read from here (:doc:`/system/mips/sgi/sn`). Ratings follow :ref:`sgi-ratings`.
 
 Sources: *Origin and Onyx2 Theory of Operations* (007-3439-002), BaseIO
 functions on printed page 67 (PDF 81), Figures 2-24 and 2-25 on printed
