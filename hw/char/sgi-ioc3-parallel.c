@@ -16,6 +16,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
+#include "chardev/char.h"
 #include "exec/hwaddr.h"
 #include "hw/char/sgi-ioc3-parallel.h"
 #include "hw/core/qdev-properties.h"
@@ -52,6 +53,17 @@ static unsigned int sgi_ioc3_parallel_mode(SGIIOC3ParallelState *s)
 {
     return (s->extended & SGI_IOC3_PAR_ECR_MODE) >>
            SGI_IOC3_PAR_ECR_MODE_SHIFT;
+}
+
+/*
+ * A null backend is an unterminated connector, the same as no backend.
+ * Anything else stands in for a peripheral that accepts what is sent.
+ */
+static bool sgi_ioc3_parallel_peripheral_attached(SGIIOC3ParallelState *s)
+{
+    Chardev *chr = qemu_chr_fe_get_driver(&s->chr);
+
+    return chr && !object_dynamic_cast(OBJECT(chr), TYPE_CHARDEV_NULL);
 }
 
 /* Synchronous transfers leave the read-only busy flags clear. */
@@ -232,9 +244,10 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
     case SGI_IOC3_PAR_ECP_DATA:
         return s->data;
 
-    /* No peripheral is attached; report no fault and no other input. */
+    /* The lines follow the cable: a peripheral, or pull-ups on nothing. */
     case SGI_IOC3_PAR_ECP_STATUS:
-        return SGI_IOC3_PAR_STATUS_IDLE;
+        return sgi_ioc3_parallel_peripheral_attached(s) ?
+               SGI_IOC3_PAR_STATUS_IDLE : SGI_IOC3_PAR_STATUS_EMPTY;
 
     case SGI_IOC3_PAR_ECP_CONTROL:
         return s->control;

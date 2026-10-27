@@ -118,6 +118,7 @@ static void test_ioc3_attach(QTestState *qts)
 #define ECP_FIFO         (PAR_ECP + 0x08)
 #define ECP_CONFIG_B     (PAR_ECP + 0x09)
 #define ECP_EXTENDED     (PAR_ECP + 0x0a)
+#define FUEL_ECP_STATUS (FUEL_IOC3_BASE + 0x20151)
 #define FUEL_ECP_FIFO   (FUEL_IOC3_BASE + 0x20158)
 #define FUEL_ECP_CONFIG_B (FUEL_IOC3_BASE + 0x20159)
 #define FUEL_ECP_EXTENDED (FUEL_IOC3_BASE + 0x2015a)
@@ -493,11 +494,18 @@ static void test_fuel_ti_fifo_survives_savevm_loadvm(const void *data)
 
 /*
  * The status register's peripheral lines. Only nFault's polarity is
- * specified: a clear level means a fault, so an idle port with no peripheral
- * on the cable reports no fault and nothing else.
+ * specified: a clear level means a fault. A port with a peripheral behind
+ * its backend reports no fault and nothing else. A port with nothing on its
+ * connector reads each of the five inputs at the level a pull-up gives it,
+ * so only the inverted BUSY bit reads clear.
  */
 #define STATUS_NFAULT    (1u << 3)
+#define STATUS_SELECT    (1u << 4)
+#define STATUS_PAPER     (1u << 5)
+#define STATUS_NACK      (1u << 6)
 #define STATUS_IDLE      STATUS_NFAULT
+#define STATUS_EMPTY     (STATUS_NFAULT | STATUS_SELECT | STATUS_PAPER | \
+                          STATUS_NACK)
 
 /*
  * The probe IRIX's parallel driver makes: the extended control register out
@@ -785,26 +793,68 @@ static void test_the_data_register_holds_a_byte(const void *data)
 }
 
 /*
- * The status register reflects the cable rather than storing a value, and
- * this machine has nothing on the cable. Only nFault's level is specified,
- * where clear means a fault. Thus an empty cable reports no fault, and
- * nothing else: no peripheral selected, no paper error, and never busy, which
- * is the level a driver polling for the printer to finish would otherwise
- * wait on forever.
+ * The status register reflects the cable rather than storing a value. With
+ * no -parallel the machine gives the port a null backend, and an explicit
+ * null backend or -parallel none is the same bare connector: every input
+ * reads at its pulled-up level. Only nFault's level is specified by a
+ * source; the rest is the pull-up inference documented with the datasheet.
  */
 static void test_the_status_register_reports_an_empty_cable(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    static const char *const machines[] = {
+        "-M origin200",
+        "-M origin200 -parallel null",
+        "-M origin200 -parallel none",
+    };
 
+    for (unsigned i = 0; i < G_N_ELEMENTS(machines); i++) {
+        QTestState *qts = qtest_init(machines[i]);
+
+        sn0_ioc3_attach(qts);
+
+        g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_EMPTY);
+
+        /* Read-only: a write reaches no line and changes nothing. */
+        qtest_writeb(qts, ECP_STATUS, 0xff);
+        g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_EMPTY);
+
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * A real backend stands in for a peripheral that accepts what it is sent:
+ * the lines read idle, no fault and nothing else.
+ */
+static void test_the_status_register_reports_a_peripheral(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("qtest-sn0-plp-status-XXXXXX", &path, NULL);
+    g_autofree char *args = NULL;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf("-M origin200 -chardev file,id=plp0,path=%s "
+                           "-parallel chardev:plp0", path);
+    qts = qtest_init(args);
     sn0_ioc3_attach(qts);
 
     g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_IDLE);
 
-    /* Read-only: a write reaches no line and changes nothing. */
-    qtest_writeb(qts, ECP_STATUS, 0xff);
-    g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_IDLE);
-
     qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/* The Fuel's port, with no -parallel, has the bare connector too. */
+static void test_fuel_status_reports_an_empty_cable(const void *data)
+{
+    g_autofree char *prom_path = NULL;
+    QTestState *qts = fuel_parallel_start(&prom_path, "");
+
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_STATUS), ==, STATUS_EMPTY);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
 }
 
 /*
@@ -1569,6 +1619,10 @@ int main(int argc, char **argv)
                         test_the_data_register_holds_a_byte);
     qtest_add_data_func("sn0/ioc3/parallel-status-reports-an-empty-cable",
                         NULL, test_the_status_register_reports_an_empty_cable);
+    qtest_add_data_func("sn0/ioc3/fuel-parallel-status-empty-cable", NULL,
+                        test_fuel_status_reports_an_empty_cable);
+    qtest_add_data_func("sn0/ioc3/parallel-status-reports-a-peripheral",
+                        NULL, test_the_status_register_reports_a_peripheral);
     qtest_add_data_func("sn0/ioc3/parallel-control-holds-its-lines", NULL,
                         test_the_control_register_holds_its_lines);
     qtest_add_data_func("sn0/ioc3/parallel-configuration-b-holds-a-byte", NULL,

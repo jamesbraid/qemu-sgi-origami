@@ -70,7 +70,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_ECP_EXTENDED   0x0a
 #define SGI_IOC3_PAR_ECP_SIZE       (SGI_IOC3_PAR_ECP_EXTENDED + 1)
 
-/* nFault is active low. The model reports no fault and no other input. */
+/*
+ * nFault is active low. A port with a peripheral behind its backend reports
+ * no fault and no other input. Bit 7 reads the inverse of the BUSY pin.
+ */
 #define SGI_IOC3_PAR_STATUS_ATTENTION (1u << 2)
 #define SGI_IOC3_PAR_STATUS_NFAULT    (1u << 3)
 #define SGI_IOC3_PAR_STATUS_SELECT    (1u << 4)
@@ -78,6 +81,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_STATUS_NACK      (1u << 6)
 #define SGI_IOC3_PAR_STATUS_BUSY      (1u << 7)
 #define SGI_IOC3_PAR_STATUS_IDLE      SGI_IOC3_PAR_STATUS_NFAULT
+/*
+ * Nothing on the connector: each of the five inputs sits at the level a
+ * pull-up gives it, high. BUSY high reads as a clear bit 7.
+ */
+#define SGI_IOC3_PAR_STATUS_EMPTY     (SGI_IOC3_PAR_STATUS_NFAULT | \
+                                       SGI_IOC3_PAR_STATUS_SELECT | \
+                                       SGI_IOC3_PAR_STATUS_PAPER | \
+                                       SGI_IOC3_PAR_STATUS_NACK)
 
 /* The output control lines, which software drives one step at a time. */
 #define SGI_IOC3_PAR_CTRL_NSTROBE   (1u << 0)
