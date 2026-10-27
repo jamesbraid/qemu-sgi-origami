@@ -8953,6 +8953,37 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * the copy itself would see the model's encoding. Only the observed copy
  * of 0x30 storage is accepted; any other is refused and logged.
  */
+/*
+ * A texel readback the model cannot answer, inside a select-feed bracket,
+ * still completes: the target gets the descriptor's bytes as zeros, as a
+ * ReadPixels the model cannot answer does. Without a completion the
+ * kernel's select-feed timeout declares the pipe dead (death reason 5),
+ * and a model refusal must not do that. The library then loads the zeros
+ * back as the texture, so it draws black: logged as a guest error. A
+ * bracket that is itself refused, or whose descriptor lines are not whole
+ * texels, is still refused.
+ */
+static void sgi_kona_gl_read_texels_zero(SGIKonaState *s)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    uint64_t io, pitch;
+    uint32_t lines;
+
+    if (d->refused || d->count || d->context != s->context_current ||
+        !sgi_kona_context_owner(s, d->context, d->generation) ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) ||
+        d->descriptor[3] % 4) {
+        sgi_kona_gl_read_dma_refuse(s);
+        return;
+    }
+    memset(d->header, 0, sizeof(d->header));
+    d->header[0] = d->descriptor[3] / 4;
+    d->header[1] = lines;
+    d->selector = SGI_KONA_CMD_GL_READ_TEXELS;
+    d->count = d->descriptor[2];
+    d->data = g_malloc0(d->count);
+}
+
 static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
 {
     SGIKonaGLReadDMA *d = &s->gl_read_dma;
@@ -8981,11 +9012,12 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
     if (found != 1 || args[0] != SGI_GL_TEXTURE_2D || args[9] || args[12] ||
         args[10] < args[7] || args[11] < args[8] ||
         bytes > SGI_KONA_TEXTURE_BYTES) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: texel readback of %u textures "
-                      "matching banks 0x%x 0x%x storage 0x%x; refused\n",
-                      found, args[16], args[17], args[5]);
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: texel readback of %u "
+                      "textures matching banks 0x%x 0x%x storage 0x%x; %s\n",
+                      found, args[16], args[17], args[5],
+                      d->active ? "answered with zeros" : "refused");
         if (d->active) {
-            sgi_kona_gl_read_dma_refuse(s);
+            sgi_kona_gl_read_texels_zero(s);
         }
         return;
     }

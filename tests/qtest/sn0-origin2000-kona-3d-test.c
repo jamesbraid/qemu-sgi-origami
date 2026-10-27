@@ -4917,11 +4917,12 @@ static void test_texture_native_publication(void)
  * texels to the mapped page and posts completion reason 0x100 with the
  * finish's tag; without the readback the pipe never completed the
  * bracket and IRIX declared it dead ("selectfeed operation timed out").
- * A readback that names no texture still closes nothing: the bracket is
- * refused and no completion posts. Neither does one asking for a copy in
- * a storage code other than the 0x28 the library was seen to use (here
- * 0x30, the texture's own): the model writes no bytes and logs the
- * storage it refused.
+ * A readback the model cannot answer, one that names no texture or asks
+ * for a copy in a storage code other than the 0x28 the library was seen
+ * to use (here 0x30, the texture's own), still completes: the target gets
+ * the descriptor's bytes as zeros, and the refusal is logged. Before, it
+ * posted no completion, and the select-feed timeout killed the pipe; a
+ * model refusal must not.
  *
  * The readback names the bank by bit 28 of its word 13, the bind's third
  * word, not by word 15, whose 0x43 is the bind record's format and
@@ -4981,12 +4982,10 @@ static void test_texture_readback(gconstpointer opaque)
     kona_command_kicked(s, 0x1f6, (uint32_t[]){ 0x100, 7 }, 2);
     qtest_memread(s, destination, actual, sizeof(actual));
     if (unknown) {
-        memset(expected, 0xa5, sizeof(expected));
-        g_assert_cmphex(qtest_readl(s, reason_page), ==, 0);
-    } else {
-        g_assert_cmphex(qtest_readl(s, reason_page), ==, 0x100);
-        g_assert_cmphex(qtest_readl(s, reason_page + 4), ==, 7);
+        memset(expected, 0, sizeof(expected));
     }
+    g_assert_cmphex(qtest_readl(s, reason_page), ==, 0x100);
+    g_assert_cmphex(qtest_readl(s, reason_page + 4), ==, 7);
     g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
     /*
      * The stream frames on: the texture still samples its texels. (Bank
@@ -5021,7 +5020,7 @@ static void test_texture_readback(gconstpointer opaque)
     if (mode == 2) {
         g_assert_nonnull(strstr(found, "texel readback of 0 textures "
                                        "matching banks 0x0 0x0 storage "
-                                       "0x30; refused"));
+                                       "0x30; answered with zeros"));
     }
 }
 
