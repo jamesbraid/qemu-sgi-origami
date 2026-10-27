@@ -952,6 +952,27 @@ static void test_reset_model_policy(void)
     qtest_quit(s);
 }
 
+/*
+ * The parent hands its I/O interface the XIO peer setting: a Bedrock with no
+ * peer reports the crosstalk link down, and one with the default reports it
+ * up.
+ */
+static void test_parent_xio_peer(void)
+{
+    const uint64_t up = UINT64_C(1) << 13;
+    QTestState *s = bedrock_start("");
+
+    g_assert_true(qtest_readq(s, IO_BASE + 0x128) & up);
+    qtest_quit(s);
+
+    s = qtest_initf(MACHINE_BASE BEDROCK_DEVICE ",xio-peer=false -S");
+    qtest_sysbus_mmio_map(s, BEDROCK_PATH, 0, BASE);
+    g_assert_false(qtest_readq(s, IO_BASE + 0x128) & up);
+    g_assert_cmphex(qtest_readq(s, IO_BASE + 0x128) | up, ==,
+                    UINT64_C(0x3fc0fff6403));
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -999,5 +1020,6 @@ int main(int argc, char **argv)
                    test_port_errors_write_drives_error_line);
     qtest_add_func("sn1/bedrock-ni/reset-model-policy",
                    test_reset_model_policy);
+    qtest_add_func("/sn1/bedrock/parent-xio-peer", test_parent_xio_peer);
     return g_test_run();
 }

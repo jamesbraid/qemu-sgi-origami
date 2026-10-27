@@ -1415,9 +1415,47 @@ static void test_source_destination_callback(void)
     qtest_quit(s);
 }
 
+/*
+ * Link control and status bit 13 says whether the crosstalk link is up. A
+ * C-brick's I/O interface has no XBridge of its own, so with no I/O brick
+ * cabled the bit reads 0 (inferred; the physical value is unknown). Nothing
+ * else about the register changes, and the default keeps the link up as an
+ * Origin 300's is.
+ */
+static void test_link_without_xio_peer(void)
+{
+    const uint64_t up = UINT64_C(1) << 13;
+    QTestState *s = io_start("");
+    uint64_t reset;
+
+    reset = qtest_readq(s, REG_BASE + LINK_STATUS);
+    g_assert_cmphex(reset, ==, UINT64_C(0x3fc0fff6403));
+    qtest_quit(s);
+
+    s = io_start_machine(MACHINE_BASE ",hub-registers=/objects/hub/hub[0],"
+                         "xio-peer=false -S", "");
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_STATUS), ==, reset & ~up);
+
+    /* The link bit is a status the peer owns, not a software bit. */
+    qtest_writeq(s, REG_BASE + LINK_STATUS, UINT64_MAX);
+    g_assert_false(qtest_readq(s, REG_BASE + LINK_STATUS) & up);
+    /* The writable control fields still retain, bit 10 among them. */
+    qtest_writeq(s, REG_BASE + LINK_STATUS, reset & ~(UINT64_C(1) << 10));
+    g_assert_false(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 10));
+    qtest_writeq(s, REG_BASE + LINK_STATUS, reset | (1 << 10));
+    g_assert_true(qtest_readq(s, REG_BASE + LINK_STATUS) & (1 << 10));
+    g_assert_false(qtest_readq(s, REG_BASE + LINK_STATUS) & up);
+
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + LINK_STATUS), ==, reset & ~up);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sn1/bedrock-io/link-without-xio-peer",
+                   test_link_without_xio_peer);
     qtest_add_func("/sn1/bedrock-io/source-destination-callback",
                    test_source_destination_callback);
     qtest_add_func("sn1/bedrock-io/dma-link-required",

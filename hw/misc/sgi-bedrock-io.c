@@ -51,6 +51,7 @@
 #define II_WIDGET_CONTROL_MASK UINT64_C(0x7fe01f)
 #define II_LINK_STATUS_MASK UINT64_C(0x3ff0fff7d3f)
 #define II_LINK_RESET UINT64_C(0x3fc0fff6403)
+#define II_LINK_UP (UINT64_C(1) << 13)
 #define II_BTE_BUSY (UINT64_C(1) << 20)
 #define II_BTE_ERROR (UINT64_C(1) << 16)
 #define II_BTE_LENGTH_MASK UINT64_C(0xffff)
@@ -407,6 +408,18 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
+/*
+ * Bit 13 of link control and status is the crosstalk link-up status. With no
+ * XIO peer cabled it is taken to read 0 (inferred; the physical value is
+ * unmeasured) and nothing software writes can raise it. The rest of the word
+ * is the same either way.
+ */
+static uint64_t ii_link_status_fixup(const SGIBedrockIOState *s,
+                                     uint64_t value)
+{
+    return s->xio_peer ? value : value & ~II_LINK_UP;
+}
+
 static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 {
     SGIBedrockIOState *s = opaque;
@@ -505,7 +518,8 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         s->device_mask |= value;
         return;
     case II_LINK_STATUS:
-        s->link_status = value & II_LINK_STATUS_MASK;
+        s->link_status = ii_link_status_fixup(s,
+                                              value & II_LINK_STATUS_MASK);
         return;
     case II_LINK_LOG:
         if (value == 0) {
@@ -1145,7 +1159,7 @@ static void ii_reset_enter(Object *obj, ResetType type)
     s->outbound_access = UINT64_MAX;
     s->inbound_access = UINT64_MAX;
     s->device_mask = s->device_mask_reset;
-    s->link_status = II_LINK_RESET;
+    s->link_status = ii_link_status_fixup(s, II_LINK_RESET);
     s->link_log = 0;
     s->interrupt_destination = 0;
     s->credit_timeout = 0;
@@ -1307,6 +1321,12 @@ static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockIOState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockIOState,
                        device_mask_reset, UINT64_MAX),
+    /*
+     * Whether an XIO peer is cabled to the interface. Without one the
+     * crosstalk link is taken to read down in link control and status
+     * (inferred; the physical value is unmeasured).
+     */
+    DEFINE_PROP_BOOL("xio-peer", SGIBedrockIOState, xio_peer, true),
     DEFINE_PROP_LINK("dma-memory", SGIBedrockIOState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("hub-registers", SGIBedrockIOState, hub_mr,
