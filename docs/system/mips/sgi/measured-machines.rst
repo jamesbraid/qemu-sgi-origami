@@ -17,13 +17,15 @@ initialised it.
 
 .. _sgi-measured-octane2:
 
-Octane2, IP30 revision B
-========================
+The reference Octane2
+=====================
 
-One Octane2 belonging to the project's maintainer. It ran IRIX 6.5.30m.
+The reference Octane2 is one physical Octane2, IP30 board revision B with
+HEART revision F, measured for these pages. Wherever a page says "the
+reference Octane2", it means this machine. It ran IRIX 6.5.30m.
 IRIX commands ran in a network shell, and register reads used the PROM
 Command Monitor's ``dump`` command with the V12 graphics board fitted.
-The maintainer ran each session and supplied its full output, except
+Each session's full output was kept, except
 where a part page says only the value was reported. Commands and
 values are reproduced exactly. Board barcodes, Laser IDs, serial numbers
 and MAC addresses are left out.
@@ -36,7 +38,7 @@ The register reads are on these pages:
   :ref:`sgi-xbow-measurements`
 - RAD1 audio configuration: :ref:`sgi-rad1-measurements`
 - the processor and FPU identity words the kernel recorded in its
-  hardware inventory, reported by the maintainer from a user-space
+  hardware inventory, reported from a user-space
   inventory query without a transcript: :ref:`sgi-r10000-measurements`
 - the Bridge's alternate flash aperture:
   :ref:`alternate aperture <sgi-ip30-octane2-alt-flash>`
