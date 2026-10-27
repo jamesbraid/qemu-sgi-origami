@@ -341,9 +341,9 @@ any XIO size, repeating its sixteen-bit words across the
 access; writes complete at sixteen bits only, on account of the
 parts' differing command sequences, and are logged and dropped,
 without an error, while the write-enable bit is clear. The model
-reuses ``pflash_cfi02``, the AMD command-set part QEMU already
-carries, rather than a bespoke device: the fitted card's own class
-builds it sized to the part and hands the Bridge the resulting
+reuses QEMU's CFI flash parts rather than a bespoke device
+(``pflash_cfi02`` for the BaseIO and board cards, ``pflash_cfi01`` for
+the Octane's): the fitted card's own class builds it sized to the part and hands the Bridge the resulting
 memory region.
 
 Migration
@@ -351,11 +351,6 @@ Migration
 
 The migration stream carries the register file; the device windows'
 aim and enable state are re-derived from it on load, exactly as
-reset derives them from reset values. A stream from before the pin
-word split into its two source domains attributes the carried levels
-to the PCI side -- a wire level is re-driven by its source device's
-own restored state. The one-wire conversation and the stored
-identity image both migrate, in the identity part's own stream
-rather than the chip's. The chip's stream keeps sixty bytes of
-padding where its own responder's state used to sit, so a stream
-written before the part became a device of its own still loads.
+reset derives them from reset values. The one-wire conversation and
+the stored identity image both migrate, in the identity part's own
+stream rather than the chip's.

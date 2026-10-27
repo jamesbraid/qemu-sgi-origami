@@ -96,11 +96,6 @@ an empty device raises the master-timeout bit in the error-interrupt
 view, whether or not it appears in the status register, because the
 SN1 consumer probes with a guarded read and then reads the view.
 
-A PCI endpoint may declare that its model already carries the guest's
-byte order. XBridge leaves DMA and PIO through that endpoint's device
-window uncorrected. The broad PCI ranges above the face have no slot
-selection, so the declaration does not apply there.
-
 Space above the face
 ====================
 
@@ -288,9 +283,7 @@ can both be set before either device is realized.
 the chip is realized; the buses are also named ``head-e.0`` and
 ``head-f.0`` after the children.
 
-The machine's V-brick route, which no topology uses since the Origin 300
-pairing it was written for was removed as never an SGI configuration,
-joins the node's external port ``0xb`` to a second XBridge's cable port
+The machine's V-brick route, which no topology uses, joins the node's external port ``0xb`` to a second XBridge's cable port
 ``0xa`` and attaches V12 to that chip's internal port ``8``. The node's processor view of widget
 ``0xb`` projects V12 into the first 8 MiB and the second XBridge's
 crossbar into the next 8 MiB. This split is a QEMU address choice;

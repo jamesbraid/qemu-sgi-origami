@@ -262,8 +262,8 @@ never rewritten.
 The PHY is a DP83840A modelled with mii.h register names, at an
 address the ``phy-addr`` property selects (default 31, an alias
 chain from ``sgi-ioc3`` through the eth child to the transceiver's
-own ``addr`` property). 31 is Origin 200's address; Origin 300's
-IO-8 board sets 1, the address its BASEIO PROM's MII helper
+own ``addr`` property). 31 is Origin 200's address; the Octane
+board sets 1, and Origin 300's IO-8 board sets 1, the address its BASEIO PROM's MII helper
 functions hard-code and OpenBSD on a real board confirms. Its
 autonegotiation completes on a
 settle window timed so the firmware diagnostic's probe lands
@@ -299,6 +299,10 @@ of the DP83843's loopback-select bits -- which is reused rather
 than an independent DP83843 reset value, since the DP83843
 datasheet is not publicly available and only OpenBSD's nsphyterreg.h
 gives the bit names.
+
+The Octane board carries an ICS1890 instead (``hw/net/ics1890.c``),
+which the ``phy-ics1890`` property selects through the same alias
+chain.
 
 Buffer RAM
 ==========
@@ -404,11 +408,9 @@ wired up with the ethernet, so a board without ethernet has no part
 on its bus and the wire reads idle -- the same answer the pin-control
 gate gives, reached the same way.
 
-Two of the Octane board's sub-devices are a deliberate gap: its clock
-is a DS1685 at two other byte-bus selects, which no device here
-models, and its front-panel LEDs are not modelled either. That board
-gets everything else and an empty window where those belong, rather
-than an M48T35 answering to a layout it does not have.
+The Octane board's clock is a DS1685 at two other byte-bus selects,
+modelled by ``hw/rtc/ds1685.c`` (:doc:`sgi-ip30`); that board gets no
+M48T35. Its front-panel LEDs are not modelled.
 
 The default is the Origin 200's own board, so the machine and every
 test that does not ask for another are unaffected.
