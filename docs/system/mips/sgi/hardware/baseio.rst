@@ -19,7 +19,8 @@ link property.
 
 The presets are ``ip29`` (the Origin 200 system board's onboard I/O),
 ``io6`` (the Origin 2000 BaseIO), ``io6g`` (the Onyx2 BaseIO-G with its
-MediaIO daughtercard), ``io8`` (the Origin 300 IO-8), ``fuel`` (the Fuel
+MediaIO daughtercard), ``io7`` (the Origin 3000 I-brick's onboard I/O),
+``io8`` (the Origin 300 IO-8), ``fuel`` (the Fuel
 system board) and the two optional XIO boards ``menet`` and ``mscsi``,
 which have their own pages (:doc:`ioc3-boards`, :doc:`mscsi`).
 ``preset`` has no default, and an unknown name is refused. The XIO cards
@@ -107,6 +108,14 @@ board, so an inventory from the model never reads as a real unit.
        parallel port, but no Ethernet, clock or one-wire identity part.
        The RAD1 audio ASIC at device 7 (:doc:`rad1-audio`). BASEIO PROM
        flash.
+   * - ``io7``
+     - Origin 3000 I-brick onboard I/O, placed on head F (widget 15) of
+       the I-brick's XBridge (:ref:`sgi-sn-family-ibrick`).
+     - IOC3 at device 4 with Ethernet through a PHY at MII address 1,
+       serial port A only and an M48T35-compatible Timekeeper; no
+       keyboard, mouse or parallel port. AT&T/Lucent OHCI USB at
+       device 5 (:doc:`lucent-ohci`), TI TSB12LV22 IEEE 1394 link at
+       device 6 (:doc:`tsb12lv22`). No SCSI controller.
    * - ``io8``
      - Origin 300 IO-8, placed on XBridge head F (widget 15).
      - ISP12160 at device 1 (:doc:`qlogic-isp`). IOC3 at device 4
