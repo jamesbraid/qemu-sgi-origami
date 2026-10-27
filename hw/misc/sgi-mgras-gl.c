@@ -3772,7 +3772,8 @@ static SGIRenderResource mgras_gl_render_resource(const SGIMgrasState *s,
 }
 
 /*
- * The callbacks may run on band workers (concurrent_pixels): each writes
+ * The callbacks may run on band workers (concurrent_pixels, unless the
+ * x-raster-bands property is off): each writes
  * only its own pixel's elements of the planes, and reads the clip-ID
  * plane, the context image and the texture views, which nothing changes
  * during a draw. They keep no counters or caches; the one log message
@@ -3790,8 +3791,17 @@ static const SGIRasterTarget mgras_gl_target = {
     .store_depth = mgras_gl_store_depth,
     .load_stencil = mgras_gl_load_stencil,
     .store_stencil = mgras_gl_store_stencil,
-    .concurrent_pixels = true,
 };
+
+/* The GL target for @s's own drawing. */
+static SGIRasterTarget mgras_gl_raster_target(SGIMgrasState *s)
+{
+    SGIRasterTarget t = mgras_gl_target;
+
+    t.opaque = s;
+    t.concurrent_pixels = s->raster_bands;
+    return t;
+}
 
 /* Host-only qtest access to one typed colour pixel of the current front. */
 static bool mgras_gl_test_resource(SGIMgrasState *s,
@@ -3806,8 +3816,7 @@ static bool mgras_gl_test_resource(SGIMgrasState *s,
     }
     *resource = mgras_gl_render_resource(s,
                             mgras_gl(s)->cur.drawable.front);
-    *target = mgras_gl_target;
-    target->opaque = s;
+    *target = mgras_gl_raster_target(s);
     target->resources = resource;
     target->resource_count = 1;
     target->resource_ops = &mgras_gl_render_ops;
@@ -3913,7 +3922,7 @@ static SGIGLDrawResult mgras_gl_selection_draw(SGIMgrasState *s,
 static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
                                           const SGIGLDraw *d)
 {
-    SGIRasterTarget t = mgras_gl_target;
+    SGIRasterTarget t = mgras_gl_raster_target(s);
     SGIGLTexImage image;
     SGIGLDrawResult result;
 
@@ -3925,7 +3934,6 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
         s->gl_scalar_inject_oom = 0;
         return SGI_GL_DRAW_OUT_OF_MEMORY;
     }
-    t.opaque = s;
     t.texture = sgi_mgras_texture_image(s, &image);
     /*
      * In a slice of display-list work on the board's thread the draw runs
@@ -4022,7 +4030,7 @@ static SGIRenderRefusal mgras_gl_mesa_preflight(const SGIMgrasState *s,
 static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
-    SGIRasterTarget t = mgras_gl_target;
+    SGIRasterTarget t = mgras_gl_raster_target(s);
     SGIGLDraw render_draw = *d;
     SGIRenderResource resource;
     SGIRenderAttemptOptions opts = { .mixed_frame = true };
@@ -4068,7 +4076,6 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
         render_draw.polygon_modes = NULL;
     }
     resource = mgras_gl_render_resource(s, d->state->drawable.front);
-    t.opaque = s;
     t.resources = &resource;
     t.resource_count = 1;
     t.resource_ops = &mgras_gl_render_ops;
@@ -4116,12 +4123,11 @@ static void mgras_gl_draw(void *opaque, const SGIGLDraw *d)
 static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
 {
     SGIMgrasState *s = opaque;
-    SGIRasterTarget t = mgras_gl_target;
+    SGIRasterTarget t = mgras_gl_raster_target(s);
 
     if (s->gl_selection[s->gl_current].active) {
         return;
     }
-    t.opaque = s;
     sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
     s->dirty = true;
 }

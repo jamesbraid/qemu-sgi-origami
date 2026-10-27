@@ -2639,6 +2639,12 @@ static const Property mgras_properties[] = {
     /* Host-only qtest fault: an SGIRenderCreateResult in place of Mesa's. */
     DEFINE_PROP_UINT32("x-test-render-create-fault", SGIMgrasState,
                        gl_render_create_fault, 0),
+    /*
+     * Large GL draws run in bands of rows on several host threads. Off
+     * draws every pixel on the calling thread, for debugging; the pixels
+     * are the same either way.
+     */
+    DEFINE_PROP_BOOL("x-raster-bands", SGIMgrasState, raster_bands, true),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     /*
