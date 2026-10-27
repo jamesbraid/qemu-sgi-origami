@@ -6759,6 +6759,7 @@ static const Register native_registers[] = {
     { 0x104, 4, false }, { 0x108, 4, false }, { 0x10c, 4, false },
     { 0x110, 4, true }, { 0x118, 8, true },
     { 0x120, 8, false }, { 0x128, 8, false }, { 0x130, 4, false },
+    { 0x134, 4, false },
     { 0x138, 8, false }, { 0x140, 8, false }, { 0x148, 8, false },
     { 0x150, 8, false }, { 0x158, 4, false }, { 0x15c, 4, false },
     { 0x160, 4, true }, { 0x168, 4, true }, { 0x170, 4, true },
@@ -7680,6 +7681,7 @@ static Shape triangle_prepare(QTestState *s, unsigned bank,
     map_region(s, bank, 4, x, y, x + 7, y + 7);
     shape_memory(s, &c, NULL);
     setup(s, 0x228 | (bank << 10), false);
+    qtest_writel(s, DE + 0x58, 0xf000f000U);
     qtest_writel(s, DE + 0x18, TRIANGLE_DRAW);
     qtest_writel(s, DE + 0x60, 0x02020000);
     return c;
@@ -7851,7 +7853,7 @@ static void test_triangle_coverage(void)
         Shape c = triangle_prepare(s, 0, 0, 0);
 
         qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | (1U << 20));
-        qtest_writeq(s, DE + 0x48, bounds(0, 0, 8, 8));
+        qtest_writeq(s, DE + 0x48, bounds(4096, 4096, 4104, 4104));
         triangle_vertices(s, vertex, NULL, true);
         g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
                         ==, MEMTX_OK);
@@ -7958,7 +7960,8 @@ static void test_triangle_pipeline(void)
 
         qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x100000);
         qtest_writeq(s, DE + 0x48,
-                     empty ? bounds(0, 0, 0, 0) : bounds(2, 2, 4, 4));
+                     empty ? bounds(0, 0, 0, 0) :
+                             bounds(4098, 4098, 4100, 4100));
         triangle_vertices(s, triangle_integer, NULL, true);
         g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
                         ==, MEMTX_OK);
@@ -7994,7 +7997,7 @@ static void triangle_failure(QTestState *s, const Shape *c, const char *path,
 static void test_triangle_admission(void)
 {
     const uint32_t invalid[] = {
-        0, 0x47ffffff, 0x48080000, 0x480c0400, 0x7f800000, 0x7fc00000,
+        0x00080000, 0x47ffffff, 0x48080000, 0x480c0400, 0x7f800000, 0x7fc00000,
     };
     g_autofree char *dir = g_dir_make_tmp("crime-triangle-fail-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "state", NULL);
@@ -8029,7 +8032,7 @@ static void test_triangle_admission(void)
             qtest_writel(s, DE + 0x18, 0x78);
             break;
         case 1:
-            qtest_writel(s, DE + 0x58, 1);
+            qtest_writel(s, DE + 0x10, 0x800);
             break;
         case 2:
             qtest_writel(s, DE + 8, 0x124);
@@ -8038,7 +8041,7 @@ static void test_triangle_admission(void)
             qtest_writel(s, DE + 8, 0xe28);
             break;
         case 4:
-            qtest_writel(s, DE + 0x10, 0x63);
+            qtest_writel(s, DE + 0x10, 0x61);
             break;
         case 5:
             qtest_writel(s, DE + 0x10, 1);
@@ -8132,7 +8135,10 @@ static void test_triangle_transactions(void)
         Shape c = triangle_prepare(s, 0, 0, 0);
 
         triangle_vertices(s, triangle_integer, NULL, true);
-        triangle_failure(s, &c, path, DE + 0x858, 1, 4);
+        g_assert_cmpint(memtx_writel(s, DE + 0x858, 1), ==, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+        g_assert_cmphex(qtest_readl(s, DE + 0x58), ==, 1);
+        qtest_writel(s, DE + 0x58, 0xf000f000U);
         triangle_failure(s, &c, path, DE + 0x8d0,
                           0x123456789abcdef0ULL, 8);
         triangle_failure(s, &c, path, DE + 0x9f0, 0, 8);
@@ -8248,6 +8254,7 @@ static void test_triangle_migration(void)
     triangle_vertices(from, triangle_integer, NULL, true);
     qtest_writel(from, DE + 0xd0, TRIANGLE_COLOR);
     qtest_writel(from, DE + 0x94, 0x480c0400);
+    qtest_writel(from, DE + 0x134, 0xdeadbeef);
     save_paired_renderer(from, path, before);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -8265,8 +8272,10 @@ static void test_triangle_migration(void)
     qtest_writel(to, DE + 8, 0x228);
     qtest_writel(to, DE + 0x18, TRIANGLE_DRAW);
     qtest_writel(to, DE + 0x60, 0x02000000);
-    triangle_failure(to, &c, path, DE + 0x8d0, 0xdeadbeef, 4);
+    g_assert_cmpint(memtx_writel(to, DE + 0x8d0, 0xdeadbeef), ==, MEMTX_OK);
+    triangle_pixels(to, &c, triangle_empty, 0, 3, UINT32_MAX);
     save_paired_renderer(to, path, after);
+    g_assert_cmphex(after[192 + 0x134 / 4], ==, 0);
     for (unsigned i = 0; i < 6; i++) {
         g_assert_cmphex(after[192 + (0x80 + i * 4) / 4], ==, 0);
     }
@@ -8275,6 +8284,237 @@ static void test_triangle_migration(void)
     qtest_quit(from);
     qtest_quit(to);
     g_unlink(sock);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+
+static void gl_field_vertices(QTestState *s, uint32_t prefix,
+                               const unsigned vertex[3][2])
+{
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_writeq(s, DE + 0x80 + 8 * i,
+                     (uint64_t)(prefix + vertex[i][0]) << 32 |
+                     (prefix + vertex[i][1]));
+    }
+}
+
+static uint32_t gl_window_offset(int x, int y)
+{
+    return (uint32_t)(uint16_t)x << 16 | (uint16_t)y;
+}
+
+static void gl_window_case(QTestState *s, uint32_t prefix,
+                            const unsigned vertex[3][2], int ox, int oy,
+                            unsigned x, unsigned y, const uint8_t rows[8])
+{
+    Shape c = triangle_prepare(s, 0, x, y);
+
+    qtest_writel(s, DE + 0x58, gl_window_offset(ox, oy));
+    gl_field_vertices(s, prefix, vertex);
+    g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==, MEMTX_OK);
+    triangle_pixels(s, &c, rows, TRIANGLE_COLOR, 3, UINT32_MAX);
+}
+
+static void test_gl_window_coordinates(void)
+{
+    const uint32_t prefixes[] = { 0, 0x00800000, 0x48000000 };
+    const unsigned at16[3][2] = {
+        { 0x40400, 0x40400 }, { 0x40500, 0x40400 }, { 0x40400, 0x40500 },
+    };
+    const unsigned zero[3][2] = { {0, 0}, {256, 0}, {0, 256} };
+    const unsigned local[3][2] = { {128, 128}, {384, 128}, {128, 384} };
+    const unsigned upper[3][2] = {
+        {0x7feff, 0x7feff}, {0x7ffff, 0x7feff}, {0x7feff, 0x7ffff},
+    };
+    const uint8_t four_rows[8] = { 15, 7, 3, 1 };
+    const uint8_t upper_rows[8] = { 3, 1 };
+    const int invisible[] = { -32768, -1, 0, 1, 32767 };
+    QTestState *s = triangle_start("");
+
+    /* The superseded implicit -4096 must not survive a zero origin. */
+    gl_window_case(s, prefixes[2], at16, 0, 0, 16, 16, triangle_empty);
+    for (unsigned p = 0; p < ARRAY_SIZE(prefixes); p++) {
+        gl_window_case(s, prefixes[p], at16, -4096, -4096,
+                       16, 16, four_rows);
+        gl_window_case(s, prefixes[p], at16, -3840, -3840,
+                       272, 272, four_rows);
+        gl_window_case(s, prefixes[p], zero, 0, 0, 0, 0, four_rows);
+        gl_window_case(s, prefixes[p], zero, 1, 1, 0, 0, triangle_ten);
+        gl_window_case(s, prefixes[p], local, -1, -1, 0, 0, triangle_ten);
+        gl_window_case(s, prefixes[p], upper, -8189, -8189,
+                       0, 0, upper_rows);
+        for (unsigned n = 0; n < ARRAY_SIZE(invisible); n++) {
+            gl_window_case(s, prefixes[p], at16,
+                           invisible[n], invisible[n], 0, 0, triangle_empty);
+        }
+        for (int delta = -1; delta <= 1; delta++) {
+            unsigned base = 0x40000 + delta;
+            const unsigned vertex[3][2] = {
+                {base, base}, {base + 256, base}, {base, base + 256},
+            };
+            const uint8_t positive[8] = { 0, 14, 6, 2 };
+
+            gl_window_case(s, prefixes[p], vertex, -4096, -4096, 0, 0,
+                           delta > 0 ? positive : four_rows);
+        }
+    }
+    {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+
+        for (unsigned v = 0; v < 3; v++) {
+            for (unsigned axis = 0; axis < 2; axis++) {
+                qtest_writel(s, DE + 0x80 + v * 8 + axis * 4,
+                    prefixes[(v * 2 + axis) % 3] + 0x40000 +
+                    triangle_integer[v][axis]);
+            }
+        }
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                        ==, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 3, UINT32_MAX);
+    }
+    /* A 128-pixel window, with a literal right-triangle span fixture. */
+    for (unsigned bank = 0; bank < 3; bank++) {
+        Shape c = triangle_prepare(s, bank, 256, 256);
+        const unsigned vertex[3][2] = {
+            {0x40000, 0x40000}, {0x42000, 0x40000}, {0x40000, 0x42000},
+        };
+        g_autofree uint32_t *expected = g_new(uint32_t, 128 * 128);
+
+        c.width = c.height = 128;
+        map_region(s, bank, 4, 256, 256, 383, 383);
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, DE + 0x58, gl_window_offset(-3840, -3840));
+        qtest_writel(s, DE + 0x18, 0x00400070);
+        gl_field_vertices(s, prefixes[bank], vertex);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                        ==, MEMTX_OK);
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 0; x < 128; x++) {
+                expected[y * 128 + x] = x + y < 128 ?
+                    (TRIANGLE_COLOR & 0xffffff00) | (c.old & 255) : c.old;
+            }
+        }
+        shape_memory(s, &c, expected);
+    }
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+}
+
+static void test_gl_window_clipping(void)
+{
+    const unsigned vertex[3][2] = {
+        {0x40040, 0x40040}, {0x40140, 0x40040}, {0x40040, 0x40140},
+    };
+    QTestState *s = triangle_start("");
+
+    for (unsigned bank = 0; bank < 3; bank++) {
+        for (unsigned masks = 0; masks <= 5; masks++) {
+            Shape c = triangle_prepare(s, bank, 256, 256);
+            uint8_t rows[8];
+            uint32_t clip = 0x400; /* An inactive CID selector is not enable. */
+
+            memcpy(rows, triangle_ten, sizeof(rows));
+            qtest_writel(s, DE + 0x58, gl_window_offset(-3840, -3840));
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x100200);
+            qtest_writel(s, DE + 0x1b0, 6);
+            qtest_writeq(s, DE + 0x48, bounds(4098, 4097, 4101, 4100));
+            for (unsigned j = 0; j < masks; j++) {
+                clip |= (1U << (5 + j)) | (1U << j);
+                qtest_writeq(s, DE + 0x20 + 8 * j,
+                             bounds(257 + j % 3, 257, 259 + j % 3, 260));
+            }
+            qtest_writel(s, DE + 0x10, clip);
+            for (unsigned y = 0; y < 8; y++) {
+                for (unsigned x = 0; x < 8; x++) {
+                    bool covered = !masks;
+
+                    for (unsigned j = 0; j < masks; j++) {
+                        covered |= x >= 1 + j % 3 && x < 3 + j % 3 &&
+                                   y >= 1 && y < 4;
+                    }
+                    if (!covered || x < 2 || x >= 5 || y < 1 || y >= 4) {
+                        rows[y] &= ~(1U << x);
+                    }
+                }
+            }
+            gl_field_vertices(s, 0x48000000, vertex);
+            g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                            ==, MEMTX_OK);
+            triangle_pixels(s, &c, rows, TRIANGLE_COLOR, 6, UINT32_MAX);
+        }
+    }
+    {
+        g_autofree char *dir = g_dir_make_tmp("crime-gl-window-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "state", NULL);
+        const unsigned bad_clip[] = { 0x800, 0xc00, 0x1000, 0x61 };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(bad_clip); i++) {
+            Shape c = triangle_prepare(s, 0, 0, 0);
+
+            gl_field_vertices(s, 0x48000000, vertex);
+            qtest_writel(s, DE + 0x58, 0);
+            qtest_writel(s, DE + 0x18, TRIANGLE_DRAW & ~0x78U);
+            qtest_writel(s, DE + 0x10, bad_clip[i]);
+            triangle_failure(s, &c, path, DE + 0x8d0, TRIANGLE_COLOR, 4);
+            triangle_failure(s, &c, path, DE + 0x858,
+                             gl_window_offset(-3840, -3840), 4);
+        }
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
+}
+
+static void test_gl_restore_word(void)
+{
+    const uint32_t payloads[] = { 0, 0x11223344, 0xdeadbeef, UINT32_MAX };
+    g_autofree char *dir = g_dir_make_tmp("crime-gl-restore-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    QTestState *s = triangle_start("");
+    uint64_t before[RENDER_WORDS], after[RENDER_WORDS], value;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(payloads); i++) {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+
+        triangle_vertices(s, triangle_integer, NULL, true);
+        g_assert_cmpint(memtx_writel(s, DE + 0x134, payloads[i]),
+                        ==, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_empty, 0, 3, UINT32_MAX);
+        save_paired_renderer(s, path, before);
+        g_assert_cmphex(before[192 + 0x134 / 4], ==, payloads[i]);
+        g_assert_cmpint(memtx_read(s, DE + 0x134, &value, 4), !=, MEMTX_OK);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width != 4) {
+                triangle_failure(s, &c, path, DE + 0x134, 0, width);
+            }
+        }
+        triangle_failure(s, &c, path, DE + 0x130, UINT64_MAX, 8);
+        triangle_failure(s, &c, path, DE + 0x138 - 1, UINT32_MAX, 4);
+        triangle_failure(s, &c, path, DE + 0x934, UINT32_MAX, 4);
+        save_paired_renderer(s, path, after);
+        g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR),
+                        ==, MEMTX_OK);
+        triangle_pixels(s, &c, triangle_ten, TRIANGLE_COLOR, 3, UINT32_MAX);
+        shape_memory(s, &c, NULL);
+        qtest_writel(s, MTE, 0);
+        qtest_writel(s, MTE + 8, UINT32_MAX);
+        qtest_writel(s, MTE + 0x18, 0x11223344);
+        qtest_writel(s, MTE + 0x30, xy(0, 0));
+        qtest_writel(s, MTE + 0x48, 1);
+        qtest_writel(s, MTE + 0x838, xy(3, 0));
+        {
+            const uint8_t first_pixel[8] = { 1 };
+
+            triangle_pixels(s, &c, first_pixel, 0x11223344, 3, UINT32_MAX);
+        }
+        save_paired_renderer(s, path, after);
+        g_assert_cmphex(after[192 + 0x134 / 4], ==, payloads[i]);
+    }
+    triangle_irq_levels(s, 1);
+    qtest_quit(s);
     g_unlink(path);
     g_rmdir(dir);
 }
@@ -8503,5 +8743,9 @@ int main(int argc, char **argv)
              test_triangle_tiles);
     add_case("sgi/crime/render/triangles/migration",
              test_triangle_migration);
+    add_case("sgi/crime/render/gl-window/coordinates",
+             test_gl_window_coordinates);
+    add_case("sgi/crime/render/gl-window/clipping", test_gl_window_clipping);
+    add_case("sgi/crime/render/gl-window/restore-word", test_gl_restore_word);
     return g_test_run();
 }
