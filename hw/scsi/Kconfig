@@ -36,6 +36,13 @@ config QLOGIC_ISP_SCSI_PCI
     depends on PCI
     select SCSI
 
+config QLOGIC_ISP2200_PCI
+    bool
+    default y if SGI_DEVICES
+    depends on PCI
+    # The source set the adapter builds in is linked only with SCSI.
+    select SCSI
+
 config VMW_PVSCSI_SCSI_PCI
     bool
     default y if PCI_DEVICES

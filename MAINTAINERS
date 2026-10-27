@@ -1515,6 +1515,7 @@ F: hw/pci-host/sgi-pic.c
 F: hw/pci-host/sgi-xbridge.c
 F: hw/rtc/m48t35*.c
 F: hw/scsi/qlogic-isp.c
+F: hw/scsi/qlogic-isp2200.c
 F: include/hw/1wire/
 F: include/hw/audio/sgi-rad1-audio.h
 F: include/hw/audio/sgi-rad1-audio-pcm.h
@@ -1547,6 +1548,7 @@ F: tests/qtest/fixtures/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/mips-cpu-exception-fixture.c
 F: tests/qtest/qlogic-isp-test.c
+F: tests/qtest/qlogic-isp2200-test.c
 F: tests/qtest/libqos/libqos-sgi-bridge.c
 F: tests/qtest/libqos/libqos-sgi-bridge.h
 F: tests/qtest/libqos/pci-sgi-bridge.c

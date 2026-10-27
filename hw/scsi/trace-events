@@ -416,6 +416,24 @@ qlogic_isp_bank_write(const char *bank, uint64_t addr, uint16_t val) "%s 0x%02" 
 qlogic_isp_reset_delay(unsigned int channel, uint16_t value) "channel %u delay %u"
 qlogic_isp_mbox_busy(uint16_t cmd) "cmd 0x%04x refused, result still held"
 
+# qlogic-isp2200.c
+qlogic_isp2200_irq(bool level) "level %d"
+qlogic_isp2200_soft_reset(void) ""
+qlogic_isp2200_host_command(uint16_t val) "hccr 0x%04x"
+qlogic_isp2200_mbox_command(uint16_t cmd) "cmd 0x%04x"
+qlogic_isp2200_mbox_complete(uint16_t cmd, uint16_t status) "cmd 0x%04x status 0x%04x"
+qlogic_isp2200_post_mailbox(uint16_t m0) "m0 0x%04x"
+qlogic_isp2200_event(uint16_t code) "async event 0x%04x"
+qlogic_isp2200_event_waiting(uint16_t code) "async event 0x%04x already waits"
+qlogic_isp2200_load_ram(uint16_t base, uint16_t count, uint64_t host) "ram word 0x%04x count %u host 0x%" PRIx64
+qlogic_isp2200_exec_firmware(uint16_t start) "start 0x%04x"
+qlogic_isp2200_init_firmware(uint64_t icb, uint64_t rqst, uint16_t rqst_len, uint64_t resp, uint16_t resp_len, uint16_t options) "icb 0x%" PRIx64 " request 0x%" PRIx64 "/%u response 0x%" PRIx64 "/%u options 0x%04x"
+qlogic_isp2200_request_ring(uint16_t in, uint16_t out) "request in %u out %u"
+qlogic_isp2200_response_ring(uint16_t in, uint16_t out, uint16_t posted) "response in %u out %u posted %u"
+qlogic_isp2200_request(uint16_t index, uint8_t type, uint8_t count) "entry %u type 0x%02x count %u"
+qlogic_isp2200_submit(uint32_t handle, uint8_t loop_id, uint16_t lun, uint8_t opcode, uint32_t nsegs) "handle 0x%08x loop %u lun %u opcode 0x%02x segments %u"
+qlogic_isp2200_complete(uint32_t handle, uint16_t scsi_status, uint16_t completion) "handle 0x%08x scsi 0x%04x completion 0x%04x"
+
 # scsi-tape.c
 scsi_tape_command(uint8_t op, uint8_t b1, uint8_t b2, uint8_t b3, uint8_t b4, uint8_t b5) "cdb %02x %02x %02x %02x %02x %02x"
 scsi_tape_mode_sense(int pc, int page, int dbd, int alloc, int len) "pc %d page 0x%02x dbd %d alloc %d -> %d bytes"
