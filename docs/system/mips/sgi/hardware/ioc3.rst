@@ -1,123 +1,647 @@
 .. SPDX-License-Identifier: BSD-3-Clause
 
+.. _sgi-ioc3:
+
 ============================
 SGI IOC3 base I/O controller
 ============================
 
-The IOC3 is one PCI device with a single BAR covering serial ports,
-an ethernet MAC, PS/2 ports, a one-wire bus holding the station
-address, byte-bus device selects (the M48T35 timekeeper among them),
-and buffer RAM. QEMU models it as a composite: the PCI shell and
-SuperIO blocks in ``hw/misc/sgi-ioc3.c``, the ethernet engine as a
-child device in ``hw/net/sgi-ioc3-eth.c`` with its DP83840 PHY child
-in ``hw/net/dp83840.c``.
+The IOC3 is SGI's PCI base I/O controller. One 32-bit PCI device with one
+1 MiB memory BAR holds two 16550 serial ports with ring DMA, a 10/100
+Ethernet MAC with its buffer RAM, a PS/2 keyboard and mouse controller, a
+parallel port, general-purpose pins, a one-wire bus and a byte bus for a
+clock part. The Origin 200 IP29 board, the Origin 2000 and Onyx2 BaseIO
+and MediaIO boards, the Octane IP30 board, the Origin 300 IO-8 board and
+several add-in cards carry it, each wiring a different subset
+(:doc:`ioc3-boards`). QEMU models PCI revision 1 as ``sgi-ioc3`` in
+``hw/misc/sgi-ioc3.c``, with child devices ``sgi-ioc3-eth``
+(``hw/net/sgi-ioc3-eth.c``), ``sgi-ioc3-kbc``
+(``hw/input/sgi-ioc3-kbc.c``) and ``sgi-ioc3-parallel``
+(``hw/char/sgi-ioc3-parallel.c``). The serial ring engine lives in
+``hw/char/sgi-ioc-serial-dma.c``.
 
-Unimplemented regions of the window are holes, not zeroes: an access
-there reaches no device and is reported. On a machine this small,
-zero is the right answer to a great many questions, which is what
-makes answering all of them dangerous.
+Facts are rated as described in :ref:`sgi-ratings`. SGI published no
+IOC3 specification. Register offsets and field names come from the public
+Linux and OpenBSD headers and are *software expectations*; behaviour no
+public source states is an *approximation* and says so.
+
+.. _sgi-ioc3-sources:
+
+Sources
+=======
+
+- The *Origin and Onyx2 Theory of Operations Manual*,
+  :src:`007-3439-002 p. 69`, Figure 2-25: the BaseIO block diagram with
+  the IOC3, its buffer RAM, the timekeeper, the SuperIO serial block and
+  the Ethernet PHY on a 32-bit PCI bus. Printed pages 71-72 describe the
+  MediaIO card.
+- The *OCTANE Technical Report*, :src:`octane-technical-report p. 2-25`:
+  the IOC3 connects to the Octane board through a 32-bit PCI interface.
+- An OpenBSD boot of a two-node Origin 200,
+  :src:`dmesgd-8994 ioc0 and ioc1 attach lines`: PCI revision ``0x01``, a
+  one-wire Ethernet-address part of family type ``0x11``, UARTs at
+  ``0x20178`` and ``0x20170``, ``128KB SSRAM``, a DP83840 PHY at MII
+  address 31 and a ``DS1742W`` clock.
+- An OpenBSD boot of an Origin 300,
+  :src:`marc-openbsd-sgi-139223952727384 lines 150-183`: PCI revision
+  ``0x01`` and no PS/2 ports on the IO-8 board.
+- SGI's *IRIX Device Driver Programmer's Guide*,
+  :src:`007-0911-180 p. 135-139`: the external interrupt output's
+  modes and pulse width.
+- The *Octane Workstation Owner's Guide*, :src:`007-3435-004 p. 301`: the
+  Octane's IEEE 1284-C parallel connector.
+- Texas Instruments' TL16PIR552 datasheet,
+  :src:`ti-tl16pir552-slls222a p. 40-45`: the parallel controller's
+  16-byte FIFO, test mode and configuration registers.
+- Two public photographs of Octane IP30 boards showing a
+  ``TL16PIR552PH`` package beside the clock:
+  :src:`bukosek-octane-motherboard-front` (a board whose owner's page,
+  :src:`bukosek-sgi-octane hinv listing`, identifies it as
+  ``030-1467-001`` revision D) and
+  :src:`commons-ip30-030-0887-003-rev-f` (labelled ``030-0887-003``
+  revision F).
+- Linux at ``db2ddb871435``, as software expectations:
+  ``arch/mips/include/asm/sn/ioc3.h`` (register layout and field names),
+  ``drivers/mfd/ioc3.c`` (board dispatch and interrupt trigger types),
+  ``drivers/net/ethernet/sgi/ioc3-eth.c``,
+  ``drivers/input/serio/ioc3kbd.c``, ``drivers/w1/masters/sgi_w1.c`` and
+  ``drivers/tty/serial/8250/8250_ioc3.c``.
+- Linux ``drivers/tty/serial/ioc3_serial.c`` and ``ioc4_serial.c`` at
+  tag ``v4.19``, removed from later releases: the serial ring DMA
+  registers, entry formats and receive timer, as software expectations.
+- OpenBSD at ``2df91d80c104``, as software expectations:
+  ``sys/arch/sgi/pci/iocreg.h``, ``ioc.c``, ``sys/arch/sgi/dev/if_iec.c``,
+  ``if_iecreg.h``, ``iockbcreg.h``, ``owmac.c``, ``owserial.c`` and
+  ``sys/arch/sgi/sgi/ip30.h``.
+
+Identity and placement
+======================
+
+Configuration space
+-------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Field
+     - Model value
+     - Notes
+   * - ``0x00``
+     - Vendor, device
+     - ``0x10a9``, ``0x0003``
+     - OpenBSD binds on this pair.
+   * - ``0x04``
+     - Command, status
+     - ``0x0000``, ``0x0280``
+     - Status reports medium DEVSEL timing and fast back-to-back, read
+       only. Command adds parity-error response to QEMU's writable bits.
+   * - ``0x08``
+     - Revision, class
+     - ``0x01``, ``0xff0000``
+     - No defined class.
+   * - ``0x0d``
+     - Latency timer
+     - ``0``
+     - Writable.
+   * - ``0x10``
+     - BAR 0
+     - 1 MiB memory
+     - The only BAR.
+   * - ``0x2c``
+     - Subsystem vendor, device
+     - ``0x10a9``, ``subsystem-id``
+     - Default ``0xc303``, the Origin 200 IP29 board.
+   * - ``0x3d``
+     - Interrupt pin
+     - ``1`` (INTA)
+     - The Ethernet line. The SuperIO line is separate board wiring.
+
+PCI revision 1 is *observed* on Origin 200 and Origin 300 systems
+(:src:`dmesgd-8994 ioc0 attach line`,
+:src:`marc-openbsd-sgi-139223952727384 lines 150-165`). The Status value
+``0x0280`` is a *software expectation*: the IRIX 6.5.30 miniroot's
+configuration-space check reads the whole dword at ``0x04`` at reset and
+fails the slot when the Status half is zero. The writable latency timer
+and parity-error response are *software expectations* of the Origin 300
+IO-8 board diagnostic, which writes ``0xff00`` over the latency word and
+``0x146`` to Command and reads both back. Linux names an error-address
+record at configuration ``0x40`` and ``0x44``; the model does not
+implement it and those offsets read zero.
+
+Board population
+----------------
+
+The subsystem identity tells a guest which functions the board wires up,
+and the model builds the same population from it. The table follows the
+per-board setup routines of Linux ``drivers/mfd/ioc3.c``, *software
+expectation*, with parallel ports added from the board manuals and
+OpenBSD's attachment, since Linux has no IOC3 parallel driver.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Identity
+     - Board
+     - Functions the model fits
+   * - ``0xc300``
+     - IP27 BaseIO-G
+     - Ethernet, both serial ports, PS/2, M48T35 at byte-bus select 0
+   * - ``0xc301``
+     - IP27 MediaIO
+     - Both serial ports, PS/2, parallel
+   * - ``0xc302``
+     - IP27 BaseIO
+     - Ethernet, both serial ports, M48T35
+   * - ``0xc303``
+     - IP29 system board (Origin 200)
+     - Ethernet, both serial ports, PS/2, parallel, M48T35
+   * - ``0xc304``
+     - IP30 system board (Octane)
+     - Ethernet, both serial ports, PS/2, parallel, DS1685 at selects 1
+       and 2
+   * - ``0xc305``
+     - MENET, first three chips
+     - Ethernet, both serial ports
+   * - ``0xc306``
+     - MENET, fourth chip
+     - Ethernet
+   * - any other
+     - Cad Duo fall-through
+     - Ethernet, PS/2
+
+Every board with Ethernet also gets the station-address part on its
+one-wire bus. The ``population`` property overrides the table with a bit
+mask: bit 0 Ethernet, 1 serial A, 2 serial B, 3 PS/2 ports, 4 parallel,
+5 one-wire station address, and ``timekeeper-kind`` then picks the clock
+(0 none, 1 M48T35, 2 DS1685). Realize refuses unknown bits, a one-wire
+identity without Ethernet, an unknown clock kind and a clock kind without
+an explicit population. A function the board does not fit is not
+realized and its window is a hole. The PS/2 register bank is the
+exception: it decodes on every board, and the population decides only
+whether keyboard and mouse devices sit behind it.
+:doc:`ioc3-boards` lists the boards and how each guest decides a
+chip's population, and :doc:`baseio` describes how each machine places
+and wires its chips.
+
+Register map
+============
+
+The window
+----------
+
+All offsets are from BAR 0.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Contents
+     - Access
+     - Model
+   * - ``0x00000-0x00063``
+     - Main control block
+     - 32-bit
+     - Always present; ``0x00-0x18`` unimplemented
+   * - ``0x00080-0x0009b``
+     - Parallel DMA contexts
+     - 32-bit
+     - With the parallel port
+   * - ``0x0009c-0x000af``
+     - PS/2 controller
+     - 32-bit
+     - Always present
+   * - ``0x000b0-0x000ef``
+     - Serial ring base and per-port ring registers
+     - 32-bit
+     - With either serial port
+   * - ``0x000f0-0x00153``
+     - Ethernet MAC
+     - 32-bit
+     - With Ethernet
+   * - ``0x04000``
+     - Interrupt-output alias page
+     - 32-bit
+     - Not modelled
+   * - ``0x08000``, ``0x0c000``
+     - Serial ring alias pages, ports A and B, 16 KiB each
+     - 32-bit
+     - With that port
+   * - ``0x20141``, ``0x20142``
+     - UART and keyboard configuration bytes
+     - 8-bit
+     - Not modelled
+   * - ``0x20150-0x2015a``
+     - Parallel ECP register file
+     - 8-bit
+     - With the parallel port
+   * - ``0x20168``
+     - SuperIO clock register file
+     - 8-bit
+     - Not modelled
+   * - ``0x20170``, ``0x20178``
+     - 16550 register files, ports B and A
+     - 8-bit
+     - With that port
+   * - ``0x40000-0x7ffff``
+     - Ethernet buffer RAM
+     - 32-bit
+     - Always present
+   * - ``0x80000``, ``0xa0000``, ``0xc0000``, ``0xe0000``
+     - Byte-bus selects 0-3
+     - 8-bit
+     - Per the board's clock
+
+The offsets are Linux's and OpenBSD's, *software expectation*. An access
+anywhere else, or to a function the board does not fit, reaches no device
+and returns a decode error to the PCI bus. :doc:`bridge` and
+:doc:`xbridge` describe what the guest then sees.
+
+Main control block
+------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Width
+     - Reset
+     - Access
+     - Notes
+   * - ``0x00-0x18``
+     - Configuration copy and error record
+     - 32
+     - ``0``
+     - none
+     - Reads zero and writes are dropped, both with ``LOG_UNIMP``.
+   * - ``0x1c``
+     - Interrupt status
+     - 32
+     - ``0``
+     - R, W1C
+     - Level bits ignore the write (`Interrupts`_).
+   * - ``0x20``
+     - Interrupt enable, set
+     - 32
+     - ``0``
+     - R, W1S
+     - Reads the live mask.
+   * - ``0x24``
+     - Interrupt enable, clear
+     - 32
+     - ``0``
+     - W1C
+     - A read returns zero with ``LOG_UNIMP``.
+   * - ``0x28``
+     - Chip control
+     - 32
+     - ``0``
+     - RW
+     - Stores bits 0-18. Bit 22, arbiter idle, always reads one.
+   * - ``0x2c``
+     - Interrupt output
+     - 32
+     - ``0``
+     - RW
+     - Stores bits 0-18 and 30. Bit 31 reads the output level.
+   * - ``0x30``
+     - MicroLAN control
+     - 32
+     - ``0``
+     - RW
+     - A write runs one one-wire slot.
+   * - ``0x34``
+     - Pin control, set
+     - 32
+     - ``0``
+     - R, W1S
+     - Reads the control word.
+   * - ``0x38``
+     - Pin control, clear
+     - 32
+     - ``0``
+     - W1C
+     - A read returns zero with ``LOG_UNIMP``.
+   * - ``0x3c``
+     - Pin data
+     - 32
+     - ``0``
+     - RW
+     - Board inputs override the stored bits on read.
+   * - ``0x40-0x60``
+     - Pin registers 0-8
+     - 32
+     - ``0``
+     - RW
+     - Bit 0 views one bit of pin data.
+
+Access widths and byte lanes
+----------------------------
+
+The 16550 files, the ECP file and the byte-bus selects accept only byte
+accesses. Every other block accepts only aligned 32-bit accesses. QEMU's
+memory core refuses other widths before they reach the device. Each
+register sits at its own offset; the model adds no ``^ 3`` of its own.
+Linux's 8250 glue and OpenBSD's Bridge accessors both apply that XOR for
+a big-endian processor reaching a little-endian PCI device, and they
+expect the same physical layout, *software expectation*.
+
+BAR accesses pass through a chip-owned adapter that keeps a full 32-bit
+word's bytes and places a narrower access at its address XOR the
+complement of its size within the word. With the host bridge's ordinary
+swap-clear lane placement this cancels out, so a byte access to
+``0x20178`` reaches port A's receive register. The adapter is a modelling
+convention, an *approximation*, not a description of the chip's pins.
+
+Interrupts
+==========
+
+The chip has two interrupt outputs. The Ethernet block drives PCI INTA.
+Everything else funnels through the SuperIO interrupt status register and
+leaves on a second line that the board wires to a Bridge interrupt pin,
+pin 3 on the Origin 200. OpenBSD establishes separate Ethernet and
+SuperIO handlers (:src:`dmesgd-8994 ioc0 attach lines` prints
+``ethernet irq 2`` and ``superio irq 3``), *observed*. The model drives
+the SuperIO line from ``status & enable``, recomputed on every write to
+either register and on every source change.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bits
+     - Source
+     - Model behaviour
+   * - 0, 9
+     - Transmit ring empty, ports A and B
+     - Level: set while ring DMA is on and nothing is left to send
+   * - 1, 10
+     - Receive ring full
+     - Latched
+   * - 2, 11
+     - Receive high water
+     - Level against the waiting-entry count
+   * - 3, 12
+     - Receive timer expired
+     - Latched
+   * - 4, 13
+     - Carrier detect changed
+     - Never raised
+   * - 5, 14
+     - Clear-to-send changed
+     - Never raised
+   * - 6, 15
+     - 16550 pass-through
+     - Level: follows the 16550's interrupt line
+   * - 7, 16
+     - Explicit transmit interrupt
+     - Latched
+   * - 8, 17
+     - Ring DMA error
+     - Latched
+   * - 18
+     - Parallel service
+     - Level: cleared by a write to the port's extended control register
+   * - 19, 20
+     - Parallel DMA contexts A and B
+     - Latched
+   * - 21
+     - Parallel DMA error
+     - Latched
+   * - 22
+     - Keyboard and mouse
+     - Latched
+   * - 27
+     - Interrupt output pulse
+     - Latched on every rising edge of the output
+   * - 28
+     - Interrupt input pulse
+     - Never raised
+
+The source assignment is Linux's and OpenBSD's, *software expectation*.
+Writing ones to the status register clears latched bits. It does not
+clear the level bits: 0, 2, 6, 9, 11, 15 and 18. Linux installs a level
+handler for bits 6 and 15 and an edge handler for the rest
+(``drivers/mfd/ioc3.c``), which makes the two pass-throughs levels and the
+keyboard bit a latch, *software expectation*. The parallel service bit
+and the high-water and transmit-empty bits as levels are
+*approximations*. The IRIX 6.5.30 ring console enables high water and
+never acknowledges it; against a latched bit its service loop never
+finished. Linux's ring driver re-reads transmit-empty after a write and
+stops it by masking, which a latch would not need.
+
+The enable mask is one register behind a set address and a clear
+address. Linux's dispatcher intersects the status with a read of the set
+address, so that address returns the live mask, *software expectation*.
+What the clear address returns is *unknown*.
+
+Chip control and the interrupt output
+=====================================
+
+Chip control
+------------
+
+Bits 1-7 and 8-14 of chip control name where ports A and B sit in the
+SuperIO window, as the byte offset divided by eight. Linux's ``ioc3.h``
+names them the serial DMA poll addresses, *software expectation*. A
+port's ring engine reaches its 16550 only while its field holds ``0x2f``
+for port A or ``0x2e`` for port B. Aimed anywhere else, the engine does
+nothing. The Origin 300 IO-8 board diagnostic zeroes both fields, then
+drives port B through its byte window with B's ring DMA still enabled and
+expects the character to stay in the 16550. What the chip's engine does
+at another offset is *unknown*. Bit 0 (SuperIO reset) and bits 15-18
+(byte-bus strobe length) are stored and have no effect. Bit 22 reads as
+arbiter idle in every state, because the IRIX console setup waits for
+it, *software expectation*.
+
+Interrupt output
+----------------
+
+Bits 16-18 select the mode, bits 0-15 the count, bit 30 diagnostic mode,
+and bit 31 reads the output level. The modes are fixed low (``000``),
+fixed high (``100``), one pulse (``101``), a pulse train (``110``) and a
+square wave (``111``). A pulse is three ticks of 7.8 µs, 23.4 µs, and a
+new command ends the running one (:src:`007-0911-180 p. 135-139`,
+Linux ``ioc3.h``), *established*. The model:
+
+- applies a fixed level within the write, so the next read sees it. The
+  IO-8 board diagnostic reads the register at once 500 times and requires
+  the level on every read, *software expectation*;
+- starts a timed mode one nanosecond of virtual time after the write.
+  A pulse train repeats every count plus one ticks. A square wave toggles
+  every count plus one ticks;
+- runs every transition already due before answering a read, so a tight
+  read loop sees both levels of a pulse train;
+- posts status bit 27 on every rising edge in every mode, whether or not
+  the source is enabled, and on no falling edge. The one-pulse edge is
+  documented; the fixed-high edge is a *software expectation* of the IO-8
+  board diagnostic; the pulse-train and square-wave edges are *inferred*
+  by extension;
+- stores every write, but runs only the supported commands: fixed levels
+  with any count, one pulse with count 0 or 2 to ``0xfffe``, a pulse train
+  with count 3 to ``0xfffe``, a square wave with count 2 to ``0xfffe``,
+  and none with bit 30 set. Any other command leaves the running output
+  alone. What the chip does with diagnostic mode, the undefined modes and
+  the unsupported counts is *unknown*.
+
+The output pin itself is not wired to anything outside the chip, and
+nothing raises the input-pulse source, bit 28.
+
+General-purpose pins
+====================
+
+Pin control holds a direction bit per pin in bits 0-7, and bit 21
+connects the MicroLAN engine to its pin. Pin data and the nine pin
+registers at ``0x40``-``0x60`` view the same pin levels; a pin register's
+bit 0 reads and writes one bit of pin data. Linux names pin 5 the PHY
+reset and pins 6 and 7 the mode selects for ports B and A, *software
+expectation*. With pin 5 set as an output and driven low, the chip raises
+its ``gpio5-reset-request`` output, which a board can connect to the
+PHY's reset input.
+
+The ``gpio-input-mask`` and ``gpio-input-values`` properties make chosen
+pins read-only board inputs: a read of pin data or of a pin register
+returns the property's value for those bits, whatever software wrote. The
+Octane machines use this for pin 2, which reads 1 on Octane and 0 on
+Octane2 according to OpenBSD ``ip30.h``, *software expectation*. Writes
+to pin data store all 32 bits, and the stored word is what reads back
+outside the input mask. Pins 0-1, 3-4 and 8 have no wiring in the model,
+and the edge and level selections in pin control bits 16-19 are stored
+only.
 
 Serial ports
 ============
 
-The SuperIO window holds two 16550 register files at a *one-byte*
-stride, where the chip's other blocks are 32 bits wide, and only
-byte accesses are served -- the most likely way to produce a silent
-console is to get either wrong. The machine is big-endian and the
-ports declare little-endian; byte-lane placement is the bus's and
-the guest's business, and the device must not add its own.
+16550 register files
+--------------------
 
-The SuperIO interrupt line follows the intersection of the status
-and enable registers and drops when it empties; it is recomputed on
-every write and source change rather than raised per event. A serial
-port's bit is a pass-through of the 16550's own line -- no status
-write clears it; the guest's own register reads are what quiet it.
-The interrupt-enable and pin-control register pairs are set/clear
-aliases with a read asymmetry: the set alias reads back the live
-mask, the clear alias does not.
-This line is board wiring to a Bridge pin, not the chip's PCI
-interrupt pin; the PCI pin belongs to the ethernet block.
+Each port is QEMU's 16550 core at an 8-byte window, port A at
+``0x20178`` and port B at ``0x20170``, *observed*
+(:src:`dmesgd-8994 com0 and com1 lines`). OpenBSD drives them with its
+ordinary ``com`` driver and enables only the pass-through interrupt bits,
+so the byte windows alone give it a console. The ``chardev-a`` and
+``chardev-b`` properties connect the ports.
+
+The model adds four things to the 16550 core:
+
+- **Clock pre-divider.** While the divisor latch is selected, a write to
+  the scratch register (offset 7) also programs a clock pre-divider whose
+  value is twice the divider. Linux's ring driver writes it there and
+  computes the clock as 44 MHz divided by the value, starting from 6, and
+  Linux's 8250 glue assumes 22 MHz divided by 3, *software expectation*.
+  The model derives the baud base as 22.1184 MHz divided by half the
+  written value, divided by 16, so a divisor of 48 gives exactly 9600
+  baud. The 22.1184 MHz crystal is an *approximation*: it differs from
+  Linux's 22 MHz by half a percent and makes the standard rates exact.
+  Writes of 0 and 1 leave the clock alone. The scratch byte still reads
+  back as written.
+- **Auto flow control bit.** Modem control bit 5 reads back as written,
+  where the 16550 core drops it. The automatic flow control it would
+  enable is not modelled.
+- **Factory test writes.** A write to line status (bits 0-6) or modem
+  status (bits 0-3) is held and ORed into the next read of that register,
+  then cleared. The modem-status form is a *software expectation* of a
+  diagnostic, not of the 16550 datasheet.
+- **Loopback clear-to-send.** In loopback with the ring engine's flow
+  control bit set, modem status reports clear-to-send asserted even when
+  request-to-send is clear, a *software expectation* of the IO-8 board
+  diagnostic. Only the reported level is modelled.
 
 Transmit record
+---------------
+
+The ``record-a`` and ``record-b`` properties name an optional second
+character device per port. Every character the chip hands a port's
+16550 for transmission, from the byte window or the ring engine, is also
+written there in full, before the port's own backend has a chance to
+refuse it. A character sent while the port is in loopback is left out,
+because no wire carried it. The record is the account of what the guest
+transmitted even when a stalled consumer on the port's own backend loses
+characters. Point it at a backend that cannot block, such as a file:
+a blocking record backend stalls the transmit path it records. A
+character written to the transmit holding register while the
+transmitter is full is lost on the wire but still appears in the record.
+
+Serial ring DMA
 ===============
 
-The ``record-a`` and ``record-b`` properties take an optional second
-character device per port. Every character the chip hands that port's
-UART to transmit is written there as well as to the port's own
-backend, and nothing the port's consumer does can refuse it. A
-character sent in loopback is left out, because no wire carried it.
+Each port has an engine that moves characters between its 16550 and two
+rings in memory, so a driver can run the port without touching the byte
+window. The layout below follows Linux's ring drivers
+(``ioc3_serial.c`` and ``ioc4_serial.c`` at ``v4.19``) and ``ioc3.h``,
+*software expectation*. The firmware, Linux and OpenBSD consoles use the
+byte windows. The firmware's base I/O diagnostic and the IRIX ring
+console use the rings.
 
-This exists because a port's own backend can refuse bytes and the
-transmitter can then abandon them. A 16550 does not wait for a
-listener -- it clocks each character out at the programmed baud rate
-whatever is on the far end of the wire -- so the model's transmit
-hold is bounded and gives up, and a consumer that stalls past the
-bound costs that consumer those characters. A durable log taken from
-the port's backend loses them with it. The record is taken before
-that decision, so it is the account of what the guest transmitted.
+Registers
+---------
 
-Point it at a backend that cannot apply backpressure of its own, a
-file being the intended case: the write is completed rather than
-watched, so a record backend that blocks would stall the transmit
-path it exists to observe. Two limits are worth stating. A guest that
-writes the transmit holding register while the transmitter is full
-has that character overwritten on the wire, here and on the part, but
-it still appears in the record; no guest on this machine does that,
-and the DMA engine cannot, because it waits for the transmit-ready
-level first. And the record follows the character the chip handed
-over, so a byte the backend later refuses and the hold bound later
-abandons is in the record and not on the wire -- which is the point.
+.. list-table::
+   :header-rows: 1
 
-.. _sgi-ioc3-serial-dma:
+   * - Offset
+     - Name
+     - Notes
+   * - ``0xb0``, ``0xb4``
+     - Ring base, high and low
+     - Low bit 0 selects 4 KiB rings over 1 KiB; bits 12-31 are address.
+   * - ``0xb8``, ``0xd4``
+     - Control, ports A and B
+     - Bits 0-8 high-water mark in entries, 17 flow control, 27 receive
+       drain, 28 ring DMA enable, 29 pause, 31 channel reset. Bits 16 and
+       30 read status. Other bits are stored.
+   * - ``+0x04``
+     - Transmit produce
+     - Software advances it.
+   * - ``+0x08``
+     - Transmit consume
+     - The engine advances it.
+   * - ``+0x0c``
+     - Receive produce
+     - The engine advances it. Bits 24-26 report characters held in the
+       packer.
+   * - ``+0x10``
+     - Receive consume
+     - Software advances it. Bit 31 arms the receive timer and reads back
+       the arm.
+   * - ``+0x14``
+     - Receive timer
+     - Reload in bits 0-11, count in bits 16-27, 16 kHz ticks.
+   * - ``+0x18``
+     - 16550 shadow
+     - Read-only mirror of the port's line and modem status.
 
-Serial DMA engines
-==================
+One base places all four rings in the order port A transmit, port A
+receive, port B transmit, port B receive, each of the selected size. A
+ring's address is derived, not readable. Indexes are byte offsets in
+8-byte entries, as wide as the ring is long. Writes to the four indexes
+store only that pointer field. The main block accepts writes to the two
+indexes the engine advances, because the IO-8 board diagnostic writes and
+reads them back.
 
-Each port has an engine moving characters between the port's 16550 and a
-pair of memory rings. The engine is shared with IOC4, which has the same
-per-port registers and ring format, and lives in
-``hw/char/sgi-ioc-serial-dma.c``; the chip supplies the register window,
-its interrupt status bits and the UARTs. This section describes the
-engine for both chips; :ref:`sgi-ip53-ioc4` lists where IOC4 differs.
-One base register places all four rings -- port A transmit, A receive,
-B transmit, B receive, in that order, each of the size the base
-register's low bit selects -- so a ring's address is derived from port
-and direction and is not readable back.
-The chip-control register's port-offset fields are stored, not acted
-on: real silicon multiplexes the ports through them, and every guest
-programs the two offsets the model implements.
-Ring entries are eight bytes; an index is exactly as wide as the
-ring is long. The receive timer's reload is 12 bits, with the running
-count readable in bits 16-27; a pause request (control bit 29) is
-acknowledged in bit 30 while the walk is stopped.
+Each port also has an alias page at ``0x08000`` or ``0x0c000`` showing
+its seven registers at the same offsets, so a process can map one port.
+Through an alias page the transmit consume index, the receive produce
+index and the shadow are read-only. Offsets past the seventh register
+log ``LOG_UNIMP``.
 
-The console path never uses these engines: firmware and both guests
-drive the ports through the byte windows with ring DMA off. What
-exercises them is the firmware's base I/O diagnostic (both ports in
-loopback, full rings) and IRIX's DMA-ring console.
+Ring entries
+------------
+
+An entry is four data bytes followed by four control or status bytes,
+one per data byte.
 
 Transmit
-    Each entry carries four control bytes typed per data byte: a
-    character, a modem-control write, a delay, or nothing -- the empty
-    type is how a driver ends a short entry, and an engine sending all
-    four regardless puts memory garbage on the wire. A descriptor fetch
-    the fabric refuses stops the walk with the consume index on the
-    entry. An entry once fetched stays with the engine until its last
-    slot has gone, as the unpacker count in the consume index implies,
-    so rewriting the ring under a half-sent entry changes nothing
-    already taken. In loopback the receiver is drained per transmitted
-    character, because the receive FIFO is sixteen bytes against rings
-    the diagnostic fills five hundred characters at a time. Each
-    looped-back character also spends the 16550's character time for the
-    programmed line on the wire before the receiver sees it, and the
-    engine sends the next one only then: the 16550 core hands it over at
-    once, and without the delay the receive timer starts a character
-    time early. An access to the block delivers an arrival already due,
-    at its own time, the way it applies a due receive-timer expiry. The
-    walk sends characters one line time apart and fills no transmit FIFO
-    ahead of the line, so in loopback its consume index can trail
-    silicon's, if the part runs ahead that way; nothing observed settles
-    which.
+    The top two bits of a control byte type its data byte: ``0x40`` a
+    character, ``0x80`` a modem-control write, ``0xc0`` a delay of that
+    many milliseconds, ``0x00`` nothing. A ``0x00`` slot ends the entry
+    and the slots after it are not sent. Bit 5 asks for the explicit
+    transmit interrupt once the slot is done, or once a delay ends. The
+    engine fetches an entry once and keeps it until its last slot has
+    gone, so rewriting the ring under a half-sent entry changes nothing.
+    A character goes to the 16550 only when its transmit holding register
+    is empty. A delay holds the walk, with control bit 16 set until it
+    ends.
 
     Outside loopback the 16550 core takes each character at once. A
     port with no backend completes it, as a line with nothing attached
@@ -136,373 +660,640 @@ Transmit
     the modem-control write lands is an approximation.
 
 Receive
-    Characters pack four to an entry; the produce index reports the
-    packer's held count so a driver can see the difference between a
-    packing engine and one writing an entry per character. A full
-    ring, or a fabric-refused entry write, refuses the delivery and
-    keeps the characters -- in the packer, and behind it the FIFO,
-    whose fullness is what stops the chardev feeding more. An entry
-    posts when its fourth character arrives; fewer wait in the packer
-    until the receive timer runs out or a drain, as the public Linux
-    ring drivers' comment on the part says. The timer's arm is a
-    latch: bit 31 of a consume write sets it, a write with bit 31
-    clear leaves it, and the consume index reads it back. The timer
-    starts on the 16 kHz clock at the first character received while
-    armed; an arm write starts nothing, and later characters do not
-    start a running timer again (a model choice). Expiry posts what
-    the packer holds, raises its source and spends the arm. Raising
-    it when the ring is already empty is a model choice no source
-    settles; without it IRIX's ring console stalls with the arm spent
-    and nothing to make it re-arm. The high-water source is a *level*
-    counted in ring entries, as both Linux drivers program it,
-    recomputed wherever the waiting count moves: a latched raise
-    storms a guest whose service loop cannot clear it, which is
-    exactly IRIX's ring-console behavior against a latching model.
-    Transmit-ring-empty is a level too, set while ring DMA is on and
-    nothing is left to send, and so is receive-ring-full, set while
-    ring DMA is on and an entry waits that the ring had no room for (a
-    model choice); a ring filled exactly with nothing waiting does not
-    raise it, and writes that acknowledge either are ignored.
+    Characters pack four to an entry. Each status byte carries
+    data-valid (bit 7), modem-valid (6), carrier (5), clear-to-send (4),
+    break (3), framing (2), parity (1) and overrun (0). An entry posts
+    when its fourth character arrives. Fewer wait in the packer until the
+    receive timer expires or software drains, as Linux's ring driver
+    comment describes. Unfilled slots carry no valid flag.
 
-Two control-register bits are commands, not settings: the channel
-reset returns the four indices to the ring start while preserving
-the watermark and timer reload, and the receive drain (bit 27) moves
-whatever the packer holds into the ring and reads back set until it
-has. It waits while ring DMA is off or paused and while the ring is
-full, and completes at once when nothing is held; IRIX polls it to
-zero, so a drain that never completed would tear its console down. A
-transmit entry typed as a delay holds the walk for that many
-milliseconds, with control bit 16 set meanwhile, and a pause freezes
-the receive timer and any delay where they stand.
+Receive timer
+-------------
 
-The 16550 shadow register is a read-only mirror of the port's status
-and modem lines, assembled fresh per read -- deliberately not read
-through the byte-wide ops, whose modem/line-status reads clear delta
-and error latches. The DMA-side console driver reads carrier from
-here, so a shadow left at zero hangs console open on a cached
-carrier-down. Writes to it are discarded without a guest-error report:
-stock firmware and OpenBSD write it on every boot. The main block
-stores the pointer field of a write to either hardware-owned index,
-the transmit consume or receive produce index, because the Origin 300
-IO-8 board test writes one and reads it back; only the per-port alias
-pages refuse those writes.
+Bit 31 of a receive-consume write sets the arm. A write with bit 31
+clear leaves it, matching Linux's ring driver, which arms when a read
+starts and ends the read without the bit. The timer starts at the first
+character received while armed. Expiry posts what the packer holds,
+raises bit 3 or 12 and spends the arm. That a running timer is not
+restarted by later characters is an *approximation*. Expiry raises its
+source even when the ring is already empty, an *approximation*: without
+it the IRIX 6.5.30 ring console stalls with the arm spent. A write to the
+timer register loads the reload and the idle count; the count reads the
+ticks left while the timer runs.
 
-Each port also has an alias page: a second view of its seven
-registers for mapping one engine into user space without the rest of
-the chip. Through the page the shadow is read-only where the main
-block tolerates the write.
+Commands, pause and errors
+--------------------------
 
-Station-address one-wire part
-=============================
+- Channel reset (control bit 31) returns the four indexes to zero, clears
+  the packer, the arm and any delay, and keeps the other control bits and
+  the timer reload.
+- Receive drain (bit 27) posts what the packer holds and reads back set
+  until it has. It waits while ring DMA is off or paused and while the
+  ring is full, as Linux's ring driver expects.
+- Pause (bit 29) stops the walk, reads back bit 30, and freezes the
+  receive timer and any delay where they stand, an *approximation*.
+- A full receive ring raises receive-full and keeps the characters in the
+  packer and the 16550 FIFO, which stops the backend feeding more.
+- A ring access the fabric refuses raises the port's DMA error source. A
+  refused transmit fetch leaves the consume index on that entry. A
+  refused receive write leaves the produce index unchanged.
 
-A MicroLAN engine drives a one-wire bus carrying one DS2501, the
-512-bit sibling of the DS2502, which holds the station address in its
-first page. Time slots complete synchronously within the register
-write; a guest's read-after-write polling cannot observe real
-timing. The part answers Search ROM (SGI's PROM continues straight
-from search to a function command), Match ROM (OpenBSD's ``owmac``),
-and Skip ROM (Linux's w1 core, whenever a bus has one device); an
-unimplemented command leaves the wire idling high and is logged,
-because it is otherwise indistinguishable from an absent part.
+In loopback the engine drains the receiver after each character it sends,
+because the 16-byte FIFO is far smaller than the rings the diagnostic
+fills. Each looped character also waits one character time on the line
+before the receiver sees it, and the engine sends the next one only then.
+Any access to the serial registers first applies loopback arrivals,
+delays and timer expiries already due.
 
-The ROM identity is family 0x91 -- the custom bit over base type
-0x11 -- with the serial's required top twelve bits 0x5e7; the
-serial's remainder comes from the machine. The two memory-read
-commands are not interchangeable: Read Data with CRC closes every
-32-byte page with a CRC-8 over that page's data, while plain Read
-Memory carries no per-page CRC at all and emits a single CRC-8 only
-where a read reaches the end of memory. Read Status serves the
-eight-byte status field -- the write-protect byte, four page
-redirection bytes, two reserved bytes and a factory-programmed 0x00
--- closed by a CRC-8 over the bytes read. Only that last byte is
-programmed, so the redirection byte OpenBSD's redirect walk reads is
-unprogrammed EPROM, and its all-ones value is what tells the walk the
-page is valid where it sits.
+16550 shadow
+------------
 
-The station-address record in page zero is image content rather than
-device behaviour: a marker byte, the address reversed into bytes 5
-through 10, and a checksum over the first eleven bytes at bytes 11
-and 12. That checksum is the record format's own, not a CRC the part
-computes -- an embedded page checksum is a software file-structure
-convention, and a part's own CRCs always cover a whole page. It is
-stored inverted so a guest's running check lands on the fixed residue
-0xb001.
+The shadow assembles bits 0-7 from line status, bit 16 delta
+clear-to-send, bit 19 delta carrier, bit 20 clear-to-send, bit 23
+carrier, and bits 24-28 DTR, RTS, OUT1, OUT2 and loopback from modem
+control. It reads the 16550's fields directly, so a shadow read does not
+clear the line-status and modem-status latches that a byte-window read
+clears. In loopback it reflects the looped modem lines. Writes are
+discarded without a report, because the stock firmware and OpenBSD write
+it on every boot.
 
-Ethernet engine
-===============
+One-wire bus
+============
 
-A transmit ring of 128-byte inline descriptors (128 or 512 of them by
-the base register's low bit) and a receive ring of 512 guest-supplied
-buffer addresses indexed by byte offset. All DMA goes through the
-chip's own PCI address space -- through the Bridge's translation,
-never the plain system space.
+MicroLAN engine
+---------------
 
-Descriptor geometry the drivers depend on: the inline data area is
-104 bytes at offset 24 with a 7-bit length field; the command word's
-total byte count is 11 bits and an over-count wraps as written; a
-buffer transfer may not cross a 16 KB boundary, which is why a
-descriptor carries two buffer pointers; pad-enable extends a short
-frame to 60 zero-padded bytes ahead of the FCS; insert-checksum
-completes a correct UDP checksum from the driver's pseudo-header
-partial. On receive, the frame begins 66 bytes (33 halfwords,
-OpenBSD's value) into the buffer; the received-count field is 11 bits
-and also arrives split across the error word (three low bits at 12,
-ten high at 16), and delivery truncates at 2040 bytes with the
-long-event and bad-packet bits set. The receive timer is 11 bits
-wide. The threshold source compares at-or-below the watermark:
-OpenBSD writes its whole available count as the mark and asks to be
-told when the count reaches it.
+A write to MicroLAN control runs one one-wire time slot: bits 10 and up
+give the time to hold the bus low and bits 2-9 the rest of the slot, both
+in microseconds. Bit 1 reads done and bit 0 the sampled level. OpenBSD's
+and Linux's one-wire drivers agree on this layout, *software
+expectation*. The model completes the slot inside the write, so done is
+already set when software polls. With pin control bit 21 clear, or on a
+board with no part on the bus, the wire reads high.
 
-Receive filtering happens before any memory is written: station
-address (from the guest-programmed MAC registers -- never the
-backend's address, which has no relation to what the driver believes
-its address is), broadcast, promiscuous, and the multicast hash --
-the low six bits of the reflected ethernet CRC, themselves
-bit-reversed, replicating Linux's ``ioc3_hash()``. A filtered frame
-reports itself *consumed*: returning zero would wedge the queue on a
-frame no retry can ever pass.
+Station-address part
+--------------------
 
-Two length and checksum facts follow from QEMU's net layer
-delivering no FCS:
+On a board with Ethernet the bus carries one DS2501, a 512-bit one-wire
+EPROM, holding the station address. Published Origin 200 boots attach it
+as a family-type ``0x11`` part (:src:`dmesgd-8994 owmac0 line`),
+*observed*; OpenBSD's ``owmac`` accepts that type only with the custom
+bit set and serial-number top bits ``0x5e7``. The model uses family
+``0x91`` and a 48-bit serial from the ``onewire-serial`` property, whose
+default keeps the ``0x5e7`` prefix above a synthetic marker. The part
+answers Search ROM, Read ROM, Match ROM and Skip ROM, and the Read Memory,
+Read Data with CRC and Read Status commands. Write commands are refused
+with ``LOG_UNIMP``.
 
-* Both guests read the byte-count field as the wire length including
-  the four-byte FCS, so the model reports four phantom bytes (backed
-  by zeroes in the buffer). Without them, every minimum-length frame
-  -- DHCP's short broadcasts, typically -- fails the guest's own
-  length check and vanishes.
-* The receive checksum-offload field is the real 16-bit one's
-  complement sum over the whole packet, which Linux finishes into
-  the transport checksum and trusts only when its reconstruction
-  folds to 0xffff; the phantom FCS is summed as zero, which the
-  driver's own subtraction makes self-consistent.
+The first page holds the record both guests read: byte 0 ``0x0a``, the
+station address reversed into bytes 5-10, and a CRC-16 over bytes 0-10
+stored inverted in bytes 11 and 12, so a running CRC over the record
+ends on the one-wire residue. That layout is a *software expectation* of
+the OpenBSD and Linux readers. The rest of the page reads zero. The
+address comes from the Ethernet child's ``mac`` or the ``board-mac``
+property.
 
-The two loopbacks differ observably and the firmware requires it:
-the MAC's own loopback short-circuits ahead of FCS and status
-generation (the diagnostic demands the byte count unchanged and a
-zero status word), while the PHY's loopback runs the whole
-controller (count four higher, status real). Either loopback
-disconnects the backend in both directions, or outside traffic
-shifts the diagnostic's frame comparisons. What selects the PHY's
-loopback is itself part-specific -- see the DP83843 paragraph below
--- and the model dispatches on the transceiver's own ``dp83843``
-property rather than guessing from the register write alone.
+Board record part
+-----------------
 
-The MAC-control reset bit resets the engine but not the ring base
-registers: SGI's power-on diagnostic programs the bases, asserts
-reset, rewrites only the indices, and never writes the bases again.
-A receive descriptor fetch the fabric refuses drops the frame -- the
-block carries no status a driver reads for a refused transfer. The
-receive-timer arm bit is a command and the MII busy bit derived,
-neither storage: a bare index write must not disarm the timer, and
-busy never reads set because requests complete inside the write.
+Setting any of ``board-part``, ``board-barcode``, ``board-revision`` or
+``board-name`` adds a second, DS2505-class part on the same bus holding
+that board record, with its serial from ``board-onewire-serial``. Add-in
+cards that keep their identity on the IOC3's bus use it, such as the Cad
+Duo card. OpenBSD reads a board record here to choose the chip's
+population, and an Origin 200 bus must carry none: the published Origin
+200 boot shows only the station-address part, and OpenBSD stops attaching
+the chip when it reads a part number it does not know.
 
-A default-generated MAC address takes SGI's OUI (08:00:69), since
-the firmware reads the station address from the one-wire part and
-expects a real part's prefix; an explicitly configured address is
-never rewritten.
+Ethernet MAC
+============
 
-The PHY is a DP83840A modelled with mii.h register names, at an
-address the ``phy-addr`` property selects (default 31, an alias
-chain from ``sgi-ioc3`` through the eth child to the transceiver's
-own ``addr`` property). 31 is Origin 200's address. Origin 300's
-IO-8 board sets 1, the address its BASEIO PROM's MII helper
-functions hard-code and OpenBSD on a real board confirms. Its
-autonegotiation completes on a
-settle window timed so the firmware diagnostic's probe lands
-inside it, its link-status bit latches low, and backend link state
-drives it the way lan9118's PHY models the same thing. Its LBREMR
-pin-latched bits reflect board wiring nothing observed, modelled as
-normal operation, and the settle window has a second constraint
-besides the diagnostic probe: the firmware's reset-value sweep
-spends about a tenth of a second of virtual time, which the settle
-must outlast.
+The MAC is SGI's own design; no catalogue part matches its registers. The
+PHY sits behind the MII management interface: a DP83840A at address 31
+by default, a DP83843 when ``phy-dp83843`` is set, or an ICS1890 when
+``phy-ics1890`` is set (:doc:`ics1890`). ``phy-addr`` sets the address.
+:doc:`dp8384x` describes the DP83840A and DP83843.
 
-Origin 300's IO-8 board carries a different part, a National
-Semiconductor DP83843 "PHYTER", which the ``phy-dp83843`` property
-selects through the same alias chain (default false, the
-DP83840A). It shares every DP83840A register except two. Its
-identity register 3 (PHYIDR2) reads 0x5c10 instead of 0x5c01, which
-also binds OpenBSD's nsphyter driver instead of nsphy. And its
-register 0x17 -- plain storage on the DP83840A (PCS_CONFIG) -- is
-instead its Loopback Register: bits 5 and 4 (TW_LBEN and
-10_ENDEC_LB) select loopback the way BMCR's own bit and the
-DP83840A's LBREMR (register 0x18) do. The IP35 BASEIO PROM's
-Twister loopback sub-test writes exactly this bit on the real
-board; a DP83840A stuck with the same write must not loop, since
-bit 5 there is PCR.CIM_DIS, which OpenBSD's nsphy driver sets on
-every media change and this project's own sn0-ioc3-test.c exercises
--- the part switch keeps that write inert on the default part and
-only closes the loop when ``dp83843`` is set. Register 0x18 on the
-DP83843 is 10BTSCR, plain storage with no loopback function; the
-model keeps the same storage field regardless of part and only its
-loopback interpretation differs. A PHY reset clears register 0x17
-to the DP83840A's PCS_CONFIG reset value on both parts -- 0 in both
-of the DP83843's loopback-select bits -- which is reused rather
-than an independent DP83843 reset value, since the DP83843
-datasheet is not publicly available and only OpenBSD's nsphyterreg.h
-gives the bit names.
+Registers
+---------
 
-The Octane board carries an ICS1890 instead (``hw/net/ics1890.c``),
-which the ``phy-ics1890`` property selects through the same alias
-chain. The Octane machine places it at address 1.
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Notes
+   * - ``0xf0``
+     - MAC control
+     - Bit 1 promiscuous, 2 pad short frames, 3-8 receive offset in
+       16-bit units, 9 buffer-RAM parity check, 13-16 transmit DMA,
+       transmit, receive DMA and receive enables, 17 MAC loopback, 31
+       reset.
+   * - ``0xf4``
+     - Interrupt status
+     - Write one to clear.
+   * - ``0xf8``
+     - Interrupt enable
+     - Writing it recomputes the line at once.
+   * - ``0xfc``
+     - Receive control
+     - Bits 0-8 receive threshold.
+   * - ``0x100``, ``0x104``
+     - Receive ring base
+     - Low word bits 12-31; 512 eight-byte buffer addresses.
+   * - ``0x108``
+     - Receive barrier
+     - Stored, no effect.
+   * - ``0x10c``
+     - Receive consume
+     - The engine advances it; byte offset, 12 bits.
+   * - ``0x110``
+     - Receive produce
+     - Software advances it; bit 31 arms the receive timer.
+   * - ``0x114``
+     - Receive timer
+     - Reload, bits 0-10.
+   * - ``0x118``, ``0x11c``
+     - Transmit control, random seed
+     - Stored, no effect.
+   * - ``0x120``
+     - Collision and deferral counters
+     - A read returns the value and clears it.
+   * - ``0x124``
+     - Buffer index
+     - Stores ``0xffffdf1f`` of a write.
+   * - ``0x128``, ``0x12c``
+     - Transmit ring base
+     - Low word bit 0 selects 512 descriptors over 128; bits 14-31
+       address.
+   * - ``0x130``
+     - Transmit consume
+     - The engine advances it; bit 31 idle.
+   * - ``0x134``
+     - Transmit produce
+     - Software advances it; a write starts the walk.
+   * - ``0x138``, ``0x13c``
+     - Station address
+     - Bytes 0-3 in the low register, 4-5 in the high.
+   * - ``0x140``, ``0x144``
+     - Multicast hash
+     - High and low 32 bits of the 64-bit filter.
+   * - ``0x148``
+     - MII control
+     - Bits 0-4 register, 5-9 PHY address, 10 read. Busy (bit 11) reads
+       zero.
+   * - ``0x14c``
+     - MII read data
+     - Writes log ``LOG_GUEST_ERROR``.
+   * - ``0x150``
+     - MII write data
+     - A write request sends it to the PHY.
+
+All reset to zero except MII read data, which reads ``0xffff`` until the
+first read request. Offsets and fields are Linux's and OpenBSD's,
+*software expectation*. Indexes are byte offsets, a property all three
+drivers rely on.
+
+Transmit
+--------
+
+A transmit descriptor is 128 bytes in the ring: a command word, a
+buffer-count word, two 64-bit buffer pointers at 8 and 16, and 104 bytes
+of inline data at 24. The command word's bits 0-10 give the frame
+length, bit 12 asks for the completion interrupt, and bits 16, 17 and 18
+mark the inline data and the two buffers as valid; bit 19 asks for a
+checksum. The buffer-count word gives the inline length in bits 0-6 and
+the buffer lengths in bits 8-18 and 20-30.
+
+With both transmit enables set, a write to the produce index, or setting
+the enables with descriptors already queued, walks the ring to the
+produce index. The engine fetches each descriptor in one transfer, gathers
+the inline data and buffers, trims to the frame length and sends it. The
+inline length is capped at 104 even though its field can name 127. With
+the checksum bit set the model computes the TCP or UDP checksum in full,
+an *approximation*. With pad enabled a short frame is zero-padded to 60
+bytes. Completion sets status bit 22 for descriptors that asked and bit
+16 once a walk has sent anything; the consume index reads bit 31 when it
+equals produce. An index off a 128-byte boundary is aligned down and
+logged with ``LOG_GUEST_ERROR``. A refused descriptor or buffer read
+stops the walk on that descriptor with ``LOG_GUEST_ERROR``.
+
+Receive
+-------
+
+Receive needs both receive enables and a PHY whose data path is enabled.
+A frame is accepted if promiscuous mode is on, if it is addressed to the
+station address programmed in ``0x138``/``0x13c``, if it is broadcast,
+or if it is multicast and its hash bit is set. The hash is the low six
+bits of the frame's little-endian CRC-32, bit-reversed, indexing the low
+register for 0-31; this is Linux's ``ioc3_hash``, *software expectation*.
+The backend's own MAC address plays no part. A filtered frame is consumed
+and dropped.
+
+The engine reads the buffer address at the consume index and writes the
+frame at the MAC control offset. The buffer's first word holds valid
+(bit 31), the byte count (bits 16-26) and a 16-bit ones'-complement sum
+of the frame (bits 0-15). The second word holds good (30), bad (29), long
+(28), broadcast (27), multicast (26) and the byte count split into bits
+12-14 and 16-25. Both guests read the count as the wire length including
+the FCS, so the model adds four phantom FCS bytes, writes them as zero
+and sums them as zero, an *approximation*. Frames over 2040 bytes are
+truncated, logged with ``LOG_GUEST_ERROR``, and marked long and bad.
+
+The receive sources are raised when the frame's completion is published:
+the timer source (bit 0) when the timer is armed and its reload is zero,
+and the threshold source (bit 1) when the buffers still available are at
+or below the threshold. Both guests write a zero reload and arm the
+timer. A non-zero reload logs ``LOG_UNIMP`` and raises nothing. No other
+receive or transmit error source is ever raised.
+
+The model holds each completion, its valid bit, consume index and
+sources, for ``rx-arrival-latency-us`` of virtual time, 200 µs by
+default, after the frame arrives; the payload is already written. This is
+an *approximation*, a floor that keeps a guest from seeing a frame faster
+than a wire could carry it. A rewritten consume index discards held
+completions with ``LOG_GUEST_ERROR``. A refused ring-entry or buffer
+access drops the frame with ``LOG_GUEST_ERROR``.
+
+Interrupt acknowledgement
+-------------------------
+
+The line follows ``status & enable``. If a source fires again while its
+bit is still set and unacknowledged, the model remembers it, and the
+write that acknowledges the bit raises the line again as a fresh edge.
+All three public drivers write back exactly the status they read, which
+this relies on. The mechanism is an *approximation*: it keeps an
+edge-triggered interrupt path from losing a completion.
+
+Loopback, reset and the station address
+---------------------------------------
+
+MAC loopback (control bit 17) turns a frame round before FCS and status:
+the received count equals the transmitted length and the second header
+word is zero. PHY loopback runs the whole receive path, with the count
+four higher and real status. The stock power-on diagnostic requires that
+difference, *software expectation*. Either loopback disconnects the
+network backend in both directions.
+
+Writing MAC control with bit 31 set resets the engine registers but keeps
+both ring bases, because the stock power-on diagnostic programs the bases
+once and never again. Control then reads ``0x80200000`` until the next
+write. Writes to the counters and buffer index are stored only while the
+MAC is stopped and out of reset; otherwise they log ``LOG_GUEST_ERROR``.
+What the chip does with those writes is *unknown*; the stored values are
+an *approximation* that satisfies the stock diagnostic's read-back.
+
+A default-generated MAC address takes SGI's ``08:00:69`` prefix, because
+the firmware expects a real part's prefix in the station-address part.
+An address given with ``mac`` or ``board-mac`` is kept as given, and a
+``-nic mac=`` that differs from ``board-mac`` is refused.
 
 Buffer RAM
 ==========
 
-The ethernet buffer RAM is storage, seventeen bits per slot: sixteen
-data bits and the stored parity bit beside them. No frame data ever
-lands here -- the engine's rings live in guest memory -- so parity
-is not computed but stored, and the checker reports odd parity
-across all seventeen bits when the ethernet block enables checking.
-The two halves of the window are separate storage because a driver's
-size probe writes a pattern at the first slot and its complement at
-the midpoint; an aliasing window reports half the RAM. Reset does
-not clear it: it is memory, not a register file.
+The window at ``0x40000`` is 64 Ki slots of 32 bits. Each stores 16 data
+bits and a parity bit at bit 16; the rest read zero. Linux's ``ioc3.h``
+names the data and parity masks, *software expectation*. The Origin 200
+has the full 128 KiB: its OpenBSD driver reports ``128KB SSRAM``
+(:src:`dmesgd-8994 iec0 line`), *observed*, which means a pattern at the
+first slot and its complement at offset ``0x20000`` both read back. The
+model keeps the two halves distinct for that reason.
 
-PS/2 ports
-==========
+While MAC control bit 9 enables parity checking, a read sets bit 17 when
+the stored 17 bits have odd parity, and a write with bit 17 set stores
+generated even parity instead of the written bit 16. That write rule is
+an *approximation* fitted to two diagnostics' expectations. With checking
+off, bit 17 reads zero and the written parity bit is stored. No frame
+data passes through this RAM in the model; the MAC reads and writes guest
+memory directly. Reset leaves it unchanged.
 
-The controller (``hw/input/sgi-ioc3-kbc.c``) wraps two generic ps2
-devices, a keyboard and a mouse, and presents SGI's five registers: a
-control/status register, a receive and a transmit register per port.
-A transmit write forwards its low byte to the port's ps2 device,
-whose replies queue up. A receive read packs up to three queued bytes,
-oldest in the highest slot, each with its valid flag, and sets the
-overflow flag when a fourth is still waiting; the read pops the queue,
-so the next read starts from empty. The two ports share one interrupt,
-chip interrupt-status bit 22, which follows the controller's
-data-available line -- asserted while either port holds bytes, cleared
-once the receive registers drain -- and which the guest also clears by
-writing it. The block is a bit-level line engine, not an 8042 clone:
-the byte-level PS/2 command protocol lives in the ps2 devices above
-it, and the control register's write-pending status reads clear, since
-a synchronous transmit completes within the register write.
+PS/2 controller
+===============
+
+The controller sits at ``0x9c``. It holds characters in the IOC3's own
+format and passes bytes to QEMU's generic PS/2 keyboard and mouse
+devices. The byte-level PS/2 protocol is theirs.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Notes
+   * - ``0x9c``
+     - Control and status
+     - Stores ``0x00fcffff`` of a write; status bits read zero.
+   * - ``0xa0``, ``0xa4``
+     - Keyboard and mouse receive
+     - Read pops the port's holding.
+   * - ``0xa8``, ``0xac``
+     - Keyboard and mouse transmit
+     - Low byte goes to the device.
+
+A receive read packs up to three held characters, oldest in the highest
+slot: slot *p* carries its byte at bits *8p* and its valid flag at bit
+*29 + p*. Bit 27 is set for the mouse port and bit 28 reports a lost
+character. The read empties the holding and clears the flags. The
+per-character error flags never set. Offsets and fields are Linux's and
+OpenBSD's, *software expectation*; the bit 27 polarity is Linux's.
+
+Control bits 20-23 are clamps that stop a port's device after one or
+three characters, keyboard and mouse in turn. A clamped port leaves the
+rest of the device's bytes in the device until a read or a clamp change
+releases them; an unclamped port takes everything and a fourth
+character is lost with bit 28 set. Linux arms clamp-after-three on both
+ports. The controller asserts its line for every character it takes and
+lowers it when a read leaves both holdings empty. The chip latches that
+into status bit 22, which only a write-one-to-clear acknowledges.
+Per-character assertion and the release of a clamp within the read are
+*approximations*. Writes setting the emulation or fast-clock bits (12,
+13) log ``LOG_UNIMP``. Reads of the transmit registers and writes to the
+receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the
+write, so the write-pending status never reads set.
+
+On a board without PS/2 ports, such as the Origin 300 IO-8 board, the
+bank still decodes and control reads back what was written, but there is
+no device: transmit writes log ``LOG_UNIMP`` and draw no reply, and
+receive reads return zero. That the register bank decodes there is
+*inferred*: OpenBSD's Origin 300 attachment omits only the keyboard
+child, and no public source shows a board-level decode disable.
+
+The write-only ``activate-keyboard`` property on ``sgi-ioc3-kbc`` routes
+QEMU's host key events to that controller's keyboard, for machines with
+two of these controllers. The guest cannot see it.
 
 Parallel port
 =============
 
-The port (``hw/char/sgi-ioc3-parallel.c``) has two faces that sit
-far apart in the chip's window, so the device presents two regions:
-a four-byte-wide DMA register block belonging to the main register
-block, and the byte-wide IEEE-1284/ECP register file belonging to
-the SuperIO window. What is modelled is the register contract,
-because that is all a source establishes. IRIX's driver probes for
-the port by reading the extended control register and taking
-"transmit FIFO empty, not full" as the port answering; without that
-the driver never attaches and opening the device node fails.
-Everything past the probe -- the mode field, the negotiation lines,
-the two DMA contexts -- is a register file a driver writes and reads
-back. The ECP file is byte-wide and declares its implementation
-width: an undeclared maximum would take one four-byte access apart
-into four calls and run the FIFO write four times over.
+The port has two register blocks: two DMA contexts at ``0x80`` in the
+main block and a byte-wide ECP register file at ``0x20150``. Offsets are
+Linux's and OpenBSD's, *software expectation*. ``parallel-chardev``
+connects the cable to a character device. The model fits the port on the
+Origin 200 IP29 board, the MediaIO card and the Octane IP30 board. The
+Octane's IEEE 1284-C connector is *established*
+(:src:`007-3435-004 p. 301`).
 
-Nothing is on the cable. Four behaviours follow from that rather than
-from the specified hardware:
+DMA contexts
+------------
 
-* The status register follows what is behind the port's backend. The
-  machine gives an empty slot a null backend, and a null backend, none
-  at all or ``-parallel none`` read as a bare connector: all five
-  inputs high, ``0x78`` (bit 7 is the inverse of the Busy pin, so it
-  reads clear). A real backend, such as a file, reads as a ready
-  printer, ``0xd8``: Busy low, nAck, Select and nFault high, no paper
-  error. Treating every host backend as always ready is an
-  approximation. Bit positions and polarity follow the fitted
-  TL16PIR552's published status register, Linux's ``parport`` and
-  OpenBSD's ``lpt``; the pull direction on the boards is an inference,
-  since no source measures an unplugged port. Bit 2, the part's PRINT
-  indicator, is not modelled.
-* The transmit FIFO is bottomless. A byte written to it leaves
-  within the write and is discarded, empty always reads set and full
-  never does, because no source gives the FIFO a depth or a drain
-  rate. A driver polling for room before each byte never waits, and
-  one polling for the queue to drain finishes on its first look.
-* The DMA engine stores its two contexts and moves no bytes: both
-  busy flags stay clear and a count reads back what software loaded,
-  nothing having been subtracted from it, because there is no
-  peripheral to move bytes to.
-* No interrupt is ever raised. The chip reserves four sources for
-  the port and nothing here drives one. The active sense of the
-  extended control register's service and nFault interrupt controls
-  is unresolved in the sources, so the model stores those bits and
-  arms nothing rather than picking a polarity a guest would then be
-  measured against.
+.. list-table::
+   :header-rows: 1
 
-Three boards fit the port: the Origin 200's IP29 system board, the IP27
-MediaIO daughtercard, and the Octane IP30 system board. SGI's Octane
-owner's guide identifies its IEEE 1284-C connector, and OpenBSD attaches
-LPT to the onboard IP30 IOC3. No other identity in the table gets
-one, and on a board without it both register regions are holes like
-any other. Mainline Linux's multifunction driver registers no
-parallel sub-device for any identity, so a Linux that drives nothing
-here is not evidence about the block either way.
+   * - Offset
+     - Name
+     - Notes
+   * - ``0x80``, ``0x84``
+     - Context A address, high and low
+     - Stored.
+   * - ``0x88``
+     - Context A count
+     - Bits 0-16 count, 30 armed, 31 last; other bits read zero.
+   * - ``0x8c``
+     - DMA control
+     - Bit 29 from peripheral, 30 reset, 31 enable. Bits 0-5 read
+       armed, last and busy for A then B.
+   * - ``0x90``, ``0x94``
+     - Context B address
+     - Stored.
+   * - ``0x98``
+     - Context B count
+     - As context A.
 
-Board variants
-==============
+With DMA control enabled and out of reset, and the ECP extended control
+DMA bit set, the engine drains each armed context in order A then B: it
+reads the count's bytes from memory and writes them to the cable at
+once, clears the count and the arm, and latches that context's source
+(bit 19 or 20). A context marked last also asserts the service source,
+bit 18, until the next extended-control write. Busy never reads set. A
+transfer from the peripheral logs ``LOG_UNIMP`` and leaves the context
+armed. An unreadable buffer latches the DMA error source, bit 21, with
+``LOG_GUEST_ERROR``. Transferring in the write is an *approximation*; the
+chip's pacing is *unknown*.
 
-The same chip sits on boards that wire up different subsets of it,
-and a guest works out which board it is on from the subsystem
-identity in configuration space. The ``subsystem-id`` property
-carries that identity and the model selects the population from it:
-the ethernet block and, with it, the one-wire station-address part;
-each 16550 with its DMA registers and alias page; the PS/2
-controller; the parallel port; and the M48T35 on byte-bus device 0.
-What a board does not fit is neither realized nor mapped, and the
-window it would have answered is a hole like any other. An identity
-the table does not name gets the fall-through population rather than
-a refusal, matching the dispatch in mainline Linux's multifunction
-driver the table is taken from.
+ECP register file
+-----------------
 
-One-wire is not selected separately. The station-address part is
-wired up with the ethernet, so a board without ethernet has no part
-on its bus and the wire reads idle -- the same answer the pin-control
-gate gives, reached the same way.
+.. list-table::
+   :header-rows: 1
 
-The Octane board's clock is a DS1685 at two other byte-bus selects,
-modelled by ``hw/rtc/ds1685.c`` (:doc:`/system/mips/sgi/ip30`); that board gets no
-M48T35. Its front-panel LEDs are not modelled.
+   * - Offset
+     - Name
+     - Notes
+   * - ``0x20150``
+     - Data
+     - Stored.
+   * - ``0x20151``
+     - Status
+     - Reads ``0x08``: no fault, nothing else. Writes log
+       ``LOG_GUEST_ERROR``.
+   * - ``0x20152``
+     - Control
+     - Stored as written.
+   * - ``0x20158``
+     - FIFO, or configuration A in mode 7
+     - A FIFO write outside test mode goes straight to the cable.
+   * - ``0x20159``
+     - Configuration B
+     - Stored.
+   * - ``0x2015a``
+     - Extended control
+     - Stores bits 2-7; bits 0 and 1 read FIFO empty and full.
 
-The default is the Origin 200's own board, so the machine and every
-test that does not ask for another are unaffected.
+Any other offset in the file logs ``LOG_UNIMP``. A status of ``0x08``
+says no fault and never busy, so a driver waiting on the printer never
+waits. Outside test mode the FIFO is bottomless: empty always reads set
+and full never does. A FIFO read outside test or configuration mode
+returns zero with ``LOG_GUEST_ERROR``, as does a test-mode read with
+nothing queued. Every extended-control write clears the service source
+first, an *approximation*; whether the service and fault-interrupt bits
+are active high or low on this part is *unknown*, so the model arms
+nothing from them.
 
-PCI identity
+Test mode (mode 6) keeps a FIFO whose depth is the ``fifo-depth``
+property, zero by default. Writes queue and reads return the oldest byte;
+the empty and full flags follow its occupancy. Entering mode 0 or 1
+empties it. Generic parts drop a write to a full FIFO with ``LOG_UNIMP``.
+
+TL16PIR552
+----------
+
+The TI TL16PIR552 is a dual UART and IEEE 1284 parallel controller with a
+16-byte parallel FIFO (:src:`ti-tl16pir552-slls222a p. 1, 40`),
+*established*. Its package sits beside the clock on Octane boards of
+revision D and revision F (:src:`bukosek-octane-motherboard-front`,
+:src:`commons-ip30-030-0887-003-rev-f`) and on an Origin 200 IP29 board
+(:src:`theretroweb-origin200-image-1`), *observed*. How it connects to
+the IOC3, and whether its UARTs are the two 16550 files, is *unknown*.
+
+``parallel-part=1`` on ``sgi-ioc3-parallel`` selects the part's register
+contract as far as the model goes:
+
+- the test FIFO is 16 bytes; ``fifo-depth`` must be 0 or 16;
+- in mode 7, configuration A reads ``0x1f`` and configuration B reads
+  ``0x0b``, IRQ 7 and DMA channel 3, both read-only
+  (:src:`ti-tl16pir552-slls222a p. 44`), *established* for the part.
+  Writes to them log ``LOG_GUEST_ERROR``. Configuration B's bit 6
+  samples the part's interrupt line; the model reads it as zero and logs
+  ``LOG_UNIMP``;
+- a test-mode write to a full FIFO drops the oldest byte. TI says writes
+  continue and overrun but not which byte is lost
+  (:src:`ti-tl16pir552-slls222a p. 41, 45`), so the order is an
+  *approximation*.
+
+Everything else, including the status and control registers, the
+extended control register and DMA, behaves as on the generic port above.
+The ``octane`` and ``octane2`` machines and the Fuel board select the
+part. The reference Octane2's board is revision B and Fuel's fitted part
+is not identified, so both selections are *inferred* from other board
+revisions. The Origin 200 board keeps the generic port.
+
+Byte bus and clocks
+===================
+
+The byte bus has four selects of 128 KiB. Which answer depends on the
+board's clock, *software expectation* from Linux and OpenBSD:
+
+- **M48T35.** A directly addressed 32 KiB timekeeper at select 0
+  (``hw/rtc/m48t35.c``), on the Origin 200, the IP27 BaseIO boards and
+  the Origin 300. OpenBSD names the Origin 200 part a DS1742W
+  (:src:`dmesgd-8994 dsrtc0 line`), *observed*; the model's 32 KiB
+  Timekeeper-compatible store is an *approximation* of it. The clock
+  occupies the top eight bytes and everything below is storage, which
+  SGI's driver probes by writing and reading back. ``nvram-drive`` backs
+  the store with a 32 KiB image, and reset keeps its contents and time.
+- **DS1685.** An indexed clock reached through an address port at select
+  1 and a data port at select 2, on the Octane (:doc:`ds1685`).
+  ``ds1685-drive`` backs it.
+
+No board fits both. A select with no part, and select 3 always, is a
+hole.
+
+DMA and byte order
+==================
+
+Every DMA master in the chip, the serial rings, the Ethernet engine and
+the parallel contexts, goes through one chip-owned view of the PCI
+bus-master address space, so the Bridge or XBridge applies its
+translation and swap controls to every access. The view reverses each
+aligned 32-bit word and places a narrower access at its address XOR the
+complement of its size. With the Bridge's DMA swap clear, as every
+guest programs it for this slot, the two compose to host byte order:
+big-endian descriptors read as values and frame bytes land in wire
+order. Setting the slot's swap control reverses every 32-bit word,
+frames included. The 32-bit PCI interface is *established*
+(:src:`octane-technical-report p. 2-25`, :src:`007-3439-002 p. 69`);
+the chip's own lane placement is *unknown*, and the view is an
+*approximation* that gives the result every guest expects. OpenBSD and
+Linux clear the swap bits for this slot, and the IRIX 6.5.30 kernel
+never sets them, *software expectation*.
+
+Reset
+=====
+
+A reset clears the SuperIO status and enable registers, chip control, the
+interrupt output and its timer, MicroLAN control, pin control and pin
+data, the ring bases and per-port registers with their timers and
+packers, and the 16550 extras. The clock pre-divider is left as
+programmed, an *approximation*: no reset value is known. The Ethernet
+engine clears every register, including the ring bases, and drops held
+completions. The PS/2 controller clears control and both holdings. The
+parallel port clears its registers and FIFO. Buffer RAM and the clock
+part's storage survive. The reset values are model choices; the chip's
+reset state is *unknown* beyond the Status value under `Configuration
+space`_.
+
+Migration
+=========
+
+The chip and each child migrate their registers, timers, ring state,
+held receive completions, PS/2 holdings, parallel FIFO and buffer RAM.
+Migration works only between identical builds. A destination with a
+different GPIO input mask or value, or a different parallel part or FIFO
+depth, refuses the stream.
+
+.. _sgi-ioc3-measurements:
+
+Measurements
 ============
 
-The chip's PCI Status register must read 0x0280 at reset (medium
-DEVSEL, fast back-to-back), both bits read-only: IRIX's
-configuration-space diagnostic compares the whole dword containing
-it and fails the slot on a zero Status half. Chip-control bit 22 (PCI
-arbiter idle) is read-only. It reads clear only while the serial DMA
-engine is inside a transfer, the rule IOC4's serial idle bit shares.
-QEMU completes each transfer before the access that started it returns,
-so software always reads it set, which a kernel's console setup needs:
-it does not complete until the bit reads idle. Whether the hardware
-also clears it for Ethernet or parallel-port DMA is not modelled.
+No IOC3 register has been read on a physical machine for this page. The
+reference Octane2 (:ref:`sgi-measured-octane2`) reported its onboard IOC3
+functions in its hardware inventory (:ref:`sgi-measured-octane2-hinv`):
 
-M48T35 timekeeper
-=================
+.. list-table::
+   :header-rows: 1
 
-The timekeeper sits on the IOC3's byte bus (``hw/rtc/m48t35.c``):
-32 KB of battery-backed byte-wide cells with the clock in the top
-eight, a control byte first and the six fields after it. Everything
-below the clock must answer as storage, and it is probed: SGI's
-driver identifies the clock part by writing 0xff at offset 0x6 with
-offset 0xb zero and reading 0x6 back. The bank of eight just below
-the clock is unidentified by any source and reads as storage too.
+   * - Source
+     - Width
+     - Value
+     - Chip revision
+     - When
+   * - ``hinv -mvv``
+     - not a register read
+     - serial ports ``tty1`` and ``tty2``, parallel ``plp1``, Ethernet
+       ``ef0``; frontplane ``030-0891-003`` revision H
+     - not reported
+     - IRIX 6.5.30m running
 
-Control bit 6 freezes the clock so that six reads describe one
-instant; bit 7 arms a write, whose fields are collected and applied
-together when the bit clears. Both read paths share one offset from
-the host clock, so releasing a freeze cannot make the clock jump. A
-clock field written with the write bit clear is dropped: the
-counters are running and the hardware has nowhere to put it. The
-weekday register is stored, not counted; the part leaves it alone
-until software writes it.
+This establishes that the board fits both serial ports, the parallel port
+and Ethernet, which the ``octane2`` population matches. It does not
+establish any register value, reset state, PCI revision, parallel
+controller part or PHY.
 
-The two-digit year counts from 1970 and every driver adds it back;
-calendar digits instead would boot cleanly and report the mid-1990s.
-A guest-set time is kept as an offset differenced through the same
-clock the read path uses (whichever ``-rtc clock=`` selected), not
-through the host clock unconditionally. The optional battery is a
-drive of exactly 32 KB, the same contract as ``mac_nvram``; reset
-preserves cells and time but cancels an unfinished freeze or write
-transaction, or the next guest inherits a stopped clock.
+.. _sgi-ioc3-limits:
+
+Model limits
+============
+
+- The PCI error-address record, the configuration copy at ``0x00-0x18``,
+  the interrupt-output alias page, the UART and keyboard configuration
+  bytes and the SuperIO clock register file are not modelled. The main
+  block logs ``LOG_UNIMP``; the others are holes.
+- Carrier-detect and clear-to-send change sources, the interrupt input
+  pulse, the external interrupt output pin and the Octane front-panel
+  LEDs are not modelled.
+- The 16550 auto flow control, RS-232 and RS-422 mode selection and the
+  SuperIO reset bit have no effect.
+- The Ethernet engine raises only the receive timer, receive threshold,
+  transmit empty and transmit completion sources. Receive timer reloads
+  other than zero are not modelled. Full duplex, interframe gaps, the
+  random seed, the receive barrier and buffer-RAM frame staging have no
+  effect. The checksum offload recomputes the whole checksum.
+- The parallel port moves no data from the peripheral, implements no
+  cable handshake, and models neither service thresholds nor interrupt
+  polarity.
+- Of the TL16PIR552, only the configuration values, test FIFO depth and
+  overrun order are modelled. Its EPP address and data registers
+  (offsets 3-7 of the ECP file) log ``LOG_UNIMP``; the status register's
+  print and EPP timeout bits, the control register's acknowledge
+  interrupt and the part's FIFO service threshold are not modelled.
+- PS/2 framing errors, timeouts and line-level status are not modelled.
+- Accesses of the wrong width are refused by QEMU's memory core.
+
+Tests
+=====
+
+- ``tests/qtest/sn0-ioc3-test.c``: configuration space, board
+  population and its validation, the interrupt status and enable aliases,
+  the second interrupt reaching Bridge pin 3, chip control, the
+  interrupt output in every mode, pin control and pin registers, the
+  one-wire engine and station-address part, the Ethernet filter,
+  transmit, checksum, threshold, timer, reset and PHY scan, buffer RAM
+  size and parity, the PS/2 controller and its clamps, and the M48T35.
+- ``tests/qtest/sn0-ioc3-serial-test.c``: the 16550 extras and the
+  pre-divider, the transmit record, ring geometry and both alias pages,
+  transmit entry types, the receive packer, timer and drain, pause,
+  loopback timing, the shadow and migration.
+- ``tests/qtest/sgi-ioc3-eth-test.c``: Ethernet ring wrap, descriptor
+  bounds, receive delivery and its arrival latency, refused DMA, the
+  stopped-MAC counter and buffer-index storage, the DMA swap controls,
+  and the DP83840A and DP83843 PHYs, with some checks repeated with the
+  ICS1890 fitted. ``tests/qtest/ics1890-test.c`` drives the ICS1890
+  through this chip's MII registers.
+- ``tests/qtest/sn0-ioc3-parallel-test.c``: both parallel register
+  blocks, the DMA engine, the status and FIFO flags, the test FIFO, the
+  TL16PIR552 variant and save and restore of the FIFO.
+- ``tests/qtest/sn0-ioc3-kbc-routing-test.c``: the
+  ``activate-keyboard`` property.
+- ``tests/qtest/ioc3-release-fixture.c`` is a helper device for a
+  release check, not a test of its own.
