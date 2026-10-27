@@ -6525,23 +6525,46 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
     return true;
 }
 
-static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
+/*
+ * A routed fabric tells its modules apart by their L1s' brick serials,
+ * so no two built controllers may share one.
+ */
+static bool sgi_machine_check_controller_serials(SGIMachineState *s,
+                                                 Error **errp)
+{
+    for (unsigned index = 0; index < s->controller_count; index++) {
+        const char *serial = s->controllers[index] ?
+            SGI_L1(s->controllers[index])->brick_serial : NULL;
+
+        for (unsigned other = 0; serial && other < index; other++) {
+            if (s->controllers[other] &&
+                !g_strcmp0(serial,
+                           SGI_L1(s->controllers[other])->brick_serial)) {
+                error_setg(errp, "controllers %u and %u share brick "
+                           "serial '%s'; use controller-brick-serial "
+                           "to assign distinct module identities",
+                           other, index, serial);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/*
+ * Register each node's L1 under its module's controller and build every
+ * SN1 router with its module's L1. Routers need this whether or not the
+ * topology carries the L1 management registry.
+ */
+static bool sgi_machine_build_sn1_controllers(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
     g_autofree const SGIModelModule **modules = NULL;
-    const SGIModelIoAssemblyList *entry;
     const SGIModelNodeList *node_entry;
-    const SGIModelL1OwnerList *owner_entry;
-    const SGIModelL1AssociationList *association;
-    const SGIModelL1AttachmentList *attachment;
     size_t module_count;
     unsigned index;
-    Error *local_error = NULL;
-    static const char *const port_names[] = {
-        "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
-    };
 
-    if (!t->l1_management) {
+    if (!t->l1_management && !t->routers) {
         return true;
     }
     modules = sgi_model_module_array(t->modules, &module_count);
@@ -6549,11 +6572,6 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     s->controllers = g_new0(DeviceState *, s->controller_count);
     s->controller_reset_registered = g_new0(bool, s->controller_count);
     s->controller_bics = g_new0(DeviceState *, s->controller_count);
-    s->io_peer_count = QAPI_LIST_LENGTH(t->io_peers);
-    s->io_peers = g_new0(DeviceState *, s->io_peer_count);
-    s->io_peer_notifiers = g_new0(SGIMachinePeerNotifier, s->io_peer_count);
-    s->assembly_ownership =
-        g_new0(SGIMachineAssemblyOwnership, s->io_peer_count);
     for (node_entry = t->nodes, index = 0; node_entry;
          node_entry = node_entry->next, index++) {
         const SGIModelNode *node = node_entry->value;
@@ -6575,6 +6593,34 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     if (!sgi_machine_build_sn1_routers(s, t, errp)) {
         return false;
     }
+    /* With the registry, the check waits for every controller it builds. */
+    return t->l1_management || sgi_machine_check_controller_serials(s, errp);
+}
+
+static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    const SGIModelIoAssemblyList *entry;
+    const SGIModelL1OwnerList *owner_entry;
+    const SGIModelL1AssociationList *association;
+    const SGIModelL1AttachmentList *attachment;
+    size_t module_count;
+    unsigned index;
+    Error *local_error = NULL;
+    static const char *const port_names[] = {
+        "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
+    };
+
+    if (!t->l1_management) {
+        return true;
+    }
+    modules = sgi_model_module_array(t->modules, &module_count);
+    s->io_peer_count = QAPI_LIST_LENGTH(t->io_peers);
+    s->io_peers = g_new0(DeviceState *, s->io_peer_count);
+    s->io_peer_notifiers = g_new0(SGIMachinePeerNotifier, s->io_peer_count);
+    s->assembly_ownership =
+        g_new0(SGIMachineAssemblyOwnership, s->io_peer_count);
     for (const SGIModelIoBoardList *board = t->io_boards; board;
          board = board->next) {
         const SGIModelIoBoard *record = board->value;
@@ -6800,21 +6846,8 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             return false;
         }
     }
-    if (t->routers) {
-        for (index = 0; index < s->controller_count; index++) {
-            const char *serial = SGI_L1(s->controllers[index])->brick_serial;
-
-            for (unsigned other = 0; serial && other < index; other++) {
-                if (!g_strcmp0(serial,
-                        SGI_L1(s->controllers[other])->brick_serial)) {
-                    error_setg(errp, "controllers %u and %u share brick "
-                               "serial '%s'; use controller-brick-serial "
-                               "to assign distinct module identities",
-                               other, index, serial);
-                    return false;
-                }
-            }
-        }
+    if (t->routers && !sgi_machine_check_controller_serials(s, errp)) {
+        return false;
     }
     for (index = 0; index < s->controller_count; index++) {
         SGIL1State *l1 = SGI_L1(s->controllers[index]);
@@ -8564,7 +8597,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         g_assert(cpu_index == machine->smp.cpus);
-        if (!sgi_machine_build_io_assemblies(s, t, errp)) {
+        if (!sgi_machine_build_sn1_controllers(s, t, errp) ||
+            !sgi_machine_build_io_assemblies(s, t, errp)) {
             return false;
         }
         /*
@@ -9455,7 +9489,8 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     for (unsigned int i = 0; i < s->controller_count; i++) {
         SGIL1State *l1 = SGI_L1(s->controllers[i]);
 
-        if (l1->power_command_owner) {
+        /* Without the L1 registry, a controller may have no built L1. */
+        if (l1 && l1->power_command_owner) {
             l1->power_command_reachable = true;
         }
     }

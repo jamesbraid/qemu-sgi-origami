@@ -9283,6 +9283,46 @@ static void test_cbrick_board_on_crossbar_port(const void *data)
     g_unlink(prom);
 }
 
+/*
+ * An SN1 router on a topology with no L1 management record: the router
+ * is built in its own module beside that module's L1 and the L1's UART,
+ * and each C-brick's Bedrock is cabled to its own port of it.
+ */
+static void test_rbrick_router_without_l1_management(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-rbrick", prom, "");
+    g_autofree char *router = qom_child_type(qts, "/machine/module2",
+                                             "router");
+    g_autofree char *l1 = qom_child_type(qts, "/machine/module2", "l1");
+    g_autofree char *uart = qom_get_str(qts, "/machine/module2/router",
+                                        "l1-uart");
+
+    g_assert_cmpstr(router, ==, "sgi-sn1-router");
+    g_assert_cmpstr(l1, ==, "sgi-l1");
+    g_assert_cmpstr(uart, ==, "/machine/module2/l1-uart");
+    for (unsigned int port = 1; port <= 8; port++) {
+        g_autofree char *name = g_strdup_printf("port%u-cable", port);
+        g_autofree char *cable = qom_get_str(qts, "/machine/module2/router",
+                                             name);
+
+        if (port == 2 || port == 3) {
+            g_autofree char *node = g_strdup_printf("/machine/node%u/bedrock",
+                                                    port - 2);
+            g_autofree char *from_node = qom_get_str(qts, node, "net-cable");
+            g_autofree char *expected = g_strdup_printf(
+                "/machine/c%u-to-router", port - 2);
+
+            g_assert_cmpstr(cable, ==, expected);
+            g_assert_cmpstr(from_node, ==, expected);
+        } else {
+            g_assert_cmpstr(cable, ==, "");
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -10542,6 +10582,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn/builder/cbrick/nbrick-save-restore",
                    test_nbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
+    qtest_add_func("sn/builder/cbrick/rbrick-without-l1-management",
+                   test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
         const char *fault = strstr(cbrick_refusal_cases[i].machine,
