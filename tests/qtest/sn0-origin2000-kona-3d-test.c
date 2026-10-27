@@ -18807,12 +18807,17 @@ static void test_texture_colour_table(gconstpointer opaque)
 /*
  * Enabling histogram, minmax or a colour table with none defined changes
  * no image: GLperf disables all five before its pixel cases, and an
- * enable alone must not stop a draw.
+ * enable alone must not stop a draw. KONA keeps these enables itself, so
+ * neither the enable nor the disable is logged as an unmodelled capability.
  */
 static void test_undefined_stages_draw(void)
 {
-    static const uint32_t caps[] = { 0x8024, 0x802e, 0x80d0, 0x80d1, 0x80d2 };
-    QTestState *s = qtest_init(MACHINE_ARGS);
+    static const uint32_t caps[] = {
+        0x8024, 0x802e, 0x80d0, 0x80d1, 0x80d2, 0x80bc,
+    };
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
 
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 0);
@@ -18821,7 +18826,13 @@ static void test_undefined_stages_draw(void)
     }
     colour_matrix_draw(s);
     convolution_expected(s, 0x400000, 0x008000);
+    for (unsigned k = 0; k < ARRAY_SIZE(caps); k++) {
+        kona_command(s, 0x25, &caps[k], 1);
+    }
     qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "is not modelled; glEnable"));
+    g_assert_null(strstr(found, "is not modelled; glDisable"));
 }
 
 /*
