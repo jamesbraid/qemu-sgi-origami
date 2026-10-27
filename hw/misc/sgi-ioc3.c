@@ -918,6 +918,7 @@ static void sgi_ioc3_sdma_transmitted(void *opaque, unsigned port, uint8_t ch)
 
 /* IOC3's header defines the held counts; an IOC3 halt is not known. */
 static const SGIIOCSerialDMAParams sgi_ioc3_sdma_params = {
+    .name = "sgi-ioc3",
     .held_counts = true,
     .halt_on_dma_error = false,
 };
@@ -935,17 +936,12 @@ static uint64_t sgi_ioc3_sdma_read(void *opaque, hwaddr addr, unsigned size)
     hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
     unsigned int port;
     hwaddr offset;
-    uint32_t val;
 
     if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
-        val = sgi_ioc_sdma_port_read(&s->sdma_engine, port, offset);
-    } else {
-        val = sgi_ioc_sdma_base_read(&s->sdma_engine, 0,
-                                     reg == SGI_IOC3_SDMA_RING_HI);
+        return sgi_ioc_sdma_port_read(&s->sdma_engine, port, offset);
     }
-
-    trace_sgi_ioc3_sdma_read((uint32_t)reg, val);
-    return val;
+    return sgi_ioc_sdma_base_read(&s->sdma_engine, 0,
+                                  reg == SGI_IOC3_SDMA_RING_HI);
 }
 
 static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
@@ -955,8 +951,6 @@ static void sgi_ioc3_sdma_write(void *opaque, hwaddr addr, uint64_t val,
     hwaddr reg = SGI_IOC3_SDMA_BASE + addr;
     unsigned int port;
     hwaddr offset;
-
-    trace_sgi_ioc3_sdma_write((uint32_t)reg, (uint32_t)val);
 
     if (sgi_ioc3_sdma_port_offset(reg, &port, &offset)) {
         sgi_ioc_sdma_port_write(&s->sdma_engine, port, offset, val);
@@ -982,9 +976,6 @@ static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
     SGIIOC3SerialAlias *alias = opaque;
-    uint32_t reg = SGI_IOC3_SDMA_ALIAS_A +
-        alias->port * (SGI_IOC3_SDMA_ALIAS_B - SGI_IOC3_SDMA_ALIAS_A) + addr;
-    uint32_t val;
 
     if (addr >= SGI_IOC_SDMA_PORT_REGS * 4) {
         qemu_log_mask(LOG_UNIMP,
@@ -994,18 +985,14 @@ static uint64_t sgi_ioc3_sdma_alias_read(void *opaque, hwaddr addr,
         return 0;
     }
 
-    val = sgi_ioc_sdma_port_read(&alias->chip->sdma_engine, alias->port,
-                                 addr);
-    trace_sgi_ioc3_sdma_read(reg, val);
-    return val;
+    return sgi_ioc_sdma_port_read(&alias->chip->sdma_engine, alias->port,
+                                  addr);
 }
 
 static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
                                       unsigned size)
 {
     SGIIOC3SerialAlias *alias = opaque;
-    uint32_t reg = SGI_IOC3_SDMA_ALIAS_A +
-        alias->port * (SGI_IOC3_SDMA_ALIAS_B - SGI_IOC3_SDMA_ALIAS_A) + addr;
 
     if (addr >= SGI_IOC_SDMA_PORT_REGS * 4) {
         qemu_log_mask(LOG_UNIMP,
@@ -1024,11 +1011,11 @@ static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
     if (addr == SGI_IOC_SDMA_TX_CONSUME ||
         addr == SGI_IOC_SDMA_RX_PRODUCE ||
         addr == SGI_IOC_SDMA_SHADOW) {
-        trace_sgi_ioc3_sdma_write_refused(reg, (uint32_t)val);
+        sgi_ioc_sdma_write_refused(&alias->chip->sdma_engine, alias->port,
+                                   addr, val);
         return;
     }
 
-    trace_sgi_ioc3_sdma_write(reg, (uint32_t)val);
     sgi_ioc_sdma_port_write(&alias->chip->sdma_engine, alias->port, addr,
                             val);
 }

@@ -15,6 +15,7 @@
 #include "chardev/char-fe.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
+#include "trace.h"
 
 /* The 16550's published layout; hw/char/serial.c's macros are private. */
 #define UART_RBR_THR    0
@@ -728,8 +729,8 @@ static uint32_t sdma_shadow(SGIIOCSerialDMAPort *p)
     return shadow;
 }
 
-uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
-                                hwaddr offset)
+static uint32_t sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
+                               hwaddr offset)
 {
     SGIIOCSerialDMAPort *p = &d->port[port];
     uint32_t val;
@@ -901,23 +902,45 @@ static void sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
     }
 }
 
+uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
+                                hwaddr offset)
+{
+    uint32_t val = sdma_port_read(d, port, offset);
+
+    trace_sgi_ioc_sdma_read(d->params->name, port, offset, val);
+    return val;
+}
+
 void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
                              hwaddr offset, uint32_t val)
 {
+    trace_sgi_ioc_sdma_write(d->params->name, port, offset, val);
     sdma_port_write(d, port, offset, val);
     /* Enabling, a doorbell or a reset can change it without a walk. */
     sdma_update_tx_empty(&d->port[port]);
     sdma_update_high_water(&d->port[port]);
 }
 
+void sgi_ioc_sdma_write_refused(SGIIOCSerialDMA *d, unsigned port,
+                                hwaddr offset, uint32_t val)
+{
+    trace_sgi_ioc_sdma_write_refused(d->params->name, port, offset, val);
+}
+
 uint32_t sgi_ioc_sdma_base_read(SGIIOCSerialDMA *d, unsigned pair, bool high)
 {
-    return high ? d->base_hi[pair] : d->base_lo[pair];
+    uint32_t val = high ? d->base_hi[pair] : d->base_lo[pair];
+
+    trace_sgi_ioc_sdma_base_read(d->params->name, pair,
+                                 high ? "high" : "low", val);
+    return val;
 }
 
 void sgi_ioc_sdma_base_write(SGIIOCSerialDMA *d, unsigned pair, bool high,
                              uint32_t val)
 {
+    trace_sgi_ioc_sdma_base_write(d->params->name, pair,
+                                  high ? "high" : "low", val);
     if (high) {
         d->base_hi[pair] = val;
     } else {

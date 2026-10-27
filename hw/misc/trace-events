@@ -752,9 +752,6 @@ sgi_ioc3_serial_read(void *chip, int port, uint32_t reg, uint8_t value) "ioc3 %p
 sgi_ioc3_serial_write(void *chip, int port, uint32_t reg, uint8_t value) "ioc3 %p serial %c reg %u <- 0x%02x"
 sgi_ioc3_serial_data_read(void *chip, int port, uint32_t reg) "ioc3 %p serial %c reg %u -> [data]"
 sgi_ioc3_serial_data_write(void *chip, int port, uint32_t reg) "ioc3 %p serial %c reg %u <- [data]"
-sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"
-sgi_ioc3_sdma_write(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x"
-sgi_ioc3_sdma_write_refused(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x refused, hardware owns it"
 
 # sgi-elsc.c
 sgi_elsc_get(uint32_t rx_before, uint32_t rx_after, unsigned int payload) "console-input poll: rx_queue %u -> %u, payload %u byte(s)"

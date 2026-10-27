@@ -129,6 +129,7 @@ static void ioc4_uart_irq(void *opaque, int n, int level)
  * capture registers, and the policies only this model has so far.
  */
 static const SGIIOCSerialDMAParams ioc4_sdma_params = {
+    .name = "sgi-ioc4",
     /* IOC4's header does not define the packer counts; unknown here. */
     .held_counts = false,
     /* "Serial halted by mem err", in the header's other-interrupt word. */
