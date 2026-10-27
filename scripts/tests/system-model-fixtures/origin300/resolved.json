@@ -109,7 +109,7 @@
       "name": "IOC3 byte bus",
       "provenance": "datasheet",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -213,7 +213,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -243,7 +243,7 @@
       "sources": [
         "007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard",
         "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi-presence"
       ]
     },
     {
@@ -264,13 +264,13 @@
         "SN1 Hub (descriptive, from SGI reusing the Hub's identifiers for it)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ip35-address-map.rst",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md",
-        "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb"
+        "qemu:docs/system/mips/sgi/ip35.rst",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md",
+        "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb"
       ],
       "description": "The node controller: two processor interfaces, the I/O interface that is the XIO port, the local block, the network interface, the internal crossbar and the memory and directory interface. Its registers are XIO widget 1 of its own node, an 8 MB window with a local alias.",
       "hardware_kind": "bedrock",
@@ -400,8 +400,8 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-xbridge.rst",
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst",
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
       ],
       "description": "The SN1 XIO-to-PCI part: a Crossbow crossbar section fused with two Bridge sections, one PCI bus each. A mode pin straps it as a crossbar with the two bridges on internal ports 0xe and 0xf and six external ports (XBridge mode), or as two independent bridges with the crossbar disabled (Super Bridge mode). The IP45 runs XBridge mode: observed on three real Origin 300s, whose inventories report a crossbar at widget 0 and bridges at widgets 14 and 15.",
       "hardware_kind": "xbridge",
@@ -430,7 +430,7 @@
         "kind": "xbridge"
       },
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-xbridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/xbridge.rst"
       ],
       "description": "Widget 0 in XBridge mode: the chip's internal Crossbow, with the two PCI bridges on ports 0xe and 0xf, six external XIO ports 8 to 0xd, and the Bedrock entering at port 0xa. Real Origin 300s report it as \"ASIC XBOW Rev 2, on CBrick\"; the verbose PROM trace prints \"HUB at 0x0 attached as widget 0xa\" and \"Check_master: link 10 is master\".",
       "hardware_kind": "xbridge",
@@ -507,7 +507,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "The same chip the Origin 200 uses, on the IO-8 assembly at PCI device 4. On the Origin 300 it exposes serial A and B, the parallel function, the byte-bus Timekeeper and the board's 10/100 Ethernet, and no keyboard or mouse controller. No rear-panel parallel connector is established by the reviewed IO-8 connector inventory. The chip includes its one-wire engine, but this board does not fit the IOC3 Ethernet-address identity part: the address comes from the brick EEPROM through the L1. Serial A is the guest console; serial B is the second rear-panel serial port. Emulator chardev index 0 is reserved for the separate L1 management channel, with IOC3 A and B on indexes 1 and 2. The integration contract uses explicit population mask 0x17 and selects M48T35-compatible timekeeper-kind 1 as a documented compatibility choice whose clearance depends on the required Origin 300 qtest.",
       "hardware_kind": "ioc3",
@@ -568,7 +568,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "Emulator compatibility choice for IOC3 byte-bus select 0. This does not identify the physical IP45 package or establish its complete decode.",
       "hardware_kind": "m48t35",
@@ -580,7 +580,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-qlogic-isp.rst"
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst"
       ],
       "description": "Ultra3 at 160 MB/s with one internal and one external channel, at PCI device 1 on the IO-8's bus. Real Origin 300s report it as \"QL12160, low voltage differential\" with PCI ids 0x1077:0x1216 (printed in decimal as 4215, 4630); OpenBSD names the same part on a Fuel.",
       "hardware_kind": "isp12160",
@@ -604,7 +604,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-lucent-ohci.rst"
+        "qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst"
       ],
       "description": "The board's two USB ports at 00:05.0 on the IO-8 bus. Real Origin 300s report an AT&T/Lucent 0x11c1:0x5802 two-port controller at PCI revision 0x10, with OHCI revision 1.0 and legacy support.",
       "hardware_kind": "lucent-ohci",
@@ -660,7 +660,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-l1.rst"
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
       ],
       "description": "The per-chassis system controller: a packet protocol over the Bedrock's UART, not a register file. It runs whenever the chassis has mains power, shows \"L1 running\" before anything else is powered, powers the node up on command, multiplexes the operator console, and answers the display, board-identity and memory-module requests a guest sends.",
       "hardware_kind": "l1",
@@ -809,7 +809,7 @@
       "nodes": 1,
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
         "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
@@ -821,7 +821,7 @@
       "min_nodes": 1,
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
       ],
@@ -900,7 +900,7 @@
       "provenance": "observed-hardware",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-io"
+        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-address-map-io"
       ],
       "widget": 10
     },
@@ -1015,7 +1015,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -1025,7 +1025,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -1249,7 +1249,7 @@
           "provenance": "derived",
           "sources": [
             "qemu:hw/mips/sgi/sn1-node.c",
-            "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology",
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
             "qemu:hw/mips/sgi/sn-machine.c"
           ]
         }
@@ -1273,9 +1273,9 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": "0x1686a8",
         "sources": [
-          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier",
-          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-trampolines",
-          "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views"
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views"
         ],
         "views": [
           {
@@ -1322,7 +1322,7 @@
           "provenance": "derived",
           "sources": [
             "hw/mips/sgi/baseio.c",
-            "qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices"
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices"
           ]
         }
       },
@@ -1348,7 +1348,7 @@
           },
           "sources": [
             "qemu:hw/mips/sgi/sn1-node.c",
-            "qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order",
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-serial-order",
             "qemu:hw/mips/sgi/sn-machine.c"
           ]
         }
@@ -1422,8 +1422,8 @@
         "tftp_mode": "fixed"
       },
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus",
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata"
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-disk-bus",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata"
       ],
       "supported_guests": [
         "irix"
@@ -1602,7 +1602,7 @@
       "part": "r16000",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs",
+        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs",
         "web:living-raptor-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified",
         "web:irixnet-thread-2263  cute-shrimp/02.hinv module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"
       ],

@@ -3,7 +3,7 @@
 /*
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The MAC is SGI's
  * own design with no vendor document; the IOC3 register behavior is
- * documented in docs/specs/sgi-ioc3.rst.
+ * documented in docs/system/mips/sgi/hardware/ioc3.rst.
  */
 
 #ifndef HW_NET_SGI_IOC3_ETH_H

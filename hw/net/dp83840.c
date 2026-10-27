@@ -7,7 +7,7 @@
  * The "dp83843" property switches the model to
  * the Origin 300 IO-8 board's DP83843 part, with its own identity,
  * loopback selection and reset register values. See
- * docs/specs/sgi-ioc3.rst.
+ * docs/system/mips/sgi/hardware/ioc3.rst.
  */
 
 #include "qemu/osdep.h"

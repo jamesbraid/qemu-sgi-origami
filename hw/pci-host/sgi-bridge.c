@@ -6,7 +6,7 @@
  * Registers are 32 bits in the upper word of an eight-byte slot -- the data
  * sits at the slot's offset plus four -- and the reset state is heavily
  * non-zero, so decode, reset value and writable mask all come from one
- * table. See docs/specs/sgi-bridge.rst for the register, translation,
+ * table. See docs/system/mips/sgi/hardware/bridge.rst for the register, translation,
  * byte-lane and board-identity contracts.
  */
 

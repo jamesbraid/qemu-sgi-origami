@@ -14,12 +14,12 @@ layer:
     max_nodes: 1
     supported_cpu_populations: [[2], [4]]
     provenance: derived
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, 007-4365-002, 108-0263-004]
   population:
     nodes: 1
     cpus_per_node: [2]
     provenance: derived
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, owner-2cpu, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, owner-2cpu, 007-4365-002, 108-0263-004]
   cpu_selection:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
@@ -44,21 +44,21 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fixed, value: 12}
             provenance: derived
-            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
+            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:
           compute-l1:
             reported_type: 52
             revision: {major: 1, minor: 18, patch: 5}
             provenance: derived
-            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-serial-order, qemu:hw/mips/sgi/sn-machine.c]
+            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-serial-order, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         io_boards:
           compute-xbridge-bridge-f:
             ioc3_subsystem_id: 65535
             mac_source: module-l1
             provenance: derived
-            sources: [hw/mips/sgi/baseio.c, qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]
+            sources: [hw/mips/sgi/baseio.c, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]
             notes: The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.
         system_timekeepers:
           compute-xbridge-bridge-f:
@@ -112,7 +112,7 @@ layer:
             address: "0x100_1a000000"
             size: "0x0080_0000"
           provenance: derived
-          sources: [qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-carrier, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-trampolines, qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip35-views]
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
           notes: >-
             The four views alias one operator-supplied payload. This is emulator
             compatibility policy; it does not identify a fitted flash part, a
@@ -186,7 +186,7 @@ layer:
         supported_guests: [irix]
         install_media: [disk-image, netboot]
         provenance: derived
-        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus, qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata]
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-disk-bus, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
     components:
       - id: compute-module
         name: Origin 300 compute server
@@ -200,10 +200,10 @@ layer:
         master: compute-bedrock
         link: {kind: cable}
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300"]
+        sources: ["qemu:docs/system/mips/sgi/hardware/pci-expansion.rst#sgi-pci-expansion-origin300"]
     connections:
       - component: compute-bedrock
         bus: expansion-cable
         role: master
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300"]
+        sources: ["qemu:docs/system/mips/sgi/hardware/pci-expansion.rst#sgi-pci-expansion-origin300"]

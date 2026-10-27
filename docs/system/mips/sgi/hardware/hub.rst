@@ -143,7 +143,7 @@ Approximation: the datasheet describes the Hub resetting its node, and a
 warm reset (bit 7) sent over the link to the nodes the Routers' reset masks
 and each Hub's protection register let it reach. The model restarts every
 module that has power, together: all processors stop at the write and the
-machine cold-starts the modules from the main loop (:doc:`sgi-sn`, "Module
+machine cold-starts the modules from the main loop (:doc:`/system/mips/sgi/sn`, "Module
 power and reset"), whichever Hub was written and whatever the masks and
 protection say. No supported guest depends on the difference: every
 software reset path writes bits 7 and 0 together (Linux and the PROM's own
@@ -163,7 +163,7 @@ they keep bits 31:3, start at zero from construction (the datasheet's
 power-on value), and survive reset for the marker the firmware parks in
 processor B's and the operation word OpenBSD parks in processor A's.
 Memory survives as well. The boot flash and the I/O each node hosts restart
-with their module, a model approximation described in :doc:`sgi-sn`.
+with their module, a model approximation described in :doc:`/system/mips/sgi/sn`.
 
 The Hub's per-processor triggers act on processors. A store to ``0x70``
 or ``0x78`` raises the non-maskable interrupt of processor A or B and the

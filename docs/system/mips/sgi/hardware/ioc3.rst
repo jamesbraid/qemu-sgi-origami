@@ -427,7 +427,7 @@ on its bus and the wire reads idle -- the same answer the pin-control
 gate gives, reached the same way.
 
 The Octane board's clock is a DS1685 at two other byte-bus selects,
-modelled by ``hw/rtc/ds1685.c`` (:doc:`sgi-ip30`); that board gets no
+modelled by ``hw/rtc/ds1685.c`` (:doc:`/system/mips/sgi/ip30`); that board gets no
 M48T35. Its front-panel LEDs are not modelled.
 
 The default is the Origin 200's own board, so the machine and every

@@ -22,7 +22,7 @@ layer:
     - 2048
     provenance: derived
     sources:
-    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
+    - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-memory
     notes: >-
       Processor capacity is restricted to the existing single-processor
       emulator profiles. Bank sizes are the owner's guides' pairs of 32 MB
@@ -35,7 +35,7 @@ layer:
     - 128
     provenance: derived
     sources:
-    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
+    - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-memory
   - id: kit-256
     dimms: 2
     dimm_mib: 128
@@ -43,4 +43,4 @@ layer:
     - 256
     provenance: derived
     sources:
-    - qemu:docs/specs/sgi-ip30.rst#sgi-ip30-memory
+    - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-memory

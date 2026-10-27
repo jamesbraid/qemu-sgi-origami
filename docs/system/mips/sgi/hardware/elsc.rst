@@ -455,7 +455,7 @@ the controller sends no NMI to an unpowered module. The machine's resets
 keep the processors stopped while the module stays unpowered. When power
 returns the machine cold-starts that module and no other: its processors
 are reset and its parts cold-reset, and the processors start from the
-reset vector (:doc:`sgi-sn`, "Module power and reset"). The power-up sets
+reset vector (:doc:`/system/mips/sgi/sn`, "Module power and reset"). The power-up sets
 the controller's cold-power latch before the module starts.
 
 The state that holds them is the controller's power state, the Hub's
@@ -489,6 +489,8 @@ power-up or power-down forward not yet delivered to its slave or dropped.
 The start-up power-up with a delay is the machine's ``module-start-delay``
 (`Start-up power-up`_); without one an Origin 2000 module is powered in the
 controller's own start, before any processor runs.
+
+.. _sgi-elsc-master-slave:
 
 Master and slave
 ----------------
@@ -651,7 +653,7 @@ different number of instructions on every run -- does not arise. A
 its reset lands at a fixed point of virtual time and the processors run
 until then. An immediate power-cycle or power-down removes the module's
 power in that work, which queues a stop on each of the module's processors
-(:doc:`sgi-sn`, "Module power and reset"); the requester's own stop runs at
+(:doc:`/system/mips/sgi/sn`, "Module power and reset"); the requester's own stop runs at
 its next block boundary. Multi-threaded execution cannot promise a peer
 stops before its own next instruction -- it runs on its own host thread --
 so there only the resulting power-cycle or shutdown itself is guaranteed,

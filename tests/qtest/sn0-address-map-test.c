@@ -1061,7 +1061,7 @@ static uint64_t qom_get_u64(QTestState *qts, const char *path,
  * On a second node the split is built the same way: each of its processors'
  * uncached spaces holds the flash at the node-less address and at the
  * node's own. The node-less
- * alias names the reader's own flash, a model choice (docs/specs/sgi-sn.rst).
+ * alias names the reader's own flash, a model choice (docs/system/mips/sgi/sn.rst).
  */
 static void test_dual_2048m_split_on_both_nodes(const void *data)
 {

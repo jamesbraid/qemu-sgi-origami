@@ -539,21 +539,21 @@ class CheckSystemModelTests(unittest.TestCase):
             if component["id"] == "bedrock"
         )
         bedrock["datasheet_contracts"] = [
-            "qemu:docs/specs/not-present-in-this-checkout.rst"
+            "qemu:docs/system/mips/sgi/not-present-in-this-checkout.rst"
         ]
         self.assertDocumentPasses(model)
 
     def test_datasheet_contracts_accept_a_specs_page_and_label(self):
         model = self.checker_module.load_system_model(INPUTS / "origin200.yaml")
-        for contract in ("qemu:docs/specs/sgi-hub.rst",
-                         "qemu:docs/specs/sgi-sn.rst#sgi-sn-topology"):
+        for contract in ("qemu:docs/system/mips/sgi/hardware/hub.rst",
+                         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology"):
             with self.subTest(contract=contract):
                 changed = copy.deepcopy(model)
                 next(component for component in changed["components"]
                      if component["id"] == "hub")["datasheet_contracts"] = [contract]
                 self.assertDocumentPasses(changed)
         for contract in ("qemu:docs/specs/Sgi-Hub.rst", "qemu:docs/specs/sgi-hub.md",
-                         "qemu:docs/system/sgi-hub.rst", "docs/specs/sgi-hub.rst",
+                         "qemu:docs/system/sgi-hub.rst", "docs/system/mips/sgi/hardware/hub.rst",
                          "docs/fictional-contract-fixture.md"):
             with self.subTest(contract=contract):
                 changed = copy.deepcopy(model)

@@ -15,20 +15,20 @@ connector_population:
   occupancy: &empty-occupancy empty
   reason: &empty-reason Select a module without optional boards or external fabric cables.
   provenance: &empty-provenance derived
-  sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]
-- {component: router-1-external-1, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: router-1-external-2, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: router-2-external-0, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: router-2-external-1, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: router-2-external-2, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: pci-expansion, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-3, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-4, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-5, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-6, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-7, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-8, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-9, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-10, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-11, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
-- {component: xio-slot-12, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-board-devices]}
+  sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]
+- {component: router-1-external-1, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: router-1-external-2, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: router-2-external-0, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: router-2-external-1, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: router-2-external-2, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: pci-expansion, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-3, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-4, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-5, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-6, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-7, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-8, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-9, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-10, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-11, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}
+- {component: xio-slot-12, occupancy: *empty-occupancy, reason: *empty-reason, provenance: *empty-provenance, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-board-devices]}

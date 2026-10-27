@@ -5,7 +5,7 @@ layer_version: 1
 # non-empty sources regardless of provenance; it cites the IP35 address map's
 # crosstalk section for the observed widget numbers.
 sources:
-  boot-logs-b: "qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-io"
+  boot-logs-b: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-address-map-io"
 layer:
   kind: module
   id: origin300-base-module
@@ -57,7 +57,7 @@ layer:
           documented two-processor population (only A and C are fitted there);
           fitted only in the four-processor population the owner's manual and
           the scan-tools field guide both name.
-        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"]
+        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi-presence"]
 
       - id: cpu3
         name: R14000
@@ -70,7 +70,7 @@ layer:
           Processor D, processor interface 1's second slot. Empty on the
           documented two-processor population; fitted only in the
           four-processor population.
-        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi-presence"]
+        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi-presence"]
 
       - id: node-memory
         name: node memory
@@ -178,13 +178,13 @@ layer:
             offset: "0x3000_0000"
             size: "0x0800_0000"
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip35-address-map.rst
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
+          - qemu:docs/system/mips/sgi/ip35.rst
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
         sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/ unit headers, first register of each", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
         notes: >-
           The unit bases are rearranged from the Hub's, not merely renumbered, and the
@@ -231,7 +231,7 @@ layer:
             revision 2; the crossbar half is the separate component below. part
             is the IO-8 board's own SGI part number (007-4365-002), the one
             physical board both PCI heads below sit on.
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         sources: ["web:xbridge-asic-spec-0.5 printed pages 17, 41, 44 to 46, 132", "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"]
         notes: >-
           Same programming model as the Bridge with the deltas the XBridge datasheet
@@ -257,7 +257,7 @@ layer:
           widget_mfg: "0x000"
           widget_revision: 2
           notes: "Part and manufacturer as OpenBSD's device table and the specification give them for a crossbar face; OpenBSD attaches the same chip as \"XXBow revision 2\", the part 0xd000 identity, on a Fuel and on two real Origin 300s (OpenBSD boot captures)."
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         regions:
           - id: widget-0-registers
             name: widget 0 registers
@@ -342,7 +342,7 @@ layer:
             explicit device placeholder so it does not inherit the Origin 200
             system-board value 0xc303. An Origin 300 configuration-space capture
             replaces the placeholder.
-        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
         sources: ["108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers", "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and both interrupt sources", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"]
 
       - {id: ioc3-ethernet, name: Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: datasheet}
@@ -355,7 +355,7 @@ layer:
         hardware_kind: m48t35
         parent: ioc3
         provenance: derived
-        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
         description: >-
           Emulator compatibility choice for IOC3 byte-bus select 0. This does not
           identify the physical IP45 package or establish its complete decode.
@@ -378,7 +378,7 @@ layer:
           notes: >-
             The subsystem fields are unobserved. The emulator exposes unavailable
             values instead of inheriting QEMU's unrelated generic PCI defaults.
-        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst]
         sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90: BDF, identity, revision and interrupt pin", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183: 33 MHz bus and matching function", "007-4365-002 printed pages 1, 12 and 14", "108-0264-004 Table 2-4, printed page 2-11"]
 
       - id: usb
@@ -402,7 +402,7 @@ layer:
             initial emulator exposes 0xffff:0xffff as explicit compatibility
             placeholders so current QEMU does not inject unrelated 0x1af4:0x1100
             defaults. An Origin 300 configuration-space capture replaces them.
-        datasheet_contracts: [qemu:docs/specs/sgi-lucent-ohci.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst]
         sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11", "007-4365-002 printed page 12"]
 
       - id: pci-option-slot-1
@@ -458,7 +458,7 @@ layer:
               window, accessed as 64-bit loads and stores with the low byte
               significant; every consumer uses the remote form. Which Bedrock unit
               decodes the window is open.
-        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/xbow/hub.h lines 68 to 73", "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/l1.c", "007-4365-002 printed pages 6, 10, 12 and 35 to 41"]
 
       - id: serial-id-eeprom
@@ -551,7 +551,7 @@ layer:
         kind: byte-bus
         master: ioc3
         provenance: datasheet
-        sources: [qemu:docs/specs/sgi-ioc3.rst]
+        sources: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
 
       - id: numalink
         name: NUMAlink 3
@@ -592,8 +592,8 @@ layer:
       - { component: scsi, bus: pci-io8, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
       - { component: ioc3, bus: pci-io8, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "108-0264-004 Table 2-4, printed page 2-11"] }
       - { component: usb, bus: pci-io8, role: endpoint, pci_device: 5, pci_function: 0, provenance: observed-hardware, sources: ["web:marc-openbsd-sgi-125897882029839 lines 55 to 90", "web:marc-openbsd-sgi-139223952727384 lines 150 to 183"] }
-      - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [qemu:docs/specs/sgi-ioc3.rst] }
-      - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [qemu:docs/specs/sgi-ioc3.rst] }
+      - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [qemu:docs/system/mips/sgi/hardware/ioc3.rst] }
+      - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [qemu:docs/system/mips/sgi/hardware/ioc3.rst] }
       - { component: pci-option-slot-1, bus: pci-option, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
       - { component: pci-option-slot-2, bus: pci-option, role: endpoint, pci_device: 2, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "web:marc-openbsd-sgi-125897882029839 lines 55 to 90"] }
       - { component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: ["007-4365-002 printed page 14, Table 1-2"] }

@@ -3,11 +3,11 @@
 layer_version: 1
 sources:
   ip53-product-capacity: "007-4566-001 printed pages 68-75 and 114-120: IP53 two/four R16000 configurations, 2 or 4 processors, 8 DIMM slots and 512 MiB or 1 GiB DIMMs"
-  onyx350-compatibility-proposal: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
+  onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
   onyx350-hinv: "web:living-raptor-onyx350-hinv  module 001c01 CPU, memory and PROM 6.211 inventory"
-  onyx350-flash-candidate: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected 800 MHz flash seed from IP35 PROM 6.210"
+  onyx350-flash-candidate: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 800 MHz flash seed from IP35 PROM 6.210"
   ip53-platform-driver: "openbsd-sgi revision 2df91d80c104636deeef8124252ddd5951b55fbf: sys/arch/sgi/sgi/ip27_machdep.c:166-185 and sys/arch/sgi/sgi/ip27.h:43-46"
-  ip53-clock-year-review: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
+  ip53-clock-year-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
 layer:
   kind: product
   id: onyx350-compat
@@ -29,7 +29,7 @@ layer:
   memory_kits_per_node: [kit-8192-at-banks-0-7-onyx350-observed]
   # The slots a graphics pipe can take, what each offers and the pipe
   # the machine fits by default; products and values are
-  # hw/mips/sgi/models/graphics-products.yaml's (docs/specs/sgi-sn.rst,
+  # hw/mips/sgi/models/graphics-products.yaml's (docs/system/mips/sgi/sn.rst,
   # Graphics pipes). The V12 is optional and fitted by -device only.
   graphics:
     max_pipes: 1

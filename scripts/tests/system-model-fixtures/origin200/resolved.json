@@ -100,7 +100,7 @@
       "notes": "Four device selects for byte-wide devices outside the chip.",
       "provenance": "datasheet",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -111,7 +111,7 @@
       "notes": "The PCF8584 masters the system-controller and configuration-NVRAM bus.",
       "provenance": "datasheet",
       "sources": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ]
     },
     {
@@ -122,7 +122,7 @@
       "notes": "The Dallas single-wire bus. SGI's own register block for it is named MicroLAN. Real and emulated Origin 200 systems supply an Ethernet-address NIC here.",
       "provenance": "guest-source",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -133,7 +133,7 @@
       "notes": "**A different bus from the IOC3's MicroLAN**, and the distinction is load-bearing. The Bridge has its own one-wire master at widget offset 0x00_00b0, driven a bit at a time \u2014 bit 0 samples the wire, bit 1 says the slot finished, a write starts a slot with its low-drive and remaining times packed in. Linux and OpenBSD read the layout the same way, but their timings differ slightly, so a model must key off the sequence of slots rather than exact microseconds.\n**Mainline Linux will not boot without it.** It reads the board-identity NIC before doing anything else with the Bridge, and a failed read makes the driver return a deferred-probe error so the Bridge never attaches \u2014 no PCI bus, no I/O controller, no console, no disk, and a deferred-probe message as the only clue.",
       "provenance": "guest-source",
       "sources": [
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
       ]
     },
     {
@@ -144,7 +144,7 @@
       "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The model stores the fitted PIMM's record there. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
       "provenance": "datasheet",
       "sources": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ]
     },
     {
@@ -317,7 +317,7 @@
         "SN0 Hub"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "description": "The node controller. Memory controller, directory-coherence engine, interrupt controller, XIO port and fabric port in one chip. The processor interface is the face it turns towards the node's two R10000s.",
       "id": "hub",
@@ -508,7 +508,7 @@
         "xbridge (OpenBSD driver name, even on IP27)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
       ],
       "description": "The XIO widget that presents a PCI bus, translates DMA through address-translation entries, and gathers device interrupts.",
       "id": "bridge",
@@ -542,7 +542,7 @@
         "SGI IOC3 (PCI identification)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "The multifunction PCI device capable of two serial ports, 10/100 ethernet, a PS/2 keyboard and mouse controller, general-purpose I/O, a one-wire bus and a byte-wide expansion bus. What this board connects is a separate question from what the chip can do.",
       "id": "ioc3",
@@ -672,7 +672,7 @@
         "DP83840AVCE (package marking)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "The ethernet physical-layer transceiver, reached through the chip's management interface.",
       "id": "enet-phy",
@@ -693,7 +693,7 @@
         "qlw (OpenBSD driver)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-qlogic-isp.rst"
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst"
       ],
       "description": "The base board's single-channel Ultra SCSI adapter for the 3.5-inch drives, at PCI device 0. A real Origin 200's own hardware inventory names both chips directly, at PCI device 0 and 1, and its captured hardware graph shows a disk behind this one.",
       "id": "isp1040",
@@ -721,7 +721,7 @@
         "qlw (OpenBSD driver)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-qlogic-isp.rst"
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst"
       ],
       "description": "The base board's single-channel Fast/Narrow SCSI adapter for the 5.25-inch devices, at PCI device 1. The same ISP1040 part as the `isp1040` Ultra channel is configured for a different board-level interface. A real Origin 200's own hardware inventory reports the identical revision for both.",
       "id": "isp1040-1",
@@ -743,7 +743,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ],
       "description": "One megabyte of firmware storage, presented at two addresses.",
       "id": "boot-flash",
@@ -789,7 +789,7 @@
         "DS1747"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "Battery-backed non-volatile memory with a real-time clock, on the IOC3's byte bus.",
       "id": "rtc",
@@ -843,7 +843,7 @@
         "PCD8584 (a different Philips part, miscited for this one in a vendor driver comment)"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "description": "The Philips I2C-bus controller wired into the Hub's local register space. It is the only path from the Hub onto the I2C bus, and the system controller answers as a slave on that bus. A generic third-party part rather than an SGI design, which is why it is named by its part number.",
       "id": "pcf8584",
@@ -880,7 +880,7 @@
         "Entry Level System Controller"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "description": "The Origin 200's instance of the SN0 Module System Controller (MSC; \"ELSC\" is SGI's own older name for the same part): a separate board answering as a slave on the I2C bus the PCF8584 masters. It takes a checksummed ASCII command and response protocol covering power control, reset and switch readback on the Origin 200 (the family protocol also carries an 8-character display and multi-module commands the Origin 200 has no hardware for), and separately multiplexes a serial terminal on its own rear diagnostic connector onto the same link.",
       "id": "sgi-elsc",
@@ -901,13 +901,13 @@
         "NVRAM"
       ],
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst#sgi-elsc-nvram"
       ],
       "description": "A serial non-volatile store answering as a slave on the same I2C bus the system controller sits on. It holds the module number (1 to 255, 0 unassigned); the model also keeps a validity marker and the partition number there, which is an emulator choice.",
       "id": "i2c-nvram",
       "kind": "flash",
       "name": "I2C configuration NVRAM",
-      "notes": "NOT the same part as the machine's other non-volatile store: the clock component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at chip select 0, and this is a separate device on the HUB'S I2C BUS, reached by raw transactions the system controller never sees. The distinction's history is in docs/specs/sgi-elsc.rst. It answers EIGHT CONSECUTIVE SLAVE ADDRESSES FROM 0x50, the top three bits of an eleven-bit byte address choosing among them and the low byte addressing within one. Whether that is one 2 KB part consuming eight addresses or several smaller ones is not established, and the firmware cannot tell either. The system controller's own reserved area is the last of the eight, which SGI's PROM Technical Reference corroborates independently by reserving the top 256 bytes for the controller's use. The `kind` is the least-wrong available value: this is an EEPROM rather than flash, and what the field is carrying here is the role of non-volatile storage.",
+      "notes": "NOT the same part as the machine's other non-volatile store: the clock component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at chip select 0, and this is a separate device on the HUB'S I2C BUS, reached by raw transactions the system controller never sees. The distinction's history is in docs/system/mips/sgi/hardware/elsc.rst. It answers EIGHT CONSECUTIVE SLAVE ADDRESSES FROM 0x50, the top three bits of an eleven-bit byte address choosing among them and the low byte addressing within one. Whether that is one 2 KB part consuming eight addresses or several smaller ones is not established, and the firmware cannot tell either. The system controller's own reserved area is the last of the eight, which SGI's PROM Technical Reference corroborates independently by reserving the top 256 bytes for the controller's use. The `kind` is the least-wrong available value: this is an EEPROM rather than flash, and what the field is carrying here is the role of non-volatile storage.",
       "parent": "cpu-module",
       "provenance": "vendor-document",
       "sources": [
@@ -1190,7 +1190,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -1200,7 +1200,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -1209,7 +1209,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ]
     },
     {
@@ -1232,7 +1232,7 @@
       "provenance": "datasheet",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ]
     },
     {
@@ -1269,7 +1269,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ]
     },
     {
@@ -1278,7 +1278,7 @@
       "provenance": "guest-source",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
       ]
     },
     {
@@ -1287,7 +1287,7 @@
       "provenance": "datasheet",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ]
     },
     {
@@ -1296,7 +1296,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-bridge.rst",
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst",
         "web:dmesgd-8994 lines 184-202 shows the Bridge, IOC3 and one-wire MAC of the real Origin 200, not the firmware base-I/O record"
       ]
     },
@@ -1491,7 +1491,7 @@
       "provenance": "datasheet",
       "source": "hub-pi",
       "sources": [
-        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-interrupts",
         "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
@@ -1513,7 +1513,7 @@
       "provenance": "datasheet",
       "source": "hub-pi",
       "sources": [
-        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-interrupts",
         "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
@@ -1540,7 +1540,7 @@
       "provenance": "datasheet",
       "source": "hub",
       "sources": [
-        "qemu:docs/specs/sgi-hub.rst#sgi-hub-interrupts",
+        "qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-interrupts",
         "linux:db2ddb871435 arch/mips/include/asm/sn/intr.h lines 45-52: hard-coded interrupt levels, L4 RTC, L5 profiling timer, L6 Hub errors"
       ]
     },
@@ -1665,9 +1665,9 @@
       },
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-config-block",
-        "qemu:docs/specs/sgi-prom-image.rst#sgi-prom-image-ip27-values",
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-config-block",
+        "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip27-values",
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ]
     },
     "generation": "SN0",
@@ -1812,9 +1812,9 @@
       "prom_dialogue": "ip27-menu",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-console",
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-metadata",
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-launch-disk-bus",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-console",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-disk-bus",
         "QEMU commit bd935b711b0d71244c1e59fb1e18e7b73d8a3dfa (\"hw/mips/sgi/sn0: delete the node's synthesized-firmware hooks\") deletes the synthesized-firmware property from the SN0 machine class entirely; origin200-machine no longer has it under any value"
       ],
       "supported_guests": [
@@ -1873,7 +1873,7 @@
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
         "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly",
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
       ],
       "variants": [
         {
@@ -1975,7 +1975,7 @@
       "part": "r12000",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the module and its evidence"
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the module and its evidence"
       ],
       "variants": [
         {

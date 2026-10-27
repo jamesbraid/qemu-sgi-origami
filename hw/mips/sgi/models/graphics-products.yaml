@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Every graphics product QEMU builds, by family, once: the device that
 # builds it, the product= value, its name and summary, and every value
-# each of the family's settings can take anywhere (docs/specs/sgi-sn.rst,
+# each of the family's settings can take anywhere (docs/system/mips/sgi/sn.rst,
 # Graphics pipes). A product layer's graphics section names the slots a
 # topology has and which of these products and values each slot offers;
 # it never restates a name or description.

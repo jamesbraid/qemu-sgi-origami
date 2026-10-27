@@ -6,7 +6,7 @@
  * The host hands whole SCSI commands to a request ring and collects
  * completions from a response ring; the guest's microcode download is
  * accepted and answered, never executed, so no vendor firmware is present
- * or required. See docs/specs/sgi-qlogic-isp.rst for the register and
+ * or required. See docs/system/mips/sgi/hardware/qlogic-isp.rst for the register and
  * ring contracts and their driver-sourced provenance.
  */
 

@@ -57,7 +57,7 @@ layer:
             IRIX 6.5.22 hinv -v reports HUB revision 2 for a revision G
             board. Both are software labels, not Bedrock register reads,
             and neither establishes a reset value or a universal revision.
-        datasheet_contracts: [qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb, qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb, qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io]
         sources: ["007-4480-001 printed pages 127 to 130: power-on test components", "web:sgi-sh-fuel-repair-attempt PROM 6.201 inventory, Bedrock revision 2", "web:tingo-fuel-irix-console raw HTML lines 132 to 145: HUB revision 2"]
       - id: xbridge
         name: XBridge
@@ -72,7 +72,7 @@ layer:
           notes: >-
             Both bridge heads report revision 2 in the cited Fuel capture.
             No Fuel board part number is established by this source.
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
       - id: xbridge-crossbar
         name: XBridge crossbar section
@@ -82,7 +82,7 @@ layer:
         parent: xbridge
         provenance: observed-hardware
         description: The capture reports XXBow revision 2 at widget 0.
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]
       - {id: xbridge-bridge-e, name: XBridge head at widget 14, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
       - {id: xbridge-bridge-f, name: XBridge head at widget 15, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["web:miod-openbsd-sgi-story raw HTML lines 5519 to 5541"]}
@@ -92,7 +92,7 @@ layer:
         parent: ip34-system-board
         hardware_kind: isp12160
         provenance: observed-hardware
-        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst]
         sources: ["web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541"]
       - id: ioc3
         name: IOC3
@@ -104,7 +104,7 @@ layer:
           The integrated Ethernet, two serial ports, keyboard, mouse and parallel
           port attach through IOC3. The Fuel PCI subsystem bytes and interrupt
           wiring have not been observed.
-        datasheet_contracts: [qemu:docs/specs/sgi-ioc3.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/ioc3.rst]
         sources: ["007-4480-001 printed pages 6 and 28: external ports", "web:miod-openbsd-sgi-story raw HTML lines 5530 to 5541", "web:tingo-fuel-irix-console raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
       - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 135", "openbsd-sgi:2df91d80c104 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
       - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
@@ -134,7 +134,7 @@ layer:
             compatibility choices; the USS-312 data sheet gives the chip's
             reset subsystem values as 11c1:5802, but no Fuel PCI configuration
             dump shows what the board's firmware leaves there.
-        datasheet_contracts: [qemu:docs/specs/sgi-lucent-ohci.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/lucent-ohci.rst]
         sources: ["web:tingo-fuel-irix-console raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312"]
       - id: graphics-connector
         name: graphics board connector
@@ -159,7 +159,7 @@ layer:
         system_controller: {kind: l1}
         provenance: vendor-document
         description: Dedicated diagnostic connection, separate from external serial ports.
-        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         sources: ["007-4480-001 printed pages 6 and 127 to 130"]
     buses:
       - {id: sysad0, name: processor interface, kind: sysad, master: cpu0, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
@@ -187,7 +187,7 @@ layer:
           The model routes ISP12160 INTA to head-F input 1. This is a
           reviewed approximation from a Fuel OpenBSD handler report on an
           unidentified board revision, not a measured revision G trace.
-        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: scsi, as: "PCI INTA at device 1", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 1", mechanism: wire}
@@ -200,7 +200,7 @@ layer:
         description: >-
           The model routes the IOC3 SuperIO output to head-F input 0 under
           the same reviewed, revision-unverified approximation.
-        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: ioc3, as: "separate SuperIO output", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 0", mechanism: wire}
@@ -213,7 +213,7 @@ layer:
         description: >-
           The model routes IOC3 Ethernet INTA to head-F input 4 under the
           same reviewed, revision-unverified approximation.
-        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: ioc3, as: "Ethernet PCI INTA at device 4", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 4", mechanism: wire}
@@ -226,7 +226,7 @@ layer:
         description: >-
           The model routes OHCI INTA to head-F input 5 under the same
           reviewed, revision-unverified approximation.
-        sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts, qemu:docs/specs/sgi-sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
         chain:
           - {at: usb, as: "PCI INTA at device 5", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 5", mechanism: wire}

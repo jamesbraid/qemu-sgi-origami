@@ -15,7 +15,7 @@ module_instances:
     parent: chassis
     observed_hardware:
       mode: direct
-      sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-ibrick]
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
       note: >-
         The IO7 device identities are the closure record's own three
         independent owners' IRIX inventories, reused directly for this

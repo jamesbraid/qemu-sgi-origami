@@ -26,7 +26,7 @@ layer:
         provenance: vendor-document
         sources: ["007-4499-002 printed pages 39 to 40 and 50"]
         identity: {hardware_revision: 2}
-        datasheet_contracts: [qemu:docs/specs/sgi-pci-expansion.rst#sgi-pci-expansion-origin300]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/pci-expansion.rst#sgi-pci-expansion-origin300]
         notes: Explicit inferred revision and synthetic identity belong to the isolated emulator experiment; processor and memory interfaces are unused.
       - id: link-port
         name: PCI expansion LINK connector
@@ -39,7 +39,7 @@ layer:
         name: XBridge U0
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -49,7 +49,7 @@ layer:
         name: XBridge U1
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -59,7 +59,7 @@ layer:
         name: XBridge U2
         kind: pci-host-bridge
         hardware_kind: xbridge
-        datasheet_contracts: [qemu:docs/specs/sgi-xbridge.rst, qemu:docs/specs/sgi-bridge.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbridge.rst, qemu:docs/system/mips/sgi/hardware/bridge.rst]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -69,7 +69,7 @@ layer:
         name: PCI expansion L1 controller
         kind: system-controller
         hardware_kind: l1
-        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         system_controller: {kind: l1}
         parent: enclosure
         provenance: vendor-document

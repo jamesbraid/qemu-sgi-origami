@@ -123,7 +123,7 @@ layer:
               open_drain_system_interface: false
               cache_test_mode: false
         provenance: vendor-document
-        sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly", "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"]
+        sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly", "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"]
       - part: r12000
         variants:
           - clock_mhz: 270
@@ -157,7 +157,7 @@ layer:
               open_drain_system_interface: false
               cache_test_mode: false
         provenance: derived
-        sources: ["qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the module and its evidence"]
+        sources: ["qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the module and its evidence"]
     address_spaces:
       - id: memory
         name: uncached memory

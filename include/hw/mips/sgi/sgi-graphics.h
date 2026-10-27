@@ -12,7 +12,7 @@
  * record before the device realizes, fills in each setting the device
  * leaves unset from the slot's defaults, and fits its default pipe once
  * every -device has been created, unless one was a pipe or -vga none was
- * given (docs/specs/sgi-sn.rst, Graphics pipes).
+ * given (docs/system/mips/sgi/sn.rst, Graphics pipes).
  */
 
 #ifndef HW_MIPS_SGI_SGI_GRAPHICS_H

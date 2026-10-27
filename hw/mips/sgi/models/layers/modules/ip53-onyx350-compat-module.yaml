@@ -2,7 +2,7 @@
 # Onyx 350 captured-module compatibility projection; selected runtime choices remain pending independent review.
 layer_version: 1
 sources:
-  onyx350-compatibility-proposal: "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
+  onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
   onyx350-hinv: "web:living-raptor-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad: public inventory for module 001c01"
 layer:
   kind: module
@@ -15,13 +15,13 @@ layer:
         kind: node-asic
         hardware_kind: bedrock
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip35-address-map.rst#sgi-ip35-address-map-hub
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-pi
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-lb
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-ni
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-io
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-md
-          - qemu:docs/specs/sgi-bedrock.rst#sgi-bedrock-xb
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-address-map-hub
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-pi
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-lb
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-ni
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-io
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-md
+          - qemu:docs/system/mips/sgi/hardware/bedrock.rst#sgi-bedrock-xb
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         parent: ip53-board
         identity: {hardware_revision: 2, ni_revision: 2, widget_revision: 2, clock_mhz: 200}
@@ -114,7 +114,7 @@ layer:
         kind: pci-host-bridge
         hardware_kind: pic
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-pic
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-pic
         pci_host_bridge: {heads: 2}
         parent: pic-board
         identity: {widget_part: "0xd102", widget_mfg: "0x024"}
@@ -126,7 +126,7 @@ layer:
         kind: io-controller
         hardware_kind: ioc4
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ioc4
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ioc4
         parent: io9
         identity: {pci_vendor: "0x10a9", pci_device: "0x100a", pci_revision: 0x53}
         ioc4: {clock_hz: 33333333, serial_dma_experimental: true}
@@ -141,7 +141,7 @@ layer:
         name: QLogic ISP12160
         kind: storage-hba
         hardware_kind: isp12160
-        datasheet_contracts: [qemu:docs/specs/sgi-qlogic-isp.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst]
         parent: io9
         identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
         provenance: derived
@@ -153,7 +153,7 @@ layer:
         name: BCM5701
         kind: io-controller
         hardware_kind: bcm5701
-        datasheet_contracts: [qemu:docs/specs/sgi-ip53.rst#sgi-ip53-bcm570x]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-bcm570x]
         parent: io9
         identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 0}
         provenance: derived
@@ -167,11 +167,11 @@ layer:
         kind: rtc
         hardware_kind: ds1744
         datasheet_contracts:
-          - qemu:docs/specs/sgi-ip53.rst#sgi-ip53-ds1744
+          - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-ds1744
         parent: io9
         provenance: derived
         fresh_year_base: 1968
-        sources: [onyx350-compatibility-proposal, "qemu:docs/specs/sgi-ip53.rst#sgi-ip53-serial-profiles"]
+        sources: [onyx350-compatibility-proposal, "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles"]
         notes: >-
           Synthetic 32 KiB timekeeper geometry selected for this software
           profile. The fitted IO9 part and physical address wiring remain
@@ -181,7 +181,7 @@ layer:
         name: L1 system controller
         kind: system-controller
         hardware_kind: l1
-        datasheet_contracts: [qemu:docs/specs/sgi-l1.rst]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
         system_controller: {kind: l1}
         provenance: vendor-document
         sources: [onyx350-compatibility-proposal]

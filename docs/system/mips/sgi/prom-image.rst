@@ -173,7 +173,7 @@ This is an emulator compatibility carrier. What it rests on:
   is physical ``0x1fc00000``).
 - The two window bases are the Bedrock's local and node-addressed boot
   windows as QEMU's Bedrock model decodes them (inferred; see
-  :doc:`sgi-sn`).
+  :doc:`/system/mips/sgi/sn`).
 - A real IP35 PROM trace copies ``0x1686a8`` bytes from the local boot
   window base into memory, which shows the image starts at that base
   and is read linearly for its full length (observed on hardware; the
@@ -191,7 +191,7 @@ length at each view and repeats nothing, so it claims nothing about
 those addresses. A public IP45 decoder description or a measurement on
 an identified board would settle it. With a bound ``node0-flash`` the
 Bedrock model's two-PROM boot flash replaces this carrier
-(:doc:`sgi-sn`, "Firmware supply").
+(:doc:`/system/mips/sgi/sn`, "Firmware supply").
 
 .. _sgi-prom-image-config-block:
 

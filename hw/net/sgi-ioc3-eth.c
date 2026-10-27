@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI IOC3 Ethernet MAC engine. */
-/* SGI IOC3 ethernet MAC engine. See docs/specs/sgi-ioc3.rst. */
+/* SGI IOC3 ethernet MAC engine. See docs/system/mips/sgi/hardware/ioc3.rst. */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"

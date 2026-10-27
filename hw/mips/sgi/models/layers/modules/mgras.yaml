@@ -6,7 +6,7 @@
 # selects the connector occupied; the connector supplies the widget,
 # controlling node and physical port. The HQ4's upstream attachment names
 # the placeholder bus `upstream`, which the instance binds to its
-# connector's XIO bus. docs/specs/sgi-graphics.rst states what public
+# connector's XIO bus. docs/system/mips/sgi/hardware/graphics.rst states what public
 # sources establish about the board and what the device approximates.
 layer_version: 1
 layer:
@@ -19,8 +19,8 @@ layer:
         kind: board
         hardware_kind: mgras
         provenance: datasheet
-        datasheet_contracts: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-mgras-windows, qemu:docs/specs/sgi-graphics.rst#sgi-graphics-mgras-raster]
-        sources: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-mgras-population]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-mgras-windows, qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-mgras-raster]
+        sources: [qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-mgras-population]
         notes: "One textureless SI board: one HQ4, one GE11, one RE4, two PP1s and one display path. The board's own part number and revision are not captured for this population, so no identity.part is claimed; the catalogue record carries an empty part."
 
       - id: hq4
@@ -33,7 +33,7 @@ layer:
           widget_mfg: "0x2aa"
           widget_part: "0xc003"
           widget_revision: 0
-        datasheet_contracts: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-mgras-windows]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-mgras-windows]
         sources: ["openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/xbow/xbowdevs lines 22 and 40: vendor SGI5 0x02aa, product IMPACT 0xc003 ImpactSR"]
         notes: "The widget identity register answers manufacturer 0x2aa and part 0xc003, the ImpactSR identity OpenBSD's xbowdevs and Linux's IMPACTSR_XTALK_MFGR/PART expect of every HQ4 board. The widget revision is not captured for this population: 0 is a placeholder matching the QEMU device's own default, not a decoded hardware revision. QEMU's mgras preset answers these values from the device itself; the catalogue record does not drive them."
 
@@ -42,7 +42,7 @@ layer:
         bus: upstream
         role: endpoint
         provenance: datasheet
-        sources: [qemu:docs/specs/sgi-graphics.rst#sgi-graphics-mgras-identity]
+        sources: [qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-mgras-identity]
         notes: >-
           A placeholder each instance binds to its connector's XIO bus
           (bus_bindings); the connector's own attachment carries the widget

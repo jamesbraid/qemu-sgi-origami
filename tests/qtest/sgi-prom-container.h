@@ -2,7 +2,7 @@
  * Synthetic SGI PROM distribution containers for machine tests.
  *
  * Wraps a test's own payload in the uncompressed single-segment container
- * docs/specs/sgi-prom-image.rst describes, so a test can prove a machine
+ * docs/system/mips/sgi/prom-image.rst describes, so a test can prove a machine
  * input takes the container and not only a raw image. The layout is
  * repeated here rather than taken from the decoder, so a decoder that got
  * it wrong would not agree with itself. No SGI firmware bytes are used.

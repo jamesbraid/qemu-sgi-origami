@@ -84,7 +84,7 @@ typedef struct OctaneMachineState {
     /* nodes=, or zero for the topology's largest row. */
     uint32_t nodes_requested;
     /*
-     * Graphics pipes (docs/specs/sgi-ip30.rst, Graphics): each is a
+     * Graphics pipes (docs/system/mips/sgi/ip30.rst, Graphics): each is a
      * -device in one of the four graphics ports, by its slot name, or the
      * topology's default pipe, created at init and realized by
      * octane_machine_done() once no -device turned out to be a pipe.
@@ -217,7 +217,7 @@ static bool octane_bank_size_accepted(const SGIModelNode *node, uint64_t size)
 }
 
 /*
- * The catalogue's bank rule (docs/specs/sgi-ip30.rst, Memory kits and
+ * The catalogue's bank rule (docs/system/mips/sgi/ip30.rst, Memory kits and
  * capacity): banks fill from bank 0 without a gap, each populated bank
  * takes an accepted capacity, and on a product that requires it no bank
  * is larger than the one before.
@@ -653,7 +653,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          * IRIX's IP30 kernel arms its scheduler clock a few register
          * instructions after reading or writing Count; the Count-sample
          * window keeps a host delay between the two from costing a full
-         * Count wrap (docs/specs/sgi-ip30.rst).
+         * Count wrap (docs/system/mips/sgi/ip30.rst).
          */
         if (!object_property_set_bool(OBJECT(dev), "count-sample-window",
                                       true, errp)) {
@@ -663,7 +663,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          * The catalogue's processor part: PRId, inferred from kernel
          * inventory records, and on the R12000 the FPU identification and
          * the approximated reset word with the cache it selects
-         * (docs/specs/sgi-ip30.rst).
+         * (docs/system/mips/sgi/ip30.rst).
          */
         if (!object_property_set_bool(OBJECT(dev), "big-endian", true, errp) ||
             !sgi_cpu_apply_processor(dev, processor, errp) ||

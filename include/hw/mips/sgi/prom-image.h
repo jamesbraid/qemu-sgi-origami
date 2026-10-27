@@ -2,7 +2,7 @@
 /*
  * SGI PROM image decoder: accepts a raw PROM image or SGI's version-6
  * single-segment distribution container, uncompressed or gzip. See
- * docs/specs/sgi-prom-image.rst for the accepted container subset.
+ * docs/system/mips/sgi/prom-image.rst for the accepted container subset.
  *
  * Copyright (c) 2026 James Braid
  */

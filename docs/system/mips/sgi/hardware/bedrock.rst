@@ -15,7 +15,7 @@ the network interface (``sgi-bedrock-ni.c``, ``sgi-bedrock-ni-regs.c``),
 the I/O interface (``sgi-bedrock-io.c``), the memory and directory
 interface (``sgi-bedrock-md.c``) and the internal crossbar
 (``sgi-bedrock-xb.c``). Where each unit sits in the address space is on
-:doc:`sgi-ip35-address-map`. Ratings follow :ref:`sgi-ip30`.
+:doc:`/system/mips/sgi/ip35`. Ratings follow :ref:`sgi-ip30`.
 
 Every register offset and field below comes from SGI's own generated Linux
 SN1 headers, ``linux-history:7570df54ef8c`` (tag v2.5.40,
@@ -233,4 +233,4 @@ definitions. Register storage and software error injection through the
 processor-interface-0 output are modelled; traffic-generated errors,
 arbitration and structureless-register masks are unknown and not modelled.
 This is the crossbar inside the Bedrock; the one at crosstalk widget 0 is
-the XBridge's (:doc:`sgi-xbridge`).
+the XBridge's (:doc:`/system/mips/sgi/hardware/xbridge`).

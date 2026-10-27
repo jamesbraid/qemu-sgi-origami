@@ -10,8 +10,8 @@ The MSCSI is SGI's XIO SCSI board for the Origin family: one Bridge
 with four QLogic ISP1040 SCSI controllers on its PCI bus. QEMU builds it
 as the ``mscsi`` preset of ``sgi-baseio`` (``hw/mips/sgi/baseio.c``),
 placed in an empty XIO slot. Ratings follow :ref:`sgi-ip30`. The
-controllers' register contract is on :doc:`sgi-qlogic-isp` and the Bridge's
-on :doc:`sgi-bridge`.
+controllers' register contract is on :doc:`/system/mips/sgi/hardware/qlogic-isp` and the Bridge's
+on :doc:`/system/mips/sgi/hardware/bridge`.
 
 Sources: *Origin2000/Onyx2 Illustrated Parts Catalog* (``web:hmm-408-b``,
 printed page 33, "XIO Options"); the one-module Origin 200 GIGAchannel
@@ -107,7 +107,7 @@ Model choices
   revision ``F`` and name ``MSCSI`` on the Bridge's own one-wire line, with
   Bridge revision 3: the board the one-module GIGAchannel inventory lists
   at ``io4``. The barcode is a placeholder; the per-unit serial comes from
-  the catalogue. The record layout is on :doc:`sgi-bridge`. (Approximation:
+  the catalogue. The record layout is on :doc:`/system/mips/sgi/hardware/bridge`. (Approximation:
   one of the three observed parts, chosen because it is the one with a
   complete capture.)
 - No IOC3, Timekeeper, serial or parallel port and no flash part: the

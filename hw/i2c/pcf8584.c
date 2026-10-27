@@ -3,7 +3,7 @@
  * Philips PCF8584 I2C-bus controller
  *
  * The register contract this model follows is written up in
- * docs/specs/sgi-elsc.rst.
+ * docs/system/mips/sgi/hardware/elsc.rst.
  */
 
 #include "qemu/osdep.h"

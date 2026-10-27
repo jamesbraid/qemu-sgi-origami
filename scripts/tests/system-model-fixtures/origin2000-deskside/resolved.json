@@ -71,7 +71,7 @@
       "name": "Shared module management I2C bus",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -621,7 +621,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-xbow.rst"
+        "qemu:docs/system/mips/sgi/hardware/xbow.rst"
       ],
       "hardware_kind": "xbow",
       "id": "crossbow-0",
@@ -644,7 +644,7 @@
         "kind": "xbow"
       },
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-xbow.rst"
+        "qemu:docs/system/mips/sgi/hardware/xbow.rst"
       ],
       "hardware_kind": "xbow",
       "id": "crossbow-1",
@@ -683,7 +683,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-router.rst"
+        "qemu:docs/system/mips/sgi/hardware/router.rst"
       ],
       "hardware_kind": "router",
       "id": "router-1",
@@ -726,7 +726,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-router.rst"
+        "qemu:docs/system/mips/sgi/hardware/router.rst"
       ],
       "hardware_kind": "router",
       "id": "router-2",
@@ -768,7 +768,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-bridge.rst"
+        "qemu:docs/system/mips/sgi/hardware/bridge.rst"
       ],
       "hardware_kind": "bridge",
       "id": "baseio-bridge",
@@ -791,12 +791,12 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "hardware_kind": "ioc3",
       "id": "baseio-ioc3",
       "identity": {
-        "notes": "Select the revision 1 component supported by the IOC3 page (docs/specs/sgi-ioc3.rst); subsystem compatibility is a separate software policy.",
+        "notes": "Select the revision 1 component supported by the IOC3 page (docs/system/mips/sgi/hardware/ioc3.rst); subsystem compatibility is a separate software policy.",
         "pci_revision": 1
       },
       "kind": "io-controller",
@@ -809,7 +809,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-qlogic-isp.rst"
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst"
       ],
       "hardware_kind": "isp1040",
       "id": "baseio-scsi-0",
@@ -829,7 +829,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-qlogic-isp.rst"
+        "qemu:docs/system/mips/sgi/hardware/qlogic-isp.rst"
       ],
       "hardware_kind": "isp1040",
       "id": "baseio-scsi-1",
@@ -1014,7 +1014,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "Separate serial support component on IOC3 byte bus.",
       "id": "baseio-superio",
@@ -1049,7 +1049,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-ioc3.rst"
+        "qemu:docs/system/mips/sgi/hardware/ioc3.rst"
       ],
       "description": "Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.",
       "hardware_kind": "ioc3-timekeeper",
@@ -1077,7 +1077,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-baseio.rst#sgi-baseio-flash"
+        "qemu:docs/system/mips/sgi/hardware/baseio.rst#sgi-baseio-flash"
       ],
       "description": "Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.",
       "id": "baseio-bridge-flash",
@@ -1095,7 +1095,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "hardware_kind": "msc",
       "id": "module-msc",
@@ -1109,7 +1109,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "description": "One logical 2048-byte store across eight slave addresses; physical package count is unknown.",
       "hardware_kind": "i2c-management-nvram",
@@ -1261,7 +1261,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "id": "node-board-1-bx",
       "kind": "bus-controller",
@@ -1276,7 +1276,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-1-hub",
@@ -1343,7 +1343,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-1-boot-flash",
@@ -1378,7 +1378,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-1-management-adapter",
@@ -1535,7 +1535,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "id": "node-board-2-bx",
       "kind": "bus-controller",
@@ -1550,7 +1550,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-2-hub",
@@ -1617,7 +1617,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-2-boot-flash",
@@ -1652,7 +1652,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-2-management-adapter",
@@ -1809,7 +1809,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "id": "node-board-3-bx",
       "kind": "bus-controller",
@@ -1824,7 +1824,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-3-hub",
@@ -1891,7 +1891,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-3-boot-flash",
@@ -1926,7 +1926,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-3-management-adapter",
@@ -2083,7 +2083,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "id": "node-board-4-bx",
       "kind": "bus-controller",
@@ -2098,7 +2098,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-hub.rst"
+        "qemu:docs/system/mips/sgi/hardware/hub.rst"
       ],
       "hardware_kind": "hub",
       "id": "node-board-4-hub",
@@ -2165,7 +2165,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-prom-image.rst"
+        "qemu:docs/system/mips/sgi/prom-image.rst"
       ],
       "hardware_kind": "am29f080",
       "id": "node-board-4-boot-flash",
@@ -2200,7 +2200,7 @@
     },
     {
       "datasheet_contracts": [
-        "qemu:docs/specs/sgi-elsc.rst"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst"
       ],
       "hardware_kind": "pcf8584",
       "id": "node-board-4-management-adapter",
@@ -2465,7 +2465,7 @@
           "sources": [
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
-            "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers",
+            "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants"
           ],
           "supported_cpu_populations": [
@@ -2528,7 +2528,7 @@
             "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
             "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
             "web:origin-onyx2-quick-reference-booklet Table 41 printed page 130 PDF page 132: the four-node quadrants",
-            "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-routers"
+            "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-routers"
           ],
           "supported_cpu_populations": [
             [
@@ -2599,7 +2599,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2608,7 +2608,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2617,7 +2617,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2626,7 +2626,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2758,7 +2758,7 @@
       "provenance": "derived",
       "role": "master",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-module-management"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-module-management"
       ]
     },
     {
@@ -2769,7 +2769,7 @@
       "provenance": "derived",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/specs/sgi-elsc.rst#sgi-elsc-nvram"
+        "qemu:docs/system/mips/sgi/hardware/elsc.rst#sgi-elsc-nvram"
       ]
     },
     {
@@ -3570,8 +3570,8 @@
       },
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-origin2000-module.rst#sgi-origin2000-reset-mode",
-        "qemu:docs/specs/sgi-hub.rst#sgi-hub-processor-interface"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-origin2000-reset-mode",
+        "qemu:docs/system/mips/sgi/hardware/hub.rst#sgi-hub-processor-interface"
       ]
     },
     "generation": "SN0",
@@ -4814,7 +4814,7 @@
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
         "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly",
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
       ],
       "variants": [
         {
@@ -4916,7 +4916,7 @@
       "part": "r12000",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/specs/sgi-sn.rst#sgi-sn-origin200-processors records the module and its evidence"
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the module and its evidence"
       ],
       "variants": [
         {

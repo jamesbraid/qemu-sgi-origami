@@ -9,7 +9,7 @@ layer:
     min_nodes: 1
     max_nodes: 1
     provenance: vendor-document
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-table]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-table]
   population:
     nodes: 1
     cpus_per_node: [2]
@@ -17,9 +17,9 @@ layer:
       status: unknown
       reason: The closure record establishes the C-brick's DIMM slots and bank range but not an installed memory population for this reference set.
       provenance: derived
-      sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-table]
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-table]
     provenance: vendor-document
-    sources: [qemu:docs/specs/sgi-sn.rst#sgi-sn-family-table]
+    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-table]
   data:
     machine:
       name: Origin 3000 reference bricks

@@ -197,7 +197,7 @@ class CheckTests(unittest.TestCase):
     def test_qemu_rst_document_in_prose_passes(self):
         report = self.check_layer(
             "facts:\n  - {provenance: derived, sources: ['web:dmesgd-8994 line 3'],"
-            " description: 'see docs/specs/sgi-sn.rst'}\n")
+            " description: 'see docs/system/mips/sgi/sn.rst'}\n")
         self.assertEqual(report.failures, [])
 
     def test_informational_classes_do_not_fail(self):
