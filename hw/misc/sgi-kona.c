@@ -8935,10 +8935,15 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * and loaded back with those same three codes. Outside a bracket the
  * library waits on the return page.
  *
- * Inferred: bit 3 of word 15 is the bank, as bit 3 of a load's word 17
- * is; every readback observed named bank 0 and carried 0x43. Word 6
- * (zero in every readback observed), word 13 and the rest of word 15 are
- * not checked: what they carry is unknown.
+ * Inferred: bit 28 of word 13 is the bank a load's word 17 bit 3 names.
+ * Words 13 to 15 come from the texture's bind record: word 13 is its
+ * third word, whose bit 28 marks a first level in bank one, and word 15
+ * its first, the format and layout byte 0x43 or 0x44, which says nothing
+ * of the bank. GLperf's mipmapped TexImage case read back a 256x256
+ * level loaded in bank one with word 13 0x138c0024 and word 15 0x43;
+ * every earlier readback observed came from bank zero, with bit 28
+ * clear. Word 6 (zero in every readback observed) and the rest of words
+ * 13 and 15 are not checked: what they carry is unknown.
  *
  * Approximated: the model keeps a texture as 32-bit RGBA texels, not in
  * the pipe's memory layout, and the copy it writes is those words,
@@ -8963,7 +8968,8 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
         args[5] == SGI_KONA_TEXTURE_COPY_STORAGE) {
         found = sgi_kona_texture_find_native(&s->textures, args[0],
                                              SGI_KONA_TEXTURE_COPIED_STORAGE,
-                                             args[14], args[15] & 8,
+                                             args[14],
+                                             (args[13] >> 28) & 1,
                                              args[16], args[17],
                                              args[10] + 1, args[11] + 1,
                                              &handle, &image);
