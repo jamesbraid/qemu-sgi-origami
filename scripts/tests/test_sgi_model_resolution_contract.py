@@ -1409,6 +1409,42 @@ class SystemModelResolutionTests(unittest.TestCase):
                         self.resolver.ResolutionError, message):
                     self.resolver.load_system_model(path)
 
+    def test_product_narrows_its_processors_and_bank_rows(self):
+        product = "layers/products/origin300.yaml"
+
+        def topology(**fields):
+            def change(document):
+                document["layer"]["topology"].update(fields)
+            return change
+
+        fitted = [0, 0, 256, 256, 0, 0, 0, 0]
+        model = self.load_layer_changes([(product, topology(
+            supported_processors=[
+                {"part": "r14000", "clock_mhz": 500, "cache_mib": 2}],
+            supported_bank_mib_per_node=[fitted]))], name="origin300")
+        self.assertEqual(
+            model["composition"]["topology"]["supported_bank_mib_per_node"],
+            [fitted])
+        for fields, message in (
+                ({"supported_processors": [
+                    {"part": "r14000", "clock_mhz": 600, "cache_mib": 2}]},
+                 "product 'origin300' does not support CPU 'cpu0', r14000 "
+                 "at 500 MHz with 2 MiB of cache"),
+                ({"supported_processors": [{"part": "r14000"}]},
+                 "supported_processors entries must name part, clock_mhz "
+                 "and cache_mib"),
+                ({"supported_bank_mib_per_node": [
+                    [0, 0, 512, 512, 0, 0, 0, 0]]},
+                 r"product 'origin300' does not support node 0 memory banks "
+                 r"\[0, 0, 256, 256, 0, 0, 0, 0\]"),
+                ({"supported_bank_mib_per_node": []},
+                 "supported_bank_mib_per_node needs a non-empty list"),
+        ):
+            with self.subTest(fields=fields), self.assertRaisesRegex(
+                    self.resolver.ResolutionError, message):
+                self.load_layer_changes([(product, topology(**fields))],
+                                        name="origin300")
+
     def test_origin200_resolution_is_deterministic_and_complete(self):
         # Two independent fresh loads of the same real file, not real_model()'s
         # single cached copy: this is what tests the loader's own determinism.

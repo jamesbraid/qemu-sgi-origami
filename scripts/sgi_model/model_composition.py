@@ -301,6 +301,17 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
 
     bank_limit = capacity.get("memory_banks_per_node")
     bank_layouts = population.get("memory_bank_mib_per_node")
+    # The bank rows an emulator built from this product would accept, when
+    # the product narrows the board's range to one fit.
+    accepted_rows = topology.get("supported_bank_mib_per_node")
+    if accepted_rows is not None and (
+            not isinstance(accepted_rows, list) or not accepted_rows or
+            not all(isinstance(row, list) for row in accepted_rows) or
+            bank_layouts is None):
+        raise ResolutionError(
+            f"product '{product_id}' supported_bank_mib_per_node needs a "
+            "non-empty list of bank rows and a bank population to check"
+        )
     if bank_layouts is not None:
         dimms_per_bank = capacity.get("dimms_per_bank")
         supported_dimms = capacity.get("supported_dimm_sizes_mib")
@@ -384,10 +395,54 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
                             f"share DIMM pair {first // pair} and must be "
                             "fitted alike"
                         )
+            if accepted_rows is not None and banks not in accepted_rows:
+                raise ResolutionError(
+                    f"product '{product_id}' does not support node {node} "
+                    f"memory banks {banks}"
+                )
         limits["memory_banks_per_node"] = bank_limit
         limits["supported_bank_sizes_mib"] = copy.deepcopy(supported)
 
     return limits
+
+
+SUPPORTED_PROCESSOR_FIELDS = {"part", "clock_mhz", "cache_mib"}
+
+
+def validate_supported_processors(
+        product_id: str, topology: dict[str, Any],
+        components: list[Any]) -> None:
+    """Refuse a fitted CPU outside the product's supported processors.
+
+    `topology.supported_processors` narrows a product to the parts, clocks
+    and caches an emulator built from it would accept, as
+    `supported_cpu_populations` narrows the counts. Every CPU component
+    must carry the identity cpu_selection attached, so this runs after
+    module instances are merged.
+    """
+    supported = topology.get("supported_processors")
+    if supported is None:
+        return
+    if (not isinstance(supported, list) or not supported or
+            not all(isinstance(item, dict) and
+                    set(item) == SUPPORTED_PROCESSOR_FIELDS
+                    for item in supported)):
+        raise ResolutionError(
+            f"product '{product_id}' supported_processors entries must name "
+            "part, clock_mhz and cache_mib")
+    accepted = {(item["part"], item["clock_mhz"], item["cache_mib"])
+                for item in supported}
+    for component in components:
+        if not isinstance(component, dict) or component.get("kind") != "cpu":
+            continue
+        identity = component.get("identity") or {}
+        fitted = (component.get("hardware_kind"), identity.get("clock_mhz"),
+                  identity.get("cache_mib"))
+        if fitted not in accepted:
+            raise ResolutionError(
+                f"product '{product_id}' does not support CPU "
+                f"'{component.get('id')}', {fitted[0]} at {fitted[1]} MHz "
+                f"with {fitted[2]} MiB of cache")
 
 
 COMPOSITION_RULE_FIELDS = {"counts", "exclusive", "requires", "provenance",
