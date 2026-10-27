@@ -1683,6 +1683,17 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     board_kind = (_bedrock_board_kind(components, node,
                                       model["machine"].get("board_ip"))
                   if asic_kind == "bedrock" else None)
+    if node_asic.get("role", "compute") == "memory":
+        # The console node runs the PROM, so it needs processors. No board
+        # layer yet allows a node with none; the first is the Cx-brick's
+        # zero-processor IP53 board.
+        if position == 0:
+            raise CompileError(
+                f"memory node '{node['id']}' cannot be the console node")
+        raise CompileError(
+            f"memory node '{node['id']}': board layer "
+            f"'{model['composition'].get('assembly')}' does not allow a node "
+            "with no processors")
 
     cpus = _node_cpus(model, components, node, asic_kind, entry["board_id"])
     if not cpus:
@@ -1700,6 +1711,9 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     identity = _node_identity(model, components, node, asic_kind, position,
                               board_kind)
     banks = _node_bank_mib(model, position, node_count)
+    if not any(banks):
+        raise CompileError(
+            f"node '{node['id']}' has processors and no memory")
     configuration = ({"bedrock": _bedrock_configuration(model, node, banks)}
                      if asic_kind == "bedrock" else {})
     compiled = {
