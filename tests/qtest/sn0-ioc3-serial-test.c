@@ -2571,6 +2571,62 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
 }
 
 /*
+ * Receive-ring-full is a level, a model choice: set while ring DMA is on
+ * and an entry waits that the ring had no room for. An acknowledgement
+ * leaves it, running the engine again with no new character does not raise
+ * it afresh, and it falls when software makes room. A ring filled exactly,
+ * with nothing waiting, does not raise it.
+ */
+static void test_receive_ring_full_is_a_level(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent[8] = "ringfull";
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+
+    /* Full to the last entry, but nothing waits for room. */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 8);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_RING_FULL),
+                    ==, 0);
+
+    /* Room for one entry; the second waits. */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 16);
+    g_assert_cmpint(write(sock, sent, sizeof(sent)), ==, (int)sizeof(sent));
+    wait_for_source(qts, SOURCE(0, SRC_RX_RING_FULL));
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+
+    qtest_writel(qts, INT_STATUS, SOURCE(0, SRC_RX_RING_FULL));
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_RING_FULL),
+                    ==, SOURCE(0, SRC_RX_RING_FULL));
+
+    /* Ring DMA off, the source with it. */
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_RING_FULL),
+                    ==, 0);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_RING_FULL),
+                    ==, SOURCE(0, SRC_RX_RING_FULL));
+
+    /* Room for the waiting entry: it posts and fills the ring exactly. */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 24);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 16);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_RING_FULL),
+                    ==, 0);
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * Flow control, not loss: the engine refuses the colliding entry, holds
  * characters in packer and FIFO, and delivers all of them in order once
  * software makes room. Consume starts two entries in to make full cheap.
@@ -3981,6 +4037,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-drops-when-consumed",
                         NULL,
                         test_consuming_below_the_high_water_mark_drops_it);
+    qtest_add_data_func("sn0/ioc3-serial/receive-ring-full-is-a-level", NULL,
+                        test_receive_ring_full_is_a_level);
     qtest_add_data_func("sn0/ioc3-serial/full-ring-holds-characters", NULL,
                         test_a_full_ring_holds_characters);
     qtest_add_data_func("sn0/ioc3-serial/pass-through-still-receives", NULL,
