@@ -1248,7 +1248,8 @@ static MemTxResult crime_tiled_commit(SGICrimeState *s, hwaddr offset,
 
     if ((mode & ~0xfffU) || depth == 3 || destination_bank >= 3 ||
         (copy && (source_bank >= 3 || depth || stipple)) ||
-        (!copy && (dx0 % pixel_bytes || (dx1 + 1) % pixel_bytes)) ||
+        (!copy && (depth != 2 || stipple) &&
+         (dx0 % pixel_bytes || (dx1 + 1) % pixel_bytes)) ||
         (p[9] != 1 && (!copy || p[9] != UINT32_MAX)) ||
         (copy && p[8] != p[9]) ||
         dx0 >= 8192 || dx1 >= 8192 || dy0 >= 2048 || dy1 >= 2048 ||
