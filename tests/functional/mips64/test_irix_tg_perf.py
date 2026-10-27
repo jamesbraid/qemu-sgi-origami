@@ -382,6 +382,10 @@ if base.QemuSystemTest is not None:
         def _interface(self, con):
             return base.irix_interface_at_pci_slot(con, 'tg', self.TG_SLOT)
 
+        def _configure_interface(self, con, iface):
+            con.run(f"ifconfig {iface} inet {self.GUEST_ADDR} "
+                    "netmask 0xffffff00 up", "ifup", timeout=60)
+
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
                 return int(con.capture_value(
@@ -470,8 +474,7 @@ if base.QemuSystemTest is not None:
                 con.run('uname -a; id; date; hinv -mvv',
                         'machine_inventory', timeout=180)
                 iface = self._interface(con)
-                con.run(f"ifconfig {iface} inet {self.GUEST_ADDR} "
-                        "netmask 0xffffff00 up", "ifup", timeout=60)
+                self._configure_interface(con, iface)
                 try:
                     con.capture_value("ifconfig " + iface, "ifs",
                                       rb"(UP)[,>]", timeout=60)
@@ -571,12 +574,6 @@ if base.QemuSystemTest is not None:
                         self._capture_network_diagnostics(
                             con, iface, 'network_state_before_syn',
                             receiver=True))
-                    # Preserve the current neighbor table above, then clear
-                    # only the gateway entry before testing its reply path.
-                    results['gateway_neighbor_reset_status'] = con.run(
-                        f'/usr/etc/arp -d {self.GATEWAY} '
-                        '>/dev/null 2>&1 || :',
-                        'clear_gateway_neighbor', timeout=60)
                     receiver_finished = con.run(
                         f'test -f {self.TCP_RECEIVER_STATUS}',
                         'rx_status_before_syn', timeout=10)
