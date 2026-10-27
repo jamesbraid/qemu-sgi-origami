@@ -12,13 +12,14 @@ cables. This page covers the C-, CX-, D-, G-, I-, IX-, N-, P-, PX-, R-,
 V- and X-bricks and the Origin 300 NUMAlink module: what each is, what it
 holds, how it connects, and how much of it the model catalogue builds. The
 catalogue is the set of YAML layers under ``hw/mips/sgi/models/layers/``
-and the compiler in ``scripts/sgi_model/``. Four bricks have a module
+and the compiler in ``scripts/sgi_model/``. Six bricks have a module
 layer there: the C-brick (``modules/c-brick.yaml``), the I-brick
-(``modules/i-brick.yaml``), the R-brick (``modules/r-brick.yaml``) and the
-NUMAlink module (``modules/numalink-module.yaml``). The V-brick has a
-machine-builder preset and a controller profile but no layer. The other
-eight bricks have no code at all and are described here as reference only.
-No QEMU machine builds any brick: the two catalogue compositions that hold
+(``modules/i-brick.yaml``), the P-brick (``modules/p-brick.yaml``), the
+R-brick (``modules/r-brick.yaml``), the X-brick (``modules/x-brick.yaml``)
+and the NUMAlink module (``modules/numalink-module.yaml``). The V-brick has
+a machine-builder preset and a controller profile but no layer. The other
+six bricks have no code at all and are described here as reference only.
+No QEMU machine builds any brick: the catalogue compositions that hold
 bricks are reference models, which the compiler refuses to compile. Facts
 are rated as described in :ref:`sgi-ratings`.
 
@@ -51,7 +52,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Reference only
    * - P-brick
      - PCI expansion (three XBridges)
-     - Reference only
+     - Layer, reference composition
    * - PX-brick
      - PCI-X expansion (three PICs)
      - Reference only
@@ -63,7 +64,7 @@ are rated as described in :ref:`sgi-ratings`.
      - Builder preset and L1 profile, no layer, no topology
    * - X-brick
      - Legacy XIO expansion (one XBridge)
-     - Reference only
+     - Layer, reference composition
    * - NUMAlink module
      - Eight-port router for Origin 300 base modules
      - Layer, reference composition
@@ -464,10 +465,32 @@ the Crosstown2 power-on speed are *unknown*. The Origin 300 PCI expansion
 module has the same three-XBridge wiring but a Bedrock interface card and
 a NUMAlink connector, and is not the P-brick.
 
-Catalogue: reference only. The nearest built device is the Origin 300
-expansion module in :doc:`pci-expansion`, on :doc:`xbridge`. The
-composition rules name ``p-brick`` as one of the I/O bricks an Origin 3200
-may hold, but no layer by that name exists.
+Catalogue: the ``p-brick`` layer and the ``origin3200-pbrick``
+reference composition, described below. The nearest built device is the
+Origin 300 expansion module in :doc:`pci-expansion`, on :doc:`xbridge`.
+
+.. _sgi-sn-family-pbrick:
+
+P-brick chips and links
+-----------------------
+
+The three chips are joined by four XIO links, two from U0 to each of the
+others: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8 and U0 8 to U1 D
+(*established*, :src:`108-0240-002 pp. 2-30, 2-31`, Figure 2-24). The
+``p-brick`` layer records the chips, their ports, the six buses and the
+twelve slots, and lists one XIO cable per link. ``origin3200-pbrick``
+hangs the brick off the second C-brick at U0 port A. Port A is a choice of
+the composition (*approximation*). The first C-brick carries the I-brick,
+as in ``origin3200``.
+
+The machine builder checks the four links like any other cable, then
+refuses to build them, so no P-brick is built. The XBridge model takes one
+host port, and a downstream chip's mode is not given by any source cited
+here (*unknown*). Also *unknown* are whether U1 and U2 present each head
+on its own link, which head rides which link, the PCI device number of
+each slot and the slots' interrupt wiring. The widget numbering above
+stays *inferred* for that reason. A document that names the downstream
+chips' mode straps, or a P-brick widget inventory, would settle these.
 
 .. _sgi-bricks-pxbrick:
 
@@ -610,8 +633,36 @@ board (*established*, :src:`007-4240-002 p. 154`;
 connector is port A (the guides conflict), the XBridge revision, and the
 per-board widget identities are *unknown*.
 
-Catalogue: reference only. The composition rules name ``x-brick`` as an
-I/O brick an Origin 3200 may hold, but no layer by that name exists.
+Catalogue: the ``x-brick`` layer and the ``origin3200-xbrick`` reference
+composition, described below.
+
+.. _sgi-sn-family-xbrick:
+
+X-brick XIO slots
+-----------------
+
+The ``x-brick`` layer holds the one XBridge, ports A and B for compute
+nodes and one XIO slot on each of ports 8, 9, C and D, slots 1 to 4 in
+that order (*established*, :src:`108-0240-002 pp. 2-32, 2-33`,
+Figure 2-25). The figure draws nothing on the PCI ports E and F, so the
+layer declares no PCI bus. The slots stay unresolved in the catalogue:
+no XIO board is specified for them.
+
+An Origin 3200 C-brick has one ``XIO (II)`` connector (*established*,
+:src:`007-4240-002 p. 125`). With the I-brick on the first C-brick, an
+X-brick hangs off the second, and ``origin3200-xbrick`` is that
+composition. It cables the X-brick at port A as a choice
+(*approximation*). Whether rear connector ``XIO 10`` or ``XIO 11`` is
+port A is *unknown*, because the two guides disagree. A source that ties a
+connector label to a port would settle it. Also *unknown* are the brick's
+L1 type character, the XBridge revision and the widget numbers a C-brick
+sees for the slots. Only an X-brick widget inventory would settle the
+last.
+
+The builder qtest does build this layout. It places Origin 2000 PCI
+carrier cards in slots 1, 2 and 4 as stand-ins (*approximation*), leaves
+slot 3 empty, and reaches each card only from the C-brick cabled at the
+chip's host port.
 
 .. _sgi-bricks-numalink-module:
 
@@ -664,14 +715,18 @@ Model limits
 ============
 
 - No machine builds a brick. ``origin3200.yaml`` (two C-bricks and an
-  I-brick) and ``origin300-numalink-module.yaml`` are reference models, and
+  I-brick), its P-brick and X-brick variants and
+  ``origin300-numalink-module.yaml`` are reference models, and
   the compiler stops with an error naming ``model_role 'reference'``. The
   machine list does not offer them.
-- The CX-, D-, G-, IX-, N-, P-, PX-, V- and X-bricks have no layer. The
-  composition rules can name ``p-brick``, ``x-brick``, ``g-brick``,
-  ``n-brick`` and ``v-brick``. A rule that names a brick with no layer
+- The CX-, D-, G-, IX-, N-, PX- and V-bricks have no layer. The
+  composition rules can name ``g-brick``, ``n-brick`` and ``v-brick``
+  alongside the layers that exist. A rule that names a brick with no layer
   counts zero of it, so a misspelled id in a maximum, exclusion or
   requirement rule passes silently.
+- The ``origin3200-pbrick`` and ``origin3200-xbrick`` compositions are
+  reference models like ``origin3200``. The builder refuses the P-brick's
+  four chip-to-chip links.
 - The model validator accepts an L1 brick-type character only for the two
   boards a source establishes, ``C`` (IP35) and ``4`` (IP45). An I-, P-,
   R- or other brick cannot yet carry one.
@@ -699,7 +754,9 @@ reference validates, that the I-brick's connectors record XBridge ports
 be unique and sit on a crossbar, that the C-brick cables to I-brick port A,
 that an XIO cable has two distinct XIO connectors that share a bus and
 carries evidence, and that the C-brick's L1 brick type is ``C`` while any
-other letter, or a letter on a non-chassis, is refused.
+other letter, or a letter on a non-chassis, is refused. The same class
+validates the P-brick and X-brick compositions and refuses a port that two
+P-brick cables share or two X-brick connectors name.
 
 ``scripts/tests/test_sgi_model_resolution_contract.py`` checks that the
 C-brick has one ``XIO (II)`` connector with a Crosstown2 interface on an
@@ -710,6 +767,24 @@ exclusions and requirements (including ``g-brick`` against ``v-brick`` and
 ``n-brick`` only with ``g-brick``), that the Origin 3200 resolves to two
 C-bricks and an I-brick and refuses a third C-brick, no I-brick, three I/O
 bricks or an R-brick, and that it still does not compile.
+
+``scripts/tests/test_sgi_model_resolution_contract.py`` also checks the
+X-brick layer (four slots on ports 8, 9, C and D, port B and the slots on
+the crossbar, no L1 type), the P-brick layer (three crossbars, the four
+Figure 2-24 links, two slots on each chip's buses), that each brick hangs
+off the second C-brick of its Origin 3200 composition, that the X-brick
+counts against the I/O-brick limit and that the X-brick composition does
+not compile.
+
+``tests/qtest/sn-builder-test.c`` builds the C-brick fixtures from
+``tests/qtest/sn-builder-fault-test.c``. ``sn/builder/cbrick/origin3200-xbrick-slots``
+checks that each filled X-brick slot answers only the C-brick cabled at
+the chip's host port, at its own port, and that empty slot 3 decodes
+nothing. The N-brick-shaped fixture (``nbrick-own-boards``) checks four
+chips named ``xbridge0`` to ``xbridge3``. The refusal cases under
+``sn/builder/cbrick/refused/`` check the P-brick's four links (``pbrick``),
+a reused P-brick port, a chip revision the XBridge model does not present,
+and the board-cable errors for an X-brick slot.
 
 ``tests/qtest/sn1-l1-test.c`` covers the V-brick controller profile
 (``sn1/l1/vbrick/reference-refusals``, ``profile-mismatch`` and

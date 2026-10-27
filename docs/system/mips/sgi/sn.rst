@@ -299,45 +299,7 @@ F and widget 14 port E, matching the block diagram (*inferred*).
 I-brick uses. A verbose Origin 3000 PROM boot would settle both, and
 none is published.
 
-.. _sgi-sn-family-xbrick:
-
-X-brick XIO slots
------------------
-
-The X-brick holds one XBridge. Its Crosstown2 ports A and B go to
-compute nodes, and its Crosstalk ports 8, 9, C and D each serve one XIO
-slot, slots 1 to 4 in that order (established, 108-0240-002 printed
-pages 2-32 and 2-33, Figure 2-25). The figure draws nothing on the PCI
-ports E and F, so the ``x-brick`` layer declares no PCI bus. In an
-Origin 3200 each C-brick has one ``XIO (II)`` connector (established,
-007-4240-002 printed page 125), so with the I-brick on the first C-brick
-an X-brick hangs off the second; ``origin3200-xbrick`` is that reference
-composition. It cables the X-brick at port A by choice: whether the rear
-connector ``XIO 10`` or ``XIO 11`` is port A is unknown, because the
-sources disagree. The slots stay unresolved in the catalogue, since no
-X-brick board has a reviewed contract. The builder test places Origin
-2000 PCI carrier cards in three slots as stand-ins, each reached only
-from the cabled C-brick at its slot's port. Unknown: the brick's L1 type
-character, the XBridge revision, and the widget numbers a C-brick sees
-for the slots, which only an X-brick widget inventory would settle.
-
-.. _sgi-sn-family-pbrick:
-
-P-brick chips and links
------------------------
-
-The P-brick has twelve PCI slots on six buses and three XBridges. U0
-serves buses 3 and 4 and takes the C-brick on Crosstown2 port A or B.
-U1 serves buses 1 and 2, U2 buses 5 and 6, and U0 joins each by two
-links: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8 and U0 8 to U1 D
-(established, 108-0240-002 printed pages 2-30 and 2-31, Figure 2-24).
-The ``p-brick`` layer records those chips, ports, buses and slots, and
-lists one XIO cable per link. ``origin3200-pbrick`` hangs it off the
-second C-brick at U0 port A, the same way ``origin3200-xbrick`` places
-the X-brick. The builder still refuses the four links, so no P-brick is
-built: whether U1 and U2 present each head on its own link, which head
-rides which link, the PCI device number of each slot and the slots'
-interrupt wiring all lack a reviewed contract.
+The X-brick and P-brick are on :doc:`hardware/bricks`.
 
 .. _sgi-sn-family-ixpx:
 
@@ -1011,13 +973,18 @@ Board devices
 
 Base I/O is one device, ``sgi-baseio`` (``hw/mips/sgi/baseio.c``), with
 a preset per shipped board design rather than a separate class each:
-``ip29``, ``io6``, ``io6g``, ``menet``, ``mscsi``, ``io8`` and ``fuel``.
-Any other preset name is refused. :doc:`hardware/baseio` describes the
+``ip29``, ``io6``, ``io6g``, ``menet``, ``mscsi``, ``io8``, ``io7`` and
+``fuel``. ``io7`` is the Origin 3000 I-brick's IOC3, Lucent OHCI
+controller and TI TSB12LV22 IEEE 1394 link at head F devices 4, 5 and 6
+(*observed*; :ref:`sgi-sn-family-ibrick`). Any other preset name is
+refused. :doc:`hardware/baseio` describes the
 presets. The Origin 200's IP29 onboard I/O is soldered to the System
 Board rather than plugged into a slot, so the Origin 200 node builds its
 ``ip29`` instance directly on its own XIO port, with no board wrapper.
 The Origin 300 node's ``io8`` instance is placed the same way, directly
-on its XBridge head, not through a board class.
+on its XBridge head, not through a board class. The machine places the
+I-brick's ``io7`` instance as ``/machine/module<M>/io7``, directly on head
+F of the XBridge in the I-brick's module, also with no board class.
 
 ``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``) is the abstract base for
 a removable XIO board: the unit that plugs into one of a module's XIO
@@ -1067,7 +1034,8 @@ machine's devices.
 Every XIO board is named by its slot label. A catalogue board's QOM name
 and qdev id, and a launch-fitted board's id unless it is given one, is
 ``io1``, ``io5`` and so on (``m<N>-io5`` where two modules share the
-label; the GIGAchannel's cabinet Bridge is ``io7``). Its PCI bus follows
+label; the GIGAchannel's cabinet Bridge is ``io7``, a board id that has
+nothing to do with the ``io7`` preset above). Its PCI bus follows
 QEMU's child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2
 with ``bus=io2.0``, and ``screendump device=io3`` names an SI board in
 IO3.
@@ -1090,18 +1058,22 @@ XBridge head, as above.
 An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
 its Bedrock to port A or B of the XBridge in an I/O brick. The builder
 creates that chip as ``/machine/module<M>/xbridge``, or ``xbridge0`` to
-``xbridge3`` for the N-brick's four chips in one module, gives it the cable's
-port as its host port and its module's catalogue id as its bus prefix,
-and hands it to the cabled node through the node's ``xbridge`` link; the
-node joins and realizes it as an Origin 300 node does its own. The
-node's Bedrock decodes the chip at the cable's port and at each of the
-chip's heads the node hosts, and nothing at the chip's other Crosstown2
-port. A second node cabled to that port is refused, since whether one
-XBridge serves two hosts at once is unknown, and so is a host also
-cabled to a router. Cables between two crossbars, such as the P-brick's
-two links from its first chip to each of the others, are checked like
-any other cable and then refused while the machine is built, since no
-contract gives the downstream chips' mode.
+``xbridge3`` where a module holds several, as the N-brick's four chips do.
+It gives the chip the cable's port as its host port and its module's
+catalogue id as its bus prefix, and hands it to the cabled node through
+the node's ``xbridge`` link. The node joins and realizes it as an
+Origin 300 node does its own. The node's Bedrock decodes the chip at the
+cable's port and at each of the chip's heads the node hosts, and nothing
+at the chip's other Crosstown2 port.
+
+The builder refuses a second host node on one XBridge, because the model
+takes one host port and whether one chip serves hosts on A and B at once
+is *unknown*. It refuses a host that is also cabled to a router, for which
+it has no rule. It checks a cable between two crossbars, such as the
+P-brick's links from its first chip to each of the others, like any other
+cable and then refuses it while the cables are built. No source cited
+here gives the downstream chips' mode (*unknown*;
+:ref:`sgi-sn-family-pbrick`).
 
 An XIO cable from one of the chip's other link ports, 8 to 0xd, reaches
 one XIO board: a card in an X-brick slot, or a board on the I-brick's
@@ -1112,7 +1084,8 @@ board's own module and joins it to the port with one XIO link once the
 nodes have realized. Only the XIO cards ``pci-carrier``,
 ``pci-shoehorn``, ``menet`` and ``mscsi``, the V-brick's VPro V12 and
 the InfiniteReality pipe of a G-brick are built at such a port; any
-other graphics pipe or a BaseIO card cabled there is refused. A V12
+other graphics pipe, a BaseIO card or any other preset cabled there is
+refused. A V12
 record cabled to a crossbar port is a graphics slot named by the
 record's catalogue id: ``-device sgi-odyssey,slot=<id>`` fits the pipe
 there, it is built in the record's module, and the chip's host node
