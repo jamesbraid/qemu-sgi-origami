@@ -12,6 +12,7 @@
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "trace.h"
@@ -449,7 +450,7 @@ static uint64_t pi_cpu_number(SGIBedrockPIState *s)
     return (uint64_t)s->interface << 1;
 }
 
-static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
+static uint64_t pi_read_locked(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockPIState *s = opaque;
     unsigned mask = pi_population_mask(s);
@@ -554,8 +555,8 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
-static void pi_write(void *opaque, hwaddr offset, uint64_t value,
-                     unsigned size)
+static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
+                            unsigned size)
 {
     SGIBedrockPIState *s = opaque;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
@@ -866,6 +867,41 @@ static bool pi_accepts(void *opaque, hwaddr addr, unsigned size,
     return false;
 }
 
+/*
+ * The register window is lockless (pi_init()), so each access decides
+ * whether it needs the BQL. A doubleword read of a pending bank does not:
+ * that is the register a waiting processor polls. The stock IP35 PROM's
+ * secondary processors spin on both banks for as long as the first one
+ * works, and under the lock every poll held up that processor and the main
+ * loop. With three processors waiting, the first one's graphics console ran
+ * at a fifth of its one-processor speed. A pending read is one acquire
+ * load of the word sgi_bedrock_pi_recompute() published, and its remaining
+ * state is the reading processor's own (current_cpu, for the trace). Every
+ * other access, a pending read made with the BQL already held included,
+ * takes the lock as before.
+ */
+static bool pi_read_is_lockless(hwaddr offset, unsigned size)
+{
+    return size == 8 && (offset == PI_PENDING_0 || offset == PI_PENDING_1);
+}
+
+static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
+{
+    if (!bql_locked() && pi_read_is_lockless(offset, size)) {
+        return pi_read_locked(opaque, offset, size);
+    }
+
+    BQL_LOCK_GUARD();
+    return pi_read_locked(opaque, offset, size);
+}
+
+static void pi_write(void *opaque, hwaddr offset, uint64_t value,
+                     unsigned size)
+{
+    BQL_LOCK_GUARD();
+    pi_write_locked(opaque, offset, value, size);
+}
+
 static const MemoryRegionOps pi_ops = {
     .read = pi_read,
     .write = pi_write,
@@ -1068,6 +1104,14 @@ static void pi_init(Object *obj)
     s->level_rearm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_level_rearm, s);
     memory_region_init_io(&s->mmio, obj, &pi_ops, s, TYPE_SGI_BEDROCK_PI,
                           SGI_BEDROCK_PI_SIZE);
+    /*
+     * Only a polled pending read goes without the BQL (pi_read()). This also
+     * drops the memory core's reentrancy guard, which only matters for a
+     * device whose access can start one that comes back into it. No access
+     * here does: a write changes registers, timers and interrupt lines and
+     * starts no transfer.
+     */
+    memory_region_enable_lockless_io(&s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));

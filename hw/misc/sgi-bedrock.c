@@ -1135,6 +1135,13 @@ static bool bedrock_resolve_slot_processors(SGIBedrockState *s, Error **errp)
  * into the slot's enabled graphics page costs the slot one credit. The
  * store goes on either way. Only a processor's uncached requests take this
  * view, so neither a debugger's access nor a device's DMA is counted.
+ *
+ * The region is lockless (bedrock_init_processor_paths()). A read needs no
+ * BQL here: it touches only this thread's store mark and goes on through
+ * address_space_read(), where whatever answers takes the lock if it needs
+ * it. So a processor polling a pending bank (pi_read() in sgi-bedrock-pi.c)
+ * reaches it without the lock. A write takes the lock for the credit count,
+ * as it did before.
  */
 #define BEDROCK_IO_SPACE_SIZE   (1ULL << 40)
 
@@ -1169,6 +1176,8 @@ static MemTxResult bedrock_pi_io_write(void *opaque, hwaddr addr,
     uint8_t bytes[8];
     MemTxResult result;
     bool counted, previous;
+
+    BQL_LOCK_GUARD();
 
     counted = sgi_pi_gfx_count_store(
         &s->pi[path->slot / SGI_BEDROCK_PI_PROCESSORS].gfx,
@@ -1219,6 +1228,8 @@ static void bedrock_init_processor_paths(SGIBedrockState *s)
                               BEDROCK_IO_SPACE_SIZE);
         /* The forwarded request may come back into this device. */
         s->pi_io[slot].disable_reentrancy_guard = true;
+        /* Only a read goes without the BQL (bedrock_pi_io_read()). */
+        memory_region_enable_lockless_io(&s->pi_io[slot]);
         s->pi_io_ready[slot] = true;
     }
 }
