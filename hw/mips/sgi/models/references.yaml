@@ -1052,6 +1052,19 @@ firmware:
       distribution: "IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img"
       image: payload
       sha256: c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd
+  ip30-prom-4.17:
+    title: "IP30 PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane and Octane2 IP30 system boards"
+    version: "4.17"
+    banner: "PROM Monitor SGI Version 6.5 Rev 4.17 IP30 Jan 20, 2004 - 64 Bit"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media"
+      image: payload
+      sha256: ee4722ca6f9b821ffadf156346c4d69bf5be71fc4b911cee75e36a1f51a49972
   ip35-prom-6.210:
     title: "IP35 PROM"
     publisher: Silicon Graphics
