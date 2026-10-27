@@ -518,13 +518,17 @@ static void test_settled_credits_return_through_the_storing_hub(void)
 #define REG_DESKSIDE(o) (SPACE_IO + NODE_STRIDE + \
                          (uint64_t)DESKSIDE_WIDGET * SMALL_WINDOW_SIZE + (o))
 
-static void queued_stores(bool parked)
+static void queued_stores(bool parked, bool detached)
 {
     g_autofree uint32_t *list = g_new(uint32_t, LONG_LIST_LOADS * 6);
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
     QTestState *qts;
+    uint64_t restored;
     SgiWait w;
+    int fd;
 
     for (unsigned i = 0; i < LONG_LIST_LOADS; i++) {
         memcpy(list + 6 * i, (uint32_t[]) {
@@ -533,7 +537,13 @@ static void queued_stores(bool parked)
     }
     build_store_server(image, true);
     path = sn0_image_write(image, "sn0-kona-pi-credit-queued");
-    qts = qtest_initf("%s-bios %s", DESKSIDE_ARGS, path);
+    log = g_strdup_printf("%s/sn0-kona-pi-credit-XXXXXX.log",
+                          g_get_tmp_dir());
+    fd = g_mkstemp(log);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = qtest_initf("%s-bios %s -d guest_errors -D %s", DESKSIDE_ARGS,
+                      path, log);
     unlink(path);
 
     sn0_program_nasid(qts, 1);
@@ -581,6 +591,9 @@ static void queued_stores(bool parked)
     g_assert_cmpuint(credit(qts), ==, TOTAL - (parked ? 6 : 3));
     g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800208)), ==, 0x7fe);
     g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800238)) & 2, ==, 0);
+    if (detached) {
+        qtest_writeq(qts, NODE1_HUB + IO_GFX_INIT(0), 0);
+    }
 
     sgi_wait_start(&w, "display list work");
     while (kona_work_pending(qts)) {
@@ -589,19 +602,28 @@ static void queued_stores(bool parked)
     if (parked) {
         /* Freed while parked: held until the target is restored. */
         g_assert_cmpuint(credit(qts), ==, TOTAL - 6);
+        if (detached) {
+            qtest_writeq(qts, NODE1_HUB + IO_GFX_INIT(0),
+                         MAP(0, 0, DESKSIDE_WIDGET));
+        }
         store(qts, DESKSIDE_KONA_IO(0x7c), 0x22, 4);
     }
-    g_assert_cmpuint(credit(qts), ==, TOTAL);
+    restored = credit(qts);
     g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800208)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800238)) & 0x12, ==,
                     0x12);
     g_assert_cmphex(qtest_readl(qts, REG_DESKSIDE(0x800240)), ==, 0x1234abcd);
     qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpint(g_unlink(log), ==, 0);
+    g_assert_null(strstr(found, "match no valid node-widget map entry"));
+    g_assert_cmpuint(restored, ==, TOTAL);
 }
 
 static void test_queued_stores_hold_their_credits(void)
 {
-    queued_stores(false);
+    queued_stores(false, false);
 }
 
 /*
@@ -613,7 +635,19 @@ static void test_queued_stores_hold_their_credits(void)
  */
 static void test_parked_target_holds_credits(void)
 {
-    queued_stores(true);
+    queued_stores(true, false);
+}
+
+/*
+ * The same with the flow detached in between, as the driver does after
+ * parking: it clears the node-widget map, so credits the work frees then
+ * match no map entry. Returned then, the Hub logs them as matching none
+ * and drops them, and IRIX's count stays short of its total. Parked, they
+ * wait until the thread is attached again and the target restored.
+ */
+static void test_detached_flow_keeps_credits(void)
+{
+    queued_stores(true, true);
 }
 
 int main(int argc, char **argv)
@@ -641,6 +675,8 @@ int main(int argc, char **argv)
                    test_queued_stores_hold_their_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/parked-target-holds-credits",
                    test_parked_target_holds_credits);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/detached-flow-keeps-credits",
+                   test_detached_flow_keeps_credits);
     qtest_add_func("sn0/origin2000/kona-pi-credit/settle-storing-hub",
                    test_settled_credits_return_through_the_storing_hub);
     qtest_add_func("sn0/origin2000/kona-pi-credit/storing-hub",
