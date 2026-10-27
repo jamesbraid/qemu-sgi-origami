@@ -3434,6 +3434,163 @@ static void test_context_switch_completion(void)
 }
 
 /*
+ * Command work after the store (hw/misc/sgi-odyssey.c). Once a processor's
+ * command-FIFO store has run longer than a slice, the stores that follow
+ * wait in a queue and run in slices on the board's thread, so the
+ * processor can take its scheduler ticks while the board draws. qtest has
+ * no processor; x-test-slice-words queues every command store and runs
+ * that many a slice. The machine is let run (qtest executes no guest
+ * code) so the slices' timer fires as the test steps the clock.
+ */
+static QTestState *work_start(void)
+{
+    QTestState *qts = board_launch("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, 0xb70000);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': 1}}", BOARD);
+    return qts;
+}
+
+static bool work_pending(QTestState *qts)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-work-pending'}}", BOARD);
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+/* Two host-write fences, slot 2 then slot 3, each three words. */
+static void work_push_fences(QTestState *qts)
+{
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x5a00);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 3);
+    cmd_push(qts, 0xa5a5);
+}
+
+/*
+ * The stores return with their work waiting; it runs one store a slice
+ * as the clock steps, in order, and its fences land when it does.
+ */
+static void test_command_work_runs_in_slices(void)
+{
+    QTestState *qts = work_start();
+    unsigned int steps = 0;
+
+    work_push_fences(qts);
+    g_assert_true(work_pending(qts));
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 4), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0);
+    while (work_pending(qts)) {
+        g_assert_cmpuint(++steps, <, 100);
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmpuint(steps, >=, 3);
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 4), ==, 0x5a00);
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0xa5a5);
+    board_quit(qts);
+}
+
+/*
+ * A context switch waits behind the commands before it: the kernel polls
+ * the done word, which the board writes only once those have run.
+ */
+static void test_command_work_orders_context_switch(void)
+{
+    QTestState *qts = work_start();
+    const uint64_t base = 0xb80000;
+
+    work_push_fences(qts);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, (uint32_t)base);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_WORD);
+    g_assert_cmphex(qtest_readl(qts, base + ODSY_CTX_SWITCH_DONE_OFFSET), ==,
+                    0);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+        if (qtest_readl(qts, base + ODSY_CTX_SWITCH_DONE_OFFSET)) {
+            /* The fences before the switch had already landed. */
+            g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0xa5a5);
+        }
+    }
+    g_assert_cmphex(qtest_readl(qts, base + ODSY_CTX_SWITCH_DONE_OFFSET), !=,
+                    0);
+    board_quit(qts);
+}
+
+/*
+ * A read of a register the work may change finishes the work first; the
+ * software token, which no command touches, is answered at once.
+ */
+static void test_command_work_read_waits(void)
+{
+    QTestState *qts = work_start();
+
+    work_push_fences(qts);
+    reg_write(qts, ODSY_SW_TOKEN, 1);
+    g_assert_cmphex(reg_read(qts, ODSY_SW_TOKEN), ==, 1);
+    g_assert_true(work_pending(qts));
+    reg_read(qts, ODSY_MEMORY_CONFIG);
+    g_assert_false(work_pending(qts));
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0xa5a5);
+    board_quit(qts);
+}
+
+/*
+ * A low-water clear written behind queued FIFO stores acts at once and
+ * keeps its order: each store raises low water as it drains, and the
+ * clear, run after them, leaves the flag clear, as the synchronous board
+ * did.
+ */
+static void test_command_work_intr_clear_keeps_order(void)
+{
+    QTestState *qts = work_start();
+
+    reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    work_push_fences(qts);
+    reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
+                    ==, 0);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
+                    ==, 0);
+    board_quit(qts);
+}
+
+/* A stopping machine finishes the work; reset abandons it. */
+static void test_command_work_stop_and_reset(void)
+{
+    QTestState *qts = work_start();
+
+    work_push_fences(qts);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    g_assert_false(work_pending(qts));
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 6), ==, 0xa5a5);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 4);
+    cmd_push(qts, 0x1234);
+    g_assert_true(work_pending(qts));
+    qtest_system_reset(qts);
+    g_assert_false(work_pending(qts));
+    g_assert_cmphex(qtest_readw(qts, 0xb70000 + 8), ==, 0);
+    board_quit(qts);
+}
+
+/*
  * With no shadow address programmed -- the reset value, and the shape a
  * board that never received the driver's 0x4004/0x400c writes would still
  * have -- the switch has nowhere to complete into. hw/misc/sgi-odyssey.c
@@ -5079,6 +5236,51 @@ static void test_command_fifo_unknown_word_skips_its_operands(void)
         user_cmd_push(qts, triangle[i]);
     }
     g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0xffff00ff);
+    board_quit(qts);
+}
+
+/*
+ * A triangle queued behind the store that carries it is drawn on the
+ * board's thread as the clock steps, without the big lock, to the pixels
+ * the synchronous board drew (test_command_fifo_gl_integer_triangle).
+ */
+static void test_command_work_draws_on_board_thread(void)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t draw[] = {
+        0x00010405, 0x2000,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 30, 40,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 70, 50,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 40, 85,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = work_start();
+
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    for (unsigned i = 0; i < ARRAY_SIZE(draw); i++) {
+        user_cmd_push(qts, draw[i]);
+    }
+    g_assert_true(work_pending(qts));
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-unlocked-draws"), ==, 0);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-unlocked-draws"), ==, 1);
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 45), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 30, 40), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 70, 77), ==, 0);
     board_quit(qts);
 }
 
@@ -22479,6 +22681,18 @@ int main(int argc, char **argv)
                    test_context_restart_unsupported_words);
     add_fresh_case("sn1/odyssey/context-switch-completion",
                    test_context_switch_completion);
+    add_fresh_case("sn1/odyssey/command-work-runs-in-slices",
+                   test_command_work_runs_in_slices);
+    add_fresh_case("sn1/odyssey/command-work-orders-context-switch",
+                   test_command_work_orders_context_switch);
+    add_fresh_case("sn1/odyssey/command-work-read-waits",
+                   test_command_work_read_waits);
+    add_fresh_case("sn1/odyssey/command-work-intr-clear-keeps-order",
+                   test_command_work_intr_clear_keeps_order);
+    add_fresh_case("sn1/odyssey/command-work-stop-and-reset",
+                   test_command_work_stop_and_reset);
+    add_fresh_case("sn1/odyssey/command-work-draws-on-board-thread",
+                   test_command_work_draws_on_board_thread);
     add_fresh_case("sn1/odyssey/context-switch-without-shadow-address",
                    test_context_switch_without_shadow_address_is_a_guest_error);
 

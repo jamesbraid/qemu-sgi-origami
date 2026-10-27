@@ -126,6 +126,8 @@
 #include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/rcu.h"
+#include "hw/core/cpu.h"
+#include "system/runstate.h"
 #include "qemu/units.h"
 #include "qemu/module.h"
 #include "hw/1wire/ds2505.h"
@@ -2653,7 +2655,8 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         /* No crosstalk error is ever posted, so the error class is clear. */
         break;
     case ODSY_INTR_FLAGS:
-        value = s->intr_flags;
+        /* A clear still queued behind work reads as done. */
+        value = s->intr_flags & ~s->work_intr_clears;
         break;
     case ODSY_INTR_ENABLE_SET:
         value = s->intr_enable;
@@ -6594,7 +6597,22 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     state.fog_index = (s->gl_fog[0] >> 12) & 0xfff;
     draw.state = &state;
     odyssey_gl_report_refusals(s, true);
-    result = sgi_soft_draw(&rules, &t, &draw);
+    /*
+     * In a slice of queued command work on the board's thread the draw
+     * runs without the big lock. It reads and writes only the planes and
+     * the state command words set; meanwhile command-FIFO stores queue and
+     * any access that would touch either waits for the slice.
+     */
+    if (sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_unlock(&s->work);
+        if (!bql_locked()) {
+            qatomic_inc(&s->work_unlocked_draws);
+        }
+        result = sgi_soft_draw(&rules, &t, &draw);
+        sgi_head_work_relock(&s->work);
+    } else {
+        result = sgi_soft_draw(&rules, &t, &draw);
+    }
     trace_sgi_odyssey_gl_draw_path("scalar", result, true);
     sgi_scanout_invalidate_all(&s->scanout);
     return result;
@@ -11982,14 +12000,307 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
     }
 }
 
+/*
+ * Command work after the store.
+ *
+ * The board draws a primitive after the store that completes it has
+ * finished: the processor goes on, and the driver learns of completion
+ * from a host-write fence or the context-switch word in guest memory, or
+ * from an interrupt. The model drew inside that store. A textured
+ * 500x500 quad takes it 60-150 ms, during which the processor takes no
+ * scheduler tick, and IRIX on IP35, as on IP27, counts one tick per
+ * interrupt and does not make up lost ones: GLperf fills on a Fuel saw a
+ * third of real time pass.
+ *
+ * So once a command-FIFO store from a processor has taken longer than one
+ * slice of host time (SGI_HEAD_WORK_SLICE_NS), the FIFO stores that follow
+ * within ODSY_WORK_HOLD_NS of machine time wait in a queue, in order, and
+ * run in slices on the board's thread (hw/display/sgi/head-work.c), their
+ * scalar draws without the big lock. The store that first runs long has
+ * already run whole. Light streams, the X server's included, stay
+ * synchronous. Stores from outside any processor (qtest) run whole unless
+ * x-test-slice-words is set, which queues every FIFO store.
+ */
+#define ODSY_WORK_HOLD_NS (1000 * SCALE_MS)
+
+/* Stores waiting behind work before the next one finishes the work. */
+#define ODSY_WORK_QUEUE_MAX 65536
+
+typedef struct OdysseyQueuedStore {
+    uint64_t value;
+    uint32_t addr;
+    uint8_t size;
+    /* When it was stored (QEMU_CLOCK_VIRTUAL), for the trace. */
+    int64_t queued_at;
+} OdysseyQueuedStore;
+
+/*
+ * Interrupt flags queued work raises when it runs: the FIFO low-water
+ * flag, which each command-FIFO store raises as it drains.
+ */
+#define ODSY_WORK_INTR_SOURCES ODSY_INTR_FIFO_LOW_WATER
+
+static bool odyssey_work_pending(SGIOdysseyState *s)
+{
+    return s->work_queue && s->work_queue->len;
+}
+
+static bool odyssey_fifo_port(hwaddr addr)
+{
+    return addr == ODSY_USER_CMD_FIFO || addr == ODSY_CMD_FIFO;
+}
+
+/*
+ * The stores that join the command stream: the two command-FIFO ports,
+ * and the kernel's context switch, the shadow address it names and the
+ * switch store itself. The kernel writes the address, clears the done
+ * word in guest memory, stores the switch and polls that word; the board
+ * writes it once the commands before the switch have run.
+ */
+static bool odyssey_command_store(hwaddr addr, unsigned size)
+{
+    return odyssey_fifo_port(addr) ||
+           (addr == ODSY_CTX_SWITCH_PORT && size == 8) ||
+           odyssey_reg(addr, size) == ODSY_CTX_SHADOW_ADDR_UPPER ||
+           odyssey_reg(addr, size) == ODSY_CTX_SHADOW_ADDR_LOWER;
+}
+
+/* What a flag clear still in the queue will remove. */
+static void odyssey_work_clears_update(SGIOdysseyState *s)
+{
+    s->work_intr_clears = 0;
+    for (unsigned int i = 0; i < s->work_queue->len; i++) {
+        OdysseyQueuedStore *q =
+            &g_array_index(s->work_queue, OdysseyQueuedStore, i);
+
+        if (q->addr == ODSY_INTR_CLEAR) {
+            s->work_intr_clears |= q->value;
+        }
+    }
+}
+
+static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
+                                uint64_t value, unsigned size)
+{
+    OdysseyQueuedStore q = {
+        .value = value, .addr = addr, .size = size,
+        .queued_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+    };
+
+    g_array_append_val(s->work_queue, q);
+    sgi_head_work_schedule(&s->work);
+}
+
+/* Run the oldest waiting stores until the budget is spent. */
+static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
+{
+    SGIOdysseyState *s = opaque;
+
+    while (s->work_queue->len) {
+        OdysseyQueuedStore q =
+            g_array_index(s->work_queue, OdysseyQueuedStore, 0);
+
+        g_array_remove_index(s->work_queue, 0);
+        odyssey_write_dispatch(s, q.addr, q.value, q.size);
+        if (q.addr == ODSY_INTR_CLEAR) {
+            odyssey_work_clears_update(s);
+        }
+        if (sgi_head_work_spent(b)) {
+            break;
+        }
+    }
+    if (s->work_queue->len) {
+        trace_sgi_odyssey_work_behind(s->work_queue->len,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+            g_array_index(s->work_queue, OdysseyQueuedStore, 0).queued_at);
+    }
+}
+
+static bool odyssey_work_pending_cb(void *opaque)
+{
+    return odyssey_work_pending(opaque);
+}
+
+static const SGIHeadWorkOps odyssey_work_ops = {
+    .step = odyssey_work_step,
+    .pending = odyssey_work_pending_cb,
+};
+
+/* Finish the waiting work now, for an access at addr that must see it. */
+static void odyssey_work_drain(SGIOdysseyState *s, hwaddr addr)
+{
+    int64_t start;
+
+    sgi_head_work_wait_slice(&s->work);
+    if (!odyssey_work_pending(s)) {
+        return;
+    }
+    start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    sgi_head_work_drain(&s->work);
+    trace_sgi_odyssey_work("drained", addr,
+                           qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start);
+}
+
+/*
+ * Accesses that need not wait for the queued stores, and act on the board
+ * as it stands. Inferred from what the IRIX kernel and X server do while
+ * the board works, not measured on a board; every other access waits.
+ *
+ * - The command-FIFO ports and the context switch queue instead.
+ * - Values no command word reads or writes: the software token the
+ *   kernel's scheduler sets and reads many times a second, the crosstalk
+ *   widget registers (identity, status, control, request timeout, error
+ *   records and error interrupt destination, which IRIX reads from its
+ *   interrupt path), the interrupt route and enables, the FIFO
+ *   status (which reads empty: the model takes every store), and the swap
+ *   and displayed-buffer registers and the cursor, which act on scanout.
+ * - Offsets the model does not implement, which it logs and answers with
+ *   zero: the kernel's scheduler writes one beside the software token, and
+ *   the OpenGL client polls one at 0x120004 while it draws.
+ * - The interrupt flags: a clear acts at once and also waits in the queue,
+ *   so a low-water flag a queued store raises when it runs is cleared after
+ *   it, as the processor ordered; a read leaves out what a queued clear
+ *   will remove.
+ */
+static bool odyssey_access_waits(hwaddr addr, unsigned size, bool write)
+{
+    hwaddr cursor = ODSY_BACKEND_READ_BASE + (ODSY_CURSOR_BASE << 3);
+
+    if (odyssey_fifo_port(addr)) {
+        return !write;
+    }
+    if (odyssey_reg(addr, size) < 0) {
+        /*
+         * Outside the modeled registers only the back-end and
+         * context-switch ports and the cursor do anything; the rest is
+         * logged and answers zero, so it need not wait.
+         */
+        if (write) {
+            return addr == ODSY_BACKEND_SELECT || addr == ODSY_CTX_SWITCH_PORT;
+        }
+        return false;
+    }
+    if (!write && addr >= cursor &&
+        addr < cursor + (ODSY_CURSOR_ENTRIES << 3)) {
+        return false;
+    }
+    switch (odyssey_reg(addr, size)) {
+    case ODSY_IDENTITY:
+    case ODSY_STATUS:
+    case ODSY_ERROR_ADDR_UPPER:
+    case ODSY_ERROR_ADDR_LOWER:
+    case ODSY_CONTROL:
+    case ODSY_XT_REQ_TIMEOUT:
+    case ODSY_INT_DEST_UPPER:
+    case ODSY_INT_DEST_LOWER:
+    case ODSY_ERROR_COMMAND:
+    case ODSY_STATUS0:
+    case ODSY_INTR_FLAGS:
+    case ODSY_INTR_CLEAR:
+    case ODSY_INTR_ENABLE_SET:
+    case ODSY_INTR_ENABLE_CLEAR:
+    case ODSY_ROUTE_DEST_UPPER:
+    case ODSY_ROUTE_DEST_LOWER:
+    case ODSY_ROUTE_VECTORS:
+    case ODSY_SW_TOKEN:
+    case ODSY_SWAP_ARM:
+    case ODSY_SWAP_PENDING:
+    case ODSY_SWAP_CONTROL:
+    case ODSY_SWAP_CONTROL_COMPANION:
+    case ODSY_DISPLAYED_BUFFER:
+        return false;
+    default:
+        return true;
+    }
+}
+
+/*
+ * An access from inside any SGI head's access or work on this thread: a
+ * board's DMA aimed at these registers. Refused and logged, as QEMU's
+ * re-entrancy guard, which these registers opt out of, would refuse it.
+ */
+static MemTxResult odyssey_refuse(hwaddr addr, bool write)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: %s at 0x%" HWADDR_PRIx
+                  " from inside a graphics head's work refused\n",
+                  write ? "write" : "read", addr);
+    return MEMTX_ACCESS_ERROR;
+}
+
+static MemTxResult odyssey_mmio_read(void *opaque, hwaddr addr,
+                                     uint64_t *data, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SGIOdysseyState *s = opaque;
+
+    if (!sgi_head_work_enter()) {
+        *data = 0;
+        return odyssey_refuse(addr, false);
+    }
+    if (odyssey_work_pending(s) && odyssey_access_waits(addr, size, false)) {
+        odyssey_work_drain(s, addr);
+    }
+    *data = odyssey_read(s, addr, size);
+    sgi_head_work_leave();
+    return MEMTX_OK;
+}
+
+/*
+ * Whether a store that joins the command stream waits in the queue:
+ * behind any store that already waits, while a slice's draw has let go of
+ * the big lock, and within ODSY_WORK_HOLD_NS of a FIFO store that ran
+ * long.
+ */
+static bool odyssey_store_queues(SGIOdysseyState *s, hwaddr addr,
+                                 unsigned size)
+{
+    if (!odyssey_command_store(addr, size)) {
+        return false;
+    }
+    return odyssey_work_pending(s) || s->work.drawing ||
+           s->work.test_words ||
+           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->work_queued_until;
+}
+
 /* Take the one-shot mark before dispatch can make another memory access. */
-static void odyssey_write(void *opaque, hwaddr addr, uint64_t value,
-                          unsigned size)
+static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
 {
     SGIOdysseyState *s = opaque;
     bool counted = sgi_pi_gfx_take_mark();
 
-    odyssey_write_dispatch(s, addr, value, size);
+    if (!sgi_head_work_enter()) {
+        return odyssey_refuse(addr, true);
+    }
+    if (odyssey_store_queues(s, addr, size)) {
+        if (s->work_queue->len >= ODSY_WORK_QUEUE_MAX && !s->work.drawing) {
+            odyssey_work_drain(s, addr);
+        }
+        odyssey_work_append(s, addr, value, size);
+    } else if (odyssey_fifo_port(addr) && current_cpu) {
+        int64_t start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+
+        odyssey_write_dispatch(s, addr, value, size);
+        if (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start >
+            SGI_HEAD_WORK_SLICE_NS) {
+            s->work_queued_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                   ODSY_WORK_HOLD_NS;
+            trace_sgi_odyssey_work("queueing", addr,
+                                   qemu_clock_get_ns(QEMU_CLOCK_REALTIME) -
+                                   start);
+        }
+    } else {
+        if (odyssey_work_pending(s) && odyssey_access_waits(addr, size, true)) {
+            odyssey_work_drain(s, addr);
+        }
+        odyssey_write_dispatch(s, addr, value, size);
+        if (addr == ODSY_INTR_CLEAR && odyssey_work_pending(s) &&
+            (value & ODSY_WORK_INTR_SOURCES)) {
+            odyssey_work_append(s, addr, value & ODSY_WORK_INTR_SOURCES, size);
+            odyssey_work_clears_update(s);
+        }
+    }
     if (counted) {
         if (s->pi) {
             sgi_pi_gfx_return_credits(s->pi, s->parent_obj.slot, 1);
@@ -11998,11 +12309,36 @@ static void odyssey_write(void *opaque, hwaddr addr, uint64_t value,
                           "store has no processor interface for its return\n");
         }
     }
+    sgi_head_work_leave();
+    return MEMTX_OK;
+}
+
+/* Work is finished before the machine stops, so none is ever saved. */
+static void odyssey_work_vm_state(void *opaque, bool running, RunState state)
+{
+    if (!running) {
+        sgi_head_work_enter_work();
+        odyssey_work_drain(opaque, UINT64_MAX);
+        sgi_head_work_leave();
+    }
+}
+
+/* Reset clears the FIFO and abandons the waiting stores. */
+static void odyssey_work_reset(SGIOdysseyState *s)
+{
+    if (!s->work_queue) {
+        return;
+    }
+    sgi_head_work_wait_slice(&s->work);
+    g_array_set_size(s->work_queue, 0);
+    s->work_intr_clears = 0;
+    s->work_queued_until = 0;
+    sgi_head_work_idle(&s->work);
 }
 
 static const MemoryRegionOps odyssey_ops = {
-    .read = odyssey_read,
-    .write = odyssey_write,
+    .read_with_attrs = odyssey_mmio_read,
+    .write_with_attrs = odyssey_mmio_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /* Keep 64-bit register and FIFO words whole instead of splitting them. */
@@ -12014,7 +12350,9 @@ static const MemoryRegionOps odyssey_ops = {
  * their stores can be posted (memory_region_enable_posted_writes()): a FIFO
  * word never changes the memory map or the storing processor's state, and
  * what it raises (low water, a finished DMA) reaches the processor as an
- * interrupt. Each page dispatches exactly as the aperture does.
+ * interrupt. Each page dispatches through the aperture's own entry
+ * points, so a page store queues behind command work, waits, and is
+ * guarded exactly as an aperture store is.
  */
 #define ODSY_FIFO_PAGE 0x1000
 
@@ -12022,29 +12360,31 @@ static const hwaddr odyssey_fifo_page_base[2] = {
     ODSY_USER_CMD_FIFO, ODSY_CMD_FIFO,
 };
 
-static uint64_t odyssey_fifo_page_read(void *opaque, hwaddr addr,
-                                       unsigned size)
+static MemTxResult odyssey_fifo_page_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
 {
     MemoryRegion *mr = opaque;
     SGIOdysseyState *s = SGI_ODYSSEY(mr->owner);
 
-    return odyssey_read(s, odyssey_fifo_page_base[mr - s->fifo_page] + addr,
-                        size);
+    return odyssey_mmio_read(s, odyssey_fifo_page_base[mr - s->fifo_page] +
+                             addr, data, size, attrs);
 }
 
-static void odyssey_fifo_page_write(void *opaque, hwaddr addr,
-                                    uint64_t value, unsigned size)
+static MemTxResult odyssey_fifo_page_write(void *opaque, hwaddr addr,
+                                           uint64_t value, unsigned size,
+                                           MemTxAttrs attrs)
 {
     MemoryRegion *mr = opaque;
     SGIOdysseyState *s = SGI_ODYSSEY(mr->owner);
 
-    odyssey_write(s, odyssey_fifo_page_base[mr - s->fifo_page] + addr, value,
-                  size);
+    return odyssey_mmio_write(s, odyssey_fifo_page_base[mr - s->fifo_page] +
+                              addr, value, size, attrs);
 }
 
 static const MemoryRegionOps odyssey_fifo_page_ops = {
-    .read = odyssey_fifo_page_read,
-    .write = odyssey_fifo_page_write,
+    .read_with_attrs = odyssey_fifo_page_read,
+    .write_with_attrs = odyssey_fifo_page_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     .impl = { .min_access_size = 1, .max_access_size = 8 },
@@ -12675,6 +13015,10 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
      */
     sgi_scanout_init(&s->scanout, dev, &odyssey_head_ops, s);
     odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+    s->work_queue = g_array_new(false, false, sizeof(OdysseyQueuedStore));
+    sgi_head_work_init(&s->work, "sgi-odyssey-work", &odyssey_work_ops, s);
+    s->work_vm_state = qemu_add_vm_change_state_handler(odyssey_work_vm_state,
+                                                        s);
 }
 
 static void odyssey_unrealize(DeviceState *dev)
@@ -12682,6 +13026,16 @@ static void odyssey_unrealize(DeviceState *dev)
     SGIOdysseyClass *oc = SGI_ODYSSEY_GET_CLASS(dev);
     SGIOdysseyState *s = SGI_ODYSSEY(dev);
 
+    if (s->work_vm_state) {
+        qemu_del_vm_change_state_handler(s->work_vm_state);
+        s->work_vm_state = NULL;
+    }
+    if (s->work_queue) {
+        /* The thread stops first; what it left waiting is abandoned. */
+        sgi_head_work_cleanup(&s->work);
+        g_array_free(s->work_queue, true);
+        s->work_queue = NULL;
+    }
     oc->parent_unrealize(dev);
     sgi_gl_cleanup(&s->gl_ctx);
     sgi_renderer_free(s->mesa_renderer);
@@ -12703,6 +13057,7 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
     Error *local_err = NULL;
 
+    odyssey_work_reset(s);
     odyssey_reset_registers(s);
     if (!odyssey_mesa_recreate(s, &local_err)) {
         error_report_err(local_err);
@@ -12950,16 +13305,40 @@ static bool odyssey_get_mesa_unavailable(Object *obj, Error **errp)
     return SGI_ODYSSEY(obj)->mesa_unavailable;
 }
 
+static bool odyssey_test_get_work_pending(Object *obj, Error **errp)
+{
+    return odyssey_work_pending(SGI_ODYSSEY(obj));
+}
+
+static void odyssey_test_get_unlocked_draws(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    uint32_t value = qatomic_read(&SGI_ODYSSEY(obj)->work_unlocked_draws);
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void odyssey_instance_init(Object *obj)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
 
     memory_region_init_io(&s->regs, obj, &odyssey_ops, s, "sgi-odyssey.regs",
                           ODSY_APERTURE);
+    /*
+     * An access that waits for queued command work sleeps in its handler
+     * with the big lock let go, and a second processor's access may then
+     * arrive. QEMU's re-entrancy guard is per device and would refuse it;
+     * the handlers keep a per-thread guard instead (sgi_head_work_enter()),
+     * which still refuses a DMA arriving from inside any head's work.
+     */
+    s->regs.disable_reentrancy_guard = true;
     for (unsigned i = 0; i < ARRAY_SIZE(s->fifo_page); i++) {
         memory_region_init_io(&s->fifo_page[i], obj, &odyssey_fifo_page_ops,
                               &s->fifo_page[i], "sgi-odyssey.fifo-page",
                               ODSY_FIFO_PAGE);
+        /* The same per-thread guard as the aperture's. */
+        s->fifo_page[i].disable_reentrancy_guard = true;
         memory_region_add_subregion(&s->regs, odyssey_fifo_page_base[i],
                                     &s->fifo_page[i]);
     }
@@ -12970,6 +13349,17 @@ static void odyssey_instance_init(Object *obj)
     s->gl_bind_drawable.back = 1;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->regs);
 
+    /*
+     * Queue every command-FIFO store and run x-test-slice-words of them a
+     * slice, and whether any is still waiting.
+     */
+    object_property_add_uint32_ptr(obj, "x-test-slice-words",
+                                   &s->work.test_words,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_bool(obj, "x-test-work-pending",
+                             odyssey_test_get_work_pending, NULL);
+    object_property_add(obj, "x-test-unlocked-draws", "uint32",
+                        odyssey_test_get_unlocked_draws, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -13430,10 +13820,20 @@ static int odyssey_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/* The machine stopped first (odyssey_work_vm_state); this only makes sure. */
+static int odyssey_work_pre_save(void *opaque)
+{
+    sgi_head_work_enter_work();
+    odyssey_work_drain(opaque, UINT64_MAX);
+    sgi_head_work_leave();
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
     .version_id = 43,
     .minimum_version_id = 43,
+    .pre_save = odyssey_work_pre_save,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
     .fields = (const VMStateField[]) {

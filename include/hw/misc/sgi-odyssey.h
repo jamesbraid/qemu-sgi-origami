@@ -10,6 +10,7 @@
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/gl-context.h"
 #include "hw/display/sgi/head-ops.h"
+#include "hw/display/sgi/head-work.h"
 #include "hw/display/sgi/pixel-dma.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
@@ -349,6 +350,20 @@ struct SGIOdysseyState {
     bool tex_rect_reported;
     uint64_t dma_seq;
     uint64_t trace_sequence; /* Monotonic for this device instance. */
+    /*
+     * Command-FIFO stores waiting behind a long draw (hw/misc/sgi-odyssey.c,
+     * "Command work after the store"). Finished before the machine stops, so
+     * none of it is migrated.
+     */
+    SGIHeadWork work;
+    GArray *work_queue;
+    /* Until when (QEMU_CLOCK_VIRTUAL) FIFO stores queue after a long one. */
+    int64_t work_queued_until;
+    /* Scalar draws run without the big lock, for the qtest. */
+    uint32_t work_unlocked_draws;
+    /* Interrupt flags a clear still in the queue will remove. */
+    uint32_t work_intr_clears;
+    VMChangeStateEntry *work_vm_state;
 
     /*
      * The per-pixel drawable-id plane, one byte per framebuffer pixel. The
