@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3000 reference composition: two two-processor C-bricks, an I-brick
+# and a one-pipe V-brick. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip35.yaml
+  - layers/products/onyx3000.yaml
+connector_population:
+  - component: c0-link-connector
+    occupancy: cabled
+    peer: c1-link-connector
+    reason: The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"]
+  - component: c1-link-connector
+    occupancy: cabled
+    peer: c0-link-connector
+    reason: The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"]
+module_instances:
+  - model: layers/modules/c-brick.yaml
+    prefix: c0-
+    parent: rack
+    observed_hardware: &cbrick-basis
+      mode: projected
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+      note: >-
+        The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
+        every published Origin 3000 inventory reports; it is not a capture of
+        this C-brick.
+  - model: layers/modules/c-brick.yaml
+    prefix: c1-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/i-brick.yaml
+    prefix: ibrick-
+    parent: rack
+    bus_bindings: {host-port-a-xio: c0-xio-ii}
+    observed_hardware:
+      mode: direct
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+      note: >-
+        The IO7 device identities are the closure record's own three
+        independent owners' IRIX inventories, reused directly for this
+        reference I-brick rather than a distinct capture of this exact set.
+  - model: layers/modules/v-brick.yaml
+    prefix: vbrick-
+    parent: rack
+    bus_bindings: {host-port-a-xio: c1-xio-ii}
+    observed_hardware:
+      mode: projected
+      sources: ["007-4264-002 printed pages 52 to 56"]
+      note: >-
+        No V-brick inventory or hardware graph has been captured; the
+        enclosure follows the owner's guide's block diagram.
