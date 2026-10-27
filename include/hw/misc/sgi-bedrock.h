@@ -136,6 +136,13 @@ struct SGIBedrockState {
     MemoryRegion pi_io[SGI_BEDROCK_PROCESSORS];
     bool pi_io_ready[SGI_BEDROCK_PROCESSORS];
     /*
+     * Graphics credits each widget behind this node owes for counted
+     * stores it has not yet taken (sgi_bedrock_gfx_map_written()). Zero
+     * whenever the machine is stopped, since the heads finish their work
+     * first, so not migrated.
+     */
+    uint32_t gfx_owed[16];
+    /*
      * The NUMAlink 3 cable on this node's one network port, or NULL. A
      * machine wires it the way it wires a Hub's; the link may also be set
      * after realize, which is how a two-node register test joins two
@@ -308,5 +315,12 @@ void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
                                     unsigned int interface,
                                     unsigned int slot);
 void sgi_bedrock_rt_counter_read(SGIBedrockState *s);
+
+/*
+ * The I/O interface is about to store 'value' in graphics node-widget map
+ * entry 'entry': settle the credits owed under the entry's present value.
+ */
+void sgi_bedrock_gfx_map_written(SGIBedrockState *s, unsigned int entry,
+                                 uint64_t value);
 
 #endif

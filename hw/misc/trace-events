@@ -729,6 +729,8 @@ sgi_bedrock_pi_mask_write(unsigned interface, uint64_t offset, uint64_t value, i
 sgi_bedrock_pi_pending_modify(int64_t virtual_ns, unsigned interface, int cpu, uint64_t value, unsigned bank, uint64_t pending) "virtual_ns=%" PRId64 " pi%u cpu %d pending modify 0x%" PRIx64 ": pending%u now 0x%" PRIx64
 sgi_bedrock_pi_io_modify(int64_t virtual_ns, unsigned interface, unsigned region, uint64_t value, unsigned bank, uint64_t pending) "virtual_ns=%" PRId64 " pi%u region %u pending modify 0x%" PRIx64 ": pending%u now 0x%" PRIx64
 sgi_bedrock_pi_pending_read(unsigned interface, int cpu, unsigned bank, uint64_t value) "pi%u cpu %d pending%u read: 0x%" PRIx64
+sgi_bedrock_gfx_settle(unsigned entry, unsigned widget, uint32_t credits) "map entry %u rewritten: widget 0x%x settles %u owed graphics credits"
+sgi_bedrock_gfx_repay_settled(unsigned widget, uint32_t credits) "widget 0x%x repays %u graphics credits already settled"
 sgi_bedrock_pi_gfx_below_bias(unsigned interface, unsigned slot, uint32_t credit, uint32_t bias) "pi%u slot %u graphics credits 0x%x below bias 0x%x: interrupt, slot stopped"
 sgi_bedrock_pi_gfx_stall(unsigned interface, unsigned slot, uint32_t credit) "pi%u slot %u counted store waits, credits 0x%x"
 sgi_bedrock_pi_gfx_stalled(unsigned interface, unsigned slot, const char *why, int64_t ns, uint32_t credit) "pi%u slot %u counted store goes on (%s) after %" PRId64 " ns, credits 0x%x"

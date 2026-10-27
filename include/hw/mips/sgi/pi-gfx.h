@@ -201,6 +201,10 @@ struct SGIPIGfxClass {
     InterfaceClass parent_class;
     void (*return_credits)(Object *node, unsigned int widget,
                            uint32_t credits);
+    /* Optional: the owed-credit ledger below. */
+    void (*owe_credits)(Object *node, unsigned int widget, int32_t credits);
+    void (*repay_credits)(Object *node, unsigned int widget,
+                          uint32_t credits);
 };
 
 /*
@@ -211,5 +215,20 @@ struct SGIPIGfxClass {
  */
 void sgi_pi_gfx_return_credits(Object *node, unsigned int widget,
                                uint32_t credits);
+
+/*
+ * Credits a head owes for counted stores it has not yet taken off its port
+ * (a board whose FIFO is full keeps the words waiting). sgi_pi_gfx_owe_
+ * credits() adds to the node's ledger for 'widget', or with a negative
+ * count cancels owed credits, as a board reset that abandons the words
+ * does. sgi_pi_gfx_repay_credits() returns owed credits as the head takes
+ * the words; the node routes only as many as it still holds owed, since it
+ * may have settled them already (see the node). A node without a ledger
+ * ignores the debt and routes a repayment as an ordinary return.
+ */
+void sgi_pi_gfx_owe_credits(Object *node, unsigned int widget,
+                            int32_t credits);
+void sgi_pi_gfx_repay_credits(Object *node, unsigned int widget,
+                              uint32_t credits);
 
 #endif

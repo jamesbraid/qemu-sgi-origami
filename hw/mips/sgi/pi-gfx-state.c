@@ -146,6 +146,28 @@ void sgi_pi_gfx_return_credits(Object *node, unsigned int widget,
     pc->return_credits(node, widget, credits);
 }
 
+void sgi_pi_gfx_owe_credits(Object *node, unsigned int widget,
+                            int32_t credits)
+{
+    SGIPIGfxClass *pc = SGI_PI_GFX_GET_CLASS(node);
+
+    if (pc->owe_credits) {
+        pc->owe_credits(node, widget, credits);
+    }
+}
+
+void sgi_pi_gfx_repay_credits(Object *node, unsigned int widget,
+                              uint32_t credits)
+{
+    SGIPIGfxClass *pc = SGI_PI_GFX_GET_CLASS(node);
+
+    if (pc->repay_credits) {
+        pc->repay_credits(node, widget, credits);
+    } else {
+        sgi_pi_gfx_return_credits(node, widget, credits);
+    }
+}
+
 static const TypeInfo sgi_pi_gfx_types[] = {
     {
         .name = TYPE_SGI_PI_GFX,
