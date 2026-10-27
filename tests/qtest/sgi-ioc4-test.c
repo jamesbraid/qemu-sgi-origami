@@ -550,6 +550,22 @@ static void ioc4_wait_rx_produce(QTestState *qts, uint32_t expected,
     g_assert_cmphex(produce, ==, expected);
 }
 
+/*
+ * Run the virtual clock a millisecond at a time until a register reads a
+ * value. In loopback each character spends a character time on the line,
+ * 1.04 ms at the 16550's reset rate, so a ring takes virtual time to cross.
+ */
+static void ioc4_run_line_until(QTestState *qts, unsigned offset,
+                                uint32_t mask, uint32_t expected)
+{
+    unsigned i;
+
+    for (i = 0; i < 2000 && (reg_read(qts, offset) & mask) != expected; i++) {
+        qtest_clock_step(qts, 1000000);
+    }
+    g_assert_cmphex(reg_read(qts, offset) & mask, ==, expected);
+}
+
 static void ioc4_socketpair(int sv[2])
 {
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
@@ -854,8 +870,8 @@ static void test_dma_loopback_pio_mcr(void)
                     0x13000000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
     ioc4_fill_loopback_tx_ring(qts, expected_ring);
-    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
-    ioc4_wait_rx_produce(qts, 0x3f8, loopback_log);
+    ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
+    ioc4_run_line_until(qts, SDMA_RX_PRODUCE(0), 0xff8, 0x3f8);
     g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0x3f8);
     g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0x3f8);
     g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)), ==, 0);
@@ -936,8 +952,12 @@ static void test_dma_loopback_tx_mcr(void)
     }
     g_assert_cmpuint(rx_count, ==, 507);
     reg_write(qts, SDMA_TX_PRODUCE(0), 0x3f8);
-    ioc4_wait_reg_with_log(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8, log);
-    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
+    ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
+    /* The last character is still on the line when its slot is consumed. */
+    qtest_clock_step(qts, 2000000);
+    ioc4_run_line_until(qts, SDMA_RX_PRODUCE(0), 0xff8, 0x3f0);
+    /* The modem-control entry wrote the UART's own register. */
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
                     ==, 0x13000000);
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f0);
@@ -982,44 +1002,52 @@ static void test_dma_loopback_shadow_reset(void)
     g_assert_nonnull(contents);
 }
 
-static void test_dma_loopback_external_retry(void)
+/*
+ * In loopback the UART's serial input is disconnected, as on a PC16550D:
+ * input from outside is discarded on arrival and logged, not kept for later.
+ */
+static void test_dma_loopback_discards_external_input(void)
 {
     g_autofree char *log = ioc4_log_file_new();
     int sv[2];
     QTestState *qts;
     const uint8_t input[4] = { 0xa1, 0xa2, 0xa3, 0xa4 };
     uint8_t entry[8];
-    struct pollfd pfd;
+    unsigned i;
     g_autofree char *contents = NULL;
 
     ioc4_socketpair(sv);
     qts = ioc4_start_dma(false, true, 0, sv[1], log);
     close(sv[1]);
     ioc4_set_pair_base_default(qts, 0, 0x400);
-    qtest_writeb(qts, UART(0) + 4, 0);
-    reg_write(qts, SDMA_SHADOW(0), SDMA_SHADOW_LOOPBACK);
+    qtest_writeb(qts, UART(0) + 4, 0x10);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
     g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
-    g_usleep(10000);
+    g_usleep(20000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1) |
+                                    SSCR_DRAIN);
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
 
-    reg_write(qts, SDMA_SHADOW(0), 0);
-    g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0);
-    ioc4_wait_rx_produce(qts, 8, log);
+    /* Out of loopback nothing comes back: it was discarded, not held. */
+    qtest_writeb(qts, UART(0) + 4, 0);
+    g_usleep(20000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1) |
+                                    SSCR_DRAIN);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
+
+    /* New input now arrives as usual. */
+    g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
+    for (i = 0; i < 1000 && reg_read(qts, SDMA_RX_PRODUCE(0)) != 8; i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 8);
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), entry,
                   sizeof(entry));
     g_assert_cmpmem(entry, sizeof(input), input, sizeof(input));
-    g_assert_cmpmem(entry + 4, 4,
-                    ((const uint8_t[]) {
-                        RX_DATA_VALID, RX_DATA_VALID,
-                        RX_DATA_VALID, RX_DATA_VALID,
-                    }), 4);
-    pfd = (struct pollfd) { .fd = sv[0], .events = POLLIN };
-    g_assert_cmpint(poll(&pfd, 1, 50), ==, 0);
     qtest_quit(qts);
     close(sv[0]);
     contents = ioc4_log_file_take(log);
-    g_assert_nonnull(contents);
+    g_assert_nonnull(strstr(contents, "while in loopback"));
 }
 
 static void test_dma_loopback_full_ring_recovery(void)
@@ -1048,11 +1076,13 @@ static void test_dma_loopback_full_ring_recovery(void)
     qts = ioc4_start_dma(false, true, 0, sv[1], log);
     close(sv[1]);
     ioc4_set_pair_base_default(qts, 0, 0x400);
-    reg_write(qts, SDMA_SHADOW(0), SDMA_SHADOW_LOOPBACK);
+    /* The 16550's FIFO on, to hold what the full ring cannot take. */
+    qtest_writeb(qts, UART(0) + 2, 0x01);
+    qtest_writeb(qts, UART(0) + 4, 0x10);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
     ioc4_fill_loopback_tx_ring(qts, expected_ring);
-    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
-    ioc4_wait_rx_produce(qts, 0x3f8, log);
+    ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
+    ioc4_run_line_until(qts, SDMA_RX_PRODUCE(0), 0xff8, 0x3f8);
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), rx_ring,
                   sizeof(rx_ring));
     g_assert_cmpmem(rx_ring, sizeof(rx_ring), expected_ring,
@@ -1061,13 +1091,19 @@ static void test_dma_loopback_full_ring_recovery(void)
     ioc4_write_tx_entry(qts, 0, 0x400, 0x3f8, first_data, valid);
     ioc4_write_tx_entry(qts, 0, 0x400, 0, second_data, valid);
     reg_write(qts, SDMA_TX_PRODUCE(0), 8);
-    ioc4_wait_reg(qts, 0x08, RX_RING_FULL(0), RX_RING_FULL(0));
+    /*
+     * The full receive ring does not stall the transmit walk: both entries
+     * go out, and the eight characters wait in the packer and the 16550's
+     * FIFO, which holds them without overrunning.
+     */
+    ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==,
+                    RX_RING_FULL(0));
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f8);
-    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0x3f8);
 
     reg_write(qts, SDMA_RX_CONSUME(0), 8);
     ioc4_wait_rx_produce(qts, 0, log);
-    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 0);
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3f8,
                   entry, sizeof(entry));
     g_assert_cmpmem(entry, sizeof(entry), first_rx, sizeof(first_rx));
@@ -1075,7 +1111,8 @@ static void test_dma_loopback_full_ring_recovery(void)
 
     reg_write(qts, SDMA_RX_CONSUME(0), 16);
     ioc4_wait_rx_produce(qts, 8, log);
-    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
+    /* Filled exactly, with nothing left waiting: the source falls. */
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==, 0);
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400), entry,
                   sizeof(entry));
     g_assert_cmpmem(entry, sizeof(entry), second_rx, sizeof(second_rx));
@@ -1173,8 +1210,10 @@ static void test_dma_rx_full_and_staged_recovery(void)
                     sizeof(incoming));
     ioc4_wait_reg(qts, 0x08, RX_RING_FULL(0), RX_RING_FULL(0));
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f8);
+    /* Ring-full is a level: it stays while the entry waits for room. */
     reg_write(qts, 0x08, RX_RING_FULL(0));
-    g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==, 0);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==,
+                    RX_RING_FULL(0));
 
     reg_write(qts, SDMA_RX_CONSUME(0), 16 | SRCIR_TIMER_ARM);
     ioc4_wait_reg(qts, SDMA_RX_PRODUCE(0), 0x3f8, 0);
@@ -1192,6 +1231,7 @@ static void test_dma_rx_full_and_staged_recovery(void)
     g_assert_cmphex(entry[1], ==, 0);
     g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
     g_assert_cmphex(entry[5], ==, 0);
+    /* Full again, but nothing waits for room: the source stays down. */
     g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==, 0);
 
     reg_write(qts, SDMA_RX_TIMER(0), 1);
@@ -1494,7 +1534,7 @@ static void test_dma_channel_reset_keeps_settings(void)
 
     ioc4_set_pair_base_default(qts, 0, 0x1000);
     reg_write(qts, SDMA_RX_TIMER(0), 0x140);
-    reg_write(qts, SDMA_SHADOW(0), 0x03000000);
+    qtest_writeb(qts, UART(0) + 4, 0x03);
     reg_write(qts, SDMA_TX_PRODUCE(0), 0x40);
     reg_write(qts, SDMA_CONTROL(0), SSCR_RESET | SSCR_THRESHOLD(5));
     g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0);
@@ -1806,7 +1846,9 @@ static void test_dma_port_fault_isolation_and_recovery(void)
                         recovered_status);
     reg_write(qts, SDMA_TX_PRODUCE(1), 8);
     ioc4_wait_reg(qts, SDMA_TX_CONSUME(1), 0x3f8, 8);
-    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(1)), ==, 0x15000000);
+    /* The shadow mirrors the UART: the outputs, beside its line status. */
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(1)) & SDMA_SHADOW_OUTPUTS, ==,
+                    0x15000000);
     g_assert_cmphex(reg_read(qts, 0x00) & ERROR_VALID, ==, ERROR_VALID);
     g_assert_cmphex(reg_read(qts, 0x04), ==, DMA_BAD_BASE >> 32);
 
@@ -1851,12 +1893,16 @@ static void test_dma_full_reset_clears_shadow(void)
     g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
     g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
                     ==, 0x13000000);
+    /* A shadow write changes nothing: the shadow mirrors the UART. */
     reg_write(qts, SDMA_SHADOW(0), 0x1f000000);
-    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)), ==, 0x1f000000);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
+                    ==, 0x13000000);
     qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
     ioc4_map(qts);
-    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)), ==, 0);
+    /* After reset it shows the UART's reset modem control, OUT2 alone. */
     g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x08);
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(0)) & SDMA_SHADOW_OUTPUTS,
+                    ==, 0x08000000);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
     g_assert_nonnull(contents);
@@ -1947,7 +1993,12 @@ static void test_serial_idle_status_backend_backpressure(void)
     g_usleep(10000);
     g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
                     ==, 1);
-    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 0);
+    /*
+     * With no backend the 16550 sends the byte anyway, as the line would,
+     * so the entry completes; a connected backend that cannot take it is
+     * held, for up to two seconds, by the 16550 core.
+     */
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 8);
     g_assert_cmphex(reg_read(qts, SIO_CR), ==, SIO_DIAG_IDLE);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
@@ -1989,6 +2040,8 @@ static void test_serial_idle_status_dma_callbacks(void)
     close(sv[1]);
     ioc4_set_pair_base_default(qts, 0, 0x1000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    /* A long reload: a zero one now expires at once, posting early. */
+    reg_write(qts, SDMA_RX_TIMER(0), 0xfff);
     reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
     g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
     g_usleep(10000);
@@ -2039,13 +2092,17 @@ static void test_serial_idle_status_nested_dma(void)
                         nested_tx_control);
     reg_write(qts, SDMA_CONTROL(1), SSCR_DMA_EN);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    /* A long reload: a zero one now expires at once, posting early. */
+    reg_write(qts, SDMA_RX_TIMER(0), 0xfff);
     reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
     g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
     g_usleep(10000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
     ioc4_wait_reg(qts, SDMA_RX_PRODUCE(0), 0xff8, 8);
     g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(1)), ==, 8);
-    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(1)), ==, 0x15000000);
+    /* The shadow mirrors the UART: the outputs, beside its line status. */
+    g_assert_cmphex(reg_read(qts, SDMA_SHADOW(1)) & SDMA_SHADOW_OUTPUTS, ==,
+                    0x15000000);
     g_assert_cmphex(ioc4_target_property(qts, "x-test-dma-observer-calls"),
                     >=, 2);
     g_assert_cmphex(ioc4_target_property(qts,
@@ -2721,6 +2778,7 @@ static void test_dma_tx_delay_migration(void)
     const uint8_t data[4] = { 3, 0, 0, 0 };
     const uint8_t control[4] = { TX_DELAY | TX_EXPLICIT, 0, 0, 0 };
     QTestState *from, *to;
+    int64_t now;
 
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
@@ -2731,10 +2789,16 @@ static void test_dma_tx_delay_migration(void)
     reg_write(from, SDMA_CONTROL(0), SSCR_DMA_EN);
     ioc4_write_tx_entry(from, 0, 0x1000, 0, data, control);
     reg_write(from, SDMA_TX_PRODUCE(0), 8);
-    qtest_clock_step(from, 1000000);
+    now = qtest_clock_step(from, 1000000);
     g_assert_cmphex(reg_read(from, 0x08) & TX_COMPLETION(0), ==, 0);
     g_assert_cmphex(reg_read(from, SDMA_TX_CONSUME(0)), ==, 0);
 
+    /*
+     * The delay migrates as its expiry time on the virtual clock, which a
+     * real migration carries; qtest clocks are per process, so bring the
+     * far side's up to this one first.
+     */
+    qtest_clock_set(to, now);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
@@ -2952,8 +3016,12 @@ static void test_dma_active_state_migration(void)
                     RX_RING_FULL(0));
     g_assert_true(qtest_get_irq(to, 0));
 
+    /* Ring-full is a level: it stays while the entry waits for room. */
     reg_write(to, 0x08, RX_RING_FULL(0) | RX_TIMER_EXPIRED(0));
-    g_assert_false(qtest_get_irq(to, 0));
+    g_assert_cmphex(reg_read(to, 0x08) & (RX_RING_FULL(0) |
+                                          RX_TIMER_EXPIRED(0)), ==,
+                    RX_RING_FULL(0));
+    g_assert_true(qtest_get_irq(to, 0));
     g_assert_cmpint(write(to_sv[0], &queued_input, 1), ==, 1);
     reg_write(to, SDMA_RX_TIMER(0), 1);
     reg_write(to, SDMA_RX_CONSUME(0), 16 | SRCIR_TIMER_ARM);
@@ -2983,7 +3051,12 @@ static void test_dma_active_state_migration(void)
     ioc4_wait_reg(to, SDMA_TX_CONSUME(0), 0x3f8, 8);
     ioc4_expect_bytes(to, to_sv[0], &second_output, 1);
 
+    /*
+     * The ring is full again, but nothing waits for room, so ring-full stays
+     * down and acknowledging the timer drops the line.
+     */
     reg_write(to, 0x08, RX_TIMER_EXPIRED(0));
+    g_assert_cmphex(reg_read(to, 0x08) & RX_RING_FULL(0), ==, 0);
     g_assert_false(qtest_get_irq(to, 0));
 
     qtest_quit(from);
@@ -3157,8 +3230,8 @@ int main(int argc, char **argv)
                    test_dma_loopback_tx_mcr);
     qtest_add_func("/sgi-ioc4/dma-loopback-shadow-reset",
                    test_dma_loopback_shadow_reset);
-    qtest_add_func("/sgi-ioc4/dma-loopback-external-retry",
-                   test_dma_loopback_external_retry);
+    qtest_add_func("/sgi-ioc4/dma-loopback-discards-external-input",
+                   test_dma_loopback_discards_external_input);
     qtest_add_func("/sgi-ioc4/dma-loopback-full-ring-recovery",
                    test_dma_loopback_full_ring_recovery);
     qtest_add_func("/sgi-ioc4/dma-tx-wrap-1k", test_dma_tx_wrap_1k);

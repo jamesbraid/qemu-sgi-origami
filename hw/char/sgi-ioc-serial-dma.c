@@ -166,6 +166,16 @@ static MemTxResult sdma_dma_rw(SGIIOCSerialDMA *d, hwaddr addr, void *buf,
     return result;
 }
 
+void sgi_ioc_sdma_refresh(SGIIOCSerialDMA *d)
+{
+    unsigned i;
+
+    for (i = 0; i < d->nports; i++) {
+        sdma_update_tx_empty(&d->port[i]);
+        sdma_update_high_water(&d->port[i]);
+    }
+}
+
 bool sgi_ioc_sdma_idle(SGIIOCSerialDMA *d)
 {
     return !d->in_flight;
@@ -422,6 +432,11 @@ static void sdma_receive(SGIIOCSerialDMAPort *p, int64_t since)
         }
         if (msr & UART_MSR_DCD) {
             status |= SGI_IOC_SDMA_RX_CD;
+        }
+        if (p->engine->ops->rx_status) {
+            status = p->engine->ops->rx_status(p->engine->opaque, p->index,
+                                               status,
+                                               serial->mcr & UART_MCR_LOOP);
         }
         p->packer[SGI_IOC_SDMA_ENTRY_CHARS + p->packed] = status;
 

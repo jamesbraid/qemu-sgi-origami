@@ -2,8 +2,9 @@
  * SGI IOC4 revision 0x53, serial-console subset.
  *
  * The four byte-wide 16550A ports and their local interrupt controller are
- * modeled. The IP53 profile also selects bounded serial DMA, ATA register
- * readback and a byte-bus clock alias. PS/2 input is optional; GPIO is absent.
+ * modeled. The IP53 profile also selects serial ring DMA, through the engine
+ * shared with IOC3 in hw/char/sgi-ioc-serial-dma.c, ATA register readback and
+ * a byte-bus clock alias. PS/2 input is optional; GPIO is absent.
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
@@ -13,6 +14,7 @@
 #include "system/runstate.h"
 #include "qapi/error.h"
 #include "hw/char/serial.h"
+#include "hw/char/sgi-ioc-serial-dma.h"
 #include "hw/core/irq.h"
 #include "hw/core/resettable.h"
 #include "hw/input/sgi-ioc3-kbc.h"
@@ -42,6 +44,7 @@
 #define IOC4_KBC_WRITE_PENDING 0x03
 #define IOC4_KBC_RX_MASK 0xe0ffffff
 #define IOC4_ATA_READBACK 0x148
+#define IOC4_DMA_BASE 0x300
 #define IOC4_DMA_PORT_BASE(n) (0x310 + 0x1c * (n))
 #define IOC4_DMA_CONTROL(n) (IOC4_DMA_PORT_BASE(n) + 0x00)
 #define IOC4_DMA_TX_PRODUCE(n) (IOC4_DMA_PORT_BASE(n) + 0x04)
@@ -84,42 +87,10 @@ struct SGIIOC4BusState {
     BusState parent_obj;
 };
 
+/* A UART window's handle: its chip and port. */
 struct SGIIOC4Port {
     SGIIOC4State *ioc4;
     unsigned index;
-    uint32_t control;
-    uint32_t tx_produce;
-    uint32_t tx_consume;
-    uint32_t rx_produce;
-    uint32_t rx_consume;
-    uint32_t rx_timer_reload;
-    uint16_t rx_idle_count;
-    uint32_t shadow;
-    uint8_t rx_data[4];
-    uint8_t rx_status[4];
-    uint8_t rx_count;
-    uint8_t tx_data[4];
-    uint8_t tx_status[4];
-    uint8_t tx_slot;
-    bool rx_staged;
-    bool tx_waiting_rx;
-    bool tx_active;
-    bool timer_armed;
-    bool rx_timer_running;
-    bool tx_timer_running;
-    bool tx_completion_pending;
-    bool halted;
-    bool drain_pending;
-    int64_t rx_remaining_ns;
-    int64_t tx_remaining_ns;
-    QEMUTimer *rx_timer;
-    QEMUTimer *tx_timer;
-    guint tx_watch;
-    IOEventHandler *saved_event;
-    IOCanReadHandler *saved_can_read;
-    IOReadHandler *saved_read;
-    BackendChangeHandler *saved_be_change;
-    void *saved_opaque;
 };
 
 struct SGIIOC4State {
@@ -136,12 +107,10 @@ struct SGIIOC4State {
     bool kbc_realized;
     SerialState uart[IOC4_PORTS];
     SGIIOC4Port dma[IOC4_PORTS];
-    uint64_t dma_base[2];
-    uint32_t dma_ring_size[2];
+    SGIIOCSerialDMA sdma;
     uint32_t other_pending;
     uint32_t dma_error_low;
     uint32_t dma_error_high;
-    unsigned dma_request_depth;
     uint8_t dma_migration_mode;
     uint8_t pci_status_compat_mode;
     uint8_t ata_readback_compat_mode;
@@ -158,6 +127,8 @@ struct SGIIOC4State {
     uint32_t threshold_level;
     /* The transmit-ring-empty sources, a level per port. */
     uint32_t tx_empty_level;
+    /* The receive-ring-full sources, a level per port. */
+    uint32_t rx_full_level;
     uint32_t clock_hz;
 };
 
@@ -166,55 +137,6 @@ typedef struct SGIIOC4Class {
     ResettablePhases parent_phases;
 } SGIIOC4Class;
 
-static unsigned ioc4_pair(unsigned port)
-{
-    return port / 2;
-}
-
-static uint32_t ioc4_ring_size(SGIIOC4State *s, unsigned port)
-{
-    return s->dma_ring_size[ioc4_pair(port)];
-}
-
-static uint32_t ioc4_ring_mask(SGIIOC4State *s, unsigned port)
-{
-    return ioc4_ring_size(s, port) - 8;
-}
-
-static bool ioc4_port_paused(SGIIOC4Port *p)
-{
-    return p->control & IOC4_SSCR_PAUSE;
-}
-
-static bool ioc4_rx_ring_full(SGIIOC4Port *p)
-{
-    SGIIOC4State *s = p->ioc4;
-    uint32_t next = (p->rx_produce + 8) & ioc4_ring_mask(s, p->index);
-
-    return next == p->rx_consume;
-}
-
-static bool ioc4_tx_ring_queued(SGIIOC4Port *p)
-{
-    return p->tx_produce != p->tx_consume || p->tx_active;
-}
-
-static bool ioc4_dma_loopback(SGIIOC4Port *p)
-{
-    return p->shadow & IOC4_DMA_SHADOW_LOOP;
-}
-
-static void ioc4_shadow_set_outputs(SGIIOC4Port *p, uint32_t outputs)
-{
-    bool was_loopback = ioc4_dma_loopback(p);
-
-    p->shadow = (p->shadow & ~IOC4_DMA_SHADOW_OUTPUTS) |
-                (outputs & IOC4_DMA_SHADOW_OUTPUTS);
-    if (was_loopback && !ioc4_dma_loopback(p)) {
-        qemu_chr_fe_accept_input(&p->ioc4->uart[p->index].chr);
-    }
-}
-
 static void ioc4_update_irq(SGIIOC4State *s)
 {
     pci_set_irq(&s->parent_obj,
@@ -222,6 +144,7 @@ static void ioc4_update_irq(SGIIOC4State *s)
                    (s->uart_level & s->serial_enable) |
                    (s->threshold_level & s->serial_enable) |
                    (s->tx_empty_level & s->serial_enable) |
+                   (s->rx_full_level & s->serial_enable) |
                    (s->other_pending & s->other_enable)));
 }
 
@@ -253,378 +176,140 @@ static void ioc4_uart_irq(void *opaque, int n, int level)
         s->uart_level &= ~bit;
     }
     ioc4_update_irq(s);
+
+    /*
+     * On every level, not assertion alone: a ring driver receives with the
+     * UART's own interrupts disabled.
+     */
+    sgi_ioc_sdma_kick(&s->sdma, n);
 }
 
-static uint64_t ioc4_tx_ring_address(SGIIOC4Port *p)
-{
-    SGIIOC4State *s = p->ioc4;
-    uint32_t ring_size = ioc4_ring_size(s, p->index);
-    uint64_t offset = (p->index & 1 ? 2 : 0) * ring_size;
+/*
+ * The serial ring DMA engine is shared with IOC3. What stays here is what
+ * differs: the register decode, where the interrupt sources sit, the error
+ * capture registers, and the policies only this model has so far.
+ */
+static const SGIIOCSerialDMAParams ioc4_sdma_params = {
+    /* IOC4's header does not define the packer counts; unknown here. */
+    .held_counts = false,
+    /* "Serial halted by mem err", in the header's other-interrupt word. */
+    .halt_on_dma_error = true,
+};
 
-    return s->dma_base[ioc4_pair(p->index)] + offset + p->tx_consume;
+static void ioc4_sdma_raise(void *opaque, unsigned port,
+                            SGIIOCSerialDMASource src)
+{
+    SGIIOC4State *s = opaque;
+
+    s->serial_pending |= 1u << (8 * port + src);
+    ioc4_update_irq(s);
 }
 
-static uint64_t ioc4_rx_ring_address(SGIIOC4Port *p)
+static void ioc4_sdma_set_level(void *opaque, unsigned port,
+                                SGIIOCSerialDMASource src, bool level)
 {
-    SGIIOC4State *s = p->ioc4;
-    uint32_t ring_size = ioc4_ring_size(s, p->index);
-    uint64_t offset = (p->index & 1 ? 3 : 1) * ring_size;
+    SGIIOC4State *s = opaque;
+    uint32_t bit = 1u << (8 * port + src);
+    uint32_t *word;
 
-    return s->dma_base[ioc4_pair(p->index)] + offset + p->rx_produce;
+    switch (src) {
+    case SGI_IOC_SDMA_SRC_RX_HIGH:
+        word = &s->threshold_level;
+        break;
+    case SGI_IOC_SDMA_SRC_TX_EMPTY:
+        word = &s->tx_empty_level;
+        break;
+    case SGI_IOC_SDMA_SRC_RX_FULL:
+        word = &s->rx_full_level;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    *word = (*word & ~bit) | (level ? bit : 0);
+    ioc4_update_irq(s);
 }
 
-static void ioc4_dma_error(SGIIOC4Port *p, uint64_t address, bool tx)
+/* The DMA profile still selects whether the engine reaches the UARTs. */
+static bool ioc4_sdma_reachable(void *opaque, unsigned port)
 {
-    SGIIOC4State *s = p->ioc4;
-    unsigned requester = 2 * p->index + !tx;
+    SGIIOC4State *s = opaque;
 
-    p->halted = true;
+    return s->serial_dma_experimental;
+}
+
+/*
+ * The first failure captures its address, with the low six bits dropped,
+ * and its requester: 2 * port for a transmit fetch, one more for a receive
+ * post. Later ones only set the multiple-error bit.
+ */
+static void ioc4_sdma_dma_error(void *opaque, unsigned port, bool rx,
+                                hwaddr address)
+{
+    SGIIOC4State *s = opaque;
+    unsigned requester = 2 * port + rx;
+
     if (!(s->dma_error_low & IOC4_DMA_ERROR_VALID)) {
         s->dma_error_low = (address & UINT32_C(0xffffffc0)) |
                            IOC4_DMA_ERROR_REQUESTER(requester) |
                            IOC4_DMA_ERROR_VALID;
-        s->dma_error_high = address >> 32;
+        s->dma_error_high = (uint64_t)address >> 32;
     } else {
         s->dma_error_low |= IOC4_DMA_ERROR_MULTIPLE;
     }
-    s->other_pending |= 1u << (p->index + IOC4_DMA_OTHER_SHIFT);
+    s->other_pending |= 1u << (port + IOC4_DMA_OTHER_SHIFT);
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-ioc4: serial DMA %s failed for port %u at 0x%"
-                  PRIx64 "\n", tx ? "read" : "write", p->index, address);
+                  HWADDR_PRIx "\n", rx ? "write" : "read", port, address);
     ioc4_update_irq(s);
 }
 
 /*
- * The receive threshold source is a level, recomputed wherever the waiting
- * count moves, and a write to the status register cannot clear it: the
- * IOC3 model is measured against IRIX's ring console, which never
- * acknowledges it and storms on a latch.
+ * Until the receive status rule is taken from the engine, keep this model's
+ * earlier values: data-valid alone for external input, data-valid and
+ * modem-valid for loopback.
  */
-static void ioc4_update_rx_threshold(SGIIOC4Port *p)
+static uint8_t ioc4_sdma_rx_status(void *opaque, unsigned port,
+                                   uint8_t status, bool loopback)
 {
-    SGIIOC4State *s = p->ioc4;
-    unsigned threshold = p->control & IOC4_SSCR_THRESHOLD;
-    unsigned entries = ((p->rx_produce - p->rx_consume) &
-                        ioc4_ring_mask(s, p->index)) / 8;
-    uint32_t bit = 1u << (8 * p->index + 2);
-
-    if (threshold && entries >= threshold) {
-        s->threshold_level |= bit;
-    } else {
-        s->threshold_level &= ~bit;
-    }
-    ioc4_update_irq(s);
+    return loopback ? IOC4_RX_VALID | IOC4_RX_MODEM_VALID : IOC4_RX_VALID;
 }
 
-static bool ioc4_rx_publish(SGIIOC4Port *p)
-{
-    SGIIOC4State *s = p->ioc4;
-    uint8_t entry[8] = { 0 };
-    uint64_t address;
-    MemTxResult result;
-    unsigned i;
+static const SGIIOCSerialDMAOps ioc4_sdma_ops = {
+    .raise = ioc4_sdma_raise,
+    .set_level = ioc4_sdma_set_level,
+    .reachable = ioc4_sdma_reachable,
+    .dma_error = ioc4_sdma_dma_error,
+    .rx_status = ioc4_sdma_rx_status,
+};
 
-    if (!p->rx_count || p->halted || ioc4_port_paused(p) ||
-        !(p->control & IOC4_SSCR_DMA_EN)) {
-        return false;
-    }
-    if (ioc4_rx_ring_full(p)) {
-        s->serial_pending |= 1u << (8 * p->index + 1);
-        ioc4_update_irq(s);
-        return false;
-    }
-    for (i = 0; i < p->rx_count; i++) {
-        entry[i] = p->rx_data[i];
-        entry[4 + i] = p->rx_status[i];
-    }
-    address = ioc4_rx_ring_address(p);
-    s->dma_request_depth++;
-    result = pci_dma_write(&s->parent_obj, address, entry, sizeof(entry));
-    s->dma_request_depth--;
-    if (result != MEMTX_OK) {
-        ioc4_dma_error(p, address, false);
-        return false;
-    }
-    p->rx_produce = (p->rx_produce + 8) & ioc4_ring_mask(s, p->index);
-    p->rx_count = 0;
-    p->rx_staged = false;
-    p->tx_waiting_rx = false;
-    p->drain_pending = false;
-    p->control &= ~IOC4_SSCR_DRAIN;
-    ioc4_update_rx_threshold(p);
-    qemu_chr_fe_accept_input(&s->uart[p->index].chr);
-    return true;
+static void ioc4_uart_tx_ready(void *opaque, int n, int level)
+{
+    SGIIOC4State *s = opaque;
+
+    sgi_ioc_sdma_set_tx_ready(&s->sdma, n, level);
 }
 
-static void ioc4_rx_stage_byte(SGIIOC4Port *p, uint8_t value,
-                               bool loopback)
+static uint32_t ioc4_sdma_control(SGIIOC4State *s, unsigned port)
 {
-    p->rx_data[p->rx_count] = value;
-    p->rx_status[p->rx_count] = IOC4_RX_VALID |
-        (loopback ? IOC4_RX_MODEM_VALID : 0);
-    p->rx_count++;
-    /*
-     * The first character accepted while armed starts the timer; a zero
-     * reload starts it already expired, as the IOC3 model has it.
-     */
-    if (p->timer_armed && !p->rx_timer_running) {
-        /* Once it runs, the count a reload write loaded is spent. */
-        p->rx_idle_count = 0;
-        p->rx_remaining_ns = (int64_t)(p->rx_timer_reload & 0xfff) * 62500;
-        p->rx_timer_running = true;
-        timer_mod(p->rx_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  p->rx_remaining_ns);
-    }
-    if (p->rx_count == 4) {
-        p->rx_staged = !ioc4_rx_publish(p);
-    }
+    return s->sdma.port[port].reg[SGI_IOC_SDMA_CONTROL / 4];
 }
 
-static gboolean ioc4_tx_watch(void *opaque, GIOCondition condition,
-                              void *data);
-
-static void ioc4_tx_walk(SGIIOC4Port *p)
+static uint32_t ioc4_sdma_reg(SGIIOC4State *s, unsigned port, hwaddr offset)
 {
-    SGIIOC4State *s = p->ioc4;
-    uint32_t mask = ioc4_ring_mask(s, p->index);
-
-    if (!s->serial_dma_experimental || p->halted || p->tx_waiting_rx ||
-        ioc4_port_paused(p) ||
-        !(p->control & IOC4_SSCR_DMA_EN) || p->tx_timer_running) {
-        return;
-    }
-    while (p->tx_consume != p->tx_produce) {
-        if (!p->tx_active) {
-            uint64_t address = ioc4_tx_ring_address(p);
-            uint8_t entry[8];
-            MemTxResult result;
-
-            s->dma_request_depth++;
-            result = pci_dma_read(&s->parent_obj, address, entry,
-                                 sizeof(entry));
-            s->dma_request_depth--;
-            if (result != MEMTX_OK) {
-                ioc4_dma_error(p, address, true);
-                return;
-            }
-            memcpy(p->tx_data, entry, 4);
-            memcpy(p->tx_status, entry + 4, 4);
-            p->tx_slot = 0;
-            p->tx_active = true;
-        }
-        while (p->tx_slot < 4) {
-            uint8_t status = p->tx_status[p->tx_slot];
-            uint8_t kind = status & 0xc0;
-
-            /*
-             * The type field and bit 5 decide what a slot does; the low
-             * five bits have no defined meaning and are logged, not obeyed.
-             * A slot of type none ends its entry wherever it sits, and the
-             * slots behind it are not sent: the IOC3 board test's expected
-             * data says so of IOC3, and IOC4 takes it from its sibling. It
-             * raises nothing even with bit 5 set, which no source settles.
-             */
-            if (status & 0x1f) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-ioc4: undefined TX control bits 0x%02x on "
-                              "port %u\n", status & 0x1f, p->index);
-            }
-            if (!kind) {
-                break;
-            }
-            if (kind == IOC4_TX_VALID) {
-                if (ioc4_dma_loopback(p)) {
-                    ioc4_rx_stage_byte(p, p->tx_data[p->tx_slot], true);
-                    p->tx_waiting_rx = p->rx_staged;
-                } else {
-                    int sent = qemu_chr_fe_write(&s->uart[p->index].chr,
-                                                 &p->tx_data[p->tx_slot], 1);
-                    if (sent == 0) {
-                        if (!p->tx_watch) {
-                            p->tx_watch = qemu_chr_fe_add_watch(
-                                &s->uart[p->index].chr, G_IO_OUT | G_IO_HUP,
-                                ioc4_tx_watch, p);
-                        }
-                        return;
-                    }
-                    if (sent < 0) {
-                        qemu_log_mask(LOG_GUEST_ERROR,
-                                      "sgi-ioc4: serial backend rejected TX on port %u\n",
-                                      p->index);
-                        return;
-                    }
-                }
-            } else if (kind == IOC4_TX_MCR) {
-                ioc4_shadow_set_outputs(p,
-                    (uint32_t)(p->tx_data[p->tx_slot] & 0x1f) << 24);
-            } else if (kind == IOC4_TX_DELAY) {
-                p->tx_remaining_ns = (int64_t)p->tx_data[p->tx_slot] *
-                                     1000000;
-                if (p->tx_remaining_ns) {
-                    p->tx_timer_running = true;
-                    timer_mod(p->tx_timer,
-                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                              p->tx_remaining_ns);
-                }
-            }
-            if (status & IOC4_TX_EXPLICIT) {
-                if (kind == IOC4_TX_DELAY && p->tx_remaining_ns) {
-                    p->tx_completion_pending = true;
-                } else {
-                    s->serial_pending |= 1u << (8 * p->index + 7);
-                    ioc4_update_irq(s);
-                }
-            }
-            p->tx_slot++;
-            if (p->tx_remaining_ns || p->tx_waiting_rx) {
-                return;
-            }
-        }
-        p->tx_active = false;
-        p->tx_slot = 0;
-        p->tx_consume = (p->tx_consume + 8) & mask;
-    }
+    return s->sdma.port[port].reg[offset / 4];
 }
 
-/*
- * Transmit-ring-empty is a level: set while ring DMA is on and nothing is
- * left to send, in the ring or held by the engine, and a write cannot clear
- * it. Linux's IOC3 driver treats the bit so, and IOC4 follows its sibling.
- */
-static void ioc4_update_tx_empty(SGIIOC4Port *p)
+/* Nothing queued, held or pending on the port: the model's restriction. */
+static bool ioc4_port_quiescent(SGIIOC4State *s, unsigned port)
 {
-    SGIIOC4State *s = p->ioc4;
-    uint32_t bit = 1u << (8 * p->index);
+    SGIIOCSerialDMAPort *p = &s->sdma.port[port];
 
-    if ((p->control & IOC4_SSCR_DMA_EN) && !ioc4_tx_ring_queued(p) &&
-        !p->tx_timer_running) {
-        s->tx_empty_level |= bit;
-    } else {
-        s->tx_empty_level &= ~bit;
-    }
-    ioc4_update_irq(s);
-}
-
-static void ioc4_tx_run(SGIIOC4Port *p)
-{
-    ioc4_tx_walk(p);
-    ioc4_update_tx_empty(p);
-}
-
-static gboolean ioc4_tx_watch(void *opaque, GIOCondition condition,
-                              void *data)
-{
-    SGIIOC4Port *p = data;
-
-    p->tx_watch = 0;
-    if (condition & G_IO_OUT) {
-        ioc4_tx_run(p);
-    }
-    return G_SOURCE_REMOVE;
-}
-
-static void ioc4_rx_timeout(void *opaque)
-{
-    SGIIOC4Port *p = opaque;
-
-    p->timer_armed = false;
-    p->rx_timer_running = false;
-    p->rx_remaining_ns = 0;
-    if (p->rx_count) {
-        p->rx_staged = !ioc4_rx_publish(p);
-    }
-    p->ioc4->serial_pending |= 1u << (8 * p->index + 3);
-    ioc4_update_irq(p->ioc4);
-}
-
-static void ioc4_tx_timeout(void *opaque)
-{
-    SGIIOC4Port *p = opaque;
-
-    p->tx_remaining_ns = 0;
-    p->tx_timer_running = false;
-    if (p->tx_completion_pending) {
-        p->tx_completion_pending = false;
-        p->ioc4->serial_pending |= 1u << (8 * p->index + 7);
-        ioc4_update_irq(p->ioc4);
-    }
-    ioc4_tx_run(p);
-}
-
-static int ioc4_char_can_read(void *opaque)
-{
-    SGIIOC4Port *p = opaque;
-    SGIIOC4State *s = p->ioc4;
-
-    if (!s->serial_dma_experimental || !(p->control & IOC4_SSCR_DMA_EN)) {
-        return p->saved_can_read ? p->saved_can_read(p->saved_opaque) : 0;
-    }
-    if (ioc4_port_paused(p) || p->halted || p->rx_staged ||
-        ioc4_dma_loopback(p)) {
-        return 0;
-    }
-    return 4 - p->rx_count;
-}
-
-static void ioc4_char_read(void *opaque, const uint8_t *buf, int size)
-{
-    SGIIOC4Port *p = opaque;
-    SGIIOC4State *s = p->ioc4;
-    int i;
-
-    if (!s->serial_dma_experimental || !(p->control & IOC4_SSCR_DMA_EN)) {
-        if (p->saved_read) {
-            p->saved_read(p->saved_opaque, buf, size);
-        }
-        return;
-    }
-    if (s->uart[p->index].wakeup) {
-        qemu_system_wakeup_request(QEMU_WAKEUP_REASON_OTHER, NULL);
-    }
-    for (i = 0; i < size && p->rx_count < 4; i++) {
-        ioc4_rx_stage_byte(p, buf[i], false);
-    }
-}
-
-static void ioc4_char_event(void *opaque, QEMUChrEvent event)
-{
-    SGIIOC4Port *p = opaque;
-
-    if (p->saved_event) {
-        p->saved_event(p->saved_opaque, event);
-    }
-}
-
-static int ioc4_char_backend_change(void *opaque);
-
-static void ioc4_install_char_handlers(SGIIOC4Port *p)
-{
-    CharFrontend *chr = &p->ioc4->uart[p->index].chr;
-
-    p->saved_event = chr->chr_event;
-    p->saved_can_read = chr->chr_can_read;
-    p->saved_read = chr->chr_read;
-    p->saved_be_change = chr->chr_be_change;
-    p->saved_opaque = chr->opaque;
-    qemu_chr_fe_set_handlers(chr, ioc4_char_can_read, ioc4_char_read,
-                             ioc4_char_event, ioc4_char_backend_change,
-                             p, NULL, true);
-}
-
-static int ioc4_char_backend_change(void *opaque)
-{
-    SGIIOC4Port *p = opaque;
-
-    if (p->tx_watch) {
-        g_source_remove(p->tx_watch);
-        p->tx_watch = 0;
-    }
-    if (p->saved_be_change && p->saved_be_change(p->saved_opaque) < 0) {
-        return -1;
-    }
-    ioc4_install_char_handlers(p);
-    ioc4_tx_run(p);
-    return 0;
+    return ioc4_sdma_reg(s, port, SGI_IOC_SDMA_TX_PRODUCE) ==
+           ioc4_sdma_reg(s, port, SGI_IOC_SDMA_TX_CONSUME) &&
+           ioc4_sdma_reg(s, port, SGI_IOC_SDMA_RX_PRODUCE) ==
+           ioc4_sdma_reg(s, port, SGI_IOC_SDMA_RX_CONSUME) &&
+           !p->tx_fetched && !p->tx_delay_due && !p->packed && !p->armed &&
+           !p->drain_pending;
 }
 
 static bool ioc4_pair_quiescent(SGIIOC4State *s, unsigned pair)
@@ -632,419 +317,172 @@ static bool ioc4_pair_quiescent(SGIIOC4State *s, unsigned pair)
     unsigned i;
 
     for (i = pair * 2; i < pair * 2 + 2; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-
-        if ((p->control & (IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE)) ||
-            p->tx_produce || p->tx_consume || p->rx_produce || p->rx_consume ||
-            p->tx_active || p->rx_count || p->timer_armed ||
-            p->drain_pending) {
+        if ((ioc4_sdma_control(s, i) & (IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE)) ||
+            ioc4_sdma_reg(s, i, SGI_IOC_SDMA_TX_PRODUCE) ||
+            ioc4_sdma_reg(s, i, SGI_IOC_SDMA_TX_CONSUME) ||
+            ioc4_sdma_reg(s, i, SGI_IOC_SDMA_RX_PRODUCE) ||
+            ioc4_sdma_reg(s, i, SGI_IOC_SDMA_RX_CONSUME) ||
+            !ioc4_port_quiescent(s, i)) {
             return false;
         }
     }
     return true;
 }
 
-static bool ioc4_port_quiescent(SGIIOC4Port *p)
-{
-    return !ioc4_tx_ring_queued(p) && p->rx_produce == p->rx_consume &&
-           !p->rx_count && !p->timer_armed && !p->drain_pending;
-}
-
 /*
- * The channel reset command returns the indices and the engine's work in
- * progress to the start and leaves the settings: control, the timer reload,
- * the shadow's outputs, pending sources and the error capture. That is the
- * IOC3 rule, carried here; what the part clears is not known. It also
- * clears a halt, which is what the command is for after a DMA fault.
+ * The DMA profile's mode-switch restrictions, kept for now: no enable over
+ * PIO data, no disable over pending work, and no enable over a pair base
+ * misaligned for its ring size. They are model policy, not hardware.
  */
-static void ioc4_channel_reset(SGIIOC4Port *p)
+static bool ioc4_control_refused(SGIIOC4State *s, unsigned n, uint32_t value)
 {
-    SGIIOC4State *s = p->ioc4;
-
-    if (p->rx_timer) {
-        timer_del(p->rx_timer);
-    }
-    if (p->tx_timer) {
-        timer_del(p->tx_timer);
-    }
-    if (p->tx_watch) {
-        g_source_remove(p->tx_watch);
-        p->tx_watch = 0;
-    }
-    p->tx_produce = p->tx_consume = 0;
-    p->rx_produce = p->rx_consume = 0;
-    p->rx_idle_count = 0;
-    memset(p->rx_data, 0, sizeof(p->rx_data));
-    memset(p->rx_status, 0, sizeof(p->rx_status));
-    memset(p->tx_data, 0, sizeof(p->tx_data));
-    memset(p->tx_status, 0, sizeof(p->tx_status));
-    p->rx_count = p->tx_slot = 0;
-    p->rx_staged = p->tx_waiting_rx = p->tx_active = false;
-    p->timer_armed = p->rx_timer_running = p->tx_timer_running = false;
-    p->tx_completion_pending = false;
-    p->halted = p->drain_pending = false;
-    p->rx_remaining_ns = p->tx_remaining_ns = 0;
-    qemu_chr_fe_accept_input(&s->uart[p->index].chr);
-}
-
-/* A device reset clears the settings and the port's sources as well. */
-static void ioc4_port_reset(SGIIOC4Port *p)
-{
-    SGIIOC4State *s = p->ioc4;
-    unsigned error_bit = p->index + IOC4_DMA_OTHER_SHIFT;
-
-    ioc4_channel_reset(p);
-    p->control = 0;
-    p->rx_timer_reload = 0;
-    p->shadow &= ~IOC4_DMA_SHADOW_OUTPUTS;
-    s->serial_pending &= ~((uint32_t)0xff << (8 * p->index));
-    s->threshold_level &= ~(1u << (8 * p->index + 2));
-    s->tx_empty_level &= ~(1u << (8 * p->index));
-    s->other_pending &= ~(1u << error_bit);
-    ioc4_update_irq(s);
-}
-
-static void ioc4_control_write(SGIIOC4Port *p, uint32_t value)
-{
-    SGIIOC4State *s = p->ioc4;
-    uint32_t supported = IOC4_SSCR_THRESHOLD | IOC4_SSCR_DRAIN |
-                         IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE |
-                         IOC4_SSCR_RESET;
-    /* Status and commands: these never read back as written. */
-    uint32_t unstored = IOC4_SSCR_TX_TIMER_BUSY | IOC4_SSCR_DRAIN |
-                        IOC4_SSCR_PAUSE_STATE | IOC4_SSCR_RESET;
-    uint32_t old = p->control;
+    uint32_t old = ioc4_sdma_control(s, n);
     bool want_dma = value & IOC4_SSCR_DMA_EN;
-    bool want_pause = value & IOC4_SSCR_PAUSE;
+    unsigned pair = n / 2;
+    uint64_t base = ((uint64_t)s->sdma.base_hi[pair] << 32 |
+                     s->sdma.base_lo[pair]) & ~UINT64_C(1);
+    unsigned size = (s->sdma.base_lo[pair] & 1) ? IOC4_RING_4K : IOC4_RING_1K;
 
     if (value & IOC4_SSCR_RESET) {
-        ioc4_channel_reset(p);
-        p->control = value & ~unstored;
-        ioc4_update_rx_threshold(p);
-        return;
+        return false;
     }
-    if (value & ~supported) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-ioc4: serial control bits 0x%08x on port %u are "
-                      "stored but not modelled\n",
-                      value & ~supported, p->index);
+    if (s->serial_dma_experimental && !(old & IOC4_SSCR_DMA_EN) && want_dma &&
+        (base & (size * 4 - 1))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc4: misaligned DMA pair base 0x%" PRIx64
+                      " on port %u\n", base, n);
+        s->sdma.port[n].halted = true;
+        return true;
     }
     if (!!(old & IOC4_SSCR_DMA_EN) != want_dma) {
-        SerialState *uart = &s->uart[p->index];
+        SerialState *uart = &s->uart[n];
 
         if (want_dma) {
             if (!fifo8_is_empty(&uart->recv_fifo) ||
                 !fifo8_is_empty(&uart->xmit_fifo) ||
                 (uart->lsr & 1) || (uart->lsr & 0x60) != 0x60) {
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-ioc4: DMA enable rejected with pending PIO data on port %u\n",
-                              p->index);
-                return;
+                              "sgi-ioc4: DMA enable rejected with pending "
+                              "PIO data on port %u\n", n);
+                return true;
             }
-        } else if (!ioc4_port_quiescent(p)) {
+        } else if (!ioc4_port_quiescent(s, n)) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: DMA disable rejected with pending work on port %u\n",
-                          p->index);
-            return;
+                          "sgi-ioc4: DMA disable rejected with pending work "
+                          "on port %u\n", n);
+            return true;
         }
     }
-    if (!(old & IOC4_SSCR_PAUSE) && want_pause) {
-        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
-        if (p->rx_timer_running) {
-            if (timer_pending(p->rx_timer)) {
-                p->rx_remaining_ns = MAX(0,
-                    timer_expire_time_ns(p->rx_timer) - now);
-            }
-            timer_del(p->rx_timer);
-        }
-        if (p->tx_timer_running) {
-            if (timer_pending(p->tx_timer)) {
-                p->tx_remaining_ns = MAX(0,
-                    timer_expire_time_ns(p->tx_timer) - now);
-            }
-            timer_del(p->tx_timer);
-        }
-    }
-    /*
-     * Every writable bit stores, as the IOC3 datasheet's control table
-     * has it, including controls with no modelled behaviour.
-     */
-    p->control = value & ~unstored;
-    if (p->drain_pending) {
-        p->control |= IOC4_SSCR_DRAIN;
-    }
-    if (value & IOC4_SSCR_DRAIN) {
-        p->drain_pending = true;
-        p->control |= IOC4_SSCR_DRAIN;
-        if (!p->rx_count && (p->control & IOC4_SSCR_DMA_EN) && !want_pause) {
-            p->drain_pending = false;
-            p->control &= ~IOC4_SSCR_DRAIN;
-        }
-    }
-    if (old & IOC4_SSCR_PAUSE && !want_pause) {
-        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
-        if (p->rx_timer_running) {
-            timer_mod(p->rx_timer, now + p->rx_remaining_ns);
-        }
-        if (p->tx_timer_running) {
-            timer_mod(p->tx_timer, now + p->tx_remaining_ns);
-        }
-    }
-    if (p->control & IOC4_SSCR_DMA_EN) {
-        if (p->drain_pending && !want_pause) {
-            if (p->rx_count) {
-                ioc4_rx_publish(p);
-            } else {
-                p->drain_pending = false;
-                p->control &= ~IOC4_SSCR_DRAIN;
-            }
-        }
-        if (!want_pause) {
-            ioc4_tx_run(p);
-            qemu_chr_fe_accept_input(&s->uart[p->index].chr);
-        }
-    }
-    ioc4_update_rx_threshold(p);
+    return false;
 }
 
-/*
- * The receive timer's live count, in 16 kHz ticks: what is left while it
- * runs or a pause holds it, otherwise what a reload write last loaded.
- */
-static uint32_t ioc4_rx_timer_count(SGIIOC4Port *p)
+/* Ring bases at 0x300-0x30c, then seven registers a port from 0x310. */
+static bool ioc4_sdma_decode(hwaddr addr, bool *base, unsigned *index,
+                             hwaddr *offset)
 {
-    int64_t left;
-
-    if (!p->rx_timer_running) {
-        return p->rx_idle_count;
+    if (addr & 3) {
+        return false;
     }
-    if (timer_pending(p->rx_timer)) {
-        left = timer_expire_time_ns(p->rx_timer) -
-               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    } else {
-        left = p->rx_remaining_ns;
+    if (addr >= IOC4_DMA_BASE && addr < IOC4_DMA_PORT_BASE(0)) {
+        *base = true;
+        *index = (addr - IOC4_DMA_BASE) / 8;
+        *offset = addr & 4;
+        return true;
     }
-    return MIN(MAX(left, 0) / 62500, 0xfff);
+    if (addr >= IOC4_DMA_PORT_BASE(0) &&
+        addr < IOC4_DMA_PORT_BASE(IOC4_PORTS)) {
+        *base = false;
+        *index = (addr - IOC4_DMA_PORT_BASE(0)) / SGI_IOC_SDMA_PORT_STRIDE;
+        *offset = (addr - IOC4_DMA_PORT_BASE(0)) % SGI_IOC_SDMA_PORT_STRIDE;
+        return true;
+    }
+    return false;
 }
 
-static uint64_t ioc4_dma_register_read(SGIIOC4State *s, hwaddr addr)
+static uint32_t ioc4_sdma_read(SGIIOC4State *s, bool base, unsigned index,
+                               hwaddr offset)
 {
-    unsigned n;
-
-    if (addr >= 0x300 && addr <= 0x30c) {
-        unsigned pair = (addr - 0x300) / 8;
-        bool high = (addr & 4) != 0;
-
-        if (high) {
-            return s->dma_base[pair] >> 32;
-        }
-        return (uint32_t)s->dma_base[pair] |
-               (s->dma_ring_size[pair] == IOC4_RING_4K);
+    if (base) {
+        /* Low word first on IOC4, the reverse of IOC3. */
+        return sgi_ioc_sdma_base_read(&s->sdma, index, offset == 4);
     }
-    if (addr < IOC4_DMA_PORT_BASE(0) ||
-        addr > IOC4_DMA_SHADOW(IOC4_PORTS - 1)) {
-        return UINT64_MAX;
-    }
-    n = (addr - IOC4_DMA_PORT_BASE(0)) / 0x1c;
-    if (n >= IOC4_PORTS || addr != IOC4_DMA_PORT_BASE(n) +
-        ((addr - IOC4_DMA_PORT_BASE(n)) / 4) * 4) {
-        return UINT64_MAX;
-    }
-    switch ((addr - IOC4_DMA_PORT_BASE(n)) / 4) {
-    case 0:
-        /* Bit 16 reads set while a transmit delay entry is running. */
-        return s->dma[n].control |
-               (ioc4_port_paused(&s->dma[n]) ? IOC4_SSCR_PAUSE_STATE : 0) |
-               (s->dma[n].tx_timer_running ? IOC4_SSCR_TX_TIMER_BUSY : 0);
-    case 1: return s->dma[n].tx_produce;
-    case 2: return s->dma[n].tx_consume;
-    case 3: return s->dma[n].rx_produce;
-    case 4: return s->dma[n].rx_consume |
-                   (s->dma[n].timer_armed ? IOC4_SRCIR_TIMER_ARM : 0);
-    case 5: return (s->dma[n].rx_timer_reload & 0xfff) |
-                   ioc4_rx_timer_count(&s->dma[n]) << 16;
-    case 6: return s->dma[n].shadow;
-    default: return UINT64_MAX;
-    }
+    return sgi_ioc_sdma_port_read(&s->sdma, index, offset);
 }
 
-static void ioc4_dma_register_write(SGIIOC4State *s, hwaddr addr,
-                                    uint32_t value)
+static void ioc4_sdma_write(SGIIOC4State *s, bool base, unsigned index,
+                            hwaddr offset, uint32_t value)
 {
-    unsigned n;
-    unsigned pair;
-    SGIIOC4Port *p;
-    uint32_t mask;
-
-    if (addr >= 0x300 && addr <= 0x30c) {
-        pair = (addr - 0x300) / 8;
-        if (!ioc4_pair_quiescent(s, pair)) {
+    if (base) {
+        if (!ioc4_pair_quiescent(s, index)) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: DMA base change rejected while pair %u is active\n",
-                          pair);
+                          "sgi-ioc4: DMA base change rejected while pair %u "
+                          "is active\n", index);
             return;
         }
-        if (addr & 4) {
-            s->dma_base[pair] = (s->dma_base[pair] & UINT32_MAX) |
-                                ((uint64_t)value << 32);
-        } else {
-            s->dma_ring_size[pair] = value & 1 ? IOC4_RING_4K : IOC4_RING_1K;
-            s->dma_base[pair] =
-                (s->dma_base[pair] & UINT64_C(0xffffffff00000000)) |
-                (value & UINT32_C(0xfffffffe));
+        sgi_ioc_sdma_base_write(&s->sdma, index, offset == 4, value);
+        return;
+    }
+    switch (offset) {
+    case SGI_IOC_SDMA_CONTROL:
+        if (value & ~(IOC4_SSCR_THRESHOLD | IOC4_SSCR_DRAIN | IOC4_SSCR_DMA_EN |
+                      IOC4_SSCR_PAUSE | IOC4_SSCR_RESET)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-ioc4: serial control bits 0x%08x on port %u "
+                          "are stored but not modelled\n",
+                          value & ~(IOC4_SSCR_THRESHOLD | IOC4_SSCR_DRAIN |
+                                    IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE |
+                                    IOC4_SSCR_RESET), index);
         }
-        return;
-    }
-    if (addr < IOC4_DMA_PORT_BASE(0) ||
-        addr > IOC4_DMA_SHADOW(IOC4_PORTS - 1)) {
-        return;
-    }
-    n = (addr - IOC4_DMA_PORT_BASE(0)) / 0x1c;
-    if (n >= IOC4_PORTS) {
-        return;
-    }
-    p = &s->dma[n];
-    mask = ioc4_ring_mask(s, n);
-    switch ((addr - IOC4_DMA_PORT_BASE(n)) / 4) {
-    case 0: {
-        bool enabling = !(p->control & IOC4_SSCR_DMA_EN) &&
-                        (value & IOC4_SSCR_DMA_EN);
-        uint64_t base = s->dma_base[ioc4_pair(n)];
-        unsigned size = ioc4_ring_size(s, n);
-
-        if (s->serial_dma_experimental && enabling &&
-            (base & (size * 4 - 1))) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: misaligned DMA pair base 0x%" PRIx64
-                          " on port %u\n", base, n);
-            p->halted = true;
+        if (ioc4_control_refused(s, index, value)) {
             return;
         }
-        ioc4_control_write(p, value);
         break;
-    }
-    /*
-     * A host-owned index keeps its pointer field; anything outside it is
-     * logged and dropped, and the port carries on. What the part does with
-     * such a write is not known.
-     */
-    case 1:
-        if (value & ~mask) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: TX producer 0x%08x on port %u has bits "
-                          "outside the pointer field\n", value, n);
-        }
-        p->tx_produce = value & mask;
-        ioc4_tx_run(p);
-        break;
-    /*
-     * The engine advances these two, and software can still place them:
-     * the IOC3 board test writes the transmit consume index and reads it
-     * back, and IOC4 has the same register. Only the pointer field stores.
-     */
-    case 2:
-        p->tx_consume = value & mask;
-        ioc4_tx_run(p);
-        break;
-    case 3:
-        p->rx_produce = value & mask;
-        ioc4_update_rx_threshold(p);
-        break;
-    case 4: {
-        uint32_t pointer = value & mask;
+    case SGI_IOC_SDMA_TX_PRODUCE:
+    case SGI_IOC_SDMA_RX_CONSUME: {
+        uint32_t size = (s->sdma.base_lo[index / 2] & 1) ? IOC4_RING_4K
+                                                         : IOC4_RING_1K;
+        uint32_t keep = (size - 8) |
+                        (offset == SGI_IOC_SDMA_RX_CONSUME ?
+                         IOC4_SRCIR_TIMER_ARM : 0);
 
-        if (value & ~(mask | IOC4_SRCIR_TIMER_ARM)) {
+        if (value & ~keep) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: RX consumer 0x%08x on port %u has bits "
-                          "outside the pointer field\n", value, n);
+                          "sgi-ioc4: %s 0x%08x on port %u has bits outside "
+                          "the pointer field\n",
+                          offset == SGI_IOC_SDMA_TX_PRODUCE ? "TX producer"
+                                                            : "RX consumer",
+                          value, index);
         }
-        /*
-         * Bit 31 sets the arm and a write with it clear leaves the arm and
-         * any running timer alone: both Linux ring drivers arm as a read
-         * starts and end the read with bit 31 clear, under a comment that
-         * calls that write a re-arm.
-         */
-        p->rx_consume = pointer;
-        if (value & IOC4_SRCIR_TIMER_ARM) {
-            p->timer_armed = true;
-        }
-        if (p->rx_staged || p->drain_pending) {
-            ioc4_rx_publish(p);
-        }
-        if (!p->rx_staged) {
-            ioc4_tx_run(p);
-        }
-        ioc4_update_rx_threshold(p);
-        qemu_chr_fe_accept_input(&s->uart[n].chr);
         break;
     }
-    case 5:
+    case SGI_IOC_SDMA_RX_TIMER:
         if (value & ~0xfff) {
             qemu_log_mask(LOG_UNIMP,
-                          "sgi-ioc4: unsupported RX timer bits 0x%08x on port %u\n",
-                          value & ~0xfff, n);
+                          "sgi-ioc4: unsupported RX timer bits 0x%08x on "
+                          "port %u\n", value & ~0xfff, index);
         }
-        p->rx_timer_reload = value & 0xfff;
-        /* The write loads the count as well; a running timer keeps its own. */
-        p->rx_idle_count = value & 0xfff;
-        break;
-    case 6:
-        if (value & ~IOC4_DMA_SHADOW_OUTPUTS) {
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-ioc4: unsupported shadow bits 0x%08x on port %u\n",
-                          value & ~IOC4_DMA_SHADOW_OUTPUTS, n);
-        }
-        ioc4_shadow_set_outputs(p, value);
-        break;
-    default:
         break;
     }
-}
-
-/*
- * A timer already due is applied before a register access, not whenever the
- * main loop next services it, so a guest that waits on the virtual clock and
- * then reads sees the expiry it waited for. The IOC3 engine does the same.
- */
-static void ioc4_catch_up(SGIIOC4State *s)
-{
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    unsigned i;
-
-    for (i = 0; i < IOC4_PORTS; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-
-        if (p->tx_timer && timer_pending(p->tx_timer) &&
-            timer_expire_time_ns(p->tx_timer) <= now) {
-            timer_del(p->tx_timer);
-            ioc4_tx_timeout(p);
-        }
-        if (p->rx_timer && timer_pending(p->rx_timer) &&
-            timer_expire_time_ns(p->rx_timer) <= now) {
-            timer_del(p->rx_timer);
-            ioc4_rx_timeout(p);
-        }
-    }
+    sgi_ioc_sdma_port_write(&s->sdma, index, offset, value);
 }
 
 static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC4State *s = opaque;
-    uint64_t dma_value;
+    bool base;
+    unsigned index;
+    hwaddr offset;
 
-    ioc4_catch_up(s);
+    sgi_ioc_sdma_catch_up(&s->sdma);
 
     if (addr <= 0x04) {
         return addr == 0 ? s->dma_error_low : s->dma_error_high;
     }
-    dma_value = ioc4_dma_register_read(s, addr);
-    if (dma_value != UINT64_MAX) {
-        return dma_value;
+    if (ioc4_sdma_decode(addr, &base, &index, &offset)) {
+        return ioc4_sdma_read(s, base, index, offset);
     }
     if (addr == 0x20 && s->serial_dma_experimental) {
-        return s->dma_request_depth ? 0 : 0x80;
+        return sgi_ioc_sdma_idle(&s->sdma) ? 0x80 : 0;
     }
     if (addr == IOC4_ATA_READBACK && s->ata_readback_compat) {
         return s->ata_readback;
@@ -1052,7 +490,7 @@ static uint64_t ioc4_read(void *opaque, hwaddr addr, unsigned size)
     switch (addr) {
     case 0x08:
         return s->serial_pending | s->uart_level | s->threshold_level |
-               s->tx_empty_level;
+               s->tx_empty_level | s->rx_full_level;
     case 0x0c:
         return s->other_pending;
     case 0x10:
@@ -1073,10 +511,11 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
                        unsigned size)
 {
     SGIIOC4State *s = opaque;
-    uint64_t dma_value;
+    bool base;
+    unsigned index;
+    hwaddr offset;
 
-    ioc4_catch_up(s);
-    dma_value = ioc4_dma_register_read(s, addr);
+    sgi_ioc_sdma_catch_up(&s->sdma);
 
     if (addr <= 0x04) {
         qemu_log_mask(LOG_UNIMP,
@@ -1084,12 +523,8 @@ static void ioc4_write(void *opaque, hwaddr addr, uint64_t val,
                       HWADDR_PRIx "\n", addr);
         return;
     }
-    if (dma_value != UINT64_MAX) {
-        ioc4_dma_register_write(s, addr, val);
-        /* Enabling, a doorbell or a reset can change it without a walk. */
-        for (int i = 0; i < IOC4_PORTS; i++) {
-            ioc4_update_tx_empty(&s->dma[i]);
-        }
+    if (ioc4_sdma_decode(addr, &base, &index, &offset)) {
+        ioc4_sdma_write(s, base, index, offset, val);
         return;
     }
     if (addr == 0x20 && s->serial_dma_experimental) {
@@ -1242,16 +677,14 @@ static void ioc4_uart_write(void *opaque, hwaddr addr, uint64_t val,
     SerialState *uart = &p->ioc4->uart[p->index];
 
     if (p->ioc4->serial_dma_experimental &&
-        (p->control & IOC4_SSCR_DMA_EN) && addr == 0 && !(uart->lcr & 0x80)) {
+        (ioc4_sdma_control(p->ioc4, p->index) & IOC4_SSCR_DMA_EN) &&
+        addr == 0 && !(uart->lcr & 0x80)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc4: PIO transmit rejected while DMA is enabled on port %u\n",
                       p->index);
         return;
     }
     serial_io_ops.write(uart, addr, val, size);
-    if (p->ioc4->serial_dma_experimental && addr == 4) {
-        ioc4_shadow_set_outputs(p, (uint32_t)(uart->mcr & 0x1f) << 24);
-    }
 }
 
 static const MemoryRegionOps ioc4_uart_ops = {
@@ -1282,75 +715,18 @@ static void ioc4_reset_hold(Object *obj, ResetType type)
     s->uart_level = 0;
     s->threshold_level = 0;
     s->tx_empty_level = 0;
+    s->rx_full_level = 0;
     s->ata_readback = 0;
     if (s->pci_status_compat) {
         pci_set_word(s->parent_obj.config + PCI_STATUS,
                      IOC4_PCI_STATUS_COMPAT);
     }
-    s->dma_base[0] = s->dma_base[1] = 0;
-    s->dma_ring_size[0] = s->dma_ring_size[1] = IOC4_RING_1K;
     s->dma_error_low = s->dma_error_high = 0;
-    s->dma_request_depth = 0;
+    sgi_ioc_sdma_reset(&s->sdma);
     for (i = 0; i < IOC4_PORTS; i++) {
-        ioc4_port_reset(&s->dma[i]);
         s->uart[i].baudbase = s->clock_hz / 16;
     }
     ioc4_update_irq(s);
-}
-
-static const VMStateDescription vmstate_ioc4_port = {
-    .name = "sgi-ioc4-port",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(control, SGIIOC4Port),
-        VMSTATE_UINT32(tx_produce, SGIIOC4Port),
-        VMSTATE_UINT32(tx_consume, SGIIOC4Port),
-        VMSTATE_UINT32(rx_produce, SGIIOC4Port),
-        VMSTATE_UINT32(rx_consume, SGIIOC4Port),
-        VMSTATE_UINT32(rx_timer_reload, SGIIOC4Port),
-        VMSTATE_UINT16(rx_idle_count, SGIIOC4Port),
-        VMSTATE_UINT32(shadow, SGIIOC4Port),
-        VMSTATE_UINT8_ARRAY(rx_data, SGIIOC4Port, 4),
-        VMSTATE_UINT8_ARRAY(rx_status, SGIIOC4Port, 4),
-        VMSTATE_UINT8(rx_count, SGIIOC4Port),
-        VMSTATE_UINT8_ARRAY(tx_data, SGIIOC4Port, 4),
-        VMSTATE_UINT8_ARRAY(tx_status, SGIIOC4Port, 4),
-        VMSTATE_UINT8(tx_slot, SGIIOC4Port),
-        VMSTATE_BOOL(rx_staged, SGIIOC4Port),
-        VMSTATE_BOOL(tx_waiting_rx, SGIIOC4Port),
-        VMSTATE_BOOL(tx_active, SGIIOC4Port),
-        VMSTATE_BOOL(timer_armed, SGIIOC4Port),
-        VMSTATE_BOOL(rx_timer_running, SGIIOC4Port),
-        VMSTATE_BOOL(tx_timer_running, SGIIOC4Port),
-        VMSTATE_BOOL(tx_completion_pending, SGIIOC4Port),
-        VMSTATE_BOOL(halted, SGIIOC4Port),
-        VMSTATE_BOOL(drain_pending, SGIIOC4Port),
-        VMSTATE_INT64(rx_remaining_ns, SGIIOC4Port),
-        VMSTATE_INT64(tx_remaining_ns, SGIIOC4Port),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static int ioc4_pre_save(void *opaque)
-{
-    SGIIOC4State *s = opaque;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    unsigned i;
-
-    for (i = 0; i < IOC4_PORTS; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-
-        if (p->rx_timer_running && timer_pending(p->rx_timer)) {
-            p->rx_remaining_ns = MAX(0,
-                timer_expire_time_ns(p->rx_timer) - now);
-        }
-        if (p->tx_timer_running && timer_pending(p->tx_timer)) {
-            p->tx_remaining_ns = MAX(0,
-                timer_expire_time_ns(p->tx_timer) - now);
-        }
-    }
-    return 0;
 }
 
 static int ioc4_post_load(void *opaque, int version_id)
@@ -1359,35 +735,11 @@ static int ioc4_post_load(void *opaque, int version_id)
     int i;
 
     for (i = 0; i < IOC4_PORTS; i++) {
-        ioc4_update_rx_threshold(&s->dma[i]);
-        ioc4_update_tx_empty(&s->dma[i]);
-    }
-    for (i = 0; i < IOC4_PORTS; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
         s->uart[i].baudbase = s->clock_hz / 16;
         serial_io_ops.write(&s->uart[i], 3, s->uart[i].lcr, 1);
-        if (!ioc4_port_paused(p)) {
-            if (p->rx_timer_running) {
-                timer_mod(p->rx_timer, now + p->rx_remaining_ns);
-            }
-            if (p->tx_timer_running) {
-                timer_mod(p->tx_timer, now + p->tx_remaining_ns);
-            }
-            if (p->rx_staged || p->drain_pending) {
-                if (p->rx_count) {
-                    ioc4_rx_publish(p);
-                } else {
-                    p->rx_staged = false;
-                    p->drain_pending = false;
-                    p->control &= ~IOC4_SSCR_DRAIN;
-                }
-            }
-            ioc4_tx_run(p);
-        }
-        qemu_chr_fe_accept_input(&s->uart[i].chr);
+        sgi_ioc_sdma_kick(&s->sdma, i);
     }
+    sgi_ioc_sdma_refresh(&s->sdma);
     ioc4_update_irq(s);
     return 0;
 }
@@ -1396,7 +748,6 @@ static const VMStateDescription vmstate_ioc4 = {
     .name = "sgi-ioc4",
     .version_id = 3,
     .minimum_version_id = 3,
-    .pre_save = ioc4_pre_save,
     .post_load = ioc4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
@@ -1411,13 +762,10 @@ static const VMStateDescription vmstate_ioc4 = {
         VMSTATE_UINT32(other_enable, SGIIOC4State),
         VMSTATE_UINT32(uart_level, SGIIOC4State),
         VMSTATE_UINT32(clock_hz, SGIIOC4State),
-        VMSTATE_UINT64_ARRAY(dma_base, SGIIOC4State, 2),
-        VMSTATE_UINT32_ARRAY(dma_ring_size, SGIIOC4State, 2),
         VMSTATE_UINT32(other_pending, SGIIOC4State),
         VMSTATE_UINT32(dma_error_low, SGIIOC4State),
         VMSTATE_UINT32(dma_error_high, SGIIOC4State),
-        VMSTATE_STRUCT_ARRAY(dma, SGIIOC4State, IOC4_PORTS, 1,
-                             vmstate_ioc4_port, SGIIOC4Port),
+        VMSTATE_SGI_IOC_SDMA(sdma, SGIIOC4State),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1433,21 +781,8 @@ static void ioc4_exit(PCIDevice *dev)
         s->kbc_realized = false;
     }
 
+    sgi_ioc_sdma_finalize(&s->sdma);
     for (i = 0; i < IOC4_PORTS; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-
-        if (p->tx_watch) {
-            g_source_remove(p->tx_watch);
-            p->tx_watch = 0;
-        }
-        if (p->rx_timer) {
-            timer_free(p->rx_timer);
-            p->rx_timer = NULL;
-        }
-        if (p->tx_timer) {
-            timer_free(p->tx_timer);
-            p->tx_timer = NULL;
-        }
         memory_region_del_subregion(&s->bar, &s->uart[i].io);
         qdev_unrealize(DEVICE(&s->uart[i]));
     }
@@ -1519,6 +854,9 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
             return;
         }
         uart->irq = &s->uart_irq[i];
+        qdev_connect_gpio_out_named(
+            DEVICE(uart), SERIAL_GPIO_TX_READY, 0,
+            qdev_get_gpio_in_named(DEVICE(dev), "uart-tx-ready", i));
         memory_region_init_io(&uart->io, OBJECT(s), &ioc4_uart_ops,
                               &s->dma[i],
                               "sgi-ioc4-uart", 8);
@@ -1552,14 +890,10 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->kbc), 0,
                        qdev_get_gpio_in_named(DEVICE(dev), "kbc-irq", 0));
 
+    sgi_ioc_sdma_init(&s->sdma, IOC4_PORTS, &ioc4_sdma_params,
+                      &ioc4_sdma_ops, s, pci_get_address_space(dev));
     for (i = 0; i < IOC4_PORTS; i++) {
-        SGIIOC4Port *p = &s->dma[i];
-
-        p->rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ioc4_rx_timeout, p);
-        p->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ioc4_tx_timeout, p);
-        if (s->serial_dma_experimental) {
-            ioc4_install_char_handlers(p);
-        }
+        sgi_ioc_sdma_attach_uart(&s->sdma, i, &s->uart[i]);
     }
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
     if (s->pci_status_compat) {
@@ -1594,8 +928,8 @@ static void ioc4_instance_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), ioc4_kbc_irq, "kbc-irq", 1);
 
     s->clock_hz = 33333333;
-    s->dma_ring_size[0] = IOC4_RING_1K;
-    s->dma_ring_size[1] = IOC4_RING_1K;
+    qdev_init_gpio_in_named(DEVICE(obj), ioc4_uart_tx_ready, "uart-tx-ready",
+                            IOC4_PORTS);
     for (i = 0; i < IOC4_PORTS; i++) {
         qemu_init_irq_child(obj, "uart-irq[*]", &s->uart_irq[i],
                             ioc4_uart_irq, s, i);
