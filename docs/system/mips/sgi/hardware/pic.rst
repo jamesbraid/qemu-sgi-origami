@@ -37,8 +37,6 @@ Sources
   :src:`miod-openbsd-sgi-story part 5`: an OpenBSD dmesg reporting
   ``PIC revision 3`` at widget 15 on a 1 GHz R16000 Origin 350, and the
   author's account of an interrupt address truncated to 32 bits.
-- A published Origin 350 L1 and PROM session, :src:`nekonomicon-16729141`:
-  the PIC at widget 15.
 - OpenBSD ``sys/arch/sgi/xbow/xbridgereg.h``, ``xbridge.c``,
   ``widget.h``, ``xbow.c``, ``xbow.h``, ``xbowdevs`` and
   ``sys/arch/sgi/sgi/ip27_machdep.c`` at ``2df91d80c104``, as software
@@ -55,6 +53,9 @@ Sources
   ``arch/ia64/sn/io/sn2/pcibr/`` at ``8ef7d46c94d5``, as software
   expectations: the identity codes, the register access rule and the
   full-width store workaround.
+- *XBridge ASIC Specification*, revision 0.5,
+  :src:`xbridge-asic-spec-0.5 p. 71, 132`: bit 0 of the sibling chip's
+  identity words.
 - The stock IP35 PROM, :src:`ip35-prom-6.210`, run on the ``origin350``
   model. What it reads and writes is a software expectation observed on
   the model.
@@ -67,10 +68,12 @@ Identity and placement
 One PIC is one XIO widget. Its two heads share the widget: head 0's
 registers start at widget offset 0 and head 1's at ``0x800000``, a
 *software expectation* from OpenBSD ``xbridgereg.h`` and ``xbridge.c``
-and the Linux IP35 port. The Origin 350 PIC is widget 15, *observed* in
-:src:`miod-openbsd-sgi-story part 5` and :src:`nekonomicon-16729141`.
-The same dmesg reports revision 3, *observed* for that one 1 GHz machine.
-Whether every IP53-family board carries revision 3 is *unknown*.
+and the Linux IP35 port. The PIC of one 1 GHz Origin 350 is widget 15
+at revision 3, *observed* in the one published dmesg
+(:src:`miod-openbsd-sgi-story part 5`). Whether every Origin 350 places
+its PIC at widget 15, and whether every IP53-family board carries
+revision 3, is *unknown*; further published inventories or boot logs
+would settle it.
 
 The Origin 350 riser has four PCI/PCI-X slots on two buses, two slots
 each, and IO9 sits in bus 1, slot 1 :src:`007-4566-001 p. 69`,
@@ -82,8 +85,11 @@ carries two PICs is *inferred* from two buses per PIC.
 
 The model places the PIC wherever the machine profile says. The
 ``origin350``, ``onyx350`` and ``onyx4-host`` machines fit one PIC at
-widget 15. The ``tezro`` profiles fit PICs at widgets 11 and 15, with
-IO9 behind head 0 of widget 15 (:ref:`sgi-ip53-serial-profiles`).
+widget 15. The ``tezro`` machine fits one PIC at widget 15 in its
+``tezro-rack`` and ``tezro-tower-one`` topologies, and PICs at widgets
+11 and 15 in ``tezro-tower-multi``. IO9 is behind head 0 of the
+widget-15 PIC in every Tezro topology
+(:ref:`sgi-ip53-serial-profiles`).
 
 No register of a physical PIC has been read for this model.
 
@@ -342,8 +348,9 @@ for head 1 (OpenBSD ``xbowdevs``; Linux/MIPS ``linux-2.4``
 therefore holds ``0x48``. The model reports revision 3.
 
 Bit 0 is set in the runtime profiles and clear in the fixture, an
-*approximation*. The published XBridge specification hardwires bit 0 to
-one on its own identity words; no source gives the PIC bit. The stock IP35
+*approximation*. The XBridge specification hardwires bit 0 to one on
+its own identity words :src:`xbridge-asic-spec-0.5 p. 71, 132`,
+*established* for XBridge; no source gives the PIC bit. The stock IP35
 PROM rejects the identity when bit 0 is clear, a *software expectation*
 observed on the model. The physical revision-3 word is *unknown*: a raw
 identity read from a real PIC would settle it.
@@ -361,7 +368,9 @@ Widget control
 
 Bits 3:0 hold the head's widget number. The model uses them as the source
 widget on every DMA and interrupt packet the head sends. The runtime reset
-value ``0x0f00320f`` makes that widget 15. Other stored bits, in the
+value ``0x0f00320f`` makes that widget 15 on every PIC, including the
+``tezro-tower-multi`` PIC attached at widget 11, until software rewrites
+the field. Other stored bits, in the
 credit and endianness fields Linux ``xwidget.h`` names for the common
 widget, have no modelled effect. Bits outside the mask are logged
 (``LOG_UNIMP``) and dropped. The reset value and mask are chosen from the
@@ -446,9 +455,11 @@ The model presents no PCI function for PIC itself because no PIC PCI
 vendor and device identity is known, *unknown*.
 
 The Linux IA64 PIC header reserves device 0 and names four internal
-slots. The Origin 350 has two connectors per bus
-:src:`007-4566-001 p. 69`, so internal slots 2 and 3 may be unused on
-that product, *inferred*.
+slots. The Origin 350 has two external connectors per bus
+:src:`007-4566-001 p. 69`. Internal slots are not connectors, so the
+four internal slots do not show that there are more connectors,
+*inferred*. On the IO9 bus the model uses internal slots 0, 2 and 3 for
+the IO9's own devices (:ref:`sgi-pic-interrupts`).
 
 .. _sgi-pic-config:
 
@@ -474,8 +485,7 @@ Short device windows
 ====================
 
 Each head has four short windows for programmed I/O to PCI devices,
-following OpenBSD's IP35 register header and the Linux SN2 PIC resource
-mapper, a *software expectation*:
+following OpenBSD ``xbridgereg.h``, a *software expectation*:
 
 .. list-table::
    :header-rows: 1
@@ -650,11 +660,12 @@ XOR 7 instead, reversing each 64-bit doubleword. The board sets the
 BCM5701 at device 4. The model samples each device's width at the end of
 reset.
 
-These placements are *inferred* from the Linux SN2 PCI interface, which
-uses bit 55 set for ordered byte streams and clear for 32-bit values,
-and from the IRIX 6.5.30 BCM5701 driver, which writes big-endian
-descriptors with the chip's own swap bits clear, a *software
-expectation*. PIC's physical byte placement, the IO9 ``REQ64#`` wiring
+These placements are *approximations*. They rest on two software
+expectations: the Linux IP35 port's producer, which names bit 55 the
+swap attribute (``pci-sgipic.c``), and the IRIX 6.5.30 BCM5701 driver,
+which writes big-endian descriptors with the chip's own swap bits
+clear. Which byte placement each value of bit 55 selects is the model's
+choice. PIC's physical byte placement, the IO9 ``REQ64#`` wiring
 and the real effect of prefetch, precise, barrier and virtual channel are
 *unknown*.
 
@@ -689,8 +700,10 @@ and the target address in bits 47:0, following the Linux IP35 port, a
 *software expectation*. The head writes an eight-byte big-endian packet
 to that address: ``0x100 | level`` to set, ``level`` to clear. Levels
 outside 7 to 127 are refused with ``LOG_GUEST_ERROR`` before any packet
-is sent. The Linux IP35 port allocates levels above 6, and the
-Bedrock selects its pending bank with bit 6. A destination the Bedrock
+is sent. The Linux IP35 port allocates levels above 6, a *software
+expectation*. Bit 6 of the value selects the Bedrock pending bank and
+bit 8 sets or clears, *established* on :ref:`sgi-bedrock-pi-interrupts`.
+A destination the Bedrock
 refuses also logs ``LOG_GUEST_ERROR``. Every packet logs ``LOG_UNIMP``
 with its destination. The packet format and address use are *approximations*:
 PIC's physical interrupt packet is *unknown*.
@@ -764,7 +777,10 @@ identity and revision 5, connects host widget 10 to the PIC's widget,
 and carries processor I/O to the PIC (:doc:`xbow`). Reusing the Crossbow
 model is an *approximation*: PXBOW's register set, revision and routing
 are *unknown*. The ``pxbow-revision``, ``pxbow-host-widget`` and
-``pxbow-pic-widget`` properties set it.
+``pxbow-pic-widget`` properties set it. Every runtime PIC builds this
+child, but a machine maps only one as widget 0: when a machine has two
+PICs, as ``tezro-tower-multi`` does, the PXBOW of the PIC that carries
+IO9 is widget 0.
 
 .. _sgi-pic-reset:
 
@@ -786,13 +802,17 @@ whether request RAM survives reset are *unknown*.
 Migration
 =========
 
-Each head migrates its registers, request RAM, input levels and packet
-counters. The PIC migrates no mutable state of its own, but records its
-transport, interrupt mode, profile, PXBOW composition, processor-lane
-policy, 64-bit DMA policy and ``REQ64#`` slots, and refuses a stream
+Each head migrates its registers, request RAM, input levels, packet
+counters and its unsupported-access log count. The PIC migrates no
+mutable state of its own, but records its transport, interrupt mode,
+profile, PXBOW composition, processor-lane policy, 64-bit DMA policy and
+``REQ64#`` slots, and refuses a stream
 whose values differ from the destination. Identity reads are computed
-from the profile, so a stream cannot change them. Migration works only
-between identical builds.
+from the profile, so a stream cannot change them. The device loads
+PIC stream versions 1 to 9. An older stream lacks the newer policy
+fields, which load as their earlier defaults, and a destination whose
+policy differs refuses it. Only migration between identical builds is
+supported.
 
 .. _sgi-pic-limits:
 
@@ -813,6 +833,9 @@ Model limits
   until reset; reads return 0. Misaligned control accesses are refused by
   the memory core and log under ``LOG_INVALID_MEM``. Accesses to the
   guard after head 1's last short window log ``LOG_GUEST_ERROR``.
+- A failed access through the large PCI memory windows logs
+  ``LOG_UNIMP`` under the same 32-per-head limit; a failed read returns
+  0. The short windows log ``LOG_GUEST_ERROR`` instead, without a limit.
 - PCI transaction failures never set PIC status or send an error
   interrupt.
 - The stock IP35 PROM's bridge checks shape several reset values and

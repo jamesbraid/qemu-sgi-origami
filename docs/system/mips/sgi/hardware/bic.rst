@@ -7,9 +7,10 @@ BIC board interface (Origin 300 PCI expansion module)
 =========================================================
 
 The PCI expansion module of the Origin 300 carries one Bedrock interface
-card, the BIC. The card holds a Bedrock ASIC, which the module's own
-NUMAlink connector and I/O interface use to reach the PCI motherboard
-(:ref:`sgi-pci-expansion-origin300`). The module has no processors and no
+card, the BIC. The card holds a Bedrock ASIC. Its network interface
+drives the module's NUMAlink connector and its I/O interface reaches the
+PCI motherboard (*established*, :src:`007-4499-002 pp. 38-40`;
+:ref:`sgi-pci-expansion-origin300`). The module has no processors and no
 memory. A separate L1 controller monitors it (:doc:`l1`).
 
 QEMU models the BIC's Bedrock as the ``sgi-bedrock`` device inside the
@@ -42,8 +43,8 @@ Sources
 - The IP35 PROM 6.210, :src:`ip35-prom-6.210`, as a software expectation:
   how it reads the board windows. Its observable behaviour fixes the
   access widths and field packing below.
-- The system-controller software carrier :src:`ip35-patch-sg0007149`, as a
-  software expectation: the controller firmware it ships writes the rack
+- The shipped L1 firmware 1.44.0 for the Origin 300 product group,
+  :src:`l1-firmware-1.44.0`, as a software expectation: it writes the rack
   and bay at start-up. The destinations and commands in
   :ref:`sgi-bic-startup` come from observing that firmware's start-up
   transactions.
@@ -75,8 +76,8 @@ Board windows
 
 The BIC board interface answers two read-only windows in the remote
 register part of the Hub special space of the module's node number. The
-offsets below are within the window that starts at ``0x30000000`` of that
-space.
+offsets below are node-relative, within the Hub special space of that
+node, in its remote register region that starts at ``0x30000000``.
 
 .. list-table::
    :header-rows: 1
@@ -108,8 +109,9 @@ node-relative offset and at that offset plus ``0x10000000000`` and
 established here.
 
 Both reads return big-endian data. Every other read, every write and every
-other width at these offsets is rejected with ``MEMTX_ERROR`` and logged
-with ``LOG_GUEST_ERROR``. A read of a window that is not fitted at all
+other width up to eight bytes at these offsets is rejected with
+``MEMTX_ERROR`` and logged with ``LOG_GUEST_ERROR``. An access wider than
+eight bytes returns a decode error without a log. A read of a window that is not fitted at all
 (the module has no board interface attached) returns a decode error.
 
 Identity word
@@ -135,8 +137,9 @@ model choice, *approximation*.
 Two device properties set an initial value: ``initial-latch-set`` and
 ``initial-latch``. With ``initial-latch-set`` off, reset leaves both bytes
 unknown. With it on, reset loads ``initial-latch`` into both bytes and
-marks them valid. The shipped products may set either. The initial value is
-a model input, not a hardware reset value.
+marks them valid. Both shipped topologies leave it off, so the latch is unknown
+until the L1 writes it. The initial value is a model input, not a
+hardware reset value.
 
 The only writer is the controller side, through the internal byte
 interface used by start-up (next section). A successful write replaces one
@@ -151,8 +154,8 @@ Controller start-up
 
 The L1 of an expansion module writes its rack and bay settings into the BIC
 latch whenever it starts. Two firmware behaviours are modelled, both
-*software expectations* of the shipped controller firmware
-:src:`ip35-patch-sg0007149`: it writes the high byte before the low byte,
+*software expectations* of the shipped L1 firmware 1.44.0
+:src:`l1-firmware-1.44.0`: it writes the high byte before the low byte,
 and it carries on with the next write after one fails. The wiring between
 controller and latch is *inferred* from the match between the controller's
 packed value and the PROM's unpacking above. No bus capture exists.
@@ -199,12 +202,13 @@ the processor-absence words described under
 Reset
 -----
 
-The board interface and the L1 are both registered as resettable with the
-machine. The BIC enters reset first and restores the initial latch. The
+When controller start-up or main power is selected, the board interface
+and the L1 are both registered as resettable with the machine. Both
+shipped topologies select both. The BIC enters reset first and restores the initial latch. The
 L1 enters reset next and marks start-up pending. The write itself happens
 in the L1's hold phase, after all devices have entered reset, so the
-latch is written after it is cleared. A reset of the BIC alone clears the
-latch with no write. A reset of the L1 alone repeats the writes.
+latch is written after it is cleared. A reset of the BIC alone restores the
+initial latch with no write. A reset of the L1 alone repeats the writes.
 
 Synthetic UART
 ==============
@@ -316,7 +320,7 @@ Measurements
 ============
 
 No read of a physical BIC exists for this page. The only physical
-evidence is the BIC ``030-1740-001`` revision F seen in a published owner
+evidence is the BIC ``030-1740-001`` revision F seen in a published
 inventory (:ref:`sgi-pci-expansion-origin300`), which names the card and
 says nothing about registers. Every register value and window on this page
 is therefore a model input or a software expectation.

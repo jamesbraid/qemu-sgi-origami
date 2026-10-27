@@ -102,8 +102,9 @@ one controller per module.
      - four, one per node
      - controller ``0x08``; NVRAM ``0x50``-``0x57``; UST control ``0x20``
 
-The controller's seven-bit address ``0x08`` is the model's choice; no
-public source states it, *approximation*. The NVRAM's addresses are
+The controller answers at seven-bit address ``0x08``, where the IP27
+PROM 6.156 addresses it, a *software expectation*; no SGI document states
+the address. The NVRAM's addresses are
 described under :ref:`sgi-elsc-nvram`.
 
 The PCF8584 is mapped in the Hub's local register space, data register
@@ -201,10 +202,12 @@ Status
 ------
 
 Hardware reset sets PIN and BB, so status reads ``0x81``
-:src:`philips-pcf8584-1997`, *established*. A control write with PIN set
-sets PIN and clears BER, LAB and AAS without disturbing a transfer in
-progress. A START clears BB and a STOP sets it. A directed match on the
-own address sets AAS; the general call does not.
+:src:`philips-pcf8584-1997`, *established*. A START clears BB and a STOP
+sets it, and a match on the own address sets AAS
+:src:`philips-pcf8584-1997`, *established*. In the model a control write
+with PIN set sets PIN and clears BER, LAB and AAS without disturbing a
+transfer in progress, and the general call does not set AAS, both
+*approximations*.
 
 Transfers
 =========
@@ -262,7 +265,7 @@ follows the longest low, the high period the shortest high
 
 - **Arbitration loss.** A master that sends high and samples low sets LAB
   at that bit and releases SDA. PIN goes active when the winning byte
-  finishes, *established* for the chip. The loser stops clocking at once
+  finishes :src:`philips-pcf8584-1997`, *established*. The loser stops clocking at once
   rather than clocking out the winning byte, an *approximation*: the
   sources do not distinguish the two.
 - **Addressed service.** An adapter addressed as a slave sets PIN after
@@ -313,9 +316,11 @@ values are lowercase with no leading zero. Errors are ``err csum``,
 A short, long or badly summed request is answered ``err csum`` and does
 not run. A response belongs to the processor whose request produced it
 and stays pending until it is read to its end or a new request replaces
-it. A requester may end its transaction with the response unread, wait
-for its own signal 2 (:ref:`sgi-elsc-arbitration`) and fetch the frame
-with a read-only transaction. A request from a context with no
+it. A requester may end its transaction with the response unread and
+fetch the frame later with a read-only transaction. On the Origin 200 the
+requester's grant shows signal 2 while its response waits
+(:ref:`sgi-elsc-arbitration`); the Origin 2000 scheduler gives no such
+signal. A request from a context with no
 processor, a monitor or qtest access, is attributed to processor code 0.
 
 Request grammar
@@ -420,10 +425,12 @@ sending ``pas``, a *software expectation*.
     ``0x258`` is ``err arg`` and changes nothing. On an unpowered module
     every ``pwr d`` answers ``ok`` and does nothing, with no range check.
     A timed request queues ``pd remote`` for the Hubs. A countdown
-    survives ``rst``. The IRIX 6.5.30 kernel sends ``dsp PowerOff`` and
-    ``pwr d 1`` to every module at power-off, through the first node it
-    found in each, and repeats ``pwr d 8`` about once a second while it
-    extends a controller-started shutdown, a *software expectation*.
+    survives ``rst``. At power-off the IRIX 6.5.30 kernel sends
+    ``dsp PowerOff`` and ``pwr d 1``: on an Origin 2000 to every module,
+    through the first node it found in each, and on a two-module Origin
+    200 only to the lowest-numbered module (`Master and slave`_). It
+    repeats ``pwr d 8`` about once a second while it extends a
+    controller-started shutdown. Both are *software expectations*.
 
 ``pwr c [<sec>]``
     Power cycle with an optional off interval, read the same way, from 5
@@ -830,8 +837,9 @@ free and its own byte absent, then present and unchanged for more than
 *software expectation*. The grants of other processors supply the
 absence; there is no separate gap transaction. The model presents
 signal 2 while something waits for that processor: queued console input
-for the processor input is announced to, a controller message, or an
-unread response for its requester.
+for the processor input is announced to, or a controller message. The
+Origin 200 ring also presents it while a response waits unread for its
+requester; the Origin 2000 scheduler does not.
 
 .. list-table::
    :header-rows: 1
@@ -859,11 +867,13 @@ controller's grant values, ordering or timing, so each is *unknown* as
 hardware. The fifth Origin 200 position stands for the slave controller
 of a two-module machine; the model keeps it on one module too, an
 *approximation*. Each grant stays readable until the next replaces it,
-which covers the PROM's hold check. A tick is re-armed from when it ran,
-so a late host tick lengthens that position rather than shortening the
-next. A STOP never triggers a grant; the controller waits for its next
-tick. On the Origin 200 a serial command waiting for the bus also stops
-the grants.
+which covers the PROM's hold check. The Origin 200 ring re-arms each tick
+from when it ran, so a late host tick lengthens that position rather than
+shortening the next; the Origin 2000 scheduler ticks on a fixed
+one-millisecond grid of virtual time however late the host runs it. A
+STOP never triggers a grant; the controller waits for its next tick. On
+the Origin 200 a serial command waiting for the bus also stops the
+grants, unless a controller message is pending.
 
 On the Origin 2000 module the scheduler gives its turn to a pending
 controller transfer first and a pending serial command second, but to
@@ -888,10 +898,10 @@ AUX serial port
 
 The Origin 200's AUX connector is an 8-pin mini-DIN on the rear of the
 module carrying RS-232 at 9600 baud, 8 data bits, 1 stop bit and no
-parity, with no flow control or XON/XOFF. It reaches the master module
+parity, with flow control none or XON/XOFF. It reaches the master module
 only and cannot be used to log in to IRIX
-:src:`007-3708-002 p. 18, 120-122`, *established*. The model's line has
-no flow control and never stalls.
+:src:`007-3708-002 p. 18, 120-122, 194`, *established*. The model's line
+has no flow control and never stalls.
 
 ``-serial`` lines are node-major with a stride of six: node *n* owns
 indices 6n to 6n+5, and its AUX slot is the third. The external AUX
@@ -1028,12 +1038,11 @@ The field layout is SGI's, published in the Linux history tree's
 the Owner's Guide :src:`007-3708-002 p. 124`. Every other byte of a fresh
 store is zero.
 
-The fresh-store values are an *approximation*: they are what the model
-takes a master controller to leave after its first power-up. Factory
-contents are *unknown*, and an erased EEPROM usually reads ``0xff``. The
-Origin 2000 clock-select default would be ``0x78`` on a full-clock
-midplane; whether this module is one is *unknown*, so the model keeps 0,
-which is also what a guest reads as the domain. A two-module Origin
+The fresh-store values, ``0x78`` at ``0x70b`` on the Origin 200 and 0
+there on the Origin 2000 included, are the model's choice, an
+*approximation*. On the Origin 2000 that 0 is also the domain a guest
+reads. Factory contents are *unknown*, and an erased EEPROM usually reads
+``0xff``. A two-module Origin
 200's slave store starts like the master's; which store a slave module's
 Hub reaches on hardware is *unknown*.
 
@@ -1044,9 +1053,8 @@ last byte wraps to that block's first byte, a write of any length is
 accepted, writes complete at once and are never refused as busy, and the
 part does not answer a general call. A real 24C16 wraps writes within a
 16-byte page; block-end behaviour, the write buffer and the write-cycle
-time are *unknown*, so all of this is *approximation*. The PROM's longest
-write is twelve bytes at ``0x700``, which the model takes as one
-transaction.
+time are *unknown*, so all of this is *approximation*. A twelve-byte
+write at ``0x700`` is accepted as one transaction.
 
 The store survives every reset, power change and migration between
 identical builds. With a backing file bound through the machine's

@@ -7,8 +7,9 @@ PsiTech RAD1 PCI graphics card
 ===================================
 
 The PsiTech RAD1 is a third-party PCI graphics card for the Origin 200,
-built on the TI/3Dlabs TVP4020 (Permedia 2) with 8 MB of SGRAM and the
-chip's own RAMDAC (:src:`psitech-rad1-ds-1099 p. 1`). It has no separate
+built on the TI/3Dlabs TVP4020 (Permedia 2) with 8 MB of SGRAM
+(:src:`psitech-rad1-ds-1099 p. 1`) and the chip's own integrated RAMDAC
+(:src:`ti-tvp4020-programmers-reference p. 304`). It has no separate
 bus bridge or RAMDAC, unlike the :doc:`psitech-rad4`. It is unrelated to
 SGI's RAD1 audio controller (:doc:`rad1-audio`). QEMU models it as
 ``psitech-rad1`` in ``hw/display/psitech-rad1.c``.
@@ -87,14 +88,16 @@ IRIX attaches it only to a card presenting one of those, *software
 expectation*. The IO6 PROM's graphics console code recognises device
 ``0x0009`` and device ``0x3d07`` and checks no vendor ID, *software
 expectation*. Linux names ``104c:3d07`` the TVP4020 and ``3d3d:0009`` the
-Permedia 2V (``include/linux/pci_ids.h``). Which identity a real RAD1
-presents is *unknown*; the model's choice of ``3d3d:0009`` reaches both
-the driver and the PROM. A configuration-space dump of a real card would
-settle it.
+Permedia 2V (``include/linux/pci_ids.h``), a different part. The product
+sheet names the TVP4020, so it favours ``104c:3d07``. Which identity a
+real RAD1 presents is *unknown*; the model presents ``3d3d:0009`` only
+because both the driver and the PROM accept it. A configuration-space
+dump of a real card would settle it.
 
-The subsystem fields carry ``12d1:0101``: PsiTech's vendor ID, which the
-RAD4 owner's guide also shows, with a board device number. No driver path
-is known to read them there.
+The subsystem pair ``12d1:0101`` is a model choice, an *approximation*.
+No retained source prints the board's subsystem identity, and no driver
+path is known to read it. A configuration-space dump of a real card would
+settle it.
 
 The driver requests a 128 KiB resource for the register region, which
 matches the manual's Region Zero map, *software expectation*. Which PCI
@@ -189,7 +192,9 @@ not implemented.
      - ``0``
      - RW
      - See :ref:`sgi-psitech-rad1-render`. Write mask resets to
-       ``0xffffffff``.
+       ``0xffffffff``. Render is write-only: reading it, or any GP
+       offset the model does not store, logs ``LOG_UNIMP`` and returns
+       zero.
 
 The manual names ``0x0008`` IntEnable and ``0x0010`` IntFlags
 (TVP4020 manual p. 34-35), *established*. Linux
@@ -275,21 +280,21 @@ narrower:
 - **Rectangle with TextureEnable (bit 13), or with FBReadMode bit 10
   set.** A flat copy of ``RectangleSize`` pixels. Forward, it reads from
   host memory over PCI when TextureBaseAddress bit 30 is set, or from the
-  framebuffer otherwise, at ``SStart, TStart`` with a source stride equal
-  to the width, and writes the rectangle at ``RectangleOrigin`` under the
-  write mask. With FBReadMode bit 10 set it copies the framebuffer
-  rectangle to the host address instead. The kernel driver's rectangle
-  moves use this path, *software expectation*. That bit 10 means
+  framebuffer otherwise, at ``SStart, TStart`` with a source stride equal to
+  the width, and writes the rectangle at ``RectangleOrigin`` under the write
+  mask. With FBReadMode bit 10 set it copies the framebuffer rectangle to
+  the host address in TextureBaseAddress instead. The kernel driver's
+  rectangle moves use this path, *software expectation*. That bit 10 means
   "read back to the host" is the model's reading, an *approximation*; the
   manual calls it read destination enable. The texture steps are ignored.
 - **Rectangle without TextureEnable, and point.** A constant fill: from
   FBBlockColor when FastFill (bit 3) is set, from FBWriteData when
   LogicalOpMode bit 5 is set, otherwise nothing is drawn and
   ``LOG_UNIMP`` is logged. A point writes one pixel at
-  ``StartXDom, StartY``. The PROM and kernel textports draw text one point
-  per glyph pixel and boxes as rectangle fills, *software expectation*.
-  Only fills towards increasing X and Y (bits 21 and 22) are drawn;
-  others log ``LOG_UNIMP``.
+  ``StartXDom, StartY``. The IO6 PROM textport draws text one point per
+  glyph pixel and boxes as rectangle fills, *software expectation*. Only
+  rectangle fills towards increasing X and Y (bits 21 and 22) are drawn;
+  others log ``LOG_UNIMP``. Points and trapezoids ignore those bits.
 - **Trapezoid.** For each of Count scanlines, the span between the two X
   edges is filled with the constant colour and the edges and Y advance by
   their deltas. Which pixels a real chip includes at a fractional edge is
@@ -310,7 +315,7 @@ drawn.
 Palette
 =======
 
-Linux loads the palette by writing the write address once and then
+Linux clears the palette by writing the write address once and then
 red, green and blue to the data register for each index in turn
 (``drivers/video/fbdev/pm2fb.c``), *software expectation*: the index
 advances after each three-byte entry. The model implements that, and the
@@ -375,9 +380,9 @@ The model's BAR2 is 64 KiB of byte-wide flash. An unlock at ``0x5555`` and
 a NOR program can only clear bits. A write that breaks the sequence
 returns it to idle. Reads return the stored byte.
 
-The driver's own addresses are ``0x5556`` and ``0x2aa9``. The Bridge
-places a byte at the exclusive-or address on a 32-bit device
-(:ref:`sgi-bridge-pio`), which turns them into ``0x5555`` and ``0x2aaa``,
+The driver's own addresses are ``0x5556`` and ``0x2aa9``. A byte store
+at offset *k* reaches PCI byte *k* XOR 3 (:ref:`sgi-bridge-pio`), which
+turns them into ``0x5555`` and ``0x2aaa``,
 *inferred*. The flash's size, part and PCI resource are *unknown*, and
 the model fills it with ``0xff`` at every reset rather than keeping it,
 an *approximation*. Erase is not implemented.

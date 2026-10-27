@@ -129,7 +129,7 @@ interrupt wiring has not been measured, *unknown*.
 The profile creates the device with ``model=bcm5701`` and gives it the
 machine's default NIC configuration, so ``-nic`` or ``-netdev`` selects
 its network backend, and ``-nic none`` leaves it without one. The
-catalogue maps a launcher network adapter to this device for ``onyx350``
+catalogue maps a netboot adapter to this device for ``onyx350``
 and ``tezro`` only (:ref:`sgi-sn-launch-metadata`).
 
 .. _sgi-bcm570x-access:
@@ -350,7 +350,8 @@ through one SRAM word and one register.
 The word is SRAM ``0x0b50``. Drivers write the magic value ``0x4b657654``
 there and poll for its one's complement ``0xb49a89ab`` when the bootcode
 has finished :src:`broadcom-57xx-pg105-r p. 152`, *established* for the
-sequence in the public drivers. The model complements every value written
+handshake. The drivers' order of writing and polling is a *software
+expectation*. The model complements every value written
 to this word. The magic therefore reads back as ``0xb49a89ab`` whether the
 driver writes it before the global reset, as OpenBSD and Linux do, or
 after, as the IRIX 6.5.30 ``tg`` driver does. A second write flips the
@@ -495,9 +496,10 @@ Link and negotiation
 --------------------
 
 The PHY has no cable. Its link is up when negotiation has completed and
-the network backend's link is up. Negotiation starts out of reset, when
-bit 9 of the control register is written, and when a status read finds it
-neither running nor complete with negotiation enabled. It completes
+the network backend's link is up. Negotiation starts out of reset, on a control register write that
+restarts it or leaves it enabled and not isolated, and on a status or
+auxiliary status read that finds it neither running nor complete with
+negotiation enabled. It completes
 100 ms of virtual time later. The partner always agrees to 1000BASE-T full
 duplex. There is no forced-speed mode: the speed and duplex bits, loopback
 (bit 14), power-down (bit 11) and the master/slave controls are stored and
@@ -611,7 +613,7 @@ The model reports completion through the status block, not a register
   *established*. Flag bit 12 (``0x1000``) asks for it and bits 14:13 pick
   one of the four station address slots. The model reads the flags from
   any descriptor of the frame and applies the replacement only to frames
-  that are not segmented. Without the flag the host's source address goes
+  whose maximum segment size is zero. Without the flag the host's source address goes
   out unchanged.
 - A non-zero maximum segment size asks for TCP segmentation. A plain IPv4
   TCP frame with more payload than one segment is cut into segments of
@@ -657,8 +659,9 @@ ring index in bits 31:16 and frame length in bits 15:0 of the next word
 (the length includes four bytes for the frame check sequence the model
 does not append), a flags word, the checksum word and the opaque word
 copied from the buffer descriptor. The flags set are END (``0x0004``),
-jumbo ring (``0x0020``), and for IPv4 TCP or UDP frames the checksum-valid
-and TCP bits (``0x1000``, ``0x2000``, ``0x4000``). The checksum word holds
+jumbo ring (``0x0020``), ``0x1000`` for any IPv4 frame whose header sum
+verifies, ``0x4000`` for any TCP frame (fragments included), and ``0x2000``
+when the TCP or UDP sum verifies over an unfragmented datagram. The checksum word holds
 the IP header sum in bits 31:16 and the transport sum in bits 15:0.
 The model sums the frame itself. The error flag is never set because the
 model never receives a bad frame. ``MODE_CTL`` bit 23 leaves the pseudo-header
@@ -687,8 +690,9 @@ The model has no wire or peer time. It therefore publishes a receive
 completion a fixed floor after the backend hands over the frame: the
 descriptor and data are written at once, but the status block's receive
 producer and the interrupt follow 200 microseconds of virtual time later.
-The floor is the ``rx-arrival-latency-us`` property and is shared with the
-other SGI Ethernet adapters. Zero turns it off. The line holds at most 256
+The floor is the ``rx-arrival-latency-us`` property. The mechanism and the
+200 microsecond default are shared code with the other SGI Ethernet
+adapters, and each device has its own property and line. Zero turns it off. The line holds at most 256
 completions. This is an *approximation*; the hardware's real delay is
 *unknown*.
 
@@ -708,8 +712,9 @@ consumer at byte 18. Offsets are those of the drivers' little-endian
 structure. The chip builds the block as a big-endian image, which puts
 each 16-bit field in the other half of its 32-bit word, and the
 non-frame swap controls then apply. Everything else is zero. A failed block write
-logs ``LOG_GUEST_ERROR``, posts no interrupt, and is retried by the
-coalescing timers.
+logs ``LOG_GUEST_ERROR``, posts no interrupt, and is usually retried by the
+coalescing timers. A send doorbell that completes no descriptor is not
+retried.
 
 An update occurs only on four criteria :src:`broadcom-57xx-pg105-r p. 63`,
 *established*:

@@ -37,8 +37,8 @@ Sources
   (an Origin 300).
 - OpenBSD ``sys/dev/mii/nsphy.c`` and ``nsphyreg.h`` (DP83840A),
   ``nsphyter.c`` and ``nsphyterreg.h`` (DP83843), ``miidevs.h`` and
-  ``mii.h``, in the ``openbsd-sgi`` tree at branch
-  ``sgi-is-alive-at-7.9``, and Linux
+  ``mii.h``, in the ``openbsd-sgi`` tree at
+  ``2df91d80c104``, and Linux
   ``drivers/net/ethernet/sgi/ioc3-eth.c``, as software expectations.
 
 Identity and placement
@@ -56,7 +56,7 @@ Identity and placement
      - DP83840A
      - 31
      - ``0x2000``, ``0x5c01``
-     - *observed*
+     - part and address *observed*, words *inferred*
    * - Origin 2000 base I/O
      - DP83840A
      - 31
@@ -66,7 +66,7 @@ Identity and placement
      - DP83843
      - 1
      - ``0x2000``, ``0x5c10``
-     - *observed*
+     - part and address *observed*, word 3 *established*
    * - Fuel
      - DP83843
      - 1
@@ -82,7 +82,7 @@ revision 1, *inferred*. A photograph of an Origin 200 system board marks
 the chip DP83840AVCE (:src:`theretroweb-origin200-image-1 Ethernet
 section`), *observed*. That the Origin 2000 base I/O board carries the
 same part at the same address is *inferred* from the shared IOC3 design.
-No capture of an Origin 2000 transceiver was read for this page.
+No cited capture shows an Origin 2000 transceiver. One would settle it.
 
 An Origin 300 capture prints ``nsphyter0 at iec0 phy 1: DP83843 10/100
 PHY, rev. 0`` (:src:`marc-openbsd-sgi-139223952727384 line 173`),
@@ -183,19 +183,18 @@ and logs ``LOG_UNIMP``. A zero read, not ``0xffff``, keeps the part
 looking present.
 
 The reset values of registers ``0x00``, ``0x17`` and ``0x1c`` are the
-DP83840A's documented defaults
-(:src:`national-dp83840a-datasheet registers`), *established*. The
-Origin 200 PROM's power-on transceiver test compares registers ``0x00``, ``0x17`` and ``0x1c``
-against the same values and reads registers ``0x01``, ``0x05`` and
-``0x06`` before it writes any control register, expecting no link, no
-completed negotiation and no partner: BMSR ``0x7809`` under its mask,
-and zero in the other two. These are *software expectations*, and the
-model returns them. The register ``0x18`` reset value ``0x8020`` copies
-the datasheet's default with its pin-latched bits modelled as normal
-operation, an *approximation*: no source gives the strapping of the
-board. The same test requires registers ``0x17``, ``0x18`` and ``0x1c``
-to read back what was written, and the model stores them for that
-reason. Their other functions are not modelled.
+DP83840A's documented defaults 
+(:src:`national-dp83840a-datasheet registers`), *established*. The Origin 200 PROM's power-on transceiver test
+compares registers ``0x00``, ``0x17`` and ``0x1c`` against the same values
+and reads registers ``0x01``, ``0x05`` and ``0x06`` before it writes any
+control register, expecting no link, no completed negotiation and no
+partner: BMSR ``0x7809`` under its mask, and zero in the other two. These
+are *software expectations*, and the model returns them. The register
+``0x18`` reset value ``0x8020`` copies the datasheet's default with its
+pin-latched bits modelled as normal operation, an *approximation*: no source
+gives the strapping of the board. The same test requires registers ``0x17``,
+``0x18`` and ``0x1c`` to read back what was written, and the model stores
+them for that reason. Their other functions are not modelled.
 
 OpenBSD's ``nsphy`` driver read-modify-writes register ``0x17`` once on a
 media change, setting the LED, congestion-control and transmit-ready
@@ -251,7 +250,7 @@ last column.
      - Advertisement (ANAR)
      - ``0x01e1``
      - ``0xa5ff``
-     - Reserved bits 14 and 12:11 read zero.
+     - Bits 14, 12:11 and 9 read zero.
      - 49-50
    * - ``0x05``
      - Partner ability (ANLPAR)
@@ -312,7 +311,7 @@ last column.
      - PCS sub-layer control (PCSR)
      - ``0x0020``
      - ``0xffef``
-     - Bit 14 is forced, see below.
+     - Bit 14 is forced in two states, see below.
      - 56-58
    * - ``0x17``
      - Loopback (LBR)
@@ -389,11 +388,12 @@ The three counters store any value written and clear on read. The model
 never increments them.
 
 Register ``0x16`` bit 14 (far-end fault indication) reads zero while
-autonegotiation is enabled. With autonegotiation disabled and fibre
-selected in register ``0x19`` bit 5 it reads one. Writes cannot change
-it. Register ``0x17`` bit 12 reads one when fibre is selected. The
-datasheet's carrier-integrity status bit (register ``0x16`` bit 4)
-reads zero because no event sets it.
+autonegotiation is enabled. With autonegotiation disabled and fibre selected
+in register ``0x19`` bit 5 it reads one. In those two states writes cannot
+change it. With autonegotiation disabled and copper selected it is ordinary
+storage. Register ``0x17`` bit 12 reads one when fibre is selected. The
+datasheet's carrier-integrity status bit (register ``0x16`` bit 4) reads
+zero because no event sets it.
 
 Register ``0x18`` bit 7 reads one when the link is full duplex or
 register ``0x19`` bit 9 selects repeater mode, whatever was written to
@@ -549,20 +549,22 @@ Other loopback selections are part-specific:
   selects loopback. Origin 200 software depends on that, because OpenBSD
   writes the carrier-integrity bit there on every media change;
 - DP83843: register ``0x17`` bits 5 (twister loopback) and 4 (10 Mb/s
-  ENDEC loopback). Register ``0x18`` is storage here. The Origin 300
-  PROM's twister loopback test writes BMCR ``0x2100`` and then ORs 0x20
-  into register ``0x17``, a *software expectation*. OpenBSD never
-  writes the register. Setting BMCR bit 14 sets both LBR bits and
-  clears the 100 Mb/s data-path selection (bits 9:7)
-  :src:`ti-dp83843-snls021b p. 33`, *established*. The datasheet does
-  not say what bits 5 and 4 read after BMCR loopback is cleared again. The model leaves them set,
-  so loopback stays selected until software clears them or the
-  transceiver resets, an *approximation*.
+  ENDEC loopback). Register ``0x18`` is storage here. The Origin 300 PROM's
+  twister loopback test writes BMCR ``0x2100`` and then ORs 0x20 into
+  register ``0x17``, a *software expectation*. OpenBSD never writes the
+  register. Setting BMCR bit 14 sets both LBR bits and clears the 100 Mb/s
+  data-path selection (bits 9:7) :src:`ti-dp83843-snls021b p. 33`,
+  *established*. The datasheet does not say what bits 5 and 4 read after
+  BMCR loopback is cleared again. The model leaves them set, so loopback
+  stays selected until software clears them or the transceiver resets, an
+  *approximation*.
 
-Isolate (BMCR bit 10) and power-down (bit 11) stop frames in both
-directions on the DP83843 while management access keeps working
-*(established)*. An unsupported media configuration and reset hold do
-the same in the model. On the DP83840A the data path is always on.
+Isolate (BMCR bit 10) and power-down (bit 11) stop frames in both directions
+on the DP83843 while management access keeps working. The BMCR table defines
+the two bits as isolating the MII and powering the part down
+:src:`ti-dp83843-snls021b p. 46-47`. Stopping frames follows from those
+definitions, *inferred*. An unsupported media configuration and reset hold
+do the same in the model. On the DP83840A the data path is always on.
 Clearing the condition re-opens receive and the IOC3 flushes frames it
 queued meanwhile.
 

@@ -132,11 +132,15 @@ implement it and those offsets read zero.
 Board population
 ----------------
 
-The subsystem identity tells a guest which functions the board wires up,
-and the model builds the same population from it. The table follows the
-per-board setup routines of Linux ``drivers/mfd/ioc3.c``, *software
-expectation*, with parallel ports added from the board manuals and
-OpenBSD's attachment, since Linux has no IOC3 parallel driver.
+The subsystem identity tells Linux which functions the board wires up.
+With ``population`` unset, the model picks the functions from the
+subsystem id by the table below. The table follows the per-board setup
+routines of Linux ``drivers/mfd/ioc3.c``, *software expectation*, with
+parallel ports added from the board manuals and OpenBSD's attachment,
+since Linux has no IOC3 parallel driver. The machine presets set the
+population explicitly instead, and not every board presents its Linux
+id: the BaseIO, BaseIO-G and IO-8 chips present ``0xffff``, a placeholder
+for a value no public source records (:doc:`baseio`).
 
 .. list-table::
    :header-rows: 1
@@ -426,9 +430,10 @@ handler for bits 6 and 15 and an edge handler for the rest
 keyboard bit a latch, *software expectation*. The parallel service bit
 and the high-water and transmit-empty bits as levels are
 *approximations*. The IRIX 6.5.30 ring console enables high water and
-never acknowledges it; against a latched bit its service loop never
-finished. Linux's ring driver re-reads transmit-empty after a write and
-stops it by masking, which a latch would not need.
+never acknowledges it, so a latched bit would keep its service loop
+running, *software expectation*. Linux's ring driver re-reads
+transmit-empty after a write and stops it by masking, which a latch would
+not need.
 
 The enable mask is one register behind a set address and a clear
 address. Linux's dispatcher intersects the status with a read of the set
@@ -1027,7 +1032,9 @@ Parallel port
 
 The port has two register blocks: two DMA contexts at ``0x80`` in the
 main block and a byte-wide ECP register file at ``0x20150``. Offsets are
-Linux's and OpenBSD's, *software expectation*. ``parallel-chardev``
+Linux's and OpenBSD's, *software expectation*, and so are the four
+interrupt sources, bits 18-21. No public header or driver defines the
+bits inside the DMA context and control registers. ``parallel-chardev``
 connects the cable to a character device. The model fits the port on the
 Origin 200 IP29 board, the MediaIO card and the Octane IP30 board. The
 Octane's IEEE 1284-C connector is *established*
@@ -1047,10 +1054,10 @@ DMA contexts
      - Stored.
    * - ``0x88``
      - Context A count
-     - Bits 0-16 count, 30 armed, 31 last; other bits read zero.
+     - Model: bits 0-16 count, 30 armed, 31 last; other bits read zero.
    * - ``0x8c``
      - DMA control
-     - Bit 29 from peripheral, 30 reset, 31 enable. Bits 0-5 read
+     - Model: bit 29 from peripheral, 30 reset, 31 enable. Bits 0-5 read
        armed, last and busy for A then B.
    * - ``0x90``, ``0x94``
      - Context B address
@@ -1058,6 +1065,14 @@ DMA contexts
    * - ``0x98``
      - Context B count
      - As context A.
+
+Linux names these registers (``ppbr_h_a``, ``ppbr_l_a``, ``ppcr_a``,
+``ppcr``, ``ppbr_h_b``, ``ppbr_l_b``, ``ppcr_b`` in ``ioc3.h``) but not
+their fields, at ``db2ddb871435`` and in its 2.4-era
+``include/asm-mips64/sn/ioc3.h``; OpenBSD's ``iocreg.h`` at
+``2df91d80c104`` does not define them either. The field layout in the
+table and the behaviour below are therefore the model's, an
+*approximation*.
 
 With DMA control enabled and out of reset, and the ECP extended control
 DMA bit set, the engine drains each armed context in order A then B: it
@@ -1067,8 +1082,8 @@ once, clears the count and the arm, and latches that context's source
 bit 18, until the next extended-control write. Busy never reads set. A
 transfer from the peripheral logs ``LOG_UNIMP`` and leaves the context
 armed. An unreadable buffer latches the DMA error source, bit 21, with
-``LOG_GUEST_ERROR``. Transferring in the write is an *approximation*; the
-chip's pacing is *unknown*.
+``LOG_GUEST_ERROR``. The chip's pacing and context semantics are
+*unknown*.
 
 ECP register file
 -----------------
@@ -1145,7 +1160,8 @@ extended control register and DMA, behaves as on the generic port above.
 The ``octane`` and ``octane2`` machines and the Fuel board select the
 part. The reference Octane2's board is revision B and Fuel's fitted part
 is not identified, so both selections are *inferred* from other board
-revisions. The Origin 200 board keeps the generic port.
+revisions. The Origin 200 model keeps the generic port, an
+*approximation*: the photographed board's revision is not known.
 
 Byte bus and clocks
 ===================
@@ -1216,7 +1232,7 @@ depth, refuses the stream.
 Measurements
 ============
 
-No IOC3 register has been read on a physical machine for this page. The
+No IOC3 register has been read on an identified physical machine. The
 reference Octane2 (:ref:`sgi-measured-octane2`) reported its onboard IOC3
 functions in its hardware inventory (:ref:`sgi-measured-octane2-hinv`):
 
@@ -1262,6 +1278,9 @@ Model limits
 - The parallel port moves no data from the peripheral, implements no
   cable handshake, and models neither service thresholds nor interrupt
   polarity.
+- The Origin 200 IP29 port is the generic one although a photographed
+  IP29 board carries a TL16PIR552; its configuration bytes, 16-byte test
+  FIFO and overrun order are not modelled there.
 - Of the TL16PIR552, only the configuration values, test FIFO depth and
   overrun order are modelled. Its EPP address and data registers
   (offsets 3-7 of the ECP file) log ``LOG_UNIMP``; the status register's

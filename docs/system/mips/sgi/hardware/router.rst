@@ -18,7 +18,7 @@ and other Routers with ``sgi-net-cable`` objects (``port1-cable`` to
 
 The Router has no window in any processor's address space. Guests reach
 its registers only through vector operations launched from a Hub
-(:doc:`hub`). The model does not carry packets, virtual channels or
+(:doc:`hub`). The model does not carry micropackets, virtual channels or
 credits. It decodes the register target, looks up routes in the tables
 guests program and follows cabled links. No chip revision is
 established for the part. The model reports revision 1. Facts are rated
@@ -474,8 +474,7 @@ anything is not established.
 In a running machine only the check-bit count moves. When the Router's
 send-data-error bit for a port is set, a successful vector read that
 arrived on that port adds one to the check-bit count of the port that
-sent it. The model uses this to stand for the diagnostic that injects a
-link error, an *approximation*. Counters are 8 bits wide and saturate
+sent it, an *approximation*. Counters are 8 bits wide and saturate
 at 255. The sequence-number and retry counts, the flag bits and the
 local error bits have no source of events in the model. Test fixtures
 can latch them.
@@ -646,9 +645,10 @@ The model implements a scan protocol and no real scan chain.
        end of the result, gives zero.
    * - ``0x78``
      - ``RR_BIST_ENTER_RUN``
-     - Starts the test: the Router resets as for a warm reset. If the
-       clock chain and one of the logic or array chains are fully
-       loaded, that chain becomes the completed chain.
+     - Starts the test: the Router resets its registers and link state
+       as for a warm reset, but does not reset its neighbours' links.
+       If the clock chain and one of the logic or array chains are
+       fully loaded, that chain becomes the completed chain.
 
 The result of a completed chain is zero except result bit 62, which the
 model sets so a guest that assembles the unloaded chunks reads a
@@ -673,7 +673,7 @@ reset register) clear:
 - every port's parameters, errors, histogram and reset mask, and
 - both routing tables, to unwritten.
 
-Machine reset and warm reset also clear the link state. After any reset
+Machine reset, warm reset and a BIST run also clear the link state. After any reset
 the BIST ready bit reads 1 and the model derives the state of every
 cabled port again. Reset completes at once. How long a real Router takes
 and what it keeps are *unknown*. A programmed reset or a BIST run
@@ -691,16 +691,19 @@ holds the board record SGI boards share: two 32-byte pages with format
 byte 0x01, a ten-byte barcode, the part number split around page 0's
 check value, a four-byte revision, group, capability and variety bytes,
 a fourteen-byte name, and each page's complemented CRC16 in its last
-two bytes. Captured Router records carry ``0xff`` in group, capability
-and variety, *observed*. The parts catalogue names 030-0841-002 as the
-Router fitted with IP27 nodes (:src:`hmm-408-b p. 29`). A published
+two bytes. OpenBSD ``owserial`` reads the same layout, a *software
+expectation*. The parts catalogue names 030-0841-002 as the Router
+fitted with IP27 nodes (:src:`hmm-408-b p. 29`), *established*. A published
 Origin 2000 inventory prints that board as ``ROUTER-IR1`` revision G
 (:src:`usenet-9uhh6o`), *observed*.
 
 The model stores that record: name ``ROUTER-IR1``, part 030-0841-002,
-revision G, and ``0xff`` in group, capability and variety. The barcode
+revision G, and ``0xff`` in group, capability and variety. The ``0xff``
+bytes are *inferred* from Router records on the later 030-0841-003 board
+in published inventories, which carry them. No registered capture shows
+them for 030-0841-002. The barcode
 is synthetic and marked: ``EMUR`` followed by the instance, taken from
-the low byte of ``nic-serial``. An unmarked ``nic-serial`` gives
+the marked ``nic-serial``'s instance field. An unmarked ``nic-serial`` gives
 instance 0, so two Routers given unmarked serials would both read
 ``EMUR00``. The machine builder always supplies marked serials. A
 ``nic-image`` file replaces the whole record.
@@ -723,7 +726,7 @@ Model limits
 
 - Register offsets, field layouts and reset values are the model's
   choice (:ref:`sgi-router-registers`).
-- The model has no packets, credits, virtual channels, age, arbitration
+- The model has no micropackets, credits, virtual channels, age, arbitration
   or buffers. Node-addressed accesses are table walks.
 - Per-port reset masks and reset permits are stored only.
 - Histogram selectors other than utilisation, and absolute mode, log

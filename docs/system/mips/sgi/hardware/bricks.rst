@@ -17,7 +17,7 @@ layer there: the C-brick (``modules/c-brick.yaml``), the I-brick
 (``modules/i-brick.yaml``), the R-brick (``modules/r-brick.yaml``) and the
 NUMAlink module (``modules/numalink-module.yaml``). The V-brick has a
 machine-builder preset and a controller profile but no layer. The other
-seven bricks have no code at all and are described here as reference only.
+eight bricks have no code at all and are described here as reference only.
 No QEMU machine builds any brick: the two catalogue compositions that hold
 bricks are reference models, which the compiler refuses to compile. Facts
 are rated as described in :ref:`sgi-ratings`.
@@ -135,14 +135,17 @@ catalogue's composition rules can express and the compiler checks, are:
 
 - A G-brick connects to a C-brick only through an I-, X- or N-brick. A
   V-brick connects to a C-brick directly (*established*,
-  :src:`007-4264-002 pp. 8, 10, 62`). - A system holds G-bricks or V-bricks,
-  not both (*established*, :src:`007-4264-002 pp. 10, 21`). - A C-brick on
-  an R-brick must use ports 2 to 5 (*established*,
-  :src:`007-4311-002 p. 36`). - An Origin 3200 holds one or two C-bricks, at
-  most two I/O bricks of which one is an I-brick, and no R-brick
-  (*established*, :src:`007-4311-002 p. 87`). - The D-brick is not on the
-  NUMAlink or XIO network. It hangs off a Fibre Channel adapter in an I- or
-  P-brick (*established*, :src:`007-4240-002 p. 168`).
+  :src:`007-4264-002 pp. 8, 10, 62`).
+- A system holds G-bricks or V-bricks, not both (*established*,
+  :src:`007-4264-002 pp. 10, 21`).
+- A C-brick on an R-brick must use ports 2 to 5 (*established*,
+  :src:`007-4311-002 p. 36`).
+- An Origin 3200 holds one or two C-bricks, at most two I/O bricks of
+  which one is an I-brick, and no R-brick (*established*,
+  :src:`007-4311-002 p. 87`).
+- The D-brick is not on the NUMAlink or XIO network. It hangs off a Fibre
+  Channel adapter in an I- or P-brick (*established*,
+  :src:`007-4240-002 p. 168`).
 
 The management network is separate. Each brick except the D-brick has an L1
 controller, and an optional L2 controls the L1 controllers over USB
@@ -169,10 +172,11 @@ records none of them.
 Connections:
 
 - One rear ``LINK (NI)`` NUMAlink 3 connector, to an R-brick or, in an
-  Origin 3200, to another C-brick. - One rear ``XIO (II)`` Crosstown2
-  connector, to an I-, P- or X-brick or, for graphics, to a V-brick. - An L1
-  controller on the motherboard with a front display, a DB-9 console port
-  and a USB port for an L2 (*established*,
+  Origin 3200, to another C-brick.
+- One rear ``XIO (II)`` Crosstown2 connector, to an I-, P- or X-brick or,
+  for graphics, to a V-brick.
+- An L1 controller on the motherboard with a front display, a DB-9 console
+  port and a USB port for an L2 (*established*,
   :src:`007-4240-002 pp. 115-116, 121`).
 
 Published inventories of an Origin 3200 and an Origin 3400 report the
@@ -266,12 +270,14 @@ Connections:
   presents is *unknown*: the owner's guide says all twelve in one place
   and six per loop at start-up in another.
 
-The D-brick has no L1 controller, no NUMAlink or XIO connection and no
-module number. A microcontroller on the operator-panel module monitors
-power, cooling and temperature over an I2C bus and runs SCSI enclosure
-services (*established*, :src:`007-4240-002 pp. 69, 72, 163, 166`; the
-L1 brick-type table on p. 235 has no D). No public IRIX document says a
-guest queries the enclosure services.
+The D-brick has no L1 controller and no NUMAlink or XIO connection
+(*established*, :src:`007-4240-002 pp. 69, 72`; the L1 brick-type table on
+p. 235 has no D). That it has no module number is *inferred* from the rack
+numbering on p. 13. A microcontroller on the operator-panel module, which
+the guides call the enclosure system interface (ESI) module, monitors
+power, cooling and temperature over an I2C bus (*established*,
+:src:`007-4240-002 p. 163`). No public IRIX document says a guest queries
+the ESI.
 
 Catalogue: reference only. The host side of the loop is the QLogic
 ISP2200 adapter (:doc:`qlogic-isp2200`).
@@ -308,7 +314,7 @@ Two guides disagree on three G-brick L1 duties: voltage margining,
 temperature monitoring and ID PROM reads. Those are *unknown*.
 
 Catalogue: reference only. The InfiniteReality pipe itself exists as the
-``sgi-kona`` device (:doc:`graphics`) and attaches only in an Onyx2
+``sgi-kona`` device (:doc:`kona`) and attaches only in an Onyx2
 Crossbow slot. No Ktown2, G-brick chassis, second pipe or Crosstown2
 attachment exists.
 
@@ -382,8 +388,8 @@ two front drive bays, a Gigabit Ethernet connector, RTI and RTO connectors
 and, through daughtercards, two or four RS-232 ports (*established*,
 :src:`007-4604-001 pp. 3, 5, 10`). A DVD-ROM is in the front bay. Its chips
 are a QLogic SCSI controller, a Broadcom BCM5701 and an IOC4. That the
-QLogic part is an ISP12160 is *inferred* from a report on a sibling
-platform, which also prints the IO9's PCI numbering as devices 1, 3 and 4.
+QLogic part is an ISP12160 is *inferred* from the Origin 350's IO9, which
+carries one (:ref:`sgi-ip53-io-profile`).
 
 Connections: rear connectors ``XIO 10`` and ``XIO 11``, each to one
 compute brick, the second optionally to another; an L1 controller with a
@@ -516,10 +522,9 @@ ports, four router ports), MetaRouter (systems above 128 processors) and
 repeat router (above 256). Origin 3400 R-bricks ship with ports 7 and 8
 disabled, a setting kept in the controller's non-volatile memory and changed
 with L1 commands and a 48-hour authenticator (*established*,
-:src:`108-0301-001 pp. 3-2, 3-3, 3-7 to 3-10`; :src:`007-4311-002 pp. 36-37`; :src:`108-0240-002 p. 2-20`).
-A published Origin 3400 inventory reports the router board as part
-``030-1634-002`` revision ``-B`` (*observed*). How the controller makes the
-ASIC refuse two ports is *unknown*.
+:src:`108-0301-001 pp. 3-2, 3-3, 3-7 to 3-10`;
+:src:`007-4311-002 pp. 36-37`; :src:`108-0240-002 p. 2-20`). How the
+controller makes the ASIC refuse two ports is *unknown*.
 
 Catalogue: ``modules/r-brick.yaml``. It describes the chassis, one SN1
 router component with eight ports, connectors for ports 1 and 3 to 8, a
@@ -574,8 +579,9 @@ choice, not a hardware route (*approximation*). The V12 is the topology's
 pipe slot, claimed by a pipe ``-device``. The builder also adds an
 ``sgi-l1`` with brick type ``vbrick-discovery-reference``, which carries no
 identity and refuses identity, EEPROM, environment and lifecycle queries
-(``LOG_UNIMP``). No shipped topology uses any of this, because the Origin
-300 pairing it was written for was never an SGI configuration.
+(``LOG_UNIMP``). No shipped topology uses any of this. SGI paired the
+V-brick only with Origin 3000 and Onyx 3000 compute bricks (*established*,
+:src:`007-4264-002 pp. 8, 10`).
 
 .. _sgi-bricks-xbrick:
 
@@ -628,15 +634,12 @@ Ports are lettered A to H and numbered 1 to 8 (*established*,
 A system holds two to eight base modules in a tall rack and two to six in a
 short rack, with the lowest base module the global master (*established*,
 :src:`007-4498-002 pp. 2, 16, 93, 98`). A published six-chassis Origin 300
-inventory reports the router board as part ``030-1634-003`` revision
-``-A`` and the router as ``Revision 1`` (*observed*,
-:src:`nekonomicon-16727514`). The board uses the same part root as the
-R-brick's (``030-1634``), and the R-brick's board is revision ``-B`` of
-``-002``. The fitted ASIC part, its count and its silicon revision are
-*unknown*. The manuals do not show eight ports on one chip. Public Linux
-SN1 headers define an eight-port router family with chip identifier
-``0x3017``, which makes the mapping from family to product *inferred*
-(see :doc:`sn1-router`).
+inventory reports the router board as part ``030-1634-003`` revision ``-A``
+and the router as ``Revision 1`` (*observed*, :src:`nekonomicon-16727514`).
+The fitted ASIC part, its count and its silicon revision are *unknown*. The
+manuals do not show eight ports on one chip. Public Linux SN1 headers define
+an eight-port router family with chip identifier ``0x3017``, which makes the
+mapping from family to product *inferred* (see :doc:`sn1-router`).
 
 Catalogue: ``modules/numalink-module.yaml``, composed with two Origin 300
 base modules in ``origin300-numalink-module.yaml`` (a reference model that
@@ -652,9 +655,8 @@ cables its ports 1, 4 and 6 to two base modules and an expansion module.
 Measurements
 ============
 
-No brick has been measured on a physical machine for this project. The
-*observed* statements above come from published inventories of other
-owners' machines.
+No brick has been measured. The *observed* statements above come from
+published inventories.
 
 .. _sgi-bricks-limits:
 

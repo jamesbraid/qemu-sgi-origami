@@ -38,9 +38,9 @@ Sources
   ``include/linux/ioc4.h`` at ``c9bace5bce3e``, as software
   expectations: the serial DMA registers, ring entries, interrupt bits
   and error capture.
-- Linux 4.19 ``drivers/misc/ioc4.c`` and ``drivers/ide/sgiioc4.c``, as
-  software expectations: the general-purpose pins, clock calibration and
-  the ATA register layout.
+- Linux ``drivers/misc/ioc4.c`` and ``drivers/ide/sgiioc4.c`` at tag
+  ``v4.19-rc1``, as software expectations: the general-purpose pins,
+  clock calibration and the ATA register layout.
 - The Linux IP35 port's ``drivers/tty/serial/ioc4_serial.c`` at
   ``9f613a321ea0``, as a software expectation: the serial arbitration
   idle bit and the port reset sequence.
@@ -74,19 +74,22 @@ function device 1. The machine models place it at device 1. That this
 is the same slot is *inferred* from the two drivers' configuration
 window arithmetic; the IO9 connector wiring itself is *unknown*.
 
-The model's other configuration values are *approximations*: class
-word ``0x00ff`` (base class ``0x00``, subclass ``0xff``), interrupt pin
-1 (INTA) and one 1 MiB 32-bit memory BAR, sized so the byte-bus
-select at ``0x80000`` falls inside it. On IP53 boards the
-``pci-status-compat`` property sets PCI Status to ``0x0220`` at realize
-and at every reset, which is the standard 66 MHz-capable bit and medium
-DEVSEL timing. Both are read-only, so Command writes and Status
-write-one-to-clear writes leave them alone. The IP35 PROM's diagnostic
-expects that Command/Status word, ``0x02200000``
-(:src:`ip35-prom-6.210 IOC4 diagnostics`), a *software expectation*.
-The revision ``0x53`` part's real Status reset value is *unknown*; a
-configuration read on such a board before any driver runs would settle
-it. Without the property Status stays zero.
+The model's other configuration values are *approximations*: class word
+``0x00ff`` (base class ``0x00``, subclass ``0xff``), interrupt pin 1
+(INTA) and one 1 MiB 32-bit memory BAR, sized so the byte-bus select at
+``0x80000`` falls inside it. On IP53 boards the ``pci-status-compat``
+property sets PCI Status to ``0x0220`` at realize and at every reset.
+Status bit 5 is the 66 MHz-capable bit and bits 10-9 are DEVSEL timing,
+where ``01`` is medium; both are read-only
+(:src:`pci-local-bus-2.2 section 6.2.3`), *established*. The model
+keeps them across Command writes and Status write-one-to-clear writes.
+The IP35 PROM's diagnostic expects that Command/Status word,
+``0x02200000`` (:src:`ip35-prom-6.210 IOC4 diagnostics`), a *software
+expectation*. The revision ``0x53`` part's real Status reset value is
+*unknown*; a configuration read on such a board before any driver runs
+would settle it. Without the property Status reads
+zero. Either way QEMU's PCI core also sets Status bit 3, interrupt status,
+while INTA is asserted.
 
 The machine models connect the IOC4's PCI interrupt to PIC input 0 and
 its four ports to the node's serial lines. The IO9's real interrupt
@@ -244,11 +247,12 @@ accordingly. The Origin 350, Onyx 350 and Onyx 4 host machines choose
 33,333,333 Hz and the Tezro machines 66,666,667 Hz, an *approximation*:
 the boards' real selection is *unknown*.
 
-A UART window accepts only byte accesses. A wider access that reaches
-the IOC4 as one transaction fails with ``LOG_GUEST_ERROR`` and has no
-effect on the UART. An unaligned wider CPU access that XBridge splits
-into bytes reaches each register in turn. The public drivers use bytes,
-*software expectation*. The chip's answer to a wider access is
+A UART window accepts only byte accesses. A wider access that reaches the
+IOC4 as one transaction fails with ``LOG_GUEST_ERROR`` and has no effect
+on the UART. An unaligned wider access that the host bridge splits into
+bytes reaches each register in turn; the qtest pins this through a
+standalone XBridge, not the PIC the IP53 machines use. The public drivers
+use bytes, *software expectation*. The chip's answer to a wider access is
 *unknown*.
 
 OpenBSD takes the console UART's address and rate from the firmware's
@@ -269,20 +273,23 @@ expectation*. The other pending word holds ATA in bit 0, ATA DMA error in
 bit 1, serial DMA errors for ports 0-3 in bits 2-5 and the PS/2
 controller in bit 6.
 
-Writing one to a pending bit clears it; writing one to an enable-set or
-enable-clear bit changes that enable. OpenBSD masks a pending source,
+Writing one to a pending bit clears it, and writing one to an
+enable-set or enable-clear bit sets or clears that enable, a *software
+expectation* from OpenBSD ``iof.c``. OpenBSD masks a pending source,
 runs its handler, acknowledges the bit and unmasks it, *software
 expectation*. The IOC4 drives one PCI interrupt, asserted while any
-pending bit is also enabled.
+pending bit is also enabled, a *software expectation* from the same
+driver.
 
 The model's choices for these bits are *approximations*:
 
 - A UART interrupt sets its port's bit 6 and also counts as pending for
   as long as the UART holds its interrupt line. Acknowledging the bit
   does not hide a line that is still active.
-- The receive threshold bit is a level. An acknowledgment clears it only
-  while the receive ring holds fewer entries than the threshold. A zero
-  threshold disables it.
+- The receive threshold bit is set whenever the receive ring is found
+  to hold at least the threshold. An acknowledgment clears it only while
+  the ring holds fewer entries; consuming entries does not clear it by
+  itself. A zero threshold disables it.
 - The PS/2 bit latches on each rising edge of the controller's interrupt
   and stays until acknowledged.
 - DCD and CTS change bits and both ATA bits are never set.
@@ -296,9 +303,12 @@ Serial DMA
 ==========
 
 The ring DMA engine runs only when the ``serial-dma-experimental``
-property is on. Every IP53 machine model sets it. With it off, the DMA
-registers read back what was written, no ring traffic happens, received
-characters stay in the UART FIFO and offset ``0x20`` is unmodelled.
+property is on. Every IP53 machine model sets it. With it off, no ring
+traffic happens, received characters stay in the UART FIFO, UART
+transmit and modem-control writes ignore the DMA state, and offset
+``0x20`` is unmodelled. The DMA registers still apply the write checks,
+refusals and masks described below, except the ring-base alignment
+check, so they do not simply read back what was written.
 
 The register layout, ring layout and entry format below are those of
 Linux ``ioc4_serial.c`` and ``ioc4.h``, a *software expectation*. Every
@@ -351,7 +361,8 @@ Port registers
      - Device-owned. Writes log ``LOG_UNIMP``.
    * - ``0x320 + 0x1c*n``
      - Receive consumer
-     - Written by software. Bit 31 arms the receive timer.
+     - Written by software. Bit 31 arms the receive timer; a write
+       with bit 31 clear disarms it and cancels any countdown.
    * - ``0x324 + 0x1c*n``
      - Receive timer reload
      - Bits 11-0, in 16 kHz ticks. Other bits log ``LOG_UNIMP``.
@@ -377,8 +388,10 @@ completion after that slot finishes. Any other status logs
 the whole entry is done, and a port that drains a non-empty ring sets
 transmit ring empty.
 
-A character backend that cannot take a byte holds the slot until it
-can; nothing is lost or repeated.
+A character backend that cannot take a byte yet holds the slot until
+it can; nothing is lost or repeated. A backend error logs
+``LOG_GUEST_ERROR`` and stalls the port until software next writes a
+ring or control register or the backend is replaced.
 
 Receive and the timer
 ---------------------
@@ -389,14 +402,17 @@ or software sets drain. Unused slots carry zero status. If the ring is
 full, the entry stays staged, receive ring full is set and the backend
 is told the port has no room; the next consumer write publishes it.
 
-The timer is a one-shot. Writing bit 31 of the receive consumer arms it.
+The timer is a one-shot. Writing bit 31 of the receive consumer arms
+it; any consumer write with bit 31 clear disarms it.
 The next received byte starts it, and it expires after the reload count
 of 16 kHz ticks. On expiry it publishes any partial entry, sets receive
 timer and disarms. A zero reload never expires. The 16 kHz rate is
 Linux ``ioc4.h``'s declared timer clock, a *software expectation*.
 
-The model never produces modem-status entries or parity, framing, break
-and overrun flags, and does not implement hardware flow control.
+Apart from the ``0xc0`` loopback status (see below), which sets the
+bit Linux reads as modem-valid, the model never produces modem-status
+entries. It never sets parity, framing, break or overrun flags and does
+not implement hardware flow control.
 
 Pause, enable and PIO
 ---------------------
@@ -407,7 +423,8 @@ clears. Drain written while paused completes after resume.
 
 DMA enable and the UART's own FIFOs never carry the same data:
 
-- Setting DMA enable while either UART FIFO holds data logs
+- Setting DMA enable while the UART holds receive or transmit data
+  (either FIFO, data ready, or a transmitter that is not empty) logs
   ``LOG_GUEST_ERROR`` and is refused.
 - Clearing DMA enable while the port has queued transmit entries,
   unread or staged receive data, an armed timer or a pending drain logs
@@ -439,10 +456,10 @@ Arbitration idle bit
 
 The Linux IP35 port's serial driver names bit 7 of the serial control
 word at ``0x20`` the arbitration idle bit, zero while a serial port's
-DMA request is active, and polls it after setting a port's reset bit;
-the IRIX kernel does the same, a *software expectation*. The model
-returns ``0x80`` unless a serial DMA memory access is in progress at
-that moment, and zero during one, an *approximation*. DMA accesses
+DMA request is active, and polls it after setting a port's reset bit,
+a *software expectation*. The model returns ``0x80`` unless a serial
+DMA memory access is in progress at that moment, and zero during one,
+an *approximation*. DMA accesses
 complete inside the call, so software normally reads idle. Writes to
 ``0x20`` log ``LOG_UNIMP``.
 
@@ -492,6 +509,8 @@ with these *approximations*:
 - Receive words hide bits 28-24, which on the IOC3 hold receive source
   and overflow flags.
 - The controller resets to zero.
+- Reads of the transmit registers and writes to the receive registers
+  log ``LOG_GUEST_ERROR``; such reads return zero.
 - Accesses other than aligned 32-bit words fail with
   ``LOG_GUEST_ERROR``.
 
@@ -505,8 +524,8 @@ route is *inferred*; on the Onyx 4 the ports themselves are *inferred*
 from the Origin 350 guide (:src:`007-4634-002 p. 12, 23`). The model
 always attaches a PS/2 keyboard and mouse, an *approximation*: a real
 system may have empty connectors, and the stock PROM then reports that
-it cannot reach a keyboard. The daughtercard exists only on a base
-module, and every modelled IO9 is in one.
+it cannot reach a keyboard, a *software expectation*. The daughtercard
+exists only on a base module, and every modelled IO9 is in one.
 
 .. _sgi-ioc4-timekeeper:
 
@@ -553,13 +572,15 @@ Reset
 =====
 
 No public source gives the IOC4's reset state, so every value here is an
-*approximation*. A device or system reset clears both pending and both
-enable words, the error address, the ring bases (to 1 KiB rings), every
-port's DMA registers, timers, staging and shadow outputs, and the
-``0x148`` latch, and deasserts the interrupt. The UARTs return to
-QEMU's 16550A reset state: line control zero, line status ``0x60``,
-interrupt identification ``0x01`` and divisor ``0x0c``. The PS/2
-controller resets to zero. The PCI Status compatibility value is
+*approximation*. A reset of the IOC4 device, alone or as part of a
+system reset, clears both pending and both enable words, the error
+address, the ring bases (to 1 KiB rings), every port's DMA registers,
+timers, staging and shadow outputs, and the ``0x148`` latch, and
+deasserts the interrupt. The PS/2 controller resets to zero. On a
+system reset the UARTs also return to QEMU's 16550A reset state: line
+control zero, line status ``0x60``, interrupt identification ``0x01``
+and divisor ``0x0c``. A reset of the IOC4 device alone leaves the UART
+registers unchanged. The PCI Status compatibility value is
 restored. The timekeeper keeps its contents.
 
 Both public drivers start by disabling every source and acknowledging
