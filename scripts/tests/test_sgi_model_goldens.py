@@ -41,6 +41,7 @@ CONFIGURATIONS = {
     "origin300": "origin300.yaml",
     "origin300-two-chassis": "origin300-two-chassis.yaml",
     "origin3200": "origin3200.yaml",
+    "origin3900": "origin3900.yaml",
     "onyx2-rack": "onyx2-rack.yaml",
     "onyx2-deskside": "onyx2-deskside.yaml",
 }

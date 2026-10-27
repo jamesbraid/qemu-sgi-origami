@@ -112,6 +112,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-4365-002``
    *SGI Origin 300 User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4365-002/pdf/007-4365-002.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-documents-007-4426-001:
+
+``007-4426-001``
+   *Partitioning Guide for Systems That Contain Cx-bricks*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4426-001/pdf/007-4426-001.pdf>`__ Published; may be quoted.
+
 .. _sgi-ref-documents-007-4480-001:
 
 ``007-4480-001``
@@ -136,6 +141,11 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-4566-001``
    *SGI Origin 350 Server System User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4566-001/pdf/007-4566-001.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-documents-007-4572-001:
+
+``007-4572-001``
+   *Cx-brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf>`__ Published; may be quoted.
 
 .. _sgi-ref-documents-007-4632-001:
 

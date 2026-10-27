@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3900: one Cx-brick with four IP53 node boards, and an I-brick on
+# node board 0's XIO connector.
+layer_version: 1
+sources:
+  007-4426-001-scope: "007-4426-001 printed page xi: the guide covers Origin 3900 and Onyx 3900 systems, the systems that contain Cx-bricks"
+  007-4426-001-partition: "007-4426-001 printed page 3: a standalone partition includes at least one Cx-brick, one I- or IX-brick, a root disk and one console connection"
+  007-4426-001-one-brick: "007-4426-001 printed pages 6 and 18, Table 1-1 and Figure 2-1: a partition of one Cx-brick, with all four IP53 node boards on its own router"
+  007-4572-001-population: "007-4572-001 printed pages 3, 4 and 13: one to four IP53 node boards, each with zero or four processors, processors added in increments of four"
+  007-4572-001-io: "007-4572-001 printed pages 2 and 14: a Cx-brick attaches up to four I/O bricks; the I-, P-, X-, N-, IX- and PX-bricks are compatible"
+  007-4572-001-xio: "007-4572-001 printed page 10: XIO 0 to node 0"
+layer:
+  kind: product
+  id: origin3900
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 4
+    node_cpu_counts: [0, 4]
+    provenance: vendor-document
+    sources: [007-4426-001-one-brick, 007-4572-001-population]
+  population:
+    nodes: 4
+    cpus_per_node: [4, 4, 4, 4]
+    fitted_memory:
+      status: unknown
+      reason: >-
+        No source read gives a Cx-brick's shipped memory; this composition
+        selects none.
+      provenance: vendor-document
+      sources: [007-4572-001-population]
+    provenance: vendor-document
+    sources: [007-4426-001-one-brick, 007-4572-001-population]
+  composition_rules:
+    counts:
+      - {bricks: [cx-brick], min: 1, max: 1}
+      - {bricks: [r-brick], max: 0}
+      - {bricks: [i-brick, p-brick, x-brick], max: 4, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4426-001-partition, 007-4426-001-one-brick, 007-4572-001-io]
+  data:
+    machine:
+      name: Origin 3900
+      model_role: reference
+      notes: >-
+        The smallest Origin 3900 partition: one Cx-brick with all four IP53
+        node boards fitted, sixteen processors, and an I-brick on node board
+        0's XIO connector at its XBridge port A. Node board 0 and port A are
+        this composition's choices; which XIO connector a boot I-brick uses
+        is unknown. An IX-brick may take the I-brick's place on a real
+        partition; no IX-brick layer exists yet. The Cx-brick's L1, its
+        router port assignment, its NASIDs, its node boards' widget numbers
+        and the processors' clock are not described, so this configuration
+        never compiles.
+    evidence_policy: strict
+    components:
+      - id: rack
+        name: Origin 3900 rack
+        kind: chassis
+        provenance: vendor-document
+        description: The rack that holds the Cx-brick and its I/O brick.
+        sources: [007-4426-001-scope, 007-4426-001-one-brick]
+    buses: []
+    connections: []
+    xio_cables:
+      - id: cx0-to-ibrick
+        ends: [cx0-xio-0-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4572-001-xio, 007-4572-001-io]
+        notes: >-
+          Node board 0 and port A are this composition's choices; which XIO
+          connector and port a boot I-brick uses is unknown.

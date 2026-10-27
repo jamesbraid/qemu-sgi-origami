@@ -276,6 +276,26 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
                 f"node {node} populates {count} CPUs, but assembly "
                 f"'{assembly_id}' has {cpu_limit} slots"
             )
+    # A product whose boards fit processors only in fixed counts, such as
+    # the Cx-brick's IP53 board with none or four, lists them.
+    choices = topology.get("node_cpu_counts")
+    if choices is not None:
+        if (not isinstance(choices, list) or not choices or
+                not all(isinstance(value, int) and value >= 0
+                        for value in choices)):
+            raise ResolutionError(
+                f"product '{product_id}' node_cpu_counts must be a non-empty "
+                "list of counts")
+        for node, count in enumerate(cpus):
+            if count not in choices:
+                allowed = " or ".join(str(value) for value in choices)
+                raise ResolutionError(
+                    f"node {node} populates {count} CPUs, but product "
+                    f"'{product_id}' fits {allowed} per node")
+        if not any(cpus):
+            raise ResolutionError(
+                f"product '{product_id}' population has no node with "
+                "processors")
     if dimms is not None:
         for node, count in enumerate(dimms):
             if count < 0 or count > dimm_limit:
