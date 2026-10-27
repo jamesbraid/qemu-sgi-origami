@@ -2788,6 +2788,15 @@ class Origin3000BrickTests(unittest.TestCase):
                    if item["kind"] == "node-asic"),
             ["c0-bedrock", "c1-bedrock"])
         self.assertEqual(components["c0-chassis"]["brick_type"], "C")
+        # Each brick is a module of its own under the rack, so the
+        # compiler gives each one its own module record.
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "module"),
+            ["c0-chassis", "c1-chassis", "ibrick-brick"])
+        self.assertTrue(all(components[cid]["parent"] == "rack"
+                            for cid in ("c0-chassis", "c1-chassis",
+                                        "ibrick-brick")))
         self.assertEqual(
             [(item["id"], item["ends"]) for item in model["xio_cables"]],
             [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"])])
