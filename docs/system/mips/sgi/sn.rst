@@ -301,14 +301,51 @@ interrupt wiring all lack a reviewed contract.
 R-brick and NUMAlink module ports
 ---------------------------------
 
-The R-brick router has eight ports, 1 to 8. C-bricks must use ports
-2 to 5; router-to-router links normally use 1, 6, 7 and 8; Origin 3400
-R-bricks disable ports 7 and 8 (established, *SGI Origin 3000 Series
+The R-brick router has eight ports, 1 to 8, lettered A to H. A C-brick
+connects only to port 2, 3, 4 or 5, since only those cables carry the
+USB signals that reach its L1; router-to-router links normally use 1,
+6, 7 and 8 but may use any port (established, *SGI Origin 3000 Series
 Technical Configuration Owner's Guide*, 007-4311-002, printed pages
-36-37; 108-0266-001 printed pages 40-41). The router ASIC itself is not
-named in any SGI document found (unknown).
+36-37; *SGI Origin 3000 Series Owner's Guide*, 007-4240-002, printed
+page 196). An Origin 3400 R-brick ships with two of its ports disabled
+(*Origin 3000 System Architecture*, 108-0240-002, printed page 2-20);
+which two, and how, no source cited here establishes (unknown). The
+router ASIC itself is not named in any SGI document found (unknown).
 
-The Origin 300 NUMAlink module uses the same board. Ports 1, 6, 7 and 8
+The ``r-brick`` model layer is the enclosure: the router, its L1 and
+USB hub, and the eight port connectors, each with a cable bus a
+composition attaches the far end to. The router's ``node_ports``
+names ports 2 to 5. Resolution refuses a node cabled to any other
+port, and the builder refuses such a cable in a topology it is handed,
+with the message "node '<id>' is cabled to router '<id>' port <n>; it
+takes a node only on ports 2, 3, 4, 5". A cable to another router may
+use any port. The layer sets no L1 brick-type character, since no
+reviewed L1 contract gives the R-brick's.
+
+The ``origin3400`` reference composition is the guide's 8- to
+16-processor interconnect drawn with one R-brick (007-4311-002 printed
+page 55): four C-bricks on ports 2 to 5 and an I-brick on the first
+C-brick's ``XIO (II)`` connector at XBridge port A. Its composition
+rules follow Appendix B (printed page 89): one to eight C-bricks, one
+or two R-bricks and at least one I-brick among at most eight I/O
+bricks. Every Origin 3400 bundle ships two R-bricks (printed pages
+76-78), which this composition does not show. It never compiles: the
+C-brick layer has no fitted memory, processor clock or L1 yet.
+
+Stated limitations of a routed Origin 3000 build. The L2 controller,
+which a rack holding an R-brick requires (007-4311-002 printed page
+42), is not modelled, nor is the R-brick's USB hub traffic to the
+C-brick L1s; running without them is a limitation, not a claim that
+the hardware does. The router presents all eight ports, not the six an
+Origin 3400 enables. Its forwarding is the routed Origin 300
+experiment's (below), which no R-brick register contract confirms:
+the table shapes, the destination-ID mapping and whether an entry
+names an absolute port or a turn are unknown.
+
+The Origin 300 NUMAlink module is a different product. Published
+inventories report its router board as another revision of the
+R-brick board's part family; whether the two carry the same router ASIC
+revision is unknown. Ports 1, 6, 7 and 8
 take base modules only; ports 2 to 5 take base or PCI expansion
 modules and carry USB to the L2 controller (established, *SGI Origin
 300 System with NUMAlink Module User's Guide*, 007-4498-002, printed

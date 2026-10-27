@@ -3470,5 +3470,111 @@ class Origin3900Tests(unittest.TestCase):
 
 
 
+class Origin3400RoutedTests(unittest.TestCase):
+    """The Origin 3400 composition: four C-bricks on one R-brick."""
+
+    ORIGIN3400 = INPUTS / "origin3400.yaml"
+    NODE_PORT_RULE = "it takes a node only on ports 2, 3, 4, 5"
+
+    def resolve(self):
+        return _resolver.load_system_model(self.ORIGIN3400)
+
+    def cabled(self, model):
+        """Each fabric bus mapped to what is attached to it."""
+        cables = {}
+        for item in model["connections"]:
+            cables.setdefault(item["bus"], set()).add(
+                (item["component"], item.get("fabric_port")))
+        return cables
+
+    def test_cbricks_sit_on_router_ports_2_to_5(self):
+        model = self.resolve()
+        cables = self.cabled(model)
+        for brick in range(4):
+            port = brick + 2
+            with self.subTest(brick=brick):
+                self.assertEqual(
+                    cables[f"rbrick-port-{port}-cable"],
+                    {("rbrick-router", port), (f"rbrick-port-{port}", port),
+                     (f"c{brick}-bedrock", None),
+                     (f"c{brick}-link-connector", None)})
+        for port in (1, 6, 7, 8):
+            with self.subTest(port=port):
+                self.assertEqual(
+                    cables[f"rbrick-port-{port}-cable"],
+                    {("rbrick-router", port), (f"rbrick-port-{port}", port)})
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in model["xio_cables"]],
+            [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"])])
+        self.assertEqual(model["machine"]["model_role"], "reference")
+
+    def move_cbrick(self, model, brick, port):
+        old = f"rbrick-port-{brick + 2}-cable"
+        for item in model["connections"]:
+            if (item["bus"] == old and
+                    item["component"].startswith(f"c{brick}-")):
+                item["bus"] = f"rbrick-port-{port}-cable"
+
+    def test_cbrick_is_refused_off_ports_2_to_5(self):
+        for port in (1, 6, 7, 8):
+            with self.subTest(port=port), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"node 'c3-bedrock' is cabled to router 'rbrick-router' "
+                    f"port {port}; {self.NODE_PORT_RULE}"):
+                model = self.resolve()
+                self.move_cbrick(model, 3, port)
+                _resolver.model_composition.validate_router_ports(model)
+
+    def test_cbrick_moves_between_ports_2_to_5(self):
+        model = self.resolve()
+        for item in model["connections"]:
+            if item["bus"].startswith("rbrick-port-") and \
+                    item["component"].startswith("c"):
+                brick = int(item["component"][1])
+                item["bus"] = f"rbrick-port-{5 - brick}-cable"
+        _resolver.model_composition.validate_router_ports(model)
+
+    def test_router_to_router_cable_may_use_a_cbrick_port(self):
+        # Only nodes are bound to ports 2 to 5: an R-brick may sit there.
+        model = self.resolve()
+        model["components"].append(dict(
+            next(item for item in model["components"]
+                 if item["id"] == "rbrick-router"), id="second-router"))
+        model["connections"].append({
+            "component": "second-router", "bus": "rbrick-port-2-cable",
+            "role": "endpoint", "fabric_port": 2})
+        model["connections"] = [
+            item for item in model["connections"]
+            if item["component"] not in {"c0-bedrock", "c0-link-connector"}]
+        _resolver.model_composition.validate_router_ports(model)
+
+    def test_composition_rules_bound_the_routers(self):
+        layer = yaml.safe_load(
+            (INPUTS / "layers/products/origin3400.yaml").read_text())
+        rules = layer["layer"]["composition_rules"]
+        check = _resolver.model_composition.validate_composition_rules
+        check("origin3400", rules,
+              ["r-brick", "r-brick"] + ["c-brick"] * 8 + ["i-brick"])
+        for name, bricks, message in (
+                ("no R-brick", ["c-brick", "i-brick"],
+                 "requires at least 1 of r-brick, got 0"),
+                ("three R-bricks", ["r-brick"] * 3 + ["c-brick", "i-brick"],
+                 "allows at most 2 of r-brick, got 3"),
+                ("nine C-bricks", ["r-brick"] + ["c-brick"] * 9 + ["i-brick"],
+                 "allows at most 8 of c-brick, got 9"),
+                ("no I-brick", ["r-brick", "c-brick"],
+                 "requires at least one i-brick among"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"product 'origin3400' {message}"):
+                check("origin3400", rules, bricks)
+
+    def test_origin3400_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

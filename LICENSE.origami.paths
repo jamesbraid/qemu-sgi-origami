@@ -141,6 +141,7 @@ hw/mips/sgi/models/layers/products/origin300-pci-expansion.yaml
 hw/mips/sgi/models/layers/products/origin300-two-chassis.yaml
 hw/mips/sgi/models/layers/products/origin300.yaml
 hw/mips/sgi/models/layers/products/origin3200.yaml
+hw/mips/sgi/models/layers/products/origin3400.yaml
 hw/mips/sgi/models/layers/products/origin350-reference.yaml
 hw/mips/sgi/models/layers/products/origin350.yaml
 hw/mips/sgi/models/layers/products/origin3900.yaml
@@ -175,6 +176,7 @@ hw/mips/sgi/models/origin300.yaml
 hw/mips/sgi/models/origin3200-pbrick.yaml
 hw/mips/sgi/models/origin3200-xbrick.yaml
 hw/mips/sgi/models/origin3200.yaml
+hw/mips/sgi/models/origin3400.yaml
 hw/mips/sgi/models/origin350-reference.yaml
 hw/mips/sgi/models/origin350.yaml
 hw/mips/sgi/models/origin3900.yaml
@@ -450,6 +452,8 @@ scripts/tests/system-model-fixtures/origin300/resolved.json
 scripts/tests/system-model-fixtures/origin300/resolved.sha256
 scripts/tests/system-model-fixtures/origin3200/resolved.json
 scripts/tests/system-model-fixtures/origin3200/resolved.sha256
+scripts/tests/system-model-fixtures/origin3400/resolved.json
+scripts/tests/system-model-fixtures/origin3400/resolved.sha256
 scripts/tests/system-model-fixtures/population-orientation.yaml
 scripts/tests/system-model-fixtures/reference-machine.yaml
 scripts/tests/system-model-fixtures/router-reference.yaml

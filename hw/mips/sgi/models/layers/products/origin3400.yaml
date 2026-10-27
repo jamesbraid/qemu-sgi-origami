@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3400 with one R-brick: four C-bricks on router ports 2 to 5, and
+# an I-brick on the first C-brick's XIO (II) connector.
+layer_version: 1
+sources:
+  007-4311-002-3400: "007-4311-002 printed page 89, Appendix B: an Origin 3400 has one to eight four-processor C-bricks, at least one I-brick and at most eight I/O bricks, at most two R-bricks, in a tall rack"
+  007-4311-002-bundles: "007-4311-002 printed pages 76 to 78: every Origin 3400 bundle ships four-processor C-bricks without memory, two R-bricks, one I-brick and one L2 controller"
+  007-4311-002-one-router: "007-4311-002 printed page 55, section 5.1: the 8- to 16-processor interconnect is four C-bricks cabled to one R-brick, labelled 19, with four cables in one rack"
+  007-4311-002-l2: "007-4311-002 printed page 42: an L2 controller is required in a rack that holds an R-brick"
+  007-4240-002-cbrick-ports: "007-4240-002 printed page 196 and 007-4311-002 printed page 36: C-bricks are cabled only to router ports 2, 3, 4 and 5"
+  007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+  108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+layer:
+  kind: product
+  id: origin3400
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 1
+    max_nodes: 8
+    provenance: vendor-document
+    sources: [007-4311-002-3400]
+  population:
+    nodes: 4
+    cpus_per_node: [4, 4, 4, 4]
+    fitted_memory:
+      status: unknown
+      reason: >-
+        Every Origin 3400 bundle ships its C-bricks without memory and the
+        customer selects DIMMs; this composition selects none.
+      provenance: vendor-document
+      sources: [007-4311-002-bundles]
+    provenance: vendor-document
+    sources: [007-4311-002-one-router, 007-4311-002-3400]
+  composition_rules:
+    counts:
+      - {bricks: [c-brick], min: 1, max: 8}
+      - {bricks: [r-brick], min: 1, max: 2}
+      - {bricks: [i-brick, p-brick, x-brick], max: 8, require: i-brick}
+    provenance: vendor-document
+    sources: [007-4311-002-3400, 007-4311-002-one-router]
+    notes: >-
+      The bundles ship two R-bricks from four processors up, while the
+      guide's 8- to 16-processor drawing has one. No cited page says why a
+      bundle carries the second router, so one or two are accepted.
+  data:
+    machine:
+      name: Origin 3400
+      model_role: reference
+      notes: >-
+        An Origin 3400 of 16 processors drawn with one R-brick, as the
+        technical configuration guide's 8- to 16-processor interconnect
+        draws it: four four-processor C-bricks on router ports 2 to 5 and an
+        I-brick on the first C-brick's XIO (II) connector at its XBridge
+        port A. The bundles ship a second R-brick, which this composition
+        does not show. The R-brick presents all eight ports: an Origin 3400
+        R-brick ships with two of them switched off, and which two and how
+        is not established by any source this tree cites. The rack's L2
+        controller, which the guide requires beside an R-brick, is not
+        modelled, nor is the R-brick's USB hub traffic to the C-brick L1s;
+        running without them is a stated limitation, not a claim that the
+        hardware does. The C-brick layer carries one two-processor
+        interface, no L1 and no memory or clock fit, so this configuration
+        does not yet describe a fitted C-brick and never compiles.
+    evidence_policy: strict
+    components:
+      - id: rack
+        name: Origin 3400 tall rack
+        kind: chassis
+        provenance: vendor-document
+        description: The tall rack that holds the whole system.
+        sources: [007-4311-002-3400]
+    # Each C-brick cable is the R-brick port bus it is fitted to.
+    connections:
+      - {component: c0-bedrock, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c0-link-connector, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c1-bedrock, bus: rbrick-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c1-link-connector, bus: rbrick-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c2-bedrock, bus: rbrick-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c2-link-connector, bus: rbrick-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c3-bedrock, bus: rbrick-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      - {component: c3-link-connector, bus: rbrick-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+    xio_cables:
+      - id: c0-to-ibrick
+        ends: [c0-xio-ii-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 108-0240-002-ports]
+        notes: Port A is this composition's choice; which port a boot I-brick uses is unknown.
