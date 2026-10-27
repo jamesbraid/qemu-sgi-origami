@@ -21,8 +21,11 @@ def label(source_id):
 
 
 def src_role(name, rawtext, text, lineno, inliner, options=None, content=None):
-    source_id, _, locator = text.strip().partition(" ")
-    shown = f"[{source_id}, {locator.strip()}]" if locator.strip() else f"[{source_id}]"
+    # A line wrap can fall between the id and its locator.
+    parts = text.split(None, 1)
+    source_id = parts[0]
+    locator = " ".join(parts[1].split()) if len(parts) > 1 else ""
+    shown = f"[{source_id}, {locator}]" if locator else f"[{source_id}]"
     ref = addnodes.pending_xref(rawtext, refdomain="std", reftype="ref",
                                 reftarget=label(source_id), refexplicit=True,
                                 refwarn=True)
