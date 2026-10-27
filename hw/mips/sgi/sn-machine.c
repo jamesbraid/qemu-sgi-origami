@@ -2486,18 +2486,31 @@ static bool sgi_machine_nvram_backing(SGIMachineState *s,
  * and names the port the Bridge links to.
  */
 /*
- * Whether @board is a Hub product's onboard Ethernet: the IP29 I/O of an
- * Origin 200 node or the BaseIO card of an Origin 2000 or Onyx2. Add-in
- * cards such as MENET and the MediaIO's second IOC3 keep taking -nic.
+ * Whether @board is an onboard Ethernet: the IP29 I/O of an Origin 200
+ * node, the BaseIO card of an Origin 2000 or Onyx2, or an IP53 IO9 board
+ * that fits its BCM5701. Add-in cards such as MENET and the MediaIO's
+ * second IOC3 keep taking -nic.
  */
 static bool sgi_machine_onboard_ethernet(const SGIModelIoBoard *board)
 {
+    const SGIModelPciFunctionList *entry;
+
     switch (board->preset) {
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
     case SGI_MODEL_IO_BOARD_PRESET_IO6:
     case SGI_MODEL_IO_BOARD_PRESET_IO6G:
         return board->populated;
+    case SGI_MODEL_IO_BOARD_PRESET_IO9:
+        if (!board->populated) {
+            return false;
+        }
+        for (entry = board->pci_functions; entry; entry = entry->next) {
+            if (entry->value->kind == SGI_MODEL_PCI_FUNCTION_KIND_BCM5701) {
+                return true;
+            }
+        }
+        return false;
     default:
         return false;
     }
