@@ -1474,6 +1474,11 @@ static void o2_init(MachineState *machine)
                          "storage-diagnostic-event-file path");
             exit(1);
         }
+        if (g_str_has_prefix(s->storage_event_file, "/dev/fdset/")) {
+            error_report("o2-test storage diagnostic rejects "
+                         "/dev/fdset/ paths");
+            exit(1);
+        }
         s->storage_event_fd = qemu_create(s->storage_event_file,
                                          O_WRONLY | O_EXCL | O_BINARY,
                                          0600, NULL);
