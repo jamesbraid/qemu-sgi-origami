@@ -385,7 +385,8 @@ static const CrimeRenderRegister crime_render_registers[] = {
     { 0x108, 4, false, true }, { 0x10c, 4, false, true },
     { 0x110, 4, true, true }, { 0x118, 8, true, true },
     { 0x120, 8, false, true }, { 0x128, 8, false, true },
-    { 0x130, 4, false, true }, { 0x138, 8, false, true },
+    { 0x130, 4, false, true }, { 0x134, 4, false, true },
+    { 0x138, 8, false, true },
     { 0x140, 8, false, true }, { 0x148, 8, false, true },
     { 0x150, 8, false, true }, { 0x158, 4, false, true },
     { 0x15c, 4, false, true }, { 0x160, 4, true, true },
@@ -728,6 +729,21 @@ static int64_t crime_render_edge(const int64_t a[2], const int64_t b[2],
            (b[1] - a[1]) * (x - a[0]);
 }
 
+
+static bool crime_render_gl_field(uint64_t raw, int64_t *field)
+{
+    if (raw <= 0x0007ffff) {
+        *field = raw;
+    } else if (raw >= 0x00800000 && raw <= 0x0087ffff) {
+        *field = raw - 0x00800000;
+    } else if (raw >= 0x48000000 && raw <= 0x4807ffff) {
+        *field = raw - 0x48000000;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static bool crime_render_triangle(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
@@ -739,11 +755,13 @@ static bool crime_render_triangle(const uint64_t *p, CrimeRenderGeometry *g)
     for (unsigned i = 0; i < 3; i++) {
         for (unsigned axis = 0; axis < 2; axis++) {
             uint64_t raw = p[(0x80 + 8 * i + 4 * axis) / 4];
+            int16_t origin = p[0x58 / 4] >> (axis ? 0 : 16);
+            int64_t field;
 
-            if (raw < 0x48000000 || raw > 0x4807ffff) {
+            if (!crime_render_gl_field(raw, &field)) {
                 return false;
             }
-            g->vertex[i][axis] = (int64_t)raw - 0x48040000;
+            g->vertex[i][axis] = field + (int64_t)origin * 64;
         }
     }
     /* The bounded six-bit transport requires 64-bit edge products. */
@@ -932,7 +950,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     }
     triangle = (p[0x60 / 4] >> 24) == 2;
     if ((draw & ~(triangle ? 0x5a02f8U : 0x3e0af8U)) ||
-        (triangle ? (!(draw & 0x400000) || p[0x58 / 4] ||
+        (triangle ? (!(draw & 0x400000) ||
                       (p[0x8 / 4] & ~0xc00ULL) != 0x228) :
                     (p[0x50 / 4] ||
                      (copy ? p[0x58 / 4] != 0 :
@@ -940,8 +958,10 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
     }
-    destination_x = p[0x58 / 4] >> 16;
-    destination_y = p[0x58 / 4] & 0xffff;
+    destination_x = triangle ? (int16_t)(p[0x58 / 4] >> 16) :
+                               (int)(p[0x58 / 4] >> 16);
+    destination_y = triangle ? (int16_t)p[0x58 / 4] :
+                               (int)(p[0x58 / 4] & 0xffff);
     stipple = (geometry.opcode == 1 && (draw & 0x80000)) ||
               (geometry.opcode == 3 && (draw & 0x40000));
     if (alpha && (copy || stipple || (p[0x8 / 4] & ~0xc00ULL) != 0x228)) {
@@ -990,7 +1010,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         return crime_transfer_fail(offset, "unsupported raster operation");
     }
     inside = clip & 31;
-    if ((clip & ~0x3ffU) || ((clip & 31) & ~(clip >> 5))) {
+    if ((clip & ~(triangle ? 0x7ffU : 0x3ffU)) ||
+        ((clip & 31) & ~((clip >> 5) & 31))) {
         return crime_transfer_fail(offset, "unsupported clip mode");
     }
     for (unsigned n = 0; n < 5; n++) {
@@ -1004,7 +1025,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
     }
     if (screen_count > 1 &&
-        (triangle || (clip & 31) != (clip >> 5) || transfer)) {
+        ((clip & 31) != ((clip >> 5) & 31) || transfer)) {
         return crime_transfer_fail(offset, "unsupported screen mask union");
     }
     scissor = crime_render_clip(p[0x48 / 4]);
@@ -1086,11 +1107,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
         for (unsigned row = 0; row < stripe_y; row++) {
             int local_y = cy + (int)row;
-            int y = local_y + destination_y;
+            int y = local_y + (triangle ? 0 : destination_y);
 
             for (unsigned col = 0; col < stripe_x; col++) {
                 int local_x = cx + (int)col;
-                int x = local_x + destination_x;
+                int x = local_x + (triangle ? 0 : destination_x);
                 uint32_t mask = plane;
                 CrimeRenderPixel *pixel;
                 CrimeRenderTranslation translation;
@@ -1102,7 +1123,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                 }
                 if (x < 0 || x >= 2048 || y < 0 || y >= 2048 ||
                     ((draw & 0x100000) &&
-                     !crime_render_inside(&scissor, local_x, local_y)) ||
+                     !crime_render_inside(&scissor,
+                         triangle ? x - destination_x : local_x,
+                         triangle ? y - destination_y : local_y)) ||
                     !screen_pass) {
                     continue;
                 }

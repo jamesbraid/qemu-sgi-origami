@@ -134,3 +134,7 @@ triangles-admission /mips64/sgi/crime/render/triangles/admission
 triangles-transactions /mips64/sgi/crime/render/triangles/transactions
 triangles-tiles /mips64/sgi/crime/render/triangles/tiles
 triangles-migration /mips64/sgi/crime/render/triangles/migration
+
+gl-window-coordinates /mips64/sgi/crime/render/gl-window/coordinates
+gl-window-clipping /mips64/sgi/crime/render/gl-window/clipping
+gl-window-restore-word /mips64/sgi/crime/render/gl-window/restore-word
