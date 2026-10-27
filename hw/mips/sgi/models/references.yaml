@@ -107,6 +107,14 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/3000/007-3791-002/pdf/007-3791-002.pdf
+  007-4240-002:
+    title: "SGI Origin 3000 Series Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4240-002/pdf/007-4240-002.pdf
   007-4264-002:
     title: "SGI Onyx 3000 Series Graphics System Hardware Owner's Guide"
     publisher: Silicon Graphics
