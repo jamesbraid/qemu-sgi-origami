@@ -9438,6 +9438,20 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("chained-crossbars"),
       "XIO cable 'first-to-second': no reviewed contract for chained "
       "crossbars" },
+    /*
+     * The four Figure 2-24 links validate, then construction refuses
+     * them: a reused port is a validation refusal, and the crossbar
+     * revision check, which runs while the chips are created, comes
+     * before the chained-crossbar refusal.
+     */
+    { CBRICK_FIXTURE("pbrick"),
+      "XIO cable 'u0-d-to-u2-d': no reviewed contract for chained "
+      "crossbars" },
+    { CBRICK_FIXTURE("pbrick-port-reused"),
+      "crossbar 'pbrick-u1' port 0x8 carries more than one XIO cable" },
+    { CBRICK_FIXTURE("pbrick-revision-mismatch"),
+      "crossbar 'pbrick-u0' names revision 3; the XBridge model presents "
+      "revision 2" },
     { CBRICK_FIXTURE("board-cabled-twice"),
       "I/O board 'xbrick-board' carries more than one XIO cable" },
     { CBRICK_FIXTURE("board-attached-elsewhere"),

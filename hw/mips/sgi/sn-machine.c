@@ -1623,9 +1623,10 @@ static bool sgi_machine_validate_board_cable(
  * the runtime endpoints. The checks also refuse what this builder cannot
  * build honestly yet: a second host node on one XBridge, since whether
  * one chip serves hosts on A and B at once is unknown; a host cabled to
- * a router, which no Origin 3000 rule covers; a board whose preset is
- * not an XIO card this builder can join to a crossbar port; and chained
- * crossbars, for which no contract gives the downstream chips' mode.
+ * a router, which no Origin 3000 rule covers; and a board whose preset
+ * is not an XIO card this builder can join to a crossbar port. A cable
+ * between two crossbars is checked like any other, then refused when the
+ * cables are built (sgi_machine_build_board_cables()).
  */
 static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
                                             Error **errp)
@@ -1639,7 +1640,6 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
     g_autofree bool *chained = NULL;
     g_autofree int64_t *host = NULL;
     g_autofree bool *board_cabled = NULL;
-    const SGIModelXioCable *chain = NULL;
     bool ip53 = false;
     const SGIModelXioCableList *entry;
     size_t node_count, crossbar_count, attachment_count, board_count, i;
@@ -1749,7 +1749,6 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
             host[peer_end->index] = node_end->index;
         } else if (ends[0]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR &&
                    ends[1]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
-            chain = chain ? chain : cable;
             chained[ends[0]->index] = chained[ends[1]->index] = true;
         } else if (ends[0]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR ||
                    ends[1]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
@@ -1885,11 +1884,6 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
                        "300-only, and topology '%s' has XIO cables", t->name);
             return false;
         }
-    }
-    if (chain) {
-        error_setg(errp, "topology '%s' XIO cable '%s': no reviewed contract "
-                   "for chained crossbars", t->name, chain->name);
-        return false;
     }
     return true;
 }
@@ -3967,9 +3961,16 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
         uint8_t port;
         bool hosted;
 
-        /* Validation left only crossbars a node's cable reaches. */
+        /*
+         * Validation left only crossbars a node's cable reaches and the
+         * downstream chips of a chain, which are refused before they
+         * could be built.
+         */
         hosted = sgi_machine_crossbar_host(t, i, &node, &port);
-        g_assert(hosted && record->module_index < module_count);
+        g_assert(record->module_index < module_count);
+        if (!hosted) {
+            continue;
+        }
         /*
          * A brick of one chip names it xbridge. The N-brick's four are
          * xbridge0 to xbridge3, in record order within the module.
@@ -4037,12 +4038,20 @@ static const SGIModelXioCable *sgi_machine_board_cable(
 }
 
 /*
- * Join each board an XIO cable reaches from an I/O brick's crossbar port.
- * Every node has realized, and with it each crossbar, so the cable
- * becomes one XIO link from the crossbar port to the board, connected
- * before and after the board realizes. Validation put the board's own
- * attachment at that port, so the preset's builder places the board by
- * it, and the hosting node's Bedrock already decodes that widget.
+ * Build the XIO cables that do not end on a node. Every node has
+ * realized, and with it each crossbar a node hosts.
+ *
+ * A cable between two crossbars was validated but is not built. The
+ * XBridge model takes one host port, so a second link from one chip
+ * would arrive on the other as an ordinary external port, and building
+ * either would pick a downstream mode no contract gives (108-0240-002
+ * Figure 2-24 joins a P-brick's chips by two links each).
+ *
+ * A cable to a board becomes one XIO link from the crossbar port to the
+ * board, connected before and after the board realizes. Validation put
+ * the board's own attachment at that port, so the preset's builder
+ * places the board by it, and the hosting node's Bedrock already decodes
+ * that widget.
  */
 static bool sgi_machine_build_board_cables(SGIMachineState *s,
                                            const SGIModelTopology *t,
@@ -4050,7 +4059,20 @@ static bool sgi_machine_build_board_cables(SGIMachineState *s,
 {
     g_autofree const SGIModelIoBoard **boards = NULL;
     g_autofree const SGIModelXioAttachment **attachments = NULL;
+    const SGIModelXioCableList *entry;
     size_t board_count, attachment_count, i;
+
+    for (entry = t->xio_cables; entry; entry = entry->next) {
+        const SGIModelXioEndList *ends = entry->value->ends;
+
+        if (ends->value->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR &&
+            ends->next->value->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
+            error_setg(errp, "topology '%s' XIO cable '%s': no reviewed "
+                       "contract for chained crossbars", t->name,
+                       entry->value->name);
+            return false;
+        }
+    }
 
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
