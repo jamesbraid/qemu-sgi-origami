@@ -9516,6 +9516,84 @@ static void test_module_owned_l1_for_one_node(void)
     g_assert_cmpstr(module_serial, ==, node_serial);
 }
 
+/*
+ * The R-brick fixtures with four C-bricks: C-brick i on router port i + 2,
+ * or, reversed, on port 5 - i. Each node has one processor, cpu i, and
+ * banks 2 and 3 fitted.
+ */
+static QTestState *rbrick_start(const char *fixture, const char *prom)
+{
+    return qtest_initf("-M sn-builder-bedrock-test,"
+                       "construction-fault=cbrick-%s "
+                       "-cpu R14000 -smp 4,sockets=4,cores=1,threads=1 "
+                       "-m 256 -bios %s -nodefaults -display none",
+                       fixture, prom);
+}
+
+static unsigned int rbrick_port_of(const char *fixture, unsigned int node)
+{
+    return strstr(fixture, "reversed") ? 5 - node : node + 2;
+}
+
+/*
+ * Every port a C-brick may use takes one, by whichever order the
+ * fixture cables them, and ports 1, 6, 7 and 8 stay empty.
+ */
+static void test_rbrick_takes_cbricks_on_ports_2_to_5(const void *data)
+{
+    const char *fixture = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = rbrick_start(fixture, prom);
+    bool cabled[9] = { false };
+
+    for (unsigned int node = 0; node < 4; node++) {
+        unsigned int port = rbrick_port_of(fixture, node);
+        g_autofree char *name = g_strdup_printf("port%u-cable", port);
+        g_autofree char *bedrock = g_strdup_printf("/machine/node%u/bedrock",
+                                                   node);
+        g_autofree char *expected = g_strdup_printf("/machine/c%u-to-router",
+                                                    node);
+        g_autofree char *at_router = qom_get_str(qts, "/machine/module4/router",
+                                                 name);
+        g_autofree char *at_node = qom_get_str(qts, bedrock, "net-cable");
+
+        g_assert_cmpstr(at_router, ==, expected);
+        g_assert_cmpstr(at_node, ==, expected);
+        cabled[port] = true;
+    }
+    for (unsigned int port = 1; port <= 8; port++) {
+        g_autofree char *name = g_strdup_printf("port%u-cable", port);
+        g_autofree char *cable = qom_get_str(qts, "/machine/module4/router",
+                                             name);
+
+        g_assert_cmpint(cabled[port], ==, port >= 2 && port <= 5);
+        if (!cabled[port]) {
+            g_assert_cmpstr(cable, ==, "");
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * A second router on the first one's port 4: a router may sit on a port
+ * a C-brick could use, since only nodes are bound to ports 2 to 5.
+ */
+static void test_rbrick_router_on_a_cbrick_port(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-rbrick-second-router", prom, "");
+    g_autofree char *first = qom_get_str(qts, "/machine/module2/router",
+                                         "port4-cable");
+    g_autofree char *second = qom_get_str(qts, "/machine/module3/router",
+                                          "port1-cable");
+
+    g_assert_cmpstr(first, ==, "/machine/router-to-router");
+    g_assert_cmpstr(second, ==, "/machine/router-to-router");
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -10069,6 +10147,18 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("board-preset-unbuilt"),
       "I/O board 'xbrick-board' is cabled to crossbar 'xbrick-xbridge'; "
       "preset 'odyssey' is not built on an enclosure crossbar yet" },
+    { CBRICK_FIXTURE("rbrick-node-port-1"),
+      "node 'c1' is cabled to router 'rbrick-router' port 1; it takes a "
+      "node only on ports 2, 3, 4, 5" },
+    { CBRICK_FIXTURE("rbrick-node-port-6"),
+      "node 'c1' is cabled to router 'rbrick-router' port 6; it takes a "
+      "node only on ports 2, 3, 4, 5" },
+    { CBRICK_FIXTURE("rbrick-node-port-7"),
+      "node 'c1' is cabled to router 'rbrick-router' port 7; it takes a "
+      "node only on ports 2, 3, 4, 5" },
+    { CBRICK_FIXTURE("rbrick-node-port-8"),
+      "node 'c1' is cabled to router 'rbrick-router' port 8; it takes a "
+      "node only on ports 2, 3, 4, 5" },
     { CBRICK_FIXTURE("memory-node-console"),
       "memory node 'c1' cannot be the console node" },
     { CBRICK_FIXTURE("memory-node-processor"),
@@ -11102,6 +11192,14 @@ int main(int argc, char **argv)
                    test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/memory-node",
                    test_memory_node_serves_node0);
+    qtest_add_data_func("sn/builder/cbrick/rbrick-ports/in-order",
+                        "rbrick-four",
+                        test_rbrick_takes_cbricks_on_ports_2_to_5);
+    qtest_add_data_func("sn/builder/cbrick/rbrick-ports/reversed",
+                        "rbrick-four-reversed",
+                        test_rbrick_takes_cbricks_on_ports_2_to_5);
+    qtest_add_func("sn/builder/cbrick/rbrick-router-on-a-cbrick-port",
+                   test_rbrick_router_on_a_cbrick_port);
     qtest_add_func("sn/builder/cbrick/module-owned-l1",
                    test_module_owned_l1_for_one_node);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);

@@ -1602,6 +1602,85 @@ static bool sgi_machine_validate_module_controllers(const SGIModelTopology *t,
     return true;
 }
 
+/*
+ * A router that names node ports takes a node's cable only on one of
+ * them. On an Origin 3000 R-brick that is ports 2 to 5, the only ones
+ * whose cables carry the USB signals that reach a C-brick's L1
+ * (007-4311-002 printed page 36). A cable to another router may use any
+ * port. Indices and port ranges were checked with the runtime endpoints.
+ */
+static bool sgi_machine_router_takes_node(const SGIModelRouter *router,
+                                          unsigned int port)
+{
+    const uint8List *entry;
+
+    if (!router->node_ports) {
+        return true;
+    }
+    for (entry = router->node_ports; entry; entry = entry->next) {
+        if (entry->value == port) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool sgi_machine_validate_router_ports(const SGIModelTopology *t,
+                                              Error **errp)
+{
+    g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree const SGIModelRouter **routers = NULL;
+    const SGIModelCableList *entry;
+    const uint8List *port;
+    size_t node_count, router_count, i;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    routers = sgi_model_router_array(t->routers, &router_count);
+    for (i = 0; i < router_count; i++) {
+        for (port = routers[i]->node_ports; port; port = port->next) {
+            if (port->value < 1 || port->value > SGI_SN1_ROUTER_PORTS) {
+                error_setg(errp, "router '%s' names node port %u, which it "
+                           "does not have", routers[i]->id, port->value);
+                return false;
+            }
+        }
+    }
+    for (entry = t->cables; entry; entry = entry->next) {
+        const SGIModelLinkEnd *ends[2];
+
+        if (QAPI_LIST_LENGTH(entry->value->ends) != 2) {
+            continue;
+        }
+        ends[0] = entry->value->ends->value;
+        ends[1] = entry->value->ends->next->value;
+        for (unsigned int side = 0; side < 2; side++) {
+            const SGIModelLinkEnd *router = ends[side];
+            const SGIModelLinkEnd *node = ends[side ^ 1];
+            g_autoptr(GString) allowed = NULL;
+
+            if (router->kind != SGI_MODEL_LINK_END_KIND_ROUTER ||
+                node->kind != SGI_MODEL_LINK_END_KIND_NODE ||
+                router->index >= router_count || node->index >= node_count ||
+                sgi_machine_router_takes_node(routers[router->index],
+                                              router->port)) {
+                continue;
+            }
+            allowed = g_string_new(NULL);
+            for (port = routers[router->index]->node_ports; port;
+                 port = port->next) {
+                g_string_append_printf(allowed, "%s%u",
+                                       allowed->len ? ", " : "", port->value);
+            }
+            error_setg(errp, "node '%s' is cabled to router '%s' port %u; "
+                       "it takes a node only on ports %s",
+                       nodes[node->index]->id, routers[router->index]->id,
+                       router->port, allowed->str);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool sgi_machine_node_is_ip35(const SGIModelNode *node)
 {
     return node->has_board_kind &&
@@ -2007,6 +2086,7 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         !sgi_machine_refuse_unbuilt_records(chassis, errp) ||
         !sgi_machine_validate_module_controllers(chassis, errp) ||
         !sgi_machine_validate_xio_cables(chassis, errp) ||
+        !sgi_machine_validate_router_ports(chassis, errp) ||
         !sgi_machine_ip53_experiment_policy(
             s, smc, chassis, &allow_ip53_experiment, errp)) {
         return NULL;

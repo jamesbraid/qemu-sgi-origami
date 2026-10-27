@@ -1337,7 +1337,9 @@ module's L1 and that L1's UART, whether or not the topology carries the
 L1 management registry the Origin 300 PCI expansion experiment uses, so
 an R-brick needs no I/O peer. Its L1 keeps the routed Origin 300
 experiment's type profile described under :ref:`sgi-sn-family-rbrick`;
-an R-brick's own L1 type is unknown.
+an R-brick's own L1 type is unknown. A router record's ``node-ports`` lists the
+only ports a node's cable may use; the builder checks every cable
+against it before any device exists.
 
 A node with ``role: memory`` is a Bedrock with memory banks and no
 processor, the shape of the Cx-brick's zero-processor board. It realizes
