@@ -5,9 +5,10 @@
  * processor's own path through its Bedrock, which a qtest access never
  * takes: so every store here is made by a running processor. Each processor
  * serves a mailbox, a count of doubleword stores and an address to make them
- * at, and zeroes the count when done. Credits come back through a stand-in
- * head, sgi-pi-gfx-test-head, told how many stores it took; the node-widget
- * map sends them to a node, an interface and a slot.
+ * at, and zeroes the count when done; a count with MAILBOX_LOAD set asks for
+ * one doubleword load from the address instead. Credits come back through
+ * a stand-in head, sgi-pi-gfx-test-head, told how many stores it took; the
+ * node-widget map sends them to a node, an interface and a slot.
  *
  * The stores go to the local I/O interface's scratch 1, which nothing
  * watches. The mailboxes sit in low node memory, reached through Hub
@@ -52,7 +53,9 @@
 /* One mailbox per physical slot: count, then address. */
 #define MAILBOX UINT64_C(0x180000)
 #define MAILBOX_STRIDE 0x10
+#define MAILBOX_LOAD 0x8000
 #define SLOT_A 0
+#define SLOT_B 1
 #define SLOT_C 2
 
 #define ONE_NODE "-M origin300 -cpu R14000 -smp 2 "
@@ -128,7 +131,7 @@ static void patch_branch(Image *p, unsigned int at, unsigned int dest)
 
 static void build_store_server(Image *p)
 {
-    unsigned int loop, store, at;
+    unsigned int loop, store, at, to_load, done;
 
     stl_be_p(p->bytes + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
     for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
@@ -155,14 +158,22 @@ static void build_store_server(Image *p)
     at = emit_branch(p, MIPS_OPC_BEQ, R_T1, R_ZERO);
     patch_branch(p, at, loop);
     emit(p, mips_ld(R_T3, R_S1, 8));
+    /* A count with MAILBOX_LOAD set asks for one load instead. */
+    emit(p, mips_andi(R_T2, R_T1, MAILBOX_LOAD));
+    to_load = emit_branch(p, MIPS_OPC_BNE, R_T2, R_ZERO);
     store = p->pos;
     emit(p, mips_sd(R_ZERO, R_T3, 0));
     emit(p, mips_daddiu(R_T1, R_T1, -1));
     at = emit_branch(p, MIPS_OPC_BNE, R_T1, R_ZERO);
     patch_branch(p, at, store);
+    done = p->pos;
     emit(p, mips_sd(R_ZERO, R_S1, 0));
     at = emit_branch(p, MIPS_OPC_BEQ, R_ZERO, R_ZERO);
     patch_branch(p, at, loop);
+    patch_branch(p, to_load, p->pos);
+    emit(p, mips_ld(R_T0, R_T3, 0));
+    at = emit_branch(p, MIPS_OPC_BEQ, R_ZERO, R_ZERO);
+    patch_branch(p, at, done);
 }
 
 static char *write_image(void)
@@ -222,7 +233,7 @@ static QTestState *start_ip53_vpro(void)
         "-smp 4 -m 4G " RUN "-bios %s "
         "-drive if=none,id=sgi-ds1742-data-io9,file=%s,format=raw "
         "-drive if=none,id=sgi-ds1742-clock-io9,file=%s,format=raw "
-        "-device sgi-odyssey,slot=widget-12,product=v12",
+        "-device sgi-odyssey,id=vpro,slot=widget-12,product=v12",
         quoted_prom, quoted_data, quoted_clock);
     unlink(prom);
     unlink(data);
@@ -702,6 +713,66 @@ static void test_map_rewrite_settles_owed_credits(void)
     qtest_quit(qts);
 }
 
+/* The machine places the board under its own name; "vpro" is its id. */
+static void vpro_set(QTestState *qts, const char *property, uint64_t value)
+{
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'qom-set',"
+        "  'arguments': { 'path': 'vpro',"
+        "  'property': %s, 'value': %" PRIu64 " } }", property, value);
+}
+
+/*
+ * The VPro's command-FIFO page is its own (posted) region, and a processor
+ * may sleep inside its handler: a load that must see queued command work
+ * waits for the board's slice, which draws with the big lock let go.
+ * Another processor's FIFO store must then still be taken. It dispatches
+ * through the same entry points as the rest of the aperture, so it queues
+ * behind the work and is repaid as it enters the FIFO, and the memory
+ * core's per-device re-entrancy guard, which would refuse it while the
+ * first processor is inside the device, is off for the page as for the
+ * aperture.
+ *
+ * x-test-slice-sleep-ms makes the board's slice hold the board for a
+ * while; x-test-slice-words queues every FIFO store. Processor A loads
+ * from the FIFO page and waits. Processor B, whose graphics page covers
+ * the FIFO, makes five counted stores, which must complete and be repaid
+ * while A still waits.
+ */
+static void test_ip53_fifo_store_while_another_waits(void)
+{
+    QTestState *qts = start_ip53_vpro();
+    const uint64_t vpro_fifo = UINT64_C(0x920000000c110000);
+    const uint64_t vpro_page = vpro_fifo & UINT64_C(0xfffffe0000);
+    int64_t deadline;
+
+    prime(qts, 0, 0, 1, PAGE_ENABLE | vpro_page, 100);
+    map(qts, 0, MAP(0, 0, 1, 12));
+    run(qts);
+    vpro_set(qts, "x-test-slice-words", 1);
+    vpro_set(qts, "x-test-slice-sleep-ms", 3000);
+
+    /* One queued word, from a third processor, starts a long slice. */
+    stores(qts, 0, SLOT_C, vpro_fifo, 1);
+    g_usleep(300 * 1000);
+    stores_start(qts, 0, SLOT_A, vpro_fifo, MAILBOX_LOAD);
+    g_usleep(300 * 1000);
+    g_assert_cmpuint(qtest_readq(qts, mailbox(0, SLOT_A)), !=, 0);
+
+    deadline = g_get_monotonic_time() + 2 * G_TIME_SPAN_SECOND;
+    stores_start(qts, 0, SLOT_B, vpro_fifo, 5);
+    while (qtest_readq(qts, mailbox(0, SLOT_B))) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(credit(qts, 0, 0, 1), ==, 100);
+    g_assert_cmpuint(qtest_readq(qts, mailbox(0, SLOT_A)), !=, 0);
+
+    vpro_set(qts, "x-test-slice-sleep-ms", 0);
+    stores_wait(qts, 0, SLOT_A);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -728,5 +799,7 @@ int main(int argc, char **argv)
                    test_ip53_host_credit_return);
     qtest_add_func("sn1/pi-gfx/ip53-odyssey-credit-return",
                    test_ip53_odyssey_credit_return);
+    qtest_add_func("sn1/pi-gfx/ip53-fifo-store-while-another-waits",
+                   test_ip53_fifo_store_while_another_waits);
     return g_test_run();
 }

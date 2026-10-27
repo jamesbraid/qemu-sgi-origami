@@ -12158,6 +12158,14 @@ static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
 static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
 {
     SGIOdysseyState *s = opaque;
+    /* qtest: a slice that holds the board as a long unlocked draw would. */
+    uint32_t sleep_ms = s->test_slice_sleep_ms;
+
+    if (sleep_ms && sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_unlock(&s->work);
+        g_usleep(sleep_ms * 1000ULL);
+        sgi_head_work_relock(&s->work);
+    }
 
     while (s->work_queue->len) {
         OdysseyQueuedStore q =
@@ -13434,6 +13442,9 @@ static void odyssey_instance_init(Object *obj)
      * Treat every store from outside a processor as one the processor
      * interface counted, so a qtest can watch its credit come back.
      */
+    object_property_add_uint32_ptr(obj, "x-test-slice-sleep-ms",
+                                   &s->test_slice_sleep_ms,
+                                   OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint8_ptr(obj, "x-test-counted-stores",
                                  &s->test_counted_stores,
                                  OBJ_PROP_FLAG_READWRITE);
