@@ -82,11 +82,6 @@ builds only its ``timerstall`` ROM, launches QEMU under host GDB, and requires
 both a breakpoint hit and ``PASS timerstall``. An unset GDB path skips the
 case; required selections must reject that skip in the JUnit report.
 
-The offline source-archive build was checked with the ROM matrix's 85 expected
-identities and one selected IP27 PROM case on Origin 200. Both emitted fresh JUnit
-reports that passed ``scripts/check-sgi-test-results.py``; this does not
-qualify the complete functional matrix.
-
 The tests that use supplied assets read paths directly below
 ``QEMU_TEST_SGI_ASSET_DIR``. The directory is an asset root, without an extra
 ``assets/`` or repository level. The core full-qualification boots use:
@@ -98,9 +93,7 @@ The tests that use supplied assets read paths directly below
    <asset-root>/boot/6.5.30/unix.IP27
 
 These three files are the inputs for focused Origin 200 PROM, Linux kernel,
-and IRIX miniroot checks. In the current local sample they occupy 28,287,976
-bytes in total; this is a sum of those file sizes, not a distribution
-guarantee. Run the existing targets with the local asset root set:
+and IRIX miniroot checks. Run the existing targets with the local asset root set:
 
 .. code-block:: sh
 
@@ -173,11 +166,11 @@ mode or disposable overlays for guest writes. The installed-disk checks expect
 an already installed IRIX image; they do not install IRIX. The IP27 PROM
 miniroot check downloads the supplied kernel over QEMU
 user-mode networking, then executes it through the PROM boot path. It does not use an external
-netinst server. QEMU no longer checks the external ``irix-netinst`` DHCP/TFTP service.
+netinst server.
 
-The Origin 300's two first-line PROM cases require only
-``firmware/6.5.30/ip35prom.payload.bin``. Its menu cases also require both
-SPD files. The installed-guest tests pin their disk inputs:
+The Origin 300's PROM cases require only
+``firmware/6.5.30/ip35prom.payload.bin``. The installed-guest tests pin their
+disk inputs:
 
 .. list-table:: Supplied inputs declared by these functional tests
    :header-rows: 1
@@ -187,11 +180,9 @@ SPD files. The installed-guest tests pin their disk inputs:
    * - ``func-mips64-origin300_prom`` — ``Origin300Prom`` first-line cases
      - ``firmware/6.5.30/ip35prom.payload.bin``
    * - ``func-mips64-origin300_prom`` — ``Origin300PromMenu`` menu case
-     - The IP35 PROM and
-       ``eeprom/origin300-dimm2-spd.bin`` plus
-       ``eeprom/origin300-dimm3-spd.bin``
+     - The IP35 PROM
    * - ``func-mips64-origin300_two_chassis_prom``
-     - The IP35 PROM and both SPD files
+     - The IP35 PROM
    * - ``func-mips64-irix_installed_boot``
      - ``firmware/6.5.30/ip27prom.payload.bin`` and
        ``irix/6.5.30/root.qcow2`` (SHA-256
@@ -201,11 +192,7 @@ SPD files. The installed-guest tests pin their disk inputs:
        a per-run qcow2 overlay
    * - ``func-mips64-irix_origin300_installed_boot``
      - The IP35 PROM (SHA-256
-       ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``),
-       both SPD files (DIMM 2 SHA-256
-       ``a8bb5857941fefae8e11037fe98b01d199199bd34eb059b269a8c4b6875ca0d3``,
-       DIMM 3 SHA-256
-       ``9e60c3400772d227b91c5d61cea8de7f89777d41377516de072944c26cef4aa7``),
+       ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``)
        and ``irix/6.5.30/root-diags-origin300.qcow2`` (SHA-256
        ``150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390``)
    * - ``func-mips64-sn0_reset`` — SN0 reset cases
@@ -281,8 +268,7 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
    * - Test module
      - Declared inputs below the asset root
    * - ``test_irix_diag.py`` and its Origin 200, Origin 2000 and Origin 300 variants
-     - The IP27 PROM, or the IP35 PROM and its two SPD files for the Origin
-       300; ``irix/6.5.30/root-diags.qcow2`` for IP27 or
+     - The IP27 PROM, or the IP35 PROM for the Origin 300; ``irix/6.5.30/root-diags.qcow2`` for IP27 or
        ``irix/6.5.30/root-diags-origin300.qcow2`` for IP35; and
        ``irix/6.5.30/olcdrom-medium.raw`` (SHA-256
        ``ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829``).
@@ -301,9 +287,9 @@ The thorough graphics-matrix rows also declare checksum-pinned local assets:
 the IP27 PROM and ``irix/6.5.30/root-rad4.qcow2`` (SHA-256
 ``f47c806f6a1234044668bbd67fd820a3f9e7dff80ff97edc4b84be8ba84887bc``).
 
-The Origin 300 PROM tests build their writable boot-flash images and identity
-EEPROM records in each test's scratch directory. Supply only the IP35 PROM and
-SPD files listed above. The generated images do not belong in the asset root.
+The Origin 300 PROM tests build their writable boot-flash images in each
+test's scratch directory; the machine builds its own identity records. Supply
+only the IP35 PROM. The generated images do not belong in the asset root.
 
 Asset requirements are marked by each functional test. An unset asset-root
 variable can skip an asset-dependent case for a developer who has not supplied
@@ -519,8 +505,5 @@ It does not prove that a proposed change preserves guest behavior.
 
 Perfly is a separate graphics workload. Its fixed input, bounded invocation
 and rendered-result check still need runtime qualification before it can
-produce comparable measurements. A 2026-10-03 probe on the two-CPU SI profile
-with the supplied desktop disk reached serial root, but an attempted help
-invocation timed out and both captured frames were black. This establishes a
-runtime blocker without identifying its cause. CPU and network results do
+produce comparable measurements. CPU and network results do
 not establish graphics performance.

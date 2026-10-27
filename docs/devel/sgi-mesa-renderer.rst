@@ -7,8 +7,9 @@ Shared SGI Mesa renderer
 
 The shared renderer accepts decoded SGI drawing work and returns pixels to a
 family-owned resource provider. It does not decode device commands, translate
-guest addresses, own native planes, or prove hardware behaviour. No family
-device calls the checked Mesa draw path yet.
+guest addresses, own native planes, or prove hardware behaviour. The
+MGRAS and Odyssey devices call it behind their opt-in ``x-mesa-renderer``
+property, and KONA calls it too; each owns its resource provider.
 
 Current drawing support
 -----------------------
@@ -260,8 +261,8 @@ still draw. The worker reads back colour and coverage before any
 native commit. The shared code passes the bottom-origin binary write mask
 to ``commit_covered``. The provider must leave zero-mask pixels untouched.
 Equal-colour writes remain marked. A missing sparse callback returns
-``SGI_RENDER_UNSUPPORTED`` before the snapshot. No family provider uses this
-path yet, and KONA's tag meaning remains a family contract.
+``SGI_RENDER_UNSUPPORTED`` before the snapshot. KONA's tag meaning remains a
+family contract.
 
 Colour-index draws
 ------------------
