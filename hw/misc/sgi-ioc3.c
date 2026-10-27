@@ -1733,10 +1733,10 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
  * has loaded. int_status and int_enable load before serial[], so the
  * recomputed interrupt is already the saved one. chip_control loads after
  * serial[], so on a destination fresh from reset it still holds its reset
- * value during those kicks, the ports
- * read as unreachable, and the engine does nothing with its not yet loaded
- * state; post_load kicks each port once everything is in. Reordering these
- * fields needs the guard IOC4 uses instead.
+ * value during those kicks, the ports read as unreachable, and the engine
+ * does nothing with its not yet loaded state; post_load kicks each port
+ * once everything is in. Reordering these fields needs the guard IOC4 uses
+ * instead.
  */
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
