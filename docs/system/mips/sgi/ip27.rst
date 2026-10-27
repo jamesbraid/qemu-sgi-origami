@@ -11,8 +11,9 @@ built around the Hub node controller. The ``origin200``, ``origin2000``
 and ``onyx2`` machines (``hw/mips/sgi/sn-machine.c``, with the node in
 ``hw/mips/sgi/sn0.c``) build it on the shared Scalable Node base
 described in :doc:`sn`. An Origin 200 is one or two IP29 system boards
-in towers. An Origin 2000 is one module of one to four IP27 node boards
-joined by Routers, with two Crossbows and twelve XIO slots. An Onyx2 is
+in towers. The ``origin2000`` machine builds one Origin 2000 module: one
+to four IP27 node boards joined by Routers, with two Crossbows and twelve
+XIO slots. Real systems join modules (:ref:`sgi-ip27-missing`). An Onyx2 is
 the same IP27 silicon with an InfiniteReality graphics pipe, in a
 deskside of its own or a rack built from the Origin 2000 module. Every
 machine boots a stock IP27 PROM that the user supplies.
@@ -247,14 +248,14 @@ choices as ``processor-options``.
      - ``0x1213ab85``
 
 An Origin 200 module carries an R10000 or R12000, one or two to a module
-(*established*, :src:`007-3708-002 p. 5`). Real machines' inventories
-establish each module's clock, cache size, cache clock, tap and chip
-revision, all with a 90 MHz Hub (*observed*):
+(*established*, :src:`007-3708-002 p. 5`). Published inventories show
+each module's clock, cache size, cache clock, tap and chip revision, all
+with a 90 MHz Hub (*observed*):
 
-- 180 MHz with 1 MiB: the stock PROM's own configuration block (mode word
-  ``0x1211a785``, 180 MHz) and one- and two-processor inventories
-  (modules ``PIMM_1XT5_1MB`` 013-1895-001 and ``PIMM_2XT5_1MB``
-  013-1896-001).
+- 180 MHz with 1 MiB: one- and two-processor inventories (modules
+  ``PIMM_1XT5_1MB`` 013-1895-001, :src:`usenet-6kd8bj`, and
+  ``PIMM_2XT5_1MB`` 013-1896-001,
+  :src:`ebbes-parallelrechner-dissertation p. 93`).
 - 180 MHz with 2 MiB: a two-processor PROM inventory printing a 180 MHz
   R10000 revision 2.6 with a 2 MB, 180 MHz, tap 8 secondary cache
   (:src:`nekonomicon-16729597`); the single-processor module is
@@ -265,7 +266,10 @@ revision, all with a 90 MHz Hub (*observed*):
 - 270 MHz: four-processor machines print an R12000 revision 2.3 with a
   4 MB, 180 MHz, tap 9 cache (:src:`nekonomicon-16726704`).
 
-The remaining fields are *inferred*. The system clock divisor is the
+The stock PROM's own configuration block carries mode word
+``0x1211a785`` and a 180 MHz clock, the same composition (*software
+expectation*, :src:`ip27-prom-6.156 configuration block, mode word`;
+:ref:`sgi-prom-image-config-block`). The remaining fields are *inferred*. The system clock divisor is the
 processor clock over the Hub's 90 MHz and the cache divisor the
 processor clock over the printed cache speed. The PRId's low byte is the
 printed revision. The FPU identification is ``0x0900`` for every module.
@@ -290,8 +294,8 @@ Model limits, *approximations*:
 
 - The Origin 200 node keeps Hub revision 3 and the IP29 board record
   030-1244-001 revision H for every module. Real 225 and 270 MHz
-  inventories show Hub revision 5 and board 030-1389-001; every 180 MHz
-  inventory shows Hub revision 3 (*observed*).
+  inventories show Hub revision 5 and board 030-1389-001 (*observed*,
+  :src:`nekonomicon-16731033`, :src:`nekonomicon-16726704`).
 - A node flash that already exists, such as a bound ``node0-flash``,
   keeps the block it was written with: ``processor=`` does not rewrite
   it, as a module swap on real hardware needs the PROM's
@@ -313,8 +317,12 @@ its topology's default kit.
 
 **Origin 200 (IP29).** Four banks of two DIMMs, filled from the outer
 pair, in pairs of matching DIMMs (*established*,
-:src:`007-3709-002 p. 48`; :src:`108-0170-001`). The board takes 64, 128, 256 and 512 MB banks, but
-the stock PROM 6.156 disables a 256 MB bank whenever the configuration
+:src:`007-3709-002 p. 48`). The Origin technical
+report lists 32, 64, 128 and 512 MB banks and no 256 MB bank
+(*established*, :src:`origin-technical-report section 2.2.2.3, Table 2-1`).
+The model builds no 32 MB bank (*approximation*). A 256 MB bank is
+*observed* on a 270 MHz machine (:src:`nekonomicon-16726704`), and the
+model builds it. The stock PROM 6.156 disables a 256 MB bank whenever the configuration
 block gives a 180 or 195 MHz processor (*software expectation*: the
 PROM prints "256 MB dimm banks not allowed on IP27 node boards" as it
 does so, :src:`ip27-prom-6.156`). With a 180 MHz module the model
@@ -410,7 +418,8 @@ The revisions the module layers fit, each a model choice unless a
 capture is named:
 
 - Hub: revision code 3 on the Origin 200, the earliest IRIX 6.5.30
-  accepts and what every 180 MHz Origin 200 inventory reports. Code 5 on
+  accepts (*approximation*; *software expectation* for the minimum).
+  Code 5 on
   every Origin 2000 and Onyx2 node, as a two-node Origin 2200 prints on
   both slots and no Origin 2000 capture contradicts (*observed*,
   :src:`nekonomicon-16729560`).
@@ -418,10 +427,11 @@ capture is named:
   accepts (*approximation*, not a captured revision).
 - Bridge: widget revision 4, Bridge D (*approximation*).
 - Router: chip revision 1 (*approximation*; :doc:`hardware/router`).
-- BaseIO: part 030-1124-002 on the Origin 2000; BaseIO-G 030-0734-002
-  with its MediaIO daughtercard 030-0880-003 on the Onyx2, the parts
-  real deskside and rack board lists show (*observed*,
-  :src:`irixnet-post-32192`, :src:`nekonomicon-16285`).
+- BaseIO: part 030-1124-002 on the Origin 2000 (*observed*,
+  :src:`usenet-9uhh6o`); BaseIO-G 030-0734-002 with its MediaIO
+  daughtercard 030-0880-003 on the Onyx2, the parts real deskside and
+  rack board lists show (*observed*, :src:`irixnet-post-32192`,
+  :src:`nekonomicon-16285`).
 - IOC3 revision 1 and two ISP1040-compatible SCSI controllers at PCI
   revision 5 on every base I/O board (*approximation*;
   :doc:`hardware/baseio`).
@@ -546,8 +556,8 @@ Router fit
    * - 2
      - Null Router in R1, a passive Hub-to-Hub link (deskside); two
        Standard Routers (rack module).
-     - *established*
-     - :src:`007-3453-002 p. 22` Figure 2-9; a two-node rack module
+     - deskside *established*, rack *observed*
+     - :src:`007-3453-002 p. 22` Figure 2-9 (deskside); a two-node rack module
        lists both Routers, R1 active ports 4, 5 and 6 and R2 port 6
        alone (*observed*, :src:`nekonomicon-16285`).
    * - 3, 4
@@ -605,8 +615,7 @@ Module management bus
        attaches a terminal directly; a rack can attach the multimodule
        system controller.
      - *established*
-     - :src:`108-0170-001 section 1.6`; :src:`007-3456-003`. No source
-       gives four ports.
+     - :src:`108-0170-001 section 1.6`. No source gives four ports.
    * - The model builds four node-side PCF8584 adapters, one per Hub, on
        one shared bus, with one MSC and one shared NVRAM address space.
      - *approximation*
@@ -653,8 +662,9 @@ from which it is voted if the NVRAM is inaccessible (*established*,
 :src:`108-0170-001 p. 1-4`). :ref:`sgi-elsc-nvram` gives the controller
 block's layout and how a store with no backing file is seeded. The
 model numbers its one module 1, a selected installation rather than a
-reset default (*approximation*); with 0 the stock PROM votes a number
-and resets once more before it settles.
+reset default (*approximation*). With 0 the stock PROM votes a number
+and resets once more before it settles (*software expectation*,
+:src:`ip27-prom-6.156`).
 
 The per-node PROM logs are separate storage from the shared NVRAM and
 from the BaseIO's own Timekeeper.
@@ -667,46 +677,46 @@ Module serial and midplane parts
 Each module carries two module-level one-wire parts: a family ``0x09``
 part whose record is named ``MODULEID`` and holds the module serial, and
 a family ``0x0b`` midplane part holding the midplane's board record.
-Real inventories list each once per module, under node slot ``n1``, and
-the firmware and kernel print a record under the node whose Hub bus it
-came from, so the two parts are on the ``n1`` Hub's one-wire bus and no
-other (*inferred* from software and captures; a continuity check on a
-real midplane would settle it). The firmware can also read them through
-the controller's ``nic`` passthrough when ``n1`` is empty, so the
-controller's midplane line reaches the same two parts (*inferred*).
+Published inventories list one of each per module (*observed*,
+:src:`usenet-9uhh6o`). Rack inventories print them under node slot
+``n1``, and the firmware and kernel print a record under the node whose
+Hub bus it came from, so the two parts are on the ``n1`` Hub's one-wire
+bus and no other (*inferred* from software and captures; a continuity
+check on a real midplane would settle it).
 
 The model puts both parts on the controller's midplane one-wire net and
 wires the ``n1`` Hub's line to that net as well, so the ``n1`` Hub
 reaches its own node part and both module parts. The connection is
 one-way: the controller's ``nic`` line reaches the two module parts but
-not the ``n1`` node's own part. Nothing visible depends on that, because
-the firmware uses ``nic`` only when ``n1`` is empty. The other nodes'
-Hub buses carry only their own node part.
+not the ``n1`` node's own part (*approximation*). The other nodes' Hub
+buses carry only their own node part.
 
 The ``MODULEID`` pages carry the module serial in the layout the Hub
 module-serial record uses: format byte ``0x01``, the ten-character
 serial, the name at page one offset sixteen, ``0xff`` in every other
-field and a stored CRC per page. The serial is a marked synthetic one,
-``KORIGAMI01`` for module 1. It cannot carry the ``EMU`` marker other
-synthetic text serials use, because the IRIX 6.5.30 kernel takes a module
-serial only if it begins with ``K`` (*software expectation*). The
-four-node module's midplane record is ``8P12_MPLN``, part 030-0762-006
-revision H, the ``030-`` part seen most often in real inventories; which
-midplane an IP27-era module carried is *unknown*. Its barcode and both
-ROM serials are synthetic, letter ``Y`` for ``MODULEID`` and ``L`` for
-the midplane.
+field and a stored CRC per page. The serial is a synthetic value
+marked as the model's own, a ``K`` followed by nine characters, with the
+module number last. It cannot carry the ``EMU`` marker other synthetic
+text serials use, because the model keeps a leading ``K`` (*approximation*).
+The four-node module's midplane record is ``8P12_MPLN``, part
+030-0762-006 revision H (*approximation*: the rack inventories of
+:src:`nekonomicon-16285` print this part at revision K); which midplane
+an IP27-era module carried is *unknown*. Its barcode and both ROM
+serials are synthetic, letter ``Y`` for ``MODULEID`` and ``L`` for the
+midplane.
 
 The Onyx2 deskside carries the ``MODULEID`` part only. Its two-slot
 ``4P1G5_MPLN`` midplane's record values are *unknown*, so the model fits
 no midplane part there. A real Onyx2 deskside inventory would settle
 them.
 
-The IRIX 6.5.30 kernel takes the module serial from the first Crossbow
-master's midplane record that has one, and a Hub that does not master
-its Crossbow marks its record a duplicate (*software expectation*). With
-the parts on ``n1`` only, the ``n1`` Hub must master its Crossbow or IRIX
-warns that the module's serial is invalid. The model does not choose the
-Crossbow master; the firmware does.
+A Hub that does not master its Crossbow marks its midplane record a
+duplicate, and the IRIX 6.5.30 kernel skips duplicate records (*software
+expectation*, :src:`ip27-prom-6.156 midplane record, duplicate mark`).
+With the parts on ``n1`` only, the ``n1`` Hub must master its Crossbow or
+IRIX warns that the module's serial is invalid. The model does not choose
+the Crossbow master; the firmware does. Which serial the kernel reports
+when several records are present is *unknown*.
 
 .. _sgi-origin2000-module-grants:
 
@@ -1064,10 +1074,11 @@ Each pipe needs its own Crosstown cable from a Crosstown XIO board
 (*established*, :src:`007-3457-005 p. 48`). The Crosstown board converts
 the XIO link's on-board signalling to differential levels for a cable of
 up to 3 metres (*established*, :src:`007-3439-002 p. 73`). The Theory of
-Operations manual calls the XIO-slot board "the Crosstown (KTOWN)
-conversion board"; the rack guide and the captures use KTOWN for the
-graphics-module board, so this page calls the XIO-slot board Xtown and
-keeps Ktown for the graphics-module end.
+Operations manual (:src:`007-3439-002 p. 73`, Figure 2-28) calls the
+XIO-slot board "the Crosstown (KTOWN) conversion board"; the rack guide
+and the captures use KTOWN for the graphics-module board, so this page
+calls the XIO-slot board Xtown and keeps Ktown for the graphics-module
+end.
 
 The host's path ends at the GE board's XIO-to-graphics ASIC (XG): the
 booklet's "XBOW-to-GE14 path" lists the midplane, the XIO board, the
@@ -1196,24 +1207,15 @@ a BaseIO-G and a KONA widget on an Xtown slot.
 Pipe identity
 -------------
 
-The pipe presents XIO manufacturer ``0x2aa`` and part ``0xc102``, named
-KONA in Linux and OpenBSD (*established*, Linux ``xwidget.h``
-``WIDGET_KONA_MFGR_NUM`` and ``WIDGET_KONA_PART_NUM``; OpenBSD
-``xbowdevs`` lines 22 and 42; :ref:`sgi-graphics-widget-identities`).
-The PROM's graphics classifier gives part ``0xc102`` its own board type
-and the name ``kona``, and every unknown graphics part a generic name
-(*software expectation*, :src:`ip27-prom-6.156 0x1fc4291c`).
-
-The deskside pipe presents the same identity: its PROM prints the KONA
-graphics board in ``io4``, and the classifier names a board ``kona``
-only for part ``0xc102`` (*observed*, :src:`nekonomicon-16723250`). The
-same deskside's IRIX ``gfxinfo -v`` reports "KONAL" graphics with its
-GE, RM, TM and DG records (*observed*, :src:`irixnet-post-32192`). That
+The pipe's XIO identity, the PROM's classification of it and the widget
+revision are on :ref:`sgi-kona-identity`. The deskside pipe presents the
+same identity: its PROM prints the KONA graphics board in ``io4``
+(*observed*, :src:`nekonomicon-16723250`). The same deskside's IRIX
+``gfxinfo -v`` reports "KONAL" graphics with its GE, RM, TM and DG
+records (*observed*, :src:`irixnet-post-32192`). That the PROM's
+classification follows from that identity is *inferred*, and so is that
 both chassis end the host path at the same XG ASIC, which accounts for
-the shared identity, is *inferred*.
-
-The widget revision of a real pipe is not captured. The model answers
-revision 0, an *approximation*.
+the shared identity.
 
 The IRIX 6.5.30 kernel accepts a widget as a pipe only if firmware wrote
 a matching graphics board record into the node's configuration data: it
@@ -1248,8 +1250,8 @@ IRIX reads the pipe's board records through the pipe itself.
      - RM9 030-1402-001
    * - DG
      - 030-1087-001, which reports eight channels: a DG5-8 by
-       :src:`sgi-pca-numbers`; or the DG5-2 030-1055-001 an owner's
-       board list gives for a two-GE pipe
+       :src:`sgi-pca-numbers`; or a DG5-2 presenting 030-1055-001
+       (*approximation*; see :ref:`sgi-ip27-graphics`)
      - DG5-2 base 030-1242-001 rev D
    * - DGOPT
      - absent
@@ -1266,8 +1268,7 @@ and :src:`nekonomicon-16285`. IRIX lists the rack's Ktown record at
 ``/hw/module/1/slot/io3/kona``, the Xtown's XIO slot, beside the GE
 record, and lists only the GE record at the deskside's ``io4/kona``. The
 driver keeps the GE and KT records from its own one-wire reading; the
-pipe reports the RM, TM, DG and DGOPT records in its answer to the
-configuration request. The model's serials are placeholders, so the part
+pipe answers for the others (:ref:`sgi-kona-config`). The model's serials are placeholders, so the part
 numbers above are the captured identity and the serials an
 *approximation*. The default pipes are in :ref:`sgi-ip27-graphics`.
 
@@ -1414,7 +1415,9 @@ power off an individual module, the other module(s) in the configuration
 can still operate fully" (:src:`007-3456-003 p. 82`). An Origin 200
 master controller forwards power-up and power-down to its slave
 (:ref:`sgi-elsc-master-slave`). A GIGAchannel cabinet's switched domain
-follows the module it is attached to.
+follows the module it is attached to (*established*,
+:src:`108-0187-001 p. 3-7`, :src:`007-3709-002 p. 2`;
+:ref:`sgi-gigachannel`).
 
 The R10000 distinguishes three entries by its Status register: a cold
 reset (``SR`` clear, mode bits reloaded), a soft reset (``SR`` set,
@@ -1449,8 +1452,8 @@ What the model does:
   describes (*approximation*; :ref:`sgi-hub-link-reset`).
 - ``system_reset`` is an AC cycle: every module and controller starts
   over. Once every module is off with no power-up to come the machine
-  powers down; IRIX 6.5.30 sends ``pwr d 1`` at ``shutdown -p``
-  (:doc:`hardware/elsc`).
+  powers down; IRIX 6.5.30 sends ``pwr d 1`` at ``shutdown -p`` (*software
+  expectation*; :doc:`hardware/elsc`).
 - The controller's NMI output and the Hub's per-processor NMI trigger
   reach each processor through an OR gate, so neither hides the other.
 
@@ -1476,8 +1479,10 @@ words and the cache model.
 
 The 4 MiB, 195 MHz composition is documented hardware
 (:src:`108-0164-002 p. E-4`; :src:`007-3439-002 p. 33`), and its mode
-word ``0x1213a785`` is in the architecture layer, but no machine selects
-it, so no test exercises 4 MiB indexing. All node boards in a system
+word ``0x1213a785`` is in the architecture layer. No Origin 2000 or
+Onyx2 topology selects it. The only 4 MiB configuration is the Origin 200
+R12000 module (:ref:`sgi-ip27-processors`), and no test exercises 4 MiB
+indexing. All node boards in a system
 must be the same speed (*established*, :src:`108-0164-002 p. E-2 to E-3`);
 the model applies one mode word to every processor. The Origin 200
 modules' caches are in :ref:`sgi-ip27-processors`.
@@ -1502,7 +1507,8 @@ their own BASEIO PROM flash. The ``io-prom`` machine property stores an
 original I/O PROM image in every such part with no drive bound, and
 ``io<N>-flash`` binds one (:ref:`sgi-baseio-flash`). With neither, the
 IP27 PROM finds no valid image there, reports it, and runs its own
-internal copy of the BASEIO PROM.
+internal copy of the BASEIO PROM (*software expectation*,
+:src:`ip27-prom-6.156`).
 
 Writable stores, each bound through the machine property of the same
 name (:ref:`sgi-sn-storage`):
@@ -1529,9 +1535,6 @@ with the console on standard output:
    qemu-system-mips64 -M origin200,debug-leds=off -bios ip27prom.img \
        -display none -serial stdio -monitor none
 
-   qemu-system-mips64 -M origin2000 -bios ip27prom.img \
-       -display none -serial stdio -monitor none
-
    qemu-system-mips64 -M onyx2 -bios ip27prom.img \
        -display none -serial stdio -monitor none
 
@@ -1553,12 +1556,12 @@ The PROM's summary before the menu, on the model:
      - 1
      - 64 MB
      - 0
-   * - ``origin2000``, ``onyx2``
+   * - ``onyx2``
      - 4
      - 8
      - 1024 MB
      - 2
-   * - ``onyx2-deskside``
+   * - ``onyx2`` (deskside)
      - 2
      - 4
      - 512 MB
@@ -1650,14 +1653,16 @@ Onyx2 without a pipe. The deskside default is the captured deskside's
 (:src:`irixnet-post-32192`). The rack default is the captured rack's
 configuration (:src:`nekonomicon-16285`) with a plain DG5-2 in place of
 its DG5-2 with GVO, which has no video output in the model; the plain
-DG5-2 presents 030-1055-001, the part an owner's board list gives for a
-two-GE InfiniteReality2, since no capture shows a plain DG5-2 in an
-Onyx2 rack (*inferred*). A pipe in either slot takes that slot's board
+DG5-2 presents 030-1055-001, the part :src:`sgi-pca-numbers` gives for
+a DG5-2, since no capture shows a plain DG5-2 in an
+Onyx2 rack (*approximation*). A pipe in either slot takes that slot's board
 records (:ref:`sgi-onyx2-one-wire`).
 
 The catalogue refuses, with its reason: an InfiniteReality pipe on an
-Origin 2000 (that machine is an Onyx2) or on the Origin 200; an
-InfiniteReality3 or four RMs in the deskside, which has no Ktown; and a
+Origin 2000 (that machine is an Onyx2) or on the Origin 200's
+GIGAchannel cabinet slot (the other Origin 200 slots take only PCI
+cards); four RMs in the deskside, which has no Ktown; an
+InfiniteReality3 in the deskside, which no source places there; and a
 GE14 InfiniteReality2 in the rack. On the Origin 2000 a launch that fits
 a pipe should add ``baseio-preset=io6g``: the plain BaseIO has no
 keyboard or mouse port, and the BaseIO-G's MediaIO daughtercard has them
@@ -1703,7 +1708,7 @@ Onyx2
      - A deskside ``hinv`` that prints the register, or a midplane
        pinout
    * - What configuration-flags bit 0 means beyond the deskside decode
-     - The PROM's other readers of physical ``0x100000a8``
+     - The PROM's other readers of the configuration-flags word
    * - Why ``n2`` takes node number 0 on a two-node deskside
      - The PROM's node numbering for class 5 slots
    * - Which node is wired to Crossbow 1 widgets 9 and A
@@ -1732,11 +1737,11 @@ qtests:
 - ``tests/qtest/sn0-origin2000-test.c``: the four-node module's remote
   interrupts, processor mode reset, Crossbow links and warm reset,
   Router inventory and routes, block transfers, firmware supply checks
-  and migration.
+  migration, and the port reset restarting the machine on the Origin
+  2000 and the Onyx2 deskside.
 - ``tests/qtest/sn0-onyx2-test.c``: the pipe at ``io3`` on the rack and
   ``io4`` on the deskside, each pipe's board-record chain and product,
-  the deskside's peer Hubs naming each other, and a port reset
-  restarting the machine.
+  and the deskside's peer Hubs naming each other.
 - ``tests/qtest/sn0-module-management-test.c``: the shared Origin 2000
   module bus, separate adapters, one controller, shared NVRAM, the UST
   control port, the module serial and midplane parts, grants, and the
@@ -1745,7 +1750,9 @@ qtests:
   reach, off-module gating, Origin 200 master and slave forwarding,
   port resets and migration of a pending start.
 - ``tests/qtest/sn0-address-map-test.c``: the node address map and back
-  doors.
+  doors, and the per-node bank layouts, including the 512 MiB bank 0.
+- ``tests/qtest/sgi-graphics-pipes-test.c``: the graphics-pipe placement
+  and refusals.
 
 Functional tests, which boot the stock PROM:
 
