@@ -4521,5 +4521,32 @@ class NodeRoleCompileTests(unittest.TestCase):
         self.assertTrue(all("role" not in node for node in entry["nodes"]))
 
 
+class ControllerOwnerCompileTests(unittest.TestCase):
+    def test_module_owner_reaches_the_controller_record(self):
+        from sgi_model.model_emit import _render_topology
+        model = _origin3200_fixture()
+        _component(model, "c0-l1")["system_controller"]["owner"] = "module"
+        entry = compile_model(model)
+        controllers = {item["id"]: item for item in entry["controllers"]}
+        self.assertEqual(controllers["c0-l1"]["owner"], "module")
+        self.assertNotIn("owner", controllers["c1-l1"])
+        emitted = {item["id"]: item for item in
+                   _render_topology(entry, "origin3200")["controllers"]}
+        self.assertEqual(emitted["c0-l1"]["owner"], "module")
+        self.assertNotIn("owner", emitted["c1-l1"])
+
+    def test_node_owner_is_the_default_and_not_emitted(self):
+        model = _origin3200_fixture()
+        _component(model, "c0-l1")["system_controller"]["owner"] = "node"
+        entry = compile_model(model)
+        self.assertTrue(all("owner" not in item
+                            for item in entry["controllers"]))
+        for name in ("origin300-two-chassis", "origin2000-rack"):
+            with self.subTest(name=name):
+                self.assertTrue(all(
+                    "owner" not in item for item in
+                    compile_model(_resolved(name))["controllers"]))
+
+
 if __name__ == "__main__":
     unittest.main()

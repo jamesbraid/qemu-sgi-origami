@@ -350,6 +350,8 @@ def _controller(raw: dict) -> dict:
     }
     if "l1" in raw:
         controller["l1"] = _kebab_keys(raw["l1"])
+    if "owner" in raw:
+        controller["owner"] = raw["owner"]
     return controller
 
 

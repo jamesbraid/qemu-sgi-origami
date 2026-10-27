@@ -1979,6 +1979,17 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.component(model, "c1-bedrock")["node_asic"]["role"] = "io"
         self.assertFails(model, "schema:")
 
+    def test_controller_owner_is_an_authored_enum(self):
+        model = self.model()
+        model["components"].append({
+            "id": "c0-l1", "name": "L1 system controller",
+            "kind": "system-controller", "parent": "c0-chassis",
+            "provenance": "derived",
+            "system_controller": {"kind": "l1", "owner": "module"}})
+        self.assertEqual(self.problems(model), [])
+        model["components"][-1]["system_controller"]["owner"] = "rack"
+        self.assertFails(model, "schema:")
+
 
 if __name__ == "__main__":
     unittest.main()
