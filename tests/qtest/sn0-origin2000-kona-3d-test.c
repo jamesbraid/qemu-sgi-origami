@@ -12613,6 +12613,16 @@ static void test_texture_pixel_transfer(gconstpointer opaque)
         pixel_transfer_set(s, 0xd1d, 0.25);
         expected = mode == 8 ? 0x00000080 :
                    mode == 9 ? 0x800000ff : 0x80000080;
+    } else if (mode == 14) {
+        /*
+         * Unit scales with red and green biases: an unsigned-byte texel
+         * still takes its bias, and does not pass through unconverted.
+         * 0x40 + 0.25 is 0x80, 0x80 + 0.25 is 0xc0.
+         */
+        pixel_transfer_set(s, 0xd14, 1);
+        pixel_transfer_set(s, 0xd1a, 1);
+        pixel_transfer_set(s, 0xd15, 0.25);
+        expected = 0x80c0c080;
     } else if (mode == 12) {
         h[4] = 3;
         count = 8;
@@ -20549,7 +20559,7 @@ int main(int argc, char **argv)
         "late-nan-atomic", "alpha-storage", "luminance-storage",
         "luminance-alpha-storage", "dma-captured-before-state-change",
         "ushort-swap",
-        "unused-index-transfer-migrates",
+        "unused-index-transfer-migrates", "unit-scale-bias",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(texture_transfer_cases); mode++) {
         g_autofree char *path = g_strdup_printf(

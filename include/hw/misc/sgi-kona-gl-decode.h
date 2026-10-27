@@ -184,6 +184,16 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                     const uint32_t *source, bool swap_bytes,
                                     uint32_t *rgba);
 
+/*
+ * sgi_kona_gl_texture_pixel_rgba() for unsigned bytes (type 1) without
+ * swapping, in integer arithmetic: each component byte c converts to
+ * c / 255 and rounds back to c exactly, so the result is the format's
+ * bytes in RGBA order with absent colour as 0 and absent alpha as 0xff.
+ * Formats outside 0..10 are refused and leave rgba unchanged.
+ */
+bool sgi_kona_gl_pixel_rgba8(uint32_t format, uint32_t source,
+                             uint32_t *rgba);
+
 /* Apply ordinary pixel transfer before the texture storage quantization. */
 bool sgi_kona_gl_texture_pixel_transfer(uint32_t format, uint32_t type,
                                         const uint32_t *source, bool swap_bytes,

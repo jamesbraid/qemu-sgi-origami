@@ -3144,6 +3144,77 @@ static void test_words_or_bytes(void)
     }
 }
 
+/*
+ * The texture load's floating-point route for an unsigned-byte texel:
+ * decode to doubles, the identity transfer the model applies (scale 1.0f,
+ * bias 0.0f, the same arithmetic as its colour transfer), and an RGBA
+ * unsigned-byte pack.
+ */
+static bool rgba8_texture_route(uint32_t format, uint32_t source,
+                                bool swap, uint32_t *rgba)
+{
+    double values[4];
+    uint8_t bytes[4];
+
+    if (!sgi_kona_gl_pixel_rgba_double(format, 1, &source, swap, values)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        values[k] = values[k] * (double)1.0f + (double)0.0f;
+    }
+    g_assert_true(sgi_kona_gl_pixel_pack_double(5, 1, values, false, bytes,
+                                                sizeof(bytes)));
+    *rgba = ldl_be_p(bytes);
+    return true;
+}
+
+static void check_rgba8(uint32_t format, uint32_t source)
+{
+    uint32_t fast = 0x5a5a5a5a;
+    bool ok = sgi_kona_gl_pixel_rgba8(format, source, &fast);
+
+    /* Byte swapping reverses multibyte components: single bytes keep. */
+    for (unsigned swap = 0; swap < 2; swap++) {
+        uint32_t slow = 0x5a5a5a5a, texture = 0x5a5a5a5a;
+
+        g_assert_cmpint(ok, ==, sgi_kona_gl_texture_pixel_rgba(format, 1,
+                                                               &source, swap,
+                                                               &slow));
+        g_assert_cmpint(ok, ==, rgba8_texture_route(format, source, swap,
+                                                    &texture));
+        if (fast != slow || fast != texture) {
+            g_error("format %u source 0x%08x swap %u: integer 0x%08x, "
+                    "DrawPixels route 0x%08x, texture route 0x%08x", format,
+                    source, swap, fast, slow, texture);
+        }
+    }
+}
+
+/*
+ * The integer unsigned-byte conversion equals both floating-point routes
+ * it replaces, for every format code up to 15. Each output component
+ * depends on at most one source byte, so the sweep takes every value of
+ * the top two bytes and every value of the bottom two, the other half
+ * varying, and then a million pseudo-random words over format codes up to
+ * 39, where both routes refuse the unknown ones.
+ */
+static void test_pixel_rgba8_equivalence(void)
+{
+    uint32_t x = 0x9e3779b9;
+
+    for (uint32_t format = 0; format < 16; format++) {
+        for (uint32_t v = 0; v < 0x10000; v++) {
+            x = x * 1664525 + 1013904223;
+            check_rgba8(format, (v << 16) | (x >> 16));
+            check_rgba8(format, (x & 0xffff0000) | v);
+        }
+    }
+    for (unsigned k = 0; k < 1000000; k++) {
+        x = x * 1664525 + 1013904223;
+        check_rgba8(k % 40, x);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3303,6 +3374,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-gl-decode/index/pack", test_pixel_index_pack);
     g_test_add_func("/sgi-kona-gl-decode/words-or-bytes",
                     test_words_or_bytes);
+    g_test_add_func("/sgi-kona-gl-decode/rgba8/equivalence",
+                    test_pixel_rgba8_equivalence);
     g_test_add_func("/sgi-kona-gl-decode/packed/decode",
                     test_pixel_packed_decode);
     g_test_add_func("/sgi-kona-gl-decode/packed/pack",
