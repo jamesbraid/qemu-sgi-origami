@@ -212,9 +212,9 @@ their value across a local reset and a machine reset alike.
      - 64
      - all ones, kept
      - read/write
-     - One bit per region. CPU protect is stored only; a value other than
-       all ones logs ``LOG_UNIMP``. I/O protect is enforced on crosstalk
-       interrupt writes (:ref:`sgi-bedrock-pi-interrupts`).
+     - One bit per region. Both log ``LOG_UNIMP`` on a value other than
+       all ones. CPU protect is stored only; I/O protect is enforced on
+       crosstalk interrupt writes (:ref:`sgi-bedrock-pi-interrupts`).
    * - ``0x08``
      - protection override
      - 64
@@ -448,18 +448,17 @@ CPU enable withholds the bus from a processor while clear (``hubpi.h``
 lines 883-887), and survives soft reset, *established*. Its power-on
 value is *unknown*. The model sets it for every fitted slot at power-on
 and never for an empty one, an *approximation*: the stock IP35 PROM's
-boot path never sets the bit, and with interface 0 left clear a
-four-processor boot on the model counted only two processors, a
-*software expectation* observed on the model
+boot path never sets the bit, so a processor whose bit starts clear is
+never counted, a *software expectation*
 (:src:`ip35-prom-6.210 processor population`). The PROM writes zero to a
 partner's bit when that partner fails its early liveness check. The
 register drives a ``cpu-enable`` output, which the machines leave
 unconnected: a processor runs whatever the bit says.
 
 The stock PROM also records, in flash, which empty positions failed to
-start, and skips them on later boots. A fresh two-processor flash
-starts with those records (:ref:`sgi-bedrock-flash`); the processor
-interface never reports an empty slot as started.
+start, and skips them on later boots. The model does not seed those
+records (:ref:`sgi-bedrock-flash`); the processor interface never
+reports an empty slot as started.
 
 .. _sgi-bedrock-pi-interrupts:
 
@@ -902,8 +901,8 @@ processors updates the word; device and block-transfer accesses change
 nothing. Every other line's word changes only through the backdoor.
 Busy, wait and poisoned states, interventions and capacity eviction are
 not modelled; a word in a state the protocol does not produce is left
-alone and logged ``LOG_UNIMP``. Watched pages run on QEMU's slow path,
-one instruction per translation block.
+alone and logged ``LOG_UNIMP``. Every access to a watched page is
+dispatched to the unit as a device access.
 
 .. _sgi-bedrock-md-ecc:
 
@@ -951,8 +950,10 @@ cache: a 64-byte variable per entry (``hubmd.h`` lines 551-612),
 *established*. The model uses the encoding of the public SN2 successor
 header (Linux ``arch/ia64/include/asm/sn/mspec.h``): a load at offset 0
 returns the value, at 8 fetches and increments, at 16 fetches and
-decrements, at 24 fetches and clears; a store at 0 stores, at 24 ands
-and at 32 ors. That the Bedrock uses the same offsets is *inferred*:
+decrements, at 24 fetches and clears; a store at 0 stores, at 8 increments and
+at 16 decrements (the store data is ignored), at 24 ands and at 32 ors.
+The SN2 header does not define stores at 8 and 16, so the model's
+meaning for them is an *approximation*. That the Bedrock uses the same offsets is *inferred*:
 the Origin 300 field diagnostics use offsets 0 and 8 with those
 meanings. A 32-bit access operates on one word. Any other offset,
 including the SN2 cache-clear store at 56, fails with
@@ -1209,9 +1210,9 @@ Writing control starts a transfer and reading it terminates one
 The model moves every line of a transfer before the starting write
 returns, an *approximation*. The stock PROM's engine check starts both
 engines back to back, waits for engine 0's completion interrupt alone,
-then compares both copies (:src:`ip35-prom-6.210 engine check`). An
-engine paced by the host clock failed that check on the model; an
-instantaneous one passes it. A start needs busy set with a nonzero
+then compares both copies (:src:`ip35-prom-6.210 engine check`). Engine 1
+must therefore have finished by the time engine 0's interrupt is
+taken. A start needs busy set with a nonzero
 length, then the control write:
 
 - with notify set, the engine writes its final length and status word
@@ -1693,7 +1694,10 @@ its queue register and then first error are cleared (``hubxb.h`` lines
 469-470, 760-784), *established*. Seven queues have published layouts:
 PI0 output and input, MD-to-PI0 output, MD input, NI output, and LB
 output and input. The source codes are in ``hubxb_next.h`` lines 13-26;
-type and channel codes are not published.
+type and channel codes are not published. The model numbers the sources
+down from 0xf in address order, queue n having source 0xf - n. Only PI0
+output (0xf) and LB input (0x2) are confirmed against the header, so the
+values between are an *approximation*.
 
 The model ORs a write's documented bits into a structured queue and
 marks that queue unserviced. The first such write while first error is
@@ -1756,11 +1760,11 @@ The machine takes a 16 MiB raw image through the ``node<N>-flash``
 property, or boots the stock payload from ``-bios`` when none is given
 (:ref:`sgi-sn-firmware-supply`). A fresh image written by
 ``qemu-sgi-machine-init`` carries the payload, a position-1 outer label
-the PROM's own blank-media formatter would write, and, for a
-two-processor machine, the two environment records with which the PROM
-disables CPU positions B and D. Those records stand in for the state the PROM
-writes itself after repeated failed starts of the empty positions, an
-*approximation*: no factory flash dump is available.
+the PROM's own blank-media formatter would write. The tool
+writes no CPU-disable environment records. The stock PROM writes them
+itself after failed starts of an empty processor position, and a
+two-processor machine's flash starts without them. That is a model
+limit: no factory flash dump is available to seed them from.
 
 .. _sgi-bedrock-interrupts:
 
@@ -1822,9 +1826,11 @@ Bedrock (``hubni.h`` line 1079, ``hubni_next.h`` line 143),
 model does not gate it.
 
 A local reset applies each unit's reset, the memory unit's soft reset in
-place of its full one, and then asks the machine to reset. Every IP35
-consumer that reboots writes reset enable and then local plus port
-reset, and none jumps to the firmware itself, a *software expectation*.
+place of its full one, and then asks the machine to reset. The stock
+PROM and the IRIX 6.5.30 kernel write reset enable and then local plus
+port reset. OpenBSD writes local plus link reset (OpenBSD
+``sys/arch/sgi/sgi/ip27_machdep.c`` at ``2df91d80c104``). None jumps to
+the firmware itself, a *software expectation*.
 A published Origin 350 console running PROM 6.210 prints "Resetting the
 system..." after a POD ``reset`` and goes straight to the PROM banner
 (:src:`graphica-o350-chimera-notes`), *observed*. The model therefore
