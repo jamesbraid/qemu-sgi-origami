@@ -472,8 +472,13 @@ the last four are dropped and the cut is logged.
 Entry timeouts are ignored: a command completes when its device does.
 Markers are consumed without a response, and the model does not refuse
 commands to a target until a marker arrives. Commands to present ports
-run while the loop is coming up. A refused data DMA is logged and leaves
-the command outstanding: no completion code for it is known.
+run while the loop is coming up.
+
+A data transfer the host bridge refuses, for read data or for write
+data, is logged and completes the command ``0x0002`` (DMA error) with
+no SCSI status. A write shorter than its command, which otherwise goes
+to the device through QEMU's DMA helpers, takes the buffered path when
+a segment would be refused, so its refusal is reported the same way.
 
 Recovery and disconnect
 -----------------------
@@ -562,3 +567,9 @@ Limitations
 - The ISP2200 and ISP2200A differ only in mailbox 7 here; the model
   reports the 2200A value.
 - Migration is between identical builds only.
+- A write shorter than its command is checked against the host bridge
+  once, when the command is queued to its device. QEMU's DMA helpers do
+  not report a refusal: a segment they cannot map directly goes through
+  a bounce buffer whose failed read is ignored. A refusal that begins
+  after the check would therefore not be seen, and the write would
+  reach the disk with whatever that read left and complete normally.

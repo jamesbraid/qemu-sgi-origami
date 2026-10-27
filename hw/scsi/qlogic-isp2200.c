@@ -291,6 +291,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_SCSI_STATUS_RESID_UNDER 0x0800
 
 #define ISP2200_COMPLETION_COMPLETE         0x0000
+#define ISP2200_COMPLETION_DMA_ERROR        0x0002
 #define ISP2200_COMPLETION_RESET            0x0004
 #define ISP2200_COMPLETION_ABORTED          0x0005
 #define ISP2200_COMPLETION_UNDERRUN         0x0015
@@ -1417,6 +1418,28 @@ static uint16_t isp2200_recovery(QLogicISP2200State *s, uint16_t cmd,
     return status;
 }
 
+/*
+ * A data DMA the host bridge refused completes the command "DMA error",
+ * through the same path as a recovery's retirement so that it posts
+ * once, however the cancellation ends. A recovery that already owns the
+ * command keeps its own code.
+ */
+static void isp2200_data_dma_error(ISP2200Request *req, uint64_t addr)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "qlogic-isp2200: data transfer at 0x%" PRIx64 " for handle "
+                  "0x%08x refused; the command completes with a DMA error\n",
+                  addr, req->handle);
+    if (!req->retiring) {
+        req->retiring = true;
+        req->retire_completion = ISP2200_COMPLETION_DMA_ERROR;
+    }
+    if (!req->cancel_issued) {
+        req->cancel_issued = true;
+        scsi_req_cancel(req->sreq);
+    }
+}
+
 static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
 {
     ISP2200Request *req = sreq->hba_private;
@@ -1435,12 +1458,8 @@ static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
         } else {
             result = isp2200_dma_read(s, addr, buf + offset, count);
         }
-        /* No completion code for this is known; the command stays out. */
         if (result != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "qlogic-isp2200: data transfer for handle 0x%08x "
-                          "refused; the command waits for an abort or "
-                          "reset\n", req->handle);
+            isp2200_data_dma_error(req, addr);
             return;
         }
         req->transferred += count;
@@ -1466,17 +1485,32 @@ static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
 /*
  * A write shorter than its command goes direct, so the target's own
  * buffer is not padded; everything else is buffered through
- * isp2200_scsi_transfer_data().
+ * isp2200_scsi_transfer_data(). The direct path's DMA helpers cannot
+ * report a refusal: a segment that does not map directly goes through a
+ * bounce buffer whose failed read is ignored, and the write would reach
+ * the disk with whatever that read left. So a write whose segments the
+ * bridge would refuse is buffered too, and its first refused read
+ * completes it as any other refused data DMA does. The check is made
+ * once, here; a refusal that begins after it is not seen.
  */
 static QEMUSGList *isp2200_scsi_get_sg_list(SCSIRequest *sreq)
 {
     ISP2200Request *req = sreq->hba_private;
+    QLogicISP2200State *s = req->dev;
+    int i;
 
-    if (sreq->cmd.mode == SCSI_XFER_TO_DEV &&
-        req->qsg.size < sreq->cmd.xfer) {
-        return &req->qsg;
+    if (sreq->cmd.mode != SCSI_XFER_TO_DEV ||
+        req->qsg.size >= sreq->cmd.xfer || !isp2200_bus_master(s)) {
+        return NULL;
     }
-    return NULL;
+    for (i = 0; i < req->qsg.nsg; i++) {
+        if (!dma_memory_valid(req->qsg.as, req->qsg.sg[i].base,
+                              req->qsg.sg[i].len, DMA_DIRECTION_TO_DEVICE,
+                              MEMTXATTRS_UNSPECIFIED)) {
+            return NULL;
+        }
+    }
+    return &req->qsg;
 }
 
 /* The ID list: four bytes per port, AL_PA, area 0, domain 0, loop ID. */
