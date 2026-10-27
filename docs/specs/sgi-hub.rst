@@ -199,18 +199,16 @@ timeout it measures in its own retired instructions. Under TCG a
 poller can spend that whole budget inside one scheduled slice before
 the processor it waits for runs at all, and report a live peer dead.
 
-The model's assist has one minimal contract, ``sgi_hub_yield_to_processor``:
-wake the named peer and end the current processor's slice. It selects
-no successor, and it changes no Hub or interrupt state; it only makes
-an already-atomic write visible on the scheduling boundary where real
-hardware exposes it. Three register paths invoke it: an
-interrupt-modify write releases every other local processor; a write
-into a peer node's scratch registers releases that node; and a
-re-read of pending bank 1 by the secondary processor, when the
-primary's write is already credited, hands the slice back to the
-primary. Only an unchanged re-read hands off -- a read whose value
-moved is an answered poll, and the reader keeps its slice to act on
-it.
+The model's assist is a kick, ``sgi_hub_kick_peer``: it wakes the named
+peer processor and changes no Hub or interrupt state. The current
+processor keeps running. Three register paths kick: an interrupt-modify
+write that changes a pending bit kicks the node's other processors
+(under single-threaded round-robin TCG, every interrupt-modify write
+does); a write into a peer node's scratch registers kicks that node;
+and a read of pending bank 1 by the secondary processor kicks the
+primary unless the primary's write has already been credited. The
+read kick fires only under single-threaded round-robin TCG, where one
+host slice serves every processor.
 
 Under multi-threaded TCG every processor has its own host thread, so
 handing slices around helps nobody, but a descheduled thread still
@@ -362,7 +360,8 @@ reach it; it has no interrupt line, since the port is polled. The
 optional bring-up UART takes its 16550 clock argument as the
 oscillator divided by sixteen. The character-device assignment is
 fixed in one place: IOC3 ports A and B at 0 and 1, the system
-controller's AUX port at 2, the bring-up UART at 3 -- the IRIX
+controller's AUX port at 2, the bring-up UART at 3, and the IOC3
+transmit-record backends for ports A and B at 4 and 5 -- the IRIX
 console (``console=d``) is IOC3 serial A, not the AUX port. The
 system controller's 2 KB NVRAM answers eight consecutive I2C
 addresses of one 256-byte page each (one part or several is not
@@ -594,9 +593,7 @@ hardware register of this chip.
 Migration
 =========
 
-The big-window table field is version-gated, so a stream from before
-the table existed loads with the windows at their reset aim. The
-big-window aim is re-derived from the restored table entries, and
+The big-window aim is re-derived from the restored table entries, and
 the cached-alias windows from the restored size code;
 the BTE registers are the whole of an engine's state, so nothing is
 in flight to carry. The interrupt outputs are re-driven on load,
@@ -605,16 +602,5 @@ the CPU that migrates its own cause bits -- the same re-drive was
 rejected for the IOC3's line into the Bridge, whose consumer
 edge-detects.
 
-The one-wire responder's protocol state used to travel in this
-stream and now belongs to the part on the bus, which migrates its
-own. Unused spans of the original size hold its place so an older
-stream still loads, and a conversation half-finished when such a
-stream was written is discarded rather than translated. Discarding
-is not what a bus reset does -- a reset resets the master too, and a
-load does not -- so a guest resumed from one of those older streams
-keeps talking to a part that is now idle and has its next read slots
-sampled as a command byte of all ones. That produces one "unknown
-ROM command 0xff" on resume. It is benign and self-clearing at the
-guest's next reset pulse, and it is absent from streams written
-since the part became a device, which carry the part's own section
-and preserve the conversation intact.
+The one-wire part on the bus migrates its own state in its own
+section.

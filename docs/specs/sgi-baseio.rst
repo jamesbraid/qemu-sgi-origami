@@ -10,8 +10,8 @@ BaseIO is the standard XIO I/O board of the Origin 2000 and Onyx2: a
 Bridge joins it to a Crossbow, and one 32-bit PCI bus joins the Bridge
 to an IOC3 and two SCSI controllers. The BaseIO-G variant adds a MediaIO
 daughtercard. QEMU builds both from the shared Bridge, IOC3 and ISP1040
-models (``hw/mips/sgi/baseio.c``); the plain board is the default and the
-``io6g`` preset selects BaseIO-G. The Origin 200 has an integrated
+models (``hw/mips/sgi/baseio.c``); the ``io6`` preset builds the plain
+board and ``io6g`` builds BaseIO-G. ``preset`` has no default. The Origin 200 has an integrated
 system board, not this card, and its population and wiring must not be
 read from here (:doc:`sgi-sn`). Ratings follow :ref:`sgi-ip30`.
 

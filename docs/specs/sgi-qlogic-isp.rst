@@ -220,7 +220,7 @@ the part with a single channel does not carry the commands at all. The
 check is there for a part with more channels than a selector bit can
 name, not because either of these two reaches it.
 
-The branch carries the ISP12160's additional state in a vmstate
+The ISP12160's additional state travels in a vmstate
 subsection, ``qlogic-isp/isp12160``, needed only when the part is
 banked or carries two channels, so it never appears in an ISP1040
 migration stream. The subsection carries the SXP1 and DMA banks the
@@ -228,8 +228,7 @@ ISP1040 does not have, and the per-channel reset-delay values that
 mailbox command ``0x003a`` sets. The held completions are not in it:
 they travel as top-level fields both parts carry, a count of zero for
 an adapter whose response ring never filled. The top-level
-``qlogic-isp`` stream is version 10 and its minimum version is still
-6, so a stream written before either addition loads as it did.
+``qlogic-isp`` stream is version 10.
 
 Several of the choices above are compatibility selections where the
 driver-sourced evidence does not establish the hardware's own answer.
@@ -409,8 +408,7 @@ In-flight requests migrate with the SCSI core's request stream; the
 segment count read back on load is bounded by the entry format's
 ceiling and a stream claiming more fails the migration. Held
 completions migrate too, in the top-level ``qlogic-isp`` stream rather
-than the ISP12160 subsection, and a stream written before they existed
-loads with none held. The backlog travels as a counted array bounded to
+than the ISP12160 subsection. The backlog travels as a counted array bounded to
 512 entries, the most the ring rule above allows; a stream claiming
 more is refused before a single entry is read, so a stream can never
 make the load allocate more than the model itself could hold.

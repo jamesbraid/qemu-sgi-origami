@@ -136,7 +136,8 @@ Board catalogue
        ``_ip34_fuel_sysboard``). The I-brick has a layer but no QEMU
        board.
    * - Octane IP30 system board
-     - not built
+     - built by the ``octane`` machine, not a ``sgi-baseio`` preset
+       (:doc:`sgi-ip30`)
      - Device 2, pin 4 (Linux ``bridge_setup_ip30_sysboard``); out of
        family.
 
