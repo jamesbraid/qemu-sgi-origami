@@ -94,6 +94,8 @@ def entry_lines(group: str, key: str, entry: dict) -> list[str]:
         obtain = entry.get("obtain") or {}
         if obtain.get("url"):
             body.append(link(obtain["url"]))
+        if obtain.get("archive"):
+            body.append(f"Archived copy: {link(obtain['archive'])}")
         if obtain.get("message_id"):
             body.append(f"Message-ID ``{obtain['message_id']}``.")
         if obtain.get("distribution"):
