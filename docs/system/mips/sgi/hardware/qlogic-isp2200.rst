@@ -534,7 +534,10 @@ unavailable; another LUN's unplug runs no bring-up.
 A soft reset, PCI reset or system reset cancels every command without
 status and resets the loop's devices; an HCCR RISC reset cancels them
 without resetting the devices. Each also drops the loop: state 0, no
-loop ID, the bring-up stopped and its events gone.
+loop ID, the bring-up stopped and its events gone. A cancelled command
+moves no more data, including one whose device finishes while the
+reset waits on another command's cancellation; so does one cancelled
+by a second initialise-firmware.
 
 Migration
 ---------

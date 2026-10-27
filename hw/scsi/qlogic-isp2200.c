@@ -353,6 +353,12 @@ typedef struct ISP2200Request {
     bool retiring;
     bool cancel_issued;
     uint16_t retire_completion;
+    /*
+     * A reset or re-initialisation is cancelling every request: this one
+     * moves no more data and posts nothing. Transient, set and cleared
+     * inside one cancellation pass.
+     */
+    bool dropping;
     QTAILQ_ENTRY(ISP2200Request) next;
 } ISP2200Request;
 
@@ -1082,9 +1088,10 @@ static ISP2200Request *isp2200_new_request(QLogicISP2200State *s,
 
 /*
  * Every request in flight, cancelled with no status. A cancellation waits
- * for its backend, which may finish others on the way, so the head is
- * taken afresh each time. A request whose callback never comes -- it is
- * no longer queued in the SCSI layer -- is let go here.
+ * for its backend, which may finish others on the way, so all are marked
+ * first: one that finishes in that wait moves no data and posts nothing.
+ * The head is taken afresh each time. A request whose callback never
+ * comes -- it is no longer queued in the SCSI layer -- is let go here.
  */
 static void isp2200_cancel_all(QLogicISP2200State *s)
 {
@@ -1092,6 +1099,9 @@ static void isp2200_cancel_all(QLogicISP2200State *s)
     ISP2200Request *req;
 
     s->recovering = true;
+    QTAILQ_FOREACH(req, &s->requests, next) {
+        req->dropping = true;
+    }
     while ((req = QTAILQ_FIRST(&s->requests)) != NULL) {
         trace_qlogic_isp2200_request_cancelled(req->handle);
         if (!req->sreq->enqueued) {
@@ -1224,6 +1234,11 @@ static void isp2200_scsi_complete(SCSIRequest *sreq, size_t resid)
     uint64_t unused;
     int sense_len = 0;
 
+    /* Finished while a reset was cancelling it: it owes nothing. */
+    if (req->dropping) {
+        isp2200_free_request(req);
+        return;
+    }
     /* Finished while a recovery was retiring it: it still owes that. */
     if (req->retiring) {
         completion = req->retire_completion;
@@ -1454,6 +1469,10 @@ static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
     uint8_t *buf = scsi_req_get_buf(sreq);
     uint32_t offset = 0;
 
+    /* Left for the reset's own cancellation, which reaches it next. */
+    if (req->dropping) {
+        return;
+    }
     while (offset < len && req->sg_index < req->qsg.nsg) {
         ScatterGatherEntry *sg = &req->qsg.sg[req->sg_index];
         uint32_t count = MIN(len - offset, sg->len - req->sg_offset);
