@@ -1912,6 +1912,17 @@ struct SGIKonaState {
     SGIScanout scanout;
 
     /*
+     * The display lines a software draw or raster operation stored to,
+     * collected while it runs and invalidated once when it returns (see
+     * sgi_kona_invalidate_store()). Transient within one call: never
+     * migrated. invalidate_depth counts nested calls, invalidate_op
+     * numbers the outermost ones.
+     */
+    uint32_t invalidate_depth;
+    uint64_t invalidate_op;
+    int64_t invalidate_first, invalidate_last;
+
+    /*
      * The display channels: channel 0 presents through scanout above,
      * which also runs the retrace and the swap queue; channel c > 0
      * through channel_scanout[c - 1], with no retrace. Only the

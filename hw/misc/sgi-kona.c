@@ -735,6 +735,80 @@ void sgi_kona_invalidate_plane(SGIKonaState *s, const SGIPlane *p,
     }
 }
 
+/*
+ * Plane line y of p changed under a store. Outside a software draw the
+ * channels are invalidated at once. Inside one (between
+ * sgi_kona_invalidate_defer() and sgi_kona_invalidate_flush()) every
+ * store of a row would resolve every channel's view again, so the draw
+ * only widens the range of display lines it touched, once per row per
+ * band thread, and the flush invalidates that range when the draw
+ * returns. A display refresh during the draw may show the rows it has
+ * stored so far one refresh late; the lines are marked before the
+ * command completes, so what the display shows afterwards is the same.
+ */
+static void sgi_kona_invalidate_store(SGIKonaState *s, const SGIPlane *p,
+                                      int y)
+{
+    static __thread const SGIKonaState *memo_state;
+    static __thread uint64_t memo_op;
+    static __thread int64_t memo_line;
+    int64_t line = p->bottom_origin ? (int64_t)p->height - 1 - y : y;
+    int64_t seen;
+
+    if (!qatomic_read(&s->invalidate_depth)) {
+        sgi_kona_invalidate_lines(s, line, line);
+        return;
+    }
+    if (memo_state == s && memo_op == qatomic_read(&s->invalidate_op) &&
+        memo_line == line) {
+        return;
+    }
+    memo_state = s;
+    memo_op = qatomic_read(&s->invalidate_op);
+    memo_line = line;
+    seen = qatomic_read(&s->invalidate_first);
+    while (line < seen) {
+        int64_t was = qatomic_cmpxchg(&s->invalidate_first, seen, line);
+
+        if (was == seen) {
+            break;
+        }
+        seen = was;
+    }
+    seen = qatomic_read(&s->invalidate_last);
+    while (line > seen) {
+        int64_t was = qatomic_cmpxchg(&s->invalidate_last, seen, line);
+
+        if (was == seen) {
+            break;
+        }
+        seen = was;
+    }
+}
+
+/* Collect a software draw's stored lines; see sgi_kona_invalidate_store(). */
+static void sgi_kona_invalidate_defer(SGIKonaState *s)
+{
+    if (s->invalidate_depth++) {
+        return;
+    }
+    s->invalidate_first = INT64_MAX;
+    s->invalidate_last = INT64_MIN;
+    qatomic_set(&s->invalidate_op, s->invalidate_op + 1);
+}
+
+/* The draw has returned and its band threads are done: mark its lines. */
+static void sgi_kona_invalidate_flush(SGIKonaState *s)
+{
+    if (--s->invalidate_depth) {
+        return;
+    }
+    if (s->invalidate_first <= s->invalidate_last) {
+        sgi_kona_invalidate_lines(s, s->invalidate_first,
+                                  s->invalidate_last);
+    }
+}
+
 /* Repaint every channel. */
 static void sgi_kona_invalidate_all(SGIKonaState *s)
 {
@@ -4460,7 +4534,7 @@ static void sgi_kona_gl_store_colour(void *opaque, SGIColourTarget target,
     sgi_plane_store(&s->mem, sgi_kona_plane(s, sgi_kona_bank_tag_plane(s,
                                                                   bank)),
                     x, y, SGI_KONA_TAG_DIRECT);
-    sgi_kona_invalidate_plane(s, p, y, y);
+    sgi_kona_invalidate_store(s, p, y);
 }
 
 static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
@@ -4488,7 +4562,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
         sgi_plane_store(&s->desktop_mem, p, x, y,
                         (old & ~mask) | (index & mask));
         s->desktop_state_used = true;
-        sgi_kona_invalidate_plane(s, p, y, y);
+        sgi_kona_invalidate_store(s, p, y);
         return;
     }
     if (bank < 0 || (bits != 8 && bits != 12) ||
@@ -4507,7 +4581,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
     sgi_plane_store(&s->mem, sgi_kona_plane(s,
                        sgi_kona_bank_tag_plane(s, bank)),
                     x, y, SGI_KONA_TAG_X_INDEX16);
-    sgi_kona_invalidate_plane(s, p, y, y);
+    sgi_kona_invalidate_store(s, p, y);
 }
 
 static uint32_t sgi_kona_gl_load_colour(void *opaque, SGIColourTarget target,
@@ -6167,9 +6241,11 @@ scalar:
     if (s->host_gpu) {
         sgi_kona_count_fallback(s, reason, d);
     }
+    sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
     ret = sgi_soft_draw(&rules, &t, d);
     sgi_kona_work_relock(s, unlocked);
+    sgi_kona_invalidate_flush(s);
 report:
     if (ret != SGI_GL_DRAW_OK) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: GL draw of context %" PRIu32
@@ -6233,9 +6309,11 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
         copy.pixels.state = &state;
         op = &copy;
     }
+    sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
     sgi_soft_raster(&rules, &t, op);
     sgi_kona_work_relock(s, unlocked);
+    sgi_kona_invalidate_flush(s);
 }
 
 /*

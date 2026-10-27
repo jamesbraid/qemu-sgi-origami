@@ -7733,6 +7733,74 @@ static void test_raster_pos_forms(gconstpointer opaque)
     qtest_quit(s);
 }
 
+/*
+ * A software draw repaints the display lines it stored to by the time the
+ * command completes, even when the display had already shown the window:
+ * the screendump after the clear takes every dirty line, so the second
+ * one shows the draw only if its lines were marked again. Mode 0 is a
+ * DrawPixels, mode 1 a filled rectangle; the rectangle's image comes from
+ * a second machine that never showed the window first. Mode 2 draws one
+ * row, shows it, then draws the same row again in other colours: the
+ * second draw's stores land on the line the first draw's last store did,
+ * and must still mark it.
+ */
+static void test_draw_repaint(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t plain[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    g_autofree Expected *e = g_new(Expected, 1);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    if (mode == 1) {
+        QTestState *ref = qtest_init(MACHINE_ARGS);
+
+        gl_make_current(ref);
+        gl_rect_scene(ref);
+        read_window(ref, e);
+        qtest_quit(ref);
+        gl_window_cleared(s, 0, 0, 1);
+    } else {
+        gl_window_cleared(s, 0, 0, 0);
+    }
+    g_free(kona_screendump(s));
+    if (mode == 1) {
+        gl_rect_scene(s);
+        assert_window_matches(s, e);
+    } else if (mode == 2) {
+        static const uint32_t rows[2][2] = {
+            { 0xff0000ff, 0x00ff00ff }, { 0x0000ffff, 0xffffffff },
+        };
+        unsigned at = ((127 - 64) * 128 + 64) * 3;
+
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        for (unsigned pass = 0; pass < 2; pass++) {
+            kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 5, 1, 0, 0, 0, 0 },
+                         8);
+            for (unsigned k = 0; k < 2; k++) {
+                qtest_writel(s, REG_COMMAND, rows[pass][k]);
+            }
+            expected_clear(e, 0);
+            for (unsigned k = 0; k < 2; k++) {
+                e->rgb[at + 3 * k] = rows[pass][k] >> 24;
+                e->rgb[at + 3 * k + 1] = rows[pass][k] >> 16;
+                e->rgb[at + 3 * k + 2] = rows[pass][k] >> 8;
+            }
+            assert_window_matches(s, e);
+        }
+    } else {
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+        for (unsigned k = 0; k < ARRAY_SIZE(plain); k++) {
+            qtest_writel(s, REG_COMMAND, plain[k]);
+        }
+        draw_pixels_expected(s, true);
+    }
+    qtest_quit(s);
+}
+
 static void test_draw_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -20524,6 +20592,12 @@ int main(int argc, char **argv)
         add_data_case(path, GUINT_TO_POINTER(mode),
                       test_draw_pixels_transfer);
     }
+    add_data_case("sn0/origin2000/kona-3d/repaint/draw-pixels",
+                  GUINT_TO_POINTER(0), test_draw_repaint);
+    add_data_case("sn0/origin2000/kona-3d/repaint/rectangle",
+                  GUINT_TO_POINTER(1), test_draw_repaint);
+    add_data_case("sn0/origin2000/kona-3d/repaint/same-row",
+                  GUINT_TO_POINTER(2), test_draw_repaint);
     static const char *draw_pixels_zoom_cases[] = {
         "pio", "dma", "negative-pio", "negative-dma", "downscale",
         "zero", "clipped", "migrates", "pixel-mode-pop", "combined-pop",
