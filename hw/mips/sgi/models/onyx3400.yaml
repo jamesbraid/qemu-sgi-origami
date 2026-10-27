@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3400 reference composition: four C-bricks, an I-brick, an N-brick
+# and two two-pipe G-bricks, the brick set of 007-4264-002 Figure 1-10,
+# XIO side only. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip35.yaml
+  - layers/products/onyx3400.yaml
+module_instances:
+  - model: layers/modules/c-brick.yaml
+    prefix: c0-
+    parent: rack
+    observed_hardware: &cbrick-basis
+      mode: projected
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+      note: >-
+        The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
+        every published Origin 3000 inventory reports; it is not a capture of
+        this C-brick.
+  - model: layers/modules/c-brick.yaml
+    prefix: c1-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/c-brick.yaml
+    prefix: c2-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/c-brick.yaml
+    prefix: c3-
+    parent: rack
+    observed_hardware: *cbrick-basis
+  - model: layers/modules/i-brick.yaml
+    prefix: ibrick-
+    parent: rack
+    bus_bindings: {host-port-a-xio: c0-xio-ii}
+    observed_hardware:
+      mode: direct
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
+      note: >-
+        The IO7 device identities are the closure record's own three
+        independent owners' IRIX inventories, reused directly for this
+        reference I-brick rather than a distinct capture of this exact set.
+  - model: layers/modules/n-brick.yaml
+    prefix: nbrick-
+    parent: rack
+  - model: layers/modules/g-brick.yaml
+    prefix: gbrick0-
+    parent: graphics-rack
+    bus_bindings: {pipe0-xio: ibrick-port-b-xio, pipe1-xio: nbrick-graphics-pipe-0-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick0-pipe0-
+    parent: gbrick0-chassis
+    bus_bindings: {upstream: ibrick-port-b-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick0-pipe1-
+    parent: gbrick0-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-0-xio}
+  - model: layers/modules/g-brick.yaml
+    prefix: gbrick1-
+    parent: graphics-rack
+    bus_bindings: {pipe0-xio: nbrick-graphics-pipe-1-xio, pipe1-xio: nbrick-graphics-pipe-2-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick1-pipe0-
+    parent: gbrick1-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-1-xio}
+  - model: layers/modules/g-brick-ir3-pipe.yaml
+    prefix: gbrick1-pipe1-
+    parent: gbrick1-chassis
+    bus_bindings: {upstream: nbrick-graphics-pipe-2-xio}

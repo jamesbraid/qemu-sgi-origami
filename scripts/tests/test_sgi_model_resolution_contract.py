@@ -3679,5 +3679,107 @@ class Onyx3000VbrickTests(unittest.TestCase):
             compile_model(self.resolve())
 
 
+
+class Onyx3400GraphicsBrickTests(unittest.TestCase):
+    """The N- and G-brick layers in the Onyx 3400 reference composition."""
+
+    ONYX3400 = INPUTS / "onyx3400.yaml"
+    PIPES = ("gbrick0-pipe0", "gbrick0-pipe1", "gbrick1-pipe0",
+             "gbrick1-pipe1")
+
+    def resolve(self):
+        return _resolver.load_system_model(self.ONYX3400)
+
+    def pipe_paths(self, model):
+        """Each pipe XG's bus, its crossbar and the Bedrock that crossbar
+        hangs on, read from the resolved graph alone."""
+        buses = {item["id"]: item for item in model["buses"]}
+        components = {item["id"]: item for item in model["components"]}
+        paths = {}
+        for pipe in self.PIPES:
+            on = [item["bus"] for item in model["connections"]
+                  if item["component"] == f"{pipe}-xg"]
+            self.assertEqual(len(on), 1, pipe)
+            crossbar = buses[on[0]]["master"]
+            self.assertEqual(components[crossbar]["kind"], "crossbar")
+            upstream = [buses[item["bus"]]["master"]
+                        for item in model["connections"]
+                        if item["component"] == crossbar
+                        and item["role"] == "bridge-upstream"]
+            self.assertEqual(len(upstream), 1, crossbar)
+            self.assertEqual(components[upstream[0]]["kind"], "node-asic")
+            paths[pipe] = (on[0], crossbar, upstream[0])
+        return paths
+
+    def test_each_pipe_reaches_one_cbrick_through_its_own_crossbar(self):
+        paths = self.pipe_paths(self.resolve())
+        self.assertEqual(paths, {
+            "gbrick0-pipe0": ("ibrick-port-b-xio", "ibrick-xbridge-crossbar",
+                              "c0-bedrock"),
+            "gbrick0-pipe1": ("nbrick-graphics-pipe-0-xio", "nbrick-xbridge0",
+                              "c1-bedrock"),
+            "gbrick1-pipe0": ("nbrick-graphics-pipe-1-xio", "nbrick-xbridge1",
+                              "c2-bedrock"),
+            "gbrick1-pipe1": ("nbrick-graphics-pipe-2-xio", "nbrick-xbridge2",
+                              "c3-bedrock"),
+        })
+        # One pipe per C-brick (007-4424-001 printed page 1).
+        self.assertEqual(len({path[2] for path in paths.values()}), 4)
+
+    def test_no_pipe_sits_on_a_cbrick_bus(self):
+        model = self.resolve()
+        buses = {item["id"]: item for item in model["buses"]}
+        components = {item["id"]: item for item in model["components"]}
+        for item in model["connections"]:
+            if components[item["component"]].get("hardware_kind") != "xg":
+                continue
+            master = components[buses[item["bus"]]["master"]]
+            self.assertNotEqual(master["kind"], "node-asic", item)
+
+    def test_nbrick_holds_four_chips_and_no_pci(self):
+        model = self.resolve()
+        components = {item["id"]: item for item in model["components"]}
+        chips = sorted(cid for cid, item in components.items()
+                       if cid.startswith("nbrick-") and
+                       item["kind"] == "crossbar")
+        self.assertEqual(chips, [f"nbrick-xbridge{k}" for k in range(4)])
+        self.assertFalse([cid for cid, item in components.items()
+                          if cid.startswith("nbrick-") and
+                          item["kind"] == "pci-host-bridge"])
+        self.assertEqual(components["nbrick-brick"]["controller"], "absent")
+        ports = {cid: components[cid]["connector"]["port"]
+                 for cid in components if cid.startswith("nbrick-c-brick-")
+                 or cid.startswith("nbrick-graphics-pipe-")
+                 and components[cid]["kind"] == "connector"}
+        self.assertEqual(ports, {
+            **{f"nbrick-c-brick-{k}": 0xa for k in range(4)},
+            **{f"nbrick-graphics-pipe-{k}": 0xb for k in range(4)}})
+
+    def test_ktown2_connectors_share_their_pipes_bus(self):
+        model = self.resolve()
+        attached = {(item["component"], item["bus"])
+                    for item in model["connections"]}
+        for gbrick in ("gbrick0", "gbrick1"):
+            for pipe, connector in ((0, "top"), (1, "bottom")):
+                bus = next(b for c, b in attached
+                           if c == f"{gbrick}-pipe{pipe}-xg")
+                self.assertIn((f"{gbrick}-ktown2-{connector}", bus), attached)
+
+    def test_nbrick_without_gbrick_is_refused(self):
+        composition = yaml.safe_load(self.ONYX3400.read_text())
+        composition["module_instances"] = [
+            item for item in composition["module_instances"]
+            if "g-brick" not in item["model"]]
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "product 'onyx3400' requires at least 1 of g-brick, got 0"):
+            _resolver.resolve_system_model(self.ONYX3400, composition)
+
+    def test_onyx3400_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()
