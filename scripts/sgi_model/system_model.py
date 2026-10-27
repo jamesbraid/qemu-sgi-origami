@@ -1144,7 +1144,7 @@ def resolve_system_model(
         raise ResolutionError(f"composition '{path}' has no supported configuration_version")
     unknown = sorted(set(composition) - {
         "configuration_version", "layers", "module_instances",
-        "connector_population", "links",
+        "connector_population", "links", "xio_cables",
     })
     if unknown:
         raise ResolutionError(f"composition '{path}' has unsupported field '{unknown[0]}'")
@@ -1216,6 +1216,13 @@ def resolve_system_model(
             raise ResolutionError("configuration links must be a list")
         resolved.setdefault("links", []).extend(
             copy.deepcopy(composition["links"]))
+    # A cable to a brick the product layer does not place, such as a second
+    # I/O brick, belongs to the composition that places it.
+    if "xio_cables" in composition:
+        if not isinstance(composition["xio_cables"], list):
+            raise ResolutionError("configuration xio_cables must be a list")
+        resolved.setdefault("xio_cables", []).extend(
+            copy.deepcopy(composition["xio_cables"]))
     if routed and any("module_role" in item for item in module_instances):
         raise ResolutionError("routed target must not assign firmware graph module roles")
     exclusions = model_composition.component_exclusions([

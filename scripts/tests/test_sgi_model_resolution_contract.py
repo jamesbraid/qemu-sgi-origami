@@ -2855,6 +2855,78 @@ class Origin3000BrickTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
             compile_model(self.resolve())
 
+    ORIGIN3200_XBRICK = INPUTS / "origin3200-xbrick.yaml"
+
+    def test_xbrick_layer_puts_four_slots_on_crosstalk_ports(self):
+        model = self.resolve(self.ORIGIN3200_XBRICK)
+        components = {item["id"]: item for item in model["components"]}
+        ports = {cid: item["connector"]["port"]
+                 for cid, item in components.items()
+                 if cid.startswith("xbrick-") and item["kind"] == "connector"}
+        self.assertEqual(ports, {
+            "xbrick-port-a": 0xa, "xbrick-port-b": 0xb,
+            "xbrick-slot-1": 0x8, "xbrick-slot-2": 0x9,
+            "xbrick-slot-3": 0xc, "xbrick-slot-4": 0xd,
+        })
+        for cid in ports:
+            self.assertEqual(components[cid]["parent"],
+                             "xbrick-xbridge-crossbar", cid)
+        # Each slot is the far end of its own crossbar-mastered XIO bus,
+        # and the brick declares no PCI bus.
+        buses = {item["id"]: item for item in model["buses"]
+                 if item["id"].startswith("xbrick-")}
+        self.assertEqual(
+            sorted(bid for bid, item in buses.items()
+                   if item["master"] == "xbrick-xbridge-crossbar"),
+            ["xbrick-port-b-xio", "xbrick-slot-1-xio", "xbrick-slot-2-xio",
+             "xbrick-slot-3-xio", "xbrick-slot-4-xio"])
+        self.assertFalse([bid for bid, item in buses.items()
+                          if item["kind"] == "pci"])
+        self.assertNotIn("brick_type", components["xbrick-brick"])
+
+    def test_origin3200_xbrick_hangs_the_xbrick_off_the_second_cbrick(self):
+        model = self.resolve(self.ORIGIN3200_XBRICK)
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in model["xio_cables"]],
+            [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"]),
+             ("c1-to-xbrick", ["c1-xio-ii-connector", "xbrick-port-a"])])
+        attachments = {(item["component"], item["bus"], item["role"])
+                       for item in model["connections"]}
+        self.assertIn(("ibrick-xbridge-crossbar", "c0-xio-ii",
+                       "bridge-upstream"), attachments)
+        self.assertIn(("xbrick-xbridge-crossbar", "c1-xio-ii",
+                       "bridge-upstream"), attachments)
+        self.assertEqual(
+            sorted(item["id"] for item in model["components"]
+                   if item["kind"] == "module"),
+            ["c0-chassis", "c1-chassis", "ibrick-brick", "xbrick-brick"])
+
+    def test_origin3200_xbrick_counts_against_the_io_brick_limit(self):
+        composition = yaml.safe_load(self.ORIGIN3200_XBRICK.read_text())
+        composition["module_instances"].append(dict(
+            composition["module_instances"][3], prefix="xb2-",
+            bus_bindings={"host-port-a-xio": "c0-xio-ii"}))
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "product 'origin3200' allows at most 2 of i-brick, p-brick, "
+                "x-brick, got 3"):
+            _resolver.resolve_system_model(self.ORIGIN3200_XBRICK,
+                                           composition)
+
+    def test_composition_xio_cables_must_be_a_list(self):
+        composition = yaml.safe_load(self.ORIGIN3200_XBRICK.read_text())
+        composition["xio_cables"] = {"id": "c1-to-xbrick"}
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "configuration xio_cables must be a list"):
+            _resolver.resolve_system_model(self.ORIGIN3200_XBRICK,
+                                           composition)
+
+    def test_origin3200_xbrick_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve(self.ORIGIN3200_XBRICK))
+
 
 if __name__ == "__main__":
     unittest.main()
