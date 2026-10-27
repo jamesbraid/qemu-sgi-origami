@@ -17,6 +17,7 @@ scsi_ss.add(when: 'CONFIG_NCR710_SCSI', if_true: files('ncr53c710.c', 'lasi_ncr7
 scsi_ss.add(when: 'CONFIG_MEGASAS_SCSI_PCI', if_true: files('megasas.c'))
 scsi_ss.add(when: 'CONFIG_MPTSAS_SCSI_PCI', if_true: files('mptsas.c', 'mptconfig.c', 'mptendian.c'))
 scsi_ss.add(when: 'CONFIG_QLOGIC_ISP_SCSI_PCI', if_true: files('qlogic-isp.c'))
+scsi_ss.add(when: 'CONFIG_QLOGIC_ISP2200_PCI', if_true: files('qlogic-isp2200.c'))
 scsi_ss.add(when: 'CONFIG_VMW_PVSCSI_SCSI_PCI', if_true: files('vmw_pvscsi.c'))
 
 virtio_scsi_ss.add(files('virtio-scsi-dataplane.c'))
