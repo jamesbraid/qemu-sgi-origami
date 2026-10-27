@@ -2109,6 +2109,44 @@ static void test_the_receive_timer_raises_on_expiry(
 }
 
 /*
+ * In loopback the UART's serial input is disconnected, as on a PC16550D
+ * with modem-control bit 4 set: a character arriving from outside is
+ * discarded, while a looped-back one still lands.
+ */
+static void test_loopback_discards_external_input(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t outside = 'o';
+    const uint8_t out[4] = { 'l', 0, 0, 0 };
+    const uint8_t control[4] = { TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY };
+    uint8_t got, status;
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    g_assert_cmpint(write(sock, &outside, 1), ==, 1);
+    g_usleep(20000);
+    drain_port(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_DR, ==, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    carry_on_the_line(qts, 1);
+    collect_rx_chars(qts, 0, 1, &got, &status);
+    g_assert_cmphex(got, ==, 'l');
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * The receive pattern of both Linux ring drivers: arm, then consume with bit
  * 31 clear. The character that follows must still start the timer, or a
  * short burst waits for more input before software hears of it.
@@ -4002,6 +4040,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-counts-and-raises",
                         NULL,
                         test_the_receive_timer_raises_on_expiry);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-discards-external-input",
+                        NULL, test_loopback_discards_external_input);
     qtest_add_data_func("sn0/ioc3-serial/linux-receive-pattern-keeps-timer",
                         NULL, test_the_linux_receive_pattern_keeps_the_timer);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-starts-at-first-char",
