@@ -9033,6 +9033,51 @@ static void test_invalid_l1_peers(const void *data)
     assert_qemu_rejects(args, "invalid L1 peer");
 }
 
+/*
+ * A catalogue record the SN1 builder cannot build yet is refused by name
+ * before anything is created, not built as something else.
+ */
+typedef struct UnbuiltRecordCase {
+    const char *fault;
+    const char *message;
+} UnbuiltRecordCase;
+
+static const UnbuiltRecordCase unbuilt_record_cases[] = {
+    { "unbuilt-xio-cable", "XIO cables are not built yet" },
+    { "unbuilt-board-kind-ip35",
+      "node 'n1' selects board kind 'ip35', which is not built yet" },
+    { "unbuilt-memory-node",
+      "node 'n1' is a memory node; memory nodes are not built yet" },
+    { "unbuilt-no-flash", "node 'n1' has no boot flash" },
+    { "unbuilt-controller-absent",
+      "module 'module-n1' has no controller; modules without a controller "
+      "are not built yet" },
+    { "unbuilt-brick-type",
+      "module 'module-n1' names L1 brick type 'C'; brick types from the "
+      "catalogue are not built yet" },
+    { "unbuilt-module-owned-l1",
+      "controller 'l1-n1' is owned by its module; module-owned "
+      "controllers are not built yet" },
+    { "unbuilt-io7-preset",
+      "I/O board 'io8-n1' selects preset 'io7', which is not built yet" },
+};
+
+static void test_unbuilt_record_refused(const void *data)
+{
+    const UnbuiltRecordCase *c = data;
+    g_autofree char *machine = g_strdup_printf(
+        "sn-builder-bedrock-test,activate=on,construction-fault=%s",
+        c->fault);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine,
+        "-cpu", "R14000", "-smp", "2,sockets=2,cores=1,threads=1",
+        "-m", "128", "-bios", "/dev/null", "-nodefaults",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, c->message);
+}
+
 static void test_origin300_two_chassis_l1s_are_peers(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -9954,6 +9999,14 @@ int main(int argc, char **argv)
                        test_invalid_l1_peers);
     qtest_add_data_func("sn/builder/l1-peer/self", "l1-peer-self",
                        test_invalid_l1_peers);
+    for (size_t i = 0; i < ARRAY_SIZE(unbuilt_record_cases); i++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn/builder/unbuilt/%s",
+            unbuilt_record_cases[i].fault + strlen("unbuilt-"));
+
+        qtest_add_data_func(path, &unbuilt_record_cases[i],
+                            test_unbuilt_record_refused);
+    }
     qtest_add_data_func("sn/builder/origin300-two-chassis-l1s-are-peers",
                         NULL, test_origin300_two_chassis_l1s_are_peers);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",

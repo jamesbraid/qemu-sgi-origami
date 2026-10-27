@@ -1201,6 +1201,59 @@ static void bedrock_test_install_ip53_memory_descriptor(bool swapped)
         cpu_population_list(&ip53_test_population, 1));
 }
 
+/*
+ * One catalogue record the builder cannot build yet, added to the
+ * two-node Bedrock fixture. None is a hardware claim: each only has to
+ * reach the builder's refusal.
+ */
+static void bedrock_test_install_unbuilt_record(const char *record)
+{
+    if (!strcmp(record, "xio-cable")) {
+        static SGIModelCrossbar crossbar = {
+            .id = (char *)"enclosure-crossbar", .module_index = 1,
+            .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 1,
+        };
+        static SGIModelCrossbarList crossbars = { .value = &crossbar };
+        static SGIModelXioEnd ends[] = {
+            { .kind = SGI_MODEL_XIO_END_KIND_NODE, .index = 0 },
+            { .kind = SGI_MODEL_XIO_END_KIND_CROSSBAR, .index = 0,
+              .has_port = true, .port = 0xa },
+        };
+        static SGIModelXioEndList end_list[] = {
+            { .value = &ends[0], .next = &end_list[1] },
+            { .value = &ends[1] },
+        };
+        static SGIModelXioCable cable = {
+            .name = (char *)"node0-to-enclosure", .ends = &end_list[0],
+        };
+        static SGIModelXioCableList cables = { .value = &cable };
+
+        bedrock_test_topology.crossbars = &crossbars;
+        bedrock_test_topology.has_xio_cables = true;
+        bedrock_test_topology.xio_cables = &cables;
+    } else if (!strcmp(record, "board-kind-ip35")) {
+        bedrock_test_nodes[1].has_board_kind = true;
+        bedrock_test_nodes[1].board_kind = SGI_MODEL_BOARD_KIND_IP35;
+    } else if (!strcmp(record, "memory-node")) {
+        bedrock_test_nodes[1].has_role = true;
+        bedrock_test_nodes[1].role = SGI_MODEL_NODE_ROLE_MEMORY;
+    } else if (!strcmp(record, "no-flash")) {
+        bedrock_test_nodes[1].flash = NULL;
+    } else if (!strcmp(record, "controller-absent")) {
+        bedrock_test_modules[1].has_controller = true;
+        bedrock_test_modules[1].controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT;
+    } else if (!strcmp(record, "brick-type")) {
+        bedrock_test_modules[1].brick_type = (char *)"C";
+    } else if (!strcmp(record, "module-owned-l1")) {
+        bedrock_test_controllers[1].has_owner = true;
+        bedrock_test_controllers[1].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
+    } else if (!strcmp(record, "io7-preset")) {
+        bedrock_test_io_boards[1].preset = SGI_MODEL_IO_BOARD_PRESET_IO7;
+    } else {
+        g_assert_not_reached();
+    }
+}
+
 #define TYPE_SN_BUILDER_BEDROCK_TEST \
     MACHINE_TYPE_NAME("sn-builder-bedrock-test")
 
@@ -1246,6 +1299,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
             bedrock_test_topology.l1_peer_links->value->
                 target_controller_index = 0;
         }
+    } else if (g_str_has_prefix(value, "unbuilt-")) {
+        bedrock_test_install_unbuilt_record(value + strlen("unbuilt-"));
     } else if (!strcmp(value, "ip53")) {
         bedrock_test_install_ip53_descriptor(false);
     } else if (!strcmp(value, "ip53-two-pic-hosts")) {
