@@ -265,6 +265,13 @@ static bool sgi_soft_bands_run(SGISoftBandFn *fn, void *opaque,
     return true;
 }
 
+/* The pixel count from which a draw or clear into @t runs in bands. */
+static uint64_t sgi_soft_band_min_pixels(const SGIRasterTarget *t)
+{
+    return t->band_min_pixels ? t->band_min_pixels :
+           qatomic_read(&sgi_soft_bands_min_pixels);
+}
+
 static inline bool sgi_soft_row_in_band(const SGISoftDraw *r, int py)
 {
     return r->bands <= 1 ||
@@ -5378,7 +5385,7 @@ static void sgi_soft_band_draw(void *opaque, unsigned band, unsigned bands)
 static bool sgi_soft_draw_parallel(const SGISoftDraw *r, const SGIGLDraw *d)
 {
     unsigned bands = sgi_soft_bands();
-    uint64_t min_pixels = qatomic_read(&sgi_soft_bands_min_pixels);
+    uint64_t min_pixels = sgi_soft_band_min_pixels(r->t);
     SGISoftBandDraw job = { .r = r, .d = d };
 
     if (!r->t->concurrent_pixels || bands < 2 ||
@@ -5875,7 +5882,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     if (!t->concurrent_pixels || bands < 2 || op->y1 < op->y0 ||
         op->x1 < op->x0 ||
         (uint64_t)(op->x1 - op->x0 + 1) * (op->y1 - op->y0 + 1) <
-        qatomic_read(&sgi_soft_bands_min_pixels) ||
+        sgi_soft_band_min_pixels(t) ||
         !sgi_soft_bands_run(sgi_soft_clear_rows, &rows, bands)) {
         sgi_soft_clear_rows(&rows, 0, 1);
     }
