@@ -2168,6 +2168,71 @@ static void test_serial_idle_status(void)
 }
 
 
+/* The 16550 core's bound on holding a character for a refusing backend. */
+#define XMIT_GIVE_UP_NS (2LL * 1000 * 1000 * 1000)
+
+/* Leave a socket's send queue with no room for one more byte. */
+static void ioc4_fill_send_queue(int fd)
+{
+    uint8_t filler[512];
+    int sndbuf = 1024;
+    int flags;
+
+    memset(filler, 0xa5, sizeof(filler));
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+                              &sndbuf, sizeof(sndbuf)), ==, 0);
+    flags = fcntl(fd, F_GETFL);
+    g_assert_cmpint(flags, >=, 0);
+    g_assert_cmpint(fcntl(fd, F_SETFL, flags | O_NONBLOCK), ==, 0);
+    while (write(fd, filler, sizeof(filler)) > 0) {
+        continue;
+    }
+    while (write(fd, filler, 1) > 0) {
+        continue;
+    }
+    g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+/*
+ * A connected backend that never takes a character holds the walk behind
+ * it, but only for the 16550 core's bound: then the core gives the
+ * character up and the walk goes on, as a line would carry it whoever
+ * listened. With the FIFO off the 16550 takes two characters at once, one
+ * in its shift register and one in its holding register; the third waits.
+ */
+static void test_dma_tx_refusing_backend_holds_then_completes(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    const uint8_t data[4] = { 0x41, 0, 0, 0 };
+    const uint8_t control[4] = { TX_VALID, 0, 0, 0 };
+    g_autofree char *contents = NULL;
+    QTestState *qts;
+    int sv[2];
+
+    ioc4_socketpair(sv);
+    ioc4_fill_send_queue(sv[1]);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 0, data, control);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 8, data, control);
+    ioc4_write_tx_entry(qts, 0, 0x1000, 16, data, control);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_TX_PRODUCE(0), 24);
+
+    /* sv[0] is never read. */
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 16);
+    qtest_clock_step(qts, XMIT_GIVE_UP_NS - 100 * 1000 * 1000);
+    g_assert_cmphex(reg_read(qts, SDMA_TX_CONSUME(0)), ==, 16);
+    qtest_clock_step(qts, 200 * 1000 * 1000);
+    ioc4_wait_reg(qts, SDMA_TX_CONSUME(0), 0xff8, 24);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
 static void test_serial_idle_status_backend_backpressure(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -3477,6 +3542,8 @@ int main(int argc, char **argv)
                     test_serial_idle_status_default_pio);
     qtest_add_func("/sgi-ioc4/serial-idle-status-backend-backpressure",
                     test_serial_idle_status_backend_backpressure);
+    qtest_add_func("/sgi-ioc4/dma-tx-refusing-backend-holds-then-completes",
+                   test_dma_tx_refusing_backend_holds_then_completes);
     qtest_add_func("/sgi-ioc4/serial-idle-status-dma-callbacks",
                     test_serial_idle_status_dma_callbacks);
     qtest_add_func("/sgi-ioc4/serial-idle-status-nested-dma",
