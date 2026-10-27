@@ -2091,6 +2091,10 @@
             "interface": { "type": "string" },
             "location": { "type": "string" },
             "occupancy": { "enum": ["empty", "opaque", "occupied"] },
+            "port": {
+              "enum": [8, 9, 10, 11, 12, 13],
+              "description": "The XBridge port a connector on a crossbar leads to: Crosstalk port 8, 9, C (12) or D (13), or Crosstown2 port A (10) or B (11). E and F are PCI and have no connector. The connector's parent is that crossbar."
+            },
             "notes": { "type": "string" }
           }
         },

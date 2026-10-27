@@ -1808,5 +1808,65 @@ class CheckSystemModelTests(unittest.TestCase):
         self.assertDocumentPasses(self.fixture("population-orientation.yaml"))
 
 
+class Origin3000BrickValidationTests(unittest.TestCase):
+    """XIO connector ports and cables on the Origin 3000 brick layers."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.checker, validate_resolved, _ = load_checker()
+        cls.validate_resolved = staticmethod(validate_resolved)
+        cls.reference = cls.checker.load_system_model(
+            INPUTS / "origin3200.yaml")
+
+    def model(self):
+        return copy.deepcopy(self.reference)
+
+    def problems(self, document):
+        try:
+            model = self.validate_resolved(copy.deepcopy(document))
+        except self.checker.ResolutionError as exc:
+            return [f"resolution: {exc}"]
+        return self.checker.check(
+            pathlib.Path("test model"), self.checker.schema(INPUTS),
+            model=model)
+
+    def assertFails(self, document, message):
+        self.assertIn(message, "; ".join(self.problems(document)))
+
+    def component(self, model, ident):
+        return next(item for item in model["components"]
+                    if item["id"] == ident)
+
+    def test_reference_passes(self):
+        self.assertEqual(self.problems(self.model()), [])
+
+    def test_ibrick_connectors_record_their_xbridge_ports(self):
+        model = self.model()
+        for ident, port in (("ibrick-port-a", 0xa), ("ibrick-port-b", 0xb)):
+            with self.subTest(connector=ident):
+                connector = self.component(model, ident)
+                self.assertEqual(connector["connector"]["port"], port)
+                self.assertEqual(connector["parent"],
+                                 "ibrick-xbridge-crossbar")
+
+    def test_connector_port_must_be_a_crossbar_xio_port(self):
+        model = self.model()
+        self.component(model, "ibrick-port-a")["connector"]["port"] = 0xe
+        self.assertFails(model, "schema:")
+
+    def test_connector_port_must_sit_on_a_crossbar(self):
+        model = self.model()
+        self.component(model, "c0-xio-ii-connector")["connector"][
+            "port"] = 0xa
+        self.assertFails(model, "connector 'c0-xio-ii-connector' names "
+                         "XBridge port 0xa but is not on a crossbar")
+
+    def test_connector_port_is_unique_on_its_crossbar(self):
+        model = self.model()
+        self.component(model, "ibrick-port-b")["connector"]["port"] = 0xa
+        self.assertFails(model, "crossbar 'ibrick-xbridge-crossbar' port 0xa "
+                         "is named by 'ibrick-port-a' and 'ibrick-port-b'")
+
+
 if __name__ == "__main__":
     unittest.main()
