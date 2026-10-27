@@ -771,10 +771,9 @@ static void o2_private_memory_changed(MemoryListener *listener,
     s->private_memory_changed = true;
 }
 
-static void o2_private_memory_commit(MemoryListener *listener)
+static void o2_private_memory_notify(CPUState *cpu, run_on_cpu_data data)
 {
-    O2MachineState *s = container_of(listener, O2MachineState,
-                                    private_memory_listener);
+    O2MachineState *s = data.host_ptr;
     IOMMUTLBEvent event = {
         .type = IOMMU_NOTIFIER_UNMAP,
         .entry = {
@@ -785,10 +784,24 @@ static void o2_private_memory_commit(MemoryListener *listener)
         },
     };
 
+    memory_region_notify_iommu(&s->private_router, O2_PRIVATE_DECODED, event);
+}
+
+static void o2_private_memory_commit(MemoryListener *listener)
+{
+    O2MachineState *s = container_of(listener, O2MachineState,
+                                    private_memory_listener);
+    CPUState *cpu = s->private_cpu ? CPU(s->private_cpu) : NULL;
+
     if (s->private_memory_changed) {
         s->private_memory_changed = false;
-        memory_region_notify_iommu(&s->private_router, O2_PRIVATE_DECODED,
-                                    event);
+        /* The machine outlives its fixed CPU's queued work. */
+        if (cpu && cpu->halt_cond) {
+            async_run_on_cpu(cpu, o2_private_memory_notify,
+                              RUN_ON_CPU_HOST_PTR(s));
+        } else {
+            o2_private_memory_notify(cpu, RUN_ON_CPU_HOST_PTR(s));
+        }
     }
 }
 
