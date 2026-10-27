@@ -2038,6 +2038,54 @@ static void bedrock_test_install_memory_node(void)
 }
 
 /*
+ * The two IP53 nodes as boards 0 and 2 of one Cx-brick, behind the
+ * module's one L1. @variant names a change the builder must refuse, or
+ * "-memory" for a memory-only board 2. None is a hardware claim.
+ */
+static bool bedrock_test_install_ip53_cx_l1(const char *variant)
+{
+    static unsigned int boards[] = { 0, 1 };
+    SGIModelController *controller = &bedrock_test_controllers[0];
+
+    bedrock_test_install_ip53_memory_descriptor(false);
+    ip53_memory_test_nodes[1].module_index = 0;
+    ip53_memory_test_nodes[1].slot = 2;
+    bedrock_test_modules[0].nodes = uint32_list(boards, ARRAY_SIZE(boards));
+    bedrock_test_topology.modules = module_list(bedrock_test_modules, 1);
+    ip53_memory_test_controllers[0].next = NULL;
+    controller->has_owner = true;
+    controller->owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
+    controller->has_profile = true;
+    controller->profile = SGI_MODEL_MODULE_L1_PROFILE_CX_BRICK;
+    if (!*variant) {
+        return true;
+    }
+    if (!strcmp(variant, "-memory")) {
+        ip53_memory_test_nodes[1].has_role = true;
+        ip53_memory_test_nodes[1].role = SGI_MODEL_NODE_ROLE_MEMORY;
+        /* No processor slot listed: the asymmetric memory check counts them. */
+        ip53_memory_test_nodes[1].cpu_slots = NULL;
+        ip53_test_population.cpus_per_node = uint32_list(
+            memory_node_test_population,
+            ARRAY_SIZE(memory_node_test_population));
+        bedrock_test_topology.node_populations = whole_population(
+            &bedrock_test_topology,
+            cpu_population_list(&ip53_test_population, 1));
+    } else if (!strcmp(variant, "-node-owned")) {
+        controller->has_owner = false;
+    } else if (!strcmp(variant, "-slot-reused")) {
+        ip53_memory_test_nodes[1].slot = 0;
+    } else if (!strcmp(variant, "-slot-4")) {
+        ip53_memory_test_nodes[1].slot = 4;
+    } else if (!strcmp(variant, "-not-ip53")) {
+        ip53_memory_test_nodes[1].has_board_kind = false;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
  */
@@ -2330,6 +2378,12 @@ static void bedrock_test_set_construction_fault(Object *obj,
             ip53_memory_test_nodes[1].accepted_memory_mib = uint64_list(
                 ip53_memory_test_accepted_mib,
                 ARRAY_SIZE(ip53_memory_test_accepted_mib));
+        }
+    } else if (g_str_has_prefix(value, "ip53-cx-l1")) {
+        if (!bedrock_test_install_ip53_cx_l1(value + strlen("ip53-cx-l1"))) {
+            error_setg(errp, "unknown sn-builder-bedrock-test construction "
+                       "fault '%s'", value);
+            return;
         }
     } else if (!strcmp(value, "asymmetric-no-ip53")) {
         for (unsigned int i = 0; i < ARRAY_SIZE(bedrock_test_nodes); i++) {

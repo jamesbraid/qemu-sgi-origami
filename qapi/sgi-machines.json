@@ -1326,12 +1326,25 @@
 # @node: each node builds it as its own child, as an Origin 300 does
 #
 # @module: the module builds it once and links it into each of its
-#     nodes.  The SN1 builder builds it for a module with one node
-#     and refuses it for several
+#     nodes.  The SN1 builder builds it for a module with one node,
+#     and for several only with @SGIModelModuleL1Profile @cx-brick
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelControllerOwner', 'data': ['node', 'module'] }
+
+##
+# @SGIModelModuleL1Profile:
+#
+# The reviewed L1 product profile a module-owned controller models,
+# where it differs from the profile its node would give it.
+#
+# @cx-brick: the Origin 3900 Cx-brick's one L1 serving one to four
+#     IP53 node boards, each on its own link named by its slot
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelModuleL1Profile', 'data': ['cx-brick'] }
 
 ##
 # @SGIModelModuleController:
@@ -1364,6 +1377,9 @@
 #     its own or the module builds it once for all its nodes; absent
 #     means @node
 #
+# @profile: the L1 product profile of a module-owned L1; absent means
+#     the profile its node would give it
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelController',
@@ -1371,7 +1387,8 @@
             'module-index': 'uint32',
             'kind': 'SGIModelControllerKind',
             '*l1': 'SGIModelL1Config',
-            '*owner': 'SGIModelControllerOwner' } }
+            '*owner': 'SGIModelControllerOwner',
+            '*profile': 'SGIModelModuleL1Profile' } }
 
 ##
 # @SGIModelMidplaneRecord:

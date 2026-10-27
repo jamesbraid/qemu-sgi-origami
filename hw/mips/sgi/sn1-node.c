@@ -2438,12 +2438,18 @@ bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
                                     OBJECT(xbridge), errp);
 }
 
-bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1, Error **errp)
+bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1,
+                        unsigned int link, Error **errp)
 {
     if (qdev_is_realized(DEVICE(node)) || node->supplied_l1) {
         error_setg(errp, "an L1 is supplied once, before the node realizes");
         return false;
     }
+    if (link >= SGI_L1_CX_BOARDS || (link && !qdev_is_realized(l1))) {
+        error_setg(errp, "an unrealized L1 is supplied on link 0 only");
+        return false;
+    }
+    node->l1_link = link;
     /*
      * Added here rather than with the class's properties: a node's own L1
      * is its child of the same name.
@@ -2463,6 +2469,15 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
 
+    /*
+     * A realized supplied L1 is shared with the module's other nodes: the
+     * machine configured it, and this node only adds its own UART window
+     * on its board's link.
+     */
+    if (node->supplied_l1 && qdev_is_realized(node->supplied_l1)) {
+        node->l1 = node->supplied_l1;
+        goto window;
+    }
     /*
      * A module-owned L1 is configured exactly as the node's own would be;
      * only its place in the tree differs.
@@ -2538,8 +2553,10 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     }
 
 uart:
+window:
     l1_uart_dev = qdev_new(TYPE_SGI_L1_UART);
     object_property_add_child(OBJECT(node), "l1-uart", OBJECT(l1_uart_dev));
+    qdev_prop_set_uint8(l1_uart_dev, "transport-index", node->l1_link);
     object_property_set_link(OBJECT(l1_uart_dev), "controller",
                              OBJECT(node->l1), &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), errp)) {
@@ -2884,7 +2901,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         object_property_add_child(OBJECT(node), "l1-nmi-split",
                                   OBJECT(nmi_split));
         qdev_realize_and_unref(nmi_split, NULL, &error_fatal);
-        qdev_connect_gpio_out_named(node->l1, "nmi", 0,
+        qdev_connect_gpio_out_named(node->l1, "nmi", node->l1_link,
                                     qdev_get_gpio_in(nmi_split, 0));
         for (cpu = 0; cpu < node->nr_cpus; cpu++) {
             qdev_connect_gpio_out(
