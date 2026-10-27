@@ -153,7 +153,7 @@ unless the notes say otherwise.
      - read-only
      - Bits 7:0 are input pins on the XBridge
        :src:`xbridge-asic-spec-0.5 p. 133`. Bit 5 reads one; the SN1
-       driver refuses a head whose bit 5 is clear. Credit and retry
+       driver refuses a head whose bit 5 is clear, a *software expectation*. Credit and retry
        counts read zero, an *approximation*.
    * - ``0x10``, ``0x18``
      - Error address upper, lower
@@ -392,9 +392,10 @@ The specification gives no reset value for the window base field. The
 model resets device *n* with error-lock, page-cross and memory space set
 and window base 0, 2, 4, 5, 6, 7, 8 and 9, the Bridge's layout of two
 2 MB windows then six of 1 MB. The stock IP35 PROM's sanity diagnostic
-reports exactly those seven non-zero values as expected against a model
-that reset them to zero, a *software expectation*. That they are devices
-1 to 7 in order is *inferred* from the report order.
+expects device registers 1 to 7 to hold window bases 2, 4, 5, 6, 7, 8
+and 9 at reset, a *software expectation*. That the seven values it
+reports belong to devices 1 to 7 in order is *inferred* from the report
+order.
 
 A direct-window DMA address takes its target widget from direct map bits
 23:20 and XIO address bits 47:31 from bits 16:0
@@ -402,7 +403,7 @@ A direct-window DMA address takes its target widget from direct map bits
 bit 17 is set and the offset field is zero, as on the Bridge. The
 specification states bit 17 without that condition, so the model's rule
 is an *approximation*. OpenBSD, Linux and the IP35 port write widget and
-offset and so clear bit 17.
+offset and so clear bit 17, *software expectations*.
 
 .. _sgi-xbridge-nic:
 
@@ -457,7 +458,9 @@ A device window maps to PCI memory space when device bit 12 is set and
 to I/O space when it is clear. In memory space the top two base bits are
 ignored, so the base supplies PCI bits 29:20, and devices 0 and 1 ignore
 base bit 0 for their 2 MB windows. In I/O space all twelve bits map
-:src:`xbridge-asic-spec-0.5 p. 178-179`, *established*.
+:src:`xbridge-asic-spec-0.5 p. 178-179`, *established*. The model also
+clears base bit 0 for devices 0 and 1 in I/O space, which the
+specification does not state, an *approximation*.
 
 Device bit 22 gives the target's width, 4 or 8 bytes. A doubleword to a
 32-bit target is two word cycles, lower address first, carrying the more
@@ -490,10 +493,10 @@ chip learns the width from ``ACK64#`` on each transfer
 :src:`xbridge-asic-spec-0.5 p. 37`, which QEMU cannot observe. OpenBSD
 and Linux clear both control swap bits and the IP35 port sets them, a
 *software expectation*. OpenBSD maps PCI memory through the 32-bit alias
-and never uses the 64-bit alias.
+and never uses the 64-bit alias, a *software expectation*.
 
-In the Origin 300 PCI expansion topology, head E of the first chip
-narrows a 4-byte aligned access through the 64-bit alias to 4 bytes
+In the Origin 300 PCI expansion topology, with packet transport and
+revision 2, head E of the first chip narrows a 4-byte aligned access through the 64-bit alias to 4 bytes
 when the slot is in the head's wide-slot mask and device bit 22 is clear.
 The stock ``xbg`` diagnostic expects the four words it reads there in
 the order the 32-bit alias returns them. This is an *approximation*
@@ -583,10 +586,10 @@ page as ``0x4000_0000`` with swapping on. Entry bit 5 also requests
 swapping. This is an *approximation*. SGI's SN1 driver swaps a mapped
 page by setting PCI bit 29 and never sets entry bit 5 (``bridge.h``
 lines 1398-1402, ``pcibr.c`` lines 5156-5171), and the IRIX 6.5.30
-kernel does the same, both *software expectations*. Under the stock
-PROM 6.210 with USB input, the model sees the PROM program entry 1 with
-bit 5 clear and issue DMA at ``0x6000_581c``, which only the bit-29
-reading maps. A revision-B specification or a DMA capture on an
+kernel does the same, both *software expectations*. The stock IP35
+PROM 6.210 programs entry 1 with bit 5 clear and issues USB DMA at
+``0x6000_581c``, a *software expectation*. Only the bit-29 reading maps
+it. A revision-B specification or a DMA capture on an
 Origin 300 would settle the hardware rule.
 
 .. _sgi-xbridge-dma-placement:
@@ -961,11 +964,6 @@ the model uses ``0xb``, the lowest free port, an *approximation*. The
 machine offers no XIO board there. The Fuel's graphics board answers at
 widget ``0xd``, which the ``fuel`` machine selects as its external port.
 
-An experimental V-brick route joins external port ``0xb`` to a second
-XBridge's host port and projects that chip's widget 8 and widget 0 into
-the first and second 8 MB of widget ``0xb``. It is a QEMU address
-choice, not a hardware route, and no topology selects it.
-
 Packet transport
 ----------------
 
@@ -1045,6 +1043,11 @@ and transport. Migration works only between identical builds.
 Model limits
 ============
 
+- A V-brick projection exists in code but no topology selects it. It
+  joins external port ``0xb`` to a second XBridge's host port and
+  projects that chip's widget 8 and widget 0 into the first and second
+  8 MB of widget ``0xb``. It is a QEMU address choice, not a hardware
+  route.
 - Only revision 2 is presented. Code paths keyed to other head revisions
   are unreachable.
 - Deferred, reading zero and logging ``LOG_UNIMP``: the address-match

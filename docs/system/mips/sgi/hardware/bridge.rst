@@ -91,8 +91,8 @@ The model composes the word from its ``revision``, ``part`` and
      - *observed*: a published Origin 200 GIGAchannel inventory prints
        ``ASIC BRIDGE Rev 4`` for the base I/O Bridge
        (:src:`nekonomicon-16726704`). SGI's upgrade guide prints
-       ``Rev 3`` in its example listing (:src:`108-0187-001 p. 3-8`), so
-       revision 3 boards may also exist.
+       ``Rev 3`` in its example listing (:src:`108-0187-001 p. 3-8`).
+       Whether revision 3 IP29 boards shipped is *unknown*.
    * - Origin 2000 and Onyx2 BaseIO and BaseIO-G, MENET card,
        GIGAchannel cabinet, PCI-XTALK adapter
      - the board's XIO slot
@@ -105,6 +105,11 @@ The model composes the word from its ``revision``, ``part`` and
      - *observed* for the cardcage, ``ASIC BRIDGE Rev 3``
        (:src:`irixnet-post-32252`); see :doc:`mscsi` and
        :doc:`pci-expansion`.
+   * - Bare ``sgi-pci-expansion`` board
+     - the board's XIO slot
+     - 1
+     - *approximation*: the board leaves the property at its default
+       unless it is given a ``bridge-revision`` (:doc:`pci-expansion`).
    * - Octane and Octane2 IP30 system board
      - 15
      - 1
@@ -882,8 +887,11 @@ The model takes the specification's width-dependent rule, an
   the end of each reset and tells each card what its slot drove. This
   stands in for PCI's per-transaction REQ64# and ACK64# handshake. A
   32-bit function narrows a 64-bit function in the same slot. The Origin
-  200 wires devices 5 to 7, *inferred* from SGI selling those slots as
-  64-bit; every other board wires none.
+  200 wires devices 5 to 7; every other board wires none. The Origin 200
+  Owner's Guide says the option slots take 32-bit or 64-bit cards and
+  gives their PCI IDs as 5, 6 and 7 (:src:`007-3415-003 pp. 7 and 12`), *established*. That
+  those IDs are Bridge devices 5 to 7, and that the slots drive REQ64#,
+  is *inferred*.
 - The placement reads no PCI identity. A card whose bytes must arrive in
   another order models its own swap controls or converts at its own PCI
   face, as :doc:`ioc3` does.
@@ -1003,8 +1011,9 @@ time-out is recorded. The model uses the response buffer error registers,
 whose fields are a device, a buffer and 48 address bits
 (:src:`bridge-asic-spec-4.0 p. 83`, Tables 18, 19 and 58), *inferred*.
 Which device number the chip records for a cycle it mastered itself is
-also *inferred*: the specification names the field the device number of
-the PCI master (Table 27), and the model stores the addressed slot.
+*unknown*: the specification names the field the device number of the PCI
+master (Table 27), and the Bridge is the master of such a cycle. The model
+stores the addressed slot, an *approximation*.
 
 The error address registers at ``0x010`` and ``0x018``, the error command
 words and the SSRAM parity register always read zero.
@@ -1017,8 +1026,8 @@ External SSRAM and flash
 The external SSRAM port can hold an extended translation table. No
 modelled board fits one. The model completes every access to the 512 KB
 window, reads all ones and drops writes, so a write-and-read-back size
-probe finds no memory, and the control register's SSRAM size field stays
-zero. That an unfitted SSRAM port completes accesses is an
+probe finds no memory, and the control register's SSRAM size field resets to
+zero and has no effect. That an unfitted SSRAM port completes accesses is an
 *approximation*.
 
 The same port can carry a flash part instead: 16 data lines, two 2 MB
@@ -1034,8 +1043,9 @@ What the model fits:
 - The Origin 2000 and Onyx2 BaseIO cards fit an AMD-command-set part
   through QEMU's ``pflash_cfi02`` (:doc:`baseio`). The Octane and Octane2
   fit a 1 MiB Intel-command-set part through ``pflash_cfi01``
-  (:ref:`sgi-ip30-flash-wiring`). The GIGAchannel cabinet answers its
-  status word on the second select (:doc:`gigachannel`). The Origin 200
+  (:ref:`sgi-ip30-flash-wiring`). The GIGAchannel cabinet fits the BaseIO
+  card's part on select 0 when it is given an image, and answers its
+  status word on select 1 (:doc:`gigachannel`). The Origin 200
   IP29 board fits nothing.
 - The ``flash-select`` property is the strap. Clear puts select 0 at
   ``0xc00000`` and select 1 at ``0xe00000``; set swaps them.
@@ -1150,11 +1160,11 @@ The Origin 200 IP29 record is part ``030-1244-001``, revision ``H``, name
 ``IP29``: two published Origin 200 inventories report that part and
 revision for the board (:src:`usenet-95oo9r`, :src:`usenet-3a23907e`),
 *observed*, and one places the record at the Bridge's own widget. Other
-IP29 part numbers exist (:src:`preterhuman-origin-200`). The barcode is a
+IP29 part numbers exist (:src:`preterhuman-origin-200`), *observed*. The barcode is a
 marked synthetic value, ``EMUN`` and an instance number. Linux maps the
 ``030-1244-`` prefix to the IP29 setup, which puts the IOC3's second
-interrupt on Bridge pin 3; OpenBSD reaches the same pin as the first empty
-PCI device number. Other boards' records are on their own pages.
+interrupt on Bridge pin 3, and OpenBSD reaches the same pin as the first
+empty PCI device number, both *software expectations*. Other boards' records are on their own pages.
 
 .. _sgi-bridge-reset:
 
