@@ -1215,9 +1215,6 @@ static void bedrock_test_install_unbuilt_record(const char *record)
         bedrock_test_nodes[1].flash = NULL;
     } else if (!strcmp(record, "brick-type")) {
         bedrock_test_modules[1].brick_type = (char *)"C";
-    } else if (!strcmp(record, "module-owned-l1")) {
-        bedrock_test_controllers[1].has_owner = true;
-        bedrock_test_controllers[1].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
     } else {
         g_assert_not_reached();
     }
@@ -1768,6 +1765,20 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         bedrock_test_install_memory_node();
         cbrick_test_population.cpus_per_node = uint32_list(
             both, ARRAY_SIZE(both));
+    } else if (!strcmp(fault, "module-l1-several-nodes")) {
+        /* Both C-bricks' nodes in c0's module, behind its one L1. */
+        cbrick_test_install_nodes(2);
+        cbrick_test_controllers[0].has_owner = true;
+        cbrick_test_controllers[0].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
+        bedrock_test_topology.controllers->next = NULL;
+        cbrick_test_nodes[1].module_index = 0;
+        cbrick_test_modules[0].nodes = uint32_list(
+            (unsigned int[]){ 0, 1 }, 2);
+        cbrick_test_publish(1, 0, 0, 0);
+    } else if (!strcmp(fault, "module-l1-no-node")) {
+        bedrock_test_install_rbrick();
+        cbrick_test_controllers[2].has_owner = true;
+        cbrick_test_controllers[2].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
         cbrick_test_nodes[0].has_board_kind = false;
     } else if (!strcmp(fault, "routed-host")) {
@@ -1889,6 +1900,16 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_nbrick();
     } else if (!strcmp(value, "cbrick-memory-node")) {
         bedrock_test_install_memory_node();
+    } else if (!strcmp(value, "cbrick-l1-node") ||
+               !strcmp(value, "cbrick-l1-module")) {
+        /* The two C-bricks alone; c1's L1 owned by its node or module. */
+        cbrick_test_install_nodes(2);
+        cbrick_test_publish(2, 0, 0, 0);
+        if (!strcmp(value, "cbrick-l1-module")) {
+            cbrick_test_controllers[1].has_owner = true;
+            cbrick_test_controllers[1].owner =
+                SGI_MODEL_CONTROLLER_OWNER_MODULE;
+        }
     } else if (!strcmp(value, "cbrick-rbrick")) {
         bedrock_test_install_rbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {

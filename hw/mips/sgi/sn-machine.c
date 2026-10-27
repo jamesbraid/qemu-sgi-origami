@@ -1407,6 +1407,11 @@ static bool sgi_machine_ip53_normal_tuple(
     return fitted_count == profile->fitted_cpus;
 }
 
+static bool sgi_machine_controller_module_owned(const SGIModelController *c)
+{
+    return c->has_owner && c->owner == SGI_MODEL_CONTROLLER_OWNER_MODULE;
+}
+
 static bool sgi_machine_node_is_memory(const SGIModelNode *node)
 {
     return node->has_role && node->role == SGI_MODEL_NODE_ROLE_MEMORY;
@@ -1455,10 +1460,10 @@ static bool sgi_machine_validate_memory_node(const SGIModelTopology *t,
 
 /*
  * Refuse catalogue records this builder cannot build yet, before anything
- * is created: a node with no boot flash, a module that owns its L1 for
- * its nodes and a module's catalogued L1 brick type. Building any of
- * them as the nearest existing shape would show the guest hardware the
- * topology does not describe.
+ * is created: a node with no boot flash, a module-owned L1 shared by
+ * several nodes or by none, and a module's catalogued L1 brick type.
+ * Building any of them as the nearest existing shape would show the
+ * guest hardware the topology does not describe.
  */
 static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
                                                Error **errp)
@@ -1466,8 +1471,11 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     const SGIModelNodeList *node;
     const SGIModelModuleList *module;
     const SGIModelControllerList *controller;
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t module_count;
     unsigned int index = 0;
 
+    modules = sgi_model_module_array(t->modules, &module_count);
     for (node = t->nodes; node; node = node->next, index++) {
         const SGIModelNode *n = node->value;
 
@@ -1498,11 +1506,36 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     for (controller = t->controllers; controller;
          controller = controller->next) {
         const SGIModelController *c = controller->value;
+        const SGIModelModule *m;
+        size_t nodes;
 
-        if (c->has_owner && c->owner == SGI_MODEL_CONTROLLER_OWNER_MODULE) {
+        if (!sgi_machine_controller_module_owned(c)) {
+            continue;
+        }
+        m = c->module_index < module_count ? modules[c->module_index] : NULL;
+        if (t->generation != SGI_MODEL_GENERATION_SN1 ||
+            c->kind != SGI_MODEL_CONTROLLER_KIND_L1 || !m) {
             error_setg(errp, "topology '%s' controller '%s' is owned by its "
-                       "module; module-owned controllers are not built yet",
+                       "module, which only an SN1 module's L1 builds",
                        t->name, c->id);
+            return false;
+        }
+        nodes = QAPI_LIST_LENGTH(m->nodes);
+        if (!nodes) {
+            error_setg(errp, "topology '%s' controller '%s' is owned by "
+                       "module '%s', which lists no node to link it into",
+                       t->name, c->id, m->id);
+            return false;
+        }
+        /*
+         * How several Bedrocks reach one L1, and how its serial lines
+         * number, is unknown.
+         */
+        if (nodes > 1) {
+            error_setg(errp, "topology '%s' controller '%s' is owned by "
+                       "module '%s', which lists %zu nodes; no reviewed L1 "
+                       "attachment for several nodes", t->name, c->id, m->id,
+                       nodes);
             return false;
         }
     }
@@ -4064,6 +4097,48 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
             return false;
         }
         s->enclosure_xbridges[i] = xbridge;
+    }
+    return true;
+}
+
+/*
+ * Create each module-owned L1 unrealized as /machine/module<M>/l1 and
+ * hand it to the module's one node, which configures and realizes it as
+ * it would its own. Validation left only modules with exactly one node.
+ */
+static bool sgi_machine_supply_module_l1s(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          Error **errp)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    const SGIModelControllerList *entry;
+    size_t module_count;
+
+    modules = sgi_model_module_array(t->modules, &module_count);
+    for (entry = t->controllers; entry; entry = entry->next) {
+        const SGIModelController *c = entry->value;
+        g_autofree char *module_name = NULL;
+        const SGIModelModule *m;
+        Object *container;
+        DeviceState *l1;
+
+        if (!sgi_machine_controller_module_owned(c)) {
+            continue;
+        }
+        g_assert(c->module_index < module_count);
+        m = modules[c->module_index];
+        g_assert(QAPI_LIST_LENGTH(m->nodes) == 1 &&
+                 m->nodes->value < s->num_nodes);
+        module_name = g_strdup_printf("module%u", c->module_index);
+        container = object_resolve_path_component(OBJECT(s), module_name);
+        g_assert(container);
+        l1 = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(container, "l1", OBJECT(l1));
+        object_unref(OBJECT(l1));
+        if (!sn1_node_supply_l1(SN1_NODE(s->bedrock_nodes[m->nodes->value]),
+                                l1, errp)) {
+            return false;
+        }
     }
     return true;
 }
@@ -8365,7 +8440,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     if (kind != SGI_MODEL_ASIC_KIND_HUB &&
         (!sgi_machine_create_pic_hosts(s, t, errp) ||
-         !sgi_machine_create_enclosure_xbridges(s, t, errp))) {
+         !sgi_machine_create_enclosure_xbridges(s, t, errp) ||
+         !sgi_machine_supply_module_l1s(s, t, errp))) {
         return false;
     }
     if (s->ip53_fingerprint_enabled) {

@@ -9047,9 +9047,6 @@ static const UnbuiltRecordCase unbuilt_record_cases[] = {
     { "unbuilt-brick-type",
       "module 'module-n1' names L1 brick type 'C'; brick types from the "
       "catalogue are not built yet" },
-    { "unbuilt-module-owned-l1",
-      "controller 'l1-n1' is owned by its module; module-owned "
-      "controllers are not built yet" },
 };
 
 static void test_unbuilt_record_refused(const void *data)
@@ -9405,6 +9402,88 @@ static void test_memory_node_serves_node0(void)
     g_unlink(prom);
 }
 
+/* A node's L1 UART in its processors' Hub-local register window. */
+#define MODULE_L1_UART (NASID_TEST_HUB_LOCAL_REGISTERS + 0x80)
+
+typedef struct ModuleL1Uart {
+    QTestState *qts;
+    unsigned int cpu;
+} ModuleL1Uart;
+
+static uint64_t module_l1_uart_read(void *opaque, uint64_t offset)
+{
+    ModuleL1Uart *uart = opaque;
+
+    return ip53_memory_readq_cpu(uart->qts, uart->cpu,
+                                 MODULE_L1_UART + offset);
+}
+
+static void module_l1_uart_write(void *opaque, uint64_t offset,
+                                 uint64_t value)
+{
+    ModuleL1Uart *uart = opaque;
+
+    ip53_memory_writeq_cpu(uart->qts, uart->cpu, MODULE_L1_UART + offset,
+                           value);
+}
+
+/* c1's L1 reply to the brick-type request, through c1's own processor. */
+static size_t module_l1_brick_type(const char *fault, uint8_t *reply,
+                                   size_t capacity, char **serial)
+{
+    static const uint8_t request[] = { 0x10, 0, 4, 0x10, 6, 0, 3, 0 };
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start(fault, prom, "-S");
+    ModuleL1Uart uart = { qts, 1 };
+    SGIL1TestIO io = { &uart, module_l1_uart_read, module_l1_uart_write };
+    g_autofree char *owner = g_strcmp0(fault, "cbrick-l1-module") ?
+        g_strdup("/machine/node1/l1") : g_strdup("/machine/module1/l1");
+    size_t length;
+
+    *serial = qom_get_str(qts, owner, "brick-serial");
+    sgi_l1_test_send_io(&io, request, sizeof(request), false);
+    length = sgi_l1_test_receive_io(&io, reply, capacity);
+    qtest_quit(qts);
+    g_unlink(prom);
+    return length;
+}
+
+/*
+ * A module-owned L1 for one node is built once as /machine/module<M>/l1
+ * and linked into the node, which creates none of its own. It answers
+ * the brick-type request through that node exactly as the node's own L1
+ * does, and carries the same serial.
+ */
+static void test_module_owned_l1_for_one_node(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = cbrick_start("cbrick-l1-module", prom, "-S");
+    g_autofree char *in_module = qom_child_type(qts, "/machine/module1",
+                                                "l1");
+    g_autofree char *on_node = qom_child_type(qts, "/machine/node1", "l1");
+    g_autofree char *linked = qom_get_str(qts, "/machine/node1", "l1");
+    g_autofree char *c0_l1 = qom_child_type(qts, "/machine/node0", "l1");
+    g_autofree char *node_serial = NULL;
+    g_autofree char *module_serial = NULL;
+    uint8_t node_reply[32], module_reply[32];
+    size_t node_length, module_length;
+
+    g_assert_cmpstr(in_module, ==, "sgi-l1");
+    g_assert_null(on_node);
+    g_assert_cmpstr(linked, ==, "/machine/module1/l1");
+    g_assert_cmpstr(c0_l1, ==, "sgi-l1");
+    qtest_quit(qts);
+    g_unlink(prom);
+
+    node_length = module_l1_brick_type("cbrick-l1-node", node_reply,
+                                       sizeof(node_reply), &node_serial);
+    module_length = module_l1_brick_type("cbrick-l1-module", module_reply,
+                                         sizeof(module_reply),
+                                         &module_serial);
+    g_assert_cmpmem(module_reply, module_length, node_reply, node_length);
+    g_assert_cmpstr(module_serial, ==, node_serial);
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -9673,6 +9752,12 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
       "memory node 'c1' has no populated memory bank" },
     { CBRICK_FIXTURE("memory-node-population"),
       "population fits processors to memory node 1" },
+    { CBRICK_FIXTURE("module-l1-several-nodes"),
+      "controller 'l1-c0' is owned by module 'cbrick-c0', which lists 2 "
+      "nodes; no reviewed L1 attachment for several nodes" },
+    { CBRICK_FIXTURE("module-l1-no-node"),
+      "controller 'l1-rbrick' is owned by module 'rbrick', which lists no "
+      "node to link it into" },
     { CBRICK_FIXTURE("onboard-xbridge-node"),
       "node 'c0' has an XBridge on its own board; only an IP35 node takes "
       "an XIO cable" },
@@ -10676,6 +10761,8 @@ int main(int argc, char **argv)
                    test_rbrick_router_without_l1_management);
     qtest_add_func("sn/builder/cbrick/memory-node",
                    test_memory_node_serves_node0);
+    qtest_add_func("sn/builder/cbrick/module-owned-l1",
+                   test_module_owned_l1_for_one_node);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
         const char *fault = strstr(cbrick_refusal_cases[i].machine,
