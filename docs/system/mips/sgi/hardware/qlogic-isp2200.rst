@@ -427,6 +427,9 @@ Command    Name                   Model
                                   order, then zeros
 ``0x64``   Get port database      m1 loop ID in its high byte, mapping
                                   D, 128 bytes (below)
+``0x6a``   Get port name          m1 loop ID in its high byte, option
+                                  in its low byte: 0 the port name, 1
+                                  the node name, in m2, m3, m6, m7
 ``0x75``   Port name list         m1 options, mapping D: 10 bytes per
                                   port, m1 the byte count
 ``0x7c``   Get ID list            Address m1 31:16, m2 15:0, m3 63:48,
@@ -435,8 +438,10 @@ Command    Name                   Model
 =========  =====================  ======================================
 
 The discovery commands answer ``0x4005`` until the loop is ready, and
-Get Port Database also for a loop ID with no port, the adapter's own or
-one past 0x7d. Port name list options other than bits 1 and 3, the two
+Get Port Database and Get Port Name also for a loop ID with no port,
+the adapter's own or one past 0x7d, which includes the fabric port
+0x7e: every driver that asks treats that refusal as "no fabric". A Get
+Port Name option other than 0 or 1 is ``0x4006``. Port name list options other than bits 1 and 3, the two
 OpenBSD sets, are ``0x4006``. A refused DMA is ``0x4002``. The public
 definitions name these codes but not which refusal returns which, so
 each is a model choice. The lists leave the adapter out, run in
@@ -448,6 +453,15 @@ little-endian word: OpenBSD decodes that name as a little-endian integer
 but the port database's as big-endian, and compares the two. The real
 byte order is unknown.
 
+A Get Port Name reply carries the name two wire-order bytes to a
+mailbox, the earlier byte in the low half: m2 holds bytes 0 and 1, where
+byte 0 is the most significant, m3 bytes 2 and 3, m6 bytes 4 and 5 and
+m7 bytes 6 and 7. NetBSD decodes this order on every part before the
+24xx and the older qlogicfc driver on this part, so a name read here
+matches the port database's byte for byte. Mainline Linux decodes the
+other way but asks this part only for the fabric port. The real order
+is unknown.
+
 The port database is 128 bytes, zero but for: bytes 2 and 3, master
 and slave state 6 (logged in); byte 6, the hard address, the port's
 AL_PA; bytes 8-11, the port ID as domain, a zero byte, AL_PA and area;
@@ -457,9 +471,9 @@ service parameter word 3; and bytes 80-81 the loop ID, little-endian.
 Byte 0 (options) is 0, class 3 only.
 
 The enhanced port database (``0x47``), the login, logout, name-server,
-link-status and loop-port commands (``0x40``, ``0x41``, ``0x6a``,
-``0x6b``, ``0x6e``, ``0x6f``, ``0x71``, ``0x74``) answer ``0x4001`` and
-are logged as unimplemented. Linux's request-ring mailbox entry
+link-status and loop-port commands (``0x40``, ``0x41``, ``0x6b``,
+``0x6e``, ``0x6f``, ``0x71``, ``0x74``) answer ``0x4001`` and are
+logged as unimplemented. Linux's request-ring mailbox entry
 (``0x39``) is an unknown type and returns with entry status bit 2.
 
 Commands on the loop
