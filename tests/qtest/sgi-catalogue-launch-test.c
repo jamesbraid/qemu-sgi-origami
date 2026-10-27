@@ -24,6 +24,11 @@ typedef struct Launch {
     QDict *offering;
     /* With a pipe from the topology's graphics record. */
     bool pipe;
+    /*
+     * With a backend on every listed network, each by a -net nic naming
+     * no model, rather than one on the default network only.
+     */
+    bool all_networks;
 } Launch;
 
 static QDict *topology_record(const char *name)
@@ -174,6 +179,91 @@ static void check_scsi_adapters(QDict *o, const char *machine,
     }
 }
 
+/* Each NIC, its model, its address and its backend. */
+#define NETWORK "{\"execute\":\"human-monitor-command\",\"arguments\":" \
+    "{\"command-line\":\"info network\"}}\n"
+
+/*
+ * Bind a user-mode backend to the offering's default network the way a
+ * launcher does from the catalogue alone: a -net nic naming the entry's
+ * model, and where the address is derived, the derived default through
+ * the entry's option, which QEMU must accept. With @all, bind every
+ * listed network instead, in catalogue order, each by a -net nic naming
+ * no model, which QEMU hands to the onboard NICs in that same order.
+ */
+static void append_networks(GPtrArray *args, QDict *o, bool all)
+{
+    const QListEntry *e;
+    unsigned int i = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "networks"), e) {
+        QDict *n = qobject_to(QDict, qlist_entry_obj(e));
+        QDict *mac = qdict_get_qdict(n, "mac");
+
+        if (all) {
+            g_ptr_array_add(args, g_strdup("-netdev"));
+            g_ptr_array_add(args,
+                            g_strdup_printf("user,id=catalogue-net%u", i));
+            g_ptr_array_add(args, g_strdup("-net"));
+            g_ptr_array_add(args,
+                            g_strdup_printf("nic,netdev=catalogue-net%u", i));
+            i++;
+            continue;
+        }
+        if (!qdict_get_bool(n, "default")) {
+            continue;
+        }
+        g_ptr_array_add(args, g_strdup("-netdev"));
+        g_ptr_array_add(args, g_strdup("user,id=catalogue-net"));
+        g_ptr_array_add(args, g_strdup("-net"));
+        g_ptr_array_add(args, qdict_get_bool(mac, "derived") ?
+            g_strdup_printf("nic,model=%s,netdev=catalogue-net,%s=%s",
+                            qdict_get_str(n, "nic-model"),
+                            qdict_get_str(n, "nic-mac-option"),
+                            qdict_get_str(mac, "default-address")) :
+            g_strdup_printf("nic,model=%s,netdev=catalogue-net",
+                            qdict_get_str(n, "nic-model")));
+    }
+}
+
+/*
+ * Every onboard Ethernet the offering lists exists with the model it
+ * names and, where derived, its address, and the default one carries
+ * the backend bound above. With @all, each derived NIC carries the
+ * backend bound for its own catalogue position. @out holds the NETWORK
+ * reply, whose text escapes each line end as \r\n and a backslash as
+ * \\.
+ */
+static void check_networks(QDict *o, const char *machine, const char *out,
+                           bool all)
+{
+    const QListEntry *e;
+    unsigned int i = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "networks"), e) {
+        QDict *n = qobject_to(QDict, qlist_entry_obj(e));
+        QDict *mac = qdict_get_qdict(n, "mac");
+        bool derived = qdict_get_bool(mac, "derived");
+        g_autofree char *nic = derived ?
+            g_strdup_printf("model=%s,macaddr=%s",
+                            qdict_get_str(n, "nic-model"),
+                            qdict_get_str(mac, "default-address")) :
+            g_strdup_printf("model=%s,", qdict_get_str(n, "nic-model"));
+        g_autofree char *bound = all && derived ?
+            g_strdup_printf("%s\\r\\n \\\\ catalogue-net%u: ", nic, i) :
+            g_strdup(nic);
+
+        if (!strstr(out, bound)) {
+            g_test_message("%s has no NIC %s in %s", machine, bound, out);
+        }
+        g_assert_nonnull(strstr(out, bound));
+        i++;
+    }
+    if (!all && !qlist_empty(qdict_get_qlist(o, "networks"))) {
+        g_assert_nonnull(strstr(out, "catalogue-net: index="));
+    }
+}
+
 static void test_launch(const void *opaque)
 {
     const Launch *l = opaque;
@@ -249,12 +339,14 @@ static void test_launch(const void *opaque)
              "-qmp", "stdio", NULL }; *word; word++) {
         g_ptr_array_add(args, g_strdup(*word));
     }
+    append_networks(args, o, l->all_networks);
     g_ptr_array_add(args, NULL);
 
     status = run_qemu(args, mediaio ?
         "{\"execute\":\"qom-get\",\"arguments\":{\"path\":"
         "\"/machine/module0/io1/baseio/mio-ioc3/kbc\","
-        "\"property\":\"type\"}}\n" QTREE : QTREE, &out, &err);
+        "\"property\":\"type\"}}\n" QTREE NETWORK : QTREE NETWORK,
+        &out, &err);
     for (guint i = 0; i < files->len; i++) {
         unlink(g_ptr_array_index(files, i));
     }
@@ -268,6 +360,7 @@ static void test_launch(const void *opaque)
     }
     g_assert_cmpint(status, ==, 0);
     check_scsi_adapters(o, machine->str, out);
+    check_networks(o, machine->str, out, l->all_networks);
     /* The qom-get answers with the controller's type, not an error. */
     if (mediaio) {
         if (strstr(out, "\"error\"")) {
@@ -337,6 +430,18 @@ int main(int argc, char **argv)
 
             l->offering = o;
             l->pipe = pipe;
+            g_ptr_array_add(launches, l);
+            g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
+                         '-');
+            qtest_add_data_func(path, l, test_launch);
+        }
+        if (qlist_size(qdict_get_qlist(o, "networks")) > 1) {
+            Launch *l = g_new0(Launch, 1);
+            g_autofree char *path = g_strdup_printf(
+                "/sgi-catalogue-launch/%s/networks", options);
+
+            l->offering = o;
+            l->all_networks = true;
             g_ptr_array_add(launches, l);
             g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
                          '-');

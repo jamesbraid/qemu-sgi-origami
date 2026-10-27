@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "050b9b7291486cc700a46ab3201ee5a2f4116e0f1846b25c9642346b2124a935"
+    "4348892e0a3bcd78afb86095a311b37f8c323261986a79d1ad5424a48df48146"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -566,6 +566,73 @@ class StorageTests(unittest.TestCase):
                 self.assertEqual(offering["scsi-adapters"], [
                     {"type": "scsi", "bus": "scsi.0",
                      "targets": list(range(1, 16))}])
+
+    def test_networks_follow_the_listed_pci_functions(self):
+        """Every onboard Ethernet a topology's I/O boards list is one
+        offered network, whichever spelling the board's compiler record
+        gives its kind: the IO9's BCM5701 counts as an IOC3 does. Each
+        derives its address from the machine's mac= plus its position,
+        so none collide, and the first is the default."""
+        topologies = {item["name"]: item
+                      for item in self.catalogue["topologies"]}
+        models = {"ioc3": ("ioc3-ethernet", "sgi-ioc3-eth", "ef"),
+                  "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg")}
+        for offering in self.catalogue["offerings"]:
+            listed = [function["kind"]
+                      for board in topologies[offering["topology"]]
+                      ["io-boards"]
+                      for function in board.get("pci-functions", [])
+                      if function["kind"] == "bcm5701"]
+            networks = offering["networks"]
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(
+                    [entry["kind"] for entry in networks
+                     if entry["kind"] == "bcm5701-ethernet"],
+                    ["bcm5701-ethernet"] * len(listed))
+                derived = [entry for entry in networks
+                           if entry["mac"]["derived"]]
+                addresses = [entry["mac"]["default-address"]
+                             for entry in derived]
+                self.assertEqual(len(set(addresses)), len(addresses))
+                self.assertEqual(
+                    [entry["mac"]["offset"] for entry in derived],
+                    [networks.index(entry) for entry in derived])
+                self.assertEqual([entry["default"] for entry in networks],
+                                 [True] + [False] * (len(networks) - 1))
+                for entry in networks:
+                    kind = next(key for key, value in models.items()
+                                if value[0] == entry["kind"])
+                    self.assertEqual(entry["nic-model"], models[kind][1])
+                    self.assertTrue(entry["interface"].startswith(
+                        models[kind][2]))
+                    self.assertEqual(entry["nic-mac-option"], "macaddr")
+                    if entry["mac"]["derived"]:
+                        self.assertEqual(entry["mac"]["machine-property"],
+                                         "mac")
+                        self.assertTrue(entry["mac"]["default-address"]
+                                        .startswith("08:00:69:"))
+                    else:
+                        self.assertEqual(entry["mac"], {"derived": False})
+                netboot = offering["netboot-adapter"]
+                if netboot != "unsupported":
+                    self.assertEqual(netboot, networks[0]["kind"])
+
+    def test_ip53_offerings_list_the_io9_bcm5701(self):
+        for offering in self.catalogue["offerings"]:
+            if offering["product"] not in {"origin350", "onyx350", "tezro",
+                                           "onyx4-host"}:
+                continue
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(offering["networks"], [{
+                    "kind": "bcm5701-ethernet",
+                    "argument": "-netdev ...,id=net0",
+                    "nic-model": "bcm570x", "nic-mac-option": "macaddr",
+                    "index": 0, "interface": "tg0", "default": True,
+                    "required": False,
+                    "mac": {"derived": True,
+                            "machine-property": "mac", "offset": 0,
+                            "default-address": "08:00:69:12:34:56",
+                            "required-prefix": "08:00:69"}}])
 
 
 class Ip27FirmwareTests(unittest.TestCase):
