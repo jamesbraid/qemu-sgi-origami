@@ -709,11 +709,9 @@ static void tigon_migrate(QTestState *from, const char *uri)
 
 static char *tigon_migration_directory(void)
 {
-    g_autofree char *cwd = g_get_current_dir();
-    char *directory = g_build_filename(cwd,
-                                       ".tigon-migration-XXXXXX", NULL);
+    char *directory = g_dir_make_tmp("tigon-migration-XXXXXX", NULL);
 
-    g_assert_nonnull(g_mkdtemp(directory));
+    g_assert_nonnull(directory);
     return directory;
 }
 
