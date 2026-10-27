@@ -9,7 +9,7 @@ layer:
     components:
       - id: brick
         name: I-brick
-        kind: chassis
+        kind: module
         provenance: vendor-document
         sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
       - id: xbridge

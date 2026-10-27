@@ -9,7 +9,7 @@ layer:
     components:
       - id: chassis
         name: C-brick
-        kind: chassis
+        kind: module
         provenance: derived
         # The character the C-brick's L1 reports for an IP35 module.
         brick_type: C
