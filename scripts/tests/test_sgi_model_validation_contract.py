@@ -1972,6 +1972,13 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.assertFails(model, "component 'c0-bedrock' carries controller: "
                          "absent but is not a module")
 
+    def test_node_role_is_an_authored_enum(self):
+        model = self.model()
+        self.component(model, "c1-bedrock")["node_asic"]["role"] = "memory"
+        self.assertEqual(self.problems(model), [])
+        self.component(model, "c1-bedrock")["node_asic"]["role"] = "io"
+        self.assertFails(model, "schema:")
+
 
 if __name__ == "__main__":
     unittest.main()

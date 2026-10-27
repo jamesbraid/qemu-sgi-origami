@@ -4490,5 +4490,36 @@ class ModuleRecordCompileTests(unittest.TestCase):
             compile_model(model)
 
 
+class NodeRoleCompileTests(unittest.TestCase):
+    def test_memory_node_is_never_the_console(self):
+        model = _origin3200_fixture()
+        _component(model, "c0-bedrock")["node_asic"]["role"] = "memory"
+        with self.assertRaisesRegex(
+                CompileError, "memory node 'c0-bedrock' cannot be the "
+                "console node"):
+            compile_model(model)
+
+    def test_memory_node_needs_a_board_allowing_no_processors(self):
+        model = _origin3200_fixture()
+        _component(model, "c1-bedrock")["node_asic"]["role"] = "memory"
+        with self.assertRaisesRegex(
+                CompileError, "memory node 'c1-bedrock': board layer 'ip35' "
+                "does not allow a node with no processors"):
+            compile_model(model)
+
+    def test_compute_node_needs_memory(self):
+        model = _origin3200_fixture()
+        model["composition"]["population"]["memory_bank_mib_per_node"][1] = [
+            0] * 8
+        with self.assertRaisesRegex(
+                CompileError, "node 'c1-bedrock' has processors and no "
+                "memory"):
+            compile_model(model)
+
+    def test_compute_role_is_the_default_and_not_emitted(self):
+        entry = compile_model(_origin3200_fixture())
+        self.assertTrue(all("role" not in node for node in entry["nodes"]))
+
+
 if __name__ == "__main__":
     unittest.main()

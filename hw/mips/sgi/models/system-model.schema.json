@@ -1553,7 +1553,11 @@
       "description": "A node ASIC's processor-facing capacity: Hub carries one processor interface of two CPUs, Bedrock two interfaces of two CPUs each.",
       "properties": {
         "processor_interfaces": { "type": "integer", "minimum": 1 },
-        "cpus_per_interface": { "type": "integer", "minimum": 1 }
+        "cpus_per_interface": { "type": "integer", "minimum": 1 },
+        "role": {
+          "enum": ["compute", "memory"],
+          "description": "What the node contributes: processors and memory (compute, the default), or memory and no processors. A memory node is accepted only on a board layer whose population allows a node with no processors."
+        }
       }
     },
 
