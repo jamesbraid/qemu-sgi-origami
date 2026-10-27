@@ -2046,6 +2046,10 @@
         "name": { "type": "string", "description": "Canonical name from the component taxonomy. Prose uses this exact string." },
         "kind": { "$ref": "#/$defs/component-kind" },
         "board_record": {"type": "object", "required": ["role", "barcode", "part", "revision", "name", "serial"], "additionalProperties": false, "properties": {"role": {"type": "string", "minLength": 1}, "barcode": {"type": "string", "minLength": 1}, "part": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "serial": {"$ref": "#/$defs/address"}}},
+        "controller": {
+          "enum": ["absent"],
+          "description": "On a module's root component: the model gives this module no controller at all, as for a brick with no nodes and no I/O peers. This states what the model builds, not that the hardware has no controller. Omitted means the module's controller comes from its own system-controller component, or from its nodes' own as on an Origin 200."
+        },
         "brick_type": {
           "type": "string",
           "minLength": 1,

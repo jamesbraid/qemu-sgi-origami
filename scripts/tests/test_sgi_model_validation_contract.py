@@ -1964,6 +1964,14 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.assertFails(model, "component 'c0-bedrock' carries "
                          "brick_type but is not a chassis or module")
 
+    def test_absent_controller_belongs_on_a_module_root(self):
+        model = self.model()
+        self.component(model, "ibrick-brick")["controller"] = "absent"
+        self.assertEqual(self.problems(model), [])
+        self.component(model, "c0-bedrock")["controller"] = "absent"
+        self.assertFails(model, "component 'c0-bedrock' carries controller: "
+                         "absent but is not a module")
+
 
 if __name__ == "__main__":
     unittest.main()

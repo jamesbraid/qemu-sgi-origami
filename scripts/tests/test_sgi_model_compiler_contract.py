@@ -4443,5 +4443,52 @@ class XioCableCompileTests(unittest.TestCase):
             compile_model(_origin3200_fixture(ibrick_io=True))
 
 
+class ModuleRecordCompileTests(unittest.TestCase):
+    def test_module_records_carry_brick_type_and_absent_controller(self):
+        from sgi_model.model_emit import _render_topology
+        model = _origin3200_fixture()
+        _component(model, "ibrick-brick")["controller"] = "absent"
+        entry = compile_model(model)
+        modules = {module["id"]: module for module in entry["modules"]}
+        self.assertEqual(modules["c0-chassis"]["brick_type"], "C")
+        self.assertEqual(modules["c1-chassis"]["brick_type"], "C")
+        self.assertNotIn("controller", modules["c0-chassis"])
+        self.assertEqual(modules["ibrick-brick"]["controller"], "absent")
+        self.assertEqual(modules["ibrick-brick"]["controller_index"], -1)
+        self.assertNotIn("brick_type", modules["ibrick-brick"])
+        emitted = {module["id"]: module for module in
+                   _render_topology(entry, "origin3200")["modules"]}
+        self.assertEqual(emitted["c0-chassis"]["brick-type"], "C")
+        self.assertEqual(emitted["ibrick-brick"]["controller"], "absent")
+
+    def test_existing_modules_carry_neither_field(self):
+        for name in ("origin300-two-chassis", "origin200", "origin2000-rack"):
+            with self.subTest(name=name):
+                for module in compile_model(_resolved(name))["modules"]:
+                    self.assertNotIn("brick_type", module)
+                    self.assertNotIn("controller", module)
+
+    def test_absent_controller_needs_an_empty_module(self):
+        model = _origin3200_fixture()
+        _component(model, "c0-chassis")["controller"] = "absent"
+        with self.assertRaisesRegex(
+                CompileError,
+                "module 'c0-chassis' has controller: absent but carries a "
+                "node or I/O peer"):
+            compile_model(model)
+
+    def test_absent_controller_has_no_controller_index(self):
+        model = _origin3200_fixture()
+        _component(model, "ibrick-brick")["controller"] = "absent"
+        model["components"].append(dict(
+            copy.deepcopy(_component(model, "c0-l1")), id="ibrick-l1",
+            parent="ibrick-brick"))
+        with self.assertRaisesRegex(
+                CompileError,
+                "module 'ibrick-brick' has controller: absent but controller "
+                "index 2"):
+            compile_model(model)
+
+
 if __name__ == "__main__":
     unittest.main()
