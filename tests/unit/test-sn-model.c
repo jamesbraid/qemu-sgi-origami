@@ -1158,6 +1158,176 @@ static PeerPopulationFixture *peer_population_fixture(void)
     return f;
 }
 
+/*
+ * A synthetic chain, with no product claim: n0 cabled to crossbar 1, n1
+ * to crossbar 2, crossbar 2 to crossbar 3 and crossbar 3 to the one
+ * board. Crossbar 0 is reached by nothing.
+ */
+#define XIO_CABLE_NODE(id, module, role) \
+    "{\"id\":\"" id "\",\"module-index\":" module ",\"slot\":0," \
+    "\"asic-kind\":\"bedrock\",\"board-kind\":\"ip35\"," role \
+    "\"cpu-slots\":[],\"bank-mib\":[512,0,0,0,0,0,0,0]," \
+    "\"accepted-memory-mib\":[],\"slave-role\":false}"
+#define XIO_CABLE_CROSSBAR(id) \
+    "{\"id\":\"" id "\",\"module-index\":2,\"kind\":\"xbridge\"," \
+    "\"widget-revision\":1}"
+#define XIO_CABLE_END(kind, index, port) \
+    "{\"kind\":\"" kind "\",\"index\":" index port "}"
+#define XIO_CABLE_ROW(nodes) \
+    "{\"nodes\":[" nodes "],\"routers\":[],\"cables\":[]," \
+    "\"xio-slots\":[],\"supported-cpu-populations\":[]," \
+    "\"grade\":\"established\"}"
+
+static const char xio_cable_view_json[] =
+    "{\"name\":\"xio-cable-view\",\"product\":\"synthetic\","
+    "\"generation\":\"sn1\",\"description\":\"XIO cable view fixture\","
+    "\"nodes\":["
+    XIO_CABLE_NODE("n0", "0", "") ","
+    XIO_CABLE_NODE("n1", "1", "\"role\":\"memory\",") "],"
+    "\"modules\":["
+    "{\"id\":\"m0\",\"serial\":\"\",\"initial-module-number\":0,"
+    "\"controller-index\":0,\"brick-type\":\"C\",\"nodes\":[0]},"
+    "{\"id\":\"m1\",\"serial\":\"\",\"initial-module-number\":0,"
+    "\"controller-index\":-1,\"brick-type\":\"C\",\"nodes\":[1]},"
+    "{\"id\":\"m2\",\"serial\":\"\",\"initial-module-number\":0,"
+    "\"controller-index\":-1,\"controller\":\"absent\",\"nodes\":[]}],"
+    "\"routers\":[],\"cables\":[],"
+    "\"crossbars\":["
+    XIO_CABLE_CROSSBAR("x0") "," XIO_CABLE_CROSSBAR("x1") ","
+    XIO_CABLE_CROSSBAR("x2") "," XIO_CABLE_CROSSBAR("x3") "],"
+    "\"xio-attachments\":[],"
+    "\"xio-cables\":["
+    "{\"name\":\"n0-x1\",\"ends\":[" XIO_CABLE_END("node", "0", "") ","
+    XIO_CABLE_END("crossbar", "1", ",\"port\":10") "]},"
+    "{\"name\":\"n1-x2\",\"ends\":[" XIO_CABLE_END("node", "1", "") ","
+    XIO_CABLE_END("crossbar", "2", ",\"port\":10") "]},"
+    "{\"name\":\"x2-x3\",\"ends\":["
+    XIO_CABLE_END("crossbar", "2", ",\"port\":8") ","
+    XIO_CABLE_END("crossbar", "3", ",\"port\":8") "]},"
+    "{\"name\":\"x3-board\",\"ends\":["
+    XIO_CABLE_END("crossbar", "3", ",\"port\":9") ","
+    XIO_CABLE_END("io-board", "0", "") "]}],"
+    "\"xio-slots\":[],"
+    "\"io-boards\":[{\"id\":\"board\",\"module-index\":2,"
+    "\"preset\":\"io7\",\"carrier\":\"machine-placed\","
+    "\"populated\":true}],"
+    "\"controllers\":[{\"id\":\"l1\",\"module-index\":0,\"kind\":\"l1\","
+    "\"owner\":\"module\"}],"
+    "\"console\":1,\"junk-uart\":-1,"
+    "\"node-populations\":[" XIO_CABLE_ROW("0,1") ","
+    XIO_CABLE_ROW("1") "]}";
+
+static void assert_xio_end(const SGIModelXioEnd *end, SGIModelXioEndKind kind,
+                           uint32_t index, int port)
+{
+    g_assert_cmpint(end->kind, ==, kind);
+    g_assert_cmpuint(end->index, ==, index);
+    g_assert_cmpint(end->has_port, ==, port >= 0);
+    if (port >= 0) {
+        g_assert_cmpuint(end->port, ==, port);
+    }
+}
+
+static const SGIModelXioEnd *xio_cable_end(const SGIModelXioCableList *cables,
+                                           size_t cable, size_t side)
+{
+    const SGIModelXioEndList *ends;
+
+    while (cable--) {
+        cables = cables->next;
+    }
+    ends = cables->value->ends;
+    return side ? ends->next->value : ends->value;
+}
+
+static void test_xio_cable_view_copies_new_records(void)
+{
+    /* Population views keep pointers into this topology for process life. */
+    SGIModelTopology *t = parse_topology(xio_cable_view_json);
+    const SGIModelTopology *view;
+    const SGIModelXioCableList *cables;
+    Error *err = NULL;
+
+    view = sgi_model_population_view(t, t->node_populations->value, &err);
+    g_assert_null(err);
+    g_assert_true(view->has_xio_cables);
+    cables = view->xio_cables;
+    g_assert_cmpuint(QAPI_LIST_LENGTH(cables), ==, 4);
+    g_assert_cmpstr(cables->value->name, ==, "n0-x1");
+    /* Crossbar 0 has no cable to a kept node, so it is not in the view. */
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->crossbars), ==, 3);
+    assert_xio_end(xio_cable_end(cables, 0, 0), SGI_MODEL_XIO_END_KIND_NODE,
+                   0, -1);
+    assert_xio_end(xio_cable_end(cables, 0, 1),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 0, 10);
+    assert_xio_end(xio_cable_end(cables, 1, 1),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 1, 10);
+    assert_xio_end(xio_cable_end(cables, 2, 1),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 2, 8);
+    assert_xio_end(xio_cable_end(cables, 3, 1),
+                   SGI_MODEL_XIO_END_KIND_IO_BOARD, 0, -1);
+    g_assert_cmpstr(view->modules->value->brick_type, ==, "C");
+    g_assert_true(view->modules->next->next->value->has_controller);
+    g_assert_cmpint(view->modules->next->next->value->controller, ==,
+                    SGI_MODEL_MODULE_CONTROLLER_ABSENT);
+    g_assert_true(view->nodes->next->value->has_role);
+    g_assert_cmpint(view->nodes->next->value->role, ==,
+                    SGI_MODEL_NODE_ROLE_MEMORY);
+    g_assert_cmpint(view->nodes->value->board_kind, ==,
+                    SGI_MODEL_BOARD_KIND_IP35);
+    g_assert_null(view->nodes->value->flash);
+    g_assert_cmpint(view->controllers->value->owner, ==,
+                    SGI_MODEL_CONTROLLER_OWNER_MODULE);
+    g_assert_cmpint(view->io_boards->value->preset, ==,
+                    SGI_MODEL_IO_BOARD_PRESET_IO7);
+
+    /* Without n0 its cable and crossbar go; the rest renumber. */
+    view = sgi_model_population_view(t, t->node_populations->next->value,
+                                     &err);
+    g_assert_null(err);
+    cables = view->xio_cables;
+    g_assert_cmpuint(QAPI_LIST_LENGTH(cables), ==, 3);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->crossbars), ==, 2);
+    g_assert_cmpstr(cables->value->name, ==, "n1-x2");
+    assert_xio_end(xio_cable_end(cables, 0, 0), SGI_MODEL_XIO_END_KIND_NODE,
+                   0, -1);
+    assert_xio_end(xio_cable_end(cables, 0, 1),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 0, 10);
+    assert_xio_end(xio_cable_end(cables, 1, 0),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 0, 8);
+    assert_xio_end(xio_cable_end(cables, 1, 1),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 1, 8);
+    assert_xio_end(xio_cable_end(cables, 2, 0),
+                   SGI_MODEL_XIO_END_KIND_CROSSBAR, 1, 9);
+    g_assert_cmpstr(view->modules->next->value->brick_type, ==, "C");
+}
+
+static void test_xio_cable_view_refuses_bad_ends(void)
+{
+    static const char *const bad[] = { "\"port\":10", "\"index\":7" };
+
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        g_autofree char *json = NULL;
+        g_autoptr(SGIModelTopology) t = NULL;
+        const char *needle = "{\"kind\":\"node\",\"index\":0}";
+        const char *at = strstr(xio_cable_view_json, needle);
+        Error *err = NULL;
+
+        g_assert_nonnull(at);
+        json = g_strdup_printf("%.*s{\"kind\":\"node\",%s%s}%s",
+                               (int)(at - xio_cable_view_json),
+                               xio_cable_view_json, bad[i],
+                               i ? "" : ",\"index\":0",
+                               at + strlen(needle));
+        t = parse_topology(json);
+        g_assert_null(sgi_model_population_view(t, t->node_populations->value,
+                                                &err));
+        g_assert_nonnull(err);
+        g_assert_nonnull(strstr(error_get_pretty(err), "XIO cable 'n0-x1'"));
+        error_free(err);
+    }
+}
+
 static void test_l1_peer_population_preserved(void)
 {
     /* The population cache borrows these records for process life. */
@@ -1585,6 +1755,10 @@ int main(int argc, char **argv)
                     test_existing_population_views);
     g_test_add_func("/sn-model/l1-peer/population-preserved",
                     test_l1_peer_population_preserved);
+    g_test_add_func("/sn-model/xio-cable/view-copies-new-records",
+                    test_xio_cable_view_copies_new_records);
+    g_test_add_func("/sn-model/xio-cable/view-refuses-bad-ends",
+                    test_xio_cable_view_refuses_bad_ends);
     g_test_add_func("/sn-model/io-peer/population-preserved",
                     test_io_peer_population_preserved);
     g_test_add_func("/sn-model/io-peer/population-rejects-reduced",
