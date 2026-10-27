@@ -8161,6 +8161,21 @@ static bool sgi_kona_gl_index_rgba(const SGIKonaGLPixelTransfer *t,
     return true;
 }
 
+/*
+ * Whether sgi_kona_gl_rgba_transfer() leaves every finite component as it
+ * is: scales of 1.0f, biases of +0.0f and no colour maps. x * 1.0 + 0.0
+ * is x for every finite x but -0.0, which no decoded component is.
+ */
+static bool sgi_kona_gl_rgba_identity(const SGIKonaGLPixelTransfer *t)
+{
+    for (unsigned k = 0; k < 4; k++) {
+        if (t->scale[k] != 0x3f800000 || t->bias[k]) {
+            return false;
+        }
+    }
+    return !t->map_colour;
+}
+
 static bool sgi_kona_gl_rgba_transfer(const SGIKonaGLPixelTransfer *t,
                                      double rgba[4])
 {
@@ -10256,6 +10271,17 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
                                                     identity_matrix;
     bool post_conv = !sgi_kona_gl_post_conv_default(t) ||
                      sgi_kona_gl_matrix_stage(matrix, t);
+    bool staged = post_conv ||
+                  (st && (sgi_kona_gl_tables_active(st) ||
+                          sgi_kona_gl_histogram_active(st)));
+    /*
+     * Unsigned bytes through an identity transfer and no later stage come
+     * back as the bytes they went in as (sgi_kona_gl_pixel_rgba8()), so
+     * skip the floating-point round trip.
+     */
+    bool rgba8 = base != SGI_GL_DEPTH_COMPONENT && u->header[3] <= 10 &&
+                 u->header[4] == 1 && !staged &&
+                 sgi_kona_gl_rgba_identity(t);
 
     if (sgi_kona_texture_copy(u->header)) {
         /* The copy's words are already the model's texels. */
@@ -10267,6 +10293,17 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
         uint32_t rgba;
         bool converted;
 
+        if (rgba8) {
+            /* One source word a texel: words is 1 for unsigned bytes. */
+            if (!sgi_kona_gl_pixel_rgba8(u->header[3], u->pixels[at],
+                                         &rgba)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: native texture component is "
+                              "unsupported; upload refused\n");
+                return false;
+            }
+            goto store;
+        }
         if (base == SGI_GL_DEPTH_COMPONENT) {
             if (!sgi_kona_gl_texture_pixel_depth(u->header[4],
                     u->pixels + at * words, u->swap_bytes,
@@ -10295,9 +10332,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
                 sgi_kona_gl_rgba_transfer(t, values);
         }
         if (!converted ||
-            ((post_conv ||
-              (st && (sgi_kona_gl_tables_active(st) ||
-                      sgi_kona_gl_histogram_active(st)))) &&
+            (staged &&
              !sgi_kona_gl_texture_stages(st, t, matrix, post_conv,
                                          values)) ||
             !sgi_kona_gl_pixel_pack_double(5, 1, values, false,
@@ -10308,6 +10343,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaState *s,
             return false;
         }
         rgba = ldl_be_p(bytes);
+store:
         switch (base) {
         case SGI_GL_ALPHA:
             rgba &= 0xff;

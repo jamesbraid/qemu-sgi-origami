@@ -1066,6 +1066,66 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                                scale, bias, rgba);
 }
 
+bool sgi_kona_gl_pixel_rgba8(uint32_t format, uint32_t source,
+                             uint32_t *rgba)
+{
+    uint32_t c0 = source >> 24, c1 = (source >> 16) & 0xff;
+    uint32_t c2 = (source >> 8) & 0xff, c3 = source & 0xff;
+    uint32_t r = 0, g = 0, b = 0, a = 0xff;
+
+    /* The component orders of sgi_kona_gl_pixel_values(). */
+    switch (format) {
+    case 0:                     /* RED */
+        r = c0;
+        break;
+    case 1:                     /* GREEN */
+        g = c0;
+        break;
+    case 2:                     /* BLUE */
+        b = c0;
+        break;
+    case 3:                     /* ALPHA */
+        a = c0;
+        break;
+    case 4:                     /* RGB */
+        r = c0;
+        g = c1;
+        b = c2;
+        break;
+    case 5:                     /* RGBA */
+        *rgba = source;
+        return true;
+    case 6:                     /* LUMINANCE */
+        r = g = b = c0;
+        break;
+    case 7:                     /* LUMINANCE_ALPHA */
+        r = g = b = c0;
+        a = c1;
+        break;
+    case 8:                     /* ABGR */
+        r = c3;
+        g = c2;
+        b = c1;
+        a = c0;
+        break;
+    case 9:                     /* BGR */
+        r = c2;
+        g = c1;
+        b = c0;
+        break;
+    case 10:                    /* BGRA */
+        r = c2;
+        g = c1;
+        b = c0;
+        a = c3;
+        break;
+    default:
+        return false;
+    }
+    *rgba = (r << 24) | (g << 16) | (b << 8) | a;
+    return true;
+}
+
 bool sgi_kona_gl_pixel_rgba_double(uint32_t format, uint32_t type,
                                    const uint32_t *source, bool swap_bytes,
                                    double rgba[4])
