@@ -5738,6 +5738,27 @@ static void test_transfer_accesses(void)
             if (n == 1) {
                 de_transfer_failure(s, &c, path, DE + offset,
                                     0x11223344, width);
+            } else if (n == 2) {
+                uint64_t readback, interrupts = qtest_readq(s, CRIME + 0x10);
+                unsigned outputs = 0;
+
+                for (unsigned i = 0; i < 5; i++) {
+                    outputs |= qtest_get_irq(s, i) << i;
+                }
+                /* Native GL state is retained without admitting its START. */
+                g_assert_cmpint(memtx_write(s, DE + offset, 0x11223344, width),
+                                ==, MEMTX_OK);
+                c.p[offset / 4] = 0x11223344;
+                g_assert_cmpint(memtx_read(s, DE + offset, &readback, width),
+                                !=, MEMTX_OK);
+                de_transfer_raw(s, path, &c);
+                de_transfer_memory(s, &c, false, 0);
+                assert_idle(s);
+                g_assert_cmphex(qtest_readq(s, CRIME + 0x10), ==, interrupts);
+                for (unsigned i = 0; i < 5; i++) {
+                    g_assert_cmpint(qtest_get_irq(s, i), ==,
+                                    !!(outputs & (1U << i)));
+                }
             } else {
                 g_assert_cmpint(memtx_write(s, DE + offset, 0x11223344, width),
                                 !=, MEMTX_OK);
@@ -5746,6 +5767,13 @@ static void test_transfer_accesses(void)
             }
             de_transfer_failure(s, &c, path, DE + 0x800 + offset,
                                 0x11223344, width);
+            if (n == 2) {
+                g_assert_cmpint(memtx_write(s, DE + offset, 0, width), ==,
+                                MEMTX_OK);
+                c.p[offset / 4] = 0;
+                de_transfer_raw(s, path, &c);
+                de_transfer_memory(s, &c, false, 0);
+            }
         }
     }
     /* The new aliases cannot execute fills or an existing tiled copy. */
