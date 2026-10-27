@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3200 reference composition: one two-processor C-brick and one I-brick.
-# Resolve before validation or generation.
+# Origin 3200 reference composition: two two-processor C-bricks and an
+# I-brick. Resolve before validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
@@ -10,13 +10,17 @@ module_instances:
   - model: layers/modules/c-brick.yaml
     prefix: c0-
     parent: rack
-    observed_hardware:
+    observed_hardware: &cbrick-basis
       mode: projected
       sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
       note: >-
         The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
         every published Origin 3000 inventory reports; it is not a capture of
         this C-brick.
+  - model: layers/modules/c-brick.yaml
+    prefix: c1-
+    parent: rack
+    observed_hardware: *cbrick-basis
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
     parent: rack
