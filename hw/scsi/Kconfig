@@ -43,6 +43,13 @@ config QLOGIC_ISP2200_PCI
     # The source set the adapter builds in is linked only with SCSI.
     select SCSI
 
+config SGI_DBRICK
+    bool
+    default y if SGI_DEVICES
+    # Its bays hold disks on an ISP2200's loop.
+    depends on QLOGIC_ISP2200_PCI
+    select SCSI
+
 config VMW_PVSCSI_SCSI_PCI
     bool
     default y if PCI_DEVICES
