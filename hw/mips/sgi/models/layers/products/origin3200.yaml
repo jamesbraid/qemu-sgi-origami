@@ -6,8 +6,8 @@ sources:
   007-4311-002-ranges: "007-4311-002 printed page 10, Tables 2-1 and 2-2: the minimum system is one two-processor node brick and one I-brick; the Origin 3200 holds 2 to 8 processors and at most two I/O bricks in a short rack"
   007-4311-002-3200: "007-4311-002 printed page 87, Appendix A: an Origin 3200 has one or two C-bricks, at most two I/O bricks of which one must be an I-brick, and no R-brick"
   007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: an Origin 3200 C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
-  007-4311-002-bundle: "007-4311-002 printed page 75: the 4 processor (dual C-bricks) bundle, two 2-processor C-bricks and one I-brick in one short rack"
-  007-4311-002-bundle-memory: "007-4311-002 printed pages 75 and 76: the 4 processor (dual C-bricks) bundle ships its C-bricks without memory, and memory DIMMs are selected to complete it"
+  007-4311-002-bundle: "007-4311-002 printed pages 75 and 76: the 8 processor system bundle, two 4-processor C-bricks and one I-brick in one short rack"
+  cbrick-fit: "web:nekonomicon-16723604 hinv -mv of an Origin 3200: per C-brick, four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and Bank 0 to Bank 7 of 512 MB each, 4096 MB"
   007-4311-002-rack: "007-4311-002 printed page 87, Appendix A: an Origin 3200 is housed in a single 17-U high short rack"
   007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
   007-4240-002-link: "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick, as in the Origin 3200"
@@ -19,20 +19,25 @@ layer:
   topology:
     min_nodes: 1
     max_nodes: 2
+    # The product holds two to eight processors in one or two C-bricks.
+    # This composition fixes the selected fit, four per C-brick, so it is
+    # the only population an emulator built from it would accept.
+    supported_cpu_populations: [[4, 4]]
+    supported_processors:
+      - {part: r12000, clock_mhz: 400, cache_mib: 8}
+    supported_bank_mib_per_node:
+      - [512, 512, 512, 512, 512, 512, 512, 512]
     provenance: vendor-document
-    sources: [007-4311-002-ranges, 007-4311-002-3200]
+    sources: [007-4311-002-ranges, 007-4311-002-3200, 007-4311-002-bundle, cbrick-fit]
   population:
     nodes: 2
-    cpus_per_node: [2, 2]
-    fitted_memory:
-      status: unknown
-      reason: >-
-        The bundle ships its C-bricks without memory and the customer selects
-        DIMMs; this composition selects none.
-      provenance: vendor-document
-      sources: [007-4311-002-bundle-memory]
-    provenance: vendor-document
-    sources: [007-4311-002-bundle, 007-4311-002-pimm]
+    cpus_per_node: [4, 4]
+    provenance: observed-hardware
+    sources: [cbrick-fit, 007-4311-002-bundle, 007-4311-002-pimm]
+  cpu_selection:
+    default: {clock_mhz: 400, cache_mib: 8}
+    slots: [cpu0, cpu1, cpu2, cpu3]
+  memory_kits_per_node: [kit-4096-eight-512-banks, kit-4096-eight-512-banks]
   composition_rules:
     counts:
       - {bricks: [c-brick], min: 1, max: 2}
@@ -45,19 +50,19 @@ layer:
       name: Origin 3200
       model_role: reference
       notes: >-
-        The Origin 3200's 4 processor (dual C-bricks) bundle: two
-        2-processor C-bricks, one PIMM each, and one I-brick in a short
-        rack. The C-bricks join LINK (NI) to LINK (NI), with no R-brick,
+        Two C-bricks and one I-brick in a short rack, each C-brick fitted
+        as a posted Origin 3200 inventory reports: four 400 MHz R12000s
+        with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB
+        banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick,
         which the Origin 3200 does not support, and the I-brick hangs off
         the first C-brick's XIO (II) connector at its XBridge port A. Port
         A is the documented compute-node port; which port a boot I-brick
-        uses is unknown. A second PIMM per C-brick and a second I/O brick
-        are documented expansions this composition does not show.
-        Processor clock and cache are not asserted. The I-brick's XBridge head and PCI device numbers are
-        the provisional placements the module layers already carry. The
-        C-brick layer carries no L1 and no memory or clock fit, so this
-        configuration does not yet describe the C-bricks' controllers or a
-        fitted memory and never compiles.
+        uses is unknown. A second I/O brick is a documented expansion this
+        composition does not show. The I-brick's XBridge head and PCI
+        device numbers are the provisional placements the module layers
+        already carry. The C-brick layer carries no L1, so this
+        configuration does not yet describe the C-bricks' controllers and
+        never compiles.
     evidence_policy: strict
     components:
       - id: rack

@@ -155,6 +155,16 @@ per processor interface and the ``xio-ii`` bus from the Bedrock to that
 connector -- follow from this. Which port of the far brick's XBridge
 the cable reaches is the composition's choice, not the C-brick's.
 
+The eight DIMM slots form four pairs. Banks 2n and 2n+1 sit on pair n
+and both DIMMs of a pair match, so the two banks of a pair are fitted
+alike; pairs may differ (established, 108-0240-002 printed pages 2-5
+and 2-6). The Origin 3200 catalogue entry fixes each C-brick at the fit
+a :ref:`posted Origin 3200 inventory <sgi-ref-web-nekonomicon-16723604>`
+reports, four 400 MHz R12000s with 8 MB secondary caches on two PIMMs
+and 4096 MB in eight 512 MB banks, and resolution refuses any other
+processor or bank population for that product. The R12000's FPU
+identification and reset-mode word on this board are unknown.
+
 .. _sgi-sn-family-ibrick:
 
 I-brick host ports and base I/O

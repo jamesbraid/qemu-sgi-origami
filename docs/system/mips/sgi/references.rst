@@ -312,6 +312,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16723250``
    *Nekochan forum archive thread 16723250, Onyx2 deskside PROM hinv -v*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/3/16723250/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-web-nekonomicon-16723604:
+
+``nekonomicon-16723604``
+   *Nekochan forum archive thread 16723604, Origin 3200 hinv -mv*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16723604/1.html>`__ SHA-256 ``e434d158161c1185ef4766d9badb8ac2efc38d338b0d659e457df22715bd5879``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-web-nekonomicon-16724207:
 
 ``nekonomicon-16724207``

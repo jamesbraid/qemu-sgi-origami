@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3200 reference composition: two two-processor C-bricks and an
+# Origin 3200 reference composition: two four-processor C-bricks and an
 # I-brick. Resolve before validation or generation.
 configuration_version: 1
 layers:

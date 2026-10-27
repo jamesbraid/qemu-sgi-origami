@@ -694,6 +694,15 @@ web:
     rights: obtain-only
     obtain:
       url: https://nekonomicon.irixnet.org/forum/3/16723250/1.html
+  nekonomicon-16723604:
+    title: "Nekochan forum archive thread 16723604, Origin 3200 hinv -mv"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16723604/1.html
+      sha256: e434d158161c1185ef4766d9badb8ac2efc38d338b0d659e457df22715bd5879
   sgistuff-collection-2200:
     title: "SGIstuff collection, Onyx2 deskside inventory and board list"
     publisher: "SGIstuff"
