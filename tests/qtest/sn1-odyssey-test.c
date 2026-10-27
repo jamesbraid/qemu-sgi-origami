@@ -575,7 +575,6 @@ static void flag_dest_program(QTestState *qts)
     reg_write(qts, ODSY_ROUTE_VECTORS, ODSY_TEST_ROUTE_VECTORS);
 }
 
-
 /* The indexed register file's write port: (selector << 32) | data. */
 static void i2c_push(QTestState *qts, uint32_t selector, uint32_t data)
 {
