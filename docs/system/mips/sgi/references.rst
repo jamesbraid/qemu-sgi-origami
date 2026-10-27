@@ -48,10 +48,25 @@ Documents
 
 SGI manuals, service documents and papers, cited by document number.
 
+.. _sgi-ref-007-0911-090:
+
+``007-0911-090``
+   *IRIX Device Driver Programmer's Guide (1997 edition)*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/0000/007-0911-090/pdf/007-0911-090.pdf>`__ SHA-256 ``8b07ae01d6f1d2982c257660ed5551b9b96de5f1570bb214d0642194b7dfc9b2``. Published; may be quoted.
+
+.. _sgi-ref-007-0911-180:
+
+``007-0911-180``
+   *IRIX Device Driver Programmer's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/0000/007-0911-180/pdf/007-0911-180.pdf>`__ SHA-256 ``25a6ed2d5223595ace87b9d9140605be7ab361de65c183b92fae3e28d00ea45e``. Published; may be quoted.
+
 .. _sgi-ref-007-2597-001:
 
 ``007-2597-001``
    *MIPS IV Instruction Set, Revision 3.2*. MIPS Technologies. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/2000/007-2597-001/pdf/007-2597-001.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-3415-003:
+
+``007-3415-003``
+   *Origin200 Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3415-003/pdf/007-3415-003.pdf>`__ SHA-256 ``6ade2d090ed409eade39537f12cc963aca1d32408d6c351df616f547b016456b``. Published; may be quoted.
 
 .. _sgi-ref-007-3435-004:
 
@@ -98,6 +113,21 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-3791-002``
    *Preparing for an Installation of a 33 to 256 Processor System HR-04122-0B Origin Systems Last Modified: August 1999*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3791-002/pdf/007-3791-002.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-007-3819-004:
+
+``007-3819-004``
+   *SGI IRIS Gigabit Ethernet Board User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3819-004/pdf/007-3819-004.pdf>`__ SHA-256 ``3983072ca93389e5064d5053697b494184ae94c6a86a29826cdbb284d438d7cd``. Published; may be quoted.
+
+.. _sgi-ref-007-3938-001:
+
+``007-3938-001``
+   *SGI L1 and L2 Controller Software User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3938-001/pdf/007-3938-001.pdf>`__ SHA-256 ``bcf899aa2a685ac4ff15d38f5ba35e31adbd1d400ab845ecf3cf447ecb0c0b29``. Published; may be quoted.
+
+.. _sgi-ref-007-3938-006:
+
+``007-3938-006``
+   *SGI L1 and L2 Controller Software User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3938-006/pdf/007-3938-006.pdf>`__ SHA-256 ``fd9f98168ca04a9d4406041f5fce34fdbb89f3bafd5a0c6f38bea6e64291f08e``. Published; may be quoted.
+
 .. _sgi-ref-007-4207-002:
 
 ``007-4207-002``
@@ -107,6 +137,11 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-4210-003``
    *Octane/Octane2 Workstation VPro Graphics Upgrade Kit Installation Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4210-003/pdf/007-4210-003.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-4222-002:
+
+``007-4222-002``
+   *SGI Tensor Processing Unit (TPU) XIO Board Introduction*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4222-002/pdf/007-4222-002.pdf>`__ SHA-256 ``0b2d500c17d3d2a02034ab8723cc8d263567fbf28a0bfe5751e7668b30c8d86d``. Published; may be quoted.
 
 .. _sgi-ref-007-4240-002:
 
@@ -132,6 +167,11 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-4365-002``
    *SGI Origin 300 User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4365-002/pdf/007-4365-002.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-4424-001:
+
+``007-4424-001``
+   *SGI Onyx 3000 N-Brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4424-001/pdf/007-4424-001.pdf>`__ SHA-256 ``75cdcaf195fde56854872e506ddce57e9187ed727617e69149a0d0eef00382ed``. Published; may be quoted.
 
 .. _sgi-ref-007-4426-001:
 
@@ -166,7 +206,17 @@ SGI manuals, service documents and papers, cited by document number.
 .. _sgi-ref-007-4572-001:
 
 ``007-4572-001``
-   *Cx-brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf>`__ Published; may be quoted.
+   *Cx-brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf>`__ SHA-256 ``7c75a31959ce530f00c5e000816a4a26b00c052a58c94125c019b771e99f1e41``. Published; may be quoted.
+
+.. _sgi-ref-007-4604-001:
+
+``007-4604-001``
+   *IX-brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4604-001/pdf/007-4604-001.pdf>`__ SHA-256 ``320af66049b77ec322e40284350776f49910d41232a3cd21604ab1019cac76e8``. Published; may be quoted.
+
+.. _sgi-ref-007-4605-001:
+
+``007-4605-001``
+   *PX-brick Addendum*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4605-001/pdf/007-4605-001.pdf>`__ SHA-256 ``5634ea131b141993ad2cd66d4d4f132a6ec9ee6defb1197060af977259854f80``. Published; may be quoted.
 
 .. _sgi-ref-007-4632-001:
 
@@ -187,6 +237,16 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-4653-001``
    *SGI Origin 3900 Server User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4653-001/pdf/007-4653-001.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-4669-003:
+
+``007-4669-003``
+   *SGI 10-Gigabit Ethernet Network Adapter User's Guide*. Silicon Graphics. Manual, cited by section. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4669-003/pdf/007-4669-003.pdf>`__ SHA-256 ``2683bdb7438480a3f369b46011d047c13ff3cace6f193efe48ce87fe1700c7fa``. Published; may be quoted.
+
+.. _sgi-ref-108-0132-002:
+
+``108-0132-002``
+   *InfiniteReality Graphics Upgrade Installation Instructions for Deskside and Rackmount Onyx Systems*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/108-0132-002.pdf>`__ SHA-256 ``7f7da686e09fac443ef92c721562a69fd349faafea2f20f0c6125ab3d86b106d``. Published; may be quoted.
 
 .. _sgi-ref-108-0151-001:
 
@@ -233,10 +293,65 @@ SGI manuals, service documents and papers, cited by document number.
 ``108-0264-004``
    *sMDK-based Field Diagnostics for SGI Origin 300 System and SGI 3000 Family*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/108-0264-004.pdf>`__ SHA-256 ``535bda2d0de4ee9a86d79c0d1ebbb1d54ceadd52677d3395e430f50f39ebfcc7``. Published; may be quoted.
 
+.. _sgi-ref-108-0266-001:
+
+``108-0266-001``
+   *Origin 3000 Series Internal Technical Configuration Manual*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/108-0266-001.pdf>`__ SHA-256 ``385d73104d7247154f65d83880a86bf11f768a8076fbb4738f91cf236245fba7``. Published; may be quoted.
+
+.. _sgi-ref-108-0301-001:
+
+``108-0301-001``
+   *Service Procedures for SGI 3000 Series Systems*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/108-0301-001.pdf>`__ SHA-256 ``c54a8b72b543e6bb064542094911e9ccf2ec48575b4895966b8e1468ed54b131``. Published; may be quoted.
+
+.. _sgi-ref-860-0228-001:
+
+``860-0228-001``
+   *Hardware Installation Guide for the QLA2200 Board Family, FC0151103-00 D, 28 April 2000*. QLogic. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/0000/860-0228-001/pdf/860-0228-001.pdf>`__ SHA-256 ``872cca66f9f2c1e37f78e7a8265ef4fbf87fb49ce6d309b7446076d6cb4a1e2f``. Published; may be quoted.
+
 Web sources
 -----------
 
 Published inventories, posts, photographs and messages, cited as ``web:<id>``.
+
+.. _sgi-ref-alteon-tigon-pci-controller-rev-1-04:
+
+``alteon-tigon-pci-controller-rev-1.04``
+   *Tigon/PCI Ethernet Controller, revision 1.04, part number 020016, August 1997*. Alteon Networks. Part datasheet, cited by page. `<https://files.serialport.org/network/Alteon/Tigon/tigonbk.pdf>`__ SHA-256 ``21cf4d3caaa22fdc676bd6f370178b6d86af8f379878f7e587c1e7a245979dd6``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-analog-ds1742-rev-6-13:
+
+``analog-ds1742-rev-6-13``
+   *DS1742 Y2KC Nonvolatile Timekeeping RAM, document 19-6715, revision 6/13*. Analog Devices (Maxim Integrated). Part datasheet, cited by page. `<https://www.analog.com/media/en/technical-documentation/data-sheets/ds1742.pdf>`__ Archived copy: `<https://web.archive.org/web/20230515024434id_/https://www.analog.com/media/en/technical-documentation/data-sheets/ds1742.pdf>`__ SHA-256 ``b23213c68277401643202964885b750b1fedb7bf91114045f8d5810b3285756f``. Published; may be quoted.
+
+.. _sgi-ref-analog-ds1744-rev-6-13:
+
+``analog-ds1744-rev-6-13``
+   *DS1744/DS1744P Y2K-Compliant, Nonvolatile Timekeeping RAMs, document 19-5502, revision 6/13*. Analog Devices (Maxim Integrated). Part datasheet, cited by page. `<https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf>`__ Archived copy: `<https://web.archive.org/web/2024id_/https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf>`__ SHA-256 ``885e2325c7bb3c7c0e5760af73a216739ef0cf951abae9374b407137e98482a1``. Published; may be quoted.
+
+.. _sgi-ref-bridge-asic-spec-4-0:
+
+``bridge-asic-spec-4.0``
+   *Bridge ASIC Specification, Revision 4.0 for Rev D silicon, 1998-04-26*. Silicon Graphics. Asic spec, cited by page. `<https://www.mrynet.com/FTP/Hardware/sgi/SGI-Bridge_ASIC_Specification-Revision_4.0_for_Rev_D_Si-19980426.pdf>`__ SHA-256 ``8b30514b718f9259aa28dc95552fcbc7114cceeeb54fcb8330fd69aff377e01a``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-broadcom-57xx-pg105-r:
+
+``broadcom-57xx-pg105-r``
+   *BCM57XX Host Programmer's Interface Specification, document 57XX-PG105-R, 2008-01-29*. Broadcom. Part datasheet, cited by page. `<https://datasheet.datasheetarchive.com/originals/library/Datasheets-ZSAA1/DSAZSAA00017932.pdf>`__ SHA-256 ``9c55d67430e503b36ae360d8b500d34d82672cd12a2d1a26c80340ba3a00cae7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-bukosek-octane-motherboard-front:
+
+``bukosek-octane-motherboard-front``
+   *Octane IP30 motherboard, front (Andrej Bukosek's collection)*. Andrej Bukosek. Photo, cited by region. `<https://bukosek.si/hardware/collection/sgi-octane/img/octane_motherboard_front.jpg>`__ SHA-256 ``f171a375de6d1dad9294960d6b6edc1d268d378db2a298141c8bc33edb935299``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-bukosek-sgi-octane:
+
+``bukosek-sgi-octane``
+   *SGI Octane, Andrej Bukosek's hardware collection page, with hinv -mvv*. Andrej Bukosek. Web post, cited by section. `<https://bukosek.si/hardware/collection/sgi-octane.html>`__ SHA-256 ``40adeafea67e59234bb038883e78d17e54857a56669556e69d94269879a5fbfb``. Public web page; may be quoted.
+
+.. _sgi-ref-commons-ip30-030-0887-003-rev-f:
+
+``commons-ip30-030-0887-003-rev-f``
+   *Silicon Graphics motherboard IP30 030-0887-003 REV F (photograph by Mister rf, CC BY-SA 4.0)*. Wikimedia Commons. Photo, cited by region. `<https://upload.wikimedia.org/wikipedia/commons/2/2f/Silicon_Graphics_motherboard_IP30_030-0887-003_REV_F.jpg>`__ SHA-256 ``8508cee52f3169d9f4d468ef493fddbd7f35665e3b2cee8411de420e94b29e60``. Public web page; may be quoted.
 
 .. _sgi-ref-crossbow-asic-spec-12-0:
 
@@ -268,10 +383,20 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``ebay-277925514107-image-5``
    *PCI-XTALK ADAPTER board, Bridge ASIC area (photograph 5)*. eBay listing 277925514107, seller's photograph. Photo, cited by region. `<https://i.ebayimg.com/images/g/2RwAAeSwmT1p66ge/s-l1600.jpg>`__ SHA-256 ``2a7b26e77982ae594508e780dbd0c8382e9261ebc4836d6fb193809c7cd982c4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ebbes-parallelrechner-dissertation:
+
+``ebbes-parallelrechner-dissertation``
+   *Beitraege zur Modellierung von Parallelrechnern (Alexander Ebbes, dissertation, 2000), appendix B.2.1, an Origin 200 hinv -vm*. Johannes Gutenberg University Mainz. Paper, cited by page. `<https://openscience.ub.uni-mainz.de/server/api/core/bitstreams/db59142b-2d6a-40f0-b9fe-c6f8518c52ef/content>`__ SHA-256 ``12415b6e03f143a398f02197cacb89badacc36e20d1065a52c3071b953daf6aa``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-galles-spider-1997:
 
 ``galles-spider-1997``
    *Spider: A High-Speed Network Interconnect (Mike Galles, IEEE Micro 17(1), 1997)*. IEEE Computer Society. Paper, cited by page. `<https://dl.acm.org/doi/10.1109/40.566196>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-graphica-irix-flash-1m:
+
+``graphica-irix-flash-1m``
+   *flash(1M) manual page, IRIX 6.5.30 (Graphica mirror)*. Silicon Graphics. Manual, cited by section. `<https://help.graphica.com.au/irix-6.5.30/man/1M/flash>`__ SHA-256 ``86fbccd16bd18fe42fc5c63e1bf26737c517a6d6cc8bff4f84d6e2bb4003082c``. Public web page; may be quoted.
 
 .. _sgi-ref-graphica-o350-chimera-notes:
 
@@ -287,6 +412,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``hmm-408-b``
    *HMM-408-B Illustrated Parts Catalog for Origin 2000, Onyx2, Cray Origin 2000 and MetaRouter*. Silicon Graphics. Service doc, cited by page. `<https://techpubs.jurassic.nl/manuals/hdwr/service/HMM-408-B.pdf>`__ SHA-256 ``abc06bc37773997eebdc31c369549c784af41057ac814592b1bd9b3545fd4a03``. Published; may be quoted.
+
+.. _sgi-ref-ibm-rgb561-architecture-1-1:
+
+``ibm-rgb561-architecture-1.1``
+   *RGB561 Architecture, Preliminary revision 1.1, 23 January 1995*. IBM Microelectronics. Part datasheet, cited by page. `<https://datasheet4u.com/pdf/499389/RGB561.pdf>`__ SHA-256 ``e2da0d25dc9803c9ca0c9aec4cbb9babba688c5118f24cb9141d7ece17ae1545``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-ics1890-rev-g:
 
@@ -313,6 +443,21 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``irixnet-thread-2263``
    *IRIXnet thread 2263, owner Onyx 4 inventory*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-2263.html>`__ SHA-256 ``fe7d3d15560b2e4e431975e5f299c4f80e9d31db654cfe9f718b9399f3272df7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-irixnet-thread-4337:
+
+``irixnet-thread-4337``
+   *IRIXnet thread 4337, "ONYX2 Deskside without graphic output", an Onyx2 hinv -mvvv*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-4337.html>`__ SHA-256 ``9825187e846eec4f8cd33851bfc2855bf5a3bed7b911098ac212f834ddb644c3``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-laudon-lenoski-origin-1997:
+
+``laudon-lenoski-origin-1997``
+   *The SGI Origin: A ccNUMA Highly Scalable Server (Laudon and Lenoski, ISCA 1997)*. ACM and IEEE, ISCA 1997. Paper, cited by section. `<http://www.sgidepot.co.uk/origin/isca.pdf>`__ SHA-256 ``028d3e5beffca1a0f9616f0e1444b599dda7e6e72fa86e8856bff8413c2432fb``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-linux-mips-impactsr-2008:
+
+``linux-mips-impactsr-2008``
+   *linux-mips, 2008-07-31, SGI Octane (IP30) Patches, Part two, Octane core (Kumba), carrying Stanislaw Skowronek's IMPACTSR framebuffer driver*. linux-mips mailing list. Web post, cited by post. Message-ID ``<48914C74.6090309@gentoo.org>``. Public web page; may be quoted.
+
 .. _sgi-ref-lore-kaloz-ip35-35:
 
 ``lore-kaloz-ip35-35``
@@ -338,10 +483,25 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``lore-walker-octane-2005``
    *IP30 boot log with the IOC3 PHY probe (Aaron Walker, 2005-08-11)*. linux-mips mailing list. Capture, cited by line. `<https://lore.kernel.org/linux-mips/42FB71D4.9040408@gentoo.org/>`__ Message-ID ``<42FB71D4.9040408@gentoo.org>``. Public web page; may be quoted.
 
+.. _sgi-ref-lspci-saic-11c1-5802:
+
+``lspci-saic-11c1-5802``
+   *lspci -v output of a system with an AT&T/Lucent 11c1:5802 revision 0x10 USB function, Message-ID <1014289078.15561.26.camel@ukabzc383.uk.saic.com>*. Public mailing-list post. Capture, cited by line. Message-ID ``<1014289078.15561.26.camel@ukabzc383.uk.saic.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-lucent-uss312-ds:
 
 ``lucent-uss312-ds``
    *USS-312 Two-Port PCI-to-USB OpenHCI Host Controller, Lucent advance data sheet, rev. 5, March 2000*. Lucent Technologies. Part datasheet, cited by page. `<https://datasheet.octopart.com/USS312TC-Lucent-datasheet-180610558.pdf>`__ SHA-256 ``5e4b19ced7d90480afcc1d6b8eea663f100f85b3321d98eaaf078c411bd53a45``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-mail-isp12160-config-capture-2005:
+
+``mail-isp12160-config-capture-2005``
+   *Mailing-list post with raw PCI configuration bytes of two ISP12160 functions, 2005-01-05*. Public mailing-list post. Capture, cited by line. Message-ID ``<20050105190836.56872c22@gibson>``. Public web page; may be quoted.
+
+.. _sgi-ref-mail-isp12160-config-capture-2006:
+
+``mail-isp12160-config-capture-2006``
+   *Mailing-list post decoding the PCI configuration of an ISP12160 function, 2006-03*. Public mailing-list post. Capture, cited by line. Message-ID ``<4415F863.9040203@simg.de>``. Public web page; may be quoted.
 
 .. _sgi-ref-marc-openbsd-sgi-125897882029839:
 
@@ -358,6 +518,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``maxim-ds1685-ds1687-rev-10-12``
    *DS1685/DS1687 3V/5V Real-Time Clocks, document 19-5215, revision 10/12*. Maxim Integrated. Part datasheet, cited by page. `<https://web.archive.org/web/20190915061518id_/https://datasheets.maximintegrated.com/en/ds/DS1685-DS1687.pdf>`__ SHA-256 ``015f7d582af99da5b5e3da2a41b7fdbd3b66f94929aa538671f9e8bdd3ce6c83``. Published; may be quoted.
 
+.. _sgi-ref-microchip-93c46:
+
+``microchip-93c46``
+   *93AA46/93LC46/93C46 1K Microwire serial EEPROM, DS21749H*. Microchip Technology. Part datasheet, cited by page. `<https://ww1.microchip.com/downloads/en/DeviceDoc/21749H.pdf>`__ SHA-256 ``8d358ab574f3ba93b59b60895c3b5e418499275669d3b6d643c899c87dee6780``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-mimgfx-origin2000-inventory:
 
 ``mimgfx-origin2000-inventory``
@@ -373,6 +538,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``miod-openbsd-sgi-story-4``
    *The OpenBSD/sgi story, part 4*. Miod Vallat. Web post, cited by line. `<https://web.archive.org/web/20260620055955id_/http://miod.online.fr/software/openbsd/stories/sgi4.html>`__ SHA-256 ``307c9d4678f52b8fb0c43d1690f552fd774ac1620bdf9aa1299c6f85ff40b91e``. Public web page; may be quoted.
 
+.. _sgi-ref-montrym-infinitereality-1997:
+
+``montrym-infinitereality-1997``
+   *InfiniteReality: A Real-Time Graphics System (Montrym, Baum, Dignam, Migdal, SIGGRAPH 97)*. ACM SIGGRAPH. Paper, cited by section. `<https://people.csail.mit.edu/ericchan/bib/pdf/p293-montrym.pdf>`__ SHA-256 ``877a4c9e19ff82107b496c10a91339c41635e05d0e2dfa4a9d849e2e2d8647bb``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-national-dp83840a-datasheet:
+
+``national-dp83840a-datasheet``
+   *DP83840A 10/100 Mb/s Ethernet Physical Layer (DP83840AVCE), National Semiconductor datasheet*. National Semiconductor. Part datasheet, cited by section. `<https://theretroweb.com/chip/documentation/dp83840avce-67a4e1341449e807271366.pdf>`__ Archived copy: `<https://web.archive.org/web/20260810031326id_/https://theretroweb.com/chip/documentation/dp83840avce-67a4e1341449e807271366.pdf>`__ SHA-256 ``1306520677afdcc5ca93b9a3516683ad19ac080746c832ad32231a4b69655c31``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-nec-vr10000-series-um-4:
 
 ``nec-vr10000-series-um-4``
@@ -382,6 +557,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nec-vr10000-vr12000-um-3``
    *VR10000, VR12000 64-bit Microprocessor User's Manual, third edition, U10278EJ3V0UM00, May 1998*. NEC. Part datasheet, cited by page. `<http://www.bitsavers.org/components/nec/mips/Vr10000-um-r3_199805.pdf>`__ SHA-256 ``83b5e933c7ae6dd18442f3950f96e90898f7da5306318931a533799a0eb6eef9``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-11542:
+
+``nekonomicon-11542``
+   *Nekochan forum archive thread 11542, Origin 300 inventory with a PCI expansion module*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/11542/1.html>`__ SHA-256 ``f7e02aa0565afe3fc1b849d8abb654837ff1b7e5e884aaa818a785b420003c49``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-12262:
+
+``nekonomicon-12262``
+   *Nekochan forum archive thread 12262, Octane inventory with an EMXI (MOT20 030-1240-003)*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/12262/1.html>`__ SHA-256 ``a408e324489efe93ee2b70bdcd5a85da76712a5d0df8f0bb44b1d8eba8218f32``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-nekonomicon-16285:
 
@@ -407,6 +592,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nekonomicon-16724207``
    *Nekochan forum archive thread 16724207, two-module Origin 350 inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16724207/1.html>`__ SHA-256 ``88e26ec45b8e49249abe2c2269dfcda19d90d14cbdfac834faeb2f5528e2fdd4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-16726610:
+
+``nekonomicon-16726610``
+   *Nekochan forum archive thread 16726610, Octane inventory with two ESI boards (MOT10 030-1241-002)*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16726610/1.html>`__ SHA-256 ``76172b4a518d2940316a57e7297a4c8b4ad329240b09f40c1c6c213f2263383b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-nekonomicon-16726611:
 
@@ -458,6 +648,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16731033``
    *Nekochan forum archive thread 16731033, two-module Origin 200 with a GIGAchannel cabinet on each module*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16731033/1.html>`__ SHA-256 ``201c2518d5c09981a91630449b853dd45e871daa2c17647169e92a08dfcd1d29``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-nekonomicon-16972:
+
+``nekonomicon-16972``
+   *Nekochan forum archive thread 16972, Octane inventory with an MXI (GM20 030-0957-003)*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16972/1.html>`__ SHA-256 ``98bd9d0a9ccfc7220349eea7037071401c1078af679e01a5879b407d71428491``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-nekonomicon-17194:
 
 ``nekonomicon-17194``
@@ -473,6 +668,31 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-5749``
    *Nekochan forum archive thread 5749, page 1*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/3/5749/1.html>`__ SHA-256 ``ba496ee97b510dac8afbe309e668a8fa14515f45762b8b61901797393b01f019``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ns-pc16550d-1995:
+
+``ns-pc16550d-1995``
+   *PC16550D Universal Asynchronous Receiver/Transmitter with FIFOs, June 1995*. National Semiconductor. Part datasheet, cited by page. `<https://www.scs.stanford.edu/10wi-cs140/pintos/specs/pc16550d.pdf>`__ SHA-256 ``4d6b3c2f74f013e416be87cccf8d68b0e1858872e2b4bfcf8e5a2b9b3920e49a``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ntc-tech-origin-200-cmn-a019:
+
+``ntc-tech-origin-200-cmn-a019``
+   *Silicon Graphics Origin 200 Server CMN A018 Master and Slave, CMN A019 Expansion (retailer photographs)*. NTC Tech. Photo, cited by region. `<https://www.ntc-tech.com/products/silicon-graphics-origin-200-server-cmn-a018-master-and-slave-cmn-a019-expansion>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nxp-mcf5206eum-1:
+
+``nxp-mcf5206eum-1``
+   *MCF5206e ColdFire Integrated Microprocessor User's Manual, MCF5206EUM revision 1 (1998)*. Motorola (NXP). Part datasheet, cited by page. `<https://www.nxp.com/docs/en/data-sheet/MCF5206EUM.pdf>`__ Archived copy: `<https://web.archive.org/web/2024id_/https://www.nxp.com/docs/en/data-sheet/MCF5206EUM.pdf>`__ SHA-256 ``b6400475c22004374a246d97f32f306ae65720d49def0c190e7e5138b2c9409e``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nxp-mcf5206eumad-3:
+
+``nxp-mcf5206eumad-3``
+   *MCF5206e User's Manual errata, MCF5206EUMAD revision 3 (July 2001)*. Motorola (NXP). Part datasheet, cited by page. `<https://www.nxp.com/docs/en/reference-manual/MCF5206EUMAD.pdf>`__ Archived copy: `<https://web.archive.org/web/20240627052933id_/https://www.nxp.com/docs/en/reference-manual/MCF5206EUMAD.pdf>`__ SHA-256 ``fe46bb7b1852f4b81dd13f84a7ae617e58b7dd7ac21ab3852388a50992ccaf18``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nxp-um10204-rev7:
+
+``nxp-um10204-rev7``
+   *UM10204 I2C-bus specification and user manual, revision 7.0*. NXP Semiconductors. Manual, cited by page. `<https://www.nxp.com/docs/en/user-guide/UM10204.pdf>`__ Archived copy: `<https://web.archive.org/web/20241231054059id_/https://www.nxp.com/docs/en/user-guide/UM10204.pdf>`__ SHA-256 ``dc91f00f65584e06ef36e26c93bf9d91a95fb3c8a1830a9223e53caf678b36af``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-octane-technical-report:
 
 ``octane-technical-report``
@@ -483,6 +703,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``openhci-1.0a``
    *OpenHCI: Open Host Controller Interface Specification for USB, release 1.0a*. Compaq, Microsoft, National Semiconductor. Asic spec, cited by page. `<https://web.archive.org/web/20200518185527/https://www.getusb.info/resources/hcir1_0a.pdf>`__ SHA-256 ``588a27e934e3fd17ade596321d482ffb2269db17576293cd646065abd59f2a98``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ordi-spare-030-1252-001:
+
+``ordi-spare-030-1252-001``
+   *030-1252-001 XBOX XTalk interface board (images 17221-17226)*. Ordi-Spare/EURINCO. Photo, cited by region. `<https://ordi-spare.com/en/spare-part-sgi/3750-sgi-030-1252-001-xbox-xtalk-interface-board-o200.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-origin-onyx2-quick-reference-booklet:
 
 ``origin-onyx2-quick-reference-booklet``
@@ -492,6 +717,41 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``origin-technical-report``
    *Origin200 and Origin2000 Technical Report*. Silicon Graphics. Paper, cited by section. `<http://www.sgidepot.co.uk/origin/origin_techrep.tar.gz>`__ SHA-256 ``93fad3353ec58e2dd286dd46c17cdf83024b93a40643df20160b6eacb79c566b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-pci-local-bus-2-2:
+
+``pci-local-bus-2.2``
+   *PCI Local Bus Specification, revision 2.2, 1998-12-18*. PCI Special Interest Group. Asic spec, cited by page. `<https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf>`__ SHA-256 ``7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-pcisig-pci-local-bus-spec-2-2:
+
+``pcisig-pci-local-bus-spec-2.2``
+   *PCI Local Bus Specification, revision 2.2, 1998-12-18*. PCI Special Interest Group. Asic spec, cited by page. `<https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf>`__ SHA-256 ``7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-philips-pcf8584-1997:
+
+``philips-pcf8584-1997``
+   *PCF8584 I2C-bus controller, product specification, 1997-10-21*. Philips Semiconductors. Part datasheet, cited by page. `<https://www.nxp.com/docs/en/data-sheet/PCF8584.pdf>`__ Archived copy: `<https://web.archive.org/web/20241225124729id_/https://www.nxp.com/docs/en/data-sheet/PCF8584.pdf>`__ SHA-256 ``481c7ea1eacd8d92fc23be4c92f8feb600dee057e51316747783a37e106db365``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-philips-scc68681-duart:
+
+``philips-scc68681-duart``
+   *SCC68681 Dual asynchronous receiver/transmitter (DUART), product data, 2004-04-06*. Philips Semiconductors. Part datasheet, cited by page. `<https://www.nxp.com/docs/en/data-sheet/SCC68681.pdf>`__ Archived copy: `<https://web.archive.org/web/20240529120536id_/https://www.nxp.com/docs/en/data-sheet/SCC68681.pdf>`__ SHA-256 ``6e97149226228243d247dd52fb6e33253f213cc836daffbf55d50b0d28b10deb``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-plx-pci9054-data-book-1-0:
+
+``plx-pci9054-data-book-1.0``
+   *PCI 9054 Data Book, version 1.0, 1998*. PLX Technology. Part datasheet, cited by page. `<https://www.nikhef.nl/~peterj/datasheets/9054db-1C.pdf>`__ SHA-256 ``a3ef4218ecd2c48757492363390ba6217ca6c11f5025320296a034063948992d``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-plx-pci9060-data-sheet-1-2:
+
+``plx-pci9060-data-sheet-1.2``
+   *PCI 9060 Data Sheet, version 1.2, December 1995*. PLX Technology. Part datasheet, cited by page. `<https://www.farnell.com/datasheets/390078.pdf>`__ SHA-256 ``ca5a3530cc8c791fde5eac74756ed5a27a0edbf706214c53efe0f440c87f97f1``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-prestor-ccnuma-thesis-2001:
+
+``prestor-ccnuma-thesis-2001``
+   *Evaluating the Memory Performance of a ccNUMA System (Uros Prestor, MS thesis, 2001)*. University of Utah. Paper, cited by page. `<http://www.sgidepot.co.uk/origin/thesis.pdf>`__ SHA-256 ``c31fce5b0b9840c66ea2697b4c7a7ba9891fadee58a8cc064e5ff8fe10553689``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-preterhuman-impact:
 
@@ -507,6 +767,31 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``preterhuman-tezro``
    *SGI Tezro*. Higher Intellect wiki. Web post, cited by section. `<https://wiki.preterhuman.net/SGI_Tezro>`__ SHA-256 ``19715ac0971e26881330f8aae5c009e86ddb182ef8fd21c3a647896aaacb15f0``. Public web page; may be quoted.
+
+.. _sgi-ref-psitech-rad1-ds-1099:
+
+``psitech-rad1-ds-1099``
+   *RAD1 Graphics Head product sheet, publication RAD1-DS-1099*. PsiTech. Part datasheet, cited by page. `<http://www.psitech.com/RAD1_10-99.pdf>`__ Archived copy: `<https://web.archive.org/web/20040613072434id_/http://www.psitech.com/RAD1_10-99.pdf>`__ SHA-256 ``dcf49253b955b33776b3161ba69b47741b62490a72ee3b0631e05e5ad6491c2f``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-psitech-rad4-owners-guide-1-3:
+
+``psitech-rad4-owners-guide-1.3``
+   *RAD4 Owner's Guide, software revision 1.3, 15 November 1997*. PsiTech. Manual, cited by section. `<https://archive.org/details/psitech-rad4-owners-guide>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-psitech-rad4c-km-ds-1099:
+
+``psitech-rad4c-km-ds-1099``
+   *RAD4C-KM Graphics Head product sheet, publication RAD4-DS-1099*. PsiTech. Part datasheet, cited by page. `<http://www.psitech.com/RAD4C-KM_10-99.pdf>`__ Archived copy: `<https://web.archive.org/web/20050517102816id_/http://www.psitech.com/RAD4C-KM_10-99.pdf>`__ SHA-256 ``09d283777c23a7a7f32fb86906336ac10fff15786a6e011292dd9fe968c72be7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-qlogic-isp1040b-product-brief-1996:
+
+``qlogic-isp1040b-product-brief-1996``
+   *ISP1020B/ISP1040B Intelligent SCSI Processor data sheet, 83140-580-01 B, December 1996*. QLogic. Part datasheet, cited by page. `<https://bitsavers.org/pdf/qlogic/83140-580-01B_ISP1020B_1040B_data_sheet_199612.pdf>`__ SHA-256 ``4f3229ef2f2dc4db396797b559b18104738ce11a53642ce8f308dff3254dfe1d``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-qlogic-isp12160a-datasheet-1999:
+
+``qlogic-isp12160a-datasheet-1999``
+   *ISP12160A/33 and ISP12160A/66 Intelligent, Dual SCSI Processors Data Sheet, 83216-580-01 A, March 1999*. QLogic. Part datasheet, cited by page. `<https://bitsavers.org/pdf/qlogic/83216-580-01A_QLogic_ISP12160A-33_66_199903.pdf>`__ SHA-256 ``4f3ac7e015fd118ba9549e931bb04f5c9d1d8078273bf58c5c04e2b7d0cdc301``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-r10000-users-manual-2-0:
 
@@ -533,6 +818,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``sgistuff-octane``
    *SGIStuff: Octane system page*. SGIStuff. Web post, cited by section. `<https://archive.irixnet.org/sgistuff/hardware/systems/octane.html>`__ SHA-256 ``3b785cc77b38ad3ac1ae58c9c6094c28810625d943547c17d0f4700d888dd0ea``. Public web page; may be quoted.
 
+.. _sgi-ref-sharp-lh28f800su:
+
+``sharp-lh28f800su``
+   *LH28F800SU 8M Flash Memory datasheet*. Sharp. Part datasheet, cited by page. `<https://rcl-radio.ru/wp-content/uploads/2014/11/LH28F800SU.pdf>`__ SHA-256 ``589461cd0f1cd4f2ad861f558e4f1fe982274baa08fed0e6d013aa9548862384``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-st-m48t35-rev-10:
+
+``st-m48t35-rev-10``
+   *M48T35, M48T35Y 5 V, 256 Kbit (32 Kb x 8) TIMEKEEPER SRAM, document 2611, revision 10, June 2011*. STMicroelectronics. Part datasheet, cited by page. `<https://www.st.com/resource/en/datasheet/m48t35.pdf>`__ Archived copy: `<https://web.archive.org/web/20190723212704id_/https://www.st.com/resource/en/datasheet/m48t35.pdf>`__ SHA-256 ``ec4ecb512ec0d9a9621337308ea88af9ff714b638c081199e8037f7eb35ce624``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-theretroweb-origin200-image-1:
 
 ``theretroweb-origin200-image-1``
@@ -553,6 +848,26 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``theretroweb-origin200-image-5``
    *Origin 200 PCI backplane, solder side (image 5 of 5)*. The Retro Web, photograph by Petros Savvas. Photo, cited by region. `<https://theretroweb.com/motherboard/image/sgi-origin4-1-6a784d7361a61633987402.jpg>`__ SHA-256 ``9f8f11fc059dda4a8a4350f193a78ab15b57fd36744e63e34d200bdb340c781a``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ti-dp83843-snls021b:
+
+``ti-dp83843-snls021b``
+   *DP83843BVJE PHYTER Precision 10/100 Mb/s Ethernet Physical Layer, revision B (SNLS021B)*. Texas Instruments (National Semiconductor). Part datasheet, cited by page. `<https://www.ti.com/lit/ds/symlink/dp83843.pdf>`__ SHA-256 ``375dfba8351a3cf9b6caef65a79281c9d02f0760bc51abc0c475743bf41a9d73``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ti-tl16pir552-slls222a:
+
+``ti-tl16pir552-slls222a``
+   *TL16PIR552 Dual UART With 16-Byte FIFOs and Parallel Port, SLLS222A, revised August 1996*. Texas Instruments. Part datasheet, cited by page. `<https://datasheet.iiic.cc/datasheets-0/texas_instruments/TL16PIR552PH.pdf>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ti-tsb12lv22-slls290:
+
+``ti-tsb12lv22-slls290``
+   *TSB12LV22 OHCI-Lynx PCI-Based IEEE 1394 Host Controller, SLLS290, July 1998*. Texas Instruments. Part datasheet, cited by page. `<https://www.datasheetarchive.com/datasheet/TSB12LV22/Texas-Instruments>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ti-tvp4020-programmers-reference:
+
+``ti-tvp4020-programmers-reference``
+   *TVP4020 PERMEDIA 2 Programmer's Reference Manual*. Texas Instruments and 3Dlabs. Part datasheet, cited by page. `<https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7138/2156_TVP4020_PERMEDIA_2_Programmers_Reference_Manual_.pdf>`__ SHA-256 ``32fb93183ff280f3feea7d0e7d0a3d19c923eefbfc2ecd8eb8d5a6b1a94d2559``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-tingo-fuel-irix-console:
 
 ``tingo-fuel-irix-console``
@@ -563,30 +878,90 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``us-patent-5721819``
    *US patent 5,721,819, Programmable, distributed network routing*. United States Patent and Trademark Office. Paper, cited by section. `<https://patents.google.com/patent/US5721819A/en>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-us-patent-6085303:
+
+``us-patent-6085303``
+   *US patent 6,085,303, Serialized race-free virtual barrier network (Cray Research)*. United States Patent and Trademark Office. Paper, cited by section. `<https://patents.google.com/patent/US6085303A/en>`__ Published; may be quoted.
+
+.. _sgi-ref-us-patent-6751698:
+
+``us-patent-6751698``
+   *US patent 6,751,698, Multiprocessor node controller circuit and method (Silicon Graphics)*. United States Patent and Trademark Office. Paper, cited by section. `<https://patents.google.com/patent/US6751698B1/en>`__ Published; may be quoted.
+
+.. _sgi-ref-usenet-1123184831:
+
+``usenet-1123184831``
+   *comp.sys.sgi.marketplace, 2005-08-04, Origin 200 GIGAchannel with an SI with texture (MOT10 030-1241-002 rev H), hinv -vm and gfxinfo*. Usenet. Capture, cited by line. Message-ID ``<1123184831.096208.266500@f14g2000cwb.googlegroups.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-1131341991:
+
+``usenet-1131341991``
+   *Usenet post, Octane V6 hinv -vm, Message-ID <1131341991.176074@erwin.inf.tu-dresden.de>*. Usenet. Capture, cited by line. Message-ID ``<1131341991.176074@erwin.inf.tu-dresden.de>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-1154846834:
+
+``usenet-1154846834``
+   *Usenet post, Octane2 V12 hinv and gfxinfo, Message-ID <1154846834.587752.145330@m79g2000cwm.googlegroups.com>*. Usenet. Capture, cited by line. Message-ID ``<1154846834.587752.145330@m79g2000cwm.googlegroups.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-338549df:
+
+``usenet-338549df``
+   *comp.sys.sgi.graphics, 1997-05-23, Octane MXI gfxinfo beside hinv's Graphics board: MXI*. Usenet. Capture, cited by line. Message-ID ``<338549DF.98CB16C3@delusion.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-35ab0320:
+
+``usenet-35ab0320``
+   *comp.sys.sgi.graphics, 1998-07-14, three keyboards on a two-rack Onyx2, Message-ID <35AB0320.794B@kyb.tuebingen.mpg.de>*. Usenet. Capture, cited by line. Message-ID ``<35AB0320.794B@kyb.tuebingen.mpg.de>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-39b750e0:
 
 ``usenet-39b750e0``
    *comp.sys.sgi.hardware, 2000-09-07, HU-\* for Octanes (Alexis Cousein, SGI), Message-ID <39B750E0.CA1E23C4@brussels.sgi.com>*. Usenet. Capture, cited by line. Message-ID ``<39B750E0.CA1E23C4@brussels.sgi.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-3a23907e:
+
+``usenet-3a23907e``
+   *comp.sys.sgi.admin, 2000-11-28, sysinfo doesn't work anymore after upgrade. (D. Voetelink), Message-ID <3A23907E.A0A6BD61@ecn.nl>*. Usenet. Capture, cited by line. Message-ID ``<3A23907E.A0A6BD61@ecn.nl>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-3be33f04:
 
 ``usenet-3be33f04``
    *comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>*. Usenet. Capture, cited by line. Message-ID ``<3BE33F04.848B3CEE@odense.kollegienet.dk>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3fef80f1:
+
+``usenet-3fef80f1``
+   *Usenet post, Octane V8 hinv -mv, Message-ID <3FEF80F1.F00A6CFE@comcast.net>*. Usenet. Capture, cited by line. Message-ID ``<3FEF80F1.F00A6CFE@comcast.net>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-40c20497:
 
 ``usenet-40c20497``
    *comp.sys.sgi.hardware, 2004-06-05, Message-ID <40C20497.1D26A44A@machtnix.net>*. Usenet. Capture, cited by line. Message-ID ``<40C20497.1D26A44A@machtnix.net>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-6kd8bj:
+
+``usenet-6kd8bj``
+   *comp.sys.sgi.marketplace, 1998-05-25, dual-module Origin 200 for sale, Message-ID <6kd8bj$diu$1@news2.ispnews.com>*. Usenet. Capture, cited by line. Message-ID ``<6kd8bj$diu$1@news2.ispnews.com>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-7psh8j:
 
 ``usenet-7psh8j``
    *comp.sys.sgi.admin, 1999-08-23, firmware level on fiber channel cards, Message-ID <7psh8j$pos$1@nnrp1.deja.com>*. Usenet. Capture, cited by line. Message-ID ``<7psh8j$pos$1@nnrp1.deja.com>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-8nbvii:
+
+``usenet-8nbvii``
+   *comp.sys.sgi.graphics, 2000-08-15, R12000 Octane under IRIX 6.5.6 with a two-GE GE12 board and 4 TRAMs, gfxinfo*. Usenet. Capture, cited by line. Message-ID ``<8nbvii$amh$1@nnrp1.deja.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-8ns2m5:
 
 ``usenet-8ns2m5``
    *comp.sys.sgi.hardware, 2000-08-21, Octane Graphics Problem, Message-ID <8ns2m5$7u0$1@nnrp1.deja.com>*. Usenet. Capture, cited by line. Message-ID ``<8ns2m5$7u0$1@nnrp1.deja.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-95oo9r:
+
+``usenet-95oo9r``
+   *comp.sys.sgi.admin, 2001-02-06, Trouble with CrayLink (Bernd Schubert), Message-ID <95oo9r$f16$1@mlucom4.urz.uni-halle.de>*. Usenet. Capture, cited by line. Message-ID ``<95oo9r$f16$1@mlucom4.urz.uni-halle.de>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-9gjuq1:
 
@@ -603,10 +978,30 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-a47377f9``
    *comp.sys.sgi.marketplace, 2004-01-26, SGI In Stock, Message-ID <a47377f9.0401261309.38ca70ab@posting.google.com>*. Usenet. Capture, cited by line. Message-ID ``<a47377f9.0401261309.38ca70ab@posting.google.com>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-au03s8:
+
+``usenet-au03s8``
+   *Usenet post, Octane V6 gfxinfo, Message-ID <au03s8$3d2kg$1@ID-18853.news.dfncis.de>*. Usenet. Capture, cited by line. Message-ID ``<au03s8$3d2kg$1@ID-18853.news.dfncis.de>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-bqfo2p:
+
+``usenet-bqfo2p``
+   *comp.sys.sgi.apps, 2003-12-01, Octane with an ESSI under IRIX 6.5.21f, gfxinfo*. Usenet. Capture, cited by line. Message-ID ``<bqfo2p$35k$1@news.mie>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-hvh0d:
+
+``usenet-hvh0d``
+   *Usenet post, Octane V10 board ODY32VERSIONB 030-1655-001, Message-ID <hVH0d.2092$%O5.195@trnddc07>*. Usenet. Capture, cited by line. Message-ID ``<hVH0d.2092$%O5.195@trnddc07>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-pigot-3edc9a71:
 
 ``usenet-pigot-3edc9a71``
    *comp.sys.sgi.marketplace, 2003-06-03, Re: Have 3 Origin 200 XBOX Gigachannel Exp. NEW FACTORY BOXES*. Usenet. Capture, cited by line. Message-ID ``<3EDC9A71.CE2535AA@delm.tas.gov.au>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-rasey-384c6090:
+
+``usenet-rasey-384c6090``
+   *comp.sys.sgi.misc, 1999-12-06, Inst rbaud weirdness, Message-ID <384C6090.A4854432@tivo.com>*. Usenet. Capture, cited by line. Message-ID ``<384C6090.A4854432@tivo.com>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-slrndfs77l:
 
@@ -628,6 +1023,11 @@ Firmware images
 
 Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256.
 
+.. _sgi-ref-io6-prom-6-156:
+
+``io6-prom-6.156``
+   *IO6 base I/O PROM*. Silicon Graphics. Firmware, cited by address. For Origin 2000 and Onyx2 IO6 and IO6G BaseIO boards. Version 6.156. Banner ``SGI Version 6.156  built 11:26:28 AM Nov 18, 2003``. Found on IRIX 6.5.30 installation media. Hashed as the payload image. SHA-256 ``bf341a71821541233cb96459f6b99f6f4ecd2cf90f7e9321d918686ee6c25047``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ip27-prom-6-156:
 
 ``ip27-prom-6.156``
@@ -642,3 +1042,8 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 
 ``ip35-prom-6.210``
    *IP35 PROM*. Silicon Graphics. Firmware, cited by address. For Origin 300, Origin 350, Onyx 350, Fuel and Tezro IP35-family node boards. Version 6.210. Banner ``SGI Version 6.210  built 02:33:51 PM Aug 26, 2004``. Found on IRIX 6.5.30 installation media, /usr/cpu/firmware/ip35prom.img. Hashed as the payload image. SHA-256 ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-l1-firmware-1-44-0:
+
+``l1-firmware-1.44.0``
+   *L1 system controller firmware, Fuel/PE/O300 1MB image*. Silicon Graphics. Firmware, cited by address. For Origin 300, Fuel and PCI expansion module L1 controllers. Version 1.44. Banner ``1.44.0, built 2006-07-17 18:20:38, label Fuel/PE/O300 1MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (982,412-byte Origin 300 range). Hashed as the payload image. SHA-256 ``0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4``. Public, without a redistribution grant: cited and linked, never copied into this tree.

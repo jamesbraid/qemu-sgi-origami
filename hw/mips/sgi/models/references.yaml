@@ -349,6 +349,150 @@ documents:
     rights: published
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4210-003/pdf/007-4210-003.pdf
+  007-0911-180:
+    title: "IRIX Device Driver Programmer's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/0000/007-0911-180/pdf/007-0911-180.pdf
+      sha256: 25a6ed2d5223595ace87b9d9140605be7ab361de65c183b92fae3e28d00ea45e
+  007-3819-004:
+    title: "SGI IRIS Gigabit Ethernet Board User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3819-004/pdf/007-3819-004.pdf
+      sha256: 3983072ca93389e5064d5053697b494184ae94c6a86a29826cdbb284d438d7cd
+  007-4222-002:
+    title: "SGI Tensor Processing Unit (TPU) XIO Board Introduction"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4222-002/pdf/007-4222-002.pdf
+      sha256: 0b2d500c17d3d2a02034ab8723cc8d263567fbf28a0bfe5751e7668b30c8d86d
+  007-4669-003:
+    title: "SGI 10-Gigabit Ethernet Network Adapter User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: section
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4669-003/pdf/007-4669-003.pdf
+      sha256: 2683bdb7438480a3f369b46011d047c13ff3cace6f193efe48ce87fe1700c7fa
+  007-0911-090:
+    title: "IRIX Device Driver Programmer's Guide (1997 edition)"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/0000/007-0911-090/pdf/007-0911-090.pdf
+      sha256: 8b07ae01d6f1d2982c257660ed5551b9b96de5f1570bb214d0642194b7dfc9b2
+  007-3938-001:
+    title: "SGI L1 and L2 Controller Software User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3938-001/pdf/007-3938-001.pdf
+      sha256: bcf899aa2a685ac4ff15d38f5ba35e31adbd1d400ab845ecf3cf447ecb0c0b29
+  007-3938-006:
+    title: "SGI L1 and L2 Controller Software User's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3938-006/pdf/007-3938-006.pdf
+      sha256: fd9f98168ca04a9d4406041f5fce34fdbb89f3bafd5a0c6f38bea6e64291f08e
+  007-4424-001:
+    title: "SGI Onyx 3000 N-Brick Addendum"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4424-001/pdf/007-4424-001.pdf
+      sha256: 75cdcaf195fde56854872e506ddce57e9187ed727617e69149a0d0eef00382ed
+  007-4572-001:
+    title: "Cx-brick Addendum"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4572-001/pdf/007-4572-001.pdf
+      sha256: 7c75a31959ce530f00c5e000816a4a26b00c052a58c94125c019b771e99f1e41
+  007-4604-001:
+    title: "IX-brick Addendum"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4604-001/pdf/007-4604-001.pdf
+      sha256: 320af66049b77ec322e40284350776f49910d41232a3cd21604ab1019cac76e8
+  007-4605-001:
+    title: "PX-brick Addendum"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4605-001/pdf/007-4605-001.pdf
+      sha256: 5634ea131b141993ad2cd66d4d4f132a6ec9ee6defb1197060af977259854f80
+  108-0132-002:
+    title: "InfiniteReality Graphics Upgrade Installation Instructions for Deskside and Rackmount Onyx Systems"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0132-002.pdf
+      sha256: 7f7da686e09fac443ef92c721562a69fd349faafea2f20f0c6125ab3d86b106d
+  108-0266-001:
+    title: "Origin 3000 Series Internal Technical Configuration Manual"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0266-001.pdf
+      sha256: 385d73104d7247154f65d83880a86bf11f768a8076fbb4738f91cf236245fba7
+  108-0301-001:
+    title: "Service Procedures for SGI 3000 Series Systems"
+    publisher: Silicon Graphics
+    kind: service-doc
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0301-001.pdf
+      sha256: c54a8b72b543e6bb064542094911e9ccf2ec48575b4895966b8e1468ed54b131
+  860-0228-001:
+    title: "Hardware Installation Guide for the QLA2200 Board Family, FC0151103-00 D, 28 April 2000"
+    publisher: QLogic
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/0000/860-0228-001/pdf/860-0228-001.pdf
+      sha256: 872cca66f9f2c1e37f78e7a8265ef4fbf87fb49ce6d309b7446076d6cb4a1e2f
+  007-3415-003:
+    title: "Origin200 Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3415-003/pdf/007-3415-003.pdf
+      sha256: 6ade2d090ed409eade39537f12cc963aca1d32408d6c351df616f547b016456b
 
 web:
   nekonomicon-16719032:
@@ -360,6 +504,14 @@ web:
     obtain:
       url: https://nekonomicon.irixnet.org/forum/14/16719032/1.html
       sha256: a211c43f1a350be3f8726f694a21533a73baedf04b173ca0b26c2ec821a36b4d
+  ti-tsb12lv22-slls290:
+    title: "TSB12LV22 OHCI-Lynx PCI-Based IEEE 1394 Host Controller, SLLS290, July 1998"
+    publisher: "Texas Instruments"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.datasheetarchive.com/datasheet/TSB12LV22/Texas-Instruments
   nec-vr10000-series-um-4:
     title: "VR10000 Series 64-/32-bit Microprocessor User's Manual, fourth edition, U10278EJ4V0UM00, March 2001"
     publisher: NEC
@@ -1037,6 +1189,578 @@ web:
     rights: obtain-only
     obtain:
       url: https://patents.google.com/patent/US5721819A/en
+  alteon-tigon-pci-controller-rev-1.04:
+    title: "Tigon/PCI Ethernet Controller, revision 1.04, part number 020016, August 1997"
+    publisher: "Alteon Networks"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://files.serialport.org/network/Alteon/Tigon/tigonbk.pdf
+      sha256: 21cf4d3caaa22fdc676bd6f370178b6d86af8f379878f7e587c1e7a245979dd6
+  broadcom-57xx-pg105-r:
+    title: "BCM57XX Host Programmer's Interface Specification, document 57XX-PG105-R, 2008-01-29"
+    publisher: Broadcom
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://datasheet.datasheetarchive.com/originals/library/Datasheets-ZSAA1/DSAZSAA00017932.pdf
+      sha256: 9c55d67430e503b36ae360d8b500d34d82672cd12a2d1a26c80340ba3a00cae7
+  bukosek-sgi-octane:
+    title: "SGI Octane, Andrej Bukosek's hardware collection page, with hinv -mvv"
+    publisher: "Andrej Bukosek"
+    kind: web-post
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-octane.html
+      sha256: 40adeafea67e59234bb038883e78d17e54857a56669556e69d94269879a5fbfb
+  bukosek-octane-motherboard-front:
+    title: "Octane IP30 motherboard, front (Andrej Bukosek's collection)"
+    publisher: "Andrej Bukosek"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://bukosek.si/hardware/collection/sgi-octane/img/octane_motherboard_front.jpg
+      sha256: f171a375de6d1dad9294960d6b6edc1d268d378db2a298141c8bc33edb935299
+  commons-ip30-030-0887-003-rev-f:
+    title: "Silicon Graphics motherboard IP30 030-0887-003 REV F (photograph by Mister rf, CC BY-SA 4.0)"
+    publisher: "Wikimedia Commons"
+    kind: photo
+    locator: region
+    rights: public-web
+    obtain:
+      url: https://upload.wikimedia.org/wikipedia/commons/2/2f/Silicon_Graphics_motherboard_IP30_030-0887-003_REV_F.jpg
+      sha256: 8508cee52f3169d9f4d468ef493fddbd7f35665e3b2cee8411de420e94b29e60
+  ebbes-parallelrechner-dissertation:
+    title: "Beitraege zur Modellierung von Parallelrechnern (Alexander Ebbes, dissertation, 2000), appendix B.2.1, an Origin 200 hinv -vm"
+    publisher: "Johannes Gutenberg University Mainz"
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://openscience.ub.uni-mainz.de/server/api/core/bitstreams/db59142b-2d6a-40f0-b9fe-c6f8518c52ef/content
+      sha256: 12415b6e03f143a398f02197cacb89badacc36e20d1065a52c3071b953daf6aa
+  irixnet-thread-4337:
+    title: "IRIXnet thread 4337, \"ONYX2 Deskside without graphic output\", an Onyx2 hinv -mvvv"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-4337.html
+      sha256: 9825187e846eec4f8cd33851bfc2855bf5a3bed7b911098ac212f834ddb644c3
+  lspci-saic-11c1-5802:
+    title: "lspci -v output of a system with an AT&T/Lucent 11c1:5802 revision 0x10 USB function, Message-ID <1014289078.15561.26.camel@ukabzc383.uk.saic.com>"
+    publisher: "Public mailing-list post"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<1014289078.15561.26.camel@ukabzc383.uk.saic.com>"
+  national-dp83840a-datasheet:
+    title: "DP83840A 10/100 Mb/s Ethernet Physical Layer (DP83840AVCE), National Semiconductor datasheet"
+    publisher: "National Semiconductor"
+    kind: part-datasheet
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://theretroweb.com/chip/documentation/dp83840avce-67a4e1341449e807271366.pdf
+      archive: https://web.archive.org/web/20260810031326id_/https://theretroweb.com/chip/documentation/dp83840avce-67a4e1341449e807271366.pdf
+      sha256: 1306520677afdcc5ca93b9a3516683ad19ac080746c832ad32231a4b69655c31
+  nekonomicon-11542:
+    title: "Nekochan forum archive thread 11542, Origin 300 inventory with a PCI expansion module"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/11542/1.html
+      sha256: f7e02aa0565afe3fc1b849d8abb654837ff1b7e5e884aaa818a785b420003c49
+  ntc-tech-origin-200-cmn-a019:
+    title: "Silicon Graphics Origin 200 Server CMN A018 Master and Slave, CMN A019 Expansion (retailer photographs)"
+    publisher: "NTC Tech"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://www.ntc-tech.com/products/silicon-graphics-origin-200-server-cmn-a018-master-and-slave-cmn-a019-expansion
+  nxp-um10204-rev7:
+    title: "UM10204 I2C-bus specification and user manual, revision 7.0"
+    publisher: "NXP Semiconductors"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/user-guide/UM10204.pdf
+      archive: https://web.archive.org/web/20241231054059id_/https://www.nxp.com/docs/en/user-guide/UM10204.pdf
+      sha256: dc91f00f65584e06ef36e26c93bf9d91a95fb3c8a1830a9223e53caf678b36af
+  ordi-spare-030-1252-001:
+    title: "030-1252-001 XBOX XTalk interface board (images 17221-17226)"
+    publisher: "Ordi-Spare/EURINCO"
+    kind: photo
+    locator: region
+    rights: obtain-only
+    obtain:
+      url: https://ordi-spare.com/en/spare-part-sgi/3750-sgi-030-1252-001-xbox-xtalk-interface-board-o200.html
+  pci-local-bus-2.2:
+    title: "PCI Local Bus Specification, revision 2.2, 1998-12-18"
+    publisher: "PCI Special Interest Group"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf
+      sha256: 7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354
+  philips-pcf8584-1997:
+    title: "PCF8584 I2C-bus controller, product specification, 1997-10-21"
+    publisher: "Philips Semiconductors"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/data-sheet/PCF8584.pdf
+      archive: https://web.archive.org/web/20241225124729id_/https://www.nxp.com/docs/en/data-sheet/PCF8584.pdf
+      sha256: 481c7ea1eacd8d92fc23be4c92f8feb600dee057e51316747783a37e106db365
+  prestor-ccnuma-thesis-2001:
+    title: "Evaluating the Memory Performance of a ccNUMA System (Uros Prestor, MS thesis, 2001)"
+    publisher: "University of Utah"
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.sgidepot.co.uk/origin/thesis.pdf
+      sha256: c31fce5b0b9840c66ea2697b4c7a7ba9891fadee58a8cc064e5ff8fe10553689
+  ti-dp83843-snls021b:
+    title: "DP83843BVJE PHYTER Precision 10/100 Mb/s Ethernet Physical Layer, revision B (SNLS021B)"
+    publisher: "Texas Instruments (National Semiconductor)"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.ti.com/lit/ds/symlink/dp83843.pdf
+      sha256: 375dfba8351a3cf9b6caef65a79281c9d02f0760bc51abc0c475743bf41a9d73
+  ti-tl16pir552-slls222a:
+    title: "TL16PIR552 Dual UART With 16-Byte FIFOs and Parallel Port, SLLS222A, revised August 1996"
+    publisher: "Texas Instruments"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://datasheet.iiic.cc/datasheets-0/texas_instruments/TL16PIR552PH.pdf
+  us-patent-6085303:
+    title: "US patent 6,085,303, Serialized race-free virtual barrier network (Cray Research)"
+    publisher: "United States Patent and Trademark Office"
+    kind: paper
+    locator: section
+    rights: published
+    obtain:
+      url: https://patents.google.com/patent/US6085303A/en
+  usenet-35ab0320:
+    title: "comp.sys.sgi.graphics, 1998-07-14, three keyboards on a two-rack Onyx2, Message-ID <35AB0320.794B@kyb.tuebingen.mpg.de>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<35AB0320.794B@kyb.tuebingen.mpg.de>"
+  usenet-6kd8bj:
+    title: "comp.sys.sgi.marketplace, 1998-05-25, dual-module Origin 200 for sale, Message-ID <6kd8bj$diu$1@news2.ispnews.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<6kd8bj$diu$1@news2.ispnews.com>"
+  usenet-rasey-384c6090:
+    title: "comp.sys.sgi.misc, 1999-12-06, Inst rbaud weirdness, Message-ID <384C6090.A4854432@tivo.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<384C6090.A4854432@tivo.com>"
+  analog-ds1742-rev-6-13:
+    title: "DS1742 Y2KC Nonvolatile Timekeeping RAM, document 19-6715, revision 6/13"
+    publisher: "Analog Devices (Maxim Integrated)"
+    kind: part-datasheet
+    locator: page
+    rights: published
+    obtain:
+      url: https://www.analog.com/media/en/technical-documentation/data-sheets/ds1742.pdf
+      archive: https://web.archive.org/web/20230515024434id_/https://www.analog.com/media/en/technical-documentation/data-sheets/ds1742.pdf
+      sha256: b23213c68277401643202964885b750b1fedb7bf91114045f8d5810b3285756f
+  analog-ds1744-rev-6-13:
+    title: "DS1744/DS1744P Y2K-Compliant, Nonvolatile Timekeeping RAMs, document 19-5502, revision 6/13"
+    publisher: "Analog Devices (Maxim Integrated)"
+    kind: part-datasheet
+    locator: page
+    rights: published
+    obtain:
+      url: https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf
+      archive: https://web.archive.org/web/2024id_/https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf
+      sha256: 885e2325c7bb3c7c0e5760af73a216739ef0cf951abae9374b407137e98482a1
+  bridge-asic-spec-4.0:
+    title: "Bridge ASIC Specification, Revision 4.0 for Rev D silicon, 1998-04-26"
+    publisher: "Silicon Graphics"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.mrynet.com/FTP/Hardware/sgi/SGI-Bridge_ASIC_Specification-Revision_4.0_for_Rev_D_Si-19980426.pdf
+      sha256: 8b30514b718f9259aa28dc95552fcbc7114cceeeb54fcb8330fd69aff377e01a
+  mail-isp12160-config-capture-2005:
+    title: "Mailing-list post with raw PCI configuration bytes of two ISP12160 functions, 2005-01-05"
+    publisher: "Public mailing-list post"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<20050105190836.56872c22@gibson>"
+  mail-isp12160-config-capture-2006:
+    title: "Mailing-list post decoding the PCI configuration of an ISP12160 function, 2006-03"
+    publisher: "Public mailing-list post"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<4415F863.9040203@simg.de>"
+  pcisig-pci-local-bus-spec-2.2:
+    title: "PCI Local Bus Specification, revision 2.2, 1998-12-18"
+    publisher: "PCI Special Interest Group"
+    kind: asic-spec
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf
+      sha256: 7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354
+  graphica-irix-flash-1m:
+    title: "flash(1M) manual page, IRIX 6.5.30 (Graphica mirror)"
+    publisher: "Silicon Graphics"
+    kind: manual
+    locator: section
+    rights: public-web
+    obtain:
+      url: https://help.graphica.com.au/irix-6.5.30/man/1M/flash
+      sha256: 86fbccd16bd18fe42fc5c63e1bf26737c517a6d6cc8bff4f84d6e2bb4003082c
+  ibm-rgb561-architecture-1.1:
+    title: "RGB561 Architecture, Preliminary revision 1.1, 23 January 1995"
+    publisher: "IBM Microelectronics"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://datasheet4u.com/pdf/499389/RGB561.pdf
+      sha256: e2da0d25dc9803c9ca0c9aec4cbb9babba688c5118f24cb9141d7ece17ae1545
+  laudon-lenoski-origin-1997:
+    title: "The SGI Origin: A ccNUMA Highly Scalable Server (Laudon and Lenoski, ISCA 1997)"
+    publisher: "ACM and IEEE, ISCA 1997"
+    kind: paper
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: http://www.sgidepot.co.uk/origin/isca.pdf
+      sha256: 028d3e5beffca1a0f9616f0e1444b599dda7e6e72fa86e8856bff8413c2432fb
+  linux-mips-impactsr-2008:
+    title: "linux-mips, 2008-07-31, SGI Octane (IP30) Patches, Part two, Octane core (Kumba), carrying Stanislaw Skowronek's IMPACTSR framebuffer driver"
+    publisher: "linux-mips mailing list"
+    kind: web-post
+    locator: post
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<48914C74.6090309@gentoo.org>"
+  microchip-93c46:
+    title: "93AA46/93LC46/93C46 1K Microwire serial EEPROM, DS21749H"
+    publisher: "Microchip Technology"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://ww1.microchip.com/downloads/en/DeviceDoc/21749H.pdf
+      sha256: 8d358ab574f3ba93b59b60895c3b5e418499275669d3b6d643c899c87dee6780
+  montrym-infinitereality-1997:
+    title: "InfiniteReality: A Real-Time Graphics System (Montrym, Baum, Dignam, Migdal, SIGGRAPH 97)"
+    publisher: "ACM SIGGRAPH"
+    kind: paper
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://people.csail.mit.edu/ericchan/bib/pdf/p293-montrym.pdf
+      sha256: 877a4c9e19ff82107b496c10a91339c41635e05d0e2dfa4a9d849e2e2d8647bb
+  nekonomicon-12262:
+    title: "Nekochan forum archive thread 12262, Octane inventory with an EMXI (MOT20 030-1240-003)"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/12262/1.html
+      sha256: a408e324489efe93ee2b70bdcd5a85da76712a5d0df8f0bb44b1d8eba8218f32
+  nekonomicon-16726610:
+    title: "Nekochan forum archive thread 16726610, Octane inventory with two ESI boards (MOT10 030-1241-002)"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16726610/1.html
+      sha256: 76172b4a518d2940316a57e7297a4c8b4ad329240b09f40c1c6c213f2263383b
+  nekonomicon-16972:
+    title: "Nekochan forum archive thread 16972, Octane inventory with an MXI (GM20 030-0957-003)"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16972/1.html
+      sha256: 98bd9d0a9ccfc7220349eea7037071401c1078af679e01a5879b407d71428491
+  ns-pc16550d-1995:
+    title: "PC16550D Universal Asynchronous Receiver/Transmitter with FIFOs, June 1995"
+    publisher: "National Semiconductor"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.scs.stanford.edu/10wi-cs140/pintos/specs/pc16550d.pdf
+      sha256: 4d6b3c2f74f013e416be87cccf8d68b0e1858872e2b4bfcf8e5a2b9b3920e49a
+  nxp-mcf5206eum-1:
+    title: "MCF5206e ColdFire Integrated Microprocessor User's Manual, MCF5206EUM revision 1 (1998)"
+    publisher: "Motorola (NXP)"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/data-sheet/MCF5206EUM.pdf
+      archive: https://web.archive.org/web/2024id_/https://www.nxp.com/docs/en/data-sheet/MCF5206EUM.pdf
+      sha256: b6400475c22004374a246d97f32f306ae65720d49def0c190e7e5138b2c9409e
+  nxp-mcf5206eumad-3:
+    title: "MCF5206e User's Manual errata, MCF5206EUMAD revision 3 (July 2001)"
+    publisher: "Motorola (NXP)"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/reference-manual/MCF5206EUMAD.pdf
+      archive: https://web.archive.org/web/20240627052933id_/https://www.nxp.com/docs/en/reference-manual/MCF5206EUMAD.pdf
+      sha256: fe46bb7b1852f4b81dd13f84a7ae617e58b7dd7ac21ab3852388a50992ccaf18
+  philips-scc68681-duart:
+    title: "SCC68681 Dual asynchronous receiver/transmitter (DUART), product data, 2004-04-06"
+    publisher: "Philips Semiconductors"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/data-sheet/SCC68681.pdf
+      archive: https://web.archive.org/web/20240529120536id_/https://www.nxp.com/docs/en/data-sheet/SCC68681.pdf
+      sha256: 6e97149226228243d247dd52fb6e33253f213cc836daffbf55d50b0d28b10deb
+  plx-pci9054-data-book-1.0:
+    title: "PCI 9054 Data Book, version 1.0, 1998"
+    publisher: "PLX Technology"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nikhef.nl/~peterj/datasheets/9054db-1C.pdf
+      sha256: a3ef4218ecd2c48757492363390ba6217ca6c11f5025320296a034063948992d
+  plx-pci9060-data-sheet-1.2:
+    title: "PCI 9060 Data Sheet, version 1.2, December 1995"
+    publisher: "PLX Technology"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.farnell.com/datasheets/390078.pdf
+      sha256: ca5a3530cc8c791fde5eac74756ed5a27a0edbf706214c53efe0f440c87f97f1
+  psitech-rad1-ds-1099:
+    title: "RAD1 Graphics Head product sheet, publication RAD1-DS-1099"
+    publisher: "PsiTech"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.psitech.com/RAD1_10-99.pdf
+      archive: https://web.archive.org/web/20040613072434id_/http://www.psitech.com/RAD1_10-99.pdf
+      sha256: dcf49253b955b33776b3161ba69b47741b62490a72ee3b0631e05e5ad6491c2f
+  psitech-rad4-owners-guide-1.3:
+    title: "RAD4 Owner's Guide, software revision 1.3, 15 November 1997"
+    publisher: "PsiTech"
+    kind: manual
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://archive.org/details/psitech-rad4-owners-guide
+  psitech-rad4c-km-ds-1099:
+    title: "RAD4C-KM Graphics Head product sheet, publication RAD4-DS-1099"
+    publisher: "PsiTech"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.psitech.com/RAD4C-KM_10-99.pdf
+      archive: https://web.archive.org/web/20050517102816id_/http://www.psitech.com/RAD4C-KM_10-99.pdf
+      sha256: 09d283777c23a7a7f32fb86906336ac10fff15786a6e011292dd9fe968c72be7
+  qlogic-isp1040b-product-brief-1996:
+    title: "ISP1020B/ISP1040B Intelligent SCSI Processor data sheet, 83140-580-01 B, December 1996"
+    publisher: "QLogic"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bitsavers.org/pdf/qlogic/83140-580-01B_ISP1020B_1040B_data_sheet_199612.pdf
+      sha256: 4f3229ef2f2dc4db396797b559b18104738ce11a53642ce8f308dff3254dfe1d
+  qlogic-isp12160a-datasheet-1999:
+    title: "ISP12160A/33 and ISP12160A/66 Intelligent, Dual SCSI Processors Data Sheet, 83216-580-01 A, March 1999"
+    publisher: "QLogic"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://bitsavers.org/pdf/qlogic/83216-580-01A_QLogic_ISP12160A-33_66_199903.pdf
+      sha256: 4f3ac7e015fd118ba9549e931bb04f5c9d1d8078273bf58c5c04e2b7d0cdc301
+  sharp-lh28f800su:
+    title: "LH28F800SU 8M Flash Memory datasheet"
+    publisher: "Sharp"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://rcl-radio.ru/wp-content/uploads/2014/11/LH28F800SU.pdf
+      sha256: 589461cd0f1cd4f2ad861f558e4f1fe982274baa08fed0e6d013aa9548862384
+  st-m48t35-rev-10:
+    title: "M48T35, M48T35Y 5 V, 256 Kbit (32 Kb x 8) TIMEKEEPER SRAM, document 2611, revision 10, June 2011"
+    publisher: "STMicroelectronics"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.st.com/resource/en/datasheet/m48t35.pdf
+      archive: https://web.archive.org/web/20190723212704id_/https://www.st.com/resource/en/datasheet/m48t35.pdf
+      sha256: ec4ecb512ec0d9a9621337308ea88af9ff714b638c081199e8037f7eb35ce624
+  ti-tvp4020-programmers-reference:
+    title: "TVP4020 PERMEDIA 2 Programmer's Reference Manual"
+    publisher: "Texas Instruments and 3Dlabs"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://mm.digikey.com/Volume0/opasdata/d220001/medias/docus/7138/2156_TVP4020_PERMEDIA_2_Programmers_Reference_Manual_.pdf
+      sha256: 32fb93183ff280f3feea7d0e7d0a3d19c923eefbfc2ecd8eb8d5a6b1a94d2559
+  us-patent-6751698:
+    title: "US patent 6,751,698, Multiprocessor node controller circuit and method (Silicon Graphics)"
+    publisher: "United States Patent and Trademark Office"
+    kind: paper
+    locator: section
+    rights: published
+    obtain:
+      url: https://patents.google.com/patent/US6751698B1/en
+  usenet-1123184831:
+    title: "comp.sys.sgi.marketplace, 2005-08-04, Origin 200 GIGAchannel with an SI with texture (MOT10 030-1241-002 rev H), hinv -vm and gfxinfo"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<1123184831.096208.266500@f14g2000cwb.googlegroups.com>"
+  usenet-1131341991:
+    title: "Usenet post, Octane V6 hinv -vm, Message-ID <1131341991.176074@erwin.inf.tu-dresden.de>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<1131341991.176074@erwin.inf.tu-dresden.de>"
+  usenet-1154846834:
+    title: "Usenet post, Octane2 V12 hinv and gfxinfo, Message-ID <1154846834.587752.145330@m79g2000cwm.googlegroups.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<1154846834.587752.145330@m79g2000cwm.googlegroups.com>"
+  usenet-338549df:
+    title: "comp.sys.sgi.graphics, 1997-05-23, Octane MXI gfxinfo beside hinv's Graphics board: MXI"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<338549DF.98CB16C3@delusion.com>"
+  usenet-3a23907e:
+    title: "comp.sys.sgi.admin, 2000-11-28, sysinfo doesn't work anymore after upgrade. (D. Voetelink), Message-ID <3A23907E.A0A6BD61@ecn.nl>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3A23907E.A0A6BD61@ecn.nl>"
+  usenet-3fef80f1:
+    title: "Usenet post, Octane V8 hinv -mv, Message-ID <3FEF80F1.F00A6CFE@comcast.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3FEF80F1.F00A6CFE@comcast.net>"
+  usenet-8nbvii:
+    title: "comp.sys.sgi.graphics, 2000-08-15, R12000 Octane under IRIX 6.5.6 with a two-GE GE12 board and 4 TRAMs, gfxinfo"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<8nbvii$amh$1@nnrp1.deja.com>"
+  usenet-95oo9r:
+    title: "comp.sys.sgi.admin, 2001-02-06, Trouble with CrayLink (Bernd Schubert), Message-ID <95oo9r$f16$1@mlucom4.urz.uni-halle.de>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<95oo9r$f16$1@mlucom4.urz.uni-halle.de>"
+  usenet-au03s8:
+    title: "Usenet post, Octane V6 gfxinfo, Message-ID <au03s8$3d2kg$1@ID-18853.news.dfncis.de>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<au03s8$3d2kg$1@ID-18853.news.dfncis.de>"
+  usenet-bqfo2p:
+    title: "comp.sys.sgi.apps, 2003-12-01, Octane with an ESSI under IRIX 6.5.21f, gfxinfo"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<bqfo2p$35k$1@news.mie>"
+  usenet-hvh0d:
+    title: "Usenet post, Octane V10 board ODY32VERSIONB 030-1655-001, Message-ID <hVH0d.2092$%O5.195@trnddc07>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<hVH0d.2092$%O5.195@trnddc07>"
 
 firmware:
   ip27-prom-6.156:
@@ -1079,3 +1803,30 @@ firmware:
       image: payload
       sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
       container_sha256: d74b4b7ef9c11c66692019db9af698104595be7a0573a86feae8a83441921318
+  io6-prom-6.156:
+    title: "IO6 base I/O PROM"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 2000 and Onyx2 IO6 and IO6G BaseIO boards"
+    version: "6.156"
+    banner: "SGI Version 6.156  built 11:26:28 AM Nov 18, 2003"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media"
+      image: payload
+      sha256: bf341a71821541233cb96459f6b99f6f4ecd2cf90f7e9321d918686ee6c25047
+  l1-firmware-1.44.0:
+    title: "L1 system controller firmware, Fuel/PE/O300 1MB image"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 300, Fuel and PCI expansion module L1 controllers"
+    version: "1.44"
+    banner: "1.44.0, built 2006-07-17 18:20:38, label Fuel/PE/O300 1MB image"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (982,412-byte Origin 300 range)"
+      image: payload
+      sha256: 0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4
+      container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
