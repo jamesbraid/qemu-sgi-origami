@@ -811,16 +811,22 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
 
 /*
  * Match the loaded image's configuration block to this node's product and
- * processor module, as qemu-sgi-machine-init does for a new machine.
+ * processor module, as qemu-sgi-machine-init does for a new machine. A
+ * memory node has no processor module to describe, so its image stays
+ * as supplied.
  */
 static void sn1_apply_cpu_config(SN1NodeState *node, uint8_t *payload)
 {
-    SGIIP35FlashValues values = {
+    SGIIP35FlashValues values;
+
+    if (!node->nr_cpus) {
+        return;
+    }
+    values = (SGIIP35FlashValues) {
         .machine_type = node->firmware_machine_type,
         .cpu_mode_word = node->firmware_mode_word,
         .cpu_clock_hz = sn1_cpu_processor(node->model_node, 0)->clock_hz,
     };
-
     sgi_ip35_flash_configure(payload, &values);
 }
 

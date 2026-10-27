@@ -427,7 +427,8 @@
 # @compute: processors and memory
 #
 # @memory: memory and no processors; its Bedrock answers memory
-#     traffic from other nodes.  The current SN1 builder refuses it
+#     traffic from other nodes.  It cannot be the console node, and
+#     the SN1 builder still needs its boot flash
 #
 # Since: 11.2
 ##

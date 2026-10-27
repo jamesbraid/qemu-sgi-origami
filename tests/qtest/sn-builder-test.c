@@ -9043,8 +9043,6 @@ typedef struct UnbuiltRecordCase {
 } UnbuiltRecordCase;
 
 static const UnbuiltRecordCase unbuilt_record_cases[] = {
-    { "unbuilt-memory-node",
-      "node 'n1' is a memory node; memory nodes are not built yet" },
     { "unbuilt-no-flash", "node 'n1' has no boot flash" },
     { "unbuilt-brick-type",
       "module 'module-n1' names L1 brick type 'C'; brick types from the "
@@ -9323,6 +9321,90 @@ static void test_rbrick_router_without_l1_management(void)
     g_unlink(prom);
 }
 
+/*
+ * Node 0 reaches the memory node before the node has a number, as the
+ * firmware reaches a peer: through node 0's local block vector engine on
+ * route 0 (the sequence sn1-cross-node-test.c uses).
+ */
+#define MEMORY_NODE_LB_LOCAL (SPACE_IO + UINT64_C(0x01000000))
+#define MEMORY_NODE_LB_REVISION UINT64_C(0x600000)
+#define MEMORY_NODE_MD_CONFIG UINT64_C(0x780008)
+#define MEMORY_NODE_MD_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+
+static uint64_t memory_node_peer_access(QTestState *qts, uint64_t offset,
+                                        bool write, uint64_t data)
+{
+    uint64_t status;
+
+    (void)qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c038);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c008, 0);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c010, data);
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + 0x60c000,
+                 (offset & UINT64_C(0xfffff8)) | (UINT64_C(0x1c8) << 40) |
+                 (write ? 1 : 0));
+    status = qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c020);
+    g_assert_cmphex(status >> 63, ==, 1);
+    return qtest_readq(qts, MEMORY_NODE_LB_LOCAL + 0x60c030);
+}
+
+/*
+ * A memory node: c1 has memory and no processor. It realizes with none,
+ * so query-cpus-fast lists only c0's. Once c0 has configured c1's
+ * memory unit and given it node number 1 over the cable, c0 reads and
+ * writes c1's memory, which lands in c1's share of the machine's RAM.
+ */
+static void test_memory_node_serves_node0(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *ram = create_sized_temp_file(
+        "sn-builder-memory-node-ram-XXXXXX", 128 * MiB);
+    g_autofree char *extra = g_strdup_printf(
+        "-object memory-backend-file,id=memory,mem-path=%s,size=128M,"
+        "share=on", ram);
+    QTestState *qts = qtest_initf(
+        "%s -M sn-builder-bedrock-test,construction-fault=cbrick-memory-node,"
+        "memory-backend=memory -cpu R14000 -smp 1 -m 128 -bios %s "
+        "-nodefaults -display none -S", extra, prom);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'query-cpus-fast' }");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QDict *cpu = qobject_to(QDict, qlist_peek(cpus));
+    const uint64_t node1 = UINT64_C(1) << NASID_TEST_NODE_ADDRESS_SHIFT;
+    const uint64_t probe = 0x1000;
+    const uint64_t value = UINT64_C(0x0123456789abcdef);
+    uint64_t revision;
+    uint8_t backing[8];
+    int fd;
+
+    g_assert_cmpuint(qlist_size(cpus), ==, 1);
+    g_assert_true(g_str_has_prefix(qdict_get_str(cpu, "qom-path"),
+                                   "/machine/node0/"));
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1", "nr-cpus"), ==, 0);
+
+    qtest_writeq(qts, MEMORY_NODE_LB_LOCAL + MEMORY_NODE_MD_CONFIG,
+                 MEMORY_NODE_MD_SELECT2);
+    memory_node_peer_access(qts, MEMORY_NODE_MD_CONFIG, true,
+                            MEMORY_NODE_MD_SELECT2);
+    revision = memory_node_peer_access(qts, MEMORY_NODE_LB_REVISION, false, 0);
+    memory_node_peer_access(qts, MEMORY_NODE_LB_REVISION, true,
+                            (revision & ~(UINT64_C(0xff) << 32)) |
+                            (UINT64_C(1) << 32));
+
+    ip53_memory_writeq_cpu(qts, 0, node1 + probe, value);
+    g_assert_cmphex(ip53_memory_readq_cpu(qts, 0, node1 + probe), ==, value);
+    g_assert_cmphex(ip53_memory_readq_cpu(qts, 0, probe), !=, value);
+    qtest_quit(qts);
+
+    fd = open(ram, O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, backing, sizeof(backing), 64 * MiB + probe), ==,
+                    sizeof(backing));
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_cmphex(ldq_be_p(backing), ==, value);
+    g_unlink(ram);
+    g_unlink(prom);
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -9583,6 +9665,14 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("board-preset-unbuilt"),
       "I/O board 'xbrick-board' is cabled to crossbar 'xbrick-xbridge'; "
       "preset 'odyssey' is not built on an enclosure crossbar yet" },
+    { CBRICK_FIXTURE("memory-node-console"),
+      "memory node 'c1' cannot be the console node" },
+    { CBRICK_FIXTURE("memory-node-processor"),
+      "memory node 'c1' has a fitted processor" },
+    { CBRICK_FIXTURE("memory-node-no-banks"),
+      "memory node 'c1' has no populated memory bank" },
+    { CBRICK_FIXTURE("memory-node-population"),
+      "population fits processors to memory node 1" },
     { CBRICK_FIXTURE("onboard-xbridge-node"),
       "node 'c0' has an XBridge on its own board; only an IP35 node takes "
       "an XIO cable" },
@@ -10584,6 +10674,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/rbrick-without-l1-management",
                    test_rbrick_router_without_l1_management);
+    qtest_add_func("sn/builder/cbrick/memory-node",
+                   test_memory_node_serves_node0);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
         const char *fault = strstr(cbrick_refusal_cases[i].machine,

@@ -1211,10 +1211,7 @@ static void bedrock_test_install_ip53_memory_descriptor(bool swapped)
  */
 static void bedrock_test_install_unbuilt_record(const char *record)
 {
-    if (!strcmp(record, "memory-node")) {
-        bedrock_test_nodes[1].has_role = true;
-        bedrock_test_nodes[1].role = SGI_MODEL_NODE_ROLE_MEMORY;
-    } else if (!strcmp(record, "no-flash")) {
+    if (!strcmp(record, "no-flash")) {
         bedrock_test_nodes[1].flash = NULL;
     } else if (!strcmp(record, "brick-type")) {
         bedrock_test_modules[1].brick_type = (char *)"C";
@@ -1670,6 +1667,36 @@ static void bedrock_test_install_rbrick(void)
 }
 
 /*
+ * The two C-bricks with c1 a memory node: its processor slot empty and
+ * banks 2 and 3 fitted on both nodes, so only c0 brings a processor. No
+ * board layer yet allows such a board; the fixture stands in for the
+ * Cx-brick's zero-processor one, and none of its values is a hardware
+ * claim.
+ */
+static SGIModelCpuSlot memory_node_test_empty_slot[] = {
+    { .interface = 0, .slot = 0 },
+};
+static unsigned int memory_node_test_population[] = { 1, 0 };
+/* Banks 2 and 3, the ones the fixture's installed-bank mask names. */
+static uint64_t memory_node_test_bank_mib[] = { 0, 0, 32, 32, 0, 0, 0, 0 };
+
+static void bedrock_test_install_memory_node(void)
+{
+    cbrick_test_install_nodes(2);
+    for (unsigned int i = 0; i < 2; i++) {
+        cbrick_test_nodes[i].bank_mib = uint64_list(
+            memory_node_test_bank_mib, ARRAY_SIZE(memory_node_test_bank_mib));
+    }
+    cbrick_test_nodes[1].has_role = true;
+    cbrick_test_nodes[1].role = SGI_MODEL_NODE_ROLE_MEMORY;
+    cbrick_test_nodes[1].cpu_slots = cpu_slot_list(
+        memory_node_test_empty_slot, ARRAY_SIZE(memory_node_test_empty_slot));
+    cbrick_test_publish(2, 0, 0, 0);
+    cbrick_test_population.cpus_per_node = uint32_list(
+        memory_node_test_population, ARRAY_SIZE(memory_node_test_population));
+}
+
+/*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
  */
@@ -1724,6 +1751,23 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
     } else if (!strcmp(fault, "board-preset-unbuilt")) {
         bedrock_test_install_cbrick_board(8);
         cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_ODYSSEY;
+    } else if (!strcmp(fault, "memory-node-console")) {
+        bedrock_test_install_memory_node();
+        bedrock_test_topology.console = 1;
+    } else if (!strcmp(fault, "memory-node-processor")) {
+        bedrock_test_install_memory_node();
+        cbrick_test_nodes[1].cpu_slots = cbrick_test_nodes[0].cpu_slots;
+    } else if (!strcmp(fault, "memory-node-no-banks")) {
+        static uint64_t empty[8];
+
+        bedrock_test_install_memory_node();
+        cbrick_test_nodes[1].bank_mib = uint64_list(empty, ARRAY_SIZE(empty));
+    } else if (!strcmp(fault, "memory-node-population")) {
+        static unsigned int both[] = { 1, 1 };
+
+        bedrock_test_install_memory_node();
+        cbrick_test_population.cpus_per_node = uint32_list(
+            both, ARRAY_SIZE(both));
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
         cbrick_test_nodes[0].has_board_kind = false;
     } else if (!strcmp(fault, "routed-host")) {
@@ -1843,6 +1887,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
         cbrick_test_crossbars[0].widget_revision = 3;
     } else if (!strcmp(value, "cbrick-nbrick")) {
         bedrock_test_install_nbrick();
+    } else if (!strcmp(value, "cbrick-memory-node")) {
+        bedrock_test_install_memory_node();
     } else if (!strcmp(value, "cbrick-rbrick")) {
         bedrock_test_install_rbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {

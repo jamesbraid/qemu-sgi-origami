@@ -1251,6 +1251,15 @@ an R-brick needs no I/O peer. Its L1 keeps the routed Origin 300
 experiment's type profile described under :ref:`sgi-sn-family-rbrick`;
 an R-brick's own L1 type is unknown.
 
+A node with ``role: memory`` is a Bedrock with memory banks and no
+processor, the shape of the Cx-brick's zero-processor board. It realizes
+with no CPUs, its boot flash image left as supplied, and answers other
+nodes' memory traffic once they have configured and numbered it, as the
+firmware reaches a peer through its vector engine. It cannot be the
+console node, and a population that fits it a processor is refused.
+Whether such a board carries boot flash is unknown, so the builder still
+requires one.
+
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
 crossbar port, a Bridge, and a board's own widget
