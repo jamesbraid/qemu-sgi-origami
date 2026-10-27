@@ -1260,6 +1260,15 @@ console node, and a population that fits it a processor is refused.
 Whether such a board carries boot flash is unknown, so the builder still
 requires one.
 
+A controller with ``owner: module`` is built once as
+``/machine/module<M>/l1`` and linked into the module's node through the
+node's ``l1`` link, in place of the node's own ``/machine/node<N>/l1``.
+The node configures it exactly as it would its own, so the guest sees
+the same L1. Only a module with one node may own its L1: how several
+Bedrocks reach one L1, as in a Cx-brick, and how its serial lines
+number, is unknown, so a module-owned L1 shared by several nodes is
+refused.
+
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
 crossbar port, a Bridge, and a board's own widget

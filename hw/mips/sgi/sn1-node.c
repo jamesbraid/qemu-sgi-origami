@@ -2356,6 +2356,23 @@ bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
                                     OBJECT(xbridge), errp);
 }
 
+bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1, Error **errp)
+{
+    if (qdev_is_realized(DEVICE(node)) || node->supplied_l1) {
+        error_setg(errp, "an L1 is supplied once, before the node realizes");
+        return false;
+    }
+    /*
+     * Added here rather than with the class's properties: a node's own L1
+     * is its child of the same name.
+     */
+    object_property_add_link(OBJECT(node), "l1", TYPE_SGI_L1,
+                             (Object **)&node->supplied_l1,
+                             qdev_prop_allow_set_link_before_realize,
+                             OBJ_PROP_LINK_STRONG);
+    return object_property_set_link(OBJECT(node), "l1", OBJECT(l1), errp);
+}
+
 static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
                                DeviceState **l1_uart_out,
                                MemoryRegion **l1_uart_region,
@@ -2364,8 +2381,16 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
 
-    node->l1 = qdev_new(TYPE_SGI_L1);
-    object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
+    /*
+     * A module-owned L1 is configured exactly as the node's own would be;
+     * only its place in the tree differs.
+     */
+    if (node->supplied_l1) {
+        node->l1 = node->supplied_l1;
+    } else {
+        node->l1 = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
+    }
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
     if (!g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "origin300") &&
         node->l1_type_code == 0x34 &&
@@ -2415,14 +2440,18 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
         goto fail_l1;
     }
     object_unref(OBJECT(l1_uart_dev));
-    object_unref(OBJECT(node->l1));
+    if (!node->supplied_l1) {
+        object_unref(OBJECT(node->l1));
+    }
     *l1_uart_region = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
     *l1_uart_out = l1_uart_dev;
     return true;
 
 fail_l1:
-    object_unparent(OBJECT(node->l1));
-    object_unref(OBJECT(node->l1));
+    if (!node->supplied_l1) {
+        object_unparent(OBJECT(node->l1));
+        object_unref(OBJECT(node->l1));
+    }
     node->l1 = NULL;
     return false;
 }

@@ -1274,7 +1274,8 @@
 # @node: each node builds it as its own child, as an Origin 300 does
 #
 # @module: the module builds it once and links it into each of its
-#     nodes.  The current SN1 builder refuses it
+#     nodes.  The SN1 builder builds it for a module with one node
+#     and refuses it for several
 #
 # Since: 11.2
 ##

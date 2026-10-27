@@ -145,6 +145,11 @@ typedef struct SN1NodeState {
     SNPromDataPoll promdata_poll;
 
     DeviceState *l1;
+    /*
+     * The L1 the node's module owns, which the machine supplies
+     * (sn1_node_supply_l1()); NULL when the node builds its own.
+     */
+    DeviceState *supplied_l1;
     DeviceState *bedrock;
     DeviceState *xbridge;
     DeviceState *boot_flash;
@@ -302,6 +307,13 @@ bool sn1_node_set_option_intx_map(SN1NodeState *node,
  */
 bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
                              Error **errp);
+
+/*
+ * Hand a node the unrealized L1 its module owns, before the node
+ * realizes. The node configures and realizes it in place of building
+ * its own, and adds its "l1" link.
+ */
+bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1, Error **errp);
 
 /* The node-owned Bedrock I/O endpoint, available after node realization. */
 SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node);
