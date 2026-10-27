@@ -117,14 +117,18 @@ layer:
               above.
         l1_controllers:
           l1:
-            reported_type: 55
+            reported_type: 56
             revision: {major: 1, minor: 18, patch: 5}
             provenance: derived
-            sources: [onyx350-compatibility-proposal]
+            sources: ["web:graphica-o350-chimera-notes the IP35 PROM 6.210 POD session on an Onyx 350 graphics module with an Odyssey board prints 'SN12 Graphics Blade.', and after 'NVRAM checksum is incorrect: reinitializing.' prints 'Installing Graphics Console...'", "firmware:ip35-prom-6.210 product classification: L1 type '7' prints 'SN12 2U Server.', '8' 'SN12 Graphics Blade.', '9' 'SN12 Workstation.' and 'Q' 'SN12 Rackmounted Workstation.'; the BaseIO environment reset sets console to g for '8', '9' and 'Q' and for a Fuel board word, and to d otherwise", onyx350-compatibility-proposal]
             notes: >-
-              Product-specific software approximation for the selected local
-              controller, inferred from the 2U_INT_53 product context. This
-              does not establish a physical response, reset value or the
+              Type '8', inferred from a real Onyx 350 graphics module whose
+              PROM reported the graphics-module class and then chose the
+              graphics console for a fresh NVRAM.
+              The IP35 PROM's own mapping ties that class to type '8'; the
+              L1 reply byte itself was not captured. Type '7', used before,
+              makes the PROM call the machine a 2U server and default to the
+              serial console. This does not establish a reset value or the
               identity of a separately queried I/O controller.
         firmware_payload:
           argument: -bios

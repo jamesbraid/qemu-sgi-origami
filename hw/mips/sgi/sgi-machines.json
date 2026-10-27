@@ -24054,7 +24054,7 @@
               "cpu-mode-word": 1453109125,
               "hub-clock-hz": 200000000
             },
-            "reported-type": 55,
+            "reported-type": 56,
             "revision": {
               "major": 1,
               "minor": 18,
