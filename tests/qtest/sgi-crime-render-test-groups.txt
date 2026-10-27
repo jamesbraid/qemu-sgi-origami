@@ -125,3 +125,12 @@ alpha-admission /mips64/sgi/crime/render/alpha/admission
 alpha-start-forms /mips64/sgi/crime/render/alpha/start-forms
 alpha-state /mips64/sgi/crime/render/alpha/state
 alpha-migration /mips64/sgi/crime/render/alpha/migration
+
+triangles-packet /mips64/sgi/crime/render/triangles/packet
+triangles-coverage /mips64/sgi/crime/render/triangles/coverage
+triangles-neighbors /mips64/sgi/crime/render/triangles/neighbors
+triangles-pipeline /mips64/sgi/crime/render/triangles/pipeline
+triangles-admission /mips64/sgi/crime/render/triangles/admission
+triangles-transactions /mips64/sgi/crime/render/triangles/transactions
+triangles-tiles /mips64/sgi/crime/render/triangles/tiles
+triangles-migration /mips64/sgi/crime/render/triangles/migration
