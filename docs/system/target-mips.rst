@@ -15,9 +15,11 @@ machine types are emulated:
 -  A MIPS Magnum R4000 machine \"magnum\". This machine needs the
    64-bit emulator.
 
--  The SGI Scalable Node family: \"origin200\", \"origin2000\",
-   \"onyx2\" and \"origin300\". These machines need the 64-bit
-   big-endian emulator.
+-  SGI machines: \"origin200\", \"origin2000\", \"onyx2\",
+   \"origin300\", \"fuel\", \"origin350\", \"onyx350\", \"tezro\",
+   \"onyx4-host\", \"octane\", \"octane2\" and the \"o2-test\"
+   register test profile. These machines need the 64-bit big-endian
+   emulator.
 
 The Malta emulation supports the following devices:
 
@@ -80,15 +82,16 @@ The Loongson-3 virtual platform emulation supports:
 
 -  GPEX and virtio as peripheral devices
 
-The SGI Scalable Node family emulation (\"origin200\", \"origin2000\",
-\"onyx2\", \"origin300\") supports the Hub and Bedrock node ASICs, their SCSI,
-Ethernet, serial and NVRAM peripherals, and each product's own system
-controller. Every product boots only through its own stock PROM image,
-given with ``-bios``; there is no direct kernel boot. The Origin 200 can
-also be built with a GIGAchannel expansion cabinet
-(``topology=origin200-gigachannel``). See :doc:`../specs/sgi-sn` for the
-family's products, its ``topology=`` and population rules, and its board
-devices.
+The SGI machines boot only through their own stock PROM image, given
+with ``-bios``; there is no direct kernel boot. Each family has its own
+page covering its topologies, processor and memory population, and
+boards:
+
+-  Origin 200, Origin 2000, Onyx2, Origin 300 and Fuel:
+   :doc:`../specs/sgi-sn`
+-  Octane and Octane2: :doc:`../specs/sgi-ip30`
+-  Origin 350, Onyx 350, Tezro and Onyx4: :doc:`../specs/sgi-ip53`
+-  Graphics boards for all of them: :doc:`../specs/sgi-graphics`
 
 .. include:: cpu-models-mips.rst.inc
 
