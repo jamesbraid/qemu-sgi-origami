@@ -408,6 +408,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``graphica-onyx350-hinv``
    *John Hartley's Onyx 350 module inventory*. John Hartley. Capture, cited by section. `<https://just.graphica.com.au/tips/what-is-inside-that-box-sgi-hinv/#onyx-350-with-infinitereality4>`__ SHA-256 ``e165c7a004c18bd6dd079566f3d81fdfeaf5ba5f4057656ebdcb7f734e707ce8``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-graphica-tezro-hinv:
+
+``graphica-tezro-hinv``
+   *John Hartley's quad-CPU V12 Tezro inventory*. John Hartley. Capture, cited by section. `<https://just.graphica.com.au/tips/what-is-inside-that-box-sgi-hinv/#quad-cpu-v12-tezro>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-hmm-408-b:
 
 ``hmm-408-b``
@@ -428,6 +433,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``ip35-patch-sg0007149``
    *IP35 patch SG0007149 system-controller software carrier*. Silicon Graphics. Capture, cited by entry. `<https://ftp.jurassic.nl/pub/irix/patches/6.5.30/patchSG0007149.tardist>`__ SHA-256 ``9f4b8abf97c0903f697f75888ae1363b19e385a85c9d34446973975eecf9930a``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-irixnet-post-26015:
+
+``irixnet-post-26015``
+   *IRIXnet thread 785, post 26015, Tezro hinv -vm*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-785-post-26015.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-irixnet-post-32192:
 
 ``irixnet-post-32192``
@@ -442,6 +452,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``irixnet-thread-2263``
    *IRIXnet thread 2263, owner Onyx 4 inventory*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-2263.html>`__ SHA-256 ``fe7d3d15560b2e4e431975e5f299c4f80e9d31db654cfe9f718b9399f3272df7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-irixnet-thread-2737:
+
+``irixnet-thread-2737``
+   *IRIXnet thread 2737, Origin 300 serial console session with L1 1.18.5*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-2737.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-irixnet-thread-3613:
+
+``irixnet-thread-3613``
+   *IRIXnet thread 3613, 1 GHz Tezro PROM inventory*. IRIXnet forums. Capture, cited by post. `<https://forums.irixnet.org/thread-3613.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-irixnet-thread-4337:
 
@@ -592,6 +612,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nekonomicon-16724207``
    *Nekochan forum archive thread 16724207, two-module Origin 350 inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16724207/1.html>`__ SHA-256 ``88e26ec45b8e49249abe2c2269dfcda19d90d14cbdfac834faeb2f5528e2fdd4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-16724335:
+
+``nekonomicon-16724335``
+   *Nekochan forum archive thread 16724335, two-brick Origin 300 with router, L1 1.48.1*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16724335/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-nekonomicon-16726610:
 
