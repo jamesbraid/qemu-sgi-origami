@@ -2210,6 +2210,45 @@ static void test_a_short_burst_waits_for_the_timer(const void *data)
 }
 
 /*
+ * An entry the timer posts counts toward the high-water mark at once: the
+ * level follows the waiting count wherever it moves.
+ */
+static void test_an_expiry_post_reaches_the_high_water_mark(const void *data)
+{
+    QTestState *qts;
+    int sock;
+    const uint8_t sent = 'h';
+
+    qts = qtest_init_with_serial("-M origin200", &sock);
+    serial_socket_deadline(sock);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x10);
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL),
+                 CTRL_DMA_ENABLE | CTRL_HIGH_WATER(1));
+
+    g_assert_cmpint(write(sock, &sent, 1), ==, 1);
+    g_test_timer_start();
+    while (!((qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) >> 24) & 0x7)) {
+        g_assert_cmpfloat(g_test_timer_elapsed(), <,
+                          IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+        g_usleep(1000);
+    }
+    qtest_clock_step(qts, 0x11 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_RX_HIGH_WATER),
+                    ==, SOURCE(0, SRC_RX_HIGH_WATER));
+
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * Expiry spends the arm: the consume index reads it clear, and the next
  * character starts nothing until software arms the timer again. Both Linux
  * ring drivers re-arm as each read starts, and their comment's account of
@@ -3878,6 +3917,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_starts_at_the_first_character);
     qtest_add_data_func("sn0/ioc3-serial/short-burst-waits-for-timer", NULL,
                         test_a_short_burst_waits_for_the_timer);
+    qtest_add_data_func("sn0/ioc3-serial/expiry-post-reaches-high-water",
+                        NULL, test_an_expiry_post_reaches_the_high_water_mark);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-expiry-spends-arm",
                         NULL, test_the_receive_timer_expiry_spends_the_arm);
     qtest_add_data_func("sn0/ioc3-serial/empty-ring-expiry-still-raises", NULL,
