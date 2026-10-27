@@ -4013,7 +4013,14 @@ static void assert_machine_irouter_brick(QTestState *s, bool selected,
     g_assert_cmpint(qdict_get_bool(result, "return"), ==, selected);
     qtest_sysbus_mmio_map(s, "/machine/node0/l1-uart", 0, BASE);
     g_assert_cmpuint(irouter_brick_request(request), ==, sizeof(request));
-    if (selected) {
+    if (selected && !type_names[type_code]) {
+        /*
+         * No captured reply names this type, so the model answers
+         * nothing rather than invent a label.
+         */
+        send_frame_at(s, BASE, request, sizeof(request));
+        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    } else if (selected) {
         g_autofree char *text = g_strdup_printf(
             "rack: 001, slot: 01, partition: none, type: %s [?MB flash], "
             "serial:(null), source: OTHER\n\n", type_names[type_code]);
@@ -4158,7 +4165,7 @@ static void test_machine_node_board_profiles(void)
           0x569cad85, 700, 200 },
         { "onyx350,topology=onyx350-compat", "8G", 4,
           "0x009caf85", "0x800000", "IP53_4CPU", "030-2013-001", "-D",
-          0x37, { 1, 18, 5 }, 0x569caf85, 800, 200 },
+          0x38, { 1, 18, 5 }, 0x569caf85, 800, 200 },
         { "tezro,topology=tezro-tower-one", "4G", 1,
           "0x009bad85", "0x400000", NULL, NULL, NULL, 0x39,
           { 1, 48, 1 }, 0x549bad85, 700, 200 },
@@ -4762,7 +4769,7 @@ static void test_machine_port_speed_profiles(void)
         { "origin350", "2G", 4, "0x009cad85", "0x800000", 1,
           0x37, true },
         { "onyx350,topology=onyx350-compat", "8G", 4,
-          "0x009caf85", "0x800000", 1, 0x37, true },
+          "0x009caf85", "0x800000", 1, 0x38, true },
         { "tezro,topology=tezro-tower-one", "4G", 1,
           "0x009bad85", "0x400000", 1, 0x39, true },
         { "tezro,topology=tezro-tower-multi", "4G", 4,
