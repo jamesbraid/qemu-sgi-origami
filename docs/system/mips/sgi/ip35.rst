@@ -1211,7 +1211,7 @@ the Origin 350, Onyx 350 and Onyx 4 host profiles and 66,666,667 Hz on
 the Tezro profiles, all choices; the board straps are *unknown*. The L1
 console and the four IOC4 serial ports are separate endpoints, as the
 Onyx 350 and Onyx 4 guides describe. :doc:`hardware/ioc4` describes the
-model.
+model, including how its serial ring DMA differs from IOC3's.
 
 .. _sgi-ip53-bcm570x:
 

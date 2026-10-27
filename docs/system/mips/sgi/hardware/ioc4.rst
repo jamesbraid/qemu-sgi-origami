@@ -12,7 +12,7 @@ IP53 products: Origin 350, Onyx 350, Tezro and the Onyx 4 host
 serial ports with ring DMA, a PS/2 keyboard and mouse controller, one
 ATA/ATAPI channel, general-purpose pins and a byte bus for a timekeeper.
 QEMU models PCI revision ``0x53`` as ``sgi-ioc4`` in
-``hw/char/sgi-ioc4.c``, with ``sgi-ioc3-kbc``
+``hw/misc/sgi-ioc4.c``, with ``sgi-ioc3-kbc``
 (``hw/input/sgi-ioc3-kbc.c``) as its PS/2 child. The model covers the
 serial ports, their DMA, the PS/2 controller, the interrupt registers and
 the timekeeper window. ATA and the general-purpose pins are not modelled.
@@ -286,10 +286,13 @@ The model's choices for these bits are *approximations*:
 - A UART interrupt sets its port's bit 6 and also counts as pending for
   as long as the UART holds its interrupt line. Acknowledging the bit
   does not hide a line that is still active.
-- The receive threshold bit is set whenever the receive ring is found
-  to hold at least the threshold. An acknowledgment clears it only while
-  the ring holds fewer entries; consuming entries does not clear it by
-  itself. A zero threshold disables it.
+- Transmit ring empty, receive ring full and the receive threshold are
+  levels. Transmit ring empty is set while ring DMA is on and nothing is
+  left to send. Receive ring full is set while ring DMA is on and an
+  entry waits that the ring had no room for. The receive threshold is
+  set while the ring holds at least the threshold, and a zero threshold
+  disables it. Writing one to any of them has no effect. The rules are
+  those of the shared engine in :ref:`sgi-ioc3-serial-dma`.
 - The PS/2 bit latches on each rising edge of the controller's interrupt
   and stays until acknowledged.
 - DCD and CTS change bits and both ATA bits are never set.
@@ -302,39 +305,32 @@ covered in :ref:`sgi-ip35-address-map-interrupt`.
 Serial DMA
 ==========
 
-The ring DMA engine runs only when the ``serial-dma-experimental``
-property is on. Every IP53 machine model sets it. With it off, no ring
-traffic happens, received characters stay in the UART FIFO, UART
-transmit and modem-control writes ignore the DMA state, and offset
-``0x20`` is unmodelled. The DMA registers still apply the write checks,
-refusals and masks described below, except the ring-base alignment
-check, so they do not simply read back what was written.
+IOC4 runs the same serial ring DMA engine as IOC3, described once in
+:ref:`sgi-ioc3-serial-dma`: ring entries, the transmit walk, the receive
+packer, the receive timer, pause, drain, loopback and the 16550 shadow.
+The register layout, ring layout and entry format are those of Linux
+``ioc4_serial.c`` and ``ioc4.h``, a *software expectation*. What follows
+is where IOC4 differs.
 
-The register layout, ring layout and entry format below are those of
-Linux ``ioc4_serial.c`` and ``ioc4.h``, a *software expectation*. Every
-behaviour the driver leaves open is an *approximation* chosen for the
-model.
+The engine runs only when the ``serial-dma-experimental`` property is
+on. Every IP53 machine model sets it. With it off, the engine never
+touches a UART: no ring traffic happens, received characters stay in the
+UART FIFO and UART transmit and modem-control writes ignore the DMA
+state. The registers below still decode and store, and offset ``0x20``
+is unmodelled.
 
 Rings
 -----
 
-Ports 0 and 1 share the ring base at ``0x300``/``0x304``; ports 2 and 3
-share ``0x308``/``0x30c``. Bit 0 of the low word selects 4 KiB rings
-when set and 1 KiB rings when clear. The pair's region holds four rings
+IOC4 has two ring-base pairs where IOC3 has one. Ports 0 and 1 share the
+base at ``0x300`` (low word) and ``0x304`` (high word). Ports 2 and 3
+share ``0x308`` and ``0x30c``. Bit 0 of the low word selects 4 KiB rings
+when set and 1 KiB rings when clear. Each pair's region holds four rings
 in order: transmit for the even port, receive for the even port,
-transmit for the odd port, receive for the odd port. The base must be
-aligned to the whole region, 4 KiB for 1 KiB rings and 16 KiB for
-4 KiB rings. Enabling DMA on a misaligned base logs
-``LOG_GUEST_ERROR`` and stops that port without a PCI request.
-
-Each entry is eight bytes: four data bytes then four status bytes.
-Producer and consumer registers hold byte offsets that advance by eight
-and wrap at the ring size. The ring is full when advancing the producer
-would meet the consumer.
-
-The base may change only while both ports of the pair are idle, with
-DMA and pause clear, all pointers zero and nothing staged or armed.
-Otherwise the write logs ``LOG_GUEST_ERROR`` and the old base stays.
+transmit for the odd port, receive for the odd port. Linux aligns the
+base to the whole region, 4 KiB for 1 KiB rings and 16 KiB for 4 KiB
+rings, *software expectation*. The model takes bits 12-31 of the low
+word as address and does not enforce the alignment.
 
 Port registers
 --------------
@@ -348,106 +344,78 @@ Port registers
    * - ``0x310 + 0x1c*n``
      - Control
      - Threshold bits 8-0, drain bit 27, DMA enable bit 28, pause bit
-       29, pause state bit 30 (read-only), reset bit 31. Other bits log
-       ``LOG_UNIMP`` and are dropped.
+       29, reset bit 31. Bit 16 reads busy while a transmit delay runs
+       and bit 30 reads pause state; both are read-only. Other bits are
+       stored and log ``LOG_UNIMP``.
    * - ``0x314 + 0x1c*n``
      - Transmit producer
      - Written by software.
    * - ``0x318 + 0x1c*n``
      - Transmit consumer
-     - Device-owned. Writes log ``LOG_UNIMP``.
+     - Advanced by the engine. A write stores the pointer field.
    * - ``0x31c + 0x1c*n``
      - Receive producer
-     - Device-owned. Writes log ``LOG_UNIMP``.
+     - Advanced by the engine. A write stores the pointer field. Bits
+       24-26 do not report the packer's held count, as they do on IOC3.
    * - ``0x320 + 0x1c*n``
      - Receive consumer
-     - Written by software. Bit 31 arms the receive timer; a write
-       with bit 31 clear disarms it and cancels any countdown.
+     - Written by software. Bit 31 arms the receive timer.
    * - ``0x324 + 0x1c*n``
      - Receive timer reload
      - Bits 11-0, in 16 kHz ticks. Other bits log ``LOG_UNIMP``.
    * - ``0x328 + 0x1c*n``
      - Shadow
-     - Output bits 28-24: loopback, OUT2, OUT1, RTS, DTR. Other bits
-       log ``LOG_UNIMP`` and read zero.
+     - The 16550 mirror of :ref:`sgi-ioc3-serial-dma`. Writes are
+       discarded.
 
-A producer or consumer write that is not eight-byte aligned or lies
-outside the ring logs ``LOG_GUEST_ERROR``, leaves the pointer alone and
-stops DMA on that port.
+The producer and consumer registers hold byte offsets that advance by
+eight and wrap at the ring size.
 
-Transmit
---------
-
-The model reads each published entry and handles its four slots in
-order. A zero status slot is skipped. Status ``0x40`` sends the data
-byte, ``0x80`` copies the low five data bits into the shadow outputs
-and ``0xc0`` waits the data byte's number of milliseconds of virtual
-time. Adding ``0x20`` to any of these raises explicit transmit
-completion after that slot finishes. Any other status logs
-``LOG_GUEST_ERROR`` and stops the port. The consumer advances only after
-the whole entry is done, and a port that drains a non-empty ring sets
-transmit ring empty.
-
-A character backend that cannot take a byte yet holds the slot until
-it can; nothing is lost or repeated. A backend error logs
-``LOG_GUEST_ERROR`` and stalls the port until software next writes a
-ring or control register or the backend is replaced.
-
-Receive and the timer
+Differences from IOC3
 ---------------------
 
-Received bytes collect in a four-slot staging entry with status ``0x80``
-and are written to the ring when all four slots fill, the timer expires
-or software sets drain. Unused slots carry zero status. If the ring is
-full, the entry stays staged, receive ring full is set and the backend
-is told the port has no room; the next consumer write publishes it.
+- IOC3 has one ring base for both ports. IOC4 has one per pair.
+- The receive producer index does not report the packer's held count.
+  Linux's IOC4 register definitions do not name the field, so whether
+  the part has it is *unknown*. IOC3's header defines it.
+- A failed ring transfer halts the port until a channel reset (control
+  bit 31), captures the failing address and raises the port's error
+  source in the other pending word (see `DMA errors`_). The header's
+  name for these sources is "serial halted by mem err", a *software
+  expectation*. Whether an IOC3 port halts is *unknown* and the model
+  does not halt it.
+- A pointer write with bits outside the pointer field is stored masked
+  and logs ``LOG_GUEST_ERROR``. This applies to the transmit producer
+  and the receive consumer, whose bit 31 is allowed.
+- The model logs ``LOG_GUEST_ERROR`` for these, then lets them take
+  effect, because the 16550 orders PIO and DMA characters itself:
 
-The timer is a one-shot. Writing bit 31 of the receive consumer arms
-it; any consumer write with bit 31 clear disarms it.
-The next received byte starts it, and it expires after the reload count
-of 16 kHz ticks. On expiry it publishes any partial entry, sets receive
-timer and disarms. A zero reload never expires. The 16 kHz rate is
-Linux ``ioc4.h``'s declared timer clock, a *software expectation*.
+  - enabling ring DMA over a misaligned ring base;
+  - enabling ring DMA while the UART FIFOs hold PIO data;
+  - disabling ring DMA while the port has queued transmit entries,
+    held receive data, an armed timer or a pending drain;
+  - changing a pair's ring base while either port of the pair has DMA
+    enabled or paused, nonzero pointers, or work pending;
+  - a PIO write to the transmit holding register while ring DMA is on.
 
-Apart from the ``0xc0`` loopback status (see below), which sets the
-bit Linux reads as modem-valid, the model never produces modem-status
-entries. It never sets parity, framing, break or overrun flags and does
-not implement hardware flow control.
-
-Pause, enable and PIO
----------------------
-
-Setting pause stops new ring work and sets pause state before the write
-returns. Timers freeze with their remaining time and resume when pause
-clears. Drain written while paused completes after resume.
-
-DMA enable and the UART's own FIFOs never carry the same data:
-
-- Setting DMA enable while the UART holds receive or transmit data
-  (either FIFO, data ready, or a transmitter that is not empty) logs
-  ``LOG_GUEST_ERROR`` and is refused.
-- Clearing DMA enable while the port has queued transmit entries,
-  unread or staged receive data, an armed timer or a pending drain logs
-  ``LOG_GUEST_ERROR`` and is refused.
-- While DMA is enabled a write to the UART transmit holding register
-  logs ``LOG_GUEST_ERROR`` and is dropped.
-
-Writing the reset bit stops the port, clears its pointers, timers,
-staging, shadow outputs and all eight of its serial pending bits and
-its DMA error bit, then clears itself. It keeps the shared ring base,
-the UART registers and the captured error address.
+  Linux's driver avoids each of these. The refusals are model policy,
+  not hardware, an *approximation*.
+- The engine's own guest-error cases apply as on IOC3: undefined
+  transmit control bits, and input from the backend in loopback.
+- The serial idle bit at ``0x20`` follows the rule of IOC3's arbiter
+  idle bit (see below).
 
 Loopback
 --------
 
 Linux names shadow bit 28 the loopback bit, a *software expectation*.
-In the model a PIO write to a UART's modem control register also copies
-its low five bits into the shadow outputs, while reads of modem control
-return the UART's own value. With shadow loopback set, transmitted
-bytes go to the port's own receive staging instead of the backend, with
-status ``0xc0``, and external input waits until loopback clears. The
-IP35 PROM's serial DMA diagnostic sets loopback through modem control
-and compares received status against ``0xc0``
+Loopback is the 16550's modem-control loop bit, which a PIO write or a
+ring modem-control slot sets, and the engine treats it as
+:ref:`sgi-ioc3-serial-dma` describes: transmitted characters return to
+the port's own receiver one character time later, and input from the
+backend is discarded and logged. The received status byte carries the
+looped modem lines. The IP35 PROM's serial DMA diagnostic sets loopback
+through modem control and compares received status against ``0xc0``
 (:src:`ip35-prom-6.210 IOC4 diagnostics`), a *software expectation*.
 How the IOC4 itself loops DMA traffic is *unknown*.
 
@@ -455,13 +423,14 @@ Arbitration idle bit
 --------------------
 
 The Linux IP35 port's serial driver names bit 7 of the serial control
-word at ``0x20`` the arbitration idle bit, zero while a serial port's
-DMA request is active, and polls it after setting a port's reset bit,
-a *software expectation*. The model returns ``0x80`` unless a serial
-DMA memory access is in progress at that moment, and zero during one,
-an *approximation*. DMA accesses
-complete inside the call, so software normally reads idle. Writes to
-``0x20`` log ``LOG_UNIMP``.
+register at ``0x20`` (``SIO_CR``) the arbitration idle bit, zero while a
+serial port's DMA request is active, and polls it after setting a
+port's reset bit, a *software expectation*. The model returns ``0x80``
+unless the engine is inside a ring transfer at that moment, and zero
+during one, an *approximation*. IOC3's chip-control bit 22 follows the
+same rule (:ref:`sgi-ioc3-serial-dma`). QEMU completes each transfer
+before the access that started it returns, so software always reads
+idle. Writes to ``0x20`` log ``LOG_UNIMP``.
 
 Byte order
 ----------
@@ -479,9 +448,9 @@ DMA errors
 Linux ``ioc4.h`` encodes the requester as ``2*port`` for transmit and
 ``2*port + 1`` for receive, with the multiple-error and valid flags in
 the low error word, a *software expectation*. In the model a failed ring
-read or write stops both directions of that port only, leaves its
-pointers and staged data alone, logs ``LOG_GUEST_ERROR`` and sets the
-port's bit in the other pending word. The first failure while the valid
+read or write halts both directions of that port only until a channel
+reset, leaves its pointers and held data alone, logs
+``LOG_GUEST_ERROR`` and sets the port's bit in the other pending word. The first failure while the valid
 bit is clear records the address with its low six bits cleared and the
 requester; later failures only set multiple-error. Only a device reset
 clears the record. Which failure the chip records, and how software
@@ -610,9 +579,9 @@ Model limits
 - General-purpose pins, the external interrupt output, byte-bus selects
   1-3 and the PCI error capture for anything but serial DMA are absent.
   Accesses log ``LOG_UNIMP``; reads return zero.
-- Serial modem-change records, line-error flags and hardware flow
-  control are not produced. Enabling unsupported control bits logs
-  ``LOG_UNIMP``.
+- Carrier-detect and clear-to-send change sources are never raised.
+  Control bits other than the threshold, drain, enable, pause and reset
+  fields are stored and log ``LOG_UNIMP``.
 - Register widths other than those listed fail with
   ``LOG_GUEST_ERROR``: QEMU fails the PCI transaction and the host
   bridge path decides what the processor sees.
@@ -631,10 +600,13 @@ and the XBridge split of a wider access, the ``0x148`` latch with its
 width checks and migration, the PS/2 adapter and its migration, the
 timekeeper window for no clock, the 8-byte clock alias and the 32 KiB
 window, and the serial DMA profile: default-off, both PIC swap settings,
-bus mastering, control entries, both ring sizes, drain and threshold,
-loopback, full rings, the timer, error capture and requester ids, port
-reset and isolation, the idle bit, backend reconnection and migration
-of active, paused and delayed ports, including a profile mismatch.
+bus mastering, control entries, both ring sizes, drain and threshold
+as levels, loopback including overrun and discarded outside input, full
+rings, the timer, pointer-field checks, error capture, requester ids and
+the halt until a channel reset, port reset and isolation, the mode
+switches that are logged and then take effect, the idle bit, backend
+reconnection and migration of active, paused and delayed ports,
+including a profile mismatch.
 
 ``tests/qtest/sgi-pic-test.c`` covers the PCI Status compatibility value
 and its migration, CPU PIO to an IOC4 behind PIC, and serial DMA, the
