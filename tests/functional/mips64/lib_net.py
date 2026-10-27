@@ -373,8 +373,9 @@ def irix_interface_at_pci_slot(con, prefix, slot, timeout=60):
     PCI slot `slot`, read from hinv. ioconfig numbers a card it has not
     seen after every one the disk already knows, so the name depends on
     the disk's history, not on the card or the slot: the installed disk
-    calls a Tigon moved to slot 5 eg1 because slot 4 once held eg0. hinv
-    prints "PCI slot N" for eg and "PCI bus B slot N" for tg."""
+    calls a Tigon moved to slot 5 eg1 because slot 4 once held eg0. Hinv
+    labels these lines "Gigabit Ethernet" or "Integral Gigabit Ethernet";
+    it prints "PCI slot N" for eg and "PCI bus B slot N" for tg."""
     return con.capture_value("hinv", f"{prefix}-name",
                              gigabit_interface_pattern(prefix, slot), timeout)
 
@@ -382,8 +383,8 @@ def irix_interface_at_pci_slot(con, prefix, slot, timeout=60):
 def gigabit_interface_pattern(prefix, slot):
     """hinv's Gigabit Ethernet line for the prefix adapter in PCI slot
     `slot`, capturing the interface name."""
-    return (rb"Gigabit Ethernet: (" + prefix.encode() +
-            rb"\d+), module \d+, PCI (?:bus \d+ )?slot " +
+    return (rb"(?:Integral )?Gigabit Ethernet: (" + prefix.encode() +
+            rb"\d+), module [0-9a-fA-F]+, PCI (?:bus \d+ )?slot " +
             str(slot).encode() + rb"\b")
 
 

@@ -167,6 +167,8 @@ class GigabitInterfacePatternTests(unittest.TestCase):
 
     EG = b"Gigabit Ethernet: eg1, module 1, PCI slot 5, firmware version 0.0.0"
     TG = b"Gigabit Ethernet: tg1, module 1, PCI bus 0 slot 5"
+    IO9_TG = (b"Integral Gigabit Ethernet: tg0, module 001c01, "
+              b"PCI bus 1 slot 4")
 
     def test_reads_the_eg_name_in_its_slot(self):
         m = re.search(gigabit_interface_pattern("eg", 5), self.EG)
@@ -176,6 +178,10 @@ class GigabitInterfacePatternTests(unittest.TestCase):
         m = re.search(gigabit_interface_pattern("tg", 5), self.TG)
         self.assertEqual(m.group(1), b"tg1")
 
+    def test_reads_the_integral_ip53_tg_name_and_hex_module(self):
+        m = re.search(gigabit_interface_pattern("tg", 4), self.IO9_TG)
+        self.assertEqual(m.group(1), b"tg0")
+
     def test_ignores_another_slot_or_adapter(self):
         self.assertIsNone(re.search(gigabit_interface_pattern("eg", 4),
                                     self.EG))
@@ -184,6 +190,10 @@ class GigabitInterfacePatternTests(unittest.TestCase):
         self.assertIsNone(re.search(
             gigabit_interface_pattern("eg", 5),
             b"Gigabit Ethernet: eg1, module 1, PCI slot 50"))
+        self.assertIsNone(re.search(gigabit_interface_pattern("eg", 4),
+                                    self.IO9_TG))
+        self.assertIsNone(re.search(gigabit_interface_pattern("tg", 5),
+                                    self.IO9_TG))
 
 
 class DhcpKindTests(unittest.TestCase):
