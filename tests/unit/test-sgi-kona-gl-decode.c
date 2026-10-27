@@ -3215,6 +3215,54 @@ static void test_pixel_rgba8_equivalence(void)
     }
 }
 
+/*
+ * A run of row bytes reads what the same bytes one at a time read, and
+ * fails exactly when any of them would, over pseudo-random contiguous and
+ * strided layouts, every phase, rows and runs that cross the row's end,
+ * and staging buffers too short for the last rows.
+ */
+static void test_pixels_pio_bytes(void)
+{
+    uint32_t x = 0x2545f491;
+    uint32_t words[64];
+
+    for (unsigned k = 0; k < ARRAY_SIZE(words); k++) {
+        words[k] = 0x01010101u * k ^ 0xa5c30f96u;
+    }
+    for (unsigned trial = 0; trial < 2000; trial++) {
+        SGIKonaGLPixelLayout l = { 0 };
+        size_t nwords;
+
+        x = x * 1664525 + 1013904223;
+        l.height = 1 + (x >> 8) % 5;
+        l.row_bytes = 1 + (x >> 12) % 13;
+        l.strided = (x >> 20) & 1;
+        l.stride = l.row_bytes + (l.strided ? (x >> 21) % 9 : (x >> 21) % 4);
+        l.phase = (x >> 26) & 3;
+        nwords = (x >> 28) % 3 ? ARRAY_SIZE(words) : (x >> 4) % 16;
+        for (uint32_t row = 0; row <= l.height; row++) {
+            for (uint64_t byte = 0; byte <= l.row_bytes + 1; byte++) {
+                for (size_t n = 0; n <= l.row_bytes + 2; n++) {
+                    uint8_t expected[24], actual[24];
+                    bool ok = true;
+
+                    for (size_t k = 0; k < n && ok; k++) {
+                        ok = sgi_kona_gl_pixels_pio_byte(&l, words, nwords,
+                                                         row, byte + k,
+                                                         &expected[k]);
+                    }
+                    g_assert_cmpint(sgi_kona_gl_pixels_pio_bytes(&l, words,
+                                        nwords, row, byte, actual, n),
+                                    ==, ok);
+                    if (ok) {
+                        g_assert_cmpmem(actual, n, expected, n);
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3376,6 +3424,8 @@ int main(int argc, char **argv)
                     test_words_or_bytes);
     g_test_add_func("/sgi-kona-gl-decode/rgba8/equivalence",
                     test_pixel_rgba8_equivalence);
+    g_test_add_func("/sgi-kona-gl-decode/pixels/pio-bytes",
+                    test_pixels_pio_bytes);
     g_test_add_func("/sgi-kona-gl-decode/packed/decode",
                     test_pixel_packed_decode);
     g_test_add_func("/sgi-kona-gl-decode/packed/pack",

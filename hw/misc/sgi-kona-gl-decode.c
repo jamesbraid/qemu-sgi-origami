@@ -1546,6 +1546,39 @@ bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
     return true;
 }
 
+bool sgi_kona_gl_pixels_pio_bytes(const SGIKonaGLPixelLayout *l,
+                                  const uint32_t *words, size_t nwords,
+                                  uint32_t row, uint64_t byte, uint8_t *out,
+                                  size_t n)
+{
+    uint64_t pos, last;
+
+    if (!n) {
+        return true;
+    }
+    /*
+     * A row's useful bytes lie at consecutive offsets, so the last one
+     * failing is the only way any can: it has the largest byte, offset
+     * and word.
+     */
+    if (!words || !out || n - 1 > UINT64_MAX - byte ||
+        !sgi_kona_gl_pixels_pio_offset(l, row, byte + n - 1, &last) ||
+        last / 4 >= nwords ||
+        !sgi_kona_gl_pixels_pio_offset(l, row, byte, &pos)) {
+        return false;
+    }
+    for (; n && (pos & 3); n--, pos++) {
+        *out++ = words[pos / 4] >> (24 - 8 * (pos & 3));
+    }
+    for (; n >= 4; n -= 4, pos += 4, out += 4) {
+        stl_be_p(out, words[pos / 4]);
+    }
+    for (; n; n--, pos++) {
+        *out++ = words[pos / 4] >> (24 - 8 * (pos & 3));
+    }
+    return true;
+}
+
 bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
                                    const double rgba[4], bool swap_bytes,
                                    uint8_t *out, size_t capacity)
