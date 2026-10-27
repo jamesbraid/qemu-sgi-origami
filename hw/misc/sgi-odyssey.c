@@ -5520,7 +5520,8 @@ static void odyssey_gl_stipple_background(SGIOdysseyState *s,
 }
 
 /*
- * The callbacks may run on band workers (concurrent_pixels): each stores
+ * The callbacks may run on band workers (concurrent_pixels, unless the
+ * x-raster-bands property is off): each stores
  * only its own pixel's bytes, and reads the clip rectangles, the display
  * ID planes, the fog words and the per-draw texture chain, which only
  * FIFO commands on the waiting processor change. Their once-only reports
@@ -5539,7 +5540,7 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .store_stencil = odyssey_gl_store_stencil,
         .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
-        .concurrent_pixels = true,
+        .concurrent_pixels = s->raster_bands,
     };
 
     odyssey_gl_stipple_background(s, &t);
@@ -12987,6 +12988,12 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),
     DEFINE_PROP_BOOL("x-mesa-renderer", SGIOdysseyState,
                      mesa_renderer_enabled, false),
+    /*
+     * Large GL draws run in bands of rows on several host threads. Off
+     * draws every pixel on the calling thread, for debugging; the pixels
+     * are the same either way.
+     */
+    DEFINE_PROP_BOOL("x-raster-bands", SGIOdysseyState, raster_bands, true),
     DEFINE_PROP_LINK("fabric", SGIOdysseyState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
 };
