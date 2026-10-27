@@ -7,7 +7,9 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/main-loop.h"
+#include "qemu/error-report.h"
 #include "system/memory.h"
+#include "system/qtest.h"
 #include "hw/misc/sgi-pio-forward.h"
 
 #define SGI_PIO_FORWARD_PAGE    4096
@@ -35,6 +37,42 @@ static void sgi_pio_forward_commit(MemoryListener *listener)
 }
 
 /*
+ * While a qtest driver is attached, every hit is checked against a fresh
+ * resolution of its page, and a mismatch stops QEMU. Correctness rests on
+ * the commit listener emptying the cache whenever a page could resolve
+ * elsewhere: a reset, a link reset, a load or an unrealize changes a view
+ * without any access through the cache, so nothing else would notice an
+ * entry it kept. The check makes every qtest test that, whatever the
+ * cache's size or eviction order. It also holds the page to what the
+ * lookup required when it cached it: one section that starts at the page
+ * and covers all of it. Guest runs skip it.
+ */
+static void sgi_pio_forward_check_hit(SGIPioForward *f, hwaddr page)
+{
+    MemoryRegionSection fresh = memory_region_find(f->as->root, page,
+                                                   SGI_PIO_FORWARD_PAGE);
+    bool stale = fresh.mr != f->mr ||
+                 fresh.offset_within_region != f->offset;
+    /* What the lookup required when it cached the page. */
+    bool whole = fresh.offset_within_address_space == page &&
+                 int128_get64(fresh.size) == SGI_PIO_FORWARD_PAGE;
+
+    if (stale || !whole) {
+        error_report("sgi-pio-forward: stale page cache hit in %s at 0x%"
+                     HWADDR_PRIx ": cached %s, now %s at 0x%" HWADDR_PRIx
+                     " for 0x%" PRIx64, f->as->name, page,
+                     memory_region_name(f->mr),
+                     fresh.mr ? memory_region_name(fresh.mr) : "nothing",
+                     fresh.offset_within_address_space,
+                     int128_get64(fresh.size));
+        abort();
+    }
+    if (fresh.mr) {
+        memory_region_unref(fresh.mr);
+    }
+}
+
+/*
  * The region @addr's page resolves to and @addr's offset in it, or NULL
  * when the page is not one plain region of device handlers.
  */
@@ -45,6 +83,9 @@ static MemoryRegion *sgi_pio_forward_lookup(SGIPioForward *f, hwaddr addr,
     MemoryRegionSection section;
 
     if (f->mr && f->page == page) {
+        if (qtest_driver()) {
+            sgi_pio_forward_check_hit(f, page);
+        }
         *offset = f->offset + (addr - page);
         return f->mr;
     }
