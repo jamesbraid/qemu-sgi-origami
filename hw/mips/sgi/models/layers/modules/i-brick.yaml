@@ -60,21 +60,13 @@ layer:
         notes: A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.
     buses:
       - {id: io7-bus, name: "IO7, bus 1 (head F)", kind: pci, master: xbridge, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
-      - id: host-port-a-attach
-        name: Host port A XIO attach
-        kind: xio
-        master: bedrock
-        provenance: vendor-document
-        sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
-        notes: >-
-          "bedrock" names the C-brick's own Bedrock component, merged ahead of
-          this module instance; deliberately unprefixed so this bus reaches
-          outside the I-brick. Host port A, one of the two the closure record
-          establishes; which port a boot I-brick actually uses is unknown.
     connections:
       - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
-      - {component: bedrock, bus: host-port-a-attach, role: master, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
-      - {component: xbridge-crossbar, bus: host-port-a-attach, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"], notes: "Host port A, widget 0xA (10 decimal)."}
+      # host-port-a-xio is the attached C-brick's XIO bus, which the
+      # composition binds with bus_bindings. Port A is the documented
+      # compute-node port this layer uses; which port a boot I-brick uses
+      # is unknown.
+      - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"], notes: "Host port A, widget 0xA (10 decimal)."}

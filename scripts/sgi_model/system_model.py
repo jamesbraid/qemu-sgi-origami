@@ -456,6 +456,37 @@ def _apply_observed_hardware_basis(value: Any, basis: dict[str, Any]) -> Any:
     return copy.deepcopy(value)
 
 
+def _refuse_outside_references(
+        graph: dict[str, list[Any]], component_ids: set[Any]) -> None:
+    """Refuse a module that names a component it does not contain.
+
+    An unprefixed name that escapes the instance resolves only while the
+    enclosing graph has exactly one component of that name; with two
+    C-bricks, "bedrock" is ambiguous. A module reaches outside itself only
+    through an undeclared bus that its instance binds with bus_bindings.
+    """
+    def check(ident: Any) -> None:
+        if isinstance(ident, str) and ident not in component_ids:
+            raise ResolutionError(
+                f"module names component '{ident}' outside its instance; "
+                "connect it through a bus the instance binds with bus_bindings")
+
+    for connection in graph["connections"]:
+        check(connection.get("component"))
+        check(connection.get("controlled_by"))
+    for bus in graph["buses"]:
+        check(bus.get("master"))
+        for master in bus.get("masters", []):
+            check(master)
+    for interrupt in graph["interrupts"]:
+        check(interrupt.get("source"))
+        for hop in interrupt.get("chain", []):
+            check(hop.get("at"))
+    for component in graph["components"]:
+        for region in component.get("regions", []):
+            check(region.get("relative_to"))
+
+
 def _instantiate_module_graph(
         contract: dict[str, Any], *, prefix: str, parent: str,
         omit_buses: list[str],
@@ -517,6 +548,7 @@ def _instantiate_module_graph(
     original_component_ids = {
         item.get("id") for item in components if isinstance(item, dict)
     }
+    _refuse_outside_references(graph, original_component_ids)
     omitted_components = {
         component["id"] for component in components
         if (isinstance(component, dict) and

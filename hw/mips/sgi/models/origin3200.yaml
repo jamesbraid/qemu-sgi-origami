@@ -5,12 +5,22 @@ configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip35.yaml
-  - layers/modules/c-brick.yaml
   - layers/products/origin3200.yaml
 module_instances:
+  - model: layers/modules/c-brick.yaml
+    prefix: c0-
+    parent: rack
+    observed_hardware:
+      mode: projected
+      sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock]
+      note: >-
+        The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
+        every published Origin 3000 inventory reports; it is not a capture of
+        this C-brick.
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
-    parent: chassis
+    parent: rack
+    bus_bindings: {host-port-a-xio: c0-xio-ii}
     observed_hardware:
       mode: direct
       sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]
