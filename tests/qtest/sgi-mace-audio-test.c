@@ -37,10 +37,9 @@ static const uint16_t masks[32] = {
 static AudioFixture fixture_start_config(const char *extra, bool o2)
 {
     AudioFixture t = { 0 };
-    g_autofree char *cwd = g_get_current_dir();
 
-    t.dir = g_build_filename(cwd, ".mace-audio-XXXXXX", NULL);
-    g_assert_nonnull(g_mkdtemp(t.dir));
+    t.dir = g_dir_make_tmp("mace-audio-XXXXXX", NULL);
+    g_assert_nonnull(t.dir);
     t.ram = g_build_filename(t.dir, "ram", NULL);
     t.fd = g_open(t.ram, O_CREAT | O_EXCL | O_RDWR, 0600);
     g_assert_cmpint(t.fd, >=, 0);
