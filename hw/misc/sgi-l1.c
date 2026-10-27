@@ -26,6 +26,20 @@
 #include "system/qtest.h"
 #include "trace.h"
 
+/* The Origin 3000 bricks whose L1 the profile models. */
+enum {
+    L1_O3K_NONE,
+    L1_O3K_CBRICK,
+    L1_O3K_IBRICK,
+};
+
+/*
+ * How long a controller that has been told to restart answers no peer. The
+ * guides print the "no response from" line but give no figure, only "for a
+ * while", so the duration alone is the model's choice.
+ */
+#define L1_O3K_RESTART_NS (1 * NANOSECONDS_PER_SECOND)
+
 /* Product metadata does not describe physical UART wiring or power control. */
 struct SGIL1ProductProfile {
     const char *name;
@@ -33,6 +47,7 @@ struct SGIL1ProductProfile {
     unsigned board_count;
     uint32_t board_capacity;
     bool compute_services;
+    uint8_t o3k;
 };
 
 /*
@@ -48,6 +63,15 @@ static const SGIL1ProductProfile l1_profiles[] = {
     { "pci-expansion", 0x25, 4, 0x0200, false },
     { "router", 0x52, 0, 0, false },
     { "vbrick-discovery-reference", 0, 0, 0, false },
+    /*
+     * The Origin 3000 compute brick and system I/O brick. The letters are
+     * candidates (see docs/system/mips/sgi/hardware/l1.rst): a C-brick's is
+     * valid for its module name only, and the case of an I-brick's is the
+     * model's choice. Their records are all synthetic, so board_count and
+     * board_capacity, which describe the file-backed record cache, stay zero.
+     */
+    { "cbrick", 0x43, 0, 0, true, L1_O3K_CBRICK },
+    { "ibrick", 0x49, 0, 0, false, L1_O3K_IBRICK },
 };
 
 /*
@@ -97,6 +121,74 @@ static SGIL1State *l1_linked_peer(SGIL1State *s)
            s->network_422 && s->peer->network_422 ? s->peer : NULL;
 }
 
+static bool l1_is_cbrick(const SGIL1State *s)
+{
+    return s->profile->o3k == L1_O3K_CBRICK;
+}
+
+static bool l1_is_ibrick(const SGIL1State *s)
+{
+    return s->profile->o3k == L1_O3K_IBRICK;
+}
+
+/* Rack and slot are both set: only a C-brick or I-brick can lack them. */
+static bool l1_named(const SGIL1State *s)
+{
+    return s->rack_valid && s->bay_valid;
+}
+
+/*
+ * The name the operator sees: rack, type letter and slot, with dashes for
+ * what is unset ("---c--" is the factory state).
+ */
+static char *l1_module_name(const SGIL1State *s)
+{
+    char rack[8], bay[8];
+
+    if (s->rack_valid) {
+        snprintf(rack, sizeof(rack), "%03u", s->rack);
+    } else {
+        g_strlcpy(rack, "---", sizeof(rack));
+    }
+    if (s->bay_valid) {
+        snprintf(bay, sizeof(bay), "%02u", s->bay);
+    } else {
+        g_strlcpy(bay, "--", sizeof(bay));
+    }
+    return g_strdup_printf("%s%c%s", rack, l1_is_ibrick(s) ? 'i' : 'c', bay);
+}
+
+static bool l1_restarting(const SGIL1State *s)
+{
+    return s->restart_until &&
+           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->restart_until;
+}
+
+/*
+ * Every controller that exists, so a cable can be found from either end
+ * without walking the composition tree. A controller outside the tree is
+ * found too. Touched under the BQL only.
+ */
+static GSList *l1_controllers;
+
+/*
+ * The C-brick that names @ibrick as its I-brick, ignoring @except. An
+ * I-brick holds no pointer back, so the cable is found from the C-brick's
+ * side and the two ends cannot disagree.
+ */
+static SGIL1State *l1_host_of(const SGIL1State *ibrick,
+                              const SGIL1State *except)
+{
+    for (GSList *l = l1_controllers; l; l = l->next) {
+        SGIL1State *candidate = l->data;
+
+        if (candidate != except && candidate->io_peer == ibrick) {
+            return candidate;
+        }
+    }
+    return NULL;
+}
+
 /* The controller side: operator console text, display and log. */
 
 static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
@@ -116,7 +208,9 @@ static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
 
 static void l1_prompt(SGIL1State *s)
 {
-    l1_printf(s, "%03uc%02u-L1> ", s->rack, s->bay);
+    g_autofree char *name = l1_module_name(s);
+
+    l1_printf(s, "%s-L1> ", name);
 }
 
 static const char *l1_designation(SGIL1State *s)
@@ -149,12 +243,14 @@ static void l1_mode_message(SGIL1State *s, bool returning)
         l1_prompt(s);
         return;
     }
+    g_autofree char *name = l1_module_name(s);
+
     s->console_mode = true;
     s->escaped = false;
     s->warned_off = false;
-    l1_printf(s, "%s console mode  %03uc%02u %s, <CTRL_T> to escape to L1"
-              "\r\n", returning ? "returning to" : "entering", s->rack,
-              s->bay, l1_designation(s));
+    l1_printf(s, "%s console mode  %s %s, <CTRL_T> to escape to L1"
+              "\r\n", returning ? "returning to" : "entering", name,
+              l1_designation(s));
 }
 
 static void G_GNUC_PRINTF(2, 3) l1_log(SGIL1State *s, const char *fmt, ...)
@@ -200,7 +296,8 @@ static void l1_display_set(SGIL1State *s, unsigned line, const char *text)
 
 static void l1_display_id(SGIL1State *s)
 {
-    g_autofree char *id = g_strdup_printf("%03uc%02u     /", s->rack, s->bay);
+    g_autofree char *name = l1_module_name(s);
+    g_autofree char *id = g_strdup_printf("%s     /", name);
 
     l1_display_set(s, 0, id);
 }
@@ -246,8 +343,9 @@ static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
                           const char *text)
 {
     uint8_t payload[127];
-    g_autofree char *line = g_strdup_printf("\r\n%03uc%02u ATTN: %s\r\n",
-                                            s->rack, s->bay, text);
+    g_autofree char *name = l1_module_name(s);
+    g_autofree char *line = g_strdup_printf("\r\n%s ATTN: %s\r\n", name,
+                                            text);
     unsigned n = 0, length = strlen(line) + 1;
 
     if (!s->events_enabled || length > sizeof(payload) - 16) {
@@ -479,6 +577,9 @@ static void l1_boot_local(SGIL1State *s)
     s->bic_startup_needed = s->bic_startup != SGI_L1_BIC_STARTUP_NONE;
     s->rack = s->pending_rack;
     s->bay = s->pending_bay;
+    s->rack_valid = s->pending_rack_valid;
+    s->bay_valid = s->pending_bay_valid;
+    s->partition = s->pending_partition;
     s->console_mode = s->escaped = s->warned_off = false;
     s->command_len = 0;
     memset(s->frame, 0, sizeof(s->frame));
@@ -773,6 +874,19 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
     }
 }
 
+/* A destination nobody serves gets the router's own error reply. */
+static void l1_router_error_to(SGIL1State *recipient, uint8_t channel)
+{
+    uint8_t payload[] = { 0x20 | channel, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
+
+    l1_emit_direct(recipient, payload, sizeof(payload));
+}
+
+static void l1_router_error(SGIL1State *s, uint8_t channel)
+{
+    l1_router_error_to(s->reply_to ? s->reply_to : s, channel);
+}
+
 static bool l1_discovery_reference(const SGIL1State *s)
 {
     return !g_strcmp0(s->brick_type, "vbrick-discovery-reference");
@@ -785,6 +899,60 @@ static void l1_reference_refuse(SGIL1State *s, SGIL1State *recipient,
     qemu_log_mask(LOG_UNIMP, "sgi-l1: task %u unavailable on %s\n",
                   task, s->brick_type);
     l1_reply_direct(recipient, channel, task == 6 ? -104 : -101, 0, NULL, 0);
+}
+
+/*
+ * Requests 0x000c and 0x000d on a C-brick: a pair of the packed rack and bay
+ * and the type letter for each port, ports 1 to 4 or ports 5 and 10. The
+ * port each cable appears at is configuration, because the guides disagree
+ * on the numbering. An attached brick without a name appears as absent: what
+ * a real controller returns for one is unknown.
+ */
+static void l1_o3k_attached(SGIL1State *s, SGIL1State *recipient,
+                            uint8_t channel, bool low_ports)
+{
+    static const unsigned low[] = { 1, 2, 3, 4 };
+    static const unsigned high[] = { 5, 10 };
+    const unsigned *ports = low_ports ? low : high;
+    unsigned slots = low_ports ? ARRAY_SIZE(low) : ARRAY_SIZE(high);
+    uint8_t fields[40] = { 0 };
+    struct {
+        SGIL1State *brick;
+        unsigned port;
+        uint8_t letter;
+    } cables[] = {
+        { s->io_peer, s->io_port, 'I' },
+        { l1_linked_peer(s), s->c_port, 'C' },
+    };
+
+    if (l1_is_ibrick(s)) {
+        /* No source says what an I-brick answers. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: attached-brick request unavailable on the "
+                      "ibrick profile\n");
+        l1_reply_direct(recipient, channel, -101, 0, NULL, 0);
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(cables); i++) {
+        if (!cables[i].brick) {
+            continue;
+        }
+        if (!l1_named(cables[i].brick)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: attached brick has no rack and slot\n");
+            continue;
+        }
+        for (unsigned slot = 0; slot < slots; slot++) {
+            if (ports[slot] == cables[i].port) {
+                fields[10 * slot] = 0;
+                stl_be_p(fields + 10 * slot + 1,
+                         (cables[i].brick->rack << 6) | cables[i].brick->bay);
+                fields[10 * slot + 5] = 0;
+                stl_be_p(fields + 10 * slot + 6, cables[i].letter);
+            }
+        }
+    }
+    l1_reply_direct(recipient, channel, 0, 2 * slots, fields, 10 * slots);
 }
 
 static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
@@ -805,6 +973,14 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: brick identity not configured\n");
             l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+            return true;
+        }
+        if (!l1_named(s)) {
+            /* The unnamed state's reply is unknown, so the guest gets none. */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: identity requested of a brick with no "
+                          "rack and slot\n");
+            l1_router_error_to(recipient, channel);
             return true;
         }
         stl_be_p(fields + 1, (s->rack << 6) | s->bay);
@@ -836,7 +1012,17 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         }
         return true;
     case 0xc:
+        if (s->profile->o3k) {
+            l1_o3k_attached(s, recipient, channel, true);
+            return true;
+        }
         l1_reply_direct(recipient, channel, 0, 8, fields, sizeof(fields));
+        return true;
+    case 0xd:
+        if (!s->profile->o3k) {
+            return false;
+        }
+        l1_o3k_attached(s, recipient, channel, false);
         return true;
     default:
         return false;
@@ -960,6 +1146,177 @@ bool sgi_l1_bind_power_command(SGIL1State *issuer, SGIL1State *owner,
     return true;
 }
 
+static int l1_run_line(SGIL1State *s, const char *text, bool console);
+
+/* Restart the controller. A C-brick's or I-brick's peers hear nothing. */
+static void l1_reboot(SGIL1State *s)
+{
+    l1_boot(s);
+    if (s->profile->o3k) {
+        s->restart_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                           L1_O3K_RESTART_NS;
+    }
+}
+
+/*
+ * The commands each brick lacks, where every reading of the guide's table
+ * agrees. Anything else the guide lists but this model does not run is
+ * reported as an unimplemented command, not refused here.
+ */
+static bool l1_o3k_refused(const SGIL1State *s, const char *word)
+{
+    static const char *const ibrick[] = {
+        "*", "autopower", "cpu", "ctc", "cti", "debug", "leds", "nmi",
+        "pimm", "select", "sel", "softreset", "softrst", "junkbus",
+    };
+
+    if (!strcmp(word, "router")) {
+        return true;
+    }
+    if (l1_is_cbrick(s)) {
+        return !strcmp(word, "pci");
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(ibrick); i++) {
+        if (!strcmp(word, ibrick[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Run @text on an attached controller and print what it said under its
+ * name, as ctc does. The controller is asked in-process; a controller that
+ * is restarting does not answer. A command run on another controller is
+ * marked as relayed, so it cannot relay or broadcast onward; the sender's
+ * own part of a broadcast is not relayed, only collected under its name.
+ */
+static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
+{
+    g_autofree char *name = l1_module_name(target);
+    g_autofree char *output = NULL;
+    GString *saved = target->capture;
+    bool serving = target->serving_peer;
+    int result;
+
+    /* A brick always hears itself; only another brick can be restarting. */
+    if (target != s && l1_restarting(target)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: no response from a restarting controller\n");
+        l1_printf(s, "%s:\r\nno response\r\n", name);
+        return -1;
+    }
+    /* The output of the relayed command is collected, not printed. */
+    target->capture = g_string_new(NULL);
+    if (target != s) {
+        target->serving_peer = true;
+    }
+    result = l1_run_line(target, text, false);
+    output = g_string_free(target->capture, FALSE);
+    target->capture = saved;
+    target->serving_peer = serving;
+    /* One line of its own, so a task-3 reply carries it as a field. */
+    l1_printf(s, "%s:\r\n%s", name, output);
+    return result;
+}
+
+/* A C-brick's "*": this brick, the other C-brick and the I-brick, in turn. */
+static int l1_o3k_broadcast(SGIL1State *s, const char *text)
+{
+    SGIL1State *targets[] = { s, l1_linked_peer(s), s->io_peer };
+    int result = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(targets); i++) {
+        if (targets[i] && l1_relay(s, targets[i], text)) {
+            result = -1;
+        }
+    }
+    return result;
+}
+
+/* Power and reset on an I-brick act on that brick alone. */
+static void l1_ibrick_power(SGIL1State *s, int argc, char **argv)
+{
+    if (l1_word(argv[0], "reset", "rst")) {
+        l1_peer_reset(s);
+        if (s->node_power) {
+            qemu_irq_pulse(s->node_reset_out);
+        }
+    } else if (argc == 2 && l1_word(argv[1], "up", "u")) {
+        if (s->node_power) {
+            l1_printf(s, "Power is already on\r\n");
+        } else {
+            l1_peer_power(s, true);
+        }
+    } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
+        l1_peer_power(s, false);
+    } else if (argc == 2 && !strcmp(argv[1], "check")) {
+        l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
+    } else {
+        l1_invalid(s, "power");
+    }
+}
+
+typedef struct SGIL1ConfigRow {
+    unsigned index;
+    SGIL1State *brick;
+} SGIL1ConfigRow;
+
+/* The cfg listing: this brick at 0, each cabled brick at its port number. */
+static void l1_o3k_config(SGIL1State *s)
+{
+    SGIL1ConfigRow rows[3] = { { 0, s } };
+    unsigned count = 1;
+
+    if (l1_is_ibrick(s)) {
+        /* The first of an I-brick's C-brick ports. */
+        SGIL1State *host = l1_host_of(s, NULL);
+
+        if (host) {
+            rows[count++] = (SGIL1ConfigRow) { 1, host };
+        }
+    } else {
+        SGIL1State *c_brick = l1_linked_peer(s);
+
+        if (s->io_peer) {
+            rows[count++] = (SGIL1ConfigRow) { s->io_port, s->io_peer };
+        }
+        if (c_brick) {
+            rows[count++] = (SGIL1ConfigRow) { s->c_port, c_brick };
+        }
+    }
+    if (count == 3 && rows[1].index > rows[2].index) {
+        SGIL1ConfigRow swap = rows[1];
+
+        rows[1] = rows[2];
+        rows[2] = swap;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        g_autofree char *name = l1_module_name(rows[i].brick);
+
+        l1_printf(s, "%u: %s\r\n", rows[i].index, name);
+    }
+}
+
+static void l1_o3k_brick_print(SGIL1State *s)
+{
+    char rack[8], bay[8];
+
+    if (s->rack_valid) {
+        snprintf(rack, sizeof(rack), "%03u", s->rack);
+    } else {
+        g_strlcpy(rack, "---", sizeof(rack));
+    }
+    if (s->bay_valid) {
+        snprintf(bay, sizeof(bay), "%02u", s->bay);
+    } else {
+        g_strlcpy(bay, "--", sizeof(bay));
+    }
+    l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
+              "source: EEPROM\r\n", rack, bay, s->partition,
+              l1_is_ibrick(s) ? 'I' : 'C');
+}
+
 static int l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
@@ -1002,6 +1359,30 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         if (*p) {
             *p++ = 0;
         }
+    }
+    if (argc && s->profile->o3k && l1_o3k_refused(s, argv[0])) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: command %s unsupported on the %s "
+                      "profile\n", argv[0], s->profile->name);
+        l1_printf(s, "INFO: command not supported on this brick type\r\n");
+        result = -1;
+        goto complete;
+    }
+    if (argc && l1_is_cbrick(s) && !strcmp(argv[0], "*") &&
+        (s->serving_peer || (argc > 1 && !strcmp(argv[1], "*")))) {
+        /*
+         * A broadcast that reaches a brick through a relay, or that names
+         * another broadcast, would reach the same bricks again, and each
+         * extra "*" would double the work. The relay depth is one.
+         */
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: nested * is unsupported\n");
+        l1_printf(s, "INFO: nested * is unsupported.%s",
+                  "\r\n");
+        result = -1;
+        goto complete;
+    }
+    if (argc > 1 && l1_is_cbrick(s) && !strcmp(argv[0], "*")) {
+        result = l1_o3k_broadcast(s, original + (argv[1] - line));
+        goto complete;
     }
     if (argc && !strcmp(argv[0], "*")) {
         broadcast = true;
@@ -1072,6 +1453,11 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         g_string_free(output, TRUE);
         goto complete;
     }
+    if (l1_is_ibrick(s) && (l1_word(argv[0], "power", "pwr") ||
+                            l1_word(argv[0], "reset", "rst"))) {
+        l1_ibrick_power(s, argc, argv);
+        goto complete;
+    }
     if (!s->profile->compute_services &&
         (l1_word(argv[0], "power", "pwr") ||
          l1_word(argv[0], "reset", "rst") ||
@@ -1088,23 +1474,32 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
          * while that L1 is still collecting (a model choice).
         */
         qemu_log_mask(LOG_UNIMP, "sgi-l1: nested ctc is unsupported\n");
+        /* The Origin 300 profile's text keeps its LF off the console. */
         l1_printf(s, "INFO: nested ctc is unsupported.%s",
-                  console ? "\r\n" : "\n");
+                  console || s->profile->o3k ? "\r\n" : "\n");
         result = -1;
         goto complete;
     }
     if (!strcmp(argv[0], "ctc") && argc > 1 && peer) {
-        g_autofree char *output = NULL;
-
         /* The peer runs it; its brick id line comes first. */
-        peer->capture = g_string_new(NULL);
-        peer->serving_peer = true;
-        result = l1_run_line(peer, original + (argv[1] - line), false);
-        peer->serving_peer = false;
-        output = g_string_free(peer->capture, FALSE);
-        peer->capture = NULL;
-        /* One line of its own, so a task-3 reply carries it as a field. */
-        l1_printf(s, "%03uc%02u:\r\n%s", peer->rack, peer->bay, output);
+        result = l1_relay(s, peer, original + (argv[1] - line));
+        goto complete;
+    }
+    if (!strcmp(argv[0], "cti") && argc > 1 && l1_is_cbrick(s)) {
+        if (s->serving_peer) {
+            /* Refused with or without an I-brick: it is the nesting. */
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: nested cti is unsupported\n");
+            l1_printf(s, "INFO: nested cti is unsupported.%s",
+                      "\r\n");
+            result = -1;
+        } else if (!s->io_peer) {
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: cti needs an attached I-brick\n");
+            l1_printf(s, "INFO: no I/O brick is attached.%s",
+                      "\r\n");
+            result = -1;
+        } else {
+            result = l1_relay(s, s->io_peer, original + (argv[1] - line));
+        }
         goto complete;
     }
     if (!strcmp(argv[0], "ctc") && argc > 1 &&
@@ -1159,7 +1554,7 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             qemu_irq_pulse(s->nmi_out);
         }
     } else if (!strcmp(argv[0], "reboot_l1")) {
-        l1_boot(s);
+        l1_reboot(s);
         return 0;
     } else if (!strcmp(argv[0], "l1dbg")) {
         if (argc == 1) {
@@ -1194,8 +1589,10 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         l1_printf(s, "L1 command processor engaged, <CTRL-D> to exit.\r\n");
     } else if (l1_word(argv[0], "select", "sel")) {
         if (argc == 1) {
-            l1_printf(s, "console input: %03uc%02u %s\r\n"
-                      "console output: not filtered.\r\n", s->rack, s->bay,
+            g_autofree char *name = l1_module_name(s);
+
+            l1_printf(s, "console input: %s %s\r\n"
+                      "console output: not filtered.\r\n", name,
                       l1_designation(s));
         } else if (!l1_select(s, argv[argc - 1]) ||
                    (argc == 3 && !l1_word(argv[1], "subchannel", "sub") &&
@@ -1227,7 +1624,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (!strcmp(argv[0], "brick")) {
         unsigned long value = 0;
 
-        if (argc == 1) {
+        if (argc == 1 && s->profile->o3k) {
+            l1_o3k_brick_print(s);
+        } else if (argc == 1) {
             l1_printf(s, "rack: %03u, slot: %02u, partition: none, "
                       "type: C (IP45) [1MB flash], serial: unavailable, "
                       "source: EEPROM\r\n", s->rack, s->bay);
@@ -1238,17 +1637,29 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
                           "Valid slot numbers are 1-39.\r\n");
             } else {
                 s->pending_bay = value;
+                s->pending_bay_valid = true;
                 l1_printf(s, "brick slot set to %02lu (takes effect on next "
                           "L1 reboot/power cycle)\r\n", value);
             }
         } else if (argc == 3 && !strcmp(argv[1], "rack") &&
                    !qemu_strtoul(argv[2], NULL, 10, &value) && value < 0x3ff) {
             s->pending_rack = value;
+            s->pending_rack_valid = true;
             l1_printf(s, "brick rack set to %03lu (takes effect on next "
+                      "L1 reboot/power cycle)\r\n", value);
+        } else if (s->profile->o3k && argc == 3 &&
+                   !strcmp(argv[1], "partition") &&
+                   !qemu_strtoul(argv[2], NULL, 10, &value) &&
+                   value <= 0xffff) {
+            s->pending_partition = value;
+            l1_printf(s, "brick partition set to %lu (takes effect on next "
                       "L1 reboot/power cycle)\r\n", value);
         } else {
             l1_invalid(s, "brick");
         }
+    } else if (s->profile->o3k && argc == 1 &&
+               l1_word(argv[0], "config", "cfg")) {
+        l1_o3k_config(s);
     } else if (l1_word(argv[0], "help", "hlp")) {
         l1_printf(s, "Commands are:\r\n"
                   "     brick        display      help|hlp     l1\r\n"
@@ -1377,16 +1788,10 @@ static bool l1_local(SGIL1State *s, uint32_t address)
 {
     uint32_t key = address >> 12;
 
-    return key == ((s->rack << 6) | s->bay) || key == 0xffff;
+    /* A controller with no rack or slot answers only the broadcast key. */
+    return (l1_named(s) && key == ((s->rack << 6) | s->bay)) || key == 0xffff;
 }
 
-/* A destination nobody serves gets the router's own error reply. */
-static void l1_router_error(SGIL1State *s, uint8_t channel)
-{
-    uint8_t payload[] = { 0x20 | channel, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
-
-    l1_emit(s, payload, sizeof(payload));
-}
 
 void sgi_l1_query_router_init(SGIL1QueryRouter *router,
                              SGIL1QueryOwner *owners, unsigned owner_count,
@@ -1692,12 +2097,25 @@ static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
     uint32_t key = (address >> 12) & 0xffff;
     uint8_t copy[SGI_L1_FRAME_SIZE];
 
+    if (l1_is_ibrick(s)) {
+        /* An I-brick knows its C-brick and nothing else. */
+        peer = type == 4 ? NULL : l1_host_of(s, NULL);
+    } else if (type == 4) {
+        /* The attached I/O brick of a C-brick. */
+        peer = l1_is_cbrick(s) ? s->io_peer : NULL;
+    }
     if (!peer || length > sizeof(copy)) {
         return false;
     }
-    if (type == 3) {
+    if (type == 3 || type == 4) {
         address &= ~(UINT32_C(0xf) << 28);
-    } else if (type != 0 || key != ((peer->rack << 6) | peer->bay)) {
+    } else if (type != 0 || !l1_named(peer) ||
+               key != ((peer->rack << 6) | peer->bay)) {
+        return false;
+    }
+    if (l1_restarting(peer)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: no response from a restarting controller\n");
         return false;
     }
     memcpy(copy, p, length);
@@ -2202,8 +2620,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         }
         if (!s->node_power) {
             uint8_t warning[40] = { 1 };
+            g_autofree char *name = l1_module_name(s);
             g_autofree char *text = g_strdup_printf(
-                "WARNING: power on %03uc%02u appears off!", s->rack, s->bay);
+                "WARNING: power on %s appears off!", name);
 
             pstrcpy((char *)warning + 1, sizeof(warning) - 1, text);
             l1_reply(s, channel, -1, 1, warning, 2 + strlen(text));
@@ -2337,7 +2756,12 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         if (command == 0x1001) {
             s->debug_switches = ldl_be_p(args + 1) & 0xffff;
         } else if (command == 0x1006) {
-            s->partition = ldl_be_p(args + 1);
+            /* The C-brick and I-brick profiles store sixteen bits. */
+            if (s->profile->o3k && ldl_be_p(args + 1) > 0xffff) {
+                error = -105;
+                break;
+            }
+            s->partition = s->pending_partition = ldl_be_p(args + 1);
         } else {
             s->two_bit_setting = ldl_be_p(args + 1) & 3;
         }
@@ -2410,7 +2834,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     case 0x4002:
         l1_reply(s, channel, 0, 0, NULL, 0);
         l1_log(s, "L1REQ_REBOOT requested...");
-        l1_boot(s);
+        l1_reboot(s);
         return;
     case 0xe:
         /* The firmware reads no argument here, so extra ones are answered. */
@@ -2789,9 +3213,16 @@ static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
 
-    if ((!s->profile->compute_services &&
+    if ((!s->profile->compute_services && !l1_is_ibrick(s) &&
          (s->node_power || s->power_up_pending || s->power_down_pending ||
           s->console_mode || s->escaped)) ||
+        (l1_is_ibrick(s) &&
+         (s->power_up_pending || s->power_down_pending ||
+          s->console_mode || s->escaped)) ||
+        (!s->profile->o3k &&
+         (!s->rack_valid || !s->bay_valid || !s->pending_rack_valid ||
+          !s->pending_bay_valid)) ||
+        (s->profile->o3k && s->pending_partition > 0xffff) ||
         s->command_len >= sizeof(s->command) ||
         s->port_field > 0x7f ||
         s->revision_major < -1 || s->revision_minor < -1 ||
@@ -3025,6 +3456,14 @@ static const VMStateDescription vmstate_l1 = {
                              SGI_L1_IROUTER_TRANSPORTS, 0,
                              vmstate_l1_frame, SGIL1FrameState),
         VMSTATE_UINT8_2DARRAY(display, SGIL1State, 2, 128),
+        VMSTATE_BOOL(rack_valid, SGIL1State),
+        VMSTATE_BOOL(bay_valid, SGIL1State),
+        VMSTATE_BOOL(pending_rack_valid, SGIL1State),
+        VMSTATE_BOOL(pending_bay_valid, SGIL1State),
+        VMSTATE_UINT32(pending_partition, SGIL1State),
+        VMSTATE_INT64(restart_until, SGIL1State),
+        VMSTATE_UINT32_EQUAL(io_port, SGIL1State),
+        VMSTATE_UINT32_EQUAL(c_port, SGIL1State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3350,6 +3789,216 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
     return true;
 }
 
+static void l1_o3k_board(SGIL1State *s, unsigned component,
+                         const char *name, const char *part,
+                         const char *revision, const uint8_t *mac,
+                         char letter, unsigned index)
+{
+    l1_build_chassis_area(&s->records[component]);
+    l1_build_board_area(&s->records[16 + component], name, part, revision,
+                        mac, letter, index, NULL);
+}
+
+/*
+ * A synthetic JEDEC-style SPD. Only the length and size bytes, the checksum
+ * the model validates, and a position marker in the assembly serial bytes
+ * are set; the type and timing bytes are unknown and stay zero.
+ */
+static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned dimm)
+{
+    uint8_t *spd = g_malloc0(128);
+    uint8_t sum = 0;
+
+    spd[0] = 128;
+    spd[1] = 8;
+    memcpy(spd + 95, "EMU", 3);
+    spd[98] = dimm;
+    for (unsigned i = 0; i < 63; i++) {
+        sum += spd[i];
+    }
+    spd[63] = sum;
+    record->length = 128;
+    record->data = spd;
+    record->invalid = false;
+}
+
+/*
+ * The C-brick's records: the node board at component 0, the PIMMs at 1 and
+ * 2, and DIMM n at 3 + (n >> 1) + 4 * (n & 1), the numbering the published
+ * C-brick dump and one public driver agree on. The I-brick's: the power
+ * board at 0 and the logic board at 1, which carries the base I/O Ethernet
+ * address. A position not fitted has no record.
+ */
+static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
+{
+    uint8_t mac[6];
+
+    if (l1_is_ibrick(s)) {
+        if (s->node_board_name || s->node_board_part ||
+            s->node_board_revision) {
+            error_setg(errp, "L1 node board identity is for the C-brick "
+                       "profile only");
+            return false;
+        }
+        if (net_parse_macaddr(mac, s->mac) < 0 ||
+            !memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
+            error_setg(errp, "L1 mac must be a nonzero unicast address");
+            return false;
+        }
+        l1_o3k_board(s, 0, "POWER", "NOTOBSERVED0", "00", NULL, 'S',
+                     s->identity_index);
+        l1_o3k_board(s, 1, "LOGIC", "NOTOBSERVED0", "00", mac, 'I',
+                     s->identity_index);
+        memcpy(s->board_mac, mac, sizeof(s->board_mac));
+        s->board_mac_valid = true;
+        return true;
+    }
+    if ((s->node_board_name || s->node_board_part ||
+         s->node_board_revision) &&
+        (!s->node_board_name || !s->node_board_part ||
+         !s->node_board_revision)) {
+        error_setg(errp, "L1 node board identity needs a name, part and "
+                   "revision");
+        return false;
+    }
+    if (s->node_board_name &&
+        (strlen(s->node_board_name) > 0x3f ||
+         strlen(s->node_board_part) > 0x3f ||
+         strlen(s->node_board_revision) > 0x3f)) {
+        error_setg(errp, "L1 node board identity field is too long");
+        return false;
+    }
+    /*
+     * The common header's first byte counts toward the sum the existing
+     * board-area builder keeps at zero, which is the rule the Origin 300
+     * records follow; the printed C-brick header does not satisfy it, so the
+     * model uses the Origin 300 rule.
+     */
+    l1_o3k_board(s, 0, s->node_board_name ? s->node_board_name : "NODE",
+                 s->node_board_part ? s->node_board_part : "NOTOBSERVED0",
+                 s->node_board_revision ? s->node_board_revision : "00",
+                 NULL, 'N', s->identity_index);
+    for (unsigned pimm = 0; pimm < 2; pimm++) {
+        if (s->pimm_mask & (1u << pimm)) {
+            l1_o3k_board(s, 1 + pimm, "PIMM", "NOTOBSERVED0", "00", NULL,
+                         'D', s->identity_index * 2 + pimm);
+        }
+    }
+    for (unsigned dimm = 0; dimm < 8; dimm++) {
+        if (s->dimm_mask & (1u << dimm)) {
+            l1_o3k_dimm(&s->records[32 + 3 + (dimm >> 1) + 4 * (dimm & 1)],
+                        dimm);
+        }
+    }
+    return true;
+}
+
+/*
+ * What the C-brick and I-brick profiles accept. Most refusals are inputs
+ * whose meaning for these products is not established: a type code, a
+ * firmware revision, the Origin 300 compatibility modes and raw record
+ * files. Rack and slot start unset unless @named says the properties name
+ * them. Every other profile has both.
+ */
+static bool l1_o3k_check(SGIL1State *s, Error **errp)
+{
+    static const unsigned ports[] = { 1, 2, 3, 4, 5, 10 };
+    bool io_known = false, c_known = false;
+
+    if (!s->profile->o3k) {
+        if (s->named) {
+            error_setg(errp, "L1 named applies to the cbrick and ibrick "
+                       "profiles only");
+            return false;
+        }
+        if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
+            s->c_port != 5) {
+            error_setg(errp, "L1 pimm-mask, dimm-mask, io-port and c-port "
+                       "apply to the C-brick profile only");
+            return false;
+        }
+        s->rack_valid = s->bay_valid = true;
+        return true;
+    }
+    if (s->brick_type_code) {
+        error_setg(errp, "L1 brick-type-code is not accepted by the C-brick "
+                   "and I-brick profiles");
+        return false;
+    }
+    if (s->revision_major >= 0) {
+        error_setg(errp, "L1 firmware revision is unknown for the C-brick "
+                   "and I-brick profiles");
+        return false;
+    }
+    if (s->irouter_compat || s->o300_l1cmd_compat) {
+        error_setg(errp, "L1 Origin 300 compatibility is not accepted by the "
+                   "C-brick and I-brick profiles");
+        return false;
+    }
+    if (s->chassis_count || s->board_count || s->spd_count ||
+        s->board_record_count || s->spd_record_count || s->mac_record ||
+        s->fuel_mac_eeprom) {
+        error_setg(errp, "L1 C-brick and I-brick profiles take no record "
+                   "files");
+        return false;
+    }
+    if (s->cpu_context_present || s->cpu_mode_word || s->cpu_clock_hz ||
+        s->hub_clock_hz) {
+        error_setg(errp, "L1 CPU context applies to the Origin 300 profiles "
+                   "only");
+        return false;
+    }
+    if (s->partition > 0xffff) {
+        error_setg(errp, "L1 partition must fit 16 bits");
+        return false;
+    }
+    if (l1_is_ibrick(s)) {
+        if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
+            s->c_port != 5) {
+            error_setg(errp, "L1 pimm-mask, dimm-mask, io-port and c-port "
+                       "apply to the C-brick profile only");
+            return false;
+        }
+        if (!s->mac) {
+            error_setg(errp, "L1 I-brick profile needs a mac");
+            return false;
+        }
+    } else {
+        if (s->mac) {
+            error_setg(errp, "L1 mac is for the I-brick profile only");
+            return false;
+        }
+        if (s->identity_index > 49) {
+            error_setg(errp, "L1 C-brick identity-index must be 0 to 49");
+            return false;
+        }
+        if (s->pimm_mask > 3) {
+            error_setg(errp, "L1 pimm-mask names PIMM 0 and 1 only");
+            return false;
+        }
+        if (s->dimm_mask > 0xff) {
+            error_setg(errp, "L1 dimm-mask names DIMMs 0 to 7 only");
+            return false;
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(ports); i++) {
+            io_known |= s->io_port == ports[i];
+            c_known |= s->c_port == ports[i];
+        }
+        if (!io_known || !c_known) {
+            error_setg(errp, "L1 io-port and c-port must be 1, 2, 3, 4, 5 "
+                       "or 10");
+            return false;
+        }
+        if (s->io_port == s->c_port) {
+            error_setg(errp, "L1 io-port and c-port must name different "
+                       "ports");
+            return false;
+        }
+    }
+    s->rack_valid = s->bay_valid = s->named;
+    return true;
+}
+
 static uint64_t l1_irouter_profile_identity(const SGIL1State *s)
 {
     uint64_t hash = UINT64_C(14695981039346656037);
@@ -3384,6 +4033,8 @@ static uint64_t l1_irouter_profile_identity(const SGIL1State *s)
 #undef L1_IROUTER_HASH_BYTE
     return hash;
 }
+
+static bool l1_links_check(SGIL1State *s, Error **errp);
 
 static void l1_realize(DeviceState *dev, Error **errp)
 {
@@ -3553,7 +4204,8 @@ fuel_mac_done:
     }
     if (!s->profile) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, "
-                   "unknown, pci-expansion, router or vbrick-discovery-reference");
+                   "unknown, pci-expansion, router, "
+                   "vbrick-discovery-reference, cbrick or ibrick");
         return;
     }
     if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {
@@ -3561,6 +4213,12 @@ fuel_mac_done:
         return;
     }
     s->product_identity = (s->profile - l1_profiles) + 1;
+    if (!l1_o3k_check(s, errp)) {
+        return;
+    }
+    if (!l1_links_check(s, errp)) {
+        return;
+    }
     if (!s->profile->compute_services) {
         s->auto_power = false;
         s->processors = 0;
@@ -3666,11 +4324,15 @@ fuel_mac_done:
             l1_selected_spd_scan(record);
         }
     }
-    if (!l1_build_identity(s, errp)) {
+    if (s->profile->o3k ? !l1_build_o3k_identity(s, errp) :
+                          !l1_build_identity(s, errp)) {
         return;
     }
     s->pending_rack = s->rack;
     s->pending_bay = s->bay;
+    s->pending_rack_valid = s->rack_valid;
+    s->pending_bay_valid = s->bay_valid;
+    s->pending_partition = s->partition;
     s->power_up_bh = qemu_bh_new(l1_power_up_bh, s);
     qemu_register_reset(l1_after_node_reset, s);
     qemu_chr_fe_set_handlers(&s->chr, l1_console_can_receive,
@@ -3680,8 +4342,9 @@ fuel_mac_done:
     if (s->auto_power) {
         /* The real countdown is skipped: a model choice. */
         l1_log(s, "auto power up initiated");
-        l1_printf(s, "INFO: %03uc%02u powering up the system.\r\n", s->rack,
-                  s->bay);
+        g_autofree char *name = l1_module_name(s);
+
+        l1_printf(s, "INFO: %s powering up the system.\r\n", name);
         l1_power_up(s, 1, false);
     }
 }
@@ -4035,6 +4698,21 @@ static const Property l1_properties[] = {
      * default is unknown.
     */
     DEFINE_PROP_BOOL("network-422", SGIL1State, network_422, true),
+    /*
+     * The cbrick and ibrick profiles start with no rack and slot. named makes
+     * rack and bay (above) their name; for any other profile it is refused.
+     */
+    DEFINE_PROP_BOOL("named", SGIL1State, named, false),
+    /* cbrick: the PIMMs and DIMMs fitted, one bit each. */
+    DEFINE_PROP_UINT32("pimm-mask", SGIL1State, pimm_mask, 3),
+    DEFINE_PROP_UINT32("dimm-mask", SGIL1State, dimm_mask, 0xff),
+    /*
+     * cbrick: the attached-brick port the I-brick and the other C-brick
+     * appear at in requests 0x000c and 0x000d and in cfg. The guides number
+     * these differently by edition, so the numbering is configuration.
+     */
+    DEFINE_PROP_UINT32("io-port", SGIL1State, io_port, 1),
+    DEFINE_PROP_UINT32("c-port", SGIL1State, c_port, 5),
 };
 
 static bool l1_power_command_reachable_get(Object *obj, Error **errp)
@@ -4057,29 +4735,124 @@ static void l1_power_command_reachable_set(Object *obj, bool reachable,
 }
 
 /*
- * The second peer slot names a different controller from the first and never
- * the controller itself. What may sit in it, by profile, is the owning
- * profile's business.
+ * What the profiles allow across each cable. A fault is the reason two
+ * controllers may not be joined, or NULL. It needs both profiles, which a
+ * controller has only from its own realize. A link therefore names a
+ * realized controller, and is checked when it is set if the controller that
+ * holds it is realized too, and otherwise when that controller realizes.
+ * Whichever order a machine builds in, the step that completes the pair sees
+ * both profiles.
+ */
+static const char *l1_peer_fault(const SGIL1State *a, const SGIL1State *b)
+{
+    if (!a->profile->o3k && !b->profile->o3k) {
+        return NULL;
+    }
+    if (!l1_is_cbrick(a) || !l1_is_cbrick(b)) {
+        return "L1 peer of a C-brick must be another C-brick";
+    }
+    return NULL;
+}
+
+static const char *l1_io_peer_fault(const SGIL1State *c,
+                                    const SGIL1State *ibrick)
+{
+    if (!l1_is_cbrick(c)) {
+        return "L1 io-peer is for the C-brick profile only";
+    }
+    if (!l1_is_ibrick(ibrick)) {
+        return "L1 io-peer must name an I-brick";
+    }
+    /*
+     * The retained system's cabling of a second C-brick is unknown, so an
+     * I-brick takes one. A configuration that names two is refused where
+     * the second cable is made, or at realize when it was made earlier.
+     */
+    if (l1_host_of(ibrick, c)) {
+        return "L1 I-brick takes one C-brick";
+    }
+    return NULL;
+}
+
+/*
+ * The RS-422 pair between two controllers: a C-brick pair for the Origin 3000
+ * products, never a C-brick with anything else. Other profiles keep the
+ * link they always had.
+ */
+static void l1_peer_check(const Object *obj, const char *name, Object *val,
+                          Error **errp)
+{
+    const SGIL1State *s = SGI_L1(OBJECT(obj));
+    const SGIL1State *peer = val ? SGI_L1(val) : NULL;
+    const char *fault;
+
+    if (!peer) {
+        return;
+    }
+    if (peer == s) {
+        error_setg(errp, "L1 peer cannot be the controller itself");
+    } else if (peer == s->io_peer) {
+        error_setg(errp, "L1 peer must differ from the io-peer");
+    } else if (!DEVICE(val)->realized) {
+        error_setg(errp, "L1 peer joins realized controllers");
+    } else if (DEVICE(obj)->realized) {
+        fault = l1_peer_fault(s, peer);
+        if (fault) {
+            error_setg(errp, "%s", fault);
+        }
+    }
+}
+
+/*
+ * A C-brick's I-brick. The second slot names a different controller from
+ * the first and never the controller itself.
  */
 static void l1_io_peer_check(const Object *obj, const char *name, Object *val,
                              Error **errp)
 {
     const SGIL1State *s = SGI_L1(OBJECT(obj));
+    const SGIL1State *ibrick = val ? SGI_L1(val) : NULL;
+    const char *fault;
 
-    if (!val) {
+    if (!ibrick) {
         return;
     }
-    if (val == obj) {
+    if (ibrick == s) {
         error_setg(errp, "L1 io-peer cannot be the controller itself");
-    } else if (val == OBJECT(s->peer)) {
+    } else if (ibrick == s->peer) {
         error_setg(errp, "L1 io-peer must differ from the peer");
+    } else if (!DEVICE(val)->realized) {
+        error_setg(errp, "L1 io-peer joins realized controllers");
+    } else if (DEVICE(obj)->realized) {
+        fault = l1_io_peer_fault(s, ibrick);
+        if (fault) {
+            error_setg(errp, "%s", fault);
+        }
     }
+}
+
+/* Check links set before this controller realized, now its profile is known. */
+static bool l1_links_check(SGIL1State *s, Error **errp)
+{
+    const char *fault = NULL;
+
+    if (s->peer) {
+        fault = l1_peer_fault(s, s->peer);
+    }
+    if (!fault && s->io_peer) {
+        fault = l1_io_peer_fault(s, s->io_peer);
+    }
+    if (fault) {
+        error_setg(errp, "%s", fault);
+    }
+    return !fault;
 }
 
 static void l1_init(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
 
+    l1_controllers = g_slist_prepend(l1_controllers, s);
     object_property_add_bool(obj, "power-command-reachable",
         l1_power_command_reachable_get, l1_power_command_reachable_set);
 
@@ -4112,7 +4885,7 @@ static void l1_init(Object *obj)
      * machine can only join the two once both exist.
     */
     object_property_add_link(obj, "peer", TYPE_SGI_L1, (Object **)&s->peer,
-                             object_property_allow_set_link, 0);
+                             l1_peer_check, 0);
     object_property_add_link(obj, "io-peer", TYPE_SGI_L1,
                              (Object **)&s->io_peer, l1_io_peer_check, 0);
 }
@@ -4140,6 +4913,7 @@ static void l1_finalize(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
 
+    l1_controllers = g_slist_remove(l1_controllers, s);
     if (s->power_up_bh) {
         qemu_unregister_reset(l1_after_node_reset, s);
         qemu_bh_delete(s->power_up_bh);

@@ -251,6 +251,24 @@ struct SGIL1State {
     uint32_t bay;
     uint32_t pending_rack;
     uint32_t pending_bay;
+    /*
+     * Whether rack and slot are set. The C-brick and I-brick profiles start
+     * with neither; every other profile always has both. A change made by
+     * the operator waits in the pending fields until the next restart.
+     */
+    bool named;
+    bool rack_valid;
+    bool bay_valid;
+    bool pending_rack_valid;
+    bool pending_bay_valid;
+    uint32_t pending_partition;
+    /* Virtual time before which a restarting controller answers no peer. */
+    int64_t restart_until;
+    /* C-brick: fitted PIMMs and DIMMs, and the cfg and port numbers. */
+    uint32_t pimm_mask;
+    uint32_t dimm_mask;
+    uint32_t io_port;
+    uint32_t c_port;
     uint32_t node_position;
     uint8_t port_field;
     uint8_t event_subchannel;
