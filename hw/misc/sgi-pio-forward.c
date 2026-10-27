@@ -8,6 +8,7 @@
 #include "qemu/bswap.h"
 #include "qemu/main-loop.h"
 #include "qemu/error-report.h"
+#include "qemu/rcu.h"
 #include "system/memory.h"
 #include "system/qtest.h"
 #include "hw/misc/sgi-pio-forward.h"
@@ -91,10 +92,16 @@ static MemoryRegion *sgi_pio_forward_lookup(SGIPioForward *f, hwaddr addr,
     }
     sgi_pio_forward_forget(f);
 
-    /* memory_region_find() cannot search an address space with no mappings. */
-    if (!f->as->root->terminates &&
-        QTAILQ_EMPTY(&f->as->root->subregions)) {
-        return NULL;
+    /*
+     * memory_region_find() cannot search an address space with no mappings.
+     * Ask the flat view rather than the root: a root that is an alias (an
+     * XBridge port's view of its XIO space, say) has no subregions of its
+     * own but maps whatever its target holds.
+     */
+    WITH_RCU_READ_LOCK_GUARD() {
+        if (!address_space_to_flatview(f->as)->nr) {
+            return NULL;
+        }
     }
     section = memory_region_find(f->as->root, page, SGI_PIO_FORWARD_PAGE);
     if (!section.mr) {
