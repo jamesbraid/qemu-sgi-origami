@@ -317,6 +317,39 @@ documents:
       url: https://techpubs.jurassic.nl/manuals/hdwr/service/108-0264-004.pdf
       sha256: 535bda2d0de4ee9a86d79c0d1ebbb1d54ceadd52677d3395e430f50f39ebfcc7
 
+  007-2597-001:
+    title: "MIPS IV Instruction Set, Revision 3.2"
+    publisher: "MIPS Technologies"
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/2000/007-2597-001/pdf/007-2597-001.pdf
+  007-3435-004:
+    title: "Octane Workstation Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3435-004/pdf/007-3435-004.pdf
+  007-4207-002:
+    title: "Octane2 Workstation Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4207-002/pdf/007-4207-002.pdf
+  007-4210-003:
+    title: "Octane/Octane2 Workstation VPro Graphics Upgrade Kit Installation Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4210-003/pdf/007-4210-003.pdf
+
 web:
   nekonomicon-16719032:
     title: "Nekochan forum archive thread 16719032, two-module rack Tezro inventory"
@@ -327,6 +360,52 @@ web:
     obtain:
       url: https://nekonomicon.irixnet.org/forum/14/16719032/1.html
       sha256: a211c43f1a350be3f8726f694a21533a73baedf04b173ca0b26c2ec821a36b4d
+  nec-vr10000-series-um-4:
+    title: "VR10000 Series 64-/32-bit Microprocessor User's Manual, fourth edition, U10278EJ4V0UM00, March 2001"
+    publisher: NEC
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.bitsavers.org/components/nec/mips/Vr10000-um-r4_200103.pdf
+      sha256: f70616dc1a5b2d92dc1984539263d6081e86e024c883c6a26c48118709fdf05a
+  ds2505-datasheet:
+    title: "DS2505 16Kbit Add-Only Memory"
+    publisher: "Maxim Integrated"
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.analog.com/media/en/technical-documentation/data-sheets/ds2505.pdf
+      archive: http://web.archive.org/web/20260204054038/https://www.analog.com/media/en/technical-documentation/data-sheets/ds2505.pdf
+      sha256: ae7eb28b82d068a914a892928fe505ecd55815715ca7f37984f7eef7c58d2d6e
+  maxim-ds1685-ds1687-rev-10-12:
+    title: "DS1685/DS1687 3V/5V Real-Time Clocks, document 19-5215, revision 10/12"
+    publisher: "Maxim Integrated"
+    kind: part-datasheet
+    locator: page
+    rights: published
+    obtain:
+      url: https://web.archive.org/web/20190915061518id_/https://datasheets.maximintegrated.com/en/ds/DS1685-DS1687.pdf
+      sha256: 015f7d582af99da5b5e3da2a41b7fdbd3b66f94929aa538671f9e8bdd3ce6c83
+  octane-technical-report:
+    title: "OCTANE Technical Report"
+    publisher: Silicon Graphics
+    kind: paper
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.sgidepot.co.uk/octane/octane-technical-report.pdf
+      sha256: 248e73ee94f53c7e49e548503180b4f361d3ed19c4183cfcaa42edddc812aff0
+  nec-vr10000-vr12000-um-3:
+    title: "VR10000, VR12000 64-bit Microprocessor User's Manual, third edition, U10278EJ3V0UM00, May 1998"
+    publisher: NEC
+    kind: part-datasheet
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: http://www.bitsavers.org/components/nec/mips/Vr10000-um-r3_199805.pdf
+      sha256: 83b5e933c7ae6dd18442f3950f96e90898f7da5306318931a533799a0eb6eef9
   nekonomicon-16724207:
     title: "Nekochan forum archive thread 16724207, two-module Origin 350 inventory"
     publisher: "Nekochan forum archive"
@@ -915,6 +994,15 @@ web:
     obtain:
       url: https://lore.kernel.org/linux-mips/42FB71D4.9040408@gentoo.org/
       message_id: "<42FB71D4.9040408@gentoo.org>"
+  lore-kinard-octane-2017:
+    title: "Dual R14000 Octane dmesg and lspci with RAD Audio at PCI device 3 (Joshua Kinard, 2017-02-08)"
+    publisher: "linux-mips mailing list"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://lore.kernel.org/linux-mips/eafc94c6-1931-e2ce-7e03-d84d8e181e81@gentoo.org/
+      message_id: "<eafc94c6-1931-e2ce-7e03-d84d8e181e81@gentoo.org>"
   lore-kinard-octane-2019:
     title: "Dual R14000 Octane dmesg with the IOC3 PHY probe (Joshua Kinard, 2019-06-26)"
     publisher: "linux-mips mailing list"
