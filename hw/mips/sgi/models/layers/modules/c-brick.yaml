@@ -40,24 +40,25 @@ layer:
         provenance: derived
         parent: chassis
         description: Eight DIMM slots, banks 0-7, 512 MB to 8 GB.
-      - id: host-port-a
-        name: Host port A (widget 0xA)
+      - id: xio-ii-connector
+        name: XIO (II) connector
         kind: connector
-        provenance: derived
+        provenance: vendor-document
         parent: chassis
-        connector: {interface: xio, location: "0xA", occupancy: opaque, notes: One of two host ports an I-brick or other expansion brick attaches to.}
-      - id: host-port-b
-        name: Host port B (widget 0xB)
-        kind: connector
-        provenance: derived
-        parent: chassis
-        connector: {interface: xio, location: "0xB", occupancy: opaque, notes: One of two host ports an I-brick or other expansion brick attaches to.}
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            The C-brick's one XIO connector, which joins it to an I-, P- or
+            X-brick. The brick at the far end owns the crossbar and its
+            ports; the composition says what is cabled here.
+        sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
+      - {id: xio-ii, name: "XIO, the Bedrock's I/O interface", kind: xio, master: bedrock, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]}
     connections:
       - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: host-port-a, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick], notes: Widget 0xA; opaque unless module_instances wires an attached brick.}
-      - {component: host-port-b, bus: xio, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick], notes: Widget 0xB; opaque unless module_instances wires an attached brick.}
+      - {component: xio-ii-connector, bus: xio-ii, role: endpoint, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"]}

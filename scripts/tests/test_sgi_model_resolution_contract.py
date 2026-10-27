@@ -2555,5 +2555,30 @@ class ConfigurationPeerLinkTests(unittest.TestCase):
         self.assertEqual(resolved["links"][0]["source"], "master-l1")
 
 
+class Origin3000BrickTests(unittest.TestCase):
+    """The Origin 3000 brick layers and how a composition joins them."""
+
+    ORIGIN3200 = INPUTS / "origin3200.yaml"
+
+    def resolve(self, path=None):
+        return _resolver.load_system_model(path or self.ORIGIN3200)
+
+    def test_cbrick_has_one_xio_ii_connector(self):
+        model = self.resolve()
+        components = {item["id"]: item for item in model["components"]}
+        self.assertNotIn("host-port-a", components)
+        self.assertNotIn("host-port-b", components)
+        connector = components["xio-ii-connector"]
+        self.assertEqual(connector["name"], "XIO (II) connector")
+        self.assertEqual(connector["connector"]["interface"], "Crosstown2")
+        bus = next(item for item in model["buses"] if item["id"] == "xio-ii")
+        self.assertEqual((bus["kind"], bus["master"]), ("xio", "bedrock"))
+        self.assertIn(
+            {"component": "xio-ii-connector", "bus": "xio-ii",
+             "role": "endpoint"},
+            [{field: item[field] for field in ("component", "bus", "role")}
+             for item in model["connections"]])
+
+
 if __name__ == "__main__":
     unittest.main()

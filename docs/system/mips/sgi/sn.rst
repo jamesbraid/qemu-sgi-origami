@@ -147,9 +147,13 @@ R12000 at 360 MHz or R12000A at 400 MHz, with 4 or 8 MB of secondary
 cache (established, 108-0240-002 printed page 2-4). The C-brick has no
 crossbar of its own: its Bedrock reaches I/O through a Crosstown2 port
 into an I-, P- or X-brick's XBridge, whose crossbar section does the
-switching (established, 108-0240-002 printed page 2-26). The layer's
-C-brick buses -- one SysAD per processor interface and one XIO port
-reaching I-brick host ports A and B -- follow from this.
+switching (established, 108-0240-002 printed page 2-26). The C-brick
+has one rear ``XIO (II)`` connector, which joins it to an I-, P- or
+X-brick (established, *SGI Origin 3000 Series Owner's Guide*,
+007-4240-002, printed page 124). The layer's C-brick buses -- one SysAD
+per processor interface and the ``xio-ii`` bus from the Bedrock to that
+connector -- follow from this. Which port of the far brick's XBridge
+the cable reaches is the composition's choice, not the C-brick's.
 
 .. _sgi-sn-family-ibrick:
 

@@ -87,6 +87,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-3791-002``
    *Preparing for an Installation of a 33 to 256 Processor System HR-04122-0B Origin Systems Last Modified: August 1999*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3791-002/pdf/007-3791-002.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-documents-007-4240-002:
+
+``007-4240-002``
+   *SGI Origin 3000 Series Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4240-002/pdf/007-4240-002.pdf>`__ Published; may be quoted.
+
 .. _sgi-ref-documents-007-4264-002:
 
 ``007-4264-002``
