@@ -236,7 +236,7 @@ static void *qtest_server_send_opaque;
  * If the sizes do not match, the data will be truncated.
  *
  * SysBus MMIO mapping:
- * """""""""""""""""""
+ * """"""""""""""""""""
  *
  * .. code-block:: none
  *
