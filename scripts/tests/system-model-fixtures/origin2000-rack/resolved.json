@@ -3784,7 +3784,7 @@
       "module_semantic_serials": [
         {
           "component": "compute-module",
-          "reason": "Synthetic module serial for module 1, the \"KORIGAMI\" marker and the module's number, beginning with K because the kernel takes no other module serial; not hardware evidence.",
+          "reason": "Synthetic module serial for module 1, the \"KORIGAMI\" marker and the module's number; not hardware evidence.",
           "serial": "KORIGAMI01"
         }
       ],
