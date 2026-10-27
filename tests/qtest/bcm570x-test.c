@@ -178,6 +178,8 @@
 #define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* RX coalescing: BDs */
 #define BCM_MODE_CTL            0x6800u
 #define BCM_DMA_SWAP_OPTIONS    0x36u          /* MODE_CTL swap arm */
+#define BCM_MODE_RX_NO_PSEUDO   (1u << 23)
+#define BCM_MODE_NO_FRAME_CRACK (1u << 9)
 #define BCM_MODE_HOST_SEND_BDS  (1u << 17)
 #define BCM_SRAM_SEND_RING_RCB  0x0100u
 #define BCM_TXBDFLAG_TCP_UDP_CKSUM 0x0001u
@@ -222,8 +224,9 @@
 #define BCM_RXBDFLAG_JUMBO_RING 0x0020u
 #define BCM_RXBD_TCP_CSUM       0x10   /* csum: TCP/UDP result in low half */
 #define BCM_RXBD_IP_CSUM        0x12   /* csum: IP result in high half */
-#define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
-#define BCM_RXBDFLAG_IP_CKSUM   0x0002u
+#define BCM_RXBDFLAG_IP_CKSUM   0x1000u
+#define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x2000u
+#define BCM_RXBDFLAG_TCP         0x4000u
 #define BCM_RXBDFLAG_END        0x0004u
 #define BCM_CSUM_GOOD           0xffffu /* valid one's-complement sum */
 #define BCM_ETH_FCS_LEN         4      /* length includes stripped FCS */
@@ -4638,6 +4641,60 @@ static void seal_cksum_frame(uint8_t *f)
     f[51] = sum & 0xff;
 }
 
+static void seal_udp_frame(uint8_t *f)
+{
+    uint16_t sum;
+    uint32_t pseudo;
+
+    f[23] = 17;
+    f[16] = 0;
+    f[17] = 48;
+    f[38] = 0;
+    f[39] = 28;
+    f[40] = f[41] = 0;
+    sum = inet_csum(f + 14, 20, 0);
+    f[24] = sum >> 8;
+    f[25] = sum;
+    pseudo = ((uint32_t)f[26] << 8) | f[27];
+    pseudo += ((uint32_t)f[28] << 8) | f[29];
+    pseudo += ((uint32_t)f[30] << 8) | f[31];
+    pseudo += ((uint32_t)f[32] << 8) | f[33];
+    pseudo += 17 + 28;
+    sum = inet_csum(f + 34, 28, pseudo);
+    f[40] = sum >> 8;
+    f[41] = sum;
+}
+
+static void test_receive_checksum_case(const uint8_t *frame, size_t len,
+                                       uint32_t mode, uint16_t expected_flags,
+                                       uint16_t expected_ip,
+                                       uint16_t expected_l4)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint16_t flags;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_open_one(&b, sv[0]);
+    bar_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS | mode);
+    net_socket_send_frame(sv[0], frame, len);
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    flags = get16dma(ret, BCM_RXBD_FLAGS);
+    g_assert_cmphex(flags, ==, expected_flags | BCM_RXBDFLAG_END);
+    g_assert_cmphex(flags & 0x0003, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IP_CSUM), ==, expected_ip);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_TCP_CSUM), ==, expected_l4);
+    bcm_close(&b);
+    close(sv[0]);
+}
+
 /*
  * A received IPv4/TCP frame carries its checksum results in the completed
  * descriptor. The part verifies both on the way in and reports the sums,
@@ -4670,16 +4727,169 @@ static void test_receive_checksum_offload(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     flags = get16dma(ret, BCM_RXBD_FLAGS);
 
-    /* Both results are reported... */
-    g_assert_cmphex(flags & BCM_RXBDFLAG_IP_CKSUM, ==, BCM_RXBDFLAG_IP_CKSUM);
-    g_assert_cmphex(flags & BCM_RXBDFLAG_TCP_UDP_CKSUM, ==,
-                    BCM_RXBDFLAG_TCP_UDP_CKSUM);
-    /* ...and both check out, which is what the sums come to when they do. */
+    g_assert_cmphex(flags, ==, 0x7004);
+    g_assert_cmphex(flags & 0x0003, ==, 0);
     g_assert_cmphex(get16dma(ret, BCM_RXBD_IP_CSUM), ==, BCM_CSUM_GOOD);
     g_assert_cmphex(get16dma(ret, BCM_RXBD_TCP_CSUM), ==, BCM_CSUM_GOOD);
 
     bcm_close(&b);
     close(sv[0]);
+}
+
+static void test_receive_checksum_udp(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_udp_frame(frame);
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x3000,
+                               0xffff, 0xffff);
+}
+
+static void test_receive_checksum_udp_zero(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_udp_frame(frame);
+    frame[42] = 0x62;               /* Sum with pseudoheader becomes 0xffff. */
+    frame[43] = 0x6a;
+    frame[40] = frame[41] = 0;      /* IPv4 UDP checksum omitted. */
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x1000,
+                               0xffff, 0xffff);
+}
+
+static void test_receive_checksum_malformed_udp_length(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_udp_frame(frame);
+    frame[39] = 27;                 /* UDP length must match IPv4 payload. */
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x1000,
+                               0xffff, 0);
+}
+
+static void test_receive_checksum_bad_ip(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[22]--;
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x6000,
+                               0xfeff, 0xffff);
+}
+
+static void test_receive_checksum_bad_transport(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[51]++;
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x5000,
+                               0xffff, 0x0001);
+}
+
+static void test_receive_checksum_no_pseudo(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    test_receive_checksum_case(frame, sizeof(frame), BCM_MODE_RX_NO_PSEUDO,
+                               0x5000, 0xffff,
+                               ~inet_csum(frame + 34, 28, 0));
+}
+
+static void test_receive_checksum_padding(const void *data)
+{
+    uint8_t frame[70];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    memset(frame + CKSUM_FRAME_LEN, 0xa5,
+           sizeof(frame) - CKSUM_FRAME_LEN);
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x7000,
+                               0xffff, 0xffff);
+}
+
+static void test_receive_checksum_fragment(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint16_t sum;
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[20] = 0x20;               /* More fragments. */
+    frame[24] = frame[25] = 0;
+    sum = inet_csum(frame + 14, 20, 0);
+    frame[24] = sum >> 8;
+    frame[25] = sum;
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x5000,
+                               0xffff, 0);
+}
+
+static void test_receive_checksum_later_fragment(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+    uint16_t sum;
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[21] = 1;                  /* Fragment offset one. */
+    frame[24] = frame[25] = 0;
+    sum = inet_csum(frame + 14, 20, 0);
+    frame[24] = sum >> 8;
+    frame[25] = sum;
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x5000,
+                               0xffff, 0);
+}
+
+static void test_receive_checksum_malformed_tcp_header(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[46] = 0x40;               /* TCP data offset is shorter than 20. */
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0x5000,
+                               0xffff, 0);
+}
+
+static void test_receive_checksum_malformed_length(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    frame[16] = 0x01;
+    frame[17] = 0x00;
+    test_receive_checksum_case(frame, sizeof(frame), 0, 0,
+                               0, 0);
+}
+
+static void test_receive_checksum_raw_mode(const void *data)
+{
+    uint8_t frame[CKSUM_FRAME_LEN];
+
+    build_cksum_frame(frame, 0x45);
+    memset(frame, 0xff, 6);
+    seal_cksum_frame(frame);
+    test_receive_checksum_case(frame, sizeof(frame), BCM_MODE_NO_FRAME_CRACK,
+                               0, 0, 0);
 }
 
 /*
@@ -7324,6 +7534,30 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_receive_queue_reset);
     qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
                         test_receive_checksum_offload);
+    qtest_add_data_func("/bcm570x/receive-checksum-udp", NULL,
+                        test_receive_checksum_udp);
+    qtest_add_data_func("/bcm570x/receive-checksum-udp-zero", NULL,
+                        test_receive_checksum_udp_zero);
+    qtest_add_data_func("/bcm570x/receive-checksum-malformed-udp-length", NULL,
+                        test_receive_checksum_malformed_udp_length);
+    qtest_add_data_func("/bcm570x/receive-checksum-bad-ip", NULL,
+                        test_receive_checksum_bad_ip);
+    qtest_add_data_func("/bcm570x/receive-checksum-bad-transport", NULL,
+                        test_receive_checksum_bad_transport);
+    qtest_add_data_func("/bcm570x/receive-checksum-no-pseudo", NULL,
+                        test_receive_checksum_no_pseudo);
+    qtest_add_data_func("/bcm570x/receive-checksum-padding", NULL,
+                        test_receive_checksum_padding);
+    qtest_add_data_func("/bcm570x/receive-checksum-fragment", NULL,
+                        test_receive_checksum_fragment);
+    qtest_add_data_func("/bcm570x/receive-checksum-later-fragment", NULL,
+                        test_receive_checksum_later_fragment);
+    qtest_add_data_func("/bcm570x/receive-checksum-malformed-tcp-header", NULL,
+                        test_receive_checksum_malformed_tcp_header);
+    qtest_add_data_func("/bcm570x/receive-checksum-malformed-length", NULL,
+                        test_receive_checksum_malformed_length);
+    qtest_add_data_func("/bcm570x/receive-checksum-raw-mode", NULL,
+                        test_receive_checksum_raw_mode);
     qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
                         test_receive_checksum_not_ip);
     qtest_add_data_func("/bcm570x/receive-overruns-nothing", NULL,

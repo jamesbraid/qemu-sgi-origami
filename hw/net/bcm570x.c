@@ -476,10 +476,13 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RXBD_TYPE_FLAGS     0x0c    /* type (31:16), flags (15:0) */
 #define BCM570X_RXBD_CSUM           0x10 /* IP (31:16), TCP/UDP (15:0) sums */
 #define BCM570X_RXBD_OPAQUE         0x1c
-#define BCM570X_RXBDFLAG_TCP_UDP_CKSUM 0x0001
 #define BCM570X_RXBDFLAG_JUMBO_RING 0x0020
-#define BCM570X_RXBDFLAG_IP_CKSUM   0x0002
 #define BCM570X_RXBDFLAG_END        0x0004
+#define BCM570X_RXBDFLAG_IP_CKSUM_OK 0x1000
+#define BCM570X_RXBDFLAG_TCP_UDP_CKSUM_OK 0x2000
+#define BCM570X_RXBDFLAG_TCP        0x4000
+#define BCM570X_MODE_RX_NO_PSEUDO   (1u << 23)
+#define BCM570X_MODE_NO_FRAME_CRACK (1u << 9)
 #define BCM570X_ETH_FCS_LEN         4
 #define BCM570X_ETH_MIN_FRAME       60
 
@@ -2424,13 +2427,20 @@ static uint16_t bcm570x_ones_sum(const uint8_t *buf, unsigned int len,
  */
 static uint32_t bcm570x_rx_offload_checksum(const uint8_t *frame,
                                             unsigned int len,
+                                            uint32_t mode,
                                             uint16_t *flags)
 {
-    unsigned int ihl, total, l4len;
+    unsigned int ihl, total, l4len, checksum_len;
     uint16_t ip_sum, l4_sum;
     uint32_t pseudo;
+    uint16_t frag;
+    bool transport_checksum_present = true;
     uint8_t proto;
 
+    if (mode & BCM570X_MODE_NO_FRAME_CRACK) {
+        qemu_log_mask(LOG_UNIMP, "bcm570x: raw receive checksum mode\n");
+        return 0;
+    }
     if (len < 34 || lduw_be_p(frame + 12) != 0x0800 ||
         (frame[14] >> 4) != 4) {
         return 0;
@@ -2442,24 +2452,57 @@ static uint32_t bcm570x_rx_offload_checksum(const uint8_t *frame,
     }
 
     ip_sum = bcm570x_ones_sum(frame + 14, ihl, 0);
-    *flags |= BCM570X_RXBDFLAG_IP_CKSUM;
+    if (ip_sum == 0 || ip_sum == 0xffff) {
+        *flags |= BCM570X_RXBDFLAG_IP_CKSUM_OK;
+    }
 
     proto = frame[23];
     if (proto != 6 && proto != 17) {
         return (uint32_t)ip_sum << 16;
     }
+    if (proto == 6) {
+        *flags |= BCM570X_RXBDFLAG_TCP;
+    }
+    frag = lduw_be_p(frame + 20);
+    if (frag & 0x3fff) {
+        return (uint32_t)ip_sum << 16;
+    }
 
-    /* The pseudo-header the transport sum is taken over, then the segment. */
     l4len = total - ihl;
+    if ((proto == 6 && l4len < 20) || (proto == 17 && l4len < 8)) {
+        return (uint32_t)ip_sum << 16;
+    }
+    if (proto == 6) {
+        unsigned int tcp_hlen = (frame[14 + ihl + 12] >> 4) * 4;
+
+        if (tcp_hlen < 20 || tcp_hlen > l4len) {
+            return (uint32_t)ip_sum << 16;
+        }
+    } else {
+        unsigned int udp_len = lduw_be_p(frame + 14 + ihl + 4);
+
+        if (udp_len != l4len) {
+            return (uint32_t)ip_sum << 16;
+        }
+        transport_checksum_present =
+            lduw_be_p(frame + 14 + ihl + 6) != 0;
+    }
+
+    checksum_len = l4len;
     pseudo = 0;
-    pseudo += lduw_be_p(frame + 26);
-    pseudo += lduw_be_p(frame + 28);
-    pseudo += lduw_be_p(frame + 30);
-    pseudo += lduw_be_p(frame + 32);
-    pseudo += proto;
-    pseudo += l4len;
-    l4_sum = bcm570x_ones_sum(frame + 14 + ihl, l4len, pseudo);
-    *flags |= BCM570X_RXBDFLAG_TCP_UDP_CKSUM;
+    if (!(mode & BCM570X_MODE_RX_NO_PSEUDO)) {
+        pseudo += lduw_be_p(frame + 26);
+        pseudo += lduw_be_p(frame + 28);
+        pseudo += lduw_be_p(frame + 30);
+        pseudo += lduw_be_p(frame + 32);
+        pseudo += proto;
+        pseudo += checksum_len;
+    }
+    l4_sum = bcm570x_ones_sum(frame + 14 + ihl, checksum_len, pseudo);
+    if (l4_sum == 0xffff && transport_checksum_present &&
+        !(mode & BCM570X_MODE_RX_NO_PSEUDO)) {
+        *flags |= BCM570X_RXBDFLAG_TCP_UDP_CKSUM_OK;
+    }
 
     return ((uint32_t)ip_sum << 16) | l4_sum;
 }
@@ -2734,7 +2777,8 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         bcm570x_defer_rx_flush(s);
         return 0;
     }
-    csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
+    csum = bcm570x_rx_offload_checksum(
+        buf, framelen, bcm570x_regfile_read(s, BCM570X_MODE_CTL), &rx_flags);
 
     /*
      * The completed descriptor uses the selected DMA route's scalar layout.
