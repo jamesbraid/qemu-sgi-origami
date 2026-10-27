@@ -71,6 +71,7 @@ MODEL_SUITES = [
     'scripts/tests/test_sgi_model_compiler_contract.py',
     'scripts/tests/test_sgi_model_goldens.py',
     'scripts/tests/test_sgi_model_resolution_contract.py',
+    'scripts/tests/test_sgi_model_references_doc.py',
     'scripts/tests/test_sgi_synthetic_serial.py',
 ]
 
