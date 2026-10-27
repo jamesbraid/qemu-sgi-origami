@@ -83,6 +83,10 @@
 #define CMD_INIT_FIRMWARE   0x0060
 #define CMD_GET_FW_STATE    0x0069
 #define CMD_GET_RETRY_COUNT 0x0022
+#define CMD_GET_PORT_QUEUE  0x0029
+#define CMD_SET_RETRY_COUNT 0x0032
+#define CMD_RESET_LINK_STAT 0x0052
+#define CMD_GET_LINK_STATUS 0x006b
 #define CMD_ENH_PORT_DB     0x0047
 #define CMD_INITIATE_LIP    0x0062
 #define CMD_POSITION_MAP    0x0063
@@ -176,6 +180,8 @@ typedef struct Isp {
     uint16_t rq_next;   /* Host producer. */
     uint16_t rs_next;   /* Host consumer. */
     uint16_t hard_addr; /* The control block's requested loop ID. */
+    uint8_t retry_count; /* Control block byte 10. */
+    uint8_t retry_delay; /* Control block byte 11. */
 } Isp;
 
 static void *isp2200_get_driver(void *obj, const char *interface)
@@ -354,6 +360,8 @@ static void isp_rings_at(Isp *t, uint16_t rqlen, uint16_t rslen,
         qtest_memwrite(t->qts, rs + i * ENTRY_SIZE, zero, sizeof(zero));
     }
     icb_build(buf, rqlen, rslen, rq, rs, options);
+    buf[10] = t->retry_count;
+    buf[11] = t->retry_delay;
     stw_le_p(buf + 20, t->hard_addr);
     buf[64] = xopts;
     qtest_memwrite(t->qts, icb, buf, sizeof(buf));
@@ -1068,7 +1076,7 @@ static void test_semaphore_write_one(void *obj, void *data,
  * Approximation: unknown and deferred commands answer 0x4001 and leave
  * the running firmware alone, as do the commands the loop service does
  * not model: abort device, bus reset, target reset, login, enhanced port
- * database, retry count.
+ * database.
  */
 static void test_unknown_commands(void *obj, void *data,
                                   QGuestAllocator *alloc)
@@ -1085,8 +1093,6 @@ static void test_unknown_commands(void *obj, void *data,
                     MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, 0x006f, 0, 0, 0), ==, MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, CMD_ENH_PORT_DB, 1, 0, 0), ==,
-                    MBOX_INVALID);
-    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
                     MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, CMD_GET_FW_STATE, 0, 0, 0), ==,
                     MBOX_COMPLETE);
@@ -4324,6 +4330,122 @@ static void test_port_name_list_retains_m7(void *obj, void *data,
     isp_close(&t);
 }
 
+/* The model's constant m3 in a get retry count reply. */
+#define RETRY_TIMEOUT       200
+
+static void assert_retry_count(Isp *t, uint16_t count, uint16_t delay)
+{
+    g_assert_cmphex(isp_call(t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(rd(t, MBOX(1)), ==, count);
+    g_assert_cmphex(rd(t, MBOX(2)), ==, delay);
+    g_assert_cmphex(rd(t, MBOX(3)), ==, RETRY_TIMEOUT);
+    isp_ack(t);
+}
+
+/*
+ * Approximation: get retry count returns the control block's retry
+ * count in m1 and retry delay in m2, the reading Linux and NetBSD give
+ * the command, and a constant m3 no public source settles. It answers
+ * from the moment initialise-firmware completes, loop up or not, and a
+ * later initialisation replaces the pair. Before any control block it
+ * is refused with 0x4005, and before execute with 0x4001.
+ */
+static void test_retry_count(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
+                    MBOX_INVALID);
+    isp_start(&t);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+
+    t.retry_count = 6;
+    t.retry_delay = 9;
+    isp_rings(&t, 8, 8);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    assert_retry_count(&t, 6, 9);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 2);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+    assert_retry_count(&t, 6, 9);
+
+    t.retry_count = 2;
+    t.retry_delay = 3;
+    isp_rings(&t, 8, 8);
+    assert_retry_count(&t, 2, 3);
+
+    /* Each byte is zero-extended, not sign-extended. */
+    t.retry_count = 0xfe;
+    t.retry_delay = 0x81;
+    isp_rings(&t, 8, 8);
+    assert_retry_count(&t, 0xfe, 0x81);
+
+    /* A reset drops the control block with the firmware. */
+    wr(&t, REG_HCCR, HCCR_RESET);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
+                    MBOX_INVALID);
+    isp_start(&t);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_close(&t);
+}
+
+/*
+ * Get port queue parameters, set retry count, reset link status and get
+ * link status, which IRIX 6.5.30 sends on the model and no public source
+ * settles the replies of. At ready each is refused with 0x4001, writes
+ * nothing to the buffer its mailboxes could name and changes neither the
+ * loop nor the retry pair: set retry count is not stored.
+ */
+static void test_refused_loop_commands(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    static const struct {
+        uint16_t cmd;
+        uint16_t m1;
+    } cases[] = {
+        { CMD_GET_PORT_QUEUE, 1 << 8 },
+        { CMD_SET_RETRY_COUNT, 7 },
+        { CMD_RESET_LINK_STAT, 0 },
+        { CMD_GET_LINK_STATUS, 0 },
+        { CMD_GET_LINK_STATUS, 1 << 8 },
+        { CMD_GET_LINK_STATUS, 5 << 8 },
+    };
+    uint8_t seen[256], fill[256];
+    uint64_t buf;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    t.retry_count = 4;
+    t.retry_delay = 15;
+    isp_loop_up(&t, 0);
+    buf = guest_alloc(alloc, sizeof(seen));
+    memset(fill, 0xa5, sizeof(fill));
+
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        qtest_memwrite(t.qts, buf, fill, sizeof(fill));
+        g_assert_cmphex(isp_call_dma(&t, cases[i].cmd, cases[i].m1, buf), ==,
+                        MBOX_INVALID);
+        isp_ack(&t);
+        qtest_memread(t.qts, buf, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), fill, sizeof(fill));
+        isp_expect_no_event(&t);
+        g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+        assert_retry_count(&t, 4, 15);
+    }
+
+    /* Set retry count with a new pair in m1 and m2 keeps the old one. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_SET_RETRY_COUNT, 7, 8, 0), ==,
+                    MBOX_INVALID);
+    assert_retry_count(&t, 4, 15);
+    isp_close(&t);
+}
+
 static void isp2200_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -4484,6 +4606,9 @@ static void isp2200_register_nodes(void)
                  test_writes_behind_loop_up, &loop_opts);
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
                  test_port_name_list_retains_m7, &loop_opts);
+    qos_add_test("retry-count", "qlogic-isp2200", test_retry_count, NULL);
+    qos_add_test("refused-loop-commands", "qlogic-isp2200",
+                 test_refused_loop_commands, &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);
