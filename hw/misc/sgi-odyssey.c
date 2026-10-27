@@ -3694,8 +3694,24 @@ static void odyssey_retrace(void *opaque)
     }
 }
 
+/*
+ * Scanout reads the planes, and a slice of queued command work on the
+ * board's thread draws into them with the big lock let go. An update waits
+ * that draw out first, as every other reader of what a draw writes does,
+ * unless it runs on that slice's own thread.
+ */
+static void odyssey_pre_update(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    if (!sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_wait_slice(&s->work);
+    }
+}
+
 static const SGIHeadOps odyssey_head_ops = {
     .publish = odyssey_publish,
+    .pre_update = odyssey_pre_update,
     .resolve_row = odyssey_resolve_row,
     .dma_chunk = odyssey_dma_chunk,
     .retrace = odyssey_retrace,
