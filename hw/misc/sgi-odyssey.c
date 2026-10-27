@@ -2375,6 +2375,263 @@ static void odyssey_nic_slot(SGIOdysseyState *s, uint32_t value)
              (level ? ODSY_NIC_LEVEL : 0);
 }
 
+/*
+ * The display back end's 32 by 32 hardware cursor, drawn over the resolved
+ * picture: after the lookup RAM and the gamma table, over the main and the
+ * overlay planes alike. Its backend entries (the datasheet's
+ * "Hardware cursor"):
+ *   0x2500  128 words  glyph: 32 rows of four words, eight 4-bit pixels a
+ *                      word, the leftmost pixel in bits 3:0
+ *   0x2580             position: x in bits 31:16, y in 15:0, of the glyph's
+ *                      top-left pixel, or of the crosshair point
+ *   0x2581             control
+ *   0x2590  15 words   colours, ten bits a channel, as in the lookup RAM
+ *   0x25c0  64 words   plane: 32 rows of two words, sixteen 2-bit pixels a
+ *                      word, the leftmost pixel in bits 1:0
+ * Their layouts are ESTABLISHED as IRIX X server, IRIX kernel and PROM
+ * behaviour; what the board makes of the values is INFERRED.
+ *
+ * APPROXIMATION (the datasheet's proposed model contract): under plane 3 a
+ * glyph value k shows colour word k and glyph 0 shows word 0; under plane 0
+ * the pixel is transparent whatever the glyph. That is the conventional
+ * image-and-mask reading, and the only one under which the PROM's plane
+ * upload has a visible effect; the other reading, where a nonzero glyph
+ * always shows, is not excluded. The PROM pointer on a real board would
+ * settle it. Glyph value 15 and plane values 1 and 2 have no known meaning:
+ * they are reported once and drawn transparent. A channel shows the top
+ * eight bits of its ten, the model's display choice.
+ *
+ * Reset values are UNKNOWN; the model resets every entry to zero, cursor
+ * off. Every guest path writes the control word before it uses the cursor.
+ */
+#define ODSY_CURSOR_BASE 0x2500
+#define ODSY_CURSOR_ENTRIES 0x100
+#define ODSY_CURSOR_GLYPH 0x00
+#define ODSY_CURSOR_POSITION 0x80
+#define ODSY_CURSOR_CONTROL 0x81
+#define ODSY_CURSOR_COLOURS 0x90
+#define ODSY_CURSOR_COLOUR_COUNT 15
+#define ODSY_CURSOR_PLANE 0xc0
+#define ODSY_CURSOR_SIZE 32
+
+/*
+ * Control bits. Bit 0 shows the cursor (INFERRED: the only bit the X server
+ * always toggles between hiding and showing). Bit 2 is set only for the X
+ * server's crosshair cursor, which uploads no shape (INFERRED: a hardware
+ * crosshair). Bit 5 puts the cursor on the second display channel, which
+ * this model does not have. Bits 1, 4 and 31:30 are written by software
+ * with no known effect on the board, and change nothing here.
+ */
+#define ODSY_CURSOR_CTL_ENABLE (1u << 0)
+#define ODSY_CURSOR_CTL_CROSSHAIR (1u << 2)
+#define ODSY_CURSOR_CTL_CHANNEL1 (1u << 5)
+#define ODSY_CURSOR_CTL_KNOWN 0xc000003fu
+
+/* Once-only reports, bits of cursor_reported. */
+#define ODSY_CURSOR_REPORT_GLYPH15 (1u << 0)
+#define ODSY_CURSOR_REPORT_PLANE (1u << 1)
+#define ODSY_CURSOR_REPORT_CROSSHAIR (1u << 2)
+#define ODSY_CURSOR_REPORT_CHANNEL1 (1u << 3)
+#define ODSY_CURSOR_REPORT_CONTROL (1u << 4)
+#define ODSY_CURSOR_REPORT_ENTRY (1u << 5)
+
+static void odyssey_cursor_report(SGIOdysseyState *s, uint32_t bit,
+                                  const char *what, uint32_t index,
+                                  uint32_t data)
+{
+    if (s->cursor_reported & bit) {
+        return;
+    }
+    s->cursor_reported |= bit;
+    qemu_log_mask(LOG_UNIMP, "sgi-odyssey: cursor entry 0x%x word 0x%08x: "
+                  "%s\n", ODSY_CURSOR_BASE + index, data, what);
+}
+
+/* The position's components, each a signed 16-bit value (INFERRED). */
+static int odyssey_cursor_x(SGIOdysseyState *s)
+{
+    return (int16_t)(s->cursor[ODSY_CURSOR_POSITION] >> 16);
+}
+
+static int odyssey_cursor_y(SGIOdysseyState *s)
+{
+    return (int16_t)s->cursor[ODSY_CURSOR_POSITION];
+}
+
+/*
+ * Whether anything is drawn: bit 0 set and bit 5 clear. APPROXIMATION: on
+ * the second channel the cursor is on a display the model does not have.
+ */
+static bool odyssey_cursor_shown(SGIOdysseyState *s)
+{
+    uint32_t ctl = s->cursor[ODSY_CURSOR_CONTROL];
+
+    return (ctl & ODSY_CURSOR_CTL_ENABLE) && !(ctl & ODSY_CURSOR_CTL_CHANNEL1);
+}
+
+/* The display lines the cursor covers as it stands: first > last if none. */
+static void odyssey_cursor_span(SGIOdysseyState *s, int *first, int *last)
+{
+    *first = 0;
+    *last = -1;
+    if (!odyssey_cursor_shown(s)) {
+        return;
+    }
+    if (s->cursor[ODSY_CURSOR_CONTROL] & ODSY_CURSOR_CTL_CROSSHAIR) {
+        /* The vertical line crosses every line. */
+        *last = (int)s->scanout.mode.height - 1;
+        return;
+    }
+    *first = MAX(odyssey_cursor_y(s), 0);
+    *last = MIN(odyssey_cursor_y(s) + ODSY_CURSOR_SIZE - 1,
+                (int)s->scanout.mode.height - 1);
+}
+
+static void odyssey_cursor_invalidate(SGIOdysseyState *s, int first,
+                                      int last)
+{
+    if (first <= last) {
+        sgi_scanout_invalidate(&s->scanout, first, last - first + 1);
+    }
+}
+
+/* A colour word, ten bits a channel, as 0x00RRGGBB from the top eight. */
+static uint32_t odyssey_cursor_rgb(uint32_t word)
+{
+    return (((word >> ODSY_LUT_RED_SHIFT) & 0xff) << 16) |
+           (((word >> ODSY_LUT_GREEN_SHIFT) & 0xff) << 8) |
+           ((word >> ODSY_LUT_BLUE_SHIFT) & 0xff);
+}
+
+/* Report the values a stored word carries that have no known meaning. */
+static void odyssey_cursor_check(SGIOdysseyState *s, uint32_t index,
+                                 uint32_t data)
+{
+    if (index < ODSY_CURSOR_POSITION) {
+        for (unsigned i = 0; i < 32; i += 4) {
+            if (((data >> i) & 0xf) == 0xf) {
+                odyssey_cursor_report(s, ODSY_CURSOR_REPORT_GLYPH15,
+                                      "glyph value 15 has no colour word; "
+                                      "drawn transparent", index, data);
+                break;
+            }
+        }
+    } else if (index >= ODSY_CURSOR_PLANE) {
+        for (unsigned i = 0; i < 32; i += 2) {
+            uint32_t v = (data >> i) & 3;
+
+            if (v == 1 || v == 2) {
+                odyssey_cursor_report(s, ODSY_CURSOR_REPORT_PLANE,
+                                      "plane values 1 and 2 are not "
+                                      "modeled; drawn transparent",
+                                      index, data);
+                break;
+            }
+        }
+    } else if (index == ODSY_CURSOR_CONTROL) {
+        if ((data & ODSY_CURSOR_CTL_ENABLE) &&
+            (data & ODSY_CURSOR_CTL_CROSSHAIR)) {
+            odyssey_cursor_report(s, ODSY_CURSOR_REPORT_CROSSHAIR,
+                                  "crosshair drawn as full-raster lines in "
+                                  "colour word 1, an approximation",
+                                  index, data);
+        }
+        if (data & ODSY_CURSOR_CTL_CHANNEL1) {
+            odyssey_cursor_report(s, ODSY_CURSOR_REPORT_CHANNEL1,
+                                  "second display channel is not modeled; "
+                                  "nothing drawn", index, data);
+        }
+        if (data & ~ODSY_CURSOR_CTL_KNOWN) {
+            odyssey_cursor_report(s, ODSY_CURSOR_REPORT_CONTROL,
+                                  "control bits outside 0-5 and 31:30 have "
+                                  "no known meaning", index, data);
+        }
+    } else if (index != ODSY_CURSOR_POSITION &&
+               (index < ODSY_CURSOR_COLOURS ||
+                index >= ODSY_CURSOR_COLOURS + ODSY_CURSOR_COLOUR_COUNT)) {
+        odyssey_cursor_report(s, ODSY_CURSOR_REPORT_ENTRY,
+                              "no known function; stored", index, data);
+    }
+}
+
+/*
+ * One backend data word for a cursor entry: store it, report what it
+ * carries that has no known meaning, and repaint the lines the cursor
+ * covered before and covers now.
+ */
+static void odyssey_cursor_write(SGIOdysseyState *s, uint32_t index,
+                                 uint32_t data)
+{
+    int old_first, old_last, first, last;
+
+    odyssey_cursor_span(s, &old_first, &old_last);
+    s->cursor[index] = data;
+    odyssey_cursor_check(s, index, data);
+    odyssey_cursor_span(s, &first, &last);
+    odyssey_cursor_invalidate(s, old_first, old_last);
+    odyssey_cursor_invalidate(s, first, last);
+}
+
+/*
+ * Draw the cursor over display line y, already resolved into dst. With bit
+ * 2 it is a crosshair: APPROXIMATION, a one-pixel horizontal and vertical
+ * line across the whole raster through the position, in colour word 1. The
+ * crosshair's extent, width and colour are UNKNOWN; a capture of the IRIX
+ * crosshair cursor on a real board would settle them.
+ */
+static void odyssey_cursor_row(SGIOdysseyState *s, unsigned y, uint32_t *dst,
+                               uint32_t width)
+{
+    int cx = odyssey_cursor_x(s), cy = odyssey_cursor_y(s);
+    int row = (int)y - cy;
+
+    if (!odyssey_cursor_shown(s)) {
+        return;
+    }
+    if (s->cursor[ODSY_CURSOR_CONTROL] & ODSY_CURSOR_CTL_CROSSHAIR) {
+        uint32_t colour = odyssey_cursor_rgb(s->cursor[ODSY_CURSOR_COLOURS +
+                                                       1]);
+
+        if (row == 0) {
+            for (uint32_t x = 0; x < width; x++) {
+                dst[x] = colour;
+            }
+        } else if (cx >= 0 && cx < (int)width) {
+            dst[cx] = colour;
+        }
+        return;
+    }
+    if (row < 0 || row >= ODSY_CURSOR_SIZE) {
+        return;
+    }
+    for (int col = 0; col < ODSY_CURSOR_SIZE; col++) {
+        int x = cx + col;
+        uint32_t plane = (s->cursor[ODSY_CURSOR_PLANE + row * 2 + col / 16] >>
+                          (col % 16) * 2) & 3;
+        uint32_t glyph = (s->cursor[ODSY_CURSOR_GLYPH + row * 4 + col / 8] >>
+                          (col % 8) * 4) & 0xf;
+
+        if (x < 0 || x >= (int)width || plane != 3 || glyph == 0xf) {
+            continue;
+        }
+        dst[x] = odyssey_cursor_rgb(s->cursor[ODSY_CURSOR_COLOURS + glyph]);
+    }
+}
+
+/* A backend read-window offset that names a cursor entry: its stored word. */
+static bool odyssey_cursor_read(SGIOdysseyState *s, hwaddr addr,
+                                unsigned size, uint64_t *value)
+{
+    hwaddr first = ODSY_BACKEND_READ_BASE + (ODSY_CURSOR_BASE << 3);
+
+    if (size != 4 || addr < first || (addr & 7) ||
+        addr >= first + (ODSY_CURSOR_ENTRIES << 3)) {
+        return false;
+    }
+    *value = s->cursor[(addr - first) >> 3];
+    return true;
+}
+
 static uint32_t odyssey_i2c_status(uint32_t command)
 {
     return ODSY_I2C_STATUS_READY | (command != 0 ? ODSY_I2C_STATUS_DONE : 0);
@@ -2501,6 +2758,9 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
                       "register at 0x%" HWADDR_PRIx "\n", addr);
         break;
     default:
+        if (odyssey_cursor_read(s, addr, size, &value)) {
+            break;
+        }
         odyssey_unimplemented(s, addr, size, false);
         break;
     }
@@ -2572,6 +2832,11 @@ static void odyssey_backend_data(SGIOdysseyState *s, uint32_t index,
         index < ODSY_DISPMODE_BASE + ODSY_DISPMODE_COUNT) {
         s->dispmode[index - ODSY_DISPMODE_BASE] = data;
         sgi_scanout_invalidate_all(&s->scanout);
+        return;
+    }
+    if (index >= ODSY_CURSOR_BASE &&
+        index < ODSY_CURSOR_BASE + ODSY_CURSOR_ENTRIES) {
+        odyssey_cursor_write(s, index - ODSY_CURSOR_BASE, data);
         return;
     }
     if (index >= ODSY_OVERLAY_MODE_BASE &&
@@ -3366,6 +3631,7 @@ static void odyssey_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         dst[x] = odyssey_lut_rgb(s, group ? 256 * group + (word & 0xff) :
                                  word & ODSY_INDEX_MASK);
     }
+    odyssey_cursor_row(s, y, dst, width);
 }
 
 /*
@@ -11868,6 +12134,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->dispmode, 0, sizeof(s->dispmode));
     memset(s->overlay_mode, 0, sizeof(s->overlay_mode));
     s->overlay_mode_reported = false;
+    memset(s->cursor, 0, sizeof(s->cursor));
+    s->cursor_reported = 0;
     s->gl_aux_reported = false;
     s->aux_mask_reported = false;
     s->aux_image_reported = false;
@@ -12899,6 +13167,28 @@ static const VMStateDescription vmstate_odyssey_overlay = {
     },
 };
 
+/*
+ * The hardware cursor's entries. The scanout's load repaints every line, so
+ * the restored cursor is drawn without help.
+ */
+static bool odyssey_cursor_needed(void *opaque)
+{
+    SGIOdysseyState *s = opaque;
+
+    return !buffer_is_zero(s->cursor, sizeof(s->cursor));
+}
+
+static const VMStateDescription vmstate_odyssey_cursor = {
+    .name = "sgi-odyssey/cursor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = odyssey_cursor_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(cursor, SGIOdysseyState, ODSY_CURSOR_ENTRIES),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Only between a kernel 0x841 and the command after it, or after a tail. */
 static bool odyssey_window_tail_needed(void *opaque)
 {
@@ -13250,6 +13540,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         &vmstate_odyssey_overlay,
         &vmstate_odyssey_const_colour,
         &vmstate_odyssey_clip_eye,
+        &vmstate_odyssey_cursor,
         NULL
     },
 };

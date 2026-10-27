@@ -163,6 +163,9 @@ slow_qtests = {
   # 2026-10-07.
   'sn1-odyssey-test-board': 230,
   'sn1-odyssey-test-context': 320,
+  # The hardware cursor cases: 2.3 s alone on a 32-thread workstation,
+  # 2026-10-27, with room for a loaded builder.
+  'sn1-odyssey-test-cursor': 60,
   'sn1-odyssey-test-fifo': 510,
   'sn1-odyssey-test-gl': 500,
   # The profile and identity cases, split from board: three times the

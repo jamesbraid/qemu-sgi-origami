@@ -197,6 +197,13 @@ struct SGIOdysseyState {
     /* The overlay ids' display modes, backend entries 0x2920 + id. */
     uint32_t overlay_mode[8];
     bool overlay_mode_reported;
+    /*
+     * The hardware cursor's backend entries 0x2500-0x25ff, as written:
+     * glyph, position, control, colours and two-bit plane. cursor_reported
+     * holds one bit per once-only report (ODSY_CURSOR_REPORT_*).
+     */
+    uint32_t cursor[0x100];
+    uint32_t cursor_reported;
     uint32_t backend_index;
     uint32_t backend_count;
 

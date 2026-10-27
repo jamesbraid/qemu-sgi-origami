@@ -20909,6 +20909,302 @@ static void test_readback_failures(void)
 }
 
 /*
+ * The display back end's hardware cursor (the datasheet's
+ * "Hardware cursor"; hw/misc/sgi-odyssey.c). The test glyph's top row is
+ * values 1, 2, 0, 1 in columns 0 to 3, and its plane is 3 under columns 0 to
+ * 2 and 0 from column 3 on, so along that row the cursor shows colour word
+ * 1, word 2, word 0, then nothing over a glyph value of 1. Word 1 holds a
+ * ten-bit green of 0x155, which shows as its top eight bits, 0x55.
+ */
+#define ODSY_CURSOR_GLYPH 0x2500
+#define ODSY_CURSOR_POSITION 0x2580
+#define ODSY_CURSOR_CONTROL 0x2581
+#define ODSY_CURSOR_COLOURS 0x2590
+#define ODSY_CURSOR_PLANE 0x25c0
+#define ODSY_CURSOR_WORD0_RGB 0xff0000u
+#define ODSY_CURSOR_WORD1_RGB 0x005500u
+#define ODSY_CURSOR_WORD2_RGB 0x0000ffu
+#define ODSY_CURSOR_BACKGROUND 0x406080ffu
+
+static void cursor_entry(QTestState *qts, uint32_t index, uint32_t word)
+{
+    backend_push32(qts, ODSY_BACKEND_HDR(index, 1));
+    backend_push32(qts, word);
+}
+
+/* What a cursor entry reads back at the back end's read window. */
+static uint32_t cursor_readback(QTestState *qts, uint32_t index)
+{
+    return qtest_readl(qts, WIDGET + 0x220000 + ((uint64_t)index << 3));
+}
+
+/*
+ * An RGB screen with a known colour over the corner the cursor uses, the
+ * test glyph, plane and colours, and the cursor at (x, y), still off.
+ */
+static void cursor_load(QTestState *qts, uint32_t x, uint32_t y)
+{
+    display_identity(qts, 0);
+    for (uint32_t py = 0; py < 8; py++) {
+        for (uint32_t px = 0; px < 12; px++) {
+            odsy_test_pixel_write(qts, px, py, ODSY_CURSOR_BACKGROUND);
+        }
+    }
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_GLYPH, 128));
+    for (unsigned i = 0; i < 128; i++) {
+        backend_push32(qts, i == 0 ? 0x1021 : 0);
+    }
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_PLANE, 64));
+    for (unsigned i = 0; i < 64; i++) {
+        backend_push32(qts, i == 0 ? 0x3f : 0);
+    }
+    backend_push32(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_COLOURS, 15));
+    backend_push32(qts, 0x3ffu << 20);
+    backend_push32(qts, 0x155u << 10);
+    backend_push32(qts, 0x3ffu);
+    for (unsigned i = 3; i < 15; i++) {
+        backend_push32(qts, 0);
+    }
+    cursor_entry(qts, ODSY_CURSOR_POSITION, (x & 0xffff) << 16 | (y & 0xffff));
+}
+
+/* The background as it shows, before any cursor is drawn over it. */
+static uint32_t cursor_background(QTestState *qts)
+{
+    return odsy_test_display_pixel(qts, 11, 7);
+}
+
+/*
+ * Plane 3 shows glyph value k in colour word k and glyph 0 in word 0; plane
+ * 0 is transparent whatever the glyph, the model's reading 1. The cursor is
+ * drawn after colour resolution, and every entry reads back as written.
+ */
+static void test_cursor_glyph_and_plane(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bg;
+
+    cursor_load(qts, 2, 3);
+    bg = cursor_background(qts);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 3), ==,
+                    ODSY_CURSOR_WORD2_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 4, 3), ==,
+                    ODSY_CURSOR_WORD0_RGB);
+    /* Glyph 1 under plane 0, then glyph 0 under plane 0. */
+    g_assert_cmphex(odsy_test_display_pixel(qts, 5, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 6, 3), ==, bg);
+    /* Row 1 of the glyph and plane is empty, and so is the row above. */
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 4), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 2), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 1, 3), ==, bg);
+
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_GLYPH), ==, 0x1021);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_PLANE), ==, 0x3f);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_COLOURS + 1), ==,
+                    0x155u << 10);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_POSITION), ==,
+                    0x00020003);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_CONTROL), ==, 1);
+
+    /* Clearing bit 0 restores the picture. */
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 0);
+    for (uint32_t x = 2; x < 7; x++) {
+        g_assert_cmphex(odsy_test_display_pixel(qts, x, 3), ==, bg);
+    }
+    board_quit(qts);
+}
+
+/*
+ * The position is the glyph's top-left pixel, read as signed 16-bit
+ * components and clipped to the raster. A move repaints the old place.
+ */
+static void test_cursor_moves_and_clips(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bg;
+
+    cursor_load(qts, 2, 3);
+    bg = cursor_background(qts);
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+
+    /* x = -1: column 0 of the glyph is off the left edge. */
+    cursor_entry(qts, ODSY_CURSOR_POSITION, 0xffff0005);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 0, 5), ==,
+                    ODSY_CURSOR_WORD2_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 1, 5), ==,
+                    ODSY_CURSOR_WORD0_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 5), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 3), ==, bg);
+
+    /*
+     * The PROM's first position after its enable, x 1280 y 0: the first
+     * column right of the raster, which draws nothing.
+     */
+    cursor_entry(qts, ODSY_CURSOR_POSITION, 0x05000000);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 0, 5), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 1, 5), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 1279, 0), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * Control word 5, bits 0 and 2, is the X server's crosshair: the model's
+ * approximation is a one-pixel line across the raster each way through the
+ * position, in colour word 1. Word 4, bit 2 alone, draws nothing.
+ */
+static void test_cursor_crosshair(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bg;
+
+    cursor_load(qts, 2, 3);
+    bg = cursor_background(qts);
+
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 4);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 9, 3), ==, bg);
+
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 5);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 0, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 9, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 1279, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 0), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 1023), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    /* No glyph: the glyph's word 2 pixel beside the point stays clear. */
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 4), ==, bg);
+
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 4);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 9, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 6), ==, bg);
+    board_quit(qts);
+}
+
+/* Reset clears every entry, so the cursor is off. */
+static void test_cursor_reset_leaves_it_off(void)
+{
+    QTestState *qts = board_start("");
+
+    cursor_load(qts, 2, 3);
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, 0);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_CONTROL), ==, 0);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_POSITION), ==, 0);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_GLYPH), ==, 0);
+    g_assert_cmphex(cursor_readback(qts, ODSY_CURSOR_COLOURS + 1), ==, 0);
+    /* The glyph, plane and colours went too: turning it on draws nothing. */
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 1);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, 0);
+    board_quit(qts);
+}
+
+/*
+ * Values with no known meaning are reported once each: glyph value 15,
+ * plane values 1 and 2, the second display channel (bit 5, which draws
+ * nothing), the crosshair, control bits outside 0-5 and 31:30, and an
+ * entry no software writes. Glyph 15 and planes 1 and 2 draw nothing.
+ */
+static void test_cursor_unknowns_reported_once(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    uint32_t bg;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-cursor-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    cursor_load(qts, 2, 3);
+    bg = cursor_background(qts);
+    for (int i = 0; i < 2; i++) {
+        /* Glyph 15 under plane 3, and glyph 1 under planes 1 and 2. */
+        cursor_entry(qts, ODSY_CURSOR_GLYPH, 0x111f);
+        cursor_entry(qts, ODSY_CURSOR_PLANE, 0x9f);
+        cursor_entry(qts, ODSY_CURSOR_CONTROL, 0x21);
+        cursor_entry(qts, ODSY_CURSOR_CONTROL, 0x41);
+        cursor_entry(qts, ODSY_CURSOR_CONTROL, 5);
+        cursor_entry(qts, 0x25a0, 0x1234);
+    }
+    g_assert_cmphex(cursor_readback(qts, 0x25a0), ==, 0x1234);
+
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 0x21);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 3), ==, bg);
+    cursor_entry(qts, ODSY_CURSOR_CONTROL, 0xc0000003);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 2, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 3, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 4, 3), ==, bg);
+    g_assert_cmphex(odsy_test_display_pixel(qts, 5, 3), ==, bg);
+    board_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(count_occurrences(log, "glyph value 15"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "plane values 1 and 2"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "second display channel"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "crosshair drawn"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "control bits outside"), ==, 1);
+    g_assert_cmpuint(count_occurrences(log, "no known function"), ==, 1);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* The cursor's entries migrate, and the destination draws it. */
+static void test_cursor_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-cursor-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    cursor_load(from, 2, 3);
+    cursor_entry(from, ODSY_CURSOR_CONTROL, 1);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(to, "completed");
+
+    g_assert_cmphex(odsy_test_display_pixel(to, 2, 3), ==,
+                    ODSY_CURSOR_WORD1_RGB);
+    g_assert_cmphex(odsy_test_display_pixel(to, 4, 3), ==,
+                    ODSY_CURSOR_WORD0_RGB);
+    g_assert_cmphex(cursor_readback(to, ODSY_CURSOR_POSITION), ==,
+                    0x00020003);
+    board_quit(to);
+    board_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
  * Meson runs this binary once per group in sn1-odyssey-test-groups.txt,
  * naming the group's GLib paths with --group-path, so that its groups run
  * at once. Only the cases a group takes are registered. GLib's own -p
@@ -21068,6 +21364,16 @@ int main(int argc, char **argv)
              test_scanout_rgb_through_gamma);
     add_case("sn1/odyssey/scanout-paint-order",
              test_scanout_paint_order);
+    add_case("sn1/odyssey/cursor/glyph-and-plane",
+             test_cursor_glyph_and_plane);
+    add_case("sn1/odyssey/cursor/moves-and-clips",
+             test_cursor_moves_and_clips);
+    add_case("sn1/odyssey/cursor/crosshair", test_cursor_crosshair);
+    add_case("sn1/odyssey/cursor/reset-leaves-it-off",
+             test_cursor_reset_leaves_it_off);
+    add_fresh_case("sn1/odyssey/cursor/unknowns-reported-once",
+                   test_cursor_unknowns_reported_once);
+    add_fresh_case("sn1/odyssey/cursor/migration", test_cursor_migration);
     add_case("sn1/odyssey/command-fifo-fillrect",
              test_command_fifo_fillrect);
     add_case("sn1/odyssey/backend-colormap-word-stream",
