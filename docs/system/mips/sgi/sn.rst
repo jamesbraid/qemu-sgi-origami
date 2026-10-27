@@ -335,6 +335,29 @@ logged as such. No catalogued machine builds either brick yet, because
 no reviewed configuration attaches one to a C-brick; the builder test
 builds them.
 
+.. _sgi-sn-family-vbrick:
+
+Onyx 3000 V-brick
+-----------------
+
+A V-brick holds one or two InfinitePerformance pipes, each one VPro V12
+board taking two of four board slots, behind an XBridge on its
+midplane; its two rear XIO ports each cable to a C-brick's ``XIO (II)``
+connector, and each pipe needs a C-brick of its own, besides the one
+that hosts the system I-brick (established, *SGI Onyx 3000 Series
+Graphics System Hardware Owner's Guide*, 007-4264-002, printed pages 8,
+10, 19, 52 to 56). A system holds G-bricks or V-bricks, never both
+(established, printed pages 10 and 21). The ``onyx3000-vbrick``
+reference composition puts the I-brick on the first C-brick and a
+one-pipe V-brick on the second, with the cable on the midplane
+XBridge's port A and the V12 on its Crosstalk port 8. Both ports are
+the composition's choices: which connector is port A, which Crosstalk
+port serves a slot, and so the V12's widget number, are unknown, and a
+PROM inventory or hardware graph of an Onyx 3000 with a V-brick would
+settle them. The V-brick's L1 is not modelled, since its address and
+identity are unknown. Like the Origin 3200 composition, it has no
+concrete C-brick fit and so does not compile.
+
 .. _sgi-sn-family-rbrick:
 
 R-brick and NUMAlink module ports

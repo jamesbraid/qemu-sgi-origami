@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3000 V-brick: a midplane XBridge between the two rear XIO ports and
+# four V12 board slots. The composition places the V12 boards.
+layer_version: 1
+layer:
+  kind: module
+  id: v-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: V-brick
+        kind: module
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two InfinitePerformance pipes, each one VPro V12 board taking two of its four board slots, behind a midplane XBridge"]
+        notes: >-
+          Its L1 brick-type character is unknown, so brick_type stays unset.
+          It has its own L1 (007-4264-002 printed pages 52 and 128 to 129),
+          which this layer does not carry: its address and identity are
+          unknown.
+      - id: xbridge
+        name: XBridge
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["007-4264-002 printed pages 52 and 54: the midplane XBridge is the interface between the V-brick's two ports and the V12 boards; Figure 2-14 draws no PCI device"]
+        notes: >-
+          The V-brick's fitted XBridge revision and operating mode are
+          unknown. XBridge mode, with its crossbar, is inferred from the
+          two host ports reaching four board slots through one chip. The
+          chip's PCI heads E and F carry nothing in Figure 2-14.
+      - id: xbridge-crossbar
+        name: XBridge crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: xbridge
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: an XBridge's Crosstown2 ports are A (10) and B (11), and 8, 9, C and D are its Crosstalk ports"]
+      - id: port-a
+        name: Crosstown2 port A connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xa
+          notes: >-
+            The rear panel labels the two connectors XIO 10 and XIO 11 and
+            the block diagram calls them Port A and Port B; which label is
+            which port, and whether the host interface board between them
+            and the XBridge is transparent, are unknown. Landing on the
+            chip's port A is inferred: A and B are the only ports the
+            XBridge documents for host cabling.
+        sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick", "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"]
+      - id: port-b
+        name: Crosstown2 port B connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xb
+          notes: >-
+            With one pipe fitted, a second C-brick may be cabled here for
+            bandwidth; with two pipes, the second pipe's C-brick is.
+            Nothing is cabled here in this layer.
+        sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick", "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"]
+    buses:
+      - id: port-b-xio
+        name: XBridge Crosstown2 port B
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"]
+      - id: port-8-xio
+        name: XBridge Crosstalk port 8
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+        notes: >-
+          The four slot links are inferred to be the four Crosstalk ports;
+          which port serves which slot is unknown. A composition that fits
+          a V12 here chooses the port.
+      - id: port-9-xio
+        name: XBridge Crosstalk port 9
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+      - id: port-c-xio
+        name: XBridge Crosstalk port C
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+      - id: port-d-xio
+        name: XBridge Crosstalk port D
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D", "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"]
+    connections:
+      # host-port-a-xio is the attached C-brick's XIO bus, which the
+      # composition binds with bus_bindings.
+      - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"], notes: "Host port A, widget 0xA (10 decimal); inferred, see the port-a connector."}
+      - {component: port-a, bus: host-port-a-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"]}
+      - {component: port-b, bus: port-b-xio, role: endpoint, provenance: vendor-document, sources: ["007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"]}

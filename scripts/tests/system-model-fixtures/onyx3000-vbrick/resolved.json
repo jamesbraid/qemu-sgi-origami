@@ -1,0 +1,1441 @@
+{
+  "address_spaces": [
+    {
+      "id": "cached",
+      "name": "cached",
+      "node_stride": "0x2_0000_0000",
+      "notes": "The cached xkphys base, with no attribute; the same value as the Origin 200.",
+      "provenance": "datasheet",
+      "unmapped_base": "0xa800_0000_0000_0000"
+    },
+    {
+      "id": "hub-special",
+      "name": "Hub special",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 0, as on the Origin 200. Split on IP35 into a 128 MB local register window at 0x1000_0000 and a 128 MB boot window at 0x1800_0000, with remote forms at 0x3000_0000 and 0x3800_0000. The L1 UART is inside the register window. The OpenBSD board-identification read remains an unresolved consumer requirement.",
+      "provenance": "datasheet",
+      "selector": 0,
+      "unmapped_base": "0x9000_0000_0000_0000"
+    },
+    {
+      "id": "io",
+      "name": "I/O",
+      "node_stride": "0x2_0000_0000",
+      "notes": "16 MB small windows at widget times 16 MB; 512 MB big windows in M mode at (entry plus one) times 512 MB, selected by seven translation entries; the Bedrock's own registers are widget 1 of the node.",
+      "provenance": "datasheet",
+      "selector": 1,
+      "unmapped_base": "0x9200_0000_0000_0000"
+    },
+    {
+      "id": "memory-special",
+      "name": "memory special",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 2.",
+      "provenance": "datasheet",
+      "selector": 2,
+      "unmapped_base": "0x9400_0000_0000_0000"
+    },
+    {
+      "id": "memory",
+      "name": "uncached memory",
+      "node_stride": "0x2_0000_0000",
+      "notes": "Attribute 3. The node number sits at physical bits 39:33 in M mode, seven bits, an 8 GB node window and 128 nodes; N mode halves the window and is out of scope.",
+      "provenance": "datasheet",
+      "selector": 3,
+      "unmapped_base": "0x9600_0000_0000_0000"
+    }
+  ],
+  "buses": [
+    {
+      "id": "ni-cable",
+      "kind": "fabric",
+      "link": {
+        "kind": "cable"
+      },
+      "master": "c0-bedrock",
+      "name": "NUMAlink 3 cable, C-brick 0 LINK (NI) to C-brick 1 LINK (NI)",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "id": "c0-sysad0",
+      "kind": "sysad",
+      "master": "c0-cpu0",
+      "name": "SysAD, processor interface 0",
+      "provenance": "vendor-document",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "id": "c0-sysad1",
+      "kind": "sysad",
+      "master": "c0-cpu2",
+      "name": "SysAD, processor interface 1",
+      "provenance": "vendor-document",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "id": "c0-xio-ii",
+      "kind": "xio",
+      "master": "c0-bedrock",
+      "name": "XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
+        "108-0240-002 printed page 2-26: the Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"
+      ]
+    },
+    {
+      "id": "c1-sysad0",
+      "kind": "sysad",
+      "master": "c1-cpu0",
+      "name": "SysAD, processor interface 0",
+      "provenance": "vendor-document",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "id": "c1-sysad1",
+      "kind": "sysad",
+      "master": "c1-cpu2",
+      "name": "SysAD, processor interface 1",
+      "provenance": "vendor-document",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "id": "c1-xio-ii",
+      "kind": "xio",
+      "master": "c1-bedrock",
+      "name": "XIO, the Bedrock's I/O interface",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
+        "108-0240-002 printed page 2-26: the Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"
+      ]
+    },
+    {
+      "id": "ibrick-io7-bus",
+      "kind": "pci",
+      "master": "ibrick-xbridge-bridge-f",
+      "name": "IO7, bus 1 (head F)",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "id": "ibrick-heads-xio",
+      "kind": "xio",
+      "master": "ibrick-xbridge-crossbar",
+      "name": "XBridge crossbar to its PCI heads",
+      "notes": "The crossbar's internal ports E (14) and F (15), one PCI head each.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "id": "ibrick-port-b-xio",
+      "kind": "xio",
+      "master": "ibrick-xbridge-crossbar",
+      "name": "XBridge Crosstown2 port B",
+      "notes": "The crossbar's port B, out to its connector. A composition that cables a brick here attaches that brick's widget to this bus.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "id": "vbrick-port-b-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge Crosstown2 port B",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"
+      ]
+    },
+    {
+      "id": "vbrick-port-8-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge Crosstalk port 8",
+      "notes": "The four slot links are inferred to be the four Crosstalk ports; which port serves which slot is unknown. A composition that fits a V12 here chooses the port.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "id": "vbrick-port-9-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge Crosstalk port 9",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "id": "vbrick-port-c-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge Crosstalk port C",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    },
+    {
+      "id": "vbrick-port-d-xio",
+      "kind": "xio",
+      "master": "vbrick-xbridge-crossbar",
+      "name": "XBridge Crosstalk port D",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstalk ports 8, 9, C and D",
+        "007-4264-002 printed page 54, Figure 2-14: one link from the XBridge to each of the four board slots"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "description": "The rack that holds the C-bricks, the I-brick and the V-brick.",
+      "id": "rack",
+      "kind": "chassis",
+      "name": "Onyx 3000 rack",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed pages 20 and 54 to 56, Figure 1-7: each V-brick XIO port is cabled to a C-brick XIO connector, and one cable serves a one-pipe V-brick"
+      ]
+    },
+    {
+      "hardware_kind": "odyssey",
+      "id": "vbrick-v12",
+      "kind": "board",
+      "name": "VPro V12 graphics board",
+      "notes": "The one pipe of a one-pipe V-brick. Which slot pair it fills is unknown. Its fitted revision is not captured for a V-brick.",
+      "parent": "vbrick-brick",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+      ]
+    },
+    {
+      "brick_type": "C",
+      "id": "c0-chassis",
+      "kind": "module",
+      "name": "C-brick",
+      "parent": "rack",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 263: brick type C is 0x43"
+      ]
+    },
+    {
+      "hardware_kind": "bedrock",
+      "id": "c0-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "parent": "c0-chassis",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor A, the first slot of processor interface 0.",
+      "hardware_kind": "r12000",
+      "id": "c0-cpu0",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c0-chassis",
+      "processor_slice": "A",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor B, the second slot of processor interface 0.",
+      "hardware_kind": "r12000",
+      "id": "c0-cpu1",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c0-chassis",
+      "processor_slice": "B",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor C, the first slot of processor interface 1.",
+      "hardware_kind": "r12000",
+      "id": "c0-cpu2",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c0-chassis",
+      "processor_slice": "C",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor D, the second slot of processor interface 1.",
+      "hardware_kind": "r12000",
+      "id": "c0-cpu3",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c0-chassis",
+      "processor_slice": "D",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots as four pairs. Banks 2n and 2n+1 sit on pair n, both DIMMs of a pair match, and pairs may differ: 512 MB to 8 GB per C-brick.",
+      "id": "c0-node-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 reside on DIMM pair n, the DIMMs of a pair match, eight 512 MB banks give 4 GB"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The C-brick's L1, on the IP35 motherboard: it serves the console, reads the brick's identity parts and reaches the I/O brick's L1 over the XIO cable and the other C-brick's over the NUMAlink cable.",
+      "hardware_kind": "l1",
+      "id": "c0-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 115 to 116 and 121 to 125: the L1 on the IP35 motherboard, its console and its links to the I/O brick and the other C-brick",
+        "108-0240-002 printed page 2-47: RS-422 L1 links over the NUMAlink and Crosstown2 cables"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "The C-brick's one XIO connector, which joins it to an I-, P- or X-brick. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "c0-xio-ii-connector",
+      "kind": "connector",
+      "name": "XIO (II) connector",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
+        "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "The Bedrock's one network-interface connector. The composition says whether it joins another C-brick or an R-brick port.",
+        "occupancy": "opaque"
+      },
+      "id": "c0-link-connector",
+      "kind": "connector",
+      "name": "LINK (NI) connector",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "brick_type": "C",
+      "id": "c1-chassis",
+      "kind": "module",
+      "name": "C-brick",
+      "parent": "rack",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 263: brick type C is 0x43"
+      ]
+    },
+    {
+      "hardware_kind": "bedrock",
+      "id": "c1-bedrock",
+      "identity": {
+        "clock_mhz": 200,
+        "hardware_revision": 2,
+        "widget_mfg": "0x036",
+        "widget_part": "0xc110"
+      },
+      "kind": "node-asic",
+      "name": "Bedrock",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 2
+      },
+      "parent": "c1-chassis",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor A, the first slot of processor interface 0.",
+      "hardware_kind": "r12000",
+      "id": "c1-cpu0",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c1-chassis",
+      "processor_slice": "A",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor B, the second slot of processor interface 0.",
+      "hardware_kind": "r12000",
+      "id": "c1-cpu1",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c1-chassis",
+      "processor_slice": "B",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor C, the first slot of processor interface 1.",
+      "hardware_kind": "r12000",
+      "id": "c1-cpu2",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c1-chassis",
+      "processor_slice": "C",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Processor D, the second slot of processor interface 1.",
+      "hardware_kind": "r12000",
+      "id": "c1-cpu3",
+      "kind": "cpu",
+      "name": "R12000",
+      "parent": "c1-chassis",
+      "processor_slice": "D",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, CPU 0 to 3 at module 001c04 slices A to D and PIMMs on cpubus 0 and 1",
+        "108-0240-002 printed page 2-4: a node has one or two PIMMs of two processors each",
+        "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface",
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+      ]
+    },
+    {
+      "description": "Eight DIMM slots as four pairs. Banks 2n and 2n+1 sit on pair n, both DIMMs of a pair match, and pairs may differ: 512 MB to 8 GB per C-brick.",
+      "id": "c1-node-memory",
+      "kind": "memory",
+      "name": "node memory",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 reside on DIMM pair n, the DIMMs of a pair match, eight 512 MB banks give 4 GB"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The C-brick's L1, on the IP35 motherboard: it serves the console, reads the brick's identity parts and reaches the I/O brick's L1 over the XIO cable and the other C-brick's over the NUMAlink cable.",
+      "hardware_kind": "l1",
+      "id": "c1-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 115 to 116 and 121 to 125: the L1 on the IP35 motherboard, its console and its links to the I/O brick and the other C-brick",
+        "108-0240-002 printed page 2-47: RS-422 L1 links over the NUMAlink and Crosstown2 cables"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "The C-brick's one XIO connector, which joins it to an I-, P- or X-brick. The brick at the far end owns the crossbar and its ports; the composition says what is cabled here.",
+        "occupancy": "opaque"
+      },
+      "id": "c1-xio-ii-connector",
+      "kind": "connector",
+      "name": "XIO (II) connector",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
+        "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "The Bedrock's one network-interface connector. The composition says whether it joins another C-brick or an R-brick port.",
+        "occupancy": "opaque"
+      },
+      "id": "c1-link-connector",
+      "kind": "connector",
+      "name": "LINK (NI) connector",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "id": "ibrick-brick",
+      "kind": "module",
+      "name": "I-brick",
+      "parent": "rack",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The I-brick's L1, on its power board. It knows only the C-brick its XIO cable joins, and that C-brick's L1 reaches it over the same cable.",
+      "hardware_kind": "l1",
+      "id": "ibrick-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "ibrick-brick",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 105 to 106, 121 to 122 and 127 to 131: the I-brick L1, the C-brick L1 reaching it over the XIO connection, and an I-brick L1 knowing only its attached C-brick"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
+      "hardware_kind": "xbridge",
+      "id": "ibrick-xbridge",
+      "kind": "pci-host-bridge",
+      "name": "XBridge",
+      "notes": "The I-brick's own XBridge revision line is not established by any source read for this record.",
+      "parent": "ibrick-brick",
+      "pci_host_bridge": {
+        "heads": 2
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbridge"
+      },
+      "hardware_kind": "xbridge",
+      "id": "ibrick-xbridge-crossbar",
+      "identity": {
+        "notes": "The revision the QEMU XBridge model presents. The I-brick's fitted XBridge revision is unknown; a widget scan or verbose PROM boot of a real I-brick would settle it.",
+        "widget_revision": 2
+      },
+      "kind": "crossbar",
+      "name": "XBridge crossbar section",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 14, bus 2, with the I-brick's PCI slots.",
+      "id": "ibrick-xbridge-bridge-e",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xe",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 15, bus 1, with the IO7 and the Fibre Channel card.",
+      "id": "ibrick-xbridge-bridge-f",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xf",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "A compute-node port. The composition says which brick's cable ends here.",
+        "occupancy": "opaque",
+        "port": 10
+      },
+      "id": "ibrick-port-a",
+      "kind": "connector",
+      "name": "Crosstown2 port A connector",
+      "parent": "ibrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "The second Crosstown2 port: a second compute node, or a G- or V-brick when port A carries the C-brick. Nothing is cabled here in this layer.",
+        "occupancy": "opaque",
+        "port": 11
+      },
+      "id": "ibrick-port-b",
+      "kind": "connector",
+      "name": "Crosstown2 port B connector",
+      "parent": "ibrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes",
+        "007-4264-002 printed page 8: an I-brick port connects to a C-brick, G-brick or V-brick"
+      ]
+    },
+    {
+      "hardware_kind": "qlogic-isp2200",
+      "id": "ibrick-fibre-channel",
+      "identity": {
+        "pci_device": "0x2200",
+        "pci_vendor": "0x1077"
+      },
+      "kind": "storage-hba",
+      "name": "QLogic 2200 Fibre Channel",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3",
+      "id": "ibrick-ioc3",
+      "identity": {
+        "pci_device": "0x0003",
+        "pci_vendor": "0x10a9"
+      },
+      "kind": "io-controller",
+      "name": "IOC3",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-ethernet",
+      "id": "ibrick-ioc3-ethernet",
+      "kind": "subfunction",
+      "name": "Ethernet MAC",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-serial-a",
+      "id": "ibrick-ioc3-serial-a",
+      "kind": "subfunction",
+      "name": "serial port A",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
+      ]
+    },
+    {
+      "hardware_kind": "lucent-ohci",
+      "id": "ibrick-usb",
+      "identity": {
+        "pci_device": "0x5802",
+        "pci_vendor": "0x11c1"
+      },
+      "kind": "io-controller",
+      "name": "USB controller (OHCI)",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "hardware_kind": "ti-tsb12lv22",
+      "id": "ibrick-firewire",
+      "identity": {
+        "pci_device": "0x8009",
+        "pci_vendor": "0x104c"
+      },
+      "kind": "io-controller",
+      "name": "TI TSB12LV22 IEEE 1394 OHCI",
+      "notes": "A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.",
+      "parent": "ibrick-brick",
+      "provenance": "observed-hardware",
+      "regions": [],
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "id": "vbrick-brick",
+      "kind": "module",
+      "name": "V-brick",
+      "notes": "Its L1 brick-type character is unknown, so brick_type stays unset. It has its own L1 (007-4264-002 printed pages 52 and 128 to 129), which this layer does not carry: its address and identity are unknown.",
+      "parent": "rack",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two InfinitePerformance pipes, each one VPro V12 board taking two of its four board slots, behind a midplane XBridge"
+      ]
+    },
+    {
+      "hardware_kind": "xbridge",
+      "id": "vbrick-xbridge",
+      "kind": "pci-host-bridge",
+      "name": "XBridge",
+      "notes": "The V-brick's fitted XBridge revision and operating mode are unknown. XBridge mode, with its crossbar, is inferred from the two host ports reaching four board slots through one chip. The chip's PCI heads E and F carry nothing in Figure 2-14.",
+      "parent": "vbrick-brick",
+      "pci_host_bridge": {
+        "heads": 2
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 52 and 54: the midplane XBridge is the interface between the V-brick's two ports and the V12 boards; Figure 2-14 draws no PCI device"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbridge"
+      },
+      "hardware_kind": "xbridge",
+      "id": "vbrick-xbridge-crossbar",
+      "kind": "crossbar",
+      "name": "XBridge crossbar section",
+      "parent": "vbrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: an XBridge's Crosstown2 ports are A (10) and B (11), and 8, 9, C and D are its Crosstalk ports"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "The rear panel labels the two connectors XIO 10 and XIO 11 and the block diagram calls them Port A and Port B; which label is which port, and whether the host interface board between them and the XBridge is transparent, are unknown. Landing on the chip's port A is inferred: A and B are the only ports the XBridge documents for host cabling.",
+        "occupancy": "opaque",
+        "port": 10
+      },
+      "id": "vbrick-port-a",
+      "kind": "connector",
+      "name": "Crosstown2 port A connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick",
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "Crosstown2",
+        "location": "rear panel",
+        "notes": "With one pipe fitted, a second C-brick may be cabled here for bandwidth; with two pipes, the second pipe's C-brick is. Nothing is cabled here in this layer.",
+        "occupancy": "opaque",
+        "port": 11
+      },
+      "id": "vbrick-port-b",
+      "kind": "connector",
+      "name": "Crosstown2 port B connector",
+      "parent": "vbrick-xbridge-crossbar",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick",
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"
+      ]
+    }
+  ],
+  "composition": {
+    "architecture": "sn1",
+    "assembly": "ip35",
+    "connector_population": [
+      {
+        "component": "c0-link-connector",
+        "occupancy": "cabled",
+        "peer": "c1-link-connector",
+        "provenance": "vendor-document",
+        "reason": "The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.",
+        "sources": [
+          "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+        ]
+      },
+      {
+        "component": "c1-link-connector",
+        "occupancy": "cabled",
+        "peer": "c0-link-connector",
+        "provenance": "vendor-document",
+        "reason": "The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.",
+        "sources": [
+          "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+        ]
+      }
+    ],
+    "layers": [
+      {
+        "id": "sn1",
+        "kind": "architecture"
+      },
+      {
+        "id": "ip35",
+        "kind": "assembly"
+      },
+      {
+        "id": "onyx3000",
+        "kind": "product"
+      }
+    ],
+    "limits": {
+      "cpus_per_node": 4,
+      "dimms_per_node": 8,
+      "nodes": 2,
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed page 2-4: two or four processors on one or two PIMMs",
+        "108-0240-002 printed pages 2-5 and 2-6: 512 MB to 8 GB in up to eight banks, banks 2n and 2n+1 on DIMM pair n, the two DIMMs of a pair matching, 256 MB, 512 MB and 1 GB DIMMs"
+      ]
+    },
+    "module_instances": [
+      {
+        "model": "layers/modules/c-brick.yaml",
+        "observed_hardware": {
+          "mode": "projected",
+          "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "c0-"
+      },
+      {
+        "model": "layers/modules/c-brick.yaml",
+        "observed_hardware": {
+          "mode": "projected",
+          "note": "The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what every published Origin 3000 inventory reports; it is not a capture of this C-brick.",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-bedrock"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "c1-"
+      },
+      {
+        "bus_bindings": {
+          "host-port-a-xio": "c0-xio-ii"
+        },
+        "model": "layers/modules/i-brick.yaml",
+        "observed_hardware": {
+          "mode": "direct",
+          "note": "The IO7 device identities are the closure record's own three independent owners' IRIX inventories, reused directly for this reference I-brick rather than a distinct capture of this exact set.",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "ibrick-"
+      },
+      {
+        "bus_bindings": {
+          "host-port-a-xio": "c1-xio-ii"
+        },
+        "model": "layers/modules/v-brick.yaml",
+        "observed_hardware": {
+          "mode": "projected",
+          "note": "No V-brick inventory or hardware graph has been captured; the enclosure follows the owner's guide's block diagram.",
+          "sources": [
+            "007-4264-002 printed pages 52 to 56"
+          ]
+        },
+        "parent": "rack",
+        "prefix": "vbrick-"
+      }
+    ],
+    "platform": "ip35",
+    "population": {
+      "cpus_per_node": [
+        2,
+        2
+      ],
+      "fitted_memory": {
+        "provenance": "vendor-document",
+        "reason": "No Onyx 3000 bundle read for this composition fixes the C-bricks' memory; this composition selects none.",
+        "sources": [
+          "007-4311-002 printed page 83, section 8.1: a C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+        ],
+        "status": "unknown"
+      },
+      "nodes": 2,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4311-002 printed page 83, section 8.1: a C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+      ]
+    },
+    "product": "onyx3000",
+    "topology": {
+      "max_nodes": 2,
+      "min_nodes": 2,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed page 19: each InfinitePerformance pipe needs a dedicated C-brick, so a graphics system has at least as many C-bricks as pipes, plus one for the system I-brick",
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    }
+  },
+  "connections": [
+    {
+      "bus": "ni-cable",
+      "component": "c0-bedrock",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "bus": "ni-cable",
+      "component": "c1-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "bus": "ni-cable",
+      "component": "c0-link-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "bus": "ni-cable",
+      "component": "c1-link-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
+      "bus": "vbrick-port-8-xio",
+      "component": "vbrick-v12",
+      "notes": "Port 8 is this composition's choice; which Crosstalk port serves a V12 slot is unknown.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed pages 10, 52 and 54: a V-brick holds one or two pipes, each one VPro V12 board taking two of its four slots, behind its midplane XBridge"
+      ]
+    },
+    {
+      "bus": "c0-sysad0",
+      "component": "c0-cpu0",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-sysad0",
+      "component": "c0-cpu1",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-sysad1",
+      "component": "c0-cpu2",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-sysad1",
+      "component": "c0-cpu3",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-sysad0",
+      "component": "c0-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-sysad1",
+      "component": "c0-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c0-xio-ii",
+      "component": "c0-xio-ii-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+      ]
+    },
+    {
+      "bus": "c1-sysad0",
+      "component": "c1-cpu0",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-sysad0",
+      "component": "c1-cpu1",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-sysad1",
+      "component": "c1-cpu2",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-sysad1",
+      "component": "c1-cpu3",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-sysad0",
+      "component": "c1-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-sysad1",
+      "component": "c1-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+      ]
+    },
+    {
+      "bus": "c1-xio-ii",
+      "component": "c1-xio-ii-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+      ]
+    },
+    {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-e",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 14
+    },
+    {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 15
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-downstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-fibre-channel",
+      "pci_device": 1,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-ioc3",
+      "pci_device": 4,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-usb",
+      "pci_device": 5,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-firewire",
+      "pci_device": 6,
+      "provenance": "observed-hardware",
+      "role": "endpoint",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "bus": "c0-xio-ii",
+      "component": "ibrick-xbridge-crossbar",
+      "notes": "Host port A, widget 0xA (10 decimal).",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ],
+      "widget": 10
+    },
+    {
+      "bus": "c0-xio-ii",
+      "component": "ibrick-port-a",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "bus": "ibrick-port-b-xio",
+      "component": "ibrick-port-b",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "bus": "c1-xio-ii",
+      "component": "vbrick-xbridge-crossbar",
+      "notes": "Host port A, widget 0xA (10 decimal); inferred, see the port-a connector.",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 and 2-27: XBridge Crosstown2 ports A (10) and B (11)"
+      ],
+      "widget": 10
+    },
+    {
+      "bus": "c1-xio-ii",
+      "component": "vbrick-port-a",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"
+      ]
+    },
+    {
+      "bus": "vbrick-port-b-xio",
+      "component": "vbrick-port-b",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4264-002 printed pages 54 to 56: rear connectors XIO 11 and XIO 10, Port A and Port B, each cabled to a C-brick"
+      ]
+    }
+  ],
+  "evidence_policy": "strict",
+  "interrupts": [],
+  "machine": {
+    "architecture_ip": "IP35",
+    "board_ip": "IP35",
+    "generation": "SN1",
+    "kernel_ip": "IP27",
+    "model_role": "reference",
+    "name": "Onyx 3000",
+    "notes": "An Onyx 3000 with one InfinitePerformance (VPro V12) pipe: two C-bricks joined LINK (NI) to LINK (NI) with no R-brick, the I-brick on the first C-brick's XIO (II) connector at its XBridge port A, and a V-brick on the second C-brick's XIO (II) connector at its midplane XBridge's port A, with one V12 board on Crosstalk port 8. The port A choices follow the documented host ports; which port a boot I-brick uses and which V-brick connector is port A are unknown. Port 8 is this composition's choice among the four Crosstalk ports; which port a V12 slot uses, and so the V12's widget number, is unknown. The V-brick and I-brick carry no L1, the C-brick layer carries no L1, memory or clock fit, and so this configuration never compiles. Two C-bricks are the fewest a one-pipe system holds, one for the pipe and one for the I-brick, and the most this unrouted composition joins; a routed Onyx 3000 is not described. Two processors per C-brick is the smallest documented C-brick fit, not an asserted Onyx 3000 fit."
+  },
+  "model_version": 1,
+  "open_questions": [],
+  "processors": [
+    {
+      "part": "r12000",
+      "provenance": "observed-hardware",
+      "sources": [
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, the CPU 0 to 7, FPU and Scache lines",
+        "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row, word 0x5414a785",
+        "108-0240-002 printed page 2-4: a PIMM carries R12000 processors at 360 MHz or R12000A at 400 MHz with a 4 or 8 MB secondary cache",
+        "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 76 and 229: R12000 implementation and revision mask"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 266,
+          "cache_mib": 8,
+          "clock_mhz": 400,
+          "fpu_identification": "0x0935",
+          "notes": "The Origin 3200 C-brick's selected fit. Established: a posted Origin 3200 inventory reports four 400 MHz R12000s per C-brick at revision 3.5, each with an 8 MB secondary cache at 266 MHz, and an R12010 FPU at revision 3.5. Inferred: the PRId and the FPU identification, from those printed revisions and the R10000-family implementation numbers. Approximated: the reset-mode word is the low 25 bits of the stock IP35 PROM's configuration-table word for a 400 MHz, 8 MB C-brick, the way the Origin 300's R14000 word is its row's; no capture of a C-brick's reset mode exists.",
+          "processor_identification": "0x0e35",
+          "reset_mode_bits": "0x0014a785"
+        }
+      ]
+    },
+    {
+      "part": "r14000",
+      "provenance": "observed-hardware",
+      "sources": [
+        "108-0263-004 (Origin 300 scan tools guide), configuration names"
+      ],
+      "variants": [
+        {
+          "cache_mib": 2,
+          "clock_mhz": 500,
+          "notes": "QEMU's currently shipping 500 MHz/2 MiB Origin 300 configuration writes this exact Config0 low-25-bit reset word (readback 0x6c9aa985). No product here yet reads this field; it moves machine.firmware_config.processor_reset_mode here for a future compiler once a Bedrock-node compile path exists. The complete Config0 write mask remains unestablished for R14000, so only the literal word is carried, not a named-field encoding.",
+          "reset_mode_bits": "0x009aa985"
+        },
+        {
+          "cache_mib": 2,
+          "clock_mhz": 600
+        }
+      ]
+    },
+    {
+      "part": "r16000",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Origin 350 processor inputs",
+        "web:graphica-onyx350-hinv  module 001c01 CPU inventory, four 800 MHz R16000 with 8 MiB cache; single-module operation remains unverified",
+        "web:irixnet-thread-2263  module 001c01 reports 1 GHz/16 MiB; Onyx 4 host assignment remains inferred"
+      ],
+      "variants": [
+        {
+          "cache_mib": 8,
+          "clock_mhz": 700,
+          "notes": "Selected software profile for the Origin 350 IP53 runtime model. This tuple does not identify a processor stepping or prove a physical Origin 350 configuration."
+        },
+        {
+          "cache_mib": 8,
+          "clock_mhz": 800,
+          "notes": "Captured on module 001c01 in the customized Onyx 350 system. This observed tuple does not prove standalone operation or establish reset behavior."
+        },
+        {
+          "cache_mib": 16,
+          "clock_mhz": 1000,
+          "notes": "Public HINV reports this tuple for module 001c01, an IP59_4CPU board. Selecting that module as an Onyx 4 host is an inference; this tuple is used only by the explicitly IP53-backed serial compatibility experiment. It does not establish reset behavior."
+        },
+        {
+          "cache_mib": 4,
+          "clock_mhz": 700,
+          "notes": "Tezro deskside compatibility tuple. Cache clock is supplied by the product component; processor identification and reset Config0 remain unknown."
+        }
+      ]
+    }
+  ],
+  "space_selection": {
+    "bits": "58:57",
+    "count": 4,
+    "mechanism": "processor-attribute",
+    "notes": "Unchanged from the Origin 200: two uncached-attribute bits the R10000-family processor drives beside the 40-bit physical address. The seven-space, address-field encoding this file once carried matches no public source, MIPS or Itanium; the Origin 200's two-bit emulation carrier therefore fits this generation as it stands.",
+    "provenance": "public-header",
+    "sources": [
+      "openbsd-sgi:2df91d80c104 sys/arch/mips64/include/cpu.h lines 92 to 113",
+      "linux-ip35:9f613a321ea03fb91bd9947cca7dda2888ccb447 arch/mips/include/asm/mach-ip35/spaces.h lines 13 to 22",
+      "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/bedrock.h lines 40 to 44"
+    ]
+  },
+  "xio_cables": [
+    {
+      "ends": [
+        "c0-xio-ii-connector",
+        "ibrick-port-a"
+      ],
+      "id": "c0-to-ibrick",
+      "notes": "Port A is this composition's choice; which port a boot I-brick uses is unknown.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
+        "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
+      ]
+    },
+    {
+      "ends": [
+        "c1-xio-ii-connector",
+        "vbrick-port-a"
+      ],
+      "id": "c1-to-vbrick",
+      "notes": "Which V-brick connector, XIO 10 or XIO 11, is port A is unknown.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-4264-002 printed page 8: a C-brick connects directly to a V-brick, and through an I-, X- or N-brick to a G-brick",
+        "007-4264-002 printed pages 20 and 54 to 56, Figure 1-7: each V-brick XIO port is cabled to a C-brick XIO connector, and one cable serves a one-pipe V-brick"
+      ]
+    }
+  ]
+}

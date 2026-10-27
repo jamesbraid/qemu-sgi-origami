@@ -3576,5 +3576,108 @@ class Origin3400RoutedTests(unittest.TestCase):
             compile_model(self.resolve())
 
 
+class Onyx3000VbrickTests(unittest.TestCase):
+    """The Onyx 3000 with a one-pipe V-brick on its second C-brick."""
+
+    ONYX3000 = INPUTS / "onyx3000-vbrick.yaml"
+
+    def resolve(self):
+        return _resolver.load_system_model(self.ONYX3000)
+
+    def test_vbrick_hangs_off_the_second_cbrick(self):
+        model = self.resolve()
+        components = {item["id"]: item for item in model["components"]}
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "module"),
+            ["c0-chassis", "c1-chassis", "ibrick-brick", "vbrick-brick"])
+        # The V-brick's L1 brick type is unknown, so none is asserted.
+        self.assertNotIn("brick_type", components["vbrick-brick"])
+        self.assertEqual(components["vbrick-xbridge-crossbar"]["parent"],
+                         "vbrick-xbridge")
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in model["xio_cables"]],
+            [("c0-to-ibrick", ["c0-xio-ii-connector", "ibrick-port-a"]),
+             ("c1-to-vbrick", ["c1-xio-ii-connector", "vbrick-port-a"])])
+        attachments = {(item["component"], item["bus"], item["role"])
+                       for item in model["connections"]}
+        self.assertIn(("vbrick-xbridge-crossbar", "c1-xio-ii",
+                       "bridge-upstream"), attachments)
+        self.assertIn(("ibrick-xbridge-crossbar", "c0-xio-ii",
+                       "bridge-upstream"), attachments)
+        # The V12 sits behind the V-brick's own crossbar, not on either
+        # C-brick's XIO bus.
+        v12 = components["vbrick-v12"]
+        self.assertEqual((v12["hardware_kind"], v12["parent"]),
+                         ("odyssey", "vbrick-brick"))
+        self.assertEqual(
+            [(item["bus"], item["role"]) for item in model["connections"]
+             if item["component"] == "vbrick-v12"],
+            [("vbrick-port-8-xio", "endpoint")])
+        bus = next(item for item in model["buses"]
+                   if item["id"] == "vbrick-port-8-xio")
+        self.assertEqual((bus["kind"], bus["master"]),
+                         ("xio", "vbrick-xbridge-crossbar"))
+
+    def resolve_with(self, change):
+        composition = yaml.safe_load(self.ONYX3000.read_text())
+        composition["module_instances"] = change(
+            composition["module_instances"])
+        return _resolver.resolve_system_model(self.ONYX3000, composition)
+
+    def test_onyx3000_refuses_too_few_cbricks_or_no_ibrick(self):
+        def one_cbrick(instances):
+            vbrick = dict(instances[3],
+                          bus_bindings={"host-port-a-xio": "c0-xio-ii"})
+            return [instances[0], vbrick]
+
+        def without_ibrick(instances):
+            return [instances[0], instances[1], instances[3]]
+
+        for name, change, message in (
+                ("one C-brick", one_cbrick,
+                 "requires at least 2 of c-brick, got 1"),
+                ("no I-brick", without_ibrick,
+                 "requires at least 1 of i-brick, got 0"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    f"product 'onyx3000' {message}"):
+                self.resolve_with(change)
+
+    def test_onyx3000_refuses_a_gbrick_beside_the_vbrick(self):
+        # No G-brick layer exists yet, so a bare module layer with its id
+        # stands in for one.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("*.json"))
+            shutil.copy(INPUTS / "system-model.schema.json", root)
+            (root / "layers/modules/g-brick.yaml").write_text(yaml.safe_dump({
+                "layer_version": 1,
+                "layer": {"kind": "module", "id": "g-brick",
+                          "requires": {"architecture": "sn1"},
+                          "data": {"components": [{
+                              "id": "brick", "name": "G-brick",
+                              "kind": "module",
+                              "provenance": "derived"}]}}},
+                sort_keys=False))
+            path = root / "onyx3000-vbrick.yaml"
+            composition = yaml.safe_load(path.read_text())
+            composition["module_instances"].append(
+                {"model": "layers/modules/g-brick.yaml", "prefix": "gbrick-",
+                 "parent": "rack"})
+            with self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "product 'onyx3000' does not allow g-brick and v-brick "
+                    "together"):
+                _resolver.resolve_system_model(path, composition)
+
+    def test_onyx3000_never_compiles(self):
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(self.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()
