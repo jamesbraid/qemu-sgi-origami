@@ -339,6 +339,115 @@ static bool *sgi_model_host_attachments(const SGIModelTopology *t,
     return host;
 }
 
+/* Whether @end's index fits the list its kind names in @t. */
+static bool sgi_model_xio_end_valid(const SGIModelTopology *t,
+                                    const SGIModelXioEnd *end)
+{
+    switch (end->kind) {
+    case SGI_MODEL_XIO_END_KIND_NODE:
+        return !end->has_port && end->index < QAPI_LIST_LENGTH(t->nodes);
+    case SGI_MODEL_XIO_END_KIND_CROSSBAR:
+        return end->has_port && end->index < QAPI_LIST_LENGTH(t->crossbars);
+    case SGI_MODEL_XIO_END_KIND_IO_BOARD:
+        return !end->has_port && end->index < QAPI_LIST_LENGTH(t->io_boards);
+    default:
+        return false;
+    }
+}
+
+/* Every XIO cable has two ends, each in range for its kind. */
+static bool sgi_model_check_xio_cables(const SGIModelTopology *t,
+                                       Error **errp)
+{
+    const SGIModelXioCableList *cable;
+
+    for (cable = t->xio_cables; cable; cable = cable->next) {
+        const SGIModelXioEndList *end;
+
+        if (QAPI_LIST_LENGTH(cable->value->ends) != 2) {
+            error_setg(errp, "topology '%s' XIO cable '%s' does not have "
+                       "two ends", t->name, cable->value->name);
+            return false;
+        }
+        for (end = cable->value->ends; end; end = end->next) {
+            if (!sgi_model_xio_end_valid(t, end->value)) {
+                error_setg(errp, "topology '%s' XIO cable '%s' names an end "
+                           "out of range or with a port its kind does not "
+                           "take", t->name, cable->value->name);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/*
+ * Whether @end survives a view that keeps nodes, crossbars and boards by
+ * @node_map, @crossbar_map and @board_map; NULL @board_map keeps no board.
+ */
+static bool sgi_model_xio_end_kept(const SGIModelTopology *t,
+                                   const SGIModelXioEnd *end,
+                                   const int *node_map,
+                                   const int *crossbar_map,
+                                   const int *board_map)
+{
+    switch (end->kind) {
+    case SGI_MODEL_XIO_END_KIND_NODE:
+        return sgi_model_kept(node_map, QAPI_LIST_LENGTH(t->nodes),
+                              end->index);
+    case SGI_MODEL_XIO_END_KIND_CROSSBAR:
+        return sgi_model_kept(crossbar_map, QAPI_LIST_LENGTH(t->crossbars),
+                              end->index);
+    case SGI_MODEL_XIO_END_KIND_IO_BOARD:
+        return board_map &&
+               sgi_model_kept(board_map, QAPI_LIST_LENGTH(t->io_boards),
+                              end->index);
+    default:
+        return false;
+    }
+}
+
+/*
+ * Keep each crossbar an XIO cable joins to a kept node, directly or
+ * through other cabled crossbars, as a Crossbow a kept node's Hub
+ * reaches is kept. A crossbar marked here gets a non-negative entry
+ * before renumbering.
+ */
+static void sgi_model_keep_cabled_crossbars(const SGIModelTopology *t,
+                                            const int *node_map,
+                                            int *crossbar_map)
+{
+    bool changed;
+
+    do {
+        const SGIModelXioCableList *cable;
+
+        changed = false;
+        for (cable = t->xio_cables; cable; cable = cable->next) {
+            const SGIModelXioEnd *ends[2] = {
+                cable->value->ends->value,
+                cable->value->ends->next->value,
+            };
+
+            for (unsigned side = 0; side < 2; side++) {
+                const SGIModelXioEnd *peer = ends[side ^ 1];
+
+                if (ends[side]->kind != SGI_MODEL_XIO_END_KIND_CROSSBAR ||
+                    crossbar_map[ends[side]->index] >= 0) {
+                    continue;
+                }
+                if ((peer->kind == SGI_MODEL_XIO_END_KIND_NODE ||
+                     peer->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) &&
+                    sgi_model_xio_end_kept(t, peer, node_map, crossbar_map,
+                                           NULL)) {
+                    crossbar_map[ends[side]->index] = 0;
+                    changed = true;
+                }
+            }
+        }
+    } while (changed);
+}
+
 /*
  * Checks everything sgi_model_build_view relies on before it allocates
  * anything, so the build itself cannot fail half way: every index a kept
@@ -500,6 +609,8 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
         g_new(int, attachment_total ? attachment_total : 1);
     g_autofree int *pci_host_map =
         g_new(int, pci_host_total ? pci_host_total : 1);
+    size_t board_total = QAPI_LIST_LENGTH(t->io_boards);
+    g_autofree int *board_map = g_new(int, board_total ? board_total : 1);
     g_autofree bool *host = NULL;
     const SGIModelXioAttachmentList *attachment;
     const SGIModelPciHostBridgeList *pci_host;
@@ -533,7 +644,8 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     if (!sgi_model_position_map(row->nodes, node_map, node_total, "node",
                                 t->name, errp) ||
         !sgi_model_position_map(row->routers, router_map, router_total,
-                                "router", t->name, errp)) {
+                                "router", t->name, errp) ||
+        !sgi_model_check_xio_cables(t, errp)) {
         return NULL;
     }
     host = sgi_model_host_attachments(t, node_total);
@@ -560,6 +672,7 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
             crossbar_map[a->crossbar_index] = 0;
         }
     }
+    sgi_model_keep_cabled_crossbars(t, node_map, crossbar_map);
     for (i = 0, next = 0; i < crossbar_total; i++) {
         if (crossbar_map[i] >= 0) {
             crossbar_map[i] = next++;
@@ -709,14 +822,18 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     {
         SGIModelIoBoardList **tail = &view->io_boards;
 
-        for (io_board = t->io_boards; io_board; io_board = io_board->next) {
+        for (io_board = t->io_boards, i = 0; io_board;
+             io_board = io_board->next, i++) {
             SGIModelIoBoard *copy;
 
-            if (!io_board->value->has_pci_host_index) {
-                QAPI_LIST_APPEND(tail, io_board->value);
+            board_map[i] = -1;
+            if (io_board->value->has_pci_host_index &&
+                pci_host_map[io_board->value->pci_host_index] < 0) {
                 continue;
             }
-            if (pci_host_map[io_board->value->pci_host_index] < 0) {
+            board_map[i] = QAPI_LIST_LENGTH(view->io_boards);
+            if (!io_board->value->has_pci_host_index) {
+                QAPI_LIST_APPEND(tail, io_board->value);
                 continue;
             }
             if (pci_host_map[io_board->value->pci_host_index] ==
@@ -729,6 +846,51 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
                 QAPI_LIST_APPEND(tail, copy);
             }
         }
+    }
+    {
+        SGIModelXioCableList **tail = &view->xio_cables;
+        const SGIModelXioCableList *cable;
+
+        /*
+         * A cable to a node board, crossbar or board the row leaves out
+         * is not present, as that node board's own host link is not.
+         */
+        for (cable = t->xio_cables; cable; cable = cable->next) {
+            const SGIModelXioEndList *end;
+            SGIModelXioEndList **end_tail;
+            SGIModelXioCable *copy;
+            bool kept = true;
+
+            for (end = cable->value->ends; end; end = end->next) {
+                kept &= sgi_model_xio_end_kept(t, end->value, node_map,
+                                               crossbar_map, board_map);
+            }
+            if (!kept) {
+                continue;
+            }
+            copy = g_memdup2(cable->value, sizeof(*copy));
+            copy->ends = NULL;
+            end_tail = &copy->ends;
+            for (end = cable->value->ends; end; end = end->next) {
+                SGIModelXioEnd *renumbered =
+                    g_memdup2(end->value, sizeof(*renumbered));
+
+                switch (renumbered->kind) {
+                case SGI_MODEL_XIO_END_KIND_NODE:
+                    renumbered->index = node_map[renumbered->index];
+                    break;
+                case SGI_MODEL_XIO_END_KIND_CROSSBAR:
+                    renumbered->index = crossbar_map[renumbered->index];
+                    break;
+                default:
+                    renumbered->index = board_map[renumbered->index];
+                    break;
+                }
+                QAPI_LIST_APPEND(end_tail, renumbered);
+            }
+            QAPI_LIST_APPEND(tail, copy);
+        }
+        view->has_xio_cables = t->has_xio_cables;
     }
     {
         SGIModelXioSlotList **tail = &view->xio_slots;

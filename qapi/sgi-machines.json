@@ -412,8 +412,26 @@
 # @ip45: IP45 board identity.
 # @ip34: IP34 board identity.
 # @ip53: IP53 board identity; the current SN1 builder refuses it.
+#
+# @ip35: the Origin 3000 C-brick's IP35 board, whose Bedrock has no
+#     XBridge of its own and reaches I/O over an XIO cable; the
+#     current SN1 builder refuses it
 ##
-{ 'enum': 'SGIModelBoardKind', 'data': ['ip45', 'ip34', 'ip53'] }
+{ 'enum': 'SGIModelBoardKind', 'data': ['ip45', 'ip34', 'ip53', 'ip35'] }
+
+##
+# @SGIModelNodeRole:
+#
+# What a node board contributes to the machine.
+#
+# @compute: processors and memory
+#
+# @memory: memory and no processors; its Bedrock answers memory
+#     traffic from other nodes.  The current SN1 builder refuses it
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelNodeRole', 'data': ['compute', 'memory'] }
 
 ##
 # @SGIModelNode:
@@ -435,8 +453,10 @@
 # @asic-kind: which node ASIC this board is built around
 #
 # @board-kind: authored enclosing board identity for a Bedrock node;
-#     current catalogue output carries only @ip53 for early builder
-#     refusal
+#     current catalogue output carries only @ip53 and @ip35, both for
+#     early builder refusal
+#
+# @role: what this node contributes; absent means @compute
 #
 # @identity: Hub/Bedrock fitted-part identity, absent for HEART
 #
@@ -464,7 +484,7 @@
 #     holds the totals besides @bank-mib's own shipped population, and
 #     empty means the shipped population only
 #
-# @flash: this node's boot flash
+# @flash: this node's boot flash; absent only on a @memory node
 #
 # @option-intx-map: Optional synthetic compute option-board map.
 #     Eight entries for head E, device indexes 1/2, pins A/B/C/D.
@@ -482,6 +502,7 @@
             '*hub-slot-bits': 'uint8',
             'asic-kind': 'SGIModelAsicKind',
             '*board-kind': 'SGIModelBoardKind',
+            '*role': 'SGIModelNodeRole',
             '*identity': 'SGIModelAsicIdentity',
             '*heart': 'SGIModelHeartIdentity',
             '*bedrock': 'SGIModelBedrockConfig',
@@ -490,7 +511,7 @@
             'accepted-memory-mib': ['uint64'],
             '*accepted-bank-mib': ['uint64'],
             '*banks-descending': 'bool',
-            'flash': 'SGIModelFlash',
+            '*flash': 'SGIModelFlash',
             'slave-role': 'bool',
             '*option-intx-map': ['uint8'] } }
 
@@ -899,6 +920,58 @@
             'node-index': 'uint32' } }
 
 ##
+# @SGIModelXioEndKind:
+#
+# What an XIO cable's end plugs into.
+#
+# @node: a node board's own XIO (II) connector
+#
+# @crossbar: a numbered port of an XIO crossbar
+#
+# @io-board: an XIO board's own connector
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelXioEndKind',
+  'data': ['node', 'crossbar', 'io-board'] }
+
+##
+# @SGIModelXioEnd:
+#
+# One end of an XIO cable.
+#
+# @kind: what this end plugs into
+#
+# @index: position in the topology's own @nodes, @crossbars or
+#     @io-boards list
+#
+# @port: the crossbar port the cable meets; present exactly when
+#     @kind is @crossbar
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelXioEnd',
+  'data': { 'kind': 'SGIModelXioEndKind',
+            'index': 'uint32',
+            '*port': 'uint8' } }
+
+##
+# @SGIModelXioCable:
+#
+# One XIO link between two bricks.  Two links between the same two
+# chips are two records on distinct ports.
+#
+# @name: catalogue name of this cable
+#
+# @ends: the two ends it joins
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelXioCable',
+  'data': { 'name': 'str',
+            'ends': ['SGIModelXioEnd'] } }
+
+##
 # @SGIModelXioSlot:
 #
 # One physical XIO slot position.  A slot does not imply
@@ -988,12 +1061,15 @@
 #     identity is fixed by the device, so the record's @part,
 #     @revision and @serial are not presented to the guest
 #
+# @io7: the Origin 3000 I-brick's fixed I/O functions on its XBridge
+#     head F.  The current SN1 builder refuses it
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'ip30', 'io6', 'io6g', 'io8', 'fuel', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
-           'mscsi', 'mgras', 'odyssey', 'vbrick'] }
+           'mscsi', 'mgras', 'odyssey', 'vbrick', 'io7'] }
 
 ##
 # @SGIModelIoBoardCarrier:
@@ -1190,6 +1266,33 @@
   'data': ['msc', 'l1'] }
 
 ##
+# @SGIModelControllerOwner:
+#
+# Which object builds a module's shared controller.
+#
+# @node: each node builds it as its own child, as an Origin 300 does
+#
+# @module: the module builds it once and links it into each of its
+#     nodes.  The current SN1 builder refuses it
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelControllerOwner', 'data': ['node', 'module'] }
+
+##
+# @SGIModelModuleController:
+#
+# Why a module has no shared controller record.
+#
+# @absent: the model gives the module no controller at all, as for a
+#     brick with no nodes and no I/O peers.  The current SN1 builder
+#     refuses it
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelModuleController', 'data': ['absent'] }
+
+##
 # @SGIModelController:
 #
 # One module's or brick's shared system controller.  Its MicroLAN and
@@ -1203,13 +1306,18 @@
 #
 # @l1: initialization selected for a node-owned L1 controller
 #
+# @owner: whether each node of the module builds this controller as
+#     its own or the module builds it once for all its nodes; absent
+#     means @node
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelController',
   'data': { 'id': 'str',
             'module-index': 'uint32',
             'kind': 'SGIModelControllerKind',
-            '*l1': 'SGIModelL1Config' } }
+            '*l1': 'SGIModelL1Config',
+            '*owner': 'SGIModelControllerOwner' } }
 
 ##
 # @SGIModelMidplaneRecord:
@@ -1241,8 +1349,14 @@
 # @initial-module-number: module number the PROM programs at reset
 #
 # @controller-index: position in the topology's own @controllers list,
-#     or -1 when this module's nodes each carry their own controller
-#     instead (Origin 200)
+#     or -1 when the module has no shared controller: either its nodes
+#     each carry their own (Origin 200, @controller absent) or it has
+#     none (@controller is @absent)
+#
+# @controller: @absent when the module has no controller at all
+#
+# @brick-type: the brick-type character the module's L1 reports, where
+#     a source establishes it
 #
 # @nodes: positions in the topology's own @nodes list, in slot order
 #
@@ -1266,6 +1380,8 @@
             'serial': 'str',
             'initial-module-number': 'uint8',
             'controller-index': 'int',
+            '*controller': 'SGIModelModuleController',
+            '*brick-type': 'str',
             'nodes': ['uint32'],
             '*io-peers': ['uint32'],
             '*identity-serial': 'uint64',
@@ -1861,6 +1977,9 @@
 #
 # @xio-attachments: which node hosts each XIO widget
 #
+# @xio-cables: XIO cables between bricks; absent where none are
+#     fitted.  The current SN1 builder refuses them
+#
 # @xio-slots: physical XIO slot positions, whether
 #     populated or not
 #
@@ -1920,6 +2039,7 @@
             'crossbars': ['SGIModelCrossbar'],
             '*pci-host-bridges': ['SGIModelPciHostBridge'],
             'xio-attachments': ['SGIModelXioAttachment'],
+            '*xio-cables': ['SGIModelXioCable'],
             'xio-slots': ['SGIModelXioSlot'],
             'io-boards': ['SGIModelIoBoard'],
             'controllers': ['SGIModelController'],
