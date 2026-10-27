@@ -2107,6 +2107,25 @@ static bool sgi_machine_index_xio_attachments(
 }
 
 /*
+ * The backend id for board @index's parallel port: the user's -parallel,
+ * else a null backend. The machine opts out of QEMU's default parallel
+ * port (see sgi_machine_class_init()) because that is a text console, so
+ * an empty slot gets its own backend here.
+ */
+static const char *sgi_machine_parallel_label(unsigned int index)
+{
+    if (index >= MAX_PARALLEL_PORTS) {
+        return NULL;
+    }
+    if (!parallel_hds[index]) {
+        g_autofree char *id = g_strdup_printf("sgi-parallel-null%u", index);
+
+        parallel_hds[index] = qemu_chr_new(id, "null", NULL);
+    }
+    return parallel_hds[index] ? parallel_hds[index]->label : NULL;
+}
+
+/*
  * The console node's IOC3 port A is serial line 0; other nodes follow
  * in index order from line 6.
  */
@@ -2564,8 +2583,7 @@ static bool sgi_machine_instantiate_ip29_io(
         t, attachment->node_index, SN0_IOC3_RECORD_A_CHARDEV));
     Chardev *record_b = serial_hd(sgi_machine_compute_serial_line(
         t, attachment->node_index, SN0_IOC3_RECORD_B_CHARDEV));
-    const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
-        parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
+    const char *parallel_id = sgi_machine_parallel_label(board_index);
     const char *nvram, *nvram_clock;
     g_autofree char *mac = sgi_machine_onboard_mac(s, t, board_index, errp);
 
@@ -2718,10 +2736,12 @@ static bool sgi_machine_instantiate_baseio_card(
      * card has no parallel port, and QEMU's default "-parallel" backend
      * exists whether or not one was asked for, so only io6g takes it.
      */
-    if (g_str_equal(preset, "io6g") && board_index < MAX_PARALLEL_PORTS &&
-        parallel_hds[board_index]) {
-        qdev_prop_set_string(dev, "parallel-chardev",
-                             parallel_hds[board_index]->label);
+    if (g_str_equal(preset, "io6g")) {
+        const char *parallel_id = sgi_machine_parallel_label(board_index);
+
+        if (parallel_id) {
+            qdev_prop_set_string(dev, "parallel-chardev", parallel_id);
+        }
     }
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
@@ -3248,9 +3268,12 @@ static bool sgi_machine_instantiate_bedrock_io(
         if (chr) {
             qdev_prop_set_string(baseio, "record-b", chr->label);
         }
-        if (node_index == 0 && parallel_hds[0]) {
-            qdev_prop_set_string(baseio, "parallel-chardev",
-                                 parallel_hds[0]->label);
+        if (node_index == 0) {
+            const char *parallel_id = sgi_machine_parallel_label(0);
+
+            if (parallel_id) {
+                qdev_prop_set_string(baseio, "parallel-chardev", parallel_id);
+            }
         }
     }
     return qdev_realize(DEVICE(baseio), NULL, errp);
@@ -9381,6 +9404,12 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     mc->cpu_index_to_instance_props = sgi_machine_cpu_index_to_props;
     mc->get_default_cpu_node_id = sgi_machine_get_default_cpu_node_id;
     mc->default_nic = "sgi-ioc3-eth";
+    /*
+     * QEMU's default parallel backend is a text console nothing reads, and
+     * a screendump by device name aborts when its console walk reaches it.
+     * sgi_machine_parallel_label() puts a null backend there instead.
+     */
+    mc->no_parallel = true;
     mc->block_default_type = IF_SCSI;
     /* Node memory is memdev-backed -numa nodes; bare mem= has no backend. */
     mc->numa_mem_supported = false;
