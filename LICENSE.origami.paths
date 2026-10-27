@@ -38,6 +38,7 @@ hw/1wire/ds2505.c
 hw/1wire/meson.build
 hw/1wire/trace-events
 hw/audio/sgi-rad1-audio.c
+hw/char/sgi-ioc-serial-dma.c
 hw/char/sgi-ioc3-parallel.c
 hw/display/psitech-rad1.c
 hw/display/psitech-rad4-modes-fixture.h
@@ -272,6 +273,7 @@ include/hw/1wire/ds2505.h
 include/hw/1wire/onewire.h
 include/hw/audio/sgi-rad1-audio-pcm.h
 include/hw/audio/sgi-rad1-audio.h
+include/hw/char/sgi-ioc-serial-dma.h
 include/hw/char/sgi-ioc3-parallel.h
 include/hw/display/sgi/board-memory.h
 include/hw/display/sgi/command-fetch.h
