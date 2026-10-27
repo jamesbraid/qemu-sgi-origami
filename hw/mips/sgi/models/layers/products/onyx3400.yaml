@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Onyx 3400 with InfiniteReality: C-bricks reaching G-brick pipes through an
+# I-brick and an N-brick. The XIO side only; the two R-bricks are not
+# composed.
+layer_version: 1
+sources:
+  007-4264-002-3400: "007-4264-002 printed page 26: an Onyx 3400 with InfiniteReality has one to eight G-bricks and graphics pipes, one to eight C-bricks with four to 32 processors, at least one system I-brick, I-, X-, P- or N-bricks as the C-bricks need, and two six-port R-bricks"
+  007-4264-002-figure-1-10: "007-4264-002 printed page 27, Figure 1-10: an Onyx 3400 with four C-bricks, an I-brick, an N-brick, two R-bricks and two G-bricks of two pipes each"
+  007-4264-002-exclusive: "007-4264-002 printed pages 10 and 21: a system has G-bricks or V-bricks, not both"
+  007-4264-002-nbrick: "007-4264-002 printed pages 58 and 64: the N-brick is an option only for an InfiniteReality system that includes a G-brick"
+  007-4264-002-pipe-path: "007-4264-002 printed pages 8 and 62: a G-brick pipe connects to a C-brick through an I-, X- or N-brick, and an I-brick port connects to a C-brick, G-brick or V-brick"
+  007-4264-002-nbrick-cables: "007-4264-002 printed page 60: N-brick connectors C-brick 0 to 3 go to C-brick XIO (II) connectors and Graphics pipe 0 to 3 to G-brick Ktown2 connectors"
+  007-4264-002-cbrick: "007-4264-002 printed page 8: a C-brick holds two or four processors and connects through an I-, X- or N-brick to the G-brick"
+  007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I/O brick"
+  007-4424-001-ratio: "007-4424-001 printed page 1: the one-to-one ratio of C-bricks to InfiniteReality pipes is unchanged with an N-brick"
+layer:
+  kind: product
+  id: onyx3400
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 1
+    max_nodes: 8
+    provenance: vendor-document
+    sources: [007-4264-002-3400]
+  population:
+    nodes: 4
+    cpus_per_node: [2, 2, 2, 2]
+    fitted_memory:
+      status: unknown
+      reason: >-
+        No source gives the memory of the Figure 1-10 configuration; this
+        composition selects none.
+      provenance: vendor-document
+      sources: [007-4264-002-figure-1-10]
+    provenance: vendor-document
+    sources: [007-4264-002-figure-1-10, 007-4264-002-cbrick]
+  composition_rules:
+    counts:
+      - {bricks: [c-brick], min: 1, max: 8}
+      - {bricks: [g-brick], min: 1, max: 8}
+      - {bricks: [i-brick], min: 1}
+    exclusive:
+      - [g-brick, v-brick]
+    requires:
+      - {brick: n-brick, with: g-brick}
+    provenance: vendor-document
+    sources: [007-4264-002-3400, 007-4264-002-exclusive, 007-4264-002-nbrick]
+    notes: >-
+      The two R-bricks are established but not counted, because this
+      composition does not carry them; see the machine notes.
+  data:
+    machine:
+      name: Onyx 3400
+      model_role: reference
+      notes: >-
+        The Figure 1-10 brick set: four two-processor C-bricks, an I-brick,
+        an N-brick and two G-bricks of two InfiniteReality3 pipes each, one
+        pipe per C-brick. C-brick 0 cables to I-brick port A and the
+        I-brick's port B to pipe 0 of G-brick 0. C-bricks 1 to 3 cable to
+        N-brick connectors C-brick 0 to 2, and N-brick Graphics pipe 0 to 2
+        to pipe 1 of G-brick 0 and pipes 0 and 1 of G-brick 1. Each cable's
+        end connectors are documented; which C-brick, connector pair and
+        pipe a real system pairs is not, so the pairing is this
+        composition's choice. The Ktown2-to-I/O-brick hop is described by
+        the shared XIO bus, not an xio_cables record, because a cable end
+        on a board is not yet a catalogue end kind. The two R-bricks and
+        every NUMAlink cable are left out: which router ports a C-brick
+        uses is unknown, so the C-bricks' LINK connectors share one placeholder
+        bus and no C-brick Bedrock is on a fabric here. Processor
+        clock, cache and memory are not asserted. The C-, I-, N- and
+        G-brick layers carry no L1, so no controller is described, and
+        the composition never compiles.
+    evidence_policy: strict
+    components:
+      - id: rack
+        name: Onyx 3400 compute rack
+        kind: chassis
+        provenance: vendor-document
+        description: The tall rack holding the compute and I/O bricks.
+        sources: [007-4264-002-3400]
+      - id: graphics-rack
+        name: Onyx 3400 graphics rack
+        kind: chassis
+        provenance: vendor-document
+        description: The second tall rack, holding the G-bricks.
+        sources: [007-4264-002-3400]
+    buses:
+      - id: numalink-unmodelled
+        name: NUMAlink fabric of the unmodelled R-bricks
+        kind: fabric
+        master: c0-link-connector
+        provenance: derived
+        sources: [007-4264-002-figure-1-10]
+        notes: >-
+          A placeholder that holds the four C-brick LINK connectors on the
+          NUMAlink fabric the two R-bricks make, because a connector must
+          sit on a bus. It asserts no router, port or cable.
+    connections:
+      - {component: nbrick-xbridge0, bus: c1-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 0's port A, widget 0xA (10 decimal), on C-brick 1's XIO."}
+      - {component: nbrick-c-brick-0, bus: c1-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
+      - {component: nbrick-xbridge1, bus: c2-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 1's port A, widget 0xA (10 decimal), on C-brick 2's XIO."}
+      - {component: nbrick-c-brick-1, bus: c2-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
+      - {component: nbrick-xbridge2, bus: c3-xio-ii, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: [007-4264-002-nbrick-cables], notes: "N-brick chip 2's port A, widget 0xA (10 decimal), on C-brick 3's XIO."}
+      - {component: nbrick-c-brick-2, bus: c3-xio-ii, role: endpoint, provenance: vendor-document, sources: [007-4264-002-nbrick-cables]}
+      - {component: c0-link-connector, bus: numalink-unmodelled, role: endpoint, provenance: derived, sources: [007-4264-002-figure-1-10]}
+      - {component: c1-link-connector, bus: numalink-unmodelled, role: endpoint, provenance: derived, sources: [007-4264-002-figure-1-10]}
+      - {component: c2-link-connector, bus: numalink-unmodelled, role: endpoint, provenance: derived, sources: [007-4264-002-figure-1-10]}
+      - {component: c3-link-connector, bus: numalink-unmodelled, role: endpoint, provenance: derived, sources: [007-4264-002-figure-1-10]}
+    xio_cables:
+      - id: c0-to-ibrick
+        ends: [c0-xio-ii-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 007-4264-002-pipe-path]
+        notes: Port A is this composition's choice, as on the Origin 3200.
+      - id: c1-to-nbrick
+        ends: [c1-xio-ii-connector, nbrick-c-brick-0]
+        provenance: vendor-document
+        sources: [007-4264-002-nbrick-cables]
+      - id: c2-to-nbrick
+        ends: [c2-xio-ii-connector, nbrick-c-brick-1]
+        provenance: vendor-document
+        sources: [007-4264-002-nbrick-cables]
+      - id: c3-to-nbrick
+        ends: [c3-xio-ii-connector, nbrick-c-brick-2]
+        provenance: vendor-document
+        sources: [007-4264-002-nbrick-cables]
