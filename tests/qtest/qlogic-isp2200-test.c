@@ -3755,6 +3755,59 @@ static void test_scsi_dma_error(void *obj, void *data,
     isp_close(&t);
 }
 
+/*
+ * With the loop left down by the connection mode, firmware state 0 as
+ * for a disconnected adapter, a command to a present port completes
+ * "port unavailable" without reaching the disk, and the LIP commands
+ * refuse. A later initialisation in loop mode brings the port back.
+ */
+static void test_loop_down_commands(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 512);
+    uint8_t cdb[10], seen[512];
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    isp_rings_at(&t, 8, 8, guest_alloc(alloc, ICB_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE), ICB_OPT_PORT_DB, 0x10);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_CONFIG_WAIT);
+    g_assert_cmphex(isp_call_ack(&t, CMD_INITIATE_LIP, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_call_ack(&t, CMD_FULL_LOGIN_LIP, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_call_ack(&t, CMD_LIP_RESET, 0xff00, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+
+    isp_scsi(&t, 0xdd00, 5, 0, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_PORT_UNAVAILABLE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+
+    qtest_memset(t.qts, buf, 0xa5, sizeof(seen));
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0xdd01, 5, 0, cdb, sizeof(cdb), 0x20, buf, 512, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_PORT_UNAVAILABLE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    g_assert_cmphex(r.residual, ==, 0);
+    qtest_memread(t.qts, buf, seen, sizeof(seen));
+    g_assert_cmphex(seen[0], ==, 0xa5);
+    g_assert_cmphex(seen[511], ==, 0xa5);
+
+    isp_rings_at(&t, 8, 8, guest_alloc(alloc, ICB_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE), ICB_OPT_PORT_DB, 0);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, ARRAY_SIZE(bringup_events));
+    isp_clear_unit_attention(&t, &loop_config);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0);
+    isp_close(&t);
+}
+
 static void isp2200_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -3898,6 +3951,8 @@ static void isp2200_register_nodes(void)
                  test_soft_reset_cancels, &slow_opts);
     qos_add_test("scsi-dma-error", "qlogic-isp2200", test_scsi_dma_error,
                  &loop_opts);
+    qos_add_test("loop-down-commands", "qlogic-isp2200",
+                 test_loop_down_commands, &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);

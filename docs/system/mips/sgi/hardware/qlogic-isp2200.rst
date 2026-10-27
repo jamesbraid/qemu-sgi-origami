@@ -472,7 +472,9 @@ the last four are dropped and the cut is logged.
 Entry timeouts are ignored: a command completes when its device does.
 Markers are consumed without a response, and the model does not refuse
 commands to a target until a marker arrives. Commands to present ports
-run while the loop is coming up.
+run while the loop is coming up. With no loop -- the connection mode
+left it down, or every loop ID was taken -- every command completes
+``0x0028`` with no SCSI status and reaches no device.
 
 A data transfer the host bridge refuses, for read data or for write
 data, is logged and completes the command ``0x0002`` (DMA error) with

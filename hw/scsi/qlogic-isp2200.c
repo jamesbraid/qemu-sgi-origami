@@ -1133,9 +1133,13 @@ static void isp2200_add_segment(ISP2200Request *req, uint64_t max,
 }
 
 /*
- * A command from the host interface onto the loop. A loop ID with no
- * port, the adapter's own, or one past 0x7d completes "port unavailable"
- * with no SCSI status; which code real firmware returns is unknown. A
+ * A command from the host interface onto the loop. With no loop -- the
+ * connection mode left it down, or the adapter never took a loop ID --
+ * every command completes "port unavailable" with no SCSI status, as a
+ * disconnected adapter's do. So does one to a loop ID with no port, the
+ * adapter's own, or one past 0x7d; which code real firmware returns for
+ * those is unknown. Commands to present ports run while the loop comes
+ * up. A
  * port without the LUN answers through the SCSI layer's target-level
  * handling, as an FCP target with a missing LUN does, and a LUN past 255
  * gets the same CHECK CONDITION without reaching it.
@@ -1160,7 +1164,8 @@ static void isp2200_fc_submit(QLogicISP2200State *s, ISP2200Command *cmd)
     s->fc_last_bytes = described;
 
     /* The LUN's device, or another of the port's when it has no such LUN. */
-    if (isp2200_target(s, cmd->loop_id)) {
+    if (s->loop_active && s->has_loop_id &&
+        isp2200_target(s, cmd->loop_id)) {
         sdev = scsi_device_find(&s->bus, 0, cmd->loop_id, cmd->lun);
     }
     if (!sdev) {
