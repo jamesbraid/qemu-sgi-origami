@@ -1477,9 +1477,11 @@ static void test_interrupt_flags_take_written_value(void)
 }
 
 /*
- * Low water where the driver has disabled it: a later submission latches the
- * flag, as the drained FIFO would, but sends no interrupt until the high-water
- * path enables the source again, and then it asserts at once.
+ * Low water where the driver has disabled it. A submission that does not
+ * wait never lifts the FIFO to its low-water mark, so it raises nothing.
+ * The driver's high-water path, finding the FIFO already below low water,
+ * sets the flag itself through the flags register: that latches it with
+ * no interrupt until the path enables the source, which asserts at once.
  */
 static void test_lowater_not_raised_while_disabled(void)
 {
@@ -1500,7 +1502,9 @@ static void test_lowater_not_raised_while_disabled(void)
 
     qtest_writel(qts, WIDGET + ODSY_CMD_FIFO, 0x00010046);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
-                    ODSY_INTR_FIFO_LOW_WATER, ==, ODSY_INTR_FIFO_LOW_WATER);
+                    ODSY_INTR_FIFO_LOW_WATER, ==, 0);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0) & 0x20000, ==, 0x20000);
+    reg_write(qts, ODSY_INTR_FLAGS, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
@@ -1533,7 +1537,8 @@ static void test_board_status_reports_fifo_ready(void)
  * The command-FIFO low-water interrupt the driver waits on to replenish its
  * graphics credits. The empty FIFO leaves it pending out of reset, so enabling
  * the source asserts at once; acknowledging clears it; and a later command
- * submission (the drain edge) raises it again. Without the reset-pending latch
+ * submission that does not wait leaves it clear, since the FIFO never rose
+ * to its low-water mark. Without the reset-pending latch
  * the kernel's post-reset watchdog never sees it and gives up starting Xsgi.
  * There is no sysbus IRQ line any more (see test_interrupt_registers above):
  * this pins the same edges through the packet value's set bit instead.
@@ -1558,12 +1563,12 @@ static void test_command_fifo_lowater_interrupt(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
-    /* A later command submission drains the FIFO and raises it again. */
+    /* A command submission that does not wait raises nothing. */
     qtest_writel(qts, WIDGET + ODSY_CMD_FIFO, 0x00010046);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) &
-                    ODSY_INTR_FIFO_LOW_WATER, ==, ODSY_INTR_FIFO_LOW_WATER);
+                    ODSY_INTR_FIFO_LOW_WATER, ==, 0);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
-                    ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
+                    ODSY_TEST_VECTOR);
 
     board_quit(qts);
 }
@@ -1659,8 +1664,8 @@ static void test_interrupt_packet_composition(void)
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
 
-    /* A drain event's rising edge readdresses the same destination, setting it. */
-    qtest_writel(qts, WIDGET + ODSY_CMD_FIFO, ODSY_CMD_STROBE);
+    /* The flag set again readdresses the same destination, setting it. */
+    reg_write(qts, ODSY_INTR_FLAGS, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-addr"), ==,
                     ODSY_TEST_PACKET_FABRIC_ADDRESS);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
@@ -3442,6 +3447,9 @@ static void test_context_switch_completion(void)
  * that many a slice. The machine is let run (qtest executes no guest
  * code) so the slices' timer fires as the test steps the clock.
  */
+/* The model's command-FIFO low-water mark, in waiting stores. */
+#define WORK_CFIFO_LOW_WATER 16
+
 static QTestState *work_start(void)
 {
     QTestState *qts = board_launch("");
@@ -3579,10 +3587,26 @@ static void test_command_work_read_waits(void)
 static void test_command_work_status_shows_waiting_stores(void)
 {
     QTestState *qts = work_start();
+    unsigned int waiting = 0;
 
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
     work_push_fences(qts);
+    waiting += 6;
+    /* Not empty, still below the low-water mark of 16 stores. */
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10020000);
+    for (unsigned int i = 0; i < 2; i++) {
+        work_push_fences(qts);
+        waiting += 6;
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, waiting);
     g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10000000);
+    /* One store runs per slice: below the mark once 15 wait. */
+    while (work_waiting(qts) > WORK_CFIFO_LOW_WATER) {
+        work_step(qts);
+        g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10000000);
+    }
+    work_step(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10020000);
     while (work_pending(qts)) {
         qtest_clock_step(qts, 1000 * 1000);
     }
@@ -3591,28 +3615,32 @@ static void test_command_work_status_shows_waiting_stores(void)
 }
 
 /*
- * The kernel's credit flow control: it clears low water, finds stores
- * still waiting, enables the source and sleeps until the interrupt. Low
- * water is not raised while stores wait, and is raised, with its
- * interrupt, once the last has run.
+ * The kernel's credit flow control: it clears low water, finds the FIFO
+ * above its low-water mark, enables the source and sleeps until the
+ * interrupt. Low water is not raised while 16 or more stores wait, and is
+ * raised, with its interrupt, as the level falls below that mark, while
+ * stores still wait.
  */
 static void test_command_work_low_water_after_drain(void)
 {
     QTestState *qts = work_start();
 
     flag_dest_program(qts);
-    work_push_fences(qts);
+    for (unsigned int i = 0; i < 3; i++) {
+        work_push_fences(qts);
+    }
     reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
-    qtest_clock_step(qts, 1000 * 1000);
-    g_assert_true(work_pending(qts));
+    /* 18 wait; two slices leave 16, still at the mark. */
+    work_step(qts);
+    work_step(qts);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value") &
                     ODSY_HUB_INT_MODIFY_SET, ==, 0);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
                     ==, 0);
-    while (work_pending(qts)) {
-        qtest_clock_step(qts, 1000 * 1000);
-    }
+    /* The next leaves 15: below the mark. */
+    work_step(qts);
+    g_assert_cmpuint(work_waiting(qts), ==, WORK_CFIFO_LOW_WATER - 1);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
                     ==, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
