@@ -65,6 +65,8 @@ struct SGIXioTestTargetState {
     uint64_t dma_observer_status;
     uint64_t dma_observer_after_nested_status;
     uint32_t dma_observer_nested_offset;
+    char *dma_observer_device;
+    uint32_t dma_observer_status_offset;
     uint64_t destination_calls;
     hwaddr destination_address;
     SGIXioSource destination_source;
@@ -96,32 +98,59 @@ struct SGIXioTestTargetState {
     uint64_t packet_result_value;
 };
 
+/*
+ * Read the watched card's register from inside its own transfer. The card is
+ * mid-access, so its reentrancy guard would refuse the nested read; this
+ * test-only observer lifts the guard for the one read and restores it. That
+ * is safe only because the register read has no side effects: it cannot
+ * start DMA or re-enter the card. Point dma-observer-status-offset at
+ * nothing else. The fixture builds only for tests.
+ */
+static uint64_t dma_observer_card_read(PCIDevice *card, unsigned offset)
+{
+    MemoryRegion *mr = card->io_regions[0].memory;
+    MemReentrancyGuard *guard = &DEVICE(card)->mem_reentrancy_guard;
+    bool engaged = guard->engaged_in_io;
+    uint64_t value = 0;
+
+    if (mr->ops->read) {
+        return mr->ops->read(mr->opaque, offset, 4);
+    }
+    guard->engaged_in_io = false;
+    mr->ops->read_with_attrs(mr->opaque, offset, &value, 4,
+                             MEMTXATTRS_UNSPECIFIED);
+    guard->engaged_in_io = engaged;
+    return value;
+}
+
 static MemTxResult dma_observer_access(SGIXioTestTargetState *s,
                                        hwaddr address, void *buffer,
                                        size_t size, bool write)
 {
     Object *object;
-    PCIDevice *ioc4;
+    PCIDevice *card;
     uint64_t status = 0;
-    object = object_resolve_path_type("/machine/peripheral/ioc4",
+    unsigned status_offset = s->dma_observer_status_offset;
+
+    /* The watched card's status register, read from inside the transfer. */
+    object = object_resolve_path_type(s->dma_observer_device ?:
+                                      "/machine/peripheral/ioc4",
                                       TYPE_PCI_DEVICE, NULL);
     if (!object) {
         return MEMTX_DECODE_ERROR;
     }
-    ioc4 = PCI_DEVICE(object);
-    status = ioc4->io_regions[0].memory->ops->read(
-                 ioc4->io_regions[0].memory->opaque, 0x20, 4);
+    card = PCI_DEVICE(object);
+    status = dma_observer_card_read(card, status_offset);
     s->dma_observer_calls++;
     s->dma_observer_status = status;
     if (write && s->dma_observer_nested && !s->dma_observer_nested_active) {
         s->dma_observer_nested_active = true;
-        ioc4->io_regions[0].memory->ops->write(
-            ioc4->io_regions[0].memory->opaque,
+        card->io_regions[0].memory->ops->write(
+            card->io_regions[0].memory->opaque,
             s->dma_observer_nested_offset, 8, 4);
         s->dma_observer_nested_active = false;
         s->dma_observer_after_nested_status =
-            ioc4->io_regions[0].memory->ops->read(
-                ioc4->io_regions[0].memory->opaque, 0x20, 4);
+            dma_observer_card_read(card, status_offset);
     }
     if ((write && s->dma_observer_fail_write) ||
         (!write && s->dma_observer_fail_read)) {
@@ -721,6 +750,10 @@ static const Property target_properties[] = {
                      dma_observer_nested, false),
     DEFINE_PROP_UINT32("dma-observer-nested-offset", SGIXioTestTargetState,
                        dma_observer_nested_offset, 0x330),
+    DEFINE_PROP_STRING("dma-observer-device", SGIXioTestTargetState,
+                       dma_observer_device),
+    DEFINE_PROP_UINT32("dma-observer-status-offset", SGIXioTestTargetState,
+                       dma_observer_status_offset, 0x20),
     DEFINE_PROP_BOOL("pic-peer", SGIXioTestTargetState, pic_peer, false),
     DEFINE_PROP_BOOL("pic-linked", SGIXioTestTargetState, pic_linked, true),
     DEFINE_PROP_BOOL("pic-bedrock-interrupts", SGIXioTestTargetState,

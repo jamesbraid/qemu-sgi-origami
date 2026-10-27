@@ -511,8 +511,14 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
          */
         return s->int_enable;
     case SGI_IOC3_CHIP_CONTROL:
-        /* Bit 22: arbiter idle, polled by the kernel's console setup. */
-        return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
+        /*
+         * Bit 22: arbiter idle, polled by the kernel's console setup. It
+         * reads busy only while the serial DMA engine is inside a transfer,
+         * the rule IOC4's serial idle bit follows too.
+         */
+        return s->chip_control |
+               (sgi_ioc_sdma_idle(&s->sdma_engine) ?
+                SGI_IOC3_CHIP_CTRL_ARB_IDLE : 0);
     case SGI_IOC3_INT_OUTPUT:
         sgi_ioc3_int_out_catch_up(s);
         return s->int_out |

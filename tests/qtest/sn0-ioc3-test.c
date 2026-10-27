@@ -316,6 +316,68 @@ static void test_the_arbiter_reports_idle(const void *data)
     g_assert_cmphex(cr & CHIP_CTRL_STROBE, ==, CHIP_CTRL_STROBE);
 }
 
+/*
+ * The idle bit also reads clear while the serial DMA engine is inside a
+ * transfer. QEMU completes DMA synchronously, so the only place to see it
+ * clear is a read made from within the transfer: the Bridge's fabric here is
+ * a test target that reads the chip control register on every access.
+ */
+static void test_the_arbiter_is_busy_inside_serial_dma(const void *data)
+{
+    const uint8_t entry[8] = { 0x41, 0, 0, 0, 0x40, 0, 0, 0 };
+    QTestState *s;
+    QPCIBus *bus;
+    QPCIDevice *dev;
+    QPCIBar bar;
+    QDict *resp;
+    uint32_t status;
+
+    s = qtest_init("-M none -cpu R10000 -display none "
+        "-device sgi-xio-test-target,id=transfer-ram,size=16M,"
+        "dma-observer=on,dma-observer-device=/machine/peripheral/ioc3,"
+        "dma-observer-status-offset=0x28 "
+        "-device sgi-bridge,id=bridge,board-part=030-1244-001,"
+        "fabric=/machine/peripheral/transfer-ram/dma-observer[0] "
+        "-device sgi-ioc3,id=ioc3,bus=pci,addr=04.0,subsystem-id=0xc302");
+    bus = qpci_init_sgi_bridge(s, NULL);
+    dev = qpci_device_find(bus, QPCI_DEVFN(4, 0));
+    g_assert_nonnull(dev);
+    qpci_device_enable(dev);
+    bar = qpci_iomap(dev, 0, NULL);
+    /* Direct PCI DMA reaches the fabric at offset zero. */
+    qtest_writel(s, 0x40000084, 0);
+
+    /* A ring at fabric offset 1 MB, seen by the CPU through the alias. */
+    qtest_memwrite(s, 0x02000000 + 0x100000, entry, sizeof(entry));
+    qpci_io_writel(dev, bar, 0x28, 0x0007ae5e);
+    g_assert_cmphex(qpci_io_readl(dev, bar, 0x28) & CHIP_CTRL_ARB_IDLE, ==,
+                    CHIP_CTRL_ARB_IDLE);
+    qpci_io_writel(dev, bar, 0xb0, 0);
+    qpci_io_writel(dev, bar, 0xb4, 0x80100000u | 1);
+    qpci_io_writel(dev, bar, 0xb8, 1u << 28);
+    qpci_io_writel(dev, bar, 0xb8 + 4, 8);
+
+    resp = qtest_qmp(s, "{ 'execute': 'qom-get', 'arguments': "
+                     "{ 'path': '/machine/peripheral/transfer-ram', "
+                     "'property': 'x-test-dma-observer-calls' } }");
+    g_assert_cmpint(qdict_get_int(resp, "return"), >=, 1);
+    qobject_unref(resp);
+    /* The port fields written above show the read found the register. */
+    resp = qtest_qmp(s, "{ 'execute': 'qom-get', 'arguments': "
+                     "{ 'path': '/machine/peripheral/transfer-ram', "
+                     "'property': 'x-test-dma-observer-status' } }");
+    status = qdict_get_int(resp, "return");
+    qobject_unref(resp);
+    g_assert_cmphex(status & 0x3fff, ==, 0x0007ae5e & 0x3fff);
+    g_assert_cmphex(status & CHIP_CTRL_ARB_IDLE, ==, 0);
+    g_assert_cmphex(qpci_io_readl(dev, bar, 0x28) & CHIP_CTRL_ARB_IDLE, ==,
+                    CHIP_CTRL_ARB_IDLE);
+
+    g_free(dev);
+    qpci_free_sgi_bridge(bus);
+    qtest_quit(s);
+}
+
 static void test_the_interrupt_output_stores_its_configuration(const void *data)
 {
     ioc3_reset();
@@ -6827,6 +6889,8 @@ int main(int argc, char **argv)
                         test_the_enable_mask_has_two_write_aliases);
     qtest_add_data_func("sn0/ioc3/arbiter-reports-idle", NULL,
                         test_the_arbiter_reports_idle);
+    qtest_add_data_func("sn0/ioc3/arbiter-busy-inside-serial-dma", NULL,
+                        test_the_arbiter_is_busy_inside_serial_dma);
     qtest_add_data_func("sn0/ioc3/interrupt-output-stores-configuration", NULL,
                         test_the_interrupt_output_stores_its_configuration);
     qtest_add_data_func("sn0/ioc3/interrupt-output-stores-unrun-command", NULL,
