@@ -773,6 +773,38 @@ static void test_ip53_fifo_store_while_another_waits(void)
     qtest_quit(qts);
 }
 
+/*
+ * A display update reads the planes that a slice's draw writes with the
+ * big lock let go, so it waits the slice out: a screendump taken while
+ * x-test-slice-sleep-ms holds the board returns only after the slice.
+ */
+static void test_ip53_scanout_waits_for_slice(void)
+{
+    QTestState *qts = start_ip53_vpro();
+    const uint64_t vpro_fifo = UINT64_C(0x920000000c110000);
+    g_autofree char *shot = NULL;
+    int64_t start;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-pi-gfx-shot-XXXXXX.ppm", &shot, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    run(qts);
+    vpro_set(qts, "x-test-slice-words", 1);
+    vpro_set(qts, "x-test-slice-sleep-ms", 1500);
+    stores(qts, 0, SLOT_C, vpro_fifo, 1);
+    g_usleep(200 * 1000);
+    start = g_get_monotonic_time();
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'screendump',"
+        "  'arguments': { 'filename': %s, 'device': 'vpro' } }", shot);
+    g_assert_cmpint(g_get_monotonic_time() - start, >=,
+                    1000 * G_TIME_SPAN_MILLISECOND);
+    vpro_set(qts, "x-test-slice-sleep-ms", 0);
+    unlink(shot);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -801,5 +833,7 @@ int main(int argc, char **argv)
                    test_ip53_odyssey_credit_return);
     qtest_add_func("sn1/pi-gfx/ip53-fifo-store-while-another-waits",
                    test_ip53_fifo_store_while_another_waits);
+    qtest_add_func("sn1/pi-gfx/ip53-scanout-waits-for-slice",
+                   test_ip53_scanout_waits_for_slice);
     return g_test_run();
 }
