@@ -896,10 +896,15 @@
 #
 # @xbridge: an XBridge's own internal crossbar section
 #
+# @pic: the integrated crossbar of the middle PIC in an IX-brick or
+#     PX-brick, in its enclosure mode.  The port routing is a reviewed
+#     approximation, not a measured board.  No catalogued machine
+#     builds one yet
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelCrossbarKind',
-  'data': ['xbow', 'xbridge'] }
+  'data': ['xbow', 'xbridge', 'pic'] }
 
 ##
 # @SGIModelCrossbar:
@@ -1091,12 +1096,16 @@
 # @io7: the Origin 3000 I-brick's fixed I/O functions on its XBridge
 #     head F: IOC3, USB and IEEE 1394 at devices 4, 5 and 6
 #
+# @pic: an outer PIC of an IX-brick or PX-brick, joined to the
+#     enclosure's middle PIC crossbar at port 12 or 13 by one link;
+#     both heads carry empty PCI buses
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'ip30', 'io6', 'io6g', 'io8', 'fuel', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
-           'mscsi', 'mgras', 'odyssey', 'vbrick', 'io7'] }
+           'mscsi', 'mgras', 'odyssey', 'vbrick', 'io7', 'pic'] }
 
 ##
 # @SGIModelIoBoardCarrier:
@@ -1144,11 +1153,18 @@
 #     Tezro serial compatibility policy; PIC behavior uses the IP53
 #     experimental policy and is not a measured Tezro chip revision.
 #
+# @pic-rev3-enclosure-experimental:
+#     IX-brick and PX-brick software policy: the PIC register layout
+#     at revision 3 with none of the IP53 compatibility behaviours,
+#     and packets carried through the enclosure's crossbar rather
+#     than a direct Bedrock peer.  Hardware remains unknown.
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPicCompatibilityProfile',
   'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-experimental',
-           'pic-rev3-bedrock-tezro-experimental'] }
+           'pic-rev3-bedrock-tezro-experimental',
+           'pic-rev3-enclosure-experimental'] }
 
 ##
 # @SGIModelPciHostBridge:

@@ -10060,6 +10060,772 @@ static void test_origin3200_xbrick_slots_reach_their_cbrick(void)
     g_unlink(prom);
 }
 
+/*
+ * ---- IX-brick and PX-brick: three PICs behind one crossbar ----
+ *
+ * The reviewed PIC enclosure approximation, described in
+ * docs/system/mips/sgi/sn.rst: c1 cabled to port 0xa
+ * of the middle PIC's integrated crossbar; the lower and upper PICs on
+ * its ports 0xc and 0xd, one link each; the middle PIC's own heads at
+ * 0xf. Every PIC runs pic-rev3-enclosure-experimental. These tests check
+ * the model's choices, not hardware.
+ */
+#define ENC_CPU 1
+/*
+ * c1 is NASID 1. enc_start() gives its Bedrock that node number, as its
+ * PROM would, so its I/O space and memory are addressed with the node
+ * field from then on.
+ */
+#define ENC_NASID 1
+#define ENC_NODE ((uint64_t)ENC_NASID << 33)
+#define ENC_WIDGET(w) (CBRICK_WIDGET(w) + ENC_NODE)
+#define ENC_PI_PENDING (IP53_PI_PENDING + ENC_NODE)
+#define ENC_PI_PENDING_MODIFY (ENC_PI_PENDING - 8)
+#define ENC_HEAD(w, h) (ENC_WIDGET(w) + (uint64_t)(h) * 0x800000)
+#define ENC_PXBOW "/machine/module2/pic/pxbow"
+
+static const unsigned int enc_widgets[] = { 0xf, 0xc, 0xd };
+
+static char *enc_bus(const char *module, unsigned int pic, unsigned int head)
+{
+    static const char *const names[] = { NULL, "pic-lower", "pic-upper" };
+
+    return pic ? g_strdup_printf("%s-%s-head-%u.0", module, names[pic], head) :
+                 g_strdup_printf("pic-head-%u.0", head);
+}
+
+#define ENC_LOCAL_MD_MEMORY_CONFIG (CBRICK_IO_SPACE + UINT64_C(0x01000000) + \
+                                    UINT64_C(0x780008))
+#define ENC_LOCAL_LB_REVISION (CBRICK_IO_SPACE + UINT64_C(0x01000000) + \
+                               UINT64_C(0x600000))
+/* Software bank 0 is c1's locational bank 2, sized and enabled. */
+#define ENC_MD_BANK0 ((UINT64_C(2) << 32) | UINT64_C(0x3100))
+
+static void enc_local_writeq(QTestState *qts, uint64_t address,
+                             uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, ENC_CPU, address, bytes, 8));
+}
+
+/*
+ * What c1's PROM would do before anything here runs: size and enable
+ * its bank 0 for DMA to reach, and give the node its NASID as its
+ * number, which an interrupt packet's node field names. Until then the
+ * node answers its local registers at node field 0.
+ */
+static void enc_prom_setup(QTestState *qts)
+{
+    uint64_t revision = 0;
+
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1", "nasid"), ==,
+                     ENC_NASID);
+    enc_local_writeq(qts, ENC_LOCAL_MD_MEMORY_CONFIG, ENC_MD_BANK0);
+    g_assert_true(nasid_test_cpu_readq(qts, ENC_CPU, ENC_LOCAL_LB_REVISION,
+                                       &revision));
+    enc_local_writeq(qts, ENC_LOCAL_LB_REVISION,
+                     (revision & ~(UINT64_C(0xff) << 32)) |
+                     ((uint64_t)ENC_NASID << 32));
+}
+
+static QTestState *enc_start(const char *fault, const char *prom,
+                             const char *extra)
+{
+    QTestState *qts = cbrick_start(fault, prom, extra);
+
+    enc_prom_setup(qts);
+    return qts;
+}
+
+static void enc_writeq(QTestState *qts, uint64_t address, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, ENC_CPU, address, bytes, 8));
+}
+
+static uint64_t enc_readq(QTestState *qts, uint64_t address)
+{
+    uint64_t value = 0;
+
+    g_assert_true(nasid_test_cpu_readq(qts, ENC_CPU, address, &value));
+    return value;
+}
+
+static void enc_writel(QTestState *qts, uint64_t address, uint32_t value)
+{
+    uint8_t bytes[4];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, ENC_CPU, address, bytes, 4));
+}
+
+/*
+ * One sgi-bridge-dma-test card in each slot, device 1 and device 2, of
+ * every head of the three PICs: twelve cards, each with its own device
+ * id so a configuration read names its slot.
+ */
+static char *enc_cards(const char *module)
+{
+    GString *args = g_string_new("");
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            g_autofree char *bus = enc_bus(module, pic, head);
+
+            for (unsigned int dev = 1; dev <= 2; dev++) {
+                g_string_append_printf(args,
+                    "-device sgi-bridge-dma-test,id=enc%u%u%u,bus=%s,"
+                    "addr=%u,device-id=0x%x%s ", pic, head, dev, bus, dev,
+                    0x7000 | (pic << 8) | (head << 4) | dev,
+                    dev == 2 ? ",interrupt-pin=2" : "");
+            }
+        }
+    }
+    return g_string_free(args, false);
+}
+
+#define ENC_CFG(w, h, d) (ENC_HEAD(w, h) + 0x20000 + ((uint64_t)(d) << 12))
+#define ENC_DEVICE_REG(w, h, d) (ENC_HEAD(w, h) + 0x200 + ((d) - 1) * 8)
+#define ENC_WINDOW(w, h, d) (ENC_HEAD(w, h) + 0x200000 * (uint64_t)(d))
+#define ENC_DIR_MAP 0x80
+/* The DMA card's read/write scratch word. */
+#define ENC_LANE_SCRATCH 0x24
+#define ENC_INT_STATUS 0x100
+#define ENC_INT_ENABLE 0x108
+#define ENC_INT_RESET 0x110
+#define ENC_INT_CLEAR_ON_LOW 0x118
+#define ENC_INT_DEST(pin) (0x130 + (pin) * 8)
+/* Each card's BAR 0, at its own PCI memory megabyte. */
+#define ENC_BAR(d) (UINT32_C(0x01000000) * (d))
+
+/* Map a card's BAR 0 through its slot's PIO window and let it master. */
+static void enc_card_start(QTestState *qts, unsigned int widget,
+                           unsigned int head, unsigned int dev)
+{
+    enc_writel(qts, ENC_CFG(widget, head, dev) + PCI_BAR0, ENC_BAR(dev));
+    enc_writel(qts, ENC_CFG(widget, head, dev) + PCI_COMMAND,
+               PCI_COMMAND_MEMORY_MASTER);
+    enc_writeq(qts, ENC_DEVICE_REG(widget, head, dev),
+               (1u << 12) | (ENC_BAR(dev) >> 20));
+}
+
+static void enc_card_writel(QTestState *qts, unsigned int widget,
+                            unsigned int head, unsigned int dev,
+                            unsigned int reg, uint32_t value)
+{
+    enc_writel(qts, ENC_WINDOW(widget, head, dev) + reg, value);
+}
+
+static void enc_card_set(QTestState *qts, unsigned int pic,
+                         unsigned int head, const char *property,
+                         uint64_t value)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/enc%u%u1",
+                                            pic, head);
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{ 'execute': 'qom-set', 'arguments': { 'path': %s, "
+        "'property': %s, 'value': %" PRIu64 " } }", path, property, value);
+
+    g_assert_false(qdict_haskey(reply, "error"));
+}
+
+/*
+ * Point DIR_MAP of @pic's @head at widget @target. A packet to widget 10
+ * is c1's memory, whose node field the XIO address carries in bits the
+ * 2 GiB direct window takes from DIR_MAP's low field.
+ */
+static void enc_set_dir_map(QTestState *qts, unsigned int pic,
+                            unsigned int head, unsigned int target)
+{
+    enc_writeq(qts, ENC_HEAD(enc_widgets[pic], head) + ENC_DIR_MAP,
+               ((uint64_t)target << 20) |
+               (target == 10 ? ENC_NODE >> 31 : 0));
+}
+
+/*
+ * A seeded four-byte fill from slot 1 of @pic's @head to XIO @offset of
+ * the widget its DIR_MAP names, started through the card's own test
+ * properties so a downed link cannot stop the start. Returns the card's
+ * DMA result.
+ */
+static uint32_t enc_card_fill(QTestState *qts, unsigned int pic,
+                              unsigned int head, uint64_t offset,
+                              uint32_t seed)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/enc%u%u1",
+                                            pic, head);
+
+    g_assert_cmphex(offset, <, UINT64_C(0x80000000));
+    enc_card_set(qts, pic, head, "test-address", 0x80000000u | offset);
+    enc_card_set(qts, pic, head, "test-length", 4);
+    enc_card_set(qts, pic, head, "test-seed", seed);
+    enc_card_set(qts, pic, head, "test-command", 1);
+    return qom_get_uint(qts, path, "test-result");
+}
+
+static char *enc_head_path(const char *module, unsigned int pic,
+                           unsigned int head)
+{
+    static const char *const names[] = { "pic", "pic-lower", "pic-upper" };
+
+    return pic ? g_strdup_printf("/machine/module2/%s-%s/head-%u", module,
+                                 names[pic], head) :
+                 g_strdup_printf("/machine/module2/pic/head-%u", head);
+}
+
+/* Drive interrupt input 0 of @pic's @head, as its slot 1 card's INTA. */
+static void enc_raise(QTestState *qts, const char *module, unsigned int pic,
+                      unsigned int head, bool level)
+{
+    g_autofree char *path = enc_head_path(module, pic, head);
+
+    qtest_set_irq_in(qts, path, NULL, 0, level);
+}
+
+/* An XIO memory offset names that byte of c1's own memory. */
+static bool enc_landed(QTestState *qts, uint64_t at, uint32_t seed)
+{
+    uint8_t seen[4];
+
+    g_assert_true(qtest_memread_cpu(qts, ENC_CPU, ENC_NODE + at, seen,
+                                    sizeof(seen)));
+    for (unsigned int i = 0; i < sizeof(seen); i++) {
+        if (seen[i] != (uint8_t)(seed + i)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void enc_set_links_alive(QTestState *qts, uint16_t widgets)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'qom-set', 'arguments': { 'path': %s, "
+        "'property': 'links-alive', 'value': %u } }", ENC_PXBOW, widgets);
+
+    g_assert_false(qdict_haskey(response, "error"));
+}
+
+/* The crossbar's link status for a port, and its illegal-destination bit. */
+#define ENC_XBOW_LINK_STATUS(w) (ENC_WIDGET(0) + 0x100 + ((w) - 8) * 0x40 + \
+                                 0x10)
+#define ENC_XBOW_ILLEGAL_DEST (UINT64_C(1) << 17)
+#define ENC_XBOW_ERR_CMD 0x58
+
+static bool enc_illegal_latched(QTestState *qts, unsigned int port)
+{
+    uint32_t status = 0;
+
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU,
+                                       ENC_XBOW_LINK_STATUS(port) + 4,
+                                       &status));
+    return status & ENC_XBOW_ILLEGAL_DEST;
+}
+
+static bool enc_any_illegal_latched(QTestState *qts)
+{
+    for (unsigned int port = 8; port < 16; port++) {
+        if (enc_illegal_latched(qts, port)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static QTestState *enc_start_cards(const char *module, const char *prom)
+{
+    g_autofree char *cards = enc_cards(module);
+    g_autofree char *extra = g_strdup_printf("-d guest_errors,unimp %s",
+                                             cards);
+    return enc_start(module, prom, extra);
+}
+
+/*
+ * Test 1: from c1, the crossbar's identity at widget 0 and the six PIC
+ * heads at widgets 0xc, 0xd and 0xf; nothing at 8, 9, 0xa, 0xb or 0xe,
+ * which take the unreachable drop and latch nothing on port 0xa; widget
+ * 3 takes the illegal-destination path, latched on port 0xa. The
+ * crossbar reports 10, 12, 13 and 15 present and alive, and again after
+ * a link reset restores them.
+ */
+static void test_enclosure_widget_scan(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start(module, prom, "");
+    g_autofree char *linked = qom_get_str(qts, "/machine/node1",
+                                          "pic-crossbar");
+    static const unsigned int unreachable[] = { 8, 9, 0xa, 0xb, 0xe };
+    uint32_t identity = 0;
+
+    g_assert_cmpstr(linked, ==, "/machine/module2/pic");
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WIDGET(0) + 4,
+                                       &identity));
+    g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xd100);
+    g_assert_cmphex(identity >> 28, ==, 5);
+    for (size_t i = 0; i < ARRAY_SIZE(enc_widgets); i++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            g_assert_true(nasid_test_cpu_readl(
+                qts, ENC_CPU, ENC_HEAD(enc_widgets[i], head) + 4, &identity));
+            g_assert_cmphex(identity, ==, (3u << 28) |
+                            ((head ? 0xd112u : 0xd102u) << 12) | (0x24 << 1));
+        }
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(unreachable); i++) {
+        g_assert_false(nasid_test_cpu_readl(
+            qts, ENC_CPU, ENC_WIDGET(unreachable[i]) + 4, &identity));
+    }
+    g_assert_false(enc_illegal_latched(qts, 0xa));
+    g_assert_false(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WIDGET(3) + 4,
+                                        &identity));
+    g_assert_true(enc_illegal_latched(qts, 0xa));
+    g_assert_cmphex(qom_get_uint(qts, ENC_PXBOW, "links-present"), ==,
+                    0xb400);
+    g_assert_cmphex(qom_get_uint(qts, ENC_PXBOW, "links-alive"), ==,
+                    0xb400);
+    enc_set_links_alive(qts, 0x8400);
+    g_assert_false(nasid_test_cpu_readl(qts, ENC_CPU, ENC_HEAD(0xc, 0) + 4,
+                                        &identity));
+    qtest_system_reset(qts);
+    enc_prom_setup(qts);
+    g_assert_cmphex(qom_get_uint(qts, ENC_PXBOW, "links-alive"), ==,
+                    0xb400);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_HEAD(0xc, 0) + 4,
+                                       &identity));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Test 2: through each of the six heads, device 0 is reserved, devices
+ * 1 and 2 are the slot's own cards and device 3 reads all ones.
+ */
+static void test_enclosure_configuration(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start_cards(module, prom);
+    uint32_t id = 0;
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            unsigned int w = enc_widgets[pic];
+
+            g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU,
+                                               ENC_CFG(w, head, 0), &id));
+            g_assert_cmphex(id, ==, UINT32_MAX);
+            for (unsigned int dev = 1; dev <= 2; dev++) {
+                g_assert_true(nasid_test_cpu_readl(
+                    qts, ENC_CPU, ENC_CFG(w, head, dev), &id));
+                g_assert_cmphex(id, ==, ((0x7000u | (pic << 8) |
+                                          (head << 4) | dev) << 16) | 0x1b36);
+            }
+            g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU,
+                                               ENC_CFG(w, head, 3), &id));
+            g_assert_cmphex(id, ==, UINT32_MAX);
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Test 3: a distinct value written through each head's slot 1 window
+ * reads back there and nowhere else. DIR_MAP keeps bits 0-16 and 20-23
+ * and reads the rest back clear.
+ */
+static void test_enclosure_pio_and_dir_map(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start_cards(module, prom);
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            enc_card_start(qts, enc_widgets[pic], head, 1);
+            enc_card_writel(qts, enc_widgets[pic], head, 1, DMA_REG_SEED,
+                            0x5ee00000 | (pic << 4) | head);
+        }
+    }
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        for (unsigned int head = 0; head < 2; head++) {
+            uint32_t seed = 0;
+
+            g_assert_true(nasid_test_cpu_readl(
+                qts, ENC_CPU,
+                ENC_WINDOW(enc_widgets[pic], head, 1) + DMA_REG_SEED, &seed));
+            g_assert_cmphex(seed, ==, 0x5ee00000 | (pic << 4) | head);
+            enc_writeq(qts, ENC_HEAD(enc_widgets[pic], head) + ENC_DIR_MAP,
+                       UINT64_MAX);
+            g_assert_cmphex(enc_readq(qts, ENC_HEAD(enc_widgets[pic], head) +
+                                      ENC_DIR_MAP), ==,
+                            UINT64_C(0x1ffff) | (UINT64_C(0xf) << 20));
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* c1's memory as its own XIO DMA reaches it, and as its CPU reads it. */
+#define ENC_DMA_OFFSET UINT64_C(0x00100000)
+/* c1's II inbound access register, one bit per source widget. */
+#define ENC_II_INBOUND_ACCESS (IP53_IO_SPACE + ENC_NODE + \
+                               UINT64_C(0x1400000) + 0x118)
+
+/* The Bedrock's PI pending modify register as a packet from c1 names it. */
+static uint64_t enc_pi_destination(QTestState *qts, unsigned int level)
+{
+    uint64_t nasid = qom_get_uint(qts, "/machine/node1", "nasid");
+
+    g_assert_cmpuint(nasid, !=, 0);
+    return ((uint64_t)level << 48) | (UINT64_C(1) << 47) | (nasid << 39) |
+           UINT64_C(0x1800000) | 0x90;
+}
+
+static void enc_card_interrupt(QTestState *qts, unsigned int widget,
+                               unsigned int head, unsigned int dev,
+                               bool level)
+{
+    enc_card_writel(qts, widget, head, dev, DMA_REG_INTERRUPT, level);
+}
+
+/* Program input 0 of a head for level @level at c1's PI and enable it. */
+static void enc_arm_interrupt(QTestState *qts, unsigned int widget,
+                              unsigned int head, unsigned int level)
+{
+    enc_writeq(qts, ENC_HEAD(widget, head) + ENC_INT_DEST(0),
+               enc_pi_destination(qts, level));
+    enc_writeq(qts, ENC_HEAD(widget, head) + ENC_INT_CLEAR_ON_LOW, 1);
+    enc_writeq(qts, ENC_HEAD(widget, head) + ENC_INT_ENABLE, 1);
+}
+
+/*
+ * Test 4: from a card behind head 0 of each PIC, a DMA fill naming
+ * widget 10 lands in c1's memory, and the Bedrock takes it as a packet
+ * from that PIC's port: refusing that port's inbound access refuses it.
+ * The card's INTA sets PI pending bit 52 through a set packet with level
+ * 0x34, and its deassertion clears it. Levels 6 and 128 are refused
+ * before dispatch, leaving the pending bits alone and the PIC's status
+ * set. INTB reaches no PIC input.
+ */
+static void test_enclosure_dma_and_interrupts(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start_cards(module, prom);
+    uint64_t inbound = 0;
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        unsigned int w = enc_widgets[pic];
+        uint64_t at = ENC_DMA_OFFSET + pic * 0x100;
+        uint32_t seed = 0x40 + pic * 8;
+
+        enc_card_start(qts, w, 0, 1);
+        enc_card_start(qts, w, 0, 2);
+        enc_set_dir_map(qts, pic, 0, 10);
+        g_assert_false(enc_landed(qts, at, seed));
+        g_assert_cmpuint(enc_card_fill(qts, pic, 0, at, seed), ==, 0);
+        g_assert_true(enc_landed(qts, at, seed));
+
+        enc_arm_interrupt(qts, w, 0, IP53_PI_LEVEL);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                        IP53_PI_PENDING_BIT, ==, 0);
+        enc_card_interrupt(qts, w, 0, 1, true);
+        g_assert_cmphex(enc_readq(qts, ENC_HEAD(w, 0) + ENC_INT_STATUS) & 1,
+                        ==, 1);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                        IP53_PI_PENDING_BIT, ==, IP53_PI_PENDING_BIT);
+        enc_card_interrupt(qts, w, 0, 1, false);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                        IP53_PI_PENDING_BIT, ==, 0);
+
+        for (unsigned int i = 0; i < 2; i++) {
+            unsigned int level = i ? 128 : 6;
+            uint64_t before = enc_readq(qts, ENC_PI_PENDING);
+
+            enc_arm_interrupt(qts, w, 0, level);
+            enc_card_interrupt(qts, w, 0, 1, true);
+            g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING), ==, before);
+            g_assert_cmphex(enc_readq(qts, ENC_HEAD(w, 0) + ENC_INT_STATUS) &
+                            1, ==, 1);
+            enc_card_interrupt(qts, w, 0, 1, false);
+        }
+
+        /* INTB, from the slot 2 card, reaches no input. */
+        enc_arm_interrupt(qts, w, 0, IP53_PI_LEVEL);
+        enc_writeq(qts, ENC_HEAD(w, 0) + ENC_INT_RESET, 0xff);
+        enc_card_interrupt(qts, w, 0, 2, true);
+        g_assert_cmphex(enc_readq(qts, ENC_HEAD(w, 0) + ENC_INT_STATUS) &
+                        0xff, ==, 0);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                        IP53_PI_PENDING_BIT, ==, 0);
+        enc_card_interrupt(qts, w, 0, 2, false);
+    }
+
+    /*
+     * The Bedrock takes each DMA as a packet from its PIC's port:
+     * withdraw inbound access for widget 0xd and only the upper PIC's
+     * write is refused.
+     */
+    g_assert_true(nasid_test_cpu_readq(qts, ENC_CPU, ENC_II_INBOUND_ACCESS,
+                                       &inbound));
+    enc_writeq(qts, ENC_II_INBOUND_ACCESS, inbound & ~(UINT64_C(1) << 0xd));
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        uint64_t at = ENC_DMA_OFFSET + 0x1000 + pic * 0x100;
+
+        enc_card_fill(qts, pic, 0, at, 0x90 + pic);
+        g_assert_cmpint(enc_landed(qts, at, 0x90 + pic), ==, pic != 2);
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * Test 5: link down and misrouting. A downed sending link (the lower
+ * PIC's own, 0xc) reaches no crossbar region; a downed host link takes
+ * the unreachable drop on each sender's port. Neither writes memory,
+ * latches anything or delivers an interrupt, and each PIC's interrupt
+ * status stays set. Widget 3 is an illegal destination, latched on the
+ * sender's port; 9, 11 and the sender's own widget are unreachable.
+ * Widget 0 reaches the crossbar's registers, and a peer widget another
+ * PIC's card.
+ */
+static void test_enclosure_link_down_and_misrouting(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start_cards(module, prom);
+    static const unsigned int unreachable[] = { 9, 11 };
+    uint32_t word = 0;
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        enc_card_start(qts, enc_widgets[pic], 0, 1);
+        enc_arm_interrupt(qts, enc_widgets[pic], 0, IP53_PI_LEVEL);
+    }
+
+    /* Sending link down: the lower PIC's own link, 0xc. */
+    enc_set_dir_map(qts, 1, 0, 10);
+    enc_set_links_alive(qts, 0xb400 & ~(1u << 0xc));
+    g_assert_cmpuint(enc_card_fill(qts, 1, 0, ENC_DMA_OFFSET, 0x11), !=, 0);
+    g_assert_false(enc_landed(qts, ENC_DMA_OFFSET, 0x11));
+    enc_raise(qts, module, 1, 0, true);
+    g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) & IP53_PI_PENDING_BIT,
+                    ==, 0);
+    enc_raise(qts, module, 1, 0, false);
+    /* The middle PIC's traffic still arrives. */
+    enc_set_dir_map(qts, 0, 0, 10);
+    g_assert_cmpuint(enc_card_fill(qts, 0, 0, ENC_DMA_OFFSET + 0x100, 0x22),
+                     ==, 0);
+    g_assert_true(enc_landed(qts, ENC_DMA_OFFSET + 0x100, 0x22));
+    g_assert_false(enc_any_illegal_latched(qts));
+    enc_set_links_alive(qts, 0xb400);
+    g_assert_cmphex(enc_readq(qts, ENC_HEAD(0xc, 0) + ENC_INT_STATUS) & 1,
+                    ==, 1);
+
+    /*
+     * Host link down: every PIC's DMA and interrupt are dropped. The
+     * processor reaches the brick only through that link, so DIR_MAP is
+     * set first.
+     */
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        enc_set_dir_map(qts, pic, 0, 10);
+    }
+    enc_set_links_alive(qts, 0xb400 & ~(1u << 0xa));
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        uint64_t at = ENC_DMA_OFFSET + 0x200 + pic * 0x10;
+
+        g_assert_cmpuint(enc_card_fill(qts, pic, 0, at, 0x30 + pic), !=, 0);
+        g_assert_false(enc_landed(qts, at, 0x30 + pic));
+        enc_raise(qts, module, pic, 0, true);
+        enc_raise(qts, module, pic, 0, false);
+    }
+    enc_set_links_alive(qts, 0xb400);
+    g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) & IP53_PI_PENDING_BIT,
+                    ==, 0);
+    g_assert_false(enc_any_illegal_latched(qts));
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        g_assert_cmphex(enc_readq(qts, ENC_HEAD(enc_widgets[pic], 0) +
+                                  ENC_INT_STATUS) & 1, ==, 1);
+    }
+
+    /* Unreachable: 9, 11 and the sender's own widget latch nothing. */
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        for (size_t i = 0; i <= ARRAY_SIZE(unreachable); i++) {
+            unsigned int target = i < ARRAY_SIZE(unreachable) ?
+                                  unreachable[i] : enc_widgets[pic];
+
+            enc_set_dir_map(qts, pic, 0, target);
+            g_assert_cmpuint(enc_card_fill(qts, pic, 0, ENC_DMA_OFFSET,
+                                           0x50), !=, 0);
+        }
+    }
+    g_assert_false(enc_any_illegal_latched(qts));
+
+    /*
+     * Widget 0: the packet-timeout register, a 20-bit word in the low
+     * half of its doubleword at 0x28, takes the fill; past the register
+     * view nothing answers.
+     */
+    enc_set_dir_map(qts, 2, 0, 0);
+    g_assert_cmpuint(enc_card_fill(qts, 2, 0, 0x2c, 0x01), ==, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WIDGET(0) + 0x2c,
+                                       &word));
+    g_assert_cmphex(word, ==, 0x01020304 & 0xfffff);
+    /* DIR_MAP's low field 2 puts the window at XIO 0x100000000. */
+    enc_writeq(qts, ENC_HEAD(0xd, 0) + ENC_DIR_MAP, 2);
+    g_assert_cmpuint(enc_card_fill(qts, 2, 0, 0x2c, 0x60), ==, 2);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WIDGET(0) + 0x2c,
+                                       &word));
+    g_assert_cmphex(word, ==, 0x01020304 & 0xfffff);
+    g_assert_false(enc_any_illegal_latched(qts));
+
+    /* Live peer: the lower PIC's card writes the upper PIC's card. */
+    enc_set_dir_map(qts, 1, 0, 0xd);
+    g_assert_cmpuint(enc_card_fill(qts, 1, 0, UINT64_C(0x40000000) +
+                                   ENC_BAR(1) + ENC_LANE_SCRATCH, 0x70),
+                     ==, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WINDOW(0xd, 0, 1) +
+                                       ENC_LANE_SCRATCH, &word));
+    g_assert_cmphex(word, ==, 0x70717273);
+    g_assert_false(enc_landed(qts, ENC_DMA_OFFSET + 0x300, 0x70));
+    /* The upper PIC reaches the middle PIC's card the same way. */
+    enc_set_dir_map(qts, 2, 0, 0xf);
+    g_assert_cmpuint(enc_card_fill(qts, 2, 0, UINT64_C(0x40000000) +
+                                   ENC_BAR(1) + ENC_LANE_SCRATCH, 0x74),
+                     ==, 0);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WINDOW(0xf, 0, 1) +
+                                       ENC_LANE_SCRATCH, &word));
+    g_assert_cmphex(word, ==, 0x74757677);
+    /* With the target's link down, the sender's port drops the write. */
+    enc_set_links_alive(qts, 0xb400 & ~(1u << 0xd));
+    enc_set_dir_map(qts, 1, 0, 0xd);
+    g_assert_cmpuint(enc_card_fill(qts, 1, 0, UINT64_C(0x40000000) +
+                                   ENC_BAR(1) + ENC_LANE_SCRATCH, 0x78),
+                     !=, 0);
+    enc_set_links_alive(qts, 0xb400);
+    g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, ENC_WINDOW(0xd, 0, 1) +
+                                       ENC_LANE_SCRATCH, &word));
+    g_assert_cmphex(word, ==, 0x70717273);
+
+    /* Illegal: widget 3, latched on the sender's port. */
+    enc_set_dir_map(qts, 1, 0, 3);
+    g_assert_cmpuint(enc_card_fill(qts, 1, 0, ENC_DMA_OFFSET, 0x80), !=, 0);
+    g_assert_true(enc_illegal_latched(qts, 0xc));
+    g_assert_false(enc_illegal_latched(qts, 0xa));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+static uint64_t enc_packets(QTestState *qts, const char *module,
+                            unsigned int pic)
+{
+    g_autofree char *head = enc_head_path(module, pic, 0);
+    g_autofree char *path = g_path_get_dirname(head);
+
+    return qom_get_uint(qts, path, "x-test-linked-packet-count");
+}
+
+/*
+ * Test 6: the enclosure head policy leaves out each IP53 compatibility
+ * behaviour, on all six heads.
+ *
+ * - Held input: a cleared PI bit stays clear while INTA is held, with
+ *   no packet sent; only a new rising edge sends one.
+ * - IP35 PROM values: control and the Device registers reset to zero,
+ *   and a four-byte write at +0x7c sets no status bit 24.
+ * - Widget-register rule and CPU word view: a 32-bit control write is
+ *   refused and leaves the register as it was.
+ * - Direct64: a 64-bit PCI address writes no memory.
+ * - Identity: the aligned doubleword and base + 4 read the same value,
+ *   with bit zero clear.
+ */
+static void test_enclosure_head_policy(const void *data)
+{
+    const char *module = data;
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = enc_start_cards(module, prom);
+
+    for (unsigned int pic = 0; pic < 3; pic++) {
+        unsigned int w = enc_widgets[pic];
+
+        for (unsigned int head = 0; head < 2; head++) {
+            uint64_t base = ENC_HEAD(w, head);
+            uint32_t word = 0;
+
+            g_assert_cmphex(enc_readq(qts, base), ==,
+                            (3u << 28) | ((head ? 0xd112u : 0xd102u) << 12) |
+                            (0x24 << 1));
+            g_assert_true(nasid_test_cpu_readl(qts, ENC_CPU, base + 4,
+                                               &word));
+            g_assert_cmphex(word, ==, enc_readq(qts, base));
+            g_assert_cmphex(enc_readq(qts, base + 0x20), ==, 0);
+            for (unsigned int dev = 0; dev < 4; dev++) {
+                g_assert_cmphex(enc_readq(qts, base + 0x200 + dev * 8), ==, 0);
+            }
+            enc_writel(qts, base + 0x7c, 1);
+            g_assert_cmphex(enc_readq(qts, base + ENC_INT_STATUS) &
+                            (1u << 24), ==, 0);
+            enc_writeq(qts, base + 0x20, 0x5);
+            enc_writel(qts, base + 0x24, 0xa);
+            g_assert_cmphex(enc_readq(qts, base + 0x20), ==, 0x5);
+        }
+
+        /* Held input, from head 0's slot 1 card. */
+        enc_card_start(qts, w, 0, 1);
+        enc_arm_interrupt(qts, w, 0, IP53_PI_LEVEL);
+        enc_card_interrupt(qts, w, 0, 1, true);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) & IP53_PI_PENDING_BIT,
+                        ==, IP53_PI_PENDING_BIT);
+        enc_writeq(qts, ENC_PI_PENDING_MODIFY, IP53_PI_LEVEL);
+        g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) & IP53_PI_PENDING_BIT,
+                        ==, 0);
+        {
+            uint64_t sent = enc_packets(qts, module, pic);
+
+            qtest_clock_step(qts, 10 * 1000 * 1000);
+            g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                            IP53_PI_PENDING_BIT, ==, 0);
+            g_assert_cmpuint(enc_packets(qts, module, pic), ==, sent);
+            enc_card_interrupt(qts, w, 0, 1, false);
+            enc_card_interrupt(qts, w, 0, 1, true);
+            /* The clear on deassertion and one new set packet. */
+            g_assert_cmpuint(enc_packets(qts, module, pic), ==, sent + 2);
+            g_assert_cmphex(enc_readq(qts, ENC_PI_PENDING) &
+                            IP53_PI_PENDING_BIT, ==, IP53_PI_PENDING_BIT);
+            enc_card_interrupt(qts, w, 0, 1, false);
+        }
+
+        /* Direct64: a 64-bit address naming widget 10 writes no memory. */
+        enc_card_set(qts, pic, 0, "test-address",
+                     (UINT64_C(0xa) << 60) | ENC_NODE | ENC_DMA_OFFSET);
+        enc_card_set(qts, pic, 0, "test-length", 4);
+        enc_card_set(qts, pic, 0, "test-seed", 0xd0);
+        enc_card_set(qts, pic, 0, "test-command", 1);
+        g_assert_false(enc_landed(qts, ENC_DMA_OFFSET, 0xd0));
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* Both enclosures build the same way until the IX-brick's IO9 is fitted. */
+static const char *const enc_modules[] = { "pxbrick", "ixbrick" };
+
+static const struct {
+    const char *name;
+    GTestDataFunc test;
+} enc_cases[] = {
+    { "widget-scan", test_enclosure_widget_scan },
+    { "configuration", test_enclosure_configuration },
+    { "pio-dir-map", test_enclosure_pio_and_dir_map },
+    { "dma-interrupts", test_enclosure_dma_and_interrupts },
+    { "link-down", test_enclosure_link_down_and_misrouting },
+    { "head-policy", test_enclosure_head_policy },
+};
+
 static QTestState *nbrick_start(const char *prom, const char *extra)
 {
     return qtest_initf("-M sn-builder-bedrock-test,"
@@ -10299,6 +11065,18 @@ static const CbrickRefusalCase cbrick_refusal_cases[] = {
     { CBRICK_FIXTURE("revision-mismatch"),
       "crossbar 'ibrick-xbridge' names revision 3; the XBridge model "
       "presents revision 2" },
+    { "sn-builder-bedrock-test,activate=on,"
+      "construction-fault=pxbrick-second-host",
+      "XIO cable 'c0-to-enclosure' meets PIC crossbar 'enclosure-pic' at "
+      "port 0xb; only single attachment at port 0xa is built" },
+    { "sn-builder-bedrock-test,activate=on,"
+      "construction-fault=pxbrick-origin350-host",
+      "node 'c1' is an Origin 350 compute module; it cannot be named as an "
+      "I/O attachment of PIC crossbar 'enclosure-pic'" },
+    { "sn-builder-bedrock-test,activate=on,"
+      "construction-fault=pxbrick-outer-on-port-8",
+      "XIO cable 'middle-to-lower' meets PIC crossbar 'enclosure-pic' at "
+      "port 0x8; its outer PICs are on ports 0xc and 0xd" },
     { "sn-builder-console-test,construction-fault=controller-absent",
       "module 'node1-cpu-module' has controller: absent, which only an SN1 "
       "topology builds" },
@@ -11275,6 +12053,15 @@ int main(int argc, char **argv)
                    test_origin3200_loop_disk);
     qtest_add_func("sn/builder/origin3200/uncabled-ii-link-reads-down",
                    test_origin3200_uncabled_ii_link_reads_down);
+    for (size_t m = 0; m < ARRAY_SIZE(enc_modules); m++) {
+        for (size_t i = 0; i < ARRAY_SIZE(enc_cases); i++) {
+            g_autofree char *path = g_strdup_printf(
+                "sn/builder/enclosure/%s/%s", enc_modules[m],
+                enc_cases[i].name);
+
+            qtest_add_data_func(path, enc_modules[m], enc_cases[i].test);
+        }
+    }
     qtest_add_func("sn/builder/cbrick/origin3200-xbrick-slots",
                    test_origin3200_xbrick_slots_reach_their_cbrick);
     qtest_add_func("sn/builder/cbrick/nbrick-own-boards",

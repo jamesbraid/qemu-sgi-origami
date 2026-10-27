@@ -36,4 +36,17 @@ MemoryRegion *sgi_pic_routed_widget(SGIPICState *s, unsigned int widget,
                                     Error **errp);
 uint8_t sgi_pic_pxbow_revision(SGIPICState *s);
 
+/*
+ * Build a middle PIC under pic-rev3-enclosure-experimental as an IX-brick
+ * or PX-brick crossbar, before realization: its integrated PXBOW takes
+ * the host on port 10, the outer PICs on 12 and 13 and its own heads on
+ * 15. The node's view of each widget number through the host port is
+ * sgi_pic_enclosure_widget_view(); widget 0 is the crossbar's registers.
+ */
+bool sgi_pic_enable_enclosure_crossbar(SGIPICState *s, uint64_t span,
+                                       Error **errp);
+MemoryRegion *sgi_pic_enclosure_widget_view(SGIPICState *s,
+                                            unsigned int widget,
+                                            Error **errp);
+
 #endif

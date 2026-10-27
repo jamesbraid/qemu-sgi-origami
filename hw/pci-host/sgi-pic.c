@@ -189,6 +189,23 @@ struct SGIPICState {
     uint64_t last_linked_result;
     SGIXioPeer peer;
     AddressSpace widget_as;
+
+    /*
+     * Enclosure mode (pic-rev3-enclosure-experimental): every outbound
+     * packet enters the enclosure crossbar at this PIC's own port, through
+     * an alias of that port's packet ingress, carrying the port as its
+     * source. The middle PIC owns the crossbar (enclosure_crossbar) and
+     * hands the host port's traffic to the cabled Bedrock (host_peer).
+     */
+    bool enclosure_crossbar;
+    bool enclosure_as_initialized;
+    bool host_connected;
+    uint8_t enclosure_port;
+    MemoryRegion *enclosure_ingress;
+    MemoryRegion enclosure_out;
+    AddressSpace enclosure_as;
+    MemoryRegion enclosure_host_face;
+    SGIXioPeer host_peer;
 };
 
 static bool pic_uses_runtime_profile(const SGIPICState *s)
@@ -201,15 +218,51 @@ static bool pic_uses_runtime_profile(const SGIPICState *s)
        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_EXPERIMENTAL;
 }
 
+/*
+ * The IX-brick and PX-brick policy: the base register layout at revision 3
+ * with the DIR_MAP field rule, Bedrock-mode interrupt packets and the
+ * enclosure transport, and none of the IP53 compatibility behaviours.
+ */
+static bool pic_uses_enclosure_profile(const SGIPICState *s)
+{
+    return s->compatibility_profile ==
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_ENCLOSURE_EXPERIMENTAL;
+}
+
 static bool pic_uses_linked_transport(const SGIPICState *s)
 {
-    return s->linked || pic_uses_runtime_profile(s);
+    return s->linked || pic_uses_runtime_profile(s) ||
+           pic_uses_enclosure_profile(s);
 }
 
 static bool pic_uses_bedrock_interrupts(const SGIPICState *s)
 {
     return pic_uses_linked_transport(s) &&
-        (s->bedrock_interrupts || pic_uses_runtime_profile(s));
+        (s->bedrock_interrupts || pic_uses_runtime_profile(s) ||
+         pic_uses_enclosure_profile(s));
+}
+
+static bool pic_stores_dir_map_fields(const SGIPICState *s)
+{
+    return pic_uses_runtime_profile(s) || pic_uses_enclosure_profile(s);
+}
+
+/* One outbound packet into the enclosure crossbar at this PIC's port. */
+static MemTxResult pic_enclosure_send(SGIPICState *pic, hwaddr packet,
+                                      void *buffer, size_t size, bool write)
+{
+    MemTxResult result;
+
+    if (!pic->enclosure_as_initialized) {
+        result = MEMTX_DECODE_ERROR;
+    } else {
+        result = address_space_rw(&pic->enclosure_as, packet,
+                                  sgi_xio_source_attrs(pic->enclosure_port),
+                                  buffer, size, write);
+    }
+    pic->linked_packet_count++;
+    pic->last_linked_result = result;
+    return result;
 }
 
 static void pic_profile_get(Object *obj, Visitor *v, const char *name,
@@ -270,6 +323,22 @@ static MemTxResult pic_send_interrupt(SGIPICState *pic, hwaddr address,
     SGIXioPortClass *pc;
     MemTxResult result;
 
+    if (pic_uses_enclosure_profile(pic)) {
+        if (address >= (UINT64_C(1) << 48) ||
+            size > (UINT64_C(1) << 48) - address) {
+            pic->linked_packet_count++;
+            pic->last_linked_result = MEMTX_DECODE_ERROR;
+            return MEMTX_DECODE_ERROR;
+        }
+        /*
+         * The destination entries carry no widget field, so the packet
+         * goes to the host port the cable meets, the only host there is.
+         */
+        return pic_enclosure_send(pic,
+                                  ((hwaddr)pic->pxbow_host_widget <<
+                                   SGI_XIO_PACKET_ADDRESS_BITS) | address,
+                                  buffer, size, true);
+    }
     if (!source || !source->widget_known || source->widget > 15 ||
         (source->device_known && source->device > 7) ||
         !pic->peer.port) {
@@ -313,9 +382,26 @@ static MemTxResult pic_linked_rw(void *opaque, hwaddr addr, void *buffer,
         .device_known = false,
         .widget = REG(head, 0x20) & 0xf,
     };
-    hwaddr packet = ((direct >> 20) & 0xf) * SGI_XIO_PACKET_SIZE + addr;
+    unsigned widget = (direct >> 20) & 0xf;
+    hwaddr packet = widget * SGI_XIO_PACKET_SIZE + addr;
+    MemTxResult result;
 
-    return pic_send_typed(pic, packet, buffer, size, write, &source);
+    if (!pic_uses_enclosure_profile(pic)) {
+        return pic_send_typed(pic, packet, buffer, size, write, &source);
+    }
+    /*
+     * The crossbar's drop notice cannot reach a PIC whose own link is
+     * down, so every failure is reported here, from the send's result.
+     */
+    result = pic_enclosure_send(pic, packet, buffer, size, write);
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u DMA %s to widget %u at 0x%"
+                      HWADDR_PRIx " from slot %u failed (result %d)\n",
+                      head->head, write ? "write" : "read", widget, addr,
+                      dma->slot, result);
+    }
+    return result;
 }
 
 static MemTxResult pic_linked_read(void *opaque, hwaddr addr, uint64_t *value,
@@ -1154,7 +1240,7 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         /* Experimental software mask; other hardware fields are unknown. */
         const uint64_t supported = 0x1ffff | (0xfULL << 20);
 
-        if (pic_uses_runtime_profile(s->pic) && (value & ~supported)) {
+        if (pic_stores_dir_map_fields(s->pic) && (value & ~supported)) {
             pic_unsupported(s, addr, size, value, true);
             value &= supported;
         }
@@ -1817,8 +1903,31 @@ static const MemoryRegionOps pic_cpu_range_ops = {
     .impl.max_access_size = 8,
 };
 
+static MemoryRegion *pic_pxbow_routed_widget(SGIPICState *s,
+                                             unsigned int widget,
+                                             Error **errp);
+
+/*
+ * Index 0 is the PIC's own widget. A middle PIC built as an enclosure
+ * crossbar also answers for its crossbar's ports, 8 to 15, other than its
+ * own heads' port: the host's view of each widget number through the host
+ * port, and the packet ingress a widget linked at that port sends into.
+ */
+static bool pic_xio_crossbar_port(SGIPICState *s, unsigned int index)
+{
+    return s->enclosure_crossbar && index >= SGI_XBOW_FIRST_WIDGET &&
+           index < SGI_XBOW_WIDGETS && index != s->pxbow_pic_widget;
+}
+
 static const char *pic_xio_describe(Object *port, unsigned int index)
 {
+    SGIPICState *s = SGI_PIC(port);
+
+    if (pic_xio_crossbar_port(s, index)) {
+        return index == s->pxbow_host_widget ?
+            "the PIC enclosure crossbar's host port" :
+            "a PIC enclosure crossbar port";
+    }
     return "a PIC widget";
 }
 
@@ -1826,6 +1935,9 @@ static MemoryRegion *pic_xio_cpu_face(Object *port, unsigned int index)
 {
     SGIPICState *s = SGI_PIC(port);
 
+    if (pic_xio_crossbar_port(s, index)) {
+        return sgi_xbow_ingress(&s->pxbow, index);
+    }
     return index == 0 ? &s->cpu_widget : NULL;
 }
 
@@ -1833,7 +1945,57 @@ static MemoryRegion *pic_xio_packet_face(Object *port, unsigned int index)
 {
     SGIPICState *s = SGI_PIC(port);
 
+    if (pic_xio_crossbar_port(s, index)) {
+        return sgi_xbow_packet_ingress(&s->pxbow, index);
+    }
     return index == 0 ? &s->widget : NULL;
+}
+
+static bool pic_xio_switched(Object *port, unsigned int index)
+{
+    return pic_xio_crossbar_port(SGI_PIC(port), index);
+}
+
+/*
+ * Enclosure mode joins no typed peer. An outer PIC takes the crossbar
+ * port it is linked to as its outbound ingress and its port number as
+ * the source its packets carry. The middle PIC's host port keeps the
+ * cabled Bedrock for the host face, and every other crossbar port is
+ * the crossbar's own.
+ */
+static bool pic_xio_enclosure_connect(SGIPICState *s, unsigned int index,
+                                      const SGIXioPeer *peer, Error **errp)
+{
+    if (index == 0) {
+        if (DEVICE(s)->realized || s->enclosure_crossbar ||
+            s->enclosure_ingress || !peer->switched || !peer->packet_face ||
+            peer->index < SGI_XBOW_FIRST_WIDGET ||
+            peer->index >= SGI_XBOW_WIDGETS) {
+            error_setg(errp, "a PIC in an enclosure takes one crossbar port "
+                       "before it realizes");
+            return false;
+        }
+        s->enclosure_ingress = peer->packet_face;
+        s->enclosure_port = peer->index;
+        return true;
+    }
+    if (!pic_xio_crossbar_port(s, index)) {
+        error_setg(errp, "the PIC enclosure crossbar has no port 0x%x to link",
+                   index);
+        return false;
+    }
+    if (index == s->pxbow_host_widget) {
+        if (DEVICE(s)->realized || s->host_connected || peer->switched ||
+            !peer->port) {
+            error_setg(errp, "the PIC enclosure crossbar takes one host "
+                       "before it realizes");
+            return false;
+        }
+        s->host_peer = *peer;
+        s->host_connected = true;
+        return true;
+    }
+    return sgi_xio_port_connect(OBJECT(&s->pxbow), index, peer, errp);
 }
 
 static bool pic_xio_connect(Object *port, unsigned int index,
@@ -1842,6 +2004,9 @@ static bool pic_xio_connect(Object *port, unsigned int index,
     SGIPICState *s = SGI_PIC(port);
     SGIXioPortClass *pc;
 
+    if (pic_uses_enclosure_profile(s)) {
+        return pic_xio_enclosure_connect(s, index, peer, errp);
+    }
     if (index || DEVICE(s)->realized ||
         !pic_uses_linked_transport(s) || s->peer_connected ||
         !peer->port || !peer->packet_face) {
@@ -1895,11 +2060,12 @@ DeviceState *sgi_pic_head_device(SGIPICState *s, unsigned head)
 }
 
 static MemoryRegion *pic_pxbow_routed_widget(SGIPICState *s,
-                                               unsigned int widget,
-                                               Error **errp)
+                                             unsigned int widget,
+                                             Error **errp)
 {
-    if (!s->pxbow_enabled || widget < SGI_XBOW_FIRST_WIDGET ||
-        widget >= SGI_XBOW_WIDGETS) {
+    unsigned int first = s->enclosure_crossbar ? 1 : SGI_XBOW_FIRST_WIDGET;
+
+    if (!s->pxbow_enabled || widget < first || widget >= SGI_XBOW_WIDGETS) {
         error_setg(errp, "PIC PXBOW route requires an enabled link widget");
         return NULL;
     }
@@ -1968,6 +2134,134 @@ bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,
         return false;
     }
     return true;
+}
+
+/*
+ * What the host port's link delivers: each packet goes to the cabled
+ * Bedrock as a typed packet from the crossbar port it entered by. A
+ * packet with no source attached comes from the crossbar's own widget 0,
+ * whose interrupt is the only traffic written into a face directly.
+ */
+static MemTxResult pic_enclosure_host_rw(SGIPICState *s, hwaddr addr,
+                                         void *buffer, size_t size,
+                                         bool write, MemTxAttrs attrs)
+{
+    SGIXioSource source = { .widget_known = true, .widget = 0 };
+
+    if (!s->host_connected) {
+        return MEMTX_DECODE_ERROR;
+    }
+    sgi_xio_source_from_attrs(attrs, &source);
+    return sgi_xio_peer_packet_rw(&s->host_peer, addr, buffer, size, write,
+                                  &source, (SGIXioPacketAttrs) { 0 });
+}
+
+static MemTxResult pic_enclosure_host_read(void *opaque, hwaddr addr,
+                                           uint64_t *value, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result = pic_enclosure_host_rw(opaque, addr,
+                                               bytes + 8 - size, size, false,
+                                               attrs);
+
+    *value = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult pic_enclosure_host_write(void *opaque, hwaddr addr,
+                                            uint64_t value, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    return pic_enclosure_host_rw(opaque, addr, bytes + 8 - size, size, true,
+                                 attrs);
+}
+
+static const MemoryRegionOps pic_enclosure_host_ops = {
+    .read_with_attrs = pic_enclosure_host_read,
+    .write_with_attrs = pic_enclosure_host_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+bool sgi_pic_enable_enclosure_crossbar(SGIPICState *s, uint64_t span,
+                                       Error **errp)
+{
+    uint8_t outer = BIT(12 - SGI_XBOW_FIRST_WIDGET) |
+                    BIT(13 - SGI_XBOW_FIRST_WIDGET);
+    uint16_t widgets;
+
+    if (DEVICE(s)->realized || s->pxbow_enabled ||
+        !pic_uses_enclosure_profile(s)) {
+        error_setg(errp, "PIC enclosure crossbar requires an unused "
+                   "enclosure policy before realization");
+        return false;
+    }
+    if (s->pxbow_host_widget != 10 || s->pxbow_pic_widget != 15 ||
+        s->pxbow_revision > 0xf || span < PIC_WIDGET_SIZE ||
+        span > SGI_XBOW_PACKET_SIZE) {
+        error_setg(errp, "PIC enclosure crossbar takes host port 10, its "
+                   "own heads at 15, a revision and an XIO span");
+        return false;
+    }
+
+    object_initialize_child(OBJECT(s), "pxbow", &s->pxbow, TYPE_SGI_XBOW);
+    s->pxbow_initialized = true;
+    if (!sgi_xbow_enable_status_source_field(&s->pxbow, errp)) {
+        return false;
+    }
+    s->pxbow_status_source_field = true;
+    /* Single attachment: the host port, both outer PICs and our heads. */
+    widgets = BIT(s->pxbow_host_widget) | BIT(s->pxbow_pic_widget) |
+              (outer << SGI_XBOW_FIRST_WIDGET);
+    qdev_prop_set_uint64(DEVICE(&s->pxbow), "span", span);
+    qdev_prop_set_uint32(DEVICE(&s->pxbow), "revision", s->pxbow_revision);
+    qdev_prop_set_uint32(DEVICE(&s->pxbow), "part", 0xd100);
+    qdev_prop_set_uint32(DEVICE(&s->pxbow), "manufacturer", 0);
+    qdev_prop_set_uint16(DEVICE(&s->pxbow), "links-present", widgets);
+    qdev_prop_set_uint16(DEVICE(&s->pxbow), "startup-links-alive", widgets);
+    qdev_prop_set_uint16(DEVICE(&s->pxbow), "link-reset-restore-alive",
+                         widgets);
+    if (!sgi_xbow_attach_endpoint(&s->pxbow, s->pxbow_pic_widget,
+                                  &s->cpu_widget, &s->widget, errp)) {
+        return false;
+    }
+    memory_region_init_io(&s->enclosure_host_face, OBJECT(s),
+                          &pic_enclosure_host_ops, s,
+                          "pic.enclosure-host",
+                          SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+    s->enclosure_host_face.disable_reentrancy_guard = true;
+    if (!sgi_xbow_attach_endpoint(&s->pxbow, s->pxbow_host_widget, NULL,
+                                  &s->enclosure_host_face, errp)) {
+        return false;
+    }
+    memory_region_init_alias(
+        &s->pxbow_widget_zero, OBJECT(s), "pic.pxbow-widget-zero",
+        sgi_xbow_ingress(&s->pxbow, s->pxbow_host_widget), 0, span);
+    s->enclosure_ingress = sgi_xbow_packet_ingress(&s->pxbow,
+                                                   s->pxbow_pic_widget);
+    s->enclosure_port = s->pxbow_pic_widget;
+    s->enclosure_crossbar = true;
+    s->pxbow_enabled = true;
+    return true;
+}
+
+MemoryRegion *sgi_pic_enclosure_widget_view(SGIPICState *s,
+                                            unsigned int widget,
+                                            Error **errp)
+{
+    if (!s->enclosure_crossbar) {
+        error_setg(errp, "PIC is not an enclosure crossbar");
+        return NULL;
+    }
+    return widget ? pic_pxbow_routed_widget(s, widget, errp) :
+                    &s->pxbow_widget_zero;
 }
 
 bool sgi_pic_attach_pxbow_packet_endpoint(SGIPICState *s,
@@ -2147,7 +2441,8 @@ static void pic_realize(DeviceState *dev, Error **errp)
                    "pic-rev3-bedrock is only for qtest fixtures");
         return;
     }
-    if (pic_uses_runtime_profile(s) && s->test_fixture) {
+    if ((pic_uses_runtime_profile(s) || pic_uses_enclosure_profile(s)) &&
+        s->test_fixture) {
         error_setg(errp, "PIC runtime profile cannot enable test-fixture");
         return;
     }
@@ -2155,7 +2450,18 @@ static void pic_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "PIC migration test state is available only in qtest");
         return;
     }
-    if (pic_uses_linked_transport(s) && !s->peer_connected) {
+    if (pic_uses_enclosure_profile(s)) {
+        if (!s->enclosure_ingress) {
+            error_setg(errp, "PIC enclosure policy requires a crossbar port "
+                       "before realization");
+            return;
+        }
+        if (s->enclosure_crossbar && !s->host_connected) {
+            error_setg(errp, "PIC enclosure crossbar requires its host link "
+                       "before realization");
+            return;
+        }
+    } else if (pic_uses_linked_transport(s) && !s->peer_connected) {
         error_setg(errp, "PIC linked transport requires a typed peer before "
                    "realization");
         return;
@@ -2213,6 +2519,14 @@ static void pic_realize(DeviceState *dev, Error **errp)
         address_space_init(&s->widget_as, &s->widget, "pic.widget-inbound");
         s->widget_as_initialized = true;
     }
+    if (pic_uses_enclosure_profile(s)) {
+        memory_region_init_alias(&s->enclosure_out, OBJECT(s),
+                                 "pic.enclosure-out", s->enclosure_ingress, 0,
+                                 memory_region_size(s->enclosure_ingress));
+        address_space_init(&s->enclosure_as, &s->enclosure_out,
+                           "pic.enclosure-out");
+        s->enclosure_as_initialized = true;
+    }
 }
 
 static void pic_unrealize(DeviceState *dev)
@@ -2230,6 +2544,10 @@ static void pic_unrealize(DeviceState *dev)
     if (s->widget_as_initialized) {
         address_space_destroy(&s->widget_as);
         s->widget_as_initialized = false;
+    }
+    if (s->enclosure_as_initialized) {
+        address_space_destroy(&s->enclosure_as);
+        s->enclosure_as_initialized = false;
     }
     if (s->pxbow_initialized && qdev_is_realized(DEVICE(&s->pxbow))) {
         qdev_unrealize(DEVICE(&s->pxbow));
@@ -2305,6 +2623,7 @@ static void pic_class_init(ObjectClass *klass, const void *data)
     pc->cpu_face = pic_xio_cpu_face;
     pc->packet_face = pic_xio_packet_face;
     pc->packet_rw = pic_xio_packet_rw;
+    pc->switched = pic_xio_switched;
     pc->connect = pic_xio_connect;
 }
 

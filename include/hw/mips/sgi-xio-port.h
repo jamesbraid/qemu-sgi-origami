@@ -70,6 +70,37 @@ typedef struct SGIXioSource {
     uint8_t device;
 } SGIXioSource;
 
+/*
+ * A source widget carried in a packet's transaction attributes, for a
+ * path whose receiver is reached through memory regions rather than
+ * packet_rw(): a crossbar's routes are aliases, so the attributes the
+ * sender gives travel with the packet to the destination's face. Bit 15
+ * marks the field set and bits 3:0 name the widget. Model bookkeeping,
+ * not a packet-header encoding.
+ */
+#define SGI_XIO_SOURCE_ATTRS_TAG 0x8000
+
+static inline MemTxAttrs sgi_xio_source_attrs(uint8_t widget)
+{
+    return (MemTxAttrs) {
+        .requester_id = SGI_XIO_SOURCE_ATTRS_TAG | (widget & 0xf),
+    };
+}
+
+static inline bool sgi_xio_source_from_attrs(MemTxAttrs attrs,
+                                             SGIXioSource *source)
+{
+    if (attrs.unspecified ||
+        (attrs.requester_id & ~0xfu) != SGI_XIO_SOURCE_ATTRS_TAG) {
+        return false;
+    }
+    *source = (SGIXioSource) {
+        .widget_known = true,
+        .widget = attrs.requester_id & 0xf,
+    };
+    return true;
+}
+
 /* Model-only metadata for one packet, separate from source identity. */
 typedef struct SGIXioPacketAttrs {
     bool half_write_requested;
