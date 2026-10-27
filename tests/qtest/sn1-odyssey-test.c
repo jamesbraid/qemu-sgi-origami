@@ -1439,20 +1439,37 @@ static void test_interrupt_clear_acknowledges_flags(void)
 }
 
 /*
- * The driver writes the flags register itself (the kernel driver's FIFO
- * high-water handler stores 0x200, a diagnostic clears bit 11 by
- * read-modify-write) with an effect no source settles. The model accepts
- * the write, reports it, and leaves the flags and the level as they were.
+ * The driver writes the flags register itself: the kernel driver's FIFO
+ * high-water handler, finding the FIFO already below low water, stores
+ * 0x200 before enabling that source, and a diagnostic clears bit 11 by
+ * writing back the flags it read without it. The model chooses a
+ * replacing write (inferred; set-only is the competing reading), so a
+ * write raises the flags it carries and drops those it does not, and the
+ * interrupt follows.
  */
-static void test_interrupt_flags_write_is_accepted(void)
+static void test_interrupt_flags_take_written_value(void)
 {
     QTestState *qts = board_start("");
 
     flag_dest_program(qts);
     reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
     reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    ODSY_TEST_VECTOR);
 
     reg_write(qts, ODSY_INTR_FLAGS, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS), ==,
+                    ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
+
+    /* A write without the low-water bit drops it, as set-only would not. */
+    reg_write(qts, ODSY_INTR_FLAGS, ODSY_INTR_DMA_DONE);
+    g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS), ==, ODSY_INTR_DMA_DONE);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    ODSY_TEST_VECTOR);
+
+    reg_write(qts, ODSY_INTR_FLAGS, 0);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS), ==, 0);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR);
@@ -21592,8 +21609,8 @@ int main(int argc, char **argv)
                    test_interrupt_enable_set_and_clear);
     add_fresh_case("sn1/odyssey/interrupt-clear-acknowledges-flags",
                    test_interrupt_clear_acknowledges_flags);
-    add_fresh_case("sn1/odyssey/interrupt-flags-write-is-accepted",
-                   test_interrupt_flags_write_is_accepted);
+    add_fresh_case("sn1/odyssey/interrupt-flags-take-written-value",
+                   test_interrupt_flags_take_written_value);
     add_fresh_case("sn1/odyssey/lowater-not-raised-while-disabled",
                    test_lowater_not_raised_while_disabled);
     add_fresh_case("sn1/odyssey/board-status-reports-fifo-ready",

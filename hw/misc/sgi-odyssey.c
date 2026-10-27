@@ -11837,10 +11837,20 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         odyssey_update_irq(s);
         break;
     case ODSY_INTR_FLAGS:
-        /* The driver writes here, to an effect no source settles. */
-        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: write of 0x%" PRIx64
-                      " to the interrupt flags ignored; its effect is "
-                      "unknown\n", value);
+        /*
+         * The flags take the value written: an inferred model choice. The
+         * IRIX driver's credit flow control, finding the FIFO already below
+         * low water, writes the low-water bit here before enabling that
+         * source, which a write that replaces or a write that only sets
+         * would both serve; only its DMA diagnostic, which clears one flag
+         * by writing back the flags it read without it, needs a replacing
+         * write. The board's paired registers (0x1034 sets enables, 0x103c
+         * clears them, 0x101c clears flags) make set-only the competing
+         * reading. Under it a write would never clear a flag, as a write of
+         * zero does here.
+         */
+        s->intr_flags = value;
+        odyssey_update_irq(s);
         break;
     case ODSY_RESET_CONTROL:
         /* The driver's six-write reset sequence; see the define's comment. */
