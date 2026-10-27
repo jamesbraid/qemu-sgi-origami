@@ -48,6 +48,16 @@ Documents
 
 SGI manuals, service documents and papers, cited by document number.
 
+.. _sgi-ref-007-2597-001:
+
+``007-2597-001``
+   *MIPS IV Instruction Set, Revision 3.2*. MIPS Technologies. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/2000/007-2597-001/pdf/007-2597-001.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-3435-004:
+
+``007-3435-004``
+   *Octane Workstation Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3435-004/pdf/007-3435-004.pdf>`__ Published; may be quoted.
+
 .. _sgi-ref-007-3439-002:
 
 ``007-3439-002``
@@ -87,6 +97,16 @@ SGI manuals, service documents and papers, cited by document number.
 
 ``007-3791-002``
    *Preparing for an Installation of a 33 to 256 Processor System HR-04122-0B Origin Systems Last Modified: August 1999*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3791-002/pdf/007-3791-002.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-4207-002:
+
+``007-4207-002``
+   *Octane2 Workstation Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4207-002/pdf/007-4207-002.pdf>`__ Published; may be quoted.
+
+.. _sgi-ref-007-4210-003:
+
+``007-4210-003``
+   *Octane/Octane2 Workstation VPro Graphics Upgrade Kit Installation Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4210-003/pdf/007-4210-003.pdf>`__ Published; may be quoted.
 
 .. _sgi-ref-007-4240-002:
 
@@ -228,6 +248,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``dmesgd-8994``
    *OpenBSD dmesg of a real Origin 200, dmesgd entry 8994*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=8994>`__ SHA-256 ``bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f``. Public web page; may be quoted.
 
+.. _sgi-ref-ds2505-datasheet:
+
+``ds2505-datasheet``
+   *DS2505 16Kbit Add-Only Memory*. Maxim Integrated. Part datasheet, cited by page. `<https://www.analog.com/media/en/technical-documentation/data-sheets/ds2505.pdf>`__ Archived copy: `<http://web.archive.org/web/20260204054038/https://www.analog.com/media/en/technical-documentation/data-sheets/ds2505.pdf>`__ SHA-256 ``ae7eb28b82d068a914a892928fe505ecd55815715ca7f37984f7eef7c58d2d6e``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ebay-277925514107-image-1:
 
 ``ebay-277925514107-image-1``
@@ -293,6 +318,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``lore-kaloz-ip35-35``
    *[PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01)*. linux-mips mailing list. Web post, cited by hunk. `<https://lore.kernel.org/r/d4ea8cf57059fa4544c7be577c6a8033d65ced9a.1790857966.git.kaloz@kernel.org>`__ Public web page; may be quoted.
 
+.. _sgi-ref-lore-kinard-octane-2017:
+
+``lore-kinard-octane-2017``
+   *Dual R14000 Octane dmesg and lspci with RAD Audio at PCI device 3 (Joshua Kinard, 2017-02-08)*. linux-mips mailing list. Capture, cited by line. `<https://lore.kernel.org/linux-mips/eafc94c6-1931-e2ce-7e03-d84d8e181e81@gentoo.org/>`__ Message-ID ``<eafc94c6-1931-e2ce-7e03-d84d8e181e81@gentoo.org>``. Public web page; may be quoted.
+
 .. _sgi-ref-lore-kinard-octane-2019:
 
 ``lore-kinard-octane-2019``
@@ -323,6 +353,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``marc-openbsd-sgi-139223952727384``
    *openbsd-sgi list, 2014-02-12, "Origin 300 with NUMA link"*. MARC mailing-list archive. Capture, cited by line. `<https://marc.info/?l=openbsd-sgi&m=139223952727384&w=2>`__ SHA-256 ``77a8c5379587a47b764b371912b76ae7663c651e08c4ff08878d0f926569fa84``. Public web page; may be quoted.
 
+.. _sgi-ref-maxim-ds1685-ds1687-rev-10-12:
+
+``maxim-ds1685-ds1687-rev-10-12``
+   *DS1685/DS1687 3V/5V Real-Time Clocks, document 19-5215, revision 10/12*. Maxim Integrated. Part datasheet, cited by page. `<https://web.archive.org/web/20190915061518id_/https://datasheets.maximintegrated.com/en/ds/DS1685-DS1687.pdf>`__ SHA-256 ``015f7d582af99da5b5e3da2a41b7fdbd3b66f94929aa538671f9e8bdd3ce6c83``. Published; may be quoted.
+
 .. _sgi-ref-mimgfx-origin2000-inventory:
 
 ``mimgfx-origin2000-inventory``
@@ -337,6 +372,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``miod-openbsd-sgi-story-4``
    *The OpenBSD/sgi story, part 4*. Miod Vallat. Web post, cited by line. `<https://web.archive.org/web/20260620055955id_/http://miod.online.fr/software/openbsd/stories/sgi4.html>`__ SHA-256 ``307c9d4678f52b8fb0c43d1690f552fd774ac1620bdf9aa1299c6f85ff40b91e``. Public web page; may be quoted.
+
+.. _sgi-ref-nec-vr10000-series-um-4:
+
+``nec-vr10000-series-um-4``
+   *VR10000 Series 64-/32-bit Microprocessor User's Manual, fourth edition, U10278EJ4V0UM00, March 2001*. NEC. Part datasheet, cited by page. `<http://www.bitsavers.org/components/nec/mips/Vr10000-um-r4_200103.pdf>`__ SHA-256 ``f70616dc1a5b2d92dc1984539263d6081e86e024c883c6a26c48118709fdf05a``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nec-vr10000-vr12000-um-3:
+
+``nec-vr10000-vr12000-um-3``
+   *VR10000, VR12000 64-bit Microprocessor User's Manual, third edition, U10278EJ3V0UM00, May 1998*. NEC. Part datasheet, cited by page. `<http://www.bitsavers.org/components/nec/mips/Vr10000-um-r3_199805.pdf>`__ SHA-256 ``83b5e933c7ae6dd18442f3950f96e90898f7da5306318931a533799a0eb6eef9``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-nekonomicon-16285:
 
@@ -427,6 +472,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nekonomicon-5749``
    *Nekochan forum archive thread 5749, page 1*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/3/5749/1.html>`__ SHA-256 ``ba496ee97b510dac8afbe309e668a8fa14515f45762b8b61901797393b01f019``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-octane-technical-report:
+
+``octane-technical-report``
+   *OCTANE Technical Report*. Silicon Graphics. Paper, cited by page. `<http://www.sgidepot.co.uk/octane/octane-technical-report.pdf>`__ SHA-256 ``248e73ee94f53c7e49e548503180b4f361d3ed19c4183cfcaa42edddc812aff0``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-openhci-1-0a:
 
