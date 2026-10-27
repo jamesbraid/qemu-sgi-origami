@@ -5521,11 +5521,13 @@ static void odyssey_gl_stipple_background(SGIOdysseyState *s,
 
 /*
  * The callbacks may run on band workers (concurrent_pixels, unless the
- * x-raster-bands property is off): each stores
- * only its own pixel's bytes, and reads the clip rectangles, the display
- * ID planes, the fog words and the per-draw texture chain, which only
- * FIFO commands on the waiting processor change. Their once-only reports
- * are made before the draw (odyssey_gl_report_refusals()).
+ * x-raster-bands property is off): each stores only its own pixel's bytes,
+ * and reads the clip rectangles, the display ID planes, the fog words and
+ * the per-draw texture chain, which only FIFO commands on the waiting
+ * processor change. Their once-only reports are made before the draw
+ * (odyssey_gl_report_refusals()). The rasterizer's own once-per-draw
+ * reports can come out in a different place among other log lines than
+ * from one thread; their text and count, and every pixel, do not change.
  */
 static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
 {
