@@ -2945,6 +2945,67 @@ static void test_peer_nested_ctc(void)
 }
 
 
+static const char *qom_link_value(QTestState *s, const char *path,
+                                  const char *property, char **keep)
+{
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    *keep = g_strdup(qdict_get_str(result, "return"));
+    return *keep;
+}
+
+static bool qom_set_refused(QTestState *s, const char *path,
+                            const char *property, const char *value)
+{
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':%s,'value':%s}}", path, property, value);
+
+    return qdict_haskey(result, "error");
+}
+
+/*
+ * A controller has a second peer slot beside the first: it holds a
+ * different controller, never the controller itself, can be cleared, and
+ * leaves the first slot and the pair's behaviour alone.
+ */
+static void test_io_peer_slot(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                               "-device sgi-l1,id=l1c,rack=1,bay=1" UART
+                               " -device sgi-l1,id=l1d,rack=1,bay=2"
+                               " -device sgi-l1,id=l1e,rack=1,bay=3");
+    g_autofree char *value = NULL;
+    uint8_t request[] = { 0x12, 0, 0, 0, 0, 0, 3 };
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    link_peers(s);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'io-peer','value':'/machine/peripheral/l1e'}}",
+        L1);
+    g_assert_cmpstr(qom_link_value(s, L1, "io-peer", &value), ==,
+                    "/machine/peripheral/l1e");
+    g_free(value);
+    g_assert_cmpstr(qom_link_value(s, L1, "peer", &value), ==, PEER);
+
+    /* The two slots hold different controllers, and neither is itself. */
+    g_assert_true(qom_set_refused(s, L1, "io-peer", PEER));
+    g_assert_true(qom_set_refused(s, L1, "io-peer", L1));
+
+    /* The first slot still routes as before. */
+    set_destination(request, (1 << 18) | (2 << 12) | 6);
+    send_frame(s, request, sizeof(request), false);
+    expect_identity(s, 18, 0x42);
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'io-peer','value':''}}", L1);
+    g_free(value);
+    g_assert_cmpstr(qom_link_value(s, L1, "io-peer", &value), ==, "");
+    qtest_quit(s);
+}
+
 /* The command interpreter runs any code's text and returns its lines. */
 static void test_command_interpreter(void)
 {
@@ -7103,6 +7164,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/peer-pair", test_peer_pair);
     qtest_add_func("sn1/l1/peer-power", test_peer_power);
     qtest_add_func("sn1/l1/peer-nested-ctc", test_peer_nested_ctc);
+    qtest_add_func("sn1/l1/io-peer-slot", test_io_peer_slot);
     qtest_add_func("sn1/l1/command-interpreter", test_command_interpreter);
     qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
     qtest_add_func("sn1/l1/request-log", test_request_log);
