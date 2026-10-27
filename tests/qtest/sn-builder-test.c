@@ -9283,6 +9283,128 @@ static void test_cbrick_board_on_crossbar_port(const void *data)
     g_unlink(prom);
 }
 
+/* A board Bridge's interrupt enable, the low word of its doubleword. */
+#define NBRICK_INT_ENABLE 0x10c
+
+static QTestState *nbrick_start(const char *prom, const char *extra)
+{
+    return qtest_initf("-M sn-builder-bedrock-test,"
+                       "construction-fault=cbrick-nbrick -cpu R14000 "
+                       "-smp 4,sockets=4,cores=1,threads=1 -m 256 -bios %s "
+                       "-nodefaults -display none %s", prom, extra);
+}
+
+/*
+ * An N-brick-shaped module of four XBridges, each cabled to one of four
+ * C-bricks on a Crosstown2 port and to a board on the other. The chips
+ * are xbridge0 to xbridge3 in the one module. Each node reaches the
+ * board on its own chip at that chip's free port, and no other: a value
+ * each node writes to its board's interrupt enable reads back only
+ * through that node.
+ */
+static void test_nbrick_each_node_reaches_its_own_board(void)
+{
+    g_autofree char *prom = cbrick_blank_prom();
+    QTestState *qts = nbrick_start(prom, "");
+
+    for (unsigned int k = 0; k < 4; k++) {
+        unsigned int host = k % 2 ? 0xb : 0xa;
+        unsigned int board = k % 2 ? 0xa : 0xb;
+        g_autofree char *node = g_strdup_printf("/machine/node%u", k);
+        g_autofree char *chip_name = g_strdup_printf("xbridge%u", k);
+        g_autofree char *chip = g_strdup_printf("/machine/module4/%s",
+                                                chip_name);
+        g_autofree char *board_name = g_strdup_printf("pipe-board%u", k);
+        g_autofree char *chip_type = qom_child_type(qts, "/machine/module4",
+                                                    chip_name);
+        g_autofree char *board_type = qom_child_type(qts, "/machine/module5",
+                                                     board_name);
+        g_autofree char *linked = qom_get_str(qts, node, "xbridge");
+        g_autofree char *prefix = qom_get_str(qts, chip, "bus-prefix");
+        g_autofree char *bedrock = g_strdup_printf("node%u", k);
+        uint32_t identity = 0;
+        uint8_t bytes[4];
+
+        g_assert_cmpstr(chip_type, ==, "sgi-xbridge");
+        g_assert_cmpstr(board_type, ==, "sgi-pci-carrier");
+        g_assert_cmpstr(linked, ==, chip);
+        g_assert_cmpstr(prefix, ==, "nbrick-");
+        g_assert_cmpuint(qom_get_uint(qts, chip, "host-port"), ==, host);
+        g_assert_true(cbrick_bedrock_links(qts, bedrock, host));
+        g_assert_true(cbrick_bedrock_links(qts, bedrock, board));
+        g_assert_false(cbrick_bedrock_links(qts, bedrock, 14));
+        g_assert_false(cbrick_bedrock_links(qts, bedrock, 15));
+
+        g_assert_true(nasid_test_cpu_readl(qts, k, CBRICK_WIDGET(board) + 4,
+                                           &identity));
+        g_assert_cmphex((identity >> 12) & 0xffff, ==, 0xc002);
+        stl_be_p(bytes, 1u << k);
+        g_assert_true(qtest_memwrite_cpu(qts, k,
+                                         CBRICK_WIDGET(board) +
+                                         NBRICK_INT_ENABLE,
+                                         bytes, sizeof(bytes)));
+    }
+    for (unsigned int k = 0; k < 4; k++) {
+        unsigned int board = k % 2 ? 0xa : 0xb;
+        uint32_t enable = 0;
+
+        g_assert_true(nasid_test_cpu_readl(qts, k, CBRICK_WIDGET(board) +
+                                           NBRICK_INT_ENABLE, &enable));
+        g_assert_cmphex(enable, ==, 1u << k);
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The four chips share their module's bus prefix. Save and restore the
+ * fixture, so each board's state comes back on its own chip.
+ */
+static void test_nbrick_save_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = cbrick_blank_prom();
+    g_autofree char *dir = g_dir_make_tmp("sn-builder-nbrick-migrate-XXXXXX",
+                                          &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = nbrick_start(prom, "-S");
+    to = nbrick_start(prom, "-S -incoming defer");
+    for (unsigned int k = 0; k < 4; k++) {
+        uint8_t bytes[4];
+
+        stl_be_p(bytes, 0x10u << k);
+        g_assert_true(qtest_memwrite_cpu(from, k,
+                                         CBRICK_WIDGET(k % 2 ? 0xa : 0xb) +
+                                         NBRICK_INT_ENABLE,
+                                         bytes, sizeof(bytes)));
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (unsigned int k = 0; k < 4; k++) {
+        uint32_t enable = 0;
+
+        g_assert_true(nasid_test_cpu_readl(to, k,
+                                           CBRICK_WIDGET(k % 2 ? 0xa : 0xb) +
+                                           NBRICK_INT_ENABLE, &enable));
+        g_assert_cmphex(enable, ==, 0x10u << k);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_unlink(prom);
+    g_rmdir(dir);
+}
+
 typedef struct CbrickRefusalCase {
     const char *machine;
     const char *message;
@@ -10323,6 +10445,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/cbrick/board-on-crossbar-port/b",
                         GUINT_TO_POINTER(0xb),
                         test_cbrick_board_on_crossbar_port);
+    qtest_add_func("sn/builder/cbrick/nbrick-own-boards",
+                   test_nbrick_each_node_reaches_its_own_board);
+    qtest_add_func("sn/builder/cbrick/nbrick-save-restore",
+                   test_nbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/save-restore", test_cbrick_save_restore);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
