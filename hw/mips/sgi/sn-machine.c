@@ -1722,13 +1722,15 @@ static bool sgi_machine_crossbar_host(const SGIModelTopology *t,
 /*
  * The presets a crossbar-to-board cable can join: XIO cards that build
  * their own widget and take its link from sgi_machine_attach_xio_card(),
- * and the V-brick's VPro V12, a pipe record that a pipe claims after
- * machine init (sgi_machine_claim_pipe_record()). The Onyx 3000 owner's
- * guide (007-4264-002, printed pages 52 and 54) puts the V12 boards
- * behind the V-brick's own midplane XBridge. The other pipes and the
- * Origin 2000 BaseIO cards, which bind the console's serial lines and
- * flash, are not built at an enclosure crossbar port until a brick
- * contract needs them.
+ * the V-brick's VPro V12 and the InfiniteReality pipe of a G-brick, pipe
+ * records that a pipe claims after machine init
+ * (sgi_machine_claim_pipe_record()). The Onyx 3000 owner's guide
+ * (007-4264-002, printed pages 52 and 54) puts the V12 boards behind the
+ * V-brick's own midplane XBridge, and a G-brick pipe reaches a C-brick
+ * only through an I-, X- or N-brick (printed pages 8 and 62). The other
+ * pipes and the Origin 2000 BaseIO cards, which bind the console's
+ * serial lines and flash, are not built at an enclosure crossbar port
+ * until a brick contract needs them.
  */
 static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
 {
@@ -1739,6 +1741,7 @@ static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
     case SGI_MODEL_IO_BOARD_PRESET_MSCSI:
     case SGI_MODEL_IO_BOARD_PRESET_PIC:
     case SGI_MODEL_IO_BOARD_PRESET_ODYSSEY:
+    case SGI_MODEL_IO_BOARD_PRESET_KONA:
         return true;
     default:
         return false;
@@ -1806,6 +1809,14 @@ static bool sgi_machine_validate_board_cable(
                    "'%s'; preset '%s' is not built on an enclosure crossbar "
                    "yet", t->name, board->id, crossbar->id,
                    SGIModelIoBoardPreset_str(board->preset));
+        return false;
+    }
+    /* A pipe -device names the slot it claims by the record's label. */
+    if (board->populated && board->preset == SGI_MODEL_IO_BOARD_PRESET_KONA &&
+        !board->label) {
+        error_setg(errp, "topology '%s' pipe '%s' on crossbar '%s' has no "
+                   "slot label for a pipe to claim", t->name, board->id,
+                   crossbar->id);
         return false;
     }
     return true;
@@ -3597,12 +3608,23 @@ static bool sgi_machine_instantiate_xio_card(
  * driver registers.
  */
 static unsigned int sgi_machine_kona_hub_widget(
-    const SGIModelTopology *t, const SGIModelXioAttachment *board)
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelXioAttachment *board)
 {
     g_autofree const SGIModelXioAttachment **attachments = NULL;
     size_t attachment_count;
     size_t i;
 
+    /*
+     * On an I/O brick's crossbar the Bedrock is the widget at the port
+     * its XIO cable reaches, the chip's host port, which the crossbar
+     * routes the pipe's packets to.
+     */
+    if (board->crossbar_index >= 0 && s->enclosure_xbridges) {
+        return object_property_get_uint(
+            OBJECT(s->enclosure_xbridges[board->crossbar_index]),
+            "host-port", &error_abort);
+    }
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                  &attachment_count);
     for (i = 0; i < attachment_count; i++) {
@@ -3767,7 +3789,7 @@ static void sgi_machine_fill_pipe_record(SGIMachineState *s,
     qdev_prop_set_array(dev, "other-identity-parts", parts);
     qdev_prop_set_uint32(dev, "fabric-hub-widget",
                          sgi_machine_kona_hub_widget(
-                             t, s->pipe_record_attachment[index]));
+                             s, t, s->pipe_record_attachment[index]));
 }
 
 /*
