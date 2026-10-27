@@ -5,6 +5,7 @@ sources:
   007-4311-002-ranges: "007-4311-002 printed page 10, Tables 2-1 and 2-2: the minimum system is one two-processor node brick and one I-brick; the Origin 3200 holds 2 to 8 processors and at most two I/O bricks in a short rack"
   007-4311-002-3200: "007-4311-002 printed page 87, Appendix A: an Origin 3200 has one or two C-bricks, at most two I/O bricks of which one must be an I-brick, and no R-brick"
   007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: an Origin 3200 C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
+  007-4311-002-rack: "007-4311-002 printed page 87, Appendix A: an Origin 3200 is housed in a single 17-U high short rack"
 layer:
   kind: product
   id: origin3200
@@ -40,3 +41,10 @@ layer:
         module layers already carry. This configuration never compiles: no
         QEMU consumer for the Origin 3000 family exists.
     evidence_policy: strict
+    components:
+      - id: rack
+        name: Origin 3200 short rack
+        kind: chassis
+        provenance: vendor-document
+        description: The 17U short rack that holds the whole system.
+        sources: [007-4311-002-rack]

@@ -2566,18 +2566,82 @@ class Origin3000BrickTests(unittest.TestCase):
     def test_cbrick_has_one_xio_ii_connector(self):
         model = self.resolve()
         components = {item["id"]: item for item in model["components"]}
-        self.assertNotIn("host-port-a", components)
-        self.assertNotIn("host-port-b", components)
-        connector = components["xio-ii-connector"]
+        self.assertNotIn("c0-host-port-a", components)
+        self.assertNotIn("c0-host-port-b", components)
+        connector = components["c0-xio-ii-connector"]
         self.assertEqual(connector["name"], "XIO (II) connector")
         self.assertEqual(connector["connector"]["interface"], "Crosstown2")
-        bus = next(item for item in model["buses"] if item["id"] == "xio-ii")
-        self.assertEqual((bus["kind"], bus["master"]), ("xio", "bedrock"))
+        bus = next(item for item in model["buses"]
+                   if item["id"] == "c0-xio-ii")
+        self.assertEqual((bus["kind"], bus["master"]),
+                         ("xio", "c0-bedrock"))
         self.assertIn(
-            {"component": "xio-ii-connector", "bus": "xio-ii",
+            {"component": "c0-xio-ii-connector", "bus": "c0-xio-ii",
              "role": "endpoint"},
             [{field: item[field] for field in ("component", "bus", "role")}
              for item in model["connections"]])
+
+    def test_attached_ibrick_reaches_the_cbrick_through_bus_bindings(self):
+        model = self.resolve()
+        attachments = {
+            (item["component"], item["bus"], item["role"])
+            for item in model["connections"]}
+        self.assertIn(("ibrick-xbridge-crossbar", "c0-xio-ii",
+                       "bridge-upstream"),
+                      attachments)
+        # The I-brick declares no bus of its own mastered by a component
+        # outside it.
+        for bus in model["buses"]:
+            if bus["id"].startswith("ibrick-"):
+                self.assertTrue(bus["master"].startswith("ibrick-"),
+                                bus["id"])
+
+    def test_rbrick_router_reaches_its_cable_through_bus_bindings(self):
+        # No catalogued composition holds an R-brick, so instance the
+        # layer by itself onto a cable an enclosing product would declare.
+        layer = yaml.safe_load(
+            (INPUTS / "layers/modules/r-brick.yaml").read_text())
+        graph = _resolver._instantiate_module_graph(
+            copy.deepcopy(layer["layer"]["data"]), prefix="rbrick-",
+            parent="rack", omit_buses=[],
+            bus_bindings={"c-brick-cable": "c0-to-rbrick"})
+        self.assertIn(
+            ("rbrick-router", "c0-to-rbrick", "endpoint"),
+            {(item["component"], item["bus"], item["role"])
+             for item in graph["connections"]})
+        for bus in graph["buses"]:
+            self.assertTrue(bus["master"].startswith("rbrick-"), bus["id"])
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "undeclared bus 'c-brick-cable' with no bus_bindings entry"):
+            _resolver._instantiate_module_graph(
+                copy.deepcopy(layer["layer"]["data"]), prefix="rbrick-",
+                parent="rack", omit_buses=[])
+
+    def test_module_naming_a_component_outside_its_instance_is_refused(self):
+        outside = (
+            ("a connection", {
+                "components": [{"id": "brick", "name": "Brick",
+                                "kind": "chassis"}],
+                "buses": [{"id": "link", "name": "Link", "kind": "xio",
+                           "master": "brick"}],
+                "connections": [{"component": "bedrock", "bus": "link",
+                                 "role": "master"}]}),
+            ("a bus master", {
+                "components": [{"id": "brick", "name": "Brick",
+                                "kind": "chassis"}],
+                "buses": [{"id": "link", "name": "Link", "kind": "xio",
+                           "master": "bedrock"}],
+                "connections": [{"component": "brick", "bus": "link",
+                                 "role": "endpoint"}]}),
+        )
+        for name, contract in outside:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "names component 'bedrock' outside its instance"):
+                _resolver._instantiate_module_graph(
+                    contract, prefix="brick-", parent="chassis",
+                    omit_buses=[])
 
 
 if __name__ == "__main__":
