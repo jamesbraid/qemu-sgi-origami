@@ -562,6 +562,10 @@
 #     synthetic status, reset and port-error diagnostics, which no
 #     hardware record settles; absent means it does not
 #
+# @node-ports: the only ports a node's own network interface may be
+#     cabled to, as the enclosure's management wiring requires (an
+#     Origin 3000 R-brick's ports 2 to 5); absent means any port
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelRouter',
@@ -572,7 +576,8 @@
             'revision': 'uint8',
             'chip-inputs': 'uint8',
             'serial': 'uint64',
-            '*synthetic-diagnostics': 'bool' } }
+            '*synthetic-diagnostics': 'bool',
+            '*node-ports': ['uint8'] } }
 
 ##
 # @SGIModelIoPeer:

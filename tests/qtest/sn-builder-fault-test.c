@@ -227,6 +227,21 @@ static uint32List *uint32_list(const unsigned int *items, size_t count)
     return head;
 }
 
+static uint8List *uint8_list(const uint8_t *items, size_t count)
+{
+    uint8List *head = NULL;
+    uint8List **tail = &head;
+
+    for (size_t i = 0; i < count; i++) {
+        uint8List *entry = fixture_new0(uint8List);
+
+        entry->value = items[i];
+        *tail = entry;
+        tail = &entry->next;
+    }
+    return head;
+}
+
 static uint64List *uint64_list(const uint64_t *items, size_t count)
 {
     uint64List *head = NULL;
@@ -1238,7 +1253,8 @@ static SGIModelL1Config cbrick_test_l1 = {
     .reported_type = 0x43,
     .revision = &bedrock_test_l1_revision,
 };
-static SGIModelController cbrick_test_controllers[CBRICK_TEST_MAX_NODES];
+/* One per C-brick, then one per router module of the R-brick fixture. */
+static SGIModelController cbrick_test_controllers[CBRICK_TEST_MAX_NODES + 2];
 static SGIModelNode cbrick_test_nodes[CBRICK_TEST_MAX_NODES];
 static unsigned int cbrick_test_module_nodes[CBRICK_TEST_MAX_NODES][1] = {
     { 0 }, { 1 }, { 2 }, { 3 },
@@ -1607,60 +1623,154 @@ static void bedrock_test_install_pbrick(void)
 }
 
 /*
- * An R-brick-shaped module: the two C-bricks, with no XIO, each cabled
- * to its own port of one SN1 router, which sits in a module of its own
- * with its own controller. The topology carries no L1 management
- * record. The router's part and revision are the values the model
- * presents; its ports and serial are fixture values.
+ * An R-brick-shaped module: two or four C-bricks, with no XIO, each
+ * cabled to its own port of one SN1 router, which sits in a module of
+ * its own with its own controller and takes nodes on ports 2 to 5 only,
+ * as an R-brick does. The topology carries no L1 management record. The
+ * router's part and revision are the values the model presents; its
+ * serial is a fixture value. A second router, when fitted, sits in the
+ * next module, cabled from the first router's port 4 to its port 1.
  */
-static SGIModelRouter rbrick_test_router = {
-    .id = (char *)"rbrick-router", .module_index = 2, .part = 0x3017,
-    .revision = 1, .serial = 0x5200000001ULL,
-};
-static SGIModelRouterList rbrick_test_router_entry = {
-    .value = &rbrick_test_router,
-};
-static SGIModelLinkEnd rbrick_test_ends[2][2];
-static SGIModelCable rbrick_test_cables[] = {
-    { .name = (char *)"c0-to-router", .kind = SGI_MODEL_CABLE_KIND_CABLE },
-    { .name = (char *)"c1-to-router", .kind = SGI_MODEL_CABLE_KIND_CABLE },
-};
+#define RBRICK_TEST_MAX_CABLES (CBRICK_TEST_MAX_NODES + 1)
 
-static void bedrock_test_install_rbrick(void)
+static uint8_t rbrick_test_node_ports[] = { 2, 3, 4, 5 };
+static SGIModelRouter rbrick_test_routers[2] = {
+    {
+        .id = (char *)"rbrick-router", .part = 0x3017, .revision = 1,
+        .serial = 0x5200000001ULL,
+    },
+    {
+        .id = (char *)"second-router", .part = 0x3017, .revision = 1,
+        .serial = 0x5200000002ULL,
+    },
+};
+static SGIModelLinkEnd rbrick_test_ends[RBRICK_TEST_MAX_CABLES][2];
+static SGIModelCable rbrick_test_cables[RBRICK_TEST_MAX_CABLES];
+static const char *const rbrick_test_cable_names[RBRICK_TEST_MAX_CABLES] = {
+    "c0-to-router", "c1-to-router", "c2-to-router", "c3-to-router",
+};
+/* Banks 2 and 3, the ones the fixture's installed-bank mask names. */
+static uint64_t rbrick_test_bank_mib[] = { 0, 0, 32, 32, 0, 0, 0, 0 };
+
+/* A router alone in module @module, with the controller of that index. */
+static void rbrick_test_add_router(unsigned int router, unsigned int module)
 {
+    static const char *const module_ids[] = { "rbrick", "second-rbrick" };
+    static const char *const l1_ids[] = { "l1-rbrick", "l1-second-rbrick" };
     SGIModelControllerList **tail = &bedrock_test_topology.controllers;
 
-    cbrick_test_install_nodes(2);
-    cbrick_test_controllers[2] = (SGIModelController) {
-        .id = (char *)"l1-rbrick", .module_index = 2,
+    cbrick_test_controllers[module] = (SGIModelController) {
+        .id = (char *)l1_ids[router], .module_index = module,
         .kind = SGI_MODEL_CONTROLLER_KIND_L1,
     };
     while (*tail) {
         tail = &(*tail)->next;
     }
-    QAPI_LIST_APPEND(tail, &cbrick_test_controllers[2]);
+    QAPI_LIST_APPEND(tail, &cbrick_test_controllers[module]);
     fixture_remember(*tail);
-    cbrick_test_modules[2] = (SGIModelModule) {
-        .id = (char *)"rbrick", .controller_index = 2,
+    cbrick_test_modules[module] = (SGIModelModule) {
+        .id = (char *)module_ids[router], .controller_index = module,
     };
-    for (unsigned int i = 0; i < ARRAY_SIZE(rbrick_test_cables); i++) {
+    rbrick_test_routers[router].module_index = module;
+}
+
+/*
+ * @count C-bricks, C-brick i on router port @ports[i]; with @memory,
+ * banks 2 and 3 fitted on every node so each has memory its processor
+ * and the others can reach; with @second_router, the second router.
+ */
+static void bedrock_test_install_rbrick(unsigned int count,
+                                        const unsigned int *ports,
+                                        bool memory, bool second_router)
+{
+    SGIModelRouterList *routers = NULL;
+    SGIModelRouterList **tail = &routers;
+    unsigned int cables = count;
+
+    cbrick_test_install_nodes(count);
+    rbrick_test_add_router(0, count);
+    rbrick_test_routers[0].node_ports = uint8_list(
+        rbrick_test_node_ports, ARRAY_SIZE(rbrick_test_node_ports));
+    for (unsigned int i = 0; i < count; i++) {
         rbrick_test_ends[i][0] = (SGIModelLinkEnd) {
             .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = i,
         };
         rbrick_test_ends[i][1] = (SGIModelLinkEnd) {
-            .kind = SGI_MODEL_LINK_END_KIND_ROUTER, .index = 0, .port = 2 + i,
+            .kind = SGI_MODEL_LINK_END_KIND_ROUTER, .index = 0,
+            .port = ports[i],
         };
+        rbrick_test_cables[i] = (SGIModelCable) {
+            .name = (char *)rbrick_test_cable_names[i],
+            .kind = SGI_MODEL_CABLE_KIND_CABLE,
+        };
+        if (memory) {
+            cbrick_test_nodes[i].bank_mib = uint64_list(
+                rbrick_test_bank_mib, ARRAY_SIZE(rbrick_test_bank_mib));
+        }
+    }
+    *tail = fixture_new0(SGIModelRouterList);
+    (*tail)->value = &rbrick_test_routers[0];
+    tail = &(*tail)->next;
+    if (second_router) {
+        rbrick_test_add_router(1, count + 1);
+        rbrick_test_routers[1].node_ports = uint8_list(
+            rbrick_test_node_ports, ARRAY_SIZE(rbrick_test_node_ports));
+        rbrick_test_ends[cables][0] = (SGIModelLinkEnd) {
+            .kind = SGI_MODEL_LINK_END_KIND_ROUTER, .index = 0, .port = 4,
+        };
+        rbrick_test_ends[cables][1] = (SGIModelLinkEnd) {
+            .kind = SGI_MODEL_LINK_END_KIND_ROUTER, .index = 1, .port = 1,
+        };
+        rbrick_test_cables[cables++] = (SGIModelCable) {
+            .name = (char *)"router-to-router",
+            .kind = SGI_MODEL_CABLE_KIND_CABLE,
+        };
+        *tail = fixture_new0(SGIModelRouterList);
+        (*tail)->value = &rbrick_test_routers[1];
+    }
+    for (unsigned int i = 0; i < cables; i++) {
         rbrick_test_cables[i].ends = link_end_list(
             rbrick_test_ends[i], ARRAY_SIZE(rbrick_test_ends[i]));
     }
-    bedrock_test_topology.cables = cable_list(
-        rbrick_test_cables, ARRAY_SIZE(rbrick_test_cables));
-    bedrock_test_topology.routers = &rbrick_test_router_entry;
+    bedrock_test_topology.cables = cable_list(rbrick_test_cables, cables);
+    bedrock_test_topology.routers = routers;
     bedrock_test_topology.l1_management = NULL;
-    cbrick_test_publish(3, 0, 0, 0);
+    cbrick_test_publish(count + 1 + second_router, 0, 0, 0);
     bedrock_test_topology.node_populations = whole_population(
         &bedrock_test_topology,
         cpu_population_list(&cbrick_test_population, 1));
+}
+
+/*
+ * One R-brick fixture by name: "rbrick" is c0 and c1 on ports 2 and 3;
+ * "rbrick-four" all four C-bricks on ports 2 to 5 with memory, and
+ * "rbrick-four-reversed" the same bricks on ports 5 down to 2;
+ * "rbrick-second-router" adds a second router on the first's node port 4;
+ * "rbrick-node-port-<n>" puts c1 on port n.
+ */
+static bool bedrock_test_install_rbrick_fixture(const char *name)
+{
+    static const unsigned int in_order[] = { 2, 3, 4, 5 };
+    static const unsigned int reversed[] = { 5, 4, 3, 2 };
+    unsigned int ports[2] = { 2, 3 };
+    unsigned int port;
+    char end;
+
+    if (!strcmp(name, "rbrick")) {
+        bedrock_test_install_rbrick(2, ports, false, false);
+    } else if (!strcmp(name, "rbrick-four")) {
+        bedrock_test_install_rbrick(4, in_order, true, false);
+    } else if (!strcmp(name, "rbrick-four-reversed")) {
+        bedrock_test_install_rbrick(4, reversed, true, false);
+    } else if (!strcmp(name, "rbrick-second-router")) {
+        bedrock_test_install_rbrick(2, ports, false, true);
+    } else if (sscanf(name, "rbrick-node-port-%u%c", &port, &end) == 1) {
+        ports[1] = port;
+        bedrock_test_install_rbrick(2, ports, false, false);
+    } else {
+        return false;
+    }
+    return true;
 }
 
 /*
@@ -1776,7 +1886,7 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
             (unsigned int[]){ 0, 1 }, 2);
         cbrick_test_publish(1, 0, 0, 0);
     } else if (!strcmp(fault, "module-l1-no-node")) {
-        bedrock_test_install_rbrick();
+        bedrock_test_install_rbrick_fixture("rbrick");
         cbrick_test_controllers[2].has_owner = true;
         cbrick_test_controllers[2].owner = SGI_MODEL_CONTROLLER_OWNER_MODULE;
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
@@ -1910,8 +2020,9 @@ static void bedrock_test_set_construction_fault(Object *obj,
             cbrick_test_controllers[1].owner =
                 SGI_MODEL_CONTROLLER_OWNER_MODULE;
         }
-    } else if (!strcmp(value, "cbrick-rbrick")) {
-        bedrock_test_install_rbrick();
+    } else if (g_str_has_prefix(value, "cbrick-rbrick") &&
+               bedrock_test_install_rbrick_fixture(value + strlen("cbrick-"))) {
+        /* Installed by name. */
     } else if (!strcmp(value, "cbrick-board-port-8")) {
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {

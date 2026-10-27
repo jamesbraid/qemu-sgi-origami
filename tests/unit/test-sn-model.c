@@ -1302,6 +1302,63 @@ static void test_xio_cable_view_copies_new_records(void)
     g_assert_cmpstr(view->modules->next->value->brick_type, ==, "C");
 }
 
+/*
+ * A synthetic R-brick shape, with no product claim: n0 and n1 cabled to
+ * ports 2 and 3 of one router whose record names its node ports.
+ */
+#define ROUTER_VIEW_MODULE(id, controller, nodes) \
+    "{\"id\":\"" id "\",\"serial\":\"\",\"initial-module-number\":0," \
+    "\"controller-index\":" controller ",\"nodes\":[" nodes "]}"
+#define ROUTER_VIEW_CABLE(name, node, port) \
+    "{\"name\":\"" name "\",\"kind\":\"cable\",\"ends\":[" \
+    "{\"kind\":\"node\",\"index\":" node ",\"port\":0}," \
+    "{\"kind\":\"router\",\"index\":0,\"port\":" port "}]}"
+#define ROUTER_VIEW_L1(id, module) \
+    "{\"id\":\"" id "\",\"module-index\":" module ",\"kind\":\"l1\"}"
+
+static const char router_view_json[] =
+    "{\"name\":\"router-view\",\"product\":\"synthetic\","
+    "\"generation\":\"sn1\",\"description\":\"router view fixture\","
+    "\"nodes\":["
+    XIO_CABLE_NODE("n0", "0", "") "," XIO_CABLE_NODE("n1", "1", "") "],"
+    "\"modules\":["
+    ROUTER_VIEW_MODULE("m0", "0", "0") ","
+    ROUTER_VIEW_MODULE("m1", "1", "1") ","
+    ROUTER_VIEW_MODULE("router", "2", "") "],"
+    "\"routers\":[{\"id\":\"r\",\"module-index\":2,\"slot\":0,"
+    "\"part\":12311,\"revision\":1,\"chip-inputs\":0,\"serial\":1,"
+    "\"node-ports\":[2,3,4,5]}],"
+    "\"cables\":[" ROUTER_VIEW_CABLE("n0-r", "0", "2") ","
+    ROUTER_VIEW_CABLE("n1-r", "1", "3") "],"
+    "\"crossbars\":[],\"xio-attachments\":[],\"xio-slots\":[],"
+    "\"io-boards\":[],"
+    "\"controllers\":[" ROUTER_VIEW_L1("l1-0", "0") ","
+    ROUTER_VIEW_L1("l1-1", "1") "," ROUTER_VIEW_L1("l1-r", "2") "],"
+    "\"console\":0,\"junk-uart\":-1,"
+    "\"node-populations\":[{\"nodes\":[0,1],\"routers\":[0],"
+    "\"cables\":[0,1],\"xio-slots\":[],\"supported-cpu-populations\":[],"
+    "\"grade\":\"established\"}]}";
+
+static void test_router_view_keeps_node_ports(void)
+{
+    /* Population views keep pointers into this topology for process life. */
+    SGIModelTopology *t = parse_topology(router_view_json);
+    const SGIModelTopology *view;
+    const uint8List *port;
+    unsigned int expected = 2;
+    Error *err = NULL;
+
+    view = sgi_model_population_view(t, t->node_populations->value, &err);
+    g_assert_null(err);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->routers), ==, 1);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->routers->value->node_ports), ==,
+                     4);
+    for (port = view->routers->value->node_ports; port; port = port->next) {
+        g_assert_cmpuint(port->value, ==, expected++);
+    }
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->cables), ==, 2);
+}
+
 static void test_xio_cable_view_refuses_bad_ends(void)
 {
     static const char *const bad[] = { "\"port\":10", "\"index\":7" };
@@ -1757,6 +1814,8 @@ int main(int argc, char **argv)
                     test_l1_peer_population_preserved);
     g_test_add_func("/sn-model/xio-cable/view-copies-new-records",
                     test_xio_cable_view_copies_new_records);
+    g_test_add_func("/sn-model/router/view-keeps-node-ports",
+                    test_router_view_keeps_node_ports);
     g_test_add_func("/sn-model/xio-cable/view-refuses-bad-ends",
                     test_xio_cable_view_refuses_bad_ends);
     g_test_add_func("/sn-model/io-peer/population-preserved",
