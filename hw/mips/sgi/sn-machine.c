@@ -208,6 +208,9 @@ typedef struct SGIMachineNodeConfig {
 } SGIMachineNodeConfig;
 
 typedef struct SGIMachineL1Config {
+    /* An Origin 3000 brick profile, which owns its type and revision. */
+    bool has_profile;
+    SGIModelL1Profile profile;
     uint8_t reported_type;
     int32_t revision[3];
     const char *mac_eeprom;
@@ -1495,8 +1498,19 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     }
     for (module = t->modules; module; module = module->next) {
         const SGIModelModule *m = module->value;
+        const SGIModelControllerList *owner = t->controllers;
 
-        if (m->brick_type) {
+        for (int64_t i = 0; owner && i < m->controller_index; i++) {
+            owner = owner->next;
+        }
+        /*
+         * A C-brick's type letter is built by the C-brick L1 profile,
+         * which answers it; any other catalogued letter has no profile.
+         */
+        if (m->brick_type &&
+            !(!strcmp(m->brick_type, "C") && m->controller_index >= 0 &&
+              owner && owner->value->l1 && owner->value->l1->has_profile &&
+              owner->value->l1->profile == SGI_MODEL_L1_PROFILE_CBRICK)) {
             error_setg(errp, "topology '%s' module '%s' names L1 brick type "
                        "'%s'; brick types from the catalogue are not built "
                        "yet", t->name, m->id, m->brick_type);
@@ -3887,6 +3901,9 @@ static bool sgi_machine_instantiate_io7(
     object_property_add_child(module, "io7", OBJECT(io7));
     object_unref(OBJECT(io7));
     qdev_prop_set_string(io7, "preset", "io7");
+    if (record->has_ieee1394_absent && record->ieee1394_absent) {
+        qdev_prop_set_bit(io7, "ieee1394-absent", true);
+    }
     if (record->system_timekeeper) {
         const SGIModelSystemTimekeeper *clock = record->system_timekeeper;
 
@@ -5992,6 +6009,108 @@ static bool sgi_machine_build_l1_peer_links(SGIMachineState *s,
     return true;
 }
 
+/*
+ * Each I-brick's L1: a controller of the brick's own module, reached from
+ * the L1 of the C-brick whose XIO cable ends on that module's crossbar.
+ * The link between them is an in-process call with no wire format. The
+ * brick record its L1 serves carries the IO7's station address.
+ */
+static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    size_t module_count, crossbar_count;
+    unsigned int index = 0;
+
+    modules = sgi_model_module_array(t->modules, &module_count);
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    for (const SGIModelControllerList *entry = t->controllers; entry;
+         entry = entry->next, index++) {
+        const SGIModelController *controller = entry->value;
+        const SGIModelModule *module;
+        g_autofree char *module_name = NULL;
+        g_autofree char *mac = NULL;
+        DeviceState *l1, *host = NULL;
+        unsigned int board_index = 0;
+        bool found_board = false;
+
+        if (!s->l1_config || !s->l1_config[index].has_profile ||
+            s->l1_config[index].profile != SGI_MODEL_L1_PROFILE_IBRICK) {
+            continue;
+        }
+        if (controller->module_index >= module_count) {
+            error_setg(errp, "I-brick L1 '%s' names an absent module",
+                       controller->id);
+            return false;
+        }
+        module = modules[controller->module_index];
+        for (const SGIModelXioCableList *cable = t->xio_cables; cable;
+             cable = cable->next) {
+            const SGIModelXioEndList *ends = cable->value->ends;
+            const SGIModelXioEnd *a = ends->value, *b = ends->next->value;
+            const SGIModelXioEnd *node_end =
+                a->kind == SGI_MODEL_XIO_END_KIND_NODE ? a : b;
+            const SGIModelXioEnd *bar_end = node_end == a ? b : a;
+
+            if (node_end->kind != SGI_MODEL_XIO_END_KIND_NODE ||
+                bar_end->kind != SGI_MODEL_XIO_END_KIND_CROSSBAR ||
+                bar_end->index >= crossbar_count ||
+                crossbars[bar_end->index]->module_index !=
+                    controller->module_index) {
+                continue;
+            }
+            if (host || node_end->index >= s->num_nodes) {
+                error_setg(errp, "I-brick L1 '%s' takes exactly one C-brick",
+                           controller->id);
+                return false;
+            }
+            host = SN1_NODE(s->bedrock_nodes[node_end->index])->l1;
+        }
+        if (!host) {
+            error_setg(errp, "I-brick L1 '%s' has no C-brick cabled to its "
+                       "brick", controller->id);
+            return false;
+        }
+        for (const SGIModelIoBoardList *board = t->io_boards; board;
+             board = board->next, board_index++) {
+            if (board->value->module_index == controller->module_index &&
+                board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
+                found_board = true;
+                break;
+            }
+        }
+        if (!found_board) {
+            error_setg(errp, "I-brick L1 '%s' has no IO7 in its brick",
+                       controller->id);
+            return false;
+        }
+        mac = sgi_machine_onboard_mac(s, t, board_index, errp);
+        if (!mac) {
+            return false;
+        }
+        module_name = g_strdup_printf("module%u", controller->module_index);
+        l1 = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(
+            object_resolve_path_component(OBJECT(s), module_name), "l1",
+            OBJECT(l1));
+        object_unref(OBJECT(l1));
+        qdev_prop_set_string(l1, "brick-type", "ibrick");
+        qdev_prop_set_string(l1, "mac", mac);
+        if (module->initial_module_number) {
+            qdev_prop_set_uint32(l1, "bay", module->initial_module_number);
+            qdev_prop_set_bit(l1, "named", true);
+        }
+        if (!qdev_realize(l1, NULL, errp) ||
+            !object_property_set_link(OBJECT(host), "io-peer", OBJECT(l1),
+                                      errp)) {
+            return false;
+        }
+        qemu_register_resettable(OBJECT(l1));
+    }
+    return true;
+}
+
 static void sgi_machine_io_peer_number_changed(Notifier *notifier, void *data)
 {
     SGIMachinePeerNotifier *peer =
@@ -7796,6 +7915,28 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
                 break;
             }
         }
+        if (config->has_profile) {
+            /*
+             * A C-brick's L1 belongs to its node and an I-brick's to its
+             * module alone; neither takes a type code or revision.
+             */
+            if ((config->profile == SGI_MODEL_L1_PROFILE_CBRICK) !=
+                (owner_node != node_count) ||
+                config->has_reported_type || config->revision ||
+                config->mac_eeprom_input || config->cpu_context) {
+                error_setg(errp, "topology '%s' controller '%s' has an "
+                           "invalid L1 %s profile", t->name,
+                           controllers[i]->id,
+                           SGIModelL1Profile_str(config->profile));
+                return false;
+            }
+            resolved->has_profile = true;
+            resolved->profile = config->profile;
+            for (unsigned int j = 0; j < ARRAY_SIZE(resolved->revision); j++) {
+                resolved->revision[j] = -1;
+            }
+            continue;
+        }
         if (owner_node == node_count) {
             error_setg(errp, "topology '%s' controller '%s' has L1 "
                        "configuration without a modeled Bedrock node",
@@ -7890,6 +8031,13 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         unsigned int found = 0;
         uint64_t value;
 
+        if (board->has_ieee1394_absent &&
+            board->preset != SGI_MODEL_IO_BOARD_PRESET_IO7) {
+            error_setg(errp, "topology '%s' board '%s' leaves out an IEEE "
+                       "1394 controller; only an io7 board has one", t->name,
+                       board->id);
+            return false;
+        }
         if (board->populated &&
             board->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
             /*
@@ -8662,6 +8810,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                     config->initiator_region);
                 qdev_prop_set_uint8(DEVICE(node), "installed-bank-mask",
                                     config->installed_bank_mask);
+                if (l1->has_profile) {
+                    qdev_prop_set_string(DEVICE(node), "l1-brick-type",
+                                         SGIModelL1Profile_str(l1->profile));
+                }
                 qdev_prop_set_uint32(DEVICE(node), "l1-type-code",
                                      l1->reported_type);
                 qdev_prop_set_int32(DEVICE(node), "l1-revision-major",
@@ -8748,7 +8900,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         if (!sgi_machine_build_bedrock_links(s, t, errp)) {
             return false;
         }
-        if (!sgi_machine_build_l1_peer_links(s, t, errp)) {
+        if (!sgi_machine_build_ibrick_l1s(s, t, errp) ||
+            !sgi_machine_build_l1_peer_links(s, t, errp)) {
             return false;
         }
         for (node_index = 0; node_index < node_count; node_index++) {

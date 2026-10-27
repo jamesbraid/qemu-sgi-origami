@@ -244,6 +244,7 @@ _IO_BOARD_CARRIER = {
     "BASEIO": "xio-slot",
     "BASEIO_G": "xio-slot",
     "IO8": "machine-placed",
+    "IO7": "machine-placed",
     "FUEL": "onboard",
     "IO9": "machine-placed",
     "PCI_SHOEHORN": "xio-slot",
@@ -270,6 +271,7 @@ _IO_BOARD_PRESET = {
     "BASEIO": "io6",
     "BASEIO_G": "io6g",
     "IO8": "io8",
+    "IO7": "io7",
     "FUEL": "fuel",
     "IO9": "io9",
     "PCI_SHOEHORN": "pci-shoehorn",
@@ -313,6 +315,8 @@ def _io_board(raw: dict) -> dict:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
     if raw.get("ds1742") is True:
         board["ds1742"] = True
+    if raw.get("ieee1394_absent") is True:
+        board["ieee1394-absent"] = True
     if "ds1742_fresh_year_base" in raw:
         board["ds1742-fresh-year-base"] = raw["ds1742_fresh_year_base"]
 

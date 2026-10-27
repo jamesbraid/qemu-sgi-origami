@@ -1795,6 +1795,8 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
+static bool sn1_node_is_ip35(const SN1NodeState *node);
+
 static bool sn1_node_validate_processors(SN1NodeState *node,
                                         MachineState *machine, Error **errp)
 {
@@ -1851,6 +1853,30 @@ static bool sn1_node_validate_processors(SN1NodeState *node,
         return true;
     }
 
+    /*
+     * A C-brick PIMM carries an R12000 or an R14000 (108-0266-001 printed
+     * page 28); the Origin 3200's selected fit is a 400 MHz R12000.
+     */
+    if (sn1_node_is_ip35(node) && node->nr_cpus &&
+        !strcmp(sn1_cpu_processor(node->model_node, 0)->kind, "R12000")) {
+        if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R12000"))) {
+            error_setg(errp, TYPE_SGI_SN1_NODE " R12000 board requires "
+                       "R12000, requested %s", machine->cpu_type);
+            return false;
+        }
+        for (unsigned int i = 1; i < node->nr_cpus; i++) {
+            const SGIModelProcessor *processor =
+                sn1_cpu_processor(node->model_node, i);
+
+            if (strcmp(processor->kind, "R12000")) {
+                error_setg(errp, TYPE_SGI_SN1_NODE " processor %u is %s; "
+                           "the node's first is an R12000", i,
+                           processor->kind);
+                return false;
+            }
+        }
+        return true;
+    }
     if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R14000"))) {
         error_setg(errp, TYPE_SGI_SN1_NODE " requires R14000, requested %s",
                    machine->cpu_type);
@@ -1916,10 +1942,15 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
             if (!sgi_cpu_apply_processor(cpu_dev, processor, errp)) {
                 return false;
             }
-            /* The reset-latched processor mode field is Config0 bits 24:0. */
-            object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
-                node->model_node->cpu_slots->value->assembly->mode_bits &
-                0x01ffffff, &error_abort);
+            /*
+             * The reset-latched processor mode field is Config0 bits 24:0.
+             * An R12000 takes it with the rest of its profile above.
+             */
+            if (!object_property_find(OBJECT(cpu_dev), "r12000-reset-mode")) {
+                object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
+                    node->model_node->cpu_slots->value->assembly->mode_bits &
+                    0x01ffffff, &error_abort);
+            }
         } else {
             const GlobalProperty *prop;
             bool experimental;
@@ -2391,6 +2422,31 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
         node->l1 = qdev_new(TYPE_SGI_L1);
         object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     }
+    if (node->l1_brick_type) {
+        /*
+         * A C-brick's L1 profile owns its type letter and takes no record
+         * files or firmware revision. It is named by its module's slot.
+         */
+        if (node->l1_type_code || node->l1_revision[0] >= 0 ||
+            node->l1_mac_eeprom) {
+            error_setg(errp, TYPE_SGI_SN1_NODE " L1 profile '%s' takes no "
+                       "type code, revision or MAC EEPROM",
+                       node->l1_brick_type);
+            goto fail_l1;
+        }
+        qdev_prop_set_string(node->l1, "brick-type", node->l1_brick_type);
+        if (l1_console) {
+            qdev_prop_set_chr(node->l1, "chardev", l1_console);
+        }
+        if (node->l1_bay) {
+            qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
+            qdev_prop_set_bit(node->l1, "named", true);
+        }
+        if (!qdev_realize(node->l1, NULL, errp)) {
+            goto fail_l1;
+        }
+        goto uart;
+    }
     qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
     if (!g_strcmp0(SGI_MACHINE_GET_CLASS(machine)->product, "origin300") &&
         node->l1_type_code == 0x34 &&
@@ -2430,6 +2486,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
         goto fail_l1;
     }
 
+uart:
     l1_uart_dev = qdev_new(TYPE_SGI_L1_UART);
     object_property_add_child(OBJECT(node), "l1-uart", OBJECT(l1_uart_dev));
     object_property_set_link(OBJECT(l1_uart_dev), "controller",
@@ -2525,6 +2582,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         node->initiator_region);
     qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
                         node->installed_bank_mask);
+    /*
+     * An IP35 board's II is a rear connector: with no XIO cable nothing
+     * answers on it, and its link reads down (the C-brick datasheet's
+     * inference; no physical C-brick has been read uncabled).
+     */
+    if (sn1_node_is_ip35(node)) {
+        qdev_prop_set_bit(node->bedrock, "xio-peer", !!node->supplied_xbridge);
+    }
     {
         const uint64List *bank_entry = node->model_node->bank_mib;
 
@@ -3104,6 +3169,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_INT32("l1-revision-minor", SN1NodeState, l1_revision[1], -1),
     DEFINE_PROP_INT32("l1-revision-patch", SN1NodeState, l1_revision[2], -1),
     DEFINE_PROP_STRING("l1-mac-eeprom", SN1NodeState, l1_mac_eeprom),
+    DEFINE_PROP_STRING("l1-brick-type", SN1NodeState, l1_brick_type),
     DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),
     DEFINE_PROP_UINT8("local-region", SN1NodeState, local_region, 0),
     DEFINE_PROP_UINT8("initiator-region", SN1NodeState, initiator_region, 0),

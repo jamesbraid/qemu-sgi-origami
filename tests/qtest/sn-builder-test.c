@@ -9535,6 +9535,124 @@ static const struct {
  * nowhere else. Slot 3, port C, is empty, and c1 decodes nothing there.
  * c0 reaches its I-brick and none of the X-brick's widgets.
  */
+/*
+ * The catalogue's Origin 3200: two C-bricks on one NUMAlink cable and an
+ * I-brick on c0's XIO cable, booted from a blank PROM of the stock image's
+ * size. Values asserted are the catalogue's own choices.
+ */
+#define ORIGIN3200_PROM_SIZE 1476264
+#define ORIGIN3200_II_LINK_STATUS \
+    (CBRICK_IO_SPACE + UINT64_C(0x1000000) + UINT64_C(0x400128))
+
+static QTestState *origin3200_start(char **prom)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(ORIGIN3200_PROM_SIZE);
+    int fd = g_file_open_tmp("sn-builder-origin3200-prom-XXXXXX", prom,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, ORIGIN3200_PROM_SIZE), ==,
+                    ORIGIN3200_PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return qtest_initf("-M origin3000 -cpu R12000 -smp 8 -m 8192 -bios %s "
+                       "-nodefaults -display none", *prom);
+}
+
+/* Each brick's L1 runs its brick's profile and reaches its neighbours. */
+static void test_origin3200_brick_l1s(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    static const struct {
+        const char *path;
+        const char *profile;
+        unsigned int bay;
+    } l1s[] = {
+        { "/machine/node0/l1", "cbrick", 4 },
+        { "/machine/node1/l1", "cbrick", 7 },
+        { "/machine/module2/l1", "ibrick", 14 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(l1s); i++) {
+        g_autofree char *profile = qom_get_str(qts, l1s[i].path,
+                                               "brick-type");
+
+        g_assert_cmpstr(profile, ==, l1s[i].profile);
+        g_assert_cmpuint(qom_get_uint(qts, l1s[i].path, "bay"), ==,
+                         l1s[i].bay);
+        g_assert_true(qom_get_bool(qts, l1s[i].path, "named"));
+    }
+    {
+        g_autofree char *c0_peer = qom_get_str(qts, "/machine/node0/l1",
+                                               "peer");
+        g_autofree char *c1_peer = qom_get_str(qts, "/machine/node1/l1",
+                                               "peer");
+        g_autofree char *c0_io = qom_get_str(qts, "/machine/node0/l1",
+                                             "io-peer");
+        g_autofree char *c1_io = qom_get_str(qts, "/machine/node1/l1",
+                                             "io-peer");
+
+        g_assert_cmpstr(c0_peer, ==, "/machine/node1/l1");
+        g_assert_cmpstr(c1_peer, ==, "/machine/node0/l1");
+        g_assert_cmpstr(c0_io, ==, "/machine/module2/l1");
+        g_assert_cmpstr(c1_io, ==, "");
+    }
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * The IO7 answers at head F devices 4 and 5 and, with its IEEE 1394
+ * controller left out, not at device 6. Only c0 reaches it.
+ */
+static void test_origin3200_io7_without_ieee1394(void)
+{
+    static const uint32_t identity[] = {
+        [4] = 0x000310a9, [5] = 0x580211c1,
+    };
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    g_autofree char *io7 = qom_child_type(qts, "/machine/module2", "io7");
+    g_autofree char *link = qom_child_type(qts, "/machine/module2/io7",
+                                           "ieee1394");
+    uint32_t value = 0;
+
+    g_assert_cmpstr(io7, ==, "sgi-baseio");
+    g_assert_null(link);
+    for (unsigned int device = 4; device <= 6; device++) {
+        g_assert_cmphex(qtest_readl(qts, CBRICK_CONFIG(15, device)), ==,
+                        device < 6 ? identity[device] : UINT32_MAX);
+    }
+    g_assert_true(nasid_test_cpu_readl(qts, 0, CBRICK_CONFIG(15, 4),
+                                       &value));
+    g_assert_cmphex(value, ==, identity[4]);
+    g_assert_false(nasid_test_cpu_readl(qts, 4, CBRICK_CONFIG(15, 4),
+                                        &value));
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/*
+ * c1's II has no XIO cable, so its link reads down; c0's, cabled to the
+ * I-brick, reads up. Each node reads its own II.
+ */
+static void test_origin3200_uncabled_ii_link_reads_down(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    uint64_t c0 = 0, c1 = 0;
+
+    g_assert_true(nasid_test_cpu_readq(qts, 0, ORIGIN3200_II_LINK_STATUS,
+                                       &c0));
+    g_assert_true(nasid_test_cpu_readq(qts, 4, ORIGIN3200_II_LINK_STATUS,
+                                       &c1));
+    g_assert_cmphex(c0 & (1u << 13), ==, 1u << 13);
+    g_assert_cmphex(c1 & (1u << 13), ==, 0);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 static void test_origin3200_xbrick_slots_reach_their_cbrick(void)
 {
     g_autofree char *prom = cbrick_blank_prom();
@@ -10786,6 +10904,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/cbrick/board-on-crossbar-port/b",
                         GUINT_TO_POINTER(0xb),
                         test_cbrick_board_on_crossbar_port);
+    qtest_add_func("sn/builder/origin3200/brick-l1s",
+                   test_origin3200_brick_l1s);
+    qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
+                   test_origin3200_io7_without_ieee1394);
+    qtest_add_func("sn/builder/origin3200/uncabled-ii-link-reads-down",
+                   test_origin3200_uncabled_ii_link_reads_down);
     qtest_add_func("sn/builder/cbrick/origin3200-xbrick-slots",
                    test_origin3200_xbrick_slots_reach_their_cbrick);
     qtest_add_func("sn/builder/cbrick/nbrick-own-boards",

@@ -37,3 +37,12 @@ module_instances:
         The IO7 device identities are the closure record's own three
         independent owners' IRIX inventories, reused directly for this
         reference I-brick rather than a distinct capture of this exact set.
+links:
+  # The two C-brick L1s reach each other over the NUMAlink cable
+  # (108-0240-002 printed page 2-47).
+  - kind: l1-peer
+    source: c0-l1
+    target: c1-l1
+  - kind: l1-peer
+    source: c1-l1
+    target: c0-l1

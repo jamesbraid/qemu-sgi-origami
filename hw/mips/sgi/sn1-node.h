@@ -80,6 +80,8 @@ typedef struct SN1NodeState {
     bool l1_irouter_compat;
     int32_t l1_revision[3];
     char *l1_mac_eeprom;
+    /* An Origin 3000 brick's L1 profile; NULL for the Origin 300 family's. */
+    char *l1_brick_type;
     uint8_t bedrock_revision;
     uint8_t local_region;
     uint8_t initiator_region;

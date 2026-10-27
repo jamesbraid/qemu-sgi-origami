@@ -71,6 +71,19 @@ layer:
           both DIMMs of a pair match, and pairs may differ: 512 MB to 8 GB
           per C-brick.
         sources: ["108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 reside on DIMM pair n, the DIMMs of a pair match, eight 512 MB banks give 4 GB"]
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        parent: chassis
+        description: >-
+          The C-brick's L1, on the IP35 motherboard: it serves the console,
+          reads the brick's identity parts and reaches the I/O brick's L1
+          over the XIO cable and the other C-brick's over the NUMAlink cable.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+        sources: ["007-4240-002 printed pages 115 to 116 and 121 to 125: the L1 on the IP35 motherboard, its console and its links to the I/O brick and the other C-brick", "108-0240-002 printed page 2-47: RS-422 L1 links over the NUMAlink and Crosstown2 cables"]
       - id: xio-ii-connector
         name: XIO (II) connector
         kind: connector

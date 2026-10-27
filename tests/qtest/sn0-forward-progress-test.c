@@ -144,6 +144,22 @@ static void prepare_origin300(QTestState *qts)
                  ORIGIN300_MD_INSTALLED_SELECT2);
 }
 
+/*
+ * Enable banks 0 and 1, 512 MiB each, on both C-bricks under the synthetic
+ * guest. Both nodes carry number 0 until firmware numbers them, so each
+ * node's write goes through one of its own processors, 0 and 4.
+ */
+static void prepare_origin3000(QTestState *qts)
+{
+    uint8_t config[8];
+
+    stq_be_p(config, 0x43);
+    for (unsigned int cpu = 0; cpu < 8; cpu += 4) {
+        g_assert_true(qtest_memwrite_cpu(qts, cpu, BEDROCK_MD_MEMORY_CONFIG,
+                                         config, sizeof(config)));
+    }
+}
+
 static void prepare_ip53(QTestState *qts)
 {
     qtest_writeq(qts, BEDROCK_MD_MEMORY_CONFIG, 0x53);
@@ -170,6 +186,8 @@ static const Recipe recipes[] = {
     { "origin2000", "-M origin2000", 0 },
     { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
+    { "origin3000", "-M origin3000 -cpu R12000", 0x1686a8,
+      prepare_origin3000 },
     { "origin350", "-M origin350,topology=origin350,ip53-experimental=on,"
       "nvram0=sgi-ds1742-data-io9,nvram0-clock=sgi-ds1742-clock-io9",
       16 * 1024 * 1024, prepare_ip53, 0, true },

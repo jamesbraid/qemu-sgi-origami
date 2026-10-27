@@ -1003,12 +1003,21 @@ const SGIModelNodePopulation *sgi_model_default_population(
     return largest;
 }
 
+/*
+ * A topology belongs to the product its catalogue record names, or, for a
+ * hand-built record, the product its name starts with. The Origin 3200
+ * topology belongs to the origin3000 machine, which its name does not
+ * start with.
+ */
 bool sgi_model_topology_matches_product(const SGIModelTopology *t,
                                         const char *product)
 {
     size_t len = strlen(product);
     size_t name_len = strlen(t->name);
 
+    if (t->product && !strcmp(t->product, product)) {
+        return true;
+    }
     return name_len >= len && !strncmp(t->name, product, len) &&
            (t->name[len] == '\0' || t->name[len] == '-');
 }

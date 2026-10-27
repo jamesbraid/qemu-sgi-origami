@@ -19019,6 +19019,144 @@
         {
           "argument": "-serial chardev:l1",
           "kind": "console",
+          "line": 0,
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "line": 5,
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        4
+      ],
+      "default-cpu-model": "R12000",
+      "default-topology": "origin3200",
+      "dimms-per-node": [
+        8,
+        8
+      ],
+      "disk-bus": "none",
+      "display-name": "Origin 3200",
+      "hardware-inputs": [],
+      "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
+      "install-media": [
+        "netboot"
+      ],
+      "machine-options": "origin3000,topology=origin3200,nodes=2",
+      "memory-per-node-mib": {
+        "accepted": [
+          4096
+        ],
+        "default": 4096
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "ef0",
+          "kind": "ioc3-ethernet",
+          "mac": {
+            "derived": false
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "sgi-ioc3-eth",
+          "required": false
+        }
+      ],
+      "nodes": 2,
+      "overrides": [
+        {
+          "property": "bedrock-revision",
+          "target": "machine"
+        },
+        {
+          "property": "board-id-word",
+          "target": "machine"
+        },
+        {
+          "property": "l1-revision",
+          "target": "machine"
+        },
+        {
+          "property": "l1-type-code",
+          "target": "machine"
+        },
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r12000-prid",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-fpu-id",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-reset-mode",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-scache-bytes",
+          "target": "cpu"
+        },
+        {
+          "property": "r12000-scache-block-words",
+          "target": "cpu"
+        }
+      ],
+      "processor": {
+        "cache-mib": 8,
+        "clock-hz": 400000000,
+        "id": "r12000-400mhz-8mb",
+        "part": "R12000"
+      },
+      "product": "origin3000",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [],
+      "scsi-adapters": [],
+      "smp": 8,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin3200"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
           "launcher-name": "l1",
           "node": 0
         },
@@ -33069,6 +33207,370 @@
           "crossbar-index": -1,
           "node-index": 0,
           "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            },
+            {
+              "index": 1,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "cable",
+          "name": "ni-cable"
+        }
+      ],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "c0-l1",
+          "kind": "l1",
+          "l1": {
+            "profile": "cbrick"
+          },
+          "module-index": 0
+        },
+        {
+          "id": "c1-l1",
+          "kind": "l1",
+          "l1": {
+            "profile": "cbrick"
+          },
+          "module-index": 1
+        },
+        {
+          "id": "ibrick-l1",
+          "kind": "l1",
+          "l1": {
+            "profile": "ibrick"
+          },
+          "module-index": 2
+        }
+      ],
+      "crossbars": [
+        {
+          "id": "ibrick-xbridge-crossbar",
+          "kind": "xbridge",
+          "module-index": 2,
+          "widget-revision": 2
+        }
+      ],
+      "description": "SGI Origin 3200 (IP35), two C-bricks and an I-brick",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "machine-placed",
+          "id": "ibrick-xbridge-bridge-f",
+          "ieee1394-absent": true,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
+          "module-index": 2,
+          "other-identity-parts": [],
+          "populated": true,
+          "preset": "io7"
+        }
+      ],
+      "ip35-firmware": {
+        "cpu-mode-word": 1410639749,
+        "machine-type": 0
+      },
+      "junk-uart": -1,
+      "l1-peer-links": [
+        {
+          "source-controller-index": 0,
+          "target-controller-index": 1
+        },
+        {
+          "source-controller-index": 1,
+          "target-controller-index": 0
+        }
+      ],
+      "machine-default": true,
+      "modules": [
+        {
+          "brick-type": "C",
+          "controller-index": 0,
+          "id": "c0-chassis",
+          "initial-module-number": 4,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        },
+        {
+          "brick-type": "C",
+          "controller-index": 1,
+          "id": "c1-chassis",
+          "initial-module-number": 7,
+          "nodes": [
+            1
+          ],
+          "serial": ""
+        },
+        {
+          "controller-index": 2,
+          "id": "ibrick-brick",
+          "initial-module-number": 14,
+          "nodes": [],
+          "serial": ""
+        }
+      ],
+      "name": "origin3200",
+      "node-populations": [
+        {
+          "cables": [
+            0
+          ],
+          "grade": "established",
+          "nodes": [
+            0,
+            1
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                4,
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512
+          ],
+          "bedrock": {
+            "board-id-word": 2,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip35",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "c0-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029440,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        },
+        {
+          "accepted-memory-mib": [
+            4096
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512,
+            512
+          ],
+          "bedrock": {
+            "board-id-word": 2,
+            "initiator-region": 0,
+            "installed-bank-mask": 255,
+            "local-region": 0
+          },
+          "board-kind": "ip35",
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 266000000,
+                "cache-mib": 8,
+                "clock-hz": 400000000,
+                "fpu-prid": 2357,
+                "id": "r12000-400mhz-8mb",
+                "kind": "R12000",
+                "mode-bits": 1353605,
+                "prid": 3637
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "c1-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 89358092029441,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 1,
+          "slave-role": true,
+          "slot": 0
+        }
+      ],
+      "product": "origin3000",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node"
+            },
+            {
+              "index": 0,
+              "kind": "crossbar",
+              "port": 10
+            }
+          ],
+          "name": "c0-to-ibrick"
         }
       ],
       "xio-slots": []

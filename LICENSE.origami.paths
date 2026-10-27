@@ -413,7 +413,8 @@ scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sgi-machines.j
 scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sn-model.json
 scripts/tests/system-model-fixtures/format2/origin300/sgi-machines.json
 scripts/tests/system-model-fixtures/format2/origin300/sn-model.json
-scripts/tests/system-model-fixtures/format2/origin3200/refused.txt
+scripts/tests/system-model-fixtures/format2/origin3200/sgi-machines.json
+scripts/tests/system-model-fixtures/format2/origin3200/sn-model.json
 scripts/tests/system-model-fixtures/incompatible.yaml
 scripts/tests/system-model-fixtures/layers/ip29.yaml
 scripts/tests/system-model-fixtures/layers/ip45.yaml
