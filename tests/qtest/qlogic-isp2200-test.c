@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * QTest for the QLogic ISP2200 Fibre Channel host adapter's host
- * interface.
+ * QTest for the QLogic ISP2200 Fibre Channel host adapter.
  *
- * The adapter stands alone on a PCI bus with no Fibre Channel service
- * attached, so it reports a disconnected loop: every command completes
- * "port unavailable", and what reached the service is read back through
- * the device's x-fc-* QOM properties. The register contract comes from
+ * Most cases run the adapter with nothing on its loop, so every command
+ * completes "port unavailable" and what reached the loop service is read
+ * back through the device's x-fc-* QOM properties. The loop cases plug
+ * scsi-hd devices onto the adapter's bus as loop ports, at the loop ID
+ * their SCSI target number gives. The register contract comes from
  * the public Linux qla2xxx, OpenBSD qla and NetBSD isp drivers; tests
  * marked "approximation" pin a model choice those drivers leave open, not
  * a measured hardware fact. The contract is in
@@ -18,6 +18,7 @@
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "libqos/qgraph.h"
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -80,20 +81,39 @@
 #define CMD_RESOURCE_COUNTS 0x0042
 #define CMD_INIT_FIRMWARE   0x0060
 #define CMD_GET_FW_STATE    0x0069
+#define CMD_GET_RETRY_COUNT 0x0022
+#define CMD_ENH_PORT_DB     0x0047
+#define CMD_INITIATE_LIP    0x0062
+#define CMD_POSITION_MAP    0x0063
+#define CMD_GET_PORT_DB     0x0064
+#define CMD_FULL_LOGIN_LIP  0x0072
+#define CMD_PORT_NAME_LIST  0x0075
+#define CMD_GET_ID_LIST     0x007c
 
 #define MBOX_COMPLETE       0x4000
 #define MBOX_INVALID        0x4001
 #define MBOX_HOST_IF_ERROR  0x4002
 #define MBOX_TEST_FAILED    0x4003
+#define MBOX_COMMAND_ERROR  0x4005
 #define MBOX_PARAM_ERROR    0x4006
 
 #define ASYNC_REQUEST_DMA   0x8003
 #define ASYNC_RESPONSE_DMA  0x8004
+#define ASYNC_LIP           0x8010
+#define ASYNC_LOOP_UP       0x8011
+#define ASYNC_LIP_RESET     0x8013
+#define ASYNC_PORT_DB       0x8014
+
+#define FW_STATE_CONFIG_WAIT 0
+#define FW_STATE_WAIT_AL_PA  1
+#define FW_STATE_READY       3
 
 #define CODE_ORG            0x1000
 
 #define ICB_SIZE            96
+#define ICB_OPT_HARD_ADDR   0x0001
 #define ICB_OPT_FAST_POST   0x0008
+#define ICB_OPT_PORT_DB     0x0100
 
 #define ENTRY_SIZE          64
 #define ENTRY_CONT32        0x02
@@ -110,7 +130,16 @@
 #define ENTRY_FLAG_BAD_ORDER 0x20
 #define ENTRY_FLAG_DMA_ERROR 0x40
 
+#define COMPLETION_COMPLETE         0x0000
+#define COMPLETION_UNDERRUN         0x0015
 #define COMPLETION_PORT_UNAVAILABLE 0x0028
+
+#define SCSI_STATUS_SENSE_VALID     0x0200
+#define SCSI_STATUS_RESID_UNDER     0x0800
+#define SCSI_CHECK_CONDITION        0x02
+
+/* The model's loop bring-up time, a named constant in the device. */
+#define BRINGUP_NS          (100 * 1000 * 1000)
 
 /* Past the Bridge test head's transfer memory: nothing backs it. */
 #define UNMAPPED_PHYS       0x04000000ULL
@@ -144,6 +173,7 @@ typedef struct Isp {
     uint16_t rslen;
     uint16_t rq_next;   /* Host producer. */
     uint16_t rs_next;   /* Host consumer. */
+    uint16_t hard_addr; /* The control block's requested loop ID. */
 } Isp;
 
 static void *isp2200_get_driver(void *obj, const char *interface)
@@ -322,6 +352,7 @@ static void isp_rings_at(Isp *t, uint16_t rqlen, uint16_t rslen,
         qtest_memwrite(t->qts, rs + i * ENTRY_SIZE, zero, sizeof(zero));
     }
     icb_build(buf, rqlen, rslen, rq, rs, options);
+    stw_le_p(buf + 20, t->hard_addr);
     buf[64] = xopts;
     qtest_memwrite(t->qts, icb, buf, sizeof(buf));
     g_assert_cmphex(isp_init_firmware(t, icb), ==, MBOX_COMPLETE);
@@ -936,9 +967,9 @@ static void test_semaphore_write_one(void *obj, void *data,
 }
 
 /*
- * Approximation: unknown and deferred commands answer 0x4001 and
- * leave the running firmware alone; with no Fibre Channel service, a
- * loop command does too.
+ * Approximation: unknown and deferred commands answer 0x4001 and leave
+ * the running firmware alone, as do the loop commands the loop service
+ * does not model: login, enhanced port database, retry count.
  */
 static void test_unknown_commands(void *obj, void *data,
                                   QGuestAllocator *alloc)
@@ -952,7 +983,10 @@ static void test_unknown_commands(void *obj, void *data,
                     MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, CMD_RESOURCE_COUNTS, 0, 0, 0), ==,
                     MBOX_INVALID);
-    g_assert_cmphex(isp_call_ack(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+    g_assert_cmphex(isp_call_ack(&t, 0x006f, 0, 0, 0), ==, MBOX_INVALID);
+    g_assert_cmphex(isp_call_ack(&t, CMD_ENH_PORT_DB, 1, 0, 0), ==,
+                    MBOX_INVALID);
+    g_assert_cmphex(isp_call_ack(&t, CMD_GET_RETRY_COUNT, 0, 0, 0), ==,
                     MBOX_INVALID);
     g_assert_cmphex(isp_call_ack(&t, CMD_GET_FW_STATE, 0, 0, 0), ==,
                     MBOX_COMPLETE);
@@ -2296,10 +2330,1060 @@ static void test_window_openbsd_interleave_response(void *obj, void *data,
     isp_close(&t);
 }
 
+/*
+ * The loop cases. Each plugs scsi-hd devices onto the adapter's bus,
+ * "isp0.0": a device's SCSI target number is its loop ID and its LUN the
+ * LUN, and every device at one loop ID carries the same names.
+ */
+typedef enum LoopBacking {
+    LOOP_ZEROES,    /* null-co, reads zeroes, completes at once. */
+    LOOP_FILE,      /* A writable raw file the test can read back. */
+} LoopBacking;
+
+typedef struct LoopDisk {
+    int loop_id;
+    int lun;
+    uint64_t port_wwn;
+    uint64_t node_wwn;
+    const char *serial;
+    LoopBacking backing;
+} LoopDisk;
+
+typedef struct LoopConfig {
+    const LoopDisk *disks;
+    unsigned ndisks;
+    /* Unplugged drives "spare0".. for device_add. */
+    unsigned spares;
+} LoopConfig;
+
+typedef struct LoopTest {
+    const LoopConfig *config;
+    char *path[4];
+} LoopTest;
+
+/* Every byte of each name differs, so a byte-order slip shows. */
+#define WWN_PORT(id)    ((uint64_t)0x21000011aabbcc00ULL | (id))
+#define WWN_NODE(id)    ((uint64_t)0x20000011aabbcc00ULL | (id))
+
+#define LOOP_DISK_SIZE  (1024 * 1024)
+
+static void loop_test_destroy(void *opaque)
+{
+    LoopTest *test = opaque;
+    unsigned i;
+
+    for (i = 0; i < ARRAY_SIZE(test->path); i++) {
+        if (test->path[i]) {
+            unlink(test->path[i]);
+            g_free(test->path[i]);
+        }
+    }
+    g_free(test);
+}
+
+static void *loop_test_setup(GString *cmd_line, void *arg)
+{
+    LoopTest *test = g_new0(LoopTest, 1);
+    unsigned i, files = 0;
+
+    test->config = arg;
+    for (i = 0; i < test->config->ndisks; i++) {
+        const LoopDisk *d = &test->config->disks[i];
+
+        if (d->backing == LOOP_FILE) {
+            int fd;
+
+            g_assert_cmpuint(files, <, ARRAY_SIZE(test->path));
+            fd = g_file_open_tmp("qtest-isp2200.XXXXXX", &test->path[files],
+                                 NULL);
+            g_assert_cmpint(fd, >=, 0);
+            g_assert_cmpint(ftruncate(fd, LOOP_DISK_SIZE), ==, 0);
+            close(fd);
+            g_string_append_printf(cmd_line,
+                                   " -drive id=disk%u,if=none,format=raw,"
+                                   "file=%s", i, test->path[files]);
+            files++;
+        } else {
+            g_string_append_printf(cmd_line,
+                                   " -drive id=disk%u,if=none,format=raw,"
+                                   "file=null-co://,file.read-zeroes=on", i);
+        }
+        g_string_append_printf(cmd_line,
+                               " -device scsi-hd,bus=isp0.0,drive=disk%u,"
+                               "id=port%u,scsi-id=%d,lun=%d,"
+                               "port_wwn=0x%" PRIx64 ",wwn=0x%" PRIx64,
+                               i, i, d->loop_id, d->lun, d->port_wwn,
+                               d->node_wwn);
+        if (d->serial) {
+            g_string_append_printf(cmd_line, ",serial=%s", d->serial);
+        }
+    }
+    for (i = 0; i < test->config->spares; i++) {
+        g_string_append_printf(cmd_line,
+                               " -drive id=spare%u,if=none,format=raw,"
+                               "file=null-co://,file.read-zeroes=on", i);
+    }
+    g_test_queue_destroy(loop_test_destroy, test);
+    return test;
+}
+
+/* Two ports: loop ID 5 with LUNs 0 and 1, loop ID 1 with LUN 0. */
+static const LoopDisk loop_disks[] = {
+    { 5, 0, WWN_PORT(5), WWN_NODE(5), "LOOP5", LOOP_FILE },
+    { 5, 1, WWN_PORT(5), WWN_NODE(5), "LUN1", LOOP_ZEROES },
+    { 1, 0, WWN_PORT(1), WWN_NODE(1), "LOOP1", LOOP_ZEROES },
+};
+
+static const LoopConfig loop_config = {
+    .disks = loop_disks,
+    .ndisks = ARRAY_SIZE(loop_disks),
+};
+
+/* One port at loop ID 5, and spare drives to plug in. */
+static const LoopDisk plug_disks[] = {
+    { 5, 0, WWN_PORT(5), WWN_NODE(5), NULL, LOOP_ZEROES },
+};
+
+static const LoopConfig plug_config = {
+    .disks = plug_disks,
+    .ndisks = ARRAY_SIZE(plug_disks),
+    .spares = 2,
+};
+
+/* A port holding loop ID 0, the lowest one. */
+static const LoopDisk low_disks[] = {
+    { 0, 0, WWN_PORT(0x40), WWN_NODE(0x40), NULL, LOOP_ZEROES },
+    { 2, 0, WWN_PORT(0x42), WWN_NODE(0x42), NULL, LOOP_ZEROES },
+};
+
+static const LoopConfig low_config = {
+    .disks = low_disks,
+    .ndisks = ARRAY_SIZE(low_disks),
+};
+
+static uint16_t isp_fw_state(Isp *t)
+{
+    uint16_t state;
+
+    g_assert_cmphex(isp_call(t, CMD_GET_FW_STATE, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    state = rd(t, MBOX(1));
+    g_assert_cmphex(rd(t, MBOX(2)), ==, 0);
+    isp_ack(t);
+    return state;
+}
+
+/* The event now posted: its code, and m1..m3 into @m. Then released. */
+static uint16_t isp_take_event(Isp *t, uint16_t *m)
+{
+    uint16_t code;
+    unsigned i;
+
+    g_assert_cmphex(rd(t, REG_SEMAPHORE) & SEM_LOCK, ==, SEM_LOCK);
+    g_assert_cmphex(rd(t, REG_ISR) & ISR_RISC, ==, ISR_RISC);
+    code = rd(t, MBOX(0));
+    for (i = 1; i < 4; i++) {
+        m[i - 1] = rd(t, MBOX(i));
+    }
+    isp_ack(t);
+    return code;
+}
+
+static void isp_expect_no_event(Isp *t)
+{
+    g_assert_cmphex(rd(t, REG_SEMAPHORE), ==, 0);
+    g_assert_cmphex(rd(t, REG_ISR), ==, 0);
+}
+
+/* Exactly @codes, in order, with the payloads the design gives. */
+static void isp_expect_events(Isp *t, const uint16_t *codes, unsigned n)
+{
+    uint16_t m[3];
+    unsigned i;
+
+    for (i = 0; i < n; i++) {
+        g_assert_cmphex(isp_take_event(t, m), ==, codes[i]);
+        g_assert_cmphex(m[0], ==, codes[i] == ASYNC_PORT_DB ? 0xffff : 0);
+        g_assert_cmphex(m[1], ==, 0);
+        g_assert_cmphex(m[2], ==, 0);
+    }
+    isp_expect_no_event(t);
+}
+
+static const uint16_t bringup_events[] = {
+    ASYNC_LIP, ASYNC_LOOP_UP, ASYNC_PORT_DB,
+};
+
+/*
+ * Download, execute, initialise with @options, then let the loop come
+ * up and take the three events a bring-up posts.
+ */
+static void isp_loop_up(Isp *t, uint16_t options)
+{
+    isp_start(t);
+    isp_rings_at(t, 16, 16, guest_alloc(t->alloc, ICB_SIZE),
+                 guest_alloc(t->alloc, 16 * ENTRY_SIZE),
+                 guest_alloc(t->alloc, 16 * ENTRY_SIZE), options, 0);
+    g_assert_cmphex(isp_fw_state(t), ==, FW_STATE_WAIT_AL_PA);
+    qtest_clock_step(t->qts, BRINGUP_NS);
+    isp_expect_events(t, bringup_events,
+                      options & ICB_OPT_PORT_DB ? 3 : 2);
+    g_assert_cmphex(isp_fw_state(t), ==, FW_STATE_READY);
+}
+
+/* A mailbox command with a DMA address in mapping D. */
+static uint16_t isp_call_dma(Isp *t, uint16_t cmd, uint16_t m1,
+                             uint64_t addr)
+{
+    const uint16_t in[] = {
+        cmd, m1, (addr >> 16) & 0xffff, addr & 0xffff, 0, 0,
+        (addr >> 48) & 0xffff, (addr >> 32) & 0xffff,
+    };
+
+    return isp_mbox(t, in, ARRAY_SIZE(in));
+}
+
+/* Get ID List's own address split: m1 31:16, m2 15:0, m3 63:48, m6 47:32. */
+static uint16_t isp_get_id_list(Isp *t, uint64_t addr)
+{
+    const uint16_t in[] = {
+        CMD_GET_ID_LIST, (addr >> 16) & 0xffff, addr & 0xffff,
+        (addr >> 48) & 0xffff, 0, 0, (addr >> 32) & 0xffff,
+    };
+
+    return isp_mbox(t, in, ARRAY_SIZE(in));
+}
+
+/* The ID list as "alpa:loop" pairs, for a compact comparison. */
+static void assert_id_list(Isp *t, const char *expect)
+{
+    uint64_t buf = guest_alloc(t->alloc, 512);
+    g_autoptr(GString) seen = g_string_new(NULL);
+    uint8_t list[512];
+    uint16_t count;
+    unsigned i;
+
+    qtest_memset(t->qts, buf, 0xa5, sizeof(list));
+    g_assert_cmphex(isp_get_id_list(t, buf), ==, MBOX_COMPLETE);
+    count = rd(t, MBOX(1));
+    isp_ack(t);
+    g_assert_cmpuint(count, <=, 126);
+    qtest_memread(t->qts, buf, list, sizeof(list));
+    for (i = 0; i < count; i++) {
+        /* AL_PA, area 0, domain 0, loop ID. */
+        g_assert_cmphex(list[i * 4 + 1], ==, 0);
+        g_assert_cmphex(list[i * 4 + 2], ==, 0);
+        g_string_append_printf(seen, "%s%02x:%u", i ? " " : "",
+                               list[i * 4], list[i * 4 + 3]);
+    }
+    /* Nothing past the last entry is written. */
+    g_assert_cmphex(list[count * 4], ==, 0xa5);
+    g_assert_cmpstr(seen->str, ==, expect);
+}
+
+static void put_be64(uint8_t *p, uint64_t v)
+{
+    stq_be_p(p, v);
+}
+
+/* Whether @len bytes at @needle appear anywhere in @hay. */
+static bool has_bytes(const uint8_t *hay, size_t hay_len,
+                      const uint8_t *needle, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + len <= hay_len; i++) {
+        if (!memcmp(hay + i, needle, len)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The identity of one port, five ways: the adapter's own ID, the ID
+ * list, OpenBSD's port name list, the port database and the position
+ * map. The adapter takes loop ID 0, the lowest free one; loop ID 5 is
+ * AL_PA 0xe0 and loop ID 1 is 0xe8 in the standard table.
+ */
+static void test_loop_identity(void *obj, void *data, QGuestAllocator *alloc)
+{
+    uint8_t pd[129], want[128], names[32];
+    uint64_t buf;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+
+    g_assert_cmphex(isp_call(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 0);
+    g_assert_cmphex(rd(&t, MBOX(2)), ==, 0x00ef);
+    g_assert_cmphex(rd(&t, MBOX(3)), ==, 0);
+    g_assert_cmphex(rd(&t, MBOX(6)), ==, 0);
+    g_assert_cmphex(rd(&t, MBOX(7)), ==, 0);
+    isp_ack(&t);
+
+    /* Ascending loop ID, without the adapter. */
+    assert_id_list(&t, "e8:1 e0:5");
+
+    /*
+     * Approximation: the port name list's WWN is the eight wire-order
+     * bytes reversed, which OpenBSD decodes as little-endian to the same
+     * name it reads big-endian from the port database.
+     */
+    buf = guest_alloc(alloc, sizeof(names));
+    qtest_memset(t.qts, buf, 0xa5, sizeof(names));
+    g_assert_cmphex(isp_call_dma(&t, CMD_PORT_NAME_LIST, 0x08, buf), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 20);
+    isp_ack(&t);
+    qtest_memread(t.qts, buf, names, sizeof(names));
+    g_assert_cmphex(ldq_le_p(names), ==, WWN_PORT(1));
+    g_assert_cmphex(lduw_le_p(names + 8), ==, 1);
+    g_assert_cmphex(ldq_le_p(names + 10), ==, WWN_PORT(5));
+    g_assert_cmphex(lduw_le_p(names + 18), ==, 5);
+    g_assert_cmphex(names[20], ==, 0xa5);
+    /* Option bits other than 0x02 and 0x08 are a parameter error. */
+    g_assert_cmphex(isp_call_dma(&t, CMD_PORT_NAME_LIST, 0x01, buf), ==,
+                    MBOX_PARAM_ERROR);
+    isp_ack(&t);
+
+    /* The port database: every byte the design does not name is zero. */
+    buf = guest_alloc(alloc, sizeof(pd));
+    qtest_memset(t.qts, buf, 0xa5, sizeof(pd));
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, 5 << 8, buf), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    qtest_memread(t.qts, buf, pd, sizeof(pd));
+    memset(want, 0, sizeof(want));
+    want[2] = 6;
+    want[3] = 6;
+    want[6] = 0xe0;
+    want[10] = 0xe0;
+    put_be64(want + 12, WWN_NODE(5));
+    put_be64(want + 20, WWN_PORT(5));
+    want[78] = 0x10;
+    stw_le_p(want + 80, 5);
+    for (i = 0; i < sizeof(want); i++) {
+        if (pd[i] != want[i]) {
+            g_test_message("port database byte %u", i);
+        }
+        g_assert_cmphex(pd[i], ==, want[i]);
+    }
+    g_assert_cmphex(pd[128], ==, 0xa5);
+
+    /* Refused: an empty loop ID, the adapter's own, past 125. */
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, 6 << 8, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, 0 << 8, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, 126 << 8, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+
+    /* Approximation: the count, the adapter, then the ports by loop ID. */
+    qtest_memset(t.qts, buf, 0xa5, sizeof(pd));
+    g_assert_cmphex(isp_call_dma(&t, CMD_POSITION_MAP, 0, buf), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    qtest_memread(t.qts, buf, pd, sizeof(pd));
+    g_assert_cmphex(pd[0], ==, 3);
+    g_assert_cmphex(pd[1], ==, 0xef);
+    g_assert_cmphex(pd[2], ==, 0xe8);
+    g_assert_cmphex(pd[3], ==, 0xe0);
+    for (i = 4; i < 128; i++) {
+        g_assert_cmphex(pd[i], ==, 0);
+    }
+    g_assert_cmphex(pd[128], ==, 0xa5);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: the adapter's loop ID. A requested hard address it can
+ * have is taken; one a port holds, or one past 125, gives the lowest free
+ * loop ID instead. With nothing requested it is the lowest free one too.
+ */
+static void test_loop_hard_address(void *obj, void *data,
+                                   QGuestAllocator *alloc)
+{
+    static const struct {
+        uint16_t options;
+        uint16_t hard;
+        uint16_t loop_id;
+        uint8_t alpa;
+    } cases[] = {
+        { ICB_OPT_HARD_ADDR, 0, 1, 0xe8 },
+        { ICB_OPT_HARD_ADDR, 3, 3, 0xe2 },
+        { ICB_OPT_HARD_ADDR, 2, 1, 0xe8 },
+        { ICB_OPT_HARD_ADDR, 126, 1, 0xe8 },
+        { 0, 3, 1, 0xe8 },
+    };
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        t.hard_addr = cases[i].hard;
+        isp_loop_up(&t, cases[i].options);
+        g_assert_cmphex(isp_call(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+                        MBOX_COMPLETE);
+        g_assert_cmphex(rd(&t, MBOX(1)), ==, cases[i].loop_id);
+        g_assert_cmphex(rd(&t, MBOX(2)), ==, cases[i].alpa);
+        isp_ack(&t);
+        assert_id_list(&t, "ef:0 e4:2");
+        /* An HCCR reset drops the firmware and the loop ID with it. */
+        wr(&t, REG_HCCR, HCCR_RESET);
+        wr(&t, REG_HCCR, HCCR_RELEASE);
+    }
+    isp_close(&t);
+}
+
+/*
+ * State 0 until initialise-firmware, 1 while the loop comes up, 3 after.
+ * Until ready, Get Adapter ID refuses with m1 7, Linux's "loop in
+ * transition", and the discovery commands refuse too.
+ */
+static void test_loop_state_timeline(void *obj, void *data,
+                                     QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 128);
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_CONFIG_WAIT);
+    g_assert_cmphex(isp_call(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 7);
+    isp_ack(&t);
+    /* A LIP before the loop exists is refused and starts nothing. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_INITIATE_LIP, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(isp_call_ack(&t, CMD_FULL_LOGIN_LIP, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+
+    isp_rings(&t, 8, 8);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    g_assert_cmphex(isp_call(&t, CMD_GET_ADAPTER_ID, 0, 0, 0), ==,
+                    MBOX_COMMAND_ERROR);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 7);
+    isp_ack(&t);
+    g_assert_cmphex(isp_get_id_list(&t, buf), ==, MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_PORT_NAME_LIST, 0, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_POSITION_MAP, 0, buf), ==,
+                    MBOX_COMMAND_ERROR);
+    isp_ack(&t);
+
+    /* The bring-up time is a model constant; one tick short is not up. */
+    qtest_clock_step(t.qts, BRINGUP_NS - 1);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    isp_expect_no_event(&t);
+    qtest_clock_step(t.qts, 1);
+    isp_expect_events(&t, bringup_events, 2);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+
+    /* An adapter alone on the loop is ready with an empty list. */
+    g_assert_cmphex(isp_get_id_list(&t, buf), ==, MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 0);
+    isp_ack(&t);
+
+    /* A host LIP brings the loop up again. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_FULL_LOGIN_LIP, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 2);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+
+    /* A reset takes the loop back to state 0. */
+    wr(&t, REG_HCCR, HCCR_RESET);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+    isp_start(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_CONFIG_WAIT);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: the connection mode in extended options bits 6:4. Loop
+ * only, loop preferred and point-to-point preferred bring the loop up;
+ * point-to-point only and the undefined values leave state 0 and post
+ * nothing. A reduced-completion mode in bits 3:0 changes nothing.
+ */
+static void test_loop_connection_mode(void *obj, void *data,
+                                      QGuestAllocator *alloc)
+{
+    static const struct {
+        uint8_t xopts;
+        bool up;
+    } cases[] = {
+        { 0x00, true }, { 0x20, true }, { 0x30, true }, { 0x24, true },
+        { 0x10, false }, { 0x40, false }, { 0x70, false },
+    };
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        isp_rings_at(&t, 8, 8, guest_alloc(alloc, ICB_SIZE),
+                     guest_alloc(alloc, 8 * ENTRY_SIZE),
+                     guest_alloc(alloc, 8 * ENTRY_SIZE), 0, cases[i].xopts);
+        qtest_clock_step(t.qts, BRINGUP_NS);
+        if (cases[i].up) {
+            isp_expect_events(&t, bringup_events, 2);
+            g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+        } else {
+            isp_expect_no_event(&t);
+            g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_CONFIG_WAIT);
+        }
+    }
+    isp_close(&t);
+}
+
+/*
+ * Approximation: the port-database event follows loop up only with
+ * control-block option 0x0100. A new trigger drops every event an earlier
+ * bring-up queued and has not posted; one already posted stays until the
+ * host releases it, and a mailbox result waits behind it intact.
+ */
+static void test_loop_events(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, 0);
+
+    /* Let the next bring-up post its first event and leave it unread. */
+    g_assert_cmphex(isp_call_ack(&t, CMD_INITIATE_LIP, 0, 0, 0), ==,
+                    MBOX_COMPLETE);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_LIP);
+
+    /*
+     * The host reads the event, then runs a second trigger before it
+     * releases it; the result waits in its slot until the release.
+     */
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 0);
+    isp_call(&t, CMD_INITIATE_LIP, 0, 0, 0);
+    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+    isp_ack(&t);
+    /* Its result, then nothing: loop up from the first one is gone. */
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    isp_ack(&t);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+
+    /* The second bring-up posts its own whole set. */
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 2);
+
+    /* An initialisation with option 0x0100 set adds the third event. */
+    isp_rings_at(&t, 8, 8, guest_alloc(alloc, ICB_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE),
+                 guest_alloc(alloc, 8 * ENTRY_SIZE), ICB_OPT_PORT_DB, 0);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 3);
+    isp_close(&t);
+}
+
+/* One status entry, polled for: disk I/O completes from the main loop. */
+static void isp_wait_response(Isp *t, uint8_t *e)
+{
+    unsigned i;
+
+    for (i = 0; i < 10000 && !(rd(t, REG_ISR) & ISR_RISC); i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(rd(t, REG_ISR) & ISR_RISC, ==, ISR_RISC);
+    g_assert_cmphex(rd(t, REG_SEMAPHORE), ==, 0);
+    g_assert_cmphex(rd(t, REG_RESPONSE), ==, (t->rs_next + 1) % t->rslen);
+    isp_response(t, t->rs_next, e);
+    g_assert_cmphex(e[0], ==, ENTRY_STATUS);
+    isp_consume(t, 1);
+}
+
+typedef struct ScsiResult {
+    uint16_t scsi_status;
+    uint16_t completion;
+    uint16_t sense_len;
+    uint32_t residual;
+    uint8_t sense[32];
+} ScsiResult;
+
+static void decode_status(const uint8_t *e, uint32_t handle, ScsiResult *r)
+{
+    g_assert_cmphex(ldl_le_p(e + 4), ==, handle);
+    r->scsi_status = lduw_le_p(e + 8);
+    r->completion = lduw_le_p(e + 10);
+    /* State and status flags: unknown meaning, written as zero. */
+    g_assert_cmphex(lduw_le_p(e + 12), ==, 0);
+    g_assert_cmphex(lduw_le_p(e + 14), ==, 0);
+    r->sense_len = lduw_le_p(e + 18);
+    r->residual = ldl_le_p(e + 20);
+    memcpy(r->sense, e + 32, sizeof(r->sense));
+}
+
+/*
+ * A 64-bit command with at most two segments, published and waited for.
+ * @control is the direction flag; the segments split @len at @split.
+ */
+static void isp_scsi(Isp *t, uint32_t handle, uint8_t loop_id, uint16_t lun,
+                     const uint8_t *cdb, unsigned cdb_len, uint16_t control,
+                     uint64_t buf, uint32_t len, uint32_t split,
+                     ScsiResult *r)
+{
+    uint8_t e[ENTRY_SIZE];
+
+    entry_command(e, ENTRY_CMD64, handle, loop_id, lun, cdb[0]);
+    memcpy(e + 20, cdb, cdb_len);
+    stw_le_p(e + 12, control);
+    stl_le_p(e + 36, len);
+    if (len && split && split < len) {
+        stw_le_p(e + 18, 2);
+        put_seg64(e + 40, buf, split);
+        put_seg64(e + 52, buf + split, len - split);
+    } else if (len) {
+        stw_le_p(e + 18, 1);
+        put_seg64(e + 40, buf, len);
+    }
+    isp_publish(t, e);
+    isp_wait_response(t, e);
+    decode_status(e, handle, r);
+}
+
+static const uint8_t cdb_tur[6] = { 0x00 };
+
+/*
+ * The first command each disk takes after a reset reports the reset as
+ * a unit attention; INQUIRY is exempt. Clear it on every port.
+ */
+static void isp_clear_unit_attention(Isp *t, const LoopConfig *config)
+{
+    ScsiResult r;
+    unsigned i;
+
+    for (i = 0; i < config->ndisks; i++) {
+        isp_scsi(t, 0x7700 + i, config->disks[i].loop_id,
+                 config->disks[i].lun, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0,
+                 &r);
+        g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+        if (r.scsi_status) {
+            g_assert_cmphex(r.scsi_status, ==,
+                            SCSI_CHECK_CONDITION | SCSI_STATUS_SENSE_VALID);
+            g_assert_cmphex(r.sense[2] & 0x0f, ==, 0x06);
+        }
+    }
+}
+
+static void cdb_inquiry(uint8_t *cdb, bool evpd, uint8_t page,
+                        uint16_t alloc_len)
+{
+    memset(cdb, 0, 6);
+    cdb[0] = 0x12;
+    cdb[1] = evpd;
+    cdb[2] = page;
+    stw_be_p(cdb + 3, alloc_len);
+}
+
+static void cdb_rw10(uint8_t *cdb, uint8_t op, uint32_t lba, uint16_t blocks)
+{
+    memset(cdb, 0, 10);
+    cdb[0] = op;
+    stl_be_p(cdb + 2, lba);
+    stw_be_p(cdb + 7, blocks);
+}
+
+/*
+ * INQUIRY reaches the disk at its loop ID: standard data, and the
+ * device-identification page carries the same port and node names as
+ * the loop's port database.
+ */
+static void test_scsi_inquiry(void *obj, void *data, QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 256);
+    uint8_t cdb[6], page[256], name[8];
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+
+    cdb_inquiry(cdb, false, 0, 36);
+    isp_scsi(&t, 0x1201, 5, 0, cdb, sizeof(cdb), 0x20, buf, 36, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    g_assert_cmphex(r.residual, ==, 0);
+    g_assert_cmphex(r.sense_len, ==, 0);
+    qtest_memread(t.qts, buf, page, 36);
+    g_assert_cmphex(page[0], ==, 0x00);
+    g_assert_cmpint(memcmp(page + 8, "QEMU    ", 8), ==, 0);
+    g_assert_cmpint(memcmp(page + 16, "QEMU HARDDISK   ", 16), ==, 0);
+
+    cdb_inquiry(cdb, true, 0x83, 255);
+    qtest_memset(t.qts, buf, 0, 256);
+    isp_scsi(&t, 0x1202, 5, 0, cdb, sizeof(cdb), 0x20, buf, 255, 0, &r);
+    g_assert_cmphex(r.scsi_status & 0xff, ==, 0);
+    qtest_memread(t.qts, buf, page, sizeof(page));
+    g_assert_cmphex(page[1], ==, 0x83);
+    stq_be_p(name, WWN_PORT(5));
+    g_assert_true(has_bytes(page, sizeof(page), name, sizeof(name)));
+    stq_be_p(name, WWN_NODE(5));
+    g_assert_true(has_bytes(page, sizeof(page), name, sizeof(name)));
+    isp_close(&t);
+}
+
+/*
+ * WRITE(10) then READ(10) of the same eight blocks, with the segments
+ * split differently each way; the data lands in the disk's backing file
+ * and comes back the same.
+ */
+static void test_scsi_read_write(void *obj, void *data,
+                                 QGuestAllocator *alloc)
+{
+    LoopTest *test = data;
+    const uint32_t len = 8 * 512;
+    uint64_t out = guest_alloc(alloc, len), in = guest_alloc(alloc, len);
+    uint64_t list = guest_alloc(alloc, 3 * 12);
+    g_autofree uint8_t *pattern = g_malloc(len);
+    g_autofree uint8_t *seen = g_malloc(len);
+    uint8_t cdb[10], e[ENTRY_SIZE], segs[3 * 12];
+    ScsiResult r;
+    unsigned i;
+    int fd;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    for (i = 0; i < len; i++) {
+        pattern[i] = i * 7 + (i >> 9) + 1;
+    }
+    qtest_memwrite(t.qts, out, pattern, len);
+    qtest_memset(t.qts, in, 0, len);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &loop_config);
+
+    cdb_rw10(cdb, 0x2a, 16, 8);
+    isp_scsi(&t, 0x2a2a, 5, 0, cdb, sizeof(cdb), 0x40, out, len, 1536, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    g_assert_cmphex(r.residual, ==, 0);
+
+    /* The data is in the file, at block 16. */
+    fd = open(test->path[0], O_RDONLY);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pread(fd, seen, len, 16 * 512), ==, len);
+    close(fd);
+    g_assert_cmpint(memcmp(seen, pattern, len), ==, 0);
+
+    /* Read back through OpenBSD's segment-list form, three pieces. */
+    put_seg64(segs, in, 1024);
+    put_seg64(segs + 12, in + 1024, 1024);
+    put_seg64(segs + 24, in + 2048, 2048);
+    qtest_memwrite(t.qts, list, segs, sizeof(segs));
+    cdb_rw10(cdb, 0x28, 16, 8);
+    entry_command(e, ENTRY_CMD_LIST, 0x2828, 5, 0, 0x28);
+    memcpy(e + 20, cdb, sizeof(cdb));
+    stw_le_p(e + 12, 0x20);
+    stw_le_p(e + 18, 3);
+    stl_le_p(e + 36, len);
+    stw_le_p(e + 40, 1);
+    stq_le_p(e + 46, list);
+    isp_publish(&t, e);
+    isp_wait_response(&t, e);
+    decode_status(e, 0x2828, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    qtest_memread(t.qts, in, seen, len);
+    g_assert_cmpint(memcmp(seen, pattern, len), ==, 0);
+    isp_close(&t);
+}
+
+/*
+ * Commands go to the loop ID and LUN they name: the unit serial number
+ * page tells the three disks apart.
+ */
+static void test_scsi_addressing(void *obj, void *data,
+                                 QGuestAllocator *alloc)
+{
+    static const struct {
+        uint8_t loop_id;
+        uint16_t lun;
+        const char *serial;
+    } cases[] = {
+        { 5, 1, "LUN1" }, { 5, 0, "LOOP5" }, { 1, 0, "LOOP1" },
+    };
+    uint64_t buf = guest_alloc(alloc, 64);
+    uint8_t cdb[6], page[64];
+    ScsiResult r;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        size_t n = strlen(cases[i].serial);
+
+        cdb_inquiry(cdb, true, 0x80, 64);
+        qtest_memset(t.qts, buf, 0, sizeof(page));
+        isp_scsi(&t, 0x8000 + i, cases[i].loop_id, cases[i].lun, cdb,
+                 sizeof(cdb), 0x20, buf, sizeof(page), 0, &r);
+        g_assert_cmphex(r.scsi_status & 0xff, ==, 0);
+        qtest_memread(t.qts, buf, page, sizeof(page));
+        g_assert_cmphex(page[1], ==, 0x80);
+        g_assert_cmpuint(page[3], ==, n);
+        g_assert_cmpint(memcmp(page + 4, cases[i].serial, n), ==, 0);
+    }
+    isp_close(&t);
+}
+
+/*
+ * Approximation: completion precedence. A failed SCSI status completes
+ * 0x0000 with the status, sense valid and the sense bytes, and with
+ * residual-under and the residual when the transfer was short. A good
+ * short transfer is underrun 0x0015 with the residual; a good full one
+ * is 0x0000 with no flags.
+ */
+static void test_scsi_check_condition(void *obj, void *data,
+                                      QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 1024);
+    uint8_t cdb[12], page[256];
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+
+    /* The reset's unit attention: CHECK CONDITION with no data asked. */
+    isp_scsi(&t, 0x0601, 1, 0, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==,
+                    SCSI_CHECK_CONDITION | SCSI_STATUS_SENSE_VALID);
+    g_assert_cmpuint(r.sense_len, >=, 14);
+    g_assert_cmphex(r.sense[0] & 0x7f, ==, 0x70);
+    g_assert_cmphex(r.sense[2] & 0x0f, ==, 0x06);
+    g_assert_cmphex(r.sense[12], ==, 0x29);
+    g_assert_cmphex(r.residual, ==, 0);
+    isp_scsi(&t, 0x0602, 1, 0, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0, &r);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    g_assert_cmphex(r.sense_len, ==, 0);
+
+    /* A READ to a LUN the port lacks moves nothing: all 512 are residual. */
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0x0603, 1, 7, cdb, 10, 0x20, buf, 512, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==,
+                    SCSI_CHECK_CONDITION | SCSI_STATUS_SENSE_VALID |
+                    SCSI_STATUS_RESID_UNDER);
+    g_assert_cmphex(r.sense[2] & 0x0f, ==, 0x05);
+    g_assert_cmphex(r.sense[12], ==, 0x25);
+    g_assert_cmphex(r.residual, ==, 512);
+
+    /* INQUIRY to that LUN: peripheral qualifier 3, no device. */
+    cdb_inquiry(cdb, false, 0, 36);
+    qtest_memset(t.qts, buf, 0, 36);
+    isp_scsi(&t, 0x0604, 1, 7, cdb, 6, 0x20, buf, 36, 0, &r);
+    g_assert_cmphex(r.scsi_status & 0xff, ==, 0);
+    qtest_memread(t.qts, buf, page, 36);
+    g_assert_cmphex(page[0], ==, 0x7f);
+
+    /* A LUN past 255: CHECK CONDITION, the same sense, nothing moved. */
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0x0605, 1, 300, cdb, 10, 0x20, buf, 512, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==,
+                    SCSI_CHECK_CONDITION | SCSI_STATUS_SENSE_VALID |
+                    SCSI_STATUS_RESID_UNDER);
+    g_assert_cmphex(r.sense[2] & 0x0f, ==, 0x05);
+    g_assert_cmphex(r.sense[12], ==, 0x25);
+    g_assert_cmphex(r.residual, ==, 512);
+
+    /*
+     * A good transfer shorter than the host's buffer is an underrun:
+     * REPORT LUNS on loop ID 5 lists its two LUNs in 24 bytes.
+     */
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = 0xa0;
+    stl_be_p(cdb + 6, 255);
+    qtest_memset(t.qts, buf, 0, 256);
+    isp_scsi(&t, 0x0606, 5, 0, cdb, 12, 0x20, buf, 255, 0, &r);
+    qtest_memread(t.qts, buf, page, sizeof(page));
+    g_assert_cmphex(ldl_be_p(page), ==, 16);
+    g_assert_cmphex(r.completion, ==, COMPLETION_UNDERRUN);
+    g_assert_cmphex(r.scsi_status, ==, SCSI_STATUS_RESID_UNDER);
+    g_assert_cmphex(r.residual, ==, 255 - 24);
+    g_assert_cmphex(r.sense_len, ==, 0);
+
+    /* So is one block read into two blocks' worth of segments. */
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0x0607, 1, 0, cdb, 10, 0x20, buf, 512, 0, &r);
+    isp_scsi(&t, 0x0608, 1, 0, cdb, 10, 0x20, buf, 1024, 512, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_UNDERRUN);
+    g_assert_cmphex(r.scsi_status, ==, SCSI_STATUS_RESID_UNDER);
+    g_assert_cmphex(r.residual, ==, 512);
+
+    /* And a good full READ has no flags at all. */
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0x0609, 1, 0, cdb, 10, 0x20, buf, 512, 256, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+    g_assert_cmphex(r.residual, ==, 0);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: a command to a loop ID with no port, to the adapter's
+ * own loop ID or past 125 completes "port unavailable" with no SCSI
+ * status. A marker between commands answers nothing.
+ */
+static void test_scsi_unavailable(void *obj, void *data,
+                                  QGuestAllocator *alloc)
+{
+    static const uint8_t loop_ids[] = { 2, 0, 126, 255 };
+    uint8_t e[ENTRY_SIZE] = { ENTRY_MARKER, 1 };
+    ScsiResult r;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    for (i = 0; i < ARRAY_SIZE(loop_ids); i++) {
+        isp_scsi(&t, 0x2800 + i, loop_ids[i], 0, cdb_tur, sizeof(cdb_tur),
+                 0, 0, 0, 0, &r);
+        g_assert_cmphex(r.completion, ==, COMPLETION_PORT_UNAVAILABLE);
+        g_assert_cmphex(r.scsi_status, ==, 0);
+        g_assert_cmphex(r.residual, ==, 0);
+
+        e[9] = loop_ids[i];
+        e[10] = 1;
+        isp_publish(&t, e);
+        g_assert_cmphex(rd(&t, REG_REQUEST), ==, t.rq_next);
+        isp_expect_no_event(&t);
+    }
+    isp_close(&t);
+}
+
+/* A device_add onto the adapter's bus that must fail, saying @why. */
+static void G_GNUC_PRINTF(3, 4) qmp_device_add_fails(QTestState *qts,
+                                                     const char *why,
+                                                     const char *fmt, ...)
+{
+    QDict *args, *rsp, *err;
+    va_list ap;
+
+    va_start(ap, fmt);
+    args = qdict_from_vjsonf_nofail(fmt, ap);
+    va_end(ap);
+    qdict_put_str(args, "driver", "scsi-hd");
+    qdict_put_str(args, "bus", "isp0.0");
+    qdict_put_str(args, "drive", "spare0");
+
+    rsp = qtest_qmp(qts, "{ 'execute': 'device_add', 'arguments': %p }",
+                    args);
+    g_assert_true(qdict_haskey(rsp, "error"));
+    err = qdict_get_qdict(rsp, "error");
+    if (!strstr(qdict_get_str(err, "desc"), why)) {
+        g_test_message("device_add error: %s", qdict_get_str(err, "desc"));
+    }
+    g_assert_nonnull(strstr(qdict_get_str(err, "desc"), why));
+    qobject_unref(rsp);
+}
+
+/*
+ * A plug that makes a new port, or an unplug of a port's last LUN, runs
+ * a bring-up; another LUN of a port that exists does not. A port needs
+ * both names, one pair of names per loop ID, its own port name, and a
+ * loop ID the adapter does not hold.
+ */
+static void test_loop_plug(void *obj, void *data, QGuestAllocator *alloc)
+{
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+
+    qmp_device_add_fails(t.qts, "port_wwn",
+                         "{ 'scsi-id': 9, 'lun': 0, 'wwn': 1 }");
+    qmp_device_add_fails(t.qts, "wwn",
+                         "{ 'scsi-id': 9, 'lun': 0, 'port_wwn': 1 }");
+    qmp_device_add_fails(t.qts, "loop ID 5",
+                         "{ 'scsi-id': 5, 'lun': 1, 'port_wwn': 2, "
+                         "'wwn': 3 }");
+    qmp_device_add_fails(t.qts, "loop ID 5",
+                         "{ 'scsi-id': 9, 'lun': 0, 'port_wwn': %" PRIu64
+                         ", 'wwn': 3 }", WWN_PORT(5));
+    qmp_device_add_fails(t.qts, "adapter",
+                         "{ 'scsi-id': 0, 'lun': 0, 'port_wwn': 2, "
+                         "'wwn': 3 }");
+    qmp_device_add_fails(t.qts, "scsi-id",
+                         "{ 'lun': 0, 'port_wwn': 2, 'wwn': 3 }");
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+
+    /* A new port at loop ID 9 (AL_PA 0xd6). */
+    qtest_qmp_device_add(t.qts, "scsi-hd", "hot0",
+                         "{ 'bus': 'isp0.0', 'drive': 'spare0', "
+                         "'scsi-id': 9, 'lun': 0, 'port_wwn': %" PRIu64 ", "
+                         "'wwn': %" PRIu64 " }", WWN_PORT(9), WWN_NODE(9));
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 3);
+    assert_id_list(&t, "e0:5 d6:9");
+
+    /* Its second LUN joins an existing port: no bring-up. */
+    qtest_qmp_device_add(t.qts, "scsi-hd", "hot1",
+                         "{ 'bus': 'isp0.0', 'drive': 'spare1', "
+                         "'scsi-id': 9, 'lun': 1, 'port_wwn': %" PRIu64 ", "
+                         "'wwn': %" PRIu64 " }", WWN_PORT(9), WWN_NODE(9));
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_READY);
+
+    /* Unplugging that LUN leaves the port: still no bring-up. */
+    qtest_qmp_device_del(t.qts, "hot1");
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_no_event(&t);
+
+    /* Unplugging the last one takes the port off the loop. */
+    qtest_qmp_device_del(t.qts, "hot0");
+    g_assert_cmphex(isp_fw_state(&t), ==, FW_STATE_WAIT_AL_PA);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, 3);
+    assert_id_list(&t, "e0:5");
+    isp_scsi(&t, 0x0900, 9, 0, cdb_tur, sizeof(cdb_tur), 0, 0, 0, 0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_PORT_UNAVAILABLE);
+
+    /* The bus now differs from the command line's. */
+    qos_invalidate_command_line();
+    isp_close(&t);
+}
+
 static void isp2200_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
         .extra_device_opts = "addr=04.0,id=isp0",
+    };
+    QOSGraphTestOptions loop_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&loop_config,
+    };
+    QOSGraphTestOptions plug_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&plug_config,
+    };
+    QOSGraphTestOptions low_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&low_config,
     };
 
     add_qpci_address(&opts, &(QPCIAddress) { .devfn = QPCI_DEVFN(4, 0) });
@@ -2392,6 +3476,26 @@ static void isp2200_register_nodes(void)
                  test_window_openbsd_interleave, NULL);
     qos_add_test("window-openbsd-interleave-response", "qlogic-isp2200",
                  test_window_openbsd_interleave_response, NULL);
+    qos_add_test("loop-identity", "qlogic-isp2200", test_loop_identity,
+                 &loop_opts);
+    qos_add_test("loop-hard-address", "qlogic-isp2200",
+                 test_loop_hard_address, &low_opts);
+    qos_add_test("loop-state-timeline", "qlogic-isp2200",
+                 test_loop_state_timeline, NULL);
+    qos_add_test("loop-connection-mode", "qlogic-isp2200",
+                 test_loop_connection_mode, NULL);
+    qos_add_test("loop-events", "qlogic-isp2200", test_loop_events, NULL);
+    qos_add_test("loop-plug", "qlogic-isp2200", test_loop_plug, &plug_opts);
+    qos_add_test("scsi-inquiry", "qlogic-isp2200", test_scsi_inquiry,
+                 &loop_opts);
+    qos_add_test("scsi-read-write", "qlogic-isp2200", test_scsi_read_write,
+                 &loop_opts);
+    qos_add_test("scsi-addressing", "qlogic-isp2200", test_scsi_addressing,
+                 &loop_opts);
+    qos_add_test("scsi-check-condition", "qlogic-isp2200",
+                 test_scsi_check_condition, &loop_opts);
+    qos_add_test("scsi-unavailable", "qlogic-isp2200", test_scsi_unavailable,
+                 &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);

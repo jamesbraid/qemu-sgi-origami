@@ -1,23 +1,34 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * QLogic ISP2200 Fibre Channel host adapter: the host interface.
+ * QLogic ISP2200 Fibre Channel host adapter.
  *
  * The host talks to the adapter's firmware through 24 mailboxes and two
  * rings in host memory. As with the SCSI parts in qlogic-isp.c, the guest's
  * firmware download is accepted, retained and checksummed, never executed;
  * the model implements the mailbox commands and rings that firmware
- * provides. The Fibre Channel side -- loop state, logins and whatever sits
- * behind a loop handle -- is a separate service behind four hooks. None is
- * attached yet, so the adapter reports a disconnected loop. The contract
+ * provides.
+ *
+ * Behind the host interface sits a private arbitrated loop kept inside the
+ * device rather than a Fibre Channel subsystem: firmware hides frames from
+ * the host, which sees only loop IDs, names and SCSI commands. Each SCSI
+ * device on the adapter's bus is one LUN of the loop port whose loop ID is
+ * its target number, named by its port_wwn and wwn properties. The contract
  * and its sources are in docs/system/mips/sgi/hardware/qlogic-isp2200.rst.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
+#include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
+#include "hw/scsi/scsi.h"
+#include "migration/qemu-file-types.h"
+#include "migration/qemu-file.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "scsi/constants.h"
+#include "system/dma.h"
 #include "trace.h"
 #include "qom/object.h"
 
@@ -109,6 +120,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MBOX_LOAD_RAM           0x0009
 #define ISP2200_MBOX_LOAD_RAM_EXTENDED  0x000b
 #define ISP2200_MBOX_FIRMWARE_STATUS    0x001f
+#define ISP2200_MBOX_GET_ADAPTER_ID     0x0020
+#define ISP2200_MBOX_ENHANCED_PORT_DB   0x0047
+#define ISP2200_MBOX_INITIATE_LIP       0x0062
+#define ISP2200_MBOX_POSITION_MAP       0x0063
+#define ISP2200_MBOX_GET_PORT_DB        0x0064
+#define ISP2200_MBOX_FULL_LOGIN_LIP     0x0072
+#define ISP2200_MBOX_PORT_NAME_LIST     0x0075
+#define ISP2200_MBOX_GET_ID_LIST        0x007c
 #define ISP2200_MBOX_GET_FW_OPTIONS     0x0028
 #define ISP2200_MBOX_SET_FW_OPTIONS     0x0038
 #define ISP2200_MBOX_INIT_FIRMWARE      0x0060
@@ -118,10 +137,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_MBOX_INVALID            0x4001
 #define ISP2200_MBOX_HOST_INTERFACE_ERROR 0x4002
 #define ISP2200_MBOX_TEST_FAILED        0x4003
+#define ISP2200_MBOX_COMMAND_ERROR      0x4005
 #define ISP2200_MBOX_PARAM_ERROR        0x4006
 
 #define ISP2200_ASYNC_REQUEST_DMA_ERROR  0x8003
 #define ISP2200_ASYNC_RESPONSE_DMA_ERROR 0x8004
+#define ISP2200_ASYNC_LIP_OCCURRED       0x8010
+#define ISP2200_ASYNC_LOOP_UP            0x8011
+#define ISP2200_ASYNC_LIP_RESET          0x8013
+#define ISP2200_ASYNC_PORT_DB_CHANGED    0x8014
+
+/* Port-database changed m1: every port, not one that changed. */
+#define ISP2200_PORT_DB_GLOBAL           0xffff
 
 /* A model constant, deliberately not any vendor firmware release. */
 #define ISP2200_FW_VERSION_MAJOR    1
@@ -132,8 +159,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 
 #define ISP2200_MAX_OUTSTANDING     512
 
-/* Get Firmware State's "configuration wait", the disconnected answer. */
+/* Get Firmware State: the only three the loop ever reports. */
 #define ISP2200_FW_STATE_CONFIG_WAIT 0
+#define ISP2200_FW_STATE_WAIT_AL_PA  1
+#define ISP2200_FW_STATE_READY       3
+
+/*
+ * How long a loop takes to come up once something starts it. A model
+ * constant, long enough for a test to see the initialising state; how
+ * long a real loop initialisation takes is unknown.
+ */
+#define ISP2200_BRINGUP_NS          (100 * SCALE_MS)
+
+/* Loop IDs 0..0x7d are loop ports; 0x7e and up are fabric and special. */
+#define ISP2200_MAX_LOOP_ID         0x7d
+#define ISP2200_MAX_LUN             255
+
+/* Get Adapter ID m1 while the loop is down: Linux's "loop in transition". */
+#define ISP2200_ADAPTER_ID_NOT_READY 7
+
+/* Bit 1 of the stored Set Firmware Options m1 enables LIP-reset events. */
+#define ISP2200_FW_OPT_LIP_RESET_EVENTS 0x0002
 
 /* 64K 16-bit words of controller RAM; code starts at word 0x1000. */
 #define ISP2200_RAM_WORDS           0x10000
@@ -142,11 +188,40 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_ICB_VERSION         1
 #define ISP2200_ICB_OFF_VERSION     0
 #define ISP2200_ICB_OFF_OPTIONS     2
+#define ISP2200_ICB_OFF_HARD_ADDR   20
+#define ISP2200_ICB_OFF_XOPTIONS    64
 #define ISP2200_ICB_OFF_RQST_LEN    36
 #define ISP2200_ICB_OFF_RESP_LEN    38
 #define ISP2200_ICB_OFF_RQST_BASE   40
 #define ISP2200_ICB_OFF_RESP_BASE   48
+#define ISP2200_ICB_OPT_HARD_ADDR   0x0001
 #define ISP2200_ICB_OPT_FAST_POST   0x0008
+#define ISP2200_ICB_OPT_PORT_DB_EVENTS 0x0100
+/* Extended options: bits 3:0 the reduced-completion mode, 6:4 topology. */
+#define ISP2200_ICB_XOPT_TIMER_MASK 0x000f
+#define ISP2200_ICB_XOPT_CONN(x)    (((x) >> 4) & 7)
+#define ISP2200_CONN_LOOP           0
+#define ISP2200_CONN_LOOP_PREFERRED 2
+#define ISP2200_CONN_P2P_PREFERRED  3
+
+/* The port database the Get Port Database command returns. */
+#define ISP2200_PDB_SIZE            128
+#define ISP2200_PDB_OFF_MASTER      2
+#define ISP2200_PDB_OFF_SLAVE       3
+#define ISP2200_PDB_OFF_HARD_ADDR   6
+#define ISP2200_PDB_OFF_PORT_ID     8
+#define ISP2200_PDB_OFF_NODE_NAME   12
+#define ISP2200_PDB_OFF_PORT_NAME   20
+#define ISP2200_PDB_OFF_PRLI_SVC3   78
+#define ISP2200_PDB_OFF_LOOP_ID     80
+#define ISP2200_PDB_LOGGED_IN       6
+#define ISP2200_PDB_TARGET_ROLE     0x10
+
+#define ISP2200_POSITION_MAP_SIZE   128
+#define ISP2200_ID_LIST_ENTRY       4
+#define ISP2200_NAME_LIST_ENTRY     10
+/* Port Name List options OpenBSD sets: include initiators, all loop IDs. */
+#define ISP2200_NAME_LIST_OPTIONS   0x000a
 
 #define ISP2200_ENTRY_SIZE          64
 
@@ -201,15 +276,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_STATUS_OFF_RESIDUAL     20
 #define ISP2200_STATUS_OFF_SENSE        32
 #define ISP2200_STATUS_SENSE_MAX        32
+#define ISP2200_STATUS_OFF_SIGNATURE    60
+/* What Linux writes over the last word of each response it has read. */
+#define ISP2200_RESPONSE_PROCESSED      0xdeaddead
 
+#define ISP2200_SCSI_STATUS_SENSE_VALID 0x0200
+#define ISP2200_SCSI_STATUS_RESID_UNDER 0x0800
+
+#define ISP2200_COMPLETION_COMPLETE         0x0000
+#define ISP2200_COMPLETION_UNDERRUN         0x0015
 #define ISP2200_COMPLETION_PORT_UNAVAILABLE 0x0028
 
 /*
  * Events waiting for the host to release the result before them. No
  * result is ever dropped, so the queue is sized for every event that can
- * wait: the host interface raises two kinds itself, and a refused read
- * that finds an identical event still queued adds nothing (see
- * isp2200_raise_event()).
+ * wait: the host interface raises two kinds itself, each queued at most
+ * once (see isp2200_raise_event()), and the loop queues at most one
+ * bring-up's three, because a new bring-up first takes back the events
+ * of any earlier one still queued (see isp2200_bringup()).
  */
 #define ISP2200_EVENTS_MAX          8
 
@@ -238,11 +322,27 @@ typedef struct ISP2200Command {
     ISP2200Segment *segs;
 } ISP2200Command;
 
+/* One command in flight on a loop port, behind sreq->hba_private. */
+typedef struct ISP2200Request {
+    QLogicISP2200State *dev;
+    SCSIRequest *sreq;
+    QEMUSGList qsg;
+    uint64_t described;         /* Buffer bytes the segments named. */
+    uint64_t transferred;
+    uint64_t sg_offset;
+    uint32_t sg_index;
+    uint32_t handle;
+    QTAILQ_ENTRY(ISP2200Request) next;
+} ISP2200Request;
+
 struct QLogicISP2200State {
     PCIDevice parent_obj;
 
     MemoryRegion io;    /* Base address register 0, the I/O window. */
     MemoryRegion mmio;  /* Base address register 1: an alias of io. */
+
+    /* The loop: every device on it is a LUN of the port at its target. */
+    SCSIBus bus;
 
     uint16_t csr;
     bool csr_reset_visible;     /* Soft reset bit reads set until a read. */
@@ -324,8 +424,32 @@ struct QLogicISP2200State {
     bool rqst_budget_stall;
 
     /*
-     * What the disconnected FC service saw, read by qtests through QOM
-     * properties. Not guest-visible and not migrated.
+     * Initialise-firmware accepted a loop connection mode; until then, or
+     * after a reset, nothing brings the loop up.
+     */
+    bool loop_active;
+    uint16_t loop_state;    /* What Get Firmware State reports. */
+    bool has_loop_id;
+    uint8_t loop_id;        /* The adapter's own, chosen at initialisation. */
+    bool bringup_lip_reset; /* The running bring-up came from a LIP reset. */
+    QEMUTimer *bringup_timer;
+
+    /* Commands in flight on the loop's devices. */
+    QTAILQ_HEAD(, ISP2200Request) requests;
+    uint32_t outstanding;
+
+    /*
+     * A recovery, reset or unplug is cancelling requests. Cancelling waits
+     * for the backend, and a command finishing elsewhere in that wait must
+     * not start the request ring again part-way through; the walk stops,
+     * notes it, and resumes once the recovery is over. Transient.
+     */
+    bool recovering;
+    bool rqst_recovery_stall;
+
+    /*
+     * What reached the loop service from the host interface, read by
+     * qtests through QOM properties. Not guest-visible and not migrated.
      */
     uint32_t fc_submissions;
     ISP2200Command fc_last;
@@ -402,10 +526,15 @@ static void isp2200_clear_queues(QLogicISP2200State *s)
     memset(s->icb, 0, sizeof(s->icb));
 }
 
+static void isp2200_cancel_all(QLogicISP2200State *s);
+static void isp2200_loop_reset(QLogicISP2200State *s);
+
 /*
  * HCCR reset and the CSR soft reset hold the RISC the same way. The
  * firmware goes with it: every supported driver downloads again after a
  * reset, and a guest that expects firmware to survive one is unsupported.
+ * So does the loop, and every command in flight is cancelled without a
+ * status: the rings it would post to are gone.
  */
 static void isp2200_hold_risc(QLogicISP2200State *s)
 {
@@ -413,6 +542,9 @@ static void isp2200_hold_risc(QLogicISP2200State *s)
     s->risc_paused = false;
     s->cmd_window = false;
     s->cmd_pending = false;
+
+    isp2200_cancel_all(s);
+    isp2200_loop_reset(s);
 
     memset(s->mbox_in, 0, sizeof(s->mbox_in));
     memset(s->mbox_out, 0, sizeof(s->mbox_out));
@@ -571,8 +703,9 @@ static void isp2200_service_posts(QLogicISP2200State *s)
         /* A refused write left an event to post in its place. */
     }
 
-    /* Room in the held queue lets a walk stopped on the budget resume. */
-    if (s->rqst_budget_stall && s->held_count < ISP2200_HELD_MAX) {
+    /* Room in the budget lets a walk stopped on it resume. */
+    if (s->rqst_budget_stall && !s->recovering &&
+        s->outstanding + s->held_count < ISP2200_MAX_OUTSTANDING) {
         s->rqst_budget_stall = false;
         isp2200_process_requests(s);
     }
@@ -585,6 +718,17 @@ static void isp2200_service_posts(QLogicISP2200State *s)
  * has released the result before. A guest that keeps retrying a refused
  * ring therefore cannot grow the queue.
  */
+static void isp2200_push_event(QLogicISP2200State *s, uint16_t code,
+                               uint16_t m1)
+{
+    uint16_t mb[ISP2200_MAILBOX_COUNT] = { code, m1 };
+
+    /* Bounded by its sources; see ISP2200_EVENTS_MAX. */
+    assert(s->event_count < ISP2200_EVENTS_MAX);
+    trace_qlogic_isp2200_event(code);
+    memcpy(s->events[s->event_count++], mb, sizeof(mb));
+}
+
 static void isp2200_raise_event(QLogicISP2200State *s, uint16_t code)
 {
     uint16_t mb[ISP2200_MAILBOX_COUNT] = { code };
@@ -596,11 +740,7 @@ static void isp2200_raise_event(QLogicISP2200State *s, uint16_t code)
             return;
         }
     }
-
-    /* Two kinds, each queued at most once: the queue cannot fill. */
-    assert(s->event_count < ISP2200_EVENTS_MAX);
-    trace_qlogic_isp2200_event(code);
-    memcpy(s->events[s->event_count++], mb, sizeof(mb));
+    isp2200_push_event(s, code, 0);
 }
 
 static void isp2200_hold_entry(QLogicISP2200State *s, const uint8_t *entry)
@@ -623,6 +763,23 @@ static void isp2200_complete(QLogicISP2200State *s, uint32_t handle,
     trace_qlogic_isp2200_complete(handle, scsi_status, completion);
 
     sense_len = MIN(sense_len, ISP2200_STATUS_SENSE_MAX);
+    if (sense_len) {
+        memcpy(entry + ISP2200_STATUS_OFF_SENSE, sense, sense_len);
+    }
+    /*
+     * Linux would take an entry ending in its own processed mark for one
+     * it had already read, and never see it. Sense that ends that way
+     * loses its last word instead.
+     */
+    if (ldl_le_p(entry + ISP2200_STATUS_OFF_SIGNATURE) ==
+        ISP2200_RESPONSE_PROCESSED) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp2200: sense for handle 0x%08x cut to 28 "
+                      "bytes: its last word is Linux's processed mark\n",
+                      handle);
+        sense_len = ISP2200_STATUS_OFF_SIGNATURE - ISP2200_STATUS_OFF_SENSE;
+        stl_le_p(entry + ISP2200_STATUS_OFF_SIGNATURE, 0);
+    }
     entry[ISP2200_ENTRY_OFF_TYPE] = ISP2200_ENTRY_STATUS;
     entry[ISP2200_ENTRY_OFF_COUNT] = 1;
     stl_le_p(entry + ISP2200_STATUS_OFF_HANDLE, handle);
@@ -630,9 +787,6 @@ static void isp2200_complete(QLogicISP2200State *s, uint32_t handle,
     stw_le_p(entry + ISP2200_STATUS_OFF_COMPLETION, completion);
     stw_le_p(entry + ISP2200_STATUS_OFF_SENSE_LEN, sense_len);
     stl_le_p(entry + ISP2200_STATUS_OFF_RESIDUAL, residual);
-    if (sense_len) {
-        memcpy(entry + ISP2200_STATUS_OFF_SENSE, sense, sense_len);
-    }
 
     isp2200_hold_entry(s, entry);
     isp2200_service_posts(s);
@@ -656,17 +810,319 @@ static void isp2200_reject_entry(QLogicISP2200State *s, const uint8_t *req,
 }
 
 /*
- * The Fibre Channel service. With none attached the adapter is
- * disconnected: firmware state configuration wait, every command
- * completes "port unavailable" and every loop command is refused.
+ * The private loop.
+ *
+ * Loop ID n is the standard table's AL_PA n: 0xef at 0 down to 0x01 at
+ * 0x7d, then 0x00 for the fabric port. A private loop has domain and area
+ * 0, so a port ID is its AL_PA alone.
  */
-static uint16_t isp2200_fc_fw_state(QLogicISP2200State *s)
+static const uint8_t isp2200_alpa[ISP2200_MAX_LOOP_ID + 2] = {
+    0xef, 0xe8, 0xe4, 0xe2, 0xe1, 0xe0, 0xdc, 0xda,
+    0xd9, 0xd6, 0xd5, 0xd4, 0xd3, 0xd2, 0xd1, 0xce,
+    0xcd, 0xcc, 0xcb, 0xca, 0xc9, 0xc7, 0xc6, 0xc5,
+    0xc3, 0xbc, 0xba, 0xb9, 0xb6, 0xb5, 0xb4, 0xb3,
+    0xb2, 0xb1, 0xae, 0xad, 0xac, 0xab, 0xaa, 0xa9,
+    0xa7, 0xa6, 0xa5, 0xa3, 0x9f, 0x9e, 0x9d, 0x9b,
+    0x98, 0x97, 0x90, 0x8f, 0x88, 0x84, 0x82, 0x81,
+    0x80, 0x7c, 0x7a, 0x79, 0x76, 0x75, 0x74, 0x73,
+    0x72, 0x71, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x69,
+    0x67, 0x66, 0x65, 0x63, 0x5c, 0x5a, 0x59, 0x56,
+    0x55, 0x54, 0x53, 0x52, 0x51, 0x4e, 0x4d, 0x4c,
+    0x4b, 0x4a, 0x49, 0x47, 0x46, 0x45, 0x43, 0x3c,
+    0x3a, 0x39, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31,
+    0x2e, 0x2d, 0x2c, 0x2b, 0x2a, 0x29, 0x27, 0x26,
+    0x25, 0x23, 0x1f, 0x1e, 0x1d, 0x1b, 0x18, 0x17,
+    0x10, 0x0f, 0x08, 0x04, 0x02, 0x01, 0x00,
+};
+
+/*
+ * A realized device at @loop_id, which is then a port; NULL when none is.
+ * A device being plugged is not realized yet, and one being unplugged has
+ * already left the bus.
+ */
+static SCSIDevice *isp2200_port(QLogicISP2200State *s, unsigned loop_id)
 {
-    return ISP2200_FW_STATE_CONFIG_WAIT;
+    BusChild *kid;
+
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        SCSIDevice *sdev = SCSI_DEVICE(kid->child);
+
+        if (sdev->id == loop_id && qdev_is_realized(DEVICE(sdev))) {
+            return sdev;
+        }
+    }
+    return NULL;
 }
 
+/* A port other than the adapter, at a loop ID the loop has. */
+static SCSIDevice *isp2200_target(QLogicISP2200State *s, unsigned loop_id)
+{
+    if (loop_id > ISP2200_MAX_LOOP_ID ||
+        (s->has_loop_id && loop_id == s->loop_id)) {
+        return NULL;
+    }
+    return isp2200_port(s, loop_id);
+}
+
+static bool isp2200_loop_ready(QLogicISP2200State *s)
+{
+    return s->loop_state == ISP2200_FW_STATE_READY;
+}
+
+static bool isp2200_bringup_event(uint16_t code)
+{
+    switch (code) {
+    case ISP2200_ASYNC_LIP_OCCURRED:
+    case ISP2200_ASYNC_LOOP_UP:
+    case ISP2200_ASYNC_LIP_RESET:
+    case ISP2200_ASYNC_PORT_DB_CHANGED:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Takes back the queued, not yet posted, events of earlier bring-ups. */
+static void isp2200_drop_bringup_events(QLogicISP2200State *s)
+{
+    uint32_t i, kept = 0;
+
+    for (i = 0; i < s->event_count; i++) {
+        if (isp2200_bringup_event(s->events[i][0])) {
+            continue;
+        }
+        if (kept != i) {
+            memcpy(s->events[kept], s->events[i], sizeof(s->events[0]));
+        }
+        kept++;
+    }
+    s->event_count = kept;
+}
+
+/*
+ * Starts the loop coming up: state 1 until the timer fires. A new trigger
+ * restarts the timer and takes back whatever an earlier bring-up queued
+ * and has not posted, so the queue holds at most one bring-up's events
+ * and each bring-up posts a whole set. An event already posted stays
+ * until the host releases it.
+ */
+static void isp2200_bringup(QLogicISP2200State *s, bool lip_reset)
+{
+    if (!s->loop_active) {
+        return;
+    }
+    trace_qlogic_isp2200_bringup(lip_reset);
+    s->loop_state = ISP2200_FW_STATE_WAIT_AL_PA;
+    s->bringup_lip_reset = lip_reset;
+    isp2200_drop_bringup_events(s);
+    timer_mod(s->bringup_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ISP2200_BRINGUP_NS);
+}
+
+/*
+ * The loop is up. The events are a model choice conditioned on the two
+ * option bits the drivers set: LIP (or LIP reset), loop up, and port
+ * database changed for every port. Their payloads are zero but for that
+ * last m1, which Linux reads as a global update.
+ */
+static void isp2200_bringup_done(void *opaque)
+{
+    QLogicISP2200State *s = opaque;
+    uint16_t options = lduw_le_p(s->icb + ISP2200_ICB_OFF_OPTIONS);
+
+    /* With every loop ID taken the adapter never gets one, nor a loop. */
+    if (!s->has_loop_id) {
+        trace_qlogic_isp2200_loop_full();
+        return;
+    }
+
+    s->loop_state = ISP2200_FW_STATE_READY;
+    trace_qlogic_isp2200_loop_ready(s->loop_id);
+    if (!s->bringup_lip_reset) {
+        isp2200_push_event(s, ISP2200_ASYNC_LIP_OCCURRED, 0);
+    } else if (s->fw_options[0] & ISP2200_FW_OPT_LIP_RESET_EVENTS) {
+        isp2200_push_event(s, ISP2200_ASYNC_LIP_RESET, 0);
+    }
+    isp2200_push_event(s, ISP2200_ASYNC_LOOP_UP, 0);
+    if (options & ISP2200_ICB_OPT_PORT_DB_EVENTS) {
+        isp2200_push_event(s, ISP2200_ASYNC_PORT_DB_CHANGED,
+                           ISP2200_PORT_DB_GLOBAL);
+    }
+    isp2200_service_posts(s);
+}
+
+static void isp2200_loop_reset(QLogicISP2200State *s)
+{
+    timer_del(s->bringup_timer);
+    s->loop_active = false;
+    s->loop_state = ISP2200_FW_STATE_CONFIG_WAIT;
+    s->has_loop_id = false;
+    s->loop_id = 0;
+    s->bringup_lip_reset = false;
+}
+
+/*
+ * Initialise-firmware starts the loop from its control block. The adapter
+ * takes the requested hard address when it asks for one, the address is
+ * a loop ID and no port holds it, and otherwise the lowest loop ID no
+ * port holds; real loops settle this in loop initialisation, and which
+ * soft address a port then wins is unknown. The choice holds until the
+ * next initialisation or reset.
+ */
+static void isp2200_loop_init(QLogicISP2200State *s)
+{
+    uint16_t options = lduw_le_p(s->icb + ISP2200_ICB_OFF_OPTIONS);
+    uint16_t hard = lduw_le_p(s->icb + ISP2200_ICB_OFF_HARD_ADDR);
+    uint16_t xopts = lduw_le_p(s->icb + ISP2200_ICB_OFF_XOPTIONS);
+    unsigned id;
+
+    isp2200_loop_reset(s);
+    isp2200_drop_bringup_events(s);
+
+    if (xopts & ISP2200_ICB_XOPT_TIMER_MASK) {
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp2200: reduced-completion mode %u is not "
+                      "modelled; every command posts a full status entry\n",
+                      xopts & ISP2200_ICB_XOPT_TIMER_MASK);
+    }
+
+    /* Point-to-point preferred finds no partner and falls back to loop. */
+    switch (ISP2200_ICB_XOPT_CONN(xopts)) {
+    case ISP2200_CONN_LOOP:
+    case ISP2200_CONN_LOOP_PREFERRED:
+    case ISP2200_CONN_P2P_PREFERRED:
+        break;
+    default:
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp2200: connection mode %u leaves the loop "
+                      "down: only a loop is modelled\n",
+                      ISP2200_ICB_XOPT_CONN(xopts));
+        return;
+    }
+
+    if ((options & ISP2200_ICB_OPT_HARD_ADDR) &&
+        hard <= ISP2200_MAX_LOOP_ID && !isp2200_port(s, hard)) {
+        s->has_loop_id = true;
+        s->loop_id = hard;
+    } else {
+        for (id = 0; id <= ISP2200_MAX_LOOP_ID; id++) {
+            if (!isp2200_port(s, id)) {
+                s->has_loop_id = true;
+                s->loop_id = id;
+                break;
+            }
+        }
+    }
+    if (s->has_loop_id) {
+        trace_qlogic_isp2200_loop_id(s->loop_id);
+    }
+
+    s->loop_active = true;
+    isp2200_bringup(s, false);
+}
+
+static uint16_t isp2200_fc_fw_state(QLogicISP2200State *s)
+{
+    return s->loop_state;
+}
+
+/* Detached from hba_private before the unref: the request can outlive us. */
+static void isp2200_free_request(ISP2200Request *req)
+{
+    QLogicISP2200State *s = req->dev;
+
+    QTAILQ_REMOVE(&s->requests, req, next);
+    s->outstanding--;
+    if (req->sreq != NULL) {
+        req->sreq->hba_private = NULL;
+        scsi_req_unref(req->sreq);
+        req->sreq = NULL;
+    }
+    qemu_sglist_destroy(&req->qsg);
+    g_free(req);
+}
+
+static ISP2200Request *isp2200_new_request(QLogicISP2200State *s,
+                                           uint32_t handle)
+{
+    ISP2200Request *req = g_new0(ISP2200Request, 1);
+
+    req->dev = s;
+    req->handle = handle;
+    /* A hint only: a segment list can name 65535. */
+    pci_dma_sglist_init(&req->qsg, PCI_DEVICE(s), 2);
+    QTAILQ_INSERT_TAIL(&s->requests, req, next);
+    s->outstanding++;
+    return req;
+}
+
+/*
+ * Every request in flight, cancelled with no status. A cancellation waits
+ * for its backend, which may finish others on the way, so the head is
+ * taken afresh each time. A request whose callback never comes -- it is
+ * no longer queued in the SCSI layer -- is let go here.
+ */
+static void isp2200_cancel_all(QLogicISP2200State *s)
+{
+    bool was_recovering = s->recovering;
+    ISP2200Request *req;
+
+    s->recovering = true;
+    while ((req = QTAILQ_FIRST(&s->requests)) != NULL) {
+        trace_qlogic_isp2200_request_cancelled(req->handle);
+        if (!req->sreq->enqueued) {
+            isp2200_free_request(req);
+            continue;
+        }
+        scsi_req_cancel(req->sreq);
+    }
+    s->recovering = was_recovering;
+}
+
+/* A walk the recovery held off runs once the recovery is over. */
+static void isp2200_end_recovery(QLogicISP2200State *s, bool was_recovering)
+{
+    s->recovering = was_recovering;
+    if (!s->recovering) {
+        isp2200_service_posts(s);
+        if (s->rqst_recovery_stall) {
+            s->rqst_recovery_stall = false;
+            isp2200_process_requests(s);
+        }
+    }
+}
+
+/*
+ * One segment into the transfer. The segments name the host's buffer and
+ * the command names how much of it the target fills, so only that much
+ * is offered to the SCSI layer; the whole named length still counts
+ * toward the residual.
+ */
+static void isp2200_add_segment(ISP2200Request *req, uint64_t max,
+                                uint64_t base, uint32_t len)
+{
+    uint64_t room = req->described < max ? max - req->described : 0;
+    uint64_t placed = MIN(len, room);
+
+    req->described += len;
+    if (placed > 0) {
+        qemu_sglist_add(&req->qsg, base, placed);
+    }
+}
+
+/*
+ * A command from the host interface onto the loop. A loop ID with no
+ * port, the adapter's own, or one past 0x7d completes "port unavailable"
+ * with no SCSI status; which code real firmware returns is unknown. A
+ * port without the LUN answers through the SCSI layer's target-level
+ * handling, as an FCP target with a missing LUN does, and a LUN past 255
+ * gets the same CHECK CONDITION without reaching it.
+ */
 static void isp2200_fc_submit(QLogicISP2200State *s, ISP2200Command *cmd)
 {
+    SCSIDevice *sdev = NULL;
+    ISP2200Request *req;
+    uint64_t described = 0;
     uint32_t i;
 
     trace_qlogic_isp2200_submit(cmd->handle, cmd->loop_id, cmd->lun,
@@ -675,23 +1131,351 @@ static void isp2200_fc_submit(QLogicISP2200State *s, ISP2200Command *cmd)
     s->fc_submissions++;
     g_free(s->fc_last.segs);
     s->fc_last = *cmd;
-    s->fc_last_bytes = 0;
+    s->fc_last.segs = NULL;
     for (i = 0; i < cmd->nsegs; i++) {
-        s->fc_last_bytes += cmd->segs[i].len;
+        described += cmd->segs[i].len;
     }
-    cmd->segs = NULL;
+    s->fc_last_bytes = described;
 
-    isp2200_complete(s, s->fc_last.handle, 0,
-                     ISP2200_COMPLETION_PORT_UNAVAILABLE, 0, NULL, 0);
+    /* The LUN's device, or another of the port's when it has no such LUN. */
+    if (isp2200_target(s, cmd->loop_id)) {
+        sdev = scsi_device_find(&s->bus, 0, cmd->loop_id, cmd->lun);
+    }
+    if (!sdev) {
+        isp2200_complete(s, cmd->handle, 0,
+                         ISP2200_COMPLETION_PORT_UNAVAILABLE, 0, NULL, 0);
+        goto out;
+    }
+
+    if (cmd->lun > ISP2200_MAX_LUN) {
+        uint8_t sense[SCSI_SENSE_LEN];
+        int sense_len = scsi_build_sense(sense,
+                                         SENSE_CODE(LUN_NOT_SUPPORTED));
+
+        isp2200_complete(s, cmd->handle,
+                         CHECK_CONDITION | ISP2200_SCSI_STATUS_SENSE_VALID |
+                         (described ? ISP2200_SCSI_STATUS_RESID_UNDER : 0),
+                         ISP2200_COMPLETION_COMPLETE,
+                         MIN(described, UINT32_MAX), sense, sense_len);
+        goto out;
+    }
+
+    req = isp2200_new_request(s, cmd->handle);
+    /* The command first: its length is what caps the segments. */
+    req->sreq = scsi_req_new(sdev, cmd->handle, cmd->lun, cmd->cdb,
+                             sizeof(cmd->cdb), req);
+    for (i = 0; i < cmd->nsegs; i++) {
+        isp2200_add_segment(req, req->sreq->cmd.xfer, cmd->segs[i].addr,
+                            cmd->segs[i].len);
+    }
+    /* Enqueueing may complete the request and free the wrapper. */
+    if (scsi_req_enqueue(req->sreq)) {
+        scsi_req_continue(req->sreq);
+    }
+
+out:
+    g_free(cmd->segs);
+    cmd->segs = NULL;
 }
 
+/*
+ * Completion precedence, following what the two drivers decode rather
+ * than any firmware evidence: a SCSI status other than GOOD completes
+ * 0x0000 carrying the status and any sense, with residual-under when the
+ * transfer was short; GOOD and short is underrun 0x0015; GOOD and whole
+ * is 0x0000 with no flags.
+ */
+static void isp2200_scsi_complete(SCSIRequest *sreq, size_t resid)
+{
+    ISP2200Request *req = sreq->hba_private;
+    QLogicISP2200State *s = req->dev;
+    uint8_t sense[SCSI_SENSE_BUF_SIZE];
+    uint32_t handle = req->handle;
+    uint16_t scsi_status = 0, completion = ISP2200_COMPLETION_COMPLETE;
+    uint64_t unused;
+    int sense_len = 0;
+
+    /*
+     * A buffered transfer counts successful DMA; a direct one, offered
+     * only for a write shorter than its command, leaves the count to the
+     * SCSI layer. Segments beyond the command's length stay unfilled.
+     */
+    if (sreq->sg) {
+        unused = resid;
+        if (req->described > sreq->cmd.xfer) {
+            unused += req->described - sreq->cmd.xfer;
+        }
+    } else {
+        unused = MAX(req->described, sreq->cmd.xfer) - req->transferred;
+    }
+
+    if (sreq->status != GOOD) {
+        scsi_status = sreq->status & 0xff;
+        sense_len = scsi_req_get_sense(sreq, sense, sizeof(sense));
+        if (sense_len > 0) {
+            scsi_status |= ISP2200_SCSI_STATUS_SENSE_VALID;
+        } else {
+            sense_len = 0;
+        }
+    } else if (unused) {
+        completion = ISP2200_COMPLETION_UNDERRUN;
+    }
+    if (unused) {
+        scsi_status |= ISP2200_SCSI_STATUS_RESID_UNDER;
+    }
+
+    /* Out of the budget before the entry joins it. */
+    isp2200_free_request(req);
+    isp2200_complete(s, handle, scsi_status, completion,
+                     MIN(unused, UINT32_MAX), sense, sense_len);
+}
+
+/* A cancellation posts nothing: whoever cancelled owes the host nothing. */
+static void isp2200_scsi_cancel(SCSIRequest *sreq)
+{
+    ISP2200Request *req = sreq->hba_private;
+
+    if (req != NULL) {
+        isp2200_free_request(req);
+    }
+}
+
+static void isp2200_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
+{
+    ISP2200Request *req = sreq->hba_private;
+    QLogicISP2200State *s = req->dev;
+    uint8_t *buf = scsi_req_get_buf(sreq);
+    uint32_t offset = 0;
+
+    while (offset < len && req->sg_index < req->qsg.nsg) {
+        ScatterGatherEntry *sg = &req->qsg.sg[req->sg_index];
+        uint32_t count = MIN(len - offset, sg->len - req->sg_offset);
+        dma_addr_t addr = sg->base + req->sg_offset;
+        MemTxResult result;
+
+        if (sreq->cmd.mode == SCSI_XFER_FROM_DEV) {
+            result = isp2200_dma_write(s, addr, buf + offset, count);
+        } else {
+            result = isp2200_dma_read(s, addr, buf + offset, count);
+        }
+        /* No completion code for this is known; the command stays out. */
+        if (result != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "qlogic-isp2200: data transfer for handle 0x%08x "
+                          "refused; the command waits for an abort or "
+                          "reset\n", req->handle);
+            return;
+        }
+        req->transferred += count;
+        req->sg_offset += count;
+        offset += count;
+        if (req->sg_offset == sg->len) {
+            req->sg_index++;
+            req->sg_offset = 0;
+        }
+    }
+
+    /* A read may drain target bytes beyond the host's buffer. */
+    if (offset < len && sreq->cmd.mode == SCSI_XFER_TO_DEV) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp2200: write buffer for handle 0x%08x "
+                      "exhausted\n", req->handle);
+        return;
+    }
+    /* Continuing may complete and free the wrapper. */
+    scsi_req_continue(sreq);
+}
+
+/*
+ * A write shorter than its command goes direct, so the target's own
+ * buffer is not padded; everything else is buffered through
+ * isp2200_scsi_transfer_data().
+ */
+static QEMUSGList *isp2200_scsi_get_sg_list(SCSIRequest *sreq)
+{
+    ISP2200Request *req = sreq->hba_private;
+
+    if (sreq->cmd.mode == SCSI_XFER_TO_DEV &&
+        req->qsg.size < sreq->cmd.xfer) {
+        return &req->qsg;
+    }
+    return NULL;
+}
+
+/* The ID list: four bytes per port, AL_PA, area 0, domain 0, loop ID. */
+static uint16_t isp2200_get_id_list(QLogicISP2200State *s, const uint16_t *in,
+                                    uint16_t *out)
+{
+    /* Its own split: m1 bits 31:16, m2 15:0, m3 63:48, m6 47:32. */
+    uint64_t addr = ((uint64_t)in[3] << 48) | ((uint64_t)in[6] << 32) |
+                    ((uint64_t)in[1] << 16) | in[2];
+    uint8_t list[(ISP2200_MAX_LOOP_ID + 1) * ISP2200_ID_LIST_ENTRY];
+    unsigned id, n = 0;
+
+    if (!isp2200_loop_ready(s)) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    for (id = 0; id <= ISP2200_MAX_LOOP_ID; id++) {
+        uint8_t *e = list + n * ISP2200_ID_LIST_ENTRY;
+
+        if (!isp2200_target(s, id)) {
+            continue;
+        }
+        e[0] = isp2200_alpa[id];
+        e[1] = 0;
+        e[2] = 0;
+        e[3] = id;
+        n++;
+    }
+    if (n && isp2200_dma_write(s, addr, list, n * ISP2200_ID_LIST_ENTRY) !=
+        MEMTX_OK) {
+        return ISP2200_MBOX_HOST_INTERFACE_ERROR;
+    }
+    out[1] = n;
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/*
+ * OpenBSD's port name list: ten bytes per port, the port name then the
+ * loop ID as a little-endian word. OpenBSD decodes this name as a
+ * little-endian integer but the port database's as big-endian, and
+ * compares the two; the name goes here with its wire-order bytes
+ * reversed so both decodes agree. The real firmware's order is unknown.
+ */
+static uint16_t isp2200_port_name_list(QLogicISP2200State *s,
+                                       const uint16_t *in, uint16_t *out)
+{
+    uint8_t list[(ISP2200_MAX_LOOP_ID + 1) * ISP2200_NAME_LIST_ENTRY];
+    unsigned id, n = 0;
+
+    if (!isp2200_loop_ready(s)) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    if (in[1] & ~ISP2200_NAME_LIST_OPTIONS) {
+        return ISP2200_MBOX_PARAM_ERROR;
+    }
+    for (id = 0; id <= ISP2200_MAX_LOOP_ID; id++) {
+        SCSIDevice *sdev = isp2200_target(s, id);
+        uint8_t *e = list + n * ISP2200_NAME_LIST_ENTRY;
+
+        if (!sdev) {
+            continue;
+        }
+        stq_le_p(e, sdev->port_wwn);
+        stw_le_p(e + 8, id);
+        n++;
+    }
+    if (n && isp2200_dma_write(s, isp2200_mbox_addr(in), list,
+                               n * ISP2200_NAME_LIST_ENTRY) != MEMTX_OK) {
+        return ISP2200_MBOX_HOST_INTERFACE_ERROR;
+    }
+    out[1] = n * ISP2200_NAME_LIST_ENTRY;
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/*
+ * One port's database entry. Every present port is logged in with the
+ * FCP target role and class 3 only; the bytes not set here are zero.
+ */
+static uint16_t isp2200_get_port_db(QLogicISP2200State *s, const uint16_t *in)
+{
+    unsigned id = in[1] >> 8;
+    SCSIDevice *sdev = isp2200_target(s, id);
+    uint8_t pd[ISP2200_PDB_SIZE] = { 0 };
+
+    if (!isp2200_loop_ready(s) || !sdev) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    pd[ISP2200_PDB_OFF_MASTER] = ISP2200_PDB_LOGGED_IN;
+    pd[ISP2200_PDB_OFF_SLAVE] = ISP2200_PDB_LOGGED_IN;
+    pd[ISP2200_PDB_OFF_HARD_ADDR] = isp2200_alpa[id];
+    /* Domain, a reserved byte, AL_PA, area. */
+    pd[ISP2200_PDB_OFF_PORT_ID + 2] = isp2200_alpa[id];
+    stq_be_p(pd + ISP2200_PDB_OFF_NODE_NAME, sdev->wwn);
+    stq_be_p(pd + ISP2200_PDB_OFF_PORT_NAME, sdev->port_wwn);
+    /* Both drivers find the target role in the low byte. */
+    pd[ISP2200_PDB_OFF_PRLI_SVC3] = ISP2200_PDB_TARGET_ROLE;
+    stw_le_p(pd + ISP2200_PDB_OFF_LOOP_ID, id);
+
+    if (isp2200_dma_write(s, isp2200_mbox_addr(in), pd, sizeof(pd)) !=
+        MEMTX_OK) {
+        return ISP2200_MBOX_HOST_INTERFACE_ERROR;
+    }
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/*
+ * The position map: the count with the adapter, the adapter's AL_PA, then
+ * the ports' in loop ID order. A real map follows loop position; the
+ * order here is a model choice, and Linux reads only the count.
+ */
+static uint16_t isp2200_position_map(QLogicISP2200State *s,
+                                     const uint16_t *in)
+{
+    uint8_t map[ISP2200_POSITION_MAP_SIZE] = { 0 };
+    unsigned id, n = 1;
+
+    if (!isp2200_loop_ready(s)) {
+        return ISP2200_MBOX_COMMAND_ERROR;
+    }
+    map[1] = isp2200_alpa[s->loop_id];
+    for (id = 0; id <= ISP2200_MAX_LOOP_ID; id++) {
+        if (isp2200_target(s, id)) {
+            map[1 + n++] = isp2200_alpa[id];
+        }
+    }
+    map[0] = n;
+    if (isp2200_dma_write(s, isp2200_mbox_addr(in), map, sizeof(map)) !=
+        MEMTX_OK) {
+        return ISP2200_MBOX_HOST_INTERFACE_ERROR;
+    }
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/*
+ * The loop commands. Each refusal's code is a model choice: the public
+ * definitions name the codes but not which refusal returns which.
+ */
 static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
                                    const uint16_t *in, uint16_t *out)
 {
-    qemu_log_mask(LOG_UNIMP,
-                  "qlogic-isp2200: loop command 0x%04x refused: no Fibre "
-                  "Channel service is attached\n", cmd);
-    return ISP2200_MBOX_INVALID;
+    switch (cmd) {
+    case ISP2200_MBOX_GET_ADAPTER_ID:
+        if (!isp2200_loop_ready(s)) {
+            out[1] = ISP2200_ADAPTER_ID_NOT_READY;
+            return ISP2200_MBOX_COMMAND_ERROR;
+        }
+        /* m2 AL_PA and area 0, m3 domain 0, m6 topology 0: private loop. */
+        out[1] = s->loop_id;
+        out[2] = isp2200_alpa[s->loop_id];
+        return ISP2200_MBOX_COMPLETE;
+
+    case ISP2200_MBOX_GET_ID_LIST:
+        return isp2200_get_id_list(s, in, out);
+
+    case ISP2200_MBOX_PORT_NAME_LIST:
+        return isp2200_port_name_list(s, in, out);
+
+    case ISP2200_MBOX_GET_PORT_DB:
+        return isp2200_get_port_db(s, in);
+
+    case ISP2200_MBOX_POSITION_MAP:
+        return isp2200_position_map(s, in);
+
+    case ISP2200_MBOX_INITIATE_LIP:
+    case ISP2200_MBOX_FULL_LOGIN_LIP:
+        if (!s->loop_active) {
+            return ISP2200_MBOX_COMMAND_ERROR;
+        }
+        isp2200_bringup(s, false);
+        return ISP2200_MBOX_COMPLETE;
+
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "qlogic-isp2200: loop command 0x%04x not modelled\n",
+                      cmd);
+        return ISP2200_MBOX_INVALID;
+    }
 }
 
 static bool isp2200_fc_owned(uint16_t cmd)
@@ -712,7 +1496,7 @@ static bool isp2200_deferred(uint16_t cmd)
 {
     switch (cmd) {
     case 0x0010: case 0x0011: case 0x0014: case 0x0015: case 0x0016:
-    case 0x0017: case 0x0018: case 0x0042:
+    case 0x0017: case 0x0018: case 0x0022: case 0x0042:
         return true;
     default:
         return false;
@@ -843,8 +1627,10 @@ static uint16_t isp2200_init_firmware(QLogicISP2200State *s,
 
     /*
      * A re-initialisation replaces the rings; completions held for the
-     * old ones would land in the new ones under stale handles.
+     * old ones, or still to come from commands in flight, would land in
+     * the new ones under stale handles.
      */
+    isp2200_cancel_all(s);
     s->held_head = 0;
     s->held_count = 0;
 
@@ -858,6 +1644,8 @@ static uint16_t isp2200_init_firmware(QLogicISP2200State *s,
     s->rqst_out = 0;
     s->resp_in = 0;
     s->resp_out = 0;
+
+    isp2200_loop_init(s);
     return ISP2200_MBOX_COMPLETE;
 }
 
@@ -1090,8 +1878,9 @@ static void isp2200_command_entry(QLogicISP2200State *s, const uint8_t *req,
 /*
  * The adapter consumes the request ring as fast as the host fills it, so
  * the ring is never seen full. It stops short only when the entry's
- * continuations are not all published yet, when a read is refused, or
- * when the announced command budget is held waiting for the host.
+ * continuations are not all published yet, when a read is refused, when
+ * a recovery is cancelling requests, or when the announced command budget
+ * -- commands in flight plus completions waiting to post -- is used up.
  */
 static void isp2200_consume_requests(QLogicISP2200State *s)
 {
@@ -1105,7 +1894,11 @@ static void isp2200_consume_requests(QLogicISP2200State *s)
         unsigned consumed = 1;
         uint8_t count;
 
-        if (s->held_count >= ISP2200_HELD_MAX) {
+        if (s->recovering) {
+            s->rqst_recovery_stall = true;
+            return;
+        }
+        if (s->outstanding + s->held_count >= ISP2200_MAX_OUTSTANDING) {
             s->rqst_budget_stall = true;
             return;
         }
@@ -1431,8 +2224,10 @@ static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
                           val & ~(ISP2200_CSR_SOFT_RESET |
                                   ISP2200_CSR_BANK_MASK));
         }
+        /* The loop's devices see the reset too. */
         if (val & ISP2200_CSR_SOFT_RESET) {
             isp2200_soft_reset(s);
+            bus_cold_reset(BUS(&s->bus));
         }
         s->csr = val & ISP2200_CSR_BANK_MASK;
         break;
@@ -1503,6 +2298,185 @@ static const MemoryRegionOps isp2200_reg_ops = {
     },
 };
 
+/* The HBA half of a request in flight; the shape is qlogic-isp's. */
+static void isp2200_save_request(QEMUFile *f, SCSIRequest *sreq)
+{
+    ISP2200Request *req = sreq->hba_private;
+    int i;
+
+    qemu_put_be32(f, req->handle);
+    qemu_put_be32(f, sreq->dev->id);
+    qemu_put_be32(f, sreq->lun);
+    qemu_put_be32(f, req->qsg.nsg);
+    for (i = 0; i < req->qsg.nsg; i++) {
+        qemu_put_be64(f, req->qsg.sg[i].base);
+        qemu_put_be64(f, req->qsg.sg[i].len);
+    }
+    qemu_put_be64(f, req->described);
+    qemu_put_be64(f, req->transferred);
+    qemu_put_be32(f, req->sg_index);
+    qemu_put_be64(f, req->sg_offset);
+}
+
+/*
+ * The checks keep a stream that does not describe a request this build
+ * could have made from reaching the transfer path. The callback has no
+ * failure return, so a bad stream is marked failed and the wrapper left
+ * consistent for teardown.
+ */
+static void *isp2200_load_request(QEMUFile *f, SCSIRequest *sreq)
+{
+    QLogicISP2200State *s = container_of(sreq->bus, QLogicISP2200State, bus);
+    ISP2200Request *req;
+    uint32_t loop_id, lun, n, i;
+    uint64_t transferred;
+
+    req = isp2200_new_request(s, qemu_get_be32(f));
+    scsi_req_ref(sreq);
+    req->sreq = sreq;
+
+    loop_id = qemu_get_be32(f);
+    lun = qemu_get_be32(f);
+    n = qemu_get_be32(f);
+    if (loop_id != sreq->dev->id || lun != sreq->lun ||
+        n > UINT16_MAX || qemu_file_get_error(f)) {
+        qemu_file_set_error(f, -EINVAL);
+        return req;
+    }
+    for (i = 0; i < n; i++) {
+        uint64_t base = qemu_get_be64(f);
+        uint64_t len = qemu_get_be64(f);
+
+        if (!len || req->qsg.size > sreq->cmd.xfer ||
+            len > sreq->cmd.xfer - req->qsg.size ||
+            base > UINT64_MAX - len || qemu_file_get_error(f)) {
+            qemu_file_set_error(f, -EINVAL);
+            return req;
+        }
+        qemu_sglist_add(&req->qsg, base, len);
+    }
+    req->described = qemu_get_be64(f);
+    req->transferred = qemu_get_be64(f);
+    req->sg_index = qemu_get_be32(f);
+    req->sg_offset = qemu_get_be64(f);
+    if (req->described < req->qsg.size || req->sg_index > req->qsg.nsg ||
+        (req->sg_index == req->qsg.nsg ? req->sg_offset != 0 :
+         req->sg_offset >= req->qsg.sg[req->sg_index].len)) {
+        qemu_file_set_error(f, -EINVAL);
+        return req;
+    }
+    transferred = req->sg_offset;
+    for (i = 0; i < req->sg_index; i++) {
+        transferred += req->qsg.sg[i].len;
+    }
+    if (transferred != req->transferred || qemu_file_get_error(f)) {
+        qemu_file_set_error(f, -EINVAL);
+    }
+    return req;
+}
+
+static const struct SCSIBusInfo isp2200_scsi_info = {
+    .tcq = false,
+    .max_channel = 0,
+    .max_target = ISP2200_MAX_LOOP_ID,
+    .max_lun = ISP2200_MAX_LUN,
+    .get_sg_list = isp2200_scsi_get_sg_list,
+    .transfer_data = isp2200_scsi_transfer_data,
+    .complete = isp2200_scsi_complete,
+    .cancel = isp2200_scsi_cancel,
+    .save_request = isp2200_save_request,
+    .load_request = isp2200_load_request,
+};
+
+/*
+ * A device joins the loop as a LUN of the port at its target number. A
+ * port needs both names -- the drivers match ports by them, and inventing
+ * names would be worse than refusing -- and every LUN of one port carries
+ * the same pair, no other port has its port name, and the adapter's own
+ * loop ID is not a port's. The other devices are walked, not looked up:
+ * the one being plugged is on the bus already, not yet realized.
+ */
+static void isp2200_pre_plug(const HotplugHandler *hotplug_dev,
+                             DeviceState *dev, Error **errp)
+{
+    QLogicISP2200State *s = QLOGIC_ISP2200(hotplug_dev);
+    SCSIDevice *sdev = SCSI_DEVICE(dev);
+    BusChild *kid;
+
+    if (sdev->id == -1) {
+        error_setg(errp, "a loop port needs an explicit scsi-id: it is the "
+                   "port's loop ID");
+        return;
+    }
+    if (!sdev->port_wwn) {
+        error_setg(errp, "the port at loop ID %u needs a nonzero port_wwn",
+                   sdev->id);
+        return;
+    }
+    if (!sdev->wwn) {
+        error_setg(errp, "the port at loop ID %u needs a nonzero node name, "
+                   "wwn", sdev->id);
+        return;
+    }
+    if (s->has_loop_id && sdev->id == s->loop_id) {
+        error_setg(errp, "loop ID %u is the adapter's own", sdev->id);
+        return;
+    }
+
+    QTAILQ_FOREACH(kid, &s->bus.qbus.children, sibling) {
+        SCSIDevice *other = SCSI_DEVICE(kid->child);
+
+        if (other == sdev) {
+            continue;
+        }
+        if (other->id == sdev->id &&
+            (other->port_wwn != sdev->port_wwn || other->wwn != sdev->wwn)) {
+            error_setg(errp, "the port at loop ID %u is named port 0x%016"
+                       PRIx64 " node 0x%016" PRIx64 ", and every LUN of a "
+                       "port carries its names", other->id, other->port_wwn,
+                       other->wwn);
+            return;
+        }
+        if (other->id != sdev->id && other->port_wwn == sdev->port_wwn) {
+            error_setg(errp, "port_wwn 0x%016" PRIx64 " already names the "
+                       "port at loop ID %u", sdev->port_wwn, other->id);
+            return;
+        }
+    }
+}
+
+/* A device that makes a new port changes the loop; another LUN does not. */
+static void isp2200_plug(const HotplugHandler *hotplug_dev, DeviceState *dev,
+                         Error **errp)
+{
+    QLogicISP2200State *s = QLOGIC_ISP2200(hotplug_dev);
+
+    if (!isp2200_port(s, SCSI_DEVICE(dev)->id)) {
+        isp2200_bringup(s, false);
+    }
+}
+
+/*
+ * Removing a device purges its requests and drains its backend; a command
+ * finishing on another port in that drain must not start the request
+ * ring while the purge is under way. Removing a port's last LUN takes the
+ * port off the loop, which comes up again without it.
+ */
+static void isp2200_unplug(const HotplugHandler *hotplug_dev,
+                           DeviceState *dev, Error **errp)
+{
+    QLogicISP2200State *s = QLOGIC_ISP2200(hotplug_dev);
+    bool was_recovering = s->recovering;
+    int id = SCSI_DEVICE(dev)->id;
+
+    s->recovering = true;
+    qdev_simple_device_unplug_cb(hotplug_dev, dev, errp);
+    if (!isp2200_port(s, id)) {
+        isp2200_bringup(s, false);
+    }
+    isp2200_end_recovery(s, was_recovering);
+}
+
 static void isp2200_realize(PCIDevice *dev, Error **errp)
 {
     QLogicISP2200State *s = QLOGIC_ISP2200(dev);
@@ -1517,12 +2491,19 @@ static void isp2200_realize(PCIDevice *dev, Error **errp)
 
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
     pci_register_bar(dev, 1, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
+
+    s->bringup_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, isp2200_bringup_done,
+                                    s);
+    scsi_bus_init(&s->bus, sizeof(s->bus), DEVICE(dev), &isp2200_scsi_info);
+    qbus_set_hotplug_handler(BUS(&s->bus), OBJECT(dev));
 }
 
+/* Unrealizing the loop's devices has already cancelled their requests. */
 static void isp2200_exit(PCIDevice *dev)
 {
     QLogicISP2200State *s = QLOGIC_ISP2200(dev);
 
+    timer_free(s->bringup_timer);
     g_free(s->fc_last.segs);
     s->fc_last.segs = NULL;
 }
@@ -1548,6 +2529,8 @@ static char *isp2200_get_fc_last(Object *obj, Error **errp)
 static void isp2200_instance_init(Object *obj)
 {
     QLogicISP2200State *s = QLOGIC_ISP2200(obj);
+
+    QTAILQ_INIT(&s->requests);
 
     object_property_add_uint32_ptr(obj, "x-fc-submissions",
                                    &s->fc_submissions, OBJ_PROP_FLAG_READ);
@@ -1576,11 +2559,34 @@ static bool isp2200_rings_valid(void *opaque, int version_id)
            s->resp_in < s->resp_len && s->resp_out < s->resp_len;
 }
 
+static bool isp2200_loop_valid(void *opaque, int version_id)
+{
+    QLogicISP2200State *s = opaque;
+
+    switch (s->loop_state) {
+    case ISP2200_FW_STATE_CONFIG_WAIT:
+    case ISP2200_FW_STATE_WAIT_AL_PA:
+    case ISP2200_FW_STATE_READY:
+        break;
+    default:
+        return false;
+    }
+    return s->loop_id <= ISP2200_MAX_LOOP_ID &&
+           (s->has_loop_id || s->loop_state != ISP2200_FW_STATE_READY);
+}
+
+/*
+ * The loop itself is not in the stream: it is the bus's devices, which a
+ * matching configuration makes the same. An adapter loop ID one of them
+ * holds is a mismatched configuration.
+ */
 static int isp2200_post_load(void *opaque, int version_id)
 {
     QLogicISP2200State *s = opaque;
 
-    s->rqst_budget_stall = s->held_count >= ISP2200_HELD_MAX;
+    if (s->has_loop_id && isp2200_port(s, s->loop_id)) {
+        return -EINVAL;
+    }
     isp2200_update_irq(s);
     return 0;
 }
@@ -1637,6 +2643,14 @@ static const VMStateDescription vmstate_isp2200 = {
                          isp2200_counts_valid),
         VMSTATE_UINT8_2DARRAY(held, QLogicISP2200State, ISP2200_HELD_MAX,
                               ISP2200_ENTRY_SIZE),
+        VMSTATE_BOOL(rqst_budget_stall, QLogicISP2200State),
+        VMSTATE_BOOL(loop_active, QLogicISP2200State),
+        VMSTATE_UINT16(loop_state, QLogicISP2200State),
+        VMSTATE_BOOL(has_loop_id, QLogicISP2200State),
+        VMSTATE_UINT8(loop_id, QLogicISP2200State),
+        VMSTATE_VALIDATE("loop state and loop ID", isp2200_loop_valid),
+        VMSTATE_BOOL(bringup_lip_reset, QLogicISP2200State),
+        VMSTATE_TIMER_PTR(bringup_timer, QLogicISP2200State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1646,6 +2660,7 @@ static void isp2200_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
 
     pc->realize = isp2200_realize;
     pc->exit = isp2200_exit;
@@ -1655,6 +2670,9 @@ static void isp2200_class_init(ObjectClass *oc, const void *data)
     pc->subsystem_id = ISP2200_SUBSYSTEM_ID;
     pc->class_id = ISP2200_CLASS_FIBRE_CHANNEL;
     rc->phases.hold = isp2200_reset_hold;
+    hc->pre_plug = isp2200_pre_plug;
+    hc->plug = isp2200_plug;
+    hc->unplug = isp2200_unplug;
     dc->desc = "QLogic ISP2200 Fibre Channel host adapter";
     dc->vmsd = &vmstate_isp2200;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
@@ -1668,6 +2686,7 @@ static const TypeInfo isp2200_info = {
     .class_init = isp2200_class_init,
     .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+        { TYPE_HOTPLUG_HANDLER },
         { },
     },
 };

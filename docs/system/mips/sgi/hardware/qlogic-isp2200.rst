@@ -31,24 +31,17 @@ content.
 Service boundary
 ================
 
-The adapter has two halves. This device is the host interface: PCI,
-registers, mailboxes, semaphore, interrupt, controller RAM, the
-initialisation control block, the rings and their entry formats, and the
-delivery of asynchronous events. The Fibre Channel side -- firmware state,
-loop, port database, logins and whatever answers behind a loop ID -- is a
-separate service that the host interface reaches in four places: the Get
+The adapter has two halves. The host interface is PCI, registers,
+mailboxes, semaphore, interrupt, controller RAM, the initialisation
+control block, the rings and their entry formats, and the delivery of
+asynchronous events. The Fibre Channel side -- firmware state, loop,
+port database and whatever answers behind a loop ID -- is a loop
+service that the host interface reaches in four places: the Get
 Firmware State answer, the submission of one SCSI command, the loop
-mailbox commands, and the events the service posts.
+mailbox commands, and the events the service posts. The service is a
+private loop kept inside the device; see `Private loop`_.
 
-No service is attached yet, so the adapter is *disconnected*. Get
-Firmware State reports configuration wait (0), never ready; every
-submitted command completes with completion status ``0x0028``, port
-unavailable; and every loop command (``0x20``, ``0x40``, ``0x41``,
-``0x47``, ``0x62``-``0x64``, ``0x6a``-``0x6c``, ``0x6e``, ``0x6f``,
-``0x71``, ``0x72``, ``0x74``, ``0x75``, ``0x7c``) answers ``0x4001``.
-What a real part reports with no cable is unknown.
-
-For qtests, the stand-in service records what reached it. The device
+For qtests, the device records what reached the loop service. It
 exposes two read-only QOM properties that are not part of the guest
 interface and are not migrated: ``x-fc-submissions`` counts submitted
 commands, and ``x-fc-last-submission`` describes the last one (handle,
@@ -210,7 +203,7 @@ Command    Name                   Model
 ``0x28``   Get firmware options   The stored m1..m3, zero after reset
 ``0x38``   Set firmware options   Stores m1..m3; changes nothing else
 ``0x60``   Initialise firmware    See below
-``0x69``   Get firmware state     m1 from the service: 0 when disconnected
+``0x69``   Get firmware state     m1 the loop state, see `Private loop`_
 =========  =====================  ======================================
 
 The DMA address of the RAM load and of INIT_FIRMWARE is split m2 =
@@ -225,9 +218,10 @@ algorithm is unknown; this follows the SCSI parts. The firmware version
 is a model constant, not a vendor release, and the attributes report
 expanded-LUN addressing only.
 
-Abort, device and bus reset (``0x15``-``0x18``), resource counts
-(``0x42``), stop firmware (``0x14``) and the SCSI parts' queue setup
-(``0x10``, ``0x11``) answer ``0x4001`` and are logged as unimplemented.
+Abort, device and bus reset (``0x15``-``0x18``), get retry count
+(``0x22``), resource counts (``0x42``), stop firmware (``0x14``) and the
+SCSI parts' queue setup (``0x10``, ``0x11``) answer ``0x4001`` and are
+logged as unimplemented. The loop commands are under `Private loop`_.
 Unknown commands answer ``0x4001`` and are logged as guest errors.
 
 Initialisation control block
@@ -241,8 +235,11 @@ It refuses with ``0x4002`` a block it cannot read, and with ``0x4006``
 a version other than 1, a zero length, a zero base or the fast-post
 option, which would need completion events this model does not post.
 A reduced-interrupt timer mode -- Linux asks for mode 4 on this part --
-is accepted and ignored: every completion is an ordinary status entry.
-Re-initialising drops completions still held for the previous rings.
+is accepted, logged as unimplemented and ignored: every completion is an
+ordinary status entry. Re-initialising drops completions still held for
+the previous rings and cancels, without status, every command still in
+flight, whose completion would otherwise land in the new rings under a
+stale handle. It also restarts the loop.
 
 Rings and entries
 =================
@@ -319,12 +316,185 @@ adds nothing while an identical one is still queued: the queued one
 already reports the failure. A guest that keeps retrying a refused ring
 therefore sees one event per release, and the queue cannot overflow.
 
+Private loop
+============
+
+Firmware hides Fibre Channel from the host, which sees mailboxes and
+rings and never a frame. The model therefore keeps a private
+arbitrated loop inside the device rather than a Fibre Channel
+subsystem. Frames, CRC, exchanges, ordered sets, the loop
+initialisation phases, port and process login, fabric services,
+point-to-point, link speed and link timing are not modelled. Everything
+below is a reading of what the public drivers expect -- mainly OpenBSD
+``qla``, with Linux ``qla2xxx`` where it agrees -- and not firmware
+evidence.
+
+Ports
+-----
+
+The adapter has one SCSI bus, ``<id>.0``, taking SCSI targets 0 to
+0x7d and LUNs 0 to 255; both drivers treat loop IDs 0 to 0x7d as loop
+ports and 0x7e up as fabric and special ports. A device at target *n*
+is a LUN of the loop port at loop ID *n*. The port's names are the
+device's ``port_wwn`` and ``wwn`` properties, which ``scsi-hd`` also
+reports in its device identification page, so one identity serves the
+loop and the disk. A plug is refused unless the device gives an
+explicit ``scsi-id``, both names are nonzero, every LUN at that loop ID
+carries the same two names, no other loop ID has the same port name and
+the loop ID is not the adapter's own. Every port is logged in and has
+the FCP target role; the loop holds no initiators and no ports that
+refuse login.
+
+A port's AL_PA follows from its loop ID by the standard table, ``0xef``
+at loop ID 0 down to ``0x01`` at 0x7d (NetBSD ``sys/dev/ic/isp.c``
+gives the same table; the value set matches the AL_PA list in Emulex
+publication 860-0227-001, which does not give the order). A private
+loop has domain and area 0, so a port ID is its AL_PA alone.
+
+The adapter's own loop ID is chosen when initialise-firmware runs. It
+takes the control block's hard address (offset 20) when option bit 0
+asks for it, the value is at most 0x7d and no port holds it; otherwise
+the lowest loop ID no port holds. Real loops settle this during loop
+initialisation; which address a port wins there is unknown. The choice
+holds until the next initialise-firmware or reset. With every loop ID
+taken the adapter has none, and the loop never comes up.
+
+Loop state
+----------
+
+Get Firmware State reports 0 (configuration wait) from reset until
+initialise-firmware, 1 (waiting for AL_PA) while the loop comes up, and
+3 (ready) after. The other states are never reported. The loop comes up
+a fixed 100 ms of virtual time after initialise-firmware, a host LIP
+(``0x62`` or ``0x72``), a plug that makes a new port or the unplug of a
+port's last LUN. The time is a model constant chosen so a test can see
+state 1; real loop initialisation time is unknown. A new trigger
+restarts the wait.
+
+Extended options bits 6:4 (control block offset 64) choose the
+connection. Loop only (0), loop preferred (2) and point-to-point
+preferred (3) bring up the loop; with no point-to-point partner mode 3
+falls back to loop. Point-to-point only (1) and the undefined values
+leave state 0, post nothing and log a guest error.
+
+When the loop comes up the model posts, in order: LIP occurred
+``0x8010``, loop up ``0x8011``, and, when control block option
+``0x0100`` is set, port database changed ``0x8014`` with m1 ``0xffff``,
+which Linux reads as a change to every port. Every other payload word
+is zero; nothing public gives them a meaning on this part. The real
+sequence and any coalescing are unknown. Loop down ``0x8012`` is never
+posted: the model has no link to lose. A trigger takes back every event
+an earlier bring-up queued and has not yet posted, so the queue holds at
+most one bring-up's three; an event already posted stays until the host
+releases it. With the two events the host interface raises itself, at
+most five events ever wait, and the eight-entry queue cannot overflow.
+
+Loop commands
+-------------
+
+=========  =====================  ======================================
+Command    Name                   Model
+=========  =====================  ======================================
+``0x20``   Get adapter ID         Ready: m1 loop ID, m2 AL_PA (area 0
+                                  above it), m3 domain 0, m6 topology 0
+                                  (private loop), m7 0. Not ready:
+                                  ``0x4005`` with m1 7, the value Linux
+                                  reads as a loop in transition
+``0x62``   Initiate LIP           ``0x4000`` and the loop comes up again;
+``0x72``   Full login LIP         ``0x4005`` before a loop exists
+``0x63``   Position map           Mapping D, 128 bytes: the port count
+                                  including the adapter, the adapter's
+                                  AL_PA, then the ports' in loop ID
+                                  order, then zeros
+``0x64``   Get port database      m1 loop ID in its high byte, mapping
+                                  D, 128 bytes (below)
+``0x75``   Port name list         m1 options, mapping D: 10 bytes per
+                                  port, m1 the byte count
+``0x7c``   Get ID list            Address m1 31:16, m2 15:0, m3 63:48,
+                                  m6 47:32: 4 bytes per port, m1 the
+                                  count
+=========  =====================  ======================================
+
+The discovery commands answer ``0x4005`` until the loop is ready, and
+Get Port Database also for a loop ID with no port, the adapter's own or
+one past 0x7d. Port name list options other than bits 1 and 3, the two
+OpenBSD sets, are ``0x4006``. A refused DMA is ``0x4002``. The public
+definitions name these codes but not which refusal returns which, so
+each is a model choice. The lists leave the adapter out, run in
+ascending loop ID and write nothing past their last entry; whether real
+firmware lists itself, and in which order, is unknown. An ID list entry
+is the AL_PA, area 0, domain 0 and loop ID. A port name list entry is
+the port name with its wire-order bytes reversed, then the loop ID as a
+little-endian word: OpenBSD decodes that name as a little-endian integer
+but the port database's as big-endian, and compares the two. The real
+byte order is unknown.
+
+The port database is 128 bytes, zero but for: bytes 2 and 3, master
+and slave state 6 (logged in); byte 6, the hard address, the port's
+AL_PA; bytes 8-11, the port ID as domain, a zero byte, AL_PA and area;
+bytes 12-19 the node name and 20-27 the port name, in wire order; byte
+78, ``0x10``, the target role both drivers find in the low byte of
+service parameter word 3; and bytes 80-81 the loop ID, little-endian.
+Byte 0 (options) is 0, class 3 only.
+
+The enhanced port database (``0x47``), the login, logout, name-server,
+link-status and loop-port commands (``0x40``, ``0x41``, ``0x6a``,
+``0x6b``, ``0x6e``, ``0x6f``, ``0x71``, ``0x74``) answer ``0x4001`` and
+are logged as unimplemented. Linux's request-ring mailbox entry
+(``0x39``) is an unknown type and returns with entry status bit 2.
+
+Commands on the loop
+--------------------
+
+A command entry's loop ID and LUN select a device on the bus. A loop ID
+with no port, the adapter's own or one past 0x7d completes with
+``0x0028`` (port unavailable) and no SCSI status. A port without that
+LUN answers through QEMU's target-level handling, as an FCP target
+with a missing LUN would: REPORT LUNS lists the port's LUNs, INQUIRY
+reports peripheral qualifier 3 and anything else is CHECK CONDITION,
+ILLEGAL REQUEST. A LUN past 255 gets that CHECK CONDITION without
+reaching a device. Data moves between the segments and the device
+through the function's PCI address space.
+
+Completion precedence follows what the two drivers decode, not firmware
+evidence. A SCSI status other than GOOD completes ``0x0000`` with the
+status in the low byte, bit 9 and the sense bytes when the device gave
+sense, and bit 11 with the residual when the transfer was short. GOOD
+and short is underrun ``0x0015`` with bit 11 and the residual. GOOD and
+whole is ``0x0000`` with no flags. A transfer is short when fewer bytes
+moved than the larger of the segments' total and the command's own
+length. At most 32 sense bytes are returned; if they would end in
+``0xdeaddead``, the mark Linux writes over entries it has processed,
+the last four are dropped and the cut is logged.
+
+Entry timeouts are ignored: a command completes when its device does.
+Markers are consumed without a response, and the model does not refuse
+commands to a target until a marker arrives. Commands to present ports
+run while the loop is coming up. A refused data DMA is logged and leaves
+the command outstanding: no completion code for it is known.
+
+Migration
+---------
+
+The stream carries the loop state, the adapter's loop ID, the running
+bring-up timer and, through the SCSI layer's request hooks, every
+command in flight with its loop ID, LUN, segments and progress. The
+loop itself is not in the stream: it is the devices on the bus, which a
+matching configuration makes identical, and a load whose adapter loop
+ID one of them holds fails.
+
 Limitations
 ===========
 
-- No Fibre Channel service: no loop, port database, logins or targets,
-  so nothing behind the adapter transfers data. A data segment's DMA
-  errors are therefore never reached.
+- The loop is an approximation shaped by two public drivers, not a
+  model of ISP2200 firmware. No frames, logins, fabric, point-to-point,
+  link speed or link timing; no initiators or failing ports; no loop
+  down or cable removal.
+- Linux's request-ring mailbox entries are not served, so mainline
+  Linux, which logs in through them, cannot bring a port online.
+- ``scsi-hd`` tags the port name in its device identification page
+  with the SAS protocol identifier; the value matches the loop's, the
+  protocol does not.
 - No reduced-interrupt or fast-post completions, target mode, IP,
   2300-class layouts, flash BIOS, frame-buffer or FPM banks, parity
   diagnostics or single step.
