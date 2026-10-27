@@ -295,7 +295,7 @@ web:
     obtain:
       url: https://nekonomicon.irixnet.org/forum/14/16724207/1.html
       sha256: 88e26ec45b8e49249abe2c2269dfcda19d90d14cbdfac834faeb2f5528e2fdd4
-  living-raptor-onyx350-hinv:
+  graphica-onyx350-hinv:
     title: "John Hartley's Onyx 350 module inventory"
     publisher: "John Hartley"
     kind: capture

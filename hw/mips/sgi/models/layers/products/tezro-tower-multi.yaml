@@ -60,7 +60,7 @@ layer:
       name: Tezro tower, two/four-processor serial compatibility profile
       model_role: emulation-target
       notes: Software-only Tezro compatibility profile. The manual supports the selected processor population and locates IO9 at bus 1, slot 1. The 700 MHz/4 MiB CPU tuple, reset candidate, 4 GiB logical memory map, Bedrock and L1 identities, PIC revision and placement, PCI function identities, and interrupt
-        routes are emulator choices adapted from the deskside software inputs. They do not describe a measured tower or rack configuration. The optional V12 at widget 12 follows the close-bug quad Tezro inventory (030-1884-002 rev D); it does not establish the other selected board inputs. The rack second enclosure is omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
+        routes are emulator choices adapted from the deskside software inputs. They do not describe a measured tower or rack configuration. The optional V12 at widget 12 follows a published quad Tezro inventory (030-1884-002 rev D); it does not establish the other selected board inputs. The rack second enclosure is omitted. The guide overview says three PCI buses for the two/four-processor board while its detailed
         slot layout shows four; this software profile selects two PICs and four buses.
       firmware_config:
         processor_reset_mode: 0x009bad85
