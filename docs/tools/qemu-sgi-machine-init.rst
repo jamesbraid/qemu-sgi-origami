@@ -45,10 +45,9 @@ Options
 
 .. option:: -b FILE, --boot-prom FILE
 
-  The node boot PROM image. IP27 and IP35 images may be raw or SGI's
+  The node boot PROM image. IP27, IP30 and IP35 images may be raw or SGI's
   version-6 single-segment container, uncompressed or gzip. An IP35 image
   must decode to exactly the PROM size the machine's ``-bios`` requires.
-  Octane takes a raw image, as its ``-bios`` does.
 
 .. option:: -i FILE, --io-prom FILE
 
@@ -134,12 +133,13 @@ the machine property of the same name::
       --boot-prom ip27prom.img --io-prom io6prom.img vm0
 
   qemu-system-mips64 \
-      -M origin2000,topology=origin2000-deskside,nodes=2,node0-flash=node0-flash,node1-flash=node1-flash,io0-flash=io0-flash,nvram0=nvram0,nvram0-clock=nvram0-clock \
+      -M origin2000,topology=origin2000-deskside,nodes=2,node0-flash=node0-flash,node1-flash=node1-flash,io0-flash=io0-flash,nvram0=nvram0,nvram0-clock=nvram0-clock,module0-nvram=module0-nvram \
       -blockdev driver=raw,node-name=node0-flash,file.driver=file,file.filename=vm0/node0-flash.raw \
       -blockdev driver=raw,node-name=node1-flash,file.driver=file,file.filename=vm0/node1-flash.raw \
       -blockdev driver=raw,node-name=io0-flash,file.driver=file,file.filename=vm0/io0-flash.raw \
       -blockdev driver=raw,node-name=nvram0,file.driver=file,file.filename=vm0/nvram0.raw \
       -blockdev driver=raw,node-name=nvram0-clock,file.driver=file,file.filename=vm0/nvram0-clock.raw \
+      -blockdev driver=raw,node-name=module0-nvram,file.driver=file,file.filename=vm0/module0-nvram.raw \
       -smp 4 -m 512M
 
 A launcher can build this command line from the ``storage`` list of the
