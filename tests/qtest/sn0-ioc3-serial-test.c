@@ -2109,6 +2109,58 @@ static void test_the_receive_timer_raises_on_expiry(
 }
 
 /*
+ * A full receive ring does not stall the transmit walk in loopback: the
+ * characters that do not fit are lost to the 16550's overrun, and the
+ * overrun bit reaches the status byte of the next character the engine
+ * reads. With hardware flow control on, what the part does is not known.
+ */
+static void test_loopback_overrun_reaches_the_status_byte(const void *data)
+{
+    const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    uint8_t entry[8];
+    bool overrun = false;
+    unsigned int i, posted;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    qtest_writeb(qts, serial_port(0) + REG_FCR, 0x01);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+    /* Room for one entry before the ring is full. */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 16);
+
+    for (i = 0; i < 8; i++) {
+        const uint8_t out[4] = { 4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3 };
+
+        write_transmit_entry(qts, RING_TX(0), 8 * i, out, control);
+    }
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 64);
+    carry_on_the_line(qts, 32);
+
+    /* The walk went on through the full ring. */
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    ==, 64);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8,
+                    ==, 8);
+
+    /* Make room; what the FIFO kept comes in, marked after the loss. */
+    qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 8);
+    drain_port(qts, 0);
+    posted = (qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)) & 0xff8) / 8;
+    g_assert_cmpuint(posted, >, 1);
+    for (i = 1; i < posted; i++) {
+        qtest_memread(qts, RING_RX(0) + 8 * i, entry, sizeof(entry));
+        overrun |= (entry[4] | entry[5] | entry[6] | entry[7]) & RX_OVERRUN;
+    }
+    g_assert_true(overrun);
+    g_assert_cmpuint(posted * 4, <, 32);
+}
+
+/*
  * In loopback the UART's serial input is disconnected, as on a PC16550D
  * with modem-control bit 4 set: a character arriving from outside is
  * discarded, while a looped-back one still lands.
@@ -4040,6 +4092,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-counts-and-raises",
                         NULL,
                         test_the_receive_timer_raises_on_expiry);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-overrun-reaches-status",
+                        NULL, test_loopback_overrun_reaches_the_status_byte);
     qtest_add_data_func("sn0/ioc3-serial/loopback-discards-external-input",
                         NULL, test_loopback_discards_external_input);
     qtest_add_data_func("sn0/ioc3-serial/linux-receive-pattern-keeps-timer",
