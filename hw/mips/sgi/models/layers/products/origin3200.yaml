@@ -48,7 +48,7 @@ layer:
   data:
     machine:
       name: Origin 3200
-      model_role: reference
+      model_role: emulation-target
       notes: >-
         Two C-bricks and one I-brick in a short rack, each C-brick fitted
         as a posted Origin 3200 inventory reports: four 400 MHz R12000s
@@ -60,9 +60,16 @@ layer:
         uses is unknown. A second I/O brick is a documented expansion this
         composition does not show. The I-brick's XBridge head and PCI
         device numbers are the provisional placements the module layers
-        already carry. The C-brick layer carries no L1, so this
-        configuration does not yet describe the C-bricks' controllers and
-        never compiles.
+        already carry. Planned: the C-brick layer carries no L1, the
+        C-brick's board-identification word, FPU identification and reset
+        mode are unknown, and the compiler does not yet build PCI heads on
+        an enclosure crossbar, so this target is not exported to the
+        emulator.
+      emulation:
+        machine_name: origin3000
+        display_description: SGI Origin 3200 (IP35), two C-bricks and an I-brick
+        profile: origin3200
+        lifecycle: planned
     evidence_policy: strict
     components:
       - id: rack

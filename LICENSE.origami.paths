@@ -410,6 +410,7 @@ scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sgi-machines.j
 scripts/tests/system-model-fixtures/format2/origin300-two-chassis/sn-model.json
 scripts/tests/system-model-fixtures/format2/origin300/sgi-machines.json
 scripts/tests/system-model-fixtures/format2/origin300/sn-model.json
+scripts/tests/system-model-fixtures/format2/origin3200/refused.txt
 scripts/tests/system-model-fixtures/incompatible.yaml
 scripts/tests/system-model-fixtures/layers/ip29.yaml
 scripts/tests/system-model-fixtures/layers/ip45.yaml
@@ -443,6 +444,8 @@ scripts/tests/system-model-fixtures/origin300-two-chassis/resolved.json
 scripts/tests/system-model-fixtures/origin300-two-chassis/resolved.sha256
 scripts/tests/system-model-fixtures/origin300/resolved.json
 scripts/tests/system-model-fixtures/origin300/resolved.sha256
+scripts/tests/system-model-fixtures/origin3200/resolved.json
+scripts/tests/system-model-fixtures/origin3200/resolved.sha256
 scripts/tests/system-model-fixtures/population-orientation.yaml
 scripts/tests/system-model-fixtures/reference-machine.yaml
 scripts/tests/system-model-fixtures/router-reference.yaml

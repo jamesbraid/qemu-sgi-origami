@@ -866,9 +866,13 @@ def _merge_module_instances(
         path: pathlib.Path, composition: dict[str, Any], resolved: dict[str, Any],
         selected: dict[str, dict[str, Any]],
         population: dict[str, Any] | None = None,
-        bricks: list[str] | None = None) -> list[dict[str, Any]]:
+        bricks: list[str] | None = None,
+        rules: tuple[str, Any] | None = None) -> list[dict[str, Any]]:
     declarations = composition.get("module_instances")
     if declarations is None:
+        if rules is not None and bricks is not None:
+            model_composition.validate_composition_rules(
+                rules[0], rules[1], bricks)
         return []
     if not isinstance(declarations, list) or not declarations:
         raise ResolutionError("module_instances must be a non-empty list")
@@ -1022,6 +1026,10 @@ def _merge_module_instances(
                     seen_ids[field].add(ident)
             current.extend(values)
         metadata.append(copy.deepcopy(declaration))
+    # A brick set the product refuses is named as such, before the node
+    # count it also breaks.
+    if rules is not None and bricks is not None:
+        model_composition.validate_composition_rules(rules[0], rules[1], bricks)
     if population is not None and (
             population["nodes"] != instance_nodes or any(
                 not isinstance(population.get(field), list) or
@@ -1204,16 +1212,14 @@ def resolve_system_model(
     population = selected["product"]["population"]
     check_population = machine.get("model_role") == "emulation-target" and not routed
     bricks = [selected["module"]["id"]] if "module" in selected else []
+    rules = selected["product"].get("composition_rules")
     module_instances = _merge_module_instances(
         path, composition, resolved, selected,
-        population if check_population else None, bricks)
+        population if check_population else None, bricks,
+        None if rules is None else (selected["product"]["id"], rules))
     model_composition.validate_supported_processors(
         selected["product"]["id"], selected["product"].get("topology", {}),
         resolved.get("components", []))
-    rules = selected["product"].get("composition_rules")
-    if rules is not None:
-        model_composition.validate_composition_rules(
-            selected["product"]["id"], rules, bricks)
     if "links" in composition:
         if not isinstance(composition["links"], list):
             raise ResolutionError("configuration links must be a list")

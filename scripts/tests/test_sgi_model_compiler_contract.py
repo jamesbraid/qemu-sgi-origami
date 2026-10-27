@@ -4051,7 +4051,7 @@ CONFIGURATIONS = (
     "origin200-gigachannel-loopback",
     "origin2000", "origin2000-rack", "origin2000-deskside",
     "onyx2-rack", "onyx2-deskside",
-    "origin300", "origin300-two-chassis",
+    "origin300", "origin300-two-chassis", "origin3200",
 )
 
 
@@ -4301,10 +4301,12 @@ _IBRICK_IO = {"ibrick-xbridge", "ibrick-fibre-channel", "ibrick-ioc3",
 def _origin3200_fixture(*, ibrick_io: bool = False) -> dict:
     """The Origin 3200 composition made compilable for compiler tests.
 
-    The catalogue entry stays a reference until the C-brick layer supplies
-    its memory, processors and L1, so this borrows the two-chassis Origin
-    300's emulation choices, processor, L1 and synthetic Bedrock serials
-    to reach the code under test. None of them is an Origin 3200 claim.
+    The catalogue entry is a planned target that does not compile: its
+    C-brick has no L1, and the R12000's FPU identification, reset mode and
+    the C-brick's board word are unknown. So this borrows the two-chassis
+    Origin 300's emulation choices, R14000 processor, L1 and synthetic
+    Bedrock serials, and one 512 MiB bank per node, to reach the code under
+    test. None of them is an Origin 3200 claim.
     Without `ibrick_io` the I-brick keeps only its crossbar, with a
     placeholder revision, since its PCI heads are not compiled yet.
     """

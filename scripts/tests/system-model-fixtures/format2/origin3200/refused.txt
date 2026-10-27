@@ -1,0 +1,1 @@
+I/O board 'ibrick-xbridge' carries enclosure crossbar 'ibrick-xbridge-crossbar'; PCI heads on an enclosure crossbar are not compiled yet
