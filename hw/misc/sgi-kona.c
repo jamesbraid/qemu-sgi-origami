@@ -8963,6 +8963,13 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * back as the texture, so it draws black: logged as a guest error. A
  * bracket that is itself refused, or whose descriptor lines are not whole
  * texels, is still refused.
+ *
+ * Only a readback that names no texture the model holds is logged as a
+ * guest error; that includes one whose extent no stored image covers,
+ * which matches nothing. Copy codes (format, type or storage) the library
+ * was not seen to ask for, an ambiguous match, or a found texture whose
+ * target or extent the model does not copy are the model's gap, logged as
+ * unimplemented.
  */
 static void sgi_kona_gl_read_texels_zero(SGIKonaState *s)
 {
@@ -9013,7 +9020,12 @@ static void sgi_kona_gl_read_texels(SGIKonaState *s, const uint32_t *args)
     if (found != 1 || args[0] != SGI_GL_TEXTURE_2D || args[9] || args[12] ||
         args[10] < args[7] || args[11] < args[8] ||
         bytes > SGI_KONA_TEXTURE_BYTES) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: texel readback of %u "
+        bool copy = args[3] == SGI_KONA_TEXTURE_COPY_FORMAT &&
+                    args[4] == SGI_KONA_TEXTURE_COPY_TYPE &&
+                    args[5] == SGI_KONA_TEXTURE_COPY_STORAGE;
+
+        qemu_log_mask(copy && !found ? LOG_GUEST_ERROR : LOG_UNIMP,
+                      "sgi-kona: texel readback of %u "
                       "textures matching banks 0x%x 0x%x storage 0x%x; %s\n",
                       found, args[16], args[17], args[5],
                       d->active ? "answered with zeros" : "refused");

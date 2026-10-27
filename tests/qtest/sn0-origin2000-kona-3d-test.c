@@ -4940,7 +4940,13 @@ static void test_texture_readback(gconstpointer opaque)
     bool unknown = mode != 0 && mode != 3;
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
-    QTestState *s = kona_init_logged(&log);
+    /*
+     * A later -d replaces the mask: a readback naming no texture is the
+     * guest's error, a copy storage nobody was seen to ask for the
+     * model's gap.
+     */
+    QTestState *s = kona_init_logged_args(&log,
+        mode == 1 ? " -d guest_errors" : mode == 2 ? " -d unimp" : "");
     const uint64_t destination = 0x380000, reason_page = 0x300000;
     uint32_t readback[18] = {
         0xde1, 2, 2, 7, 3, 0x28, 0, 0, 0, 0, 1, 1, 0, 0x38c0000, 0x23,
@@ -5018,7 +5024,11 @@ static void test_texture_readback(gconstpointer opaque)
     }
     qtest_quit(s);
     found = kona_log_read(log);
-    if (mode == 2) {
+    if (mode == 1) {
+        g_assert_nonnull(strstr(found, "texel readback of 0 textures "
+                                       "matching banks 0x20000 0x0 storage "
+                                       "0x28; answered with zeros"));
+    } else if (mode == 2) {
         g_assert_nonnull(strstr(found, "texel readback of 0 textures "
                                        "matching banks 0x0 0x0 storage "
                                        "0x30; answered with zeros"));
