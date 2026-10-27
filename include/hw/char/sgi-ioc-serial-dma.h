@@ -82,6 +82,7 @@
 #define SGI_IOC_SDMA_TX_MODEM       0x80
 #define SGI_IOC_SDMA_TX_DELAY       0xc0
 #define SGI_IOC_SDMA_TX_INTERRUPT   0x20
+#define SGI_IOC_SDMA_TX_UNDEFINED   0x1f
 
 /* Receive status byte. */
 #define SGI_IOC_SDMA_RX_OVERRUN     0x01
