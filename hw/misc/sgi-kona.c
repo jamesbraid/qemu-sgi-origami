@@ -11230,11 +11230,12 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
                 depth[pixel] = values[0];
                 continue;
             }
+            /* Not scalar: unsigned bytes, converted exactly as integers. */
             if (scalar ?
                 !sgi_kona_gl_pixel_rgba_double(u->header[2], u->header[3],
                     source, u->header[8], rgba_double[pixel]) :
-                !sgi_kona_gl_texture_pixel_rgba(u->header[2], u->header[3],
-                    source, false, &rgba[pixel])) {
+                !sgi_kona_gl_pixel_rgba8(u->header[2], source[0],
+                                         &rgba[pixel])) {
                 goto out;
             }
             if (mapped &&
