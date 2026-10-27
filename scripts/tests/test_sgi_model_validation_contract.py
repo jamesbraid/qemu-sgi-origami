@@ -1840,6 +1840,16 @@ class Origin3000BrickValidationTests(unittest.TestCase):
     def test_reference_passes(self):
         self.assertEqual(self.problems(self.model()), [])
 
+    def test_pbrick_reference_passes(self):
+        model = self.checker.load_system_model(
+            INPUTS / "origin3200-pbrick.yaml")
+        self.assertEqual(self.problems(model), [])
+        # Each link port carries one of the four link cables.
+        model["xio_cables"].append(self.cable(
+            "second-on-u1-8", ["pbrick-u1-port-8", "pbrick-u0-port-9"]))
+        self.assertFails(model, "connector 'pbrick-u1-port-8' carries XIO "
+                         "cables 'pbrick-u0-9-to-u1-8' and 'second-on-u1-8'")
+
     def test_xbrick_reference_passes(self):
         model = self.checker.load_system_model(
             INPUTS / "origin3200-xbrick.yaml")

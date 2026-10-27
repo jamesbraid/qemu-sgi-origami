@@ -1,0 +1,310 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3000 P-brick: three XBridges and twelve PCI slots on six buses.
+# U0 takes the Crosstown2 cable on port A or B and joins U1 and U2 by two
+# links each. The builder refuses those links until a reviewed contract
+# gives the downstream chips' mode.
+layer_version: 1
+layer:
+  kind: module
+  id: p-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: P-brick
+        kind: module
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          The L1 manual's type letter for the P-brick is outside the L1
+          contract's established set, so the layer carries no brick_type.
+      - id: u0
+        name: XBridge U0
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          Head E drives PCI bus 4 and head F bus 3. The chip's revision
+          and mode strap are unknown.
+      - id: u0-crossbar
+        name: XBridge U0 crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: u0
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+      - id: u1
+        name: XBridge U1
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          Head E drives PCI bus 2 and head F bus 1. The chip's revision
+          and mode strap are unknown.
+      - id: u1-crossbar
+        name: XBridge U1 crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: u1
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          The record carries this chip's two link ports. Whether the chip
+          runs its crossbar or presents each head on its own link is
+          unknown.
+      - id: u2
+        name: XBridge U2
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          Head E drives PCI bus 6 and head F bus 5. The chip's revision
+          and mode strap are unknown.
+      - id: u2-crossbar
+        name: XBridge U2 crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: u2
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          The record carries this chip's two link ports. Whether the chip
+          runs its crossbar or presents each head on its own link is
+          unknown.
+      - id: port-a
+        name: Crosstown2 port A connector
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel, through a host interface card
+          occupancy: opaque
+          port: 0xa
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)", "108-0240-002 printed page 2-31, Figure 2-24: host interface card 1 on U0 port A"]
+      - id: port-b
+        name: Crosstown2 port B connector
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel, through a host interface card
+          occupancy: opaque
+          port: 0xb
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)", "108-0240-002 printed page 2-31, Figure 2-24: host interface card 2 on U0 port B"]
+      - id: u0-port-d
+        name: XBridge U0 port D
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0xd}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u2-port-d
+        name: XBridge U2 port D
+        kind: connector
+        provenance: vendor-document
+        parent: u2-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0xd}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-port-c
+        name: XBridge U0 port C
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0xc}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u2-port-8
+        name: XBridge U2 port 8
+        kind: connector
+        provenance: vendor-document
+        parent: u2-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0x8}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-port-9
+        name: XBridge U0 port 9
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0x9}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u1-port-8
+        name: XBridge U1 port 8
+        kind: connector
+        provenance: vendor-document
+        parent: u1-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0x8}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-port-8
+        name: XBridge U0 port 8
+        kind: connector
+        provenance: vendor-document
+        parent: u0-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0x8}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u1-port-d
+        name: XBridge U1 port D
+        kind: connector
+        provenance: vendor-document
+        parent: u1-crossbar
+        connector: {interface: Crosstalk, location: internal, occupancy: occupied, port: 0xd}
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: bus-1-slot-1
+        name: PCI bus 1 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 1 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-1-slot-2
+        name: PCI bus 1 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 1 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-2-slot-1
+        name: PCI bus 2 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 2 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-2-slot-2
+        name: PCI bus 2 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 2 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-3-slot-1
+        name: PCI bus 3 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 3 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-3-slot-2
+        name: PCI bus 3 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 3 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-4-slot-1
+        name: PCI bus 4 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 4 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-4-slot-2
+        name: PCI bus 4 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 4 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-5-slot-1
+        name: PCI bus 5 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 5 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-5-slot-2
+        name: PCI bus 5 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 5 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-6-slot-1
+        name: PCI bus 6 slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 6 slot 1, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+      - id: bus-6-slot-2
+        name: PCI bus 6 slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: brick
+        connector: {interface: PCI, location: bus 6 slot 2, occupancy: opaque}
+        sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]
+    buses:
+      - id: port-b-xio
+        name: XBridge U0 Crosstown2 port B
+        kind: xio
+        master: u0-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]
+        notes: >-
+          U0's port B, out to its connector. A composition that cables a
+          second C-brick here binds this bus.
+      - {id: link-u0-d, name: "U0 port D to U2 port D", kind: xio, master: u0-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {id: link-u0-c, name: "U0 port C to U2 port 8", kind: xio, master: u0-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {id: link-u0-9, name: "U0 port 9 to U1 port 8", kind: xio, master: u0-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {id: link-u0-8, name: "U0 port 8 to U1 port D", kind: xio, master: u0-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {id: pci-1, name: "PCI bus 1 (U1 head F)", kind: pci, master: u1, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {id: pci-2, name: "PCI bus 2 (U1 head E)", kind: pci, master: u1, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {id: pci-3, name: "PCI bus 3 (U0 head F)", kind: pci, master: u0, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {id: pci-4, name: "PCI bus 4 (U0 head E)", kind: pci, master: u0, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {id: pci-5, name: "PCI bus 5 (U2 head F)", kind: pci, master: u2, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {id: pci-6, name: "PCI bus 6 (U2 head E)", kind: pci, master: u2, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+    connections:
+      # host-port-a-xio is the attached C-brick's XIO bus, which the
+      # composition binds with bus_bindings.
+      - {component: u0-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"], notes: "Host port A, widget 0xA (10 decimal)."}
+      - {component: port-a, bus: host-port-a-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {component: port-b, bus: port-b-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-30 and 2-31, Figure 2-24: three XBridges; U0 serves buses 3 and 4 and is the Crosstown2 interface for U1 (buses 1, 2) and U2 (buses 5, 6)"]}
+      - {component: u0-port-d, bus: link-u0-d, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u2-port-d, bus: link-u0-d, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u0-port-c, bus: link-u0-c, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u2-port-8, bus: link-u0-c, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u0-port-9, bus: link-u0-9, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u1-port-8, bus: link-u0-9, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u0-port-8, bus: link-u0-8, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: u1-port-d, bus: link-u0-8, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]}
+      - {component: bus-1-slot-1, bus: pci-1, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-1-slot-2, bus: pci-1, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-2-slot-1, bus: pci-2, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-2-slot-2, bus: pci-2, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-3-slot-1, bus: pci-3, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-3-slot-2, bus: pci-3, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-4-slot-1, bus: pci-4, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-4-slot-2, bus: pci-4, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-5-slot-1, bus: pci-5, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-5-slot-2, bus: pci-5, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-6-slot-1, bus: pci-6, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+      - {component: bus-6-slot-2, bus: pci-6, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 printed pages 31 to 33: twelve PCI slots in six buses of two, labelled bus 1 to 6, slot 1 and 2"]}
+    xio_cables:
+      - id: u0-d-to-u2-d
+        ends: [u0-port-d, u2-port-d]
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-c-to-u2-8
+        ends: [u0-port-c, u2-port-8]
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-9-to-u1-8
+        ends: [u0-port-9, u1-port-8]
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]
+      - id: u0-8-to-u1-d
+        ends: [u0-port-8, u1-port-d]
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-31, Figure 2-24: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8, U0 8 to U1 D"]

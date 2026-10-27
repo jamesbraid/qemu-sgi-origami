@@ -209,9 +209,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 111)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 34)
-        self.assertEqual(len(layers), 75)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 113)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 35)
+        self.assertEqual(len(layers), 76)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
