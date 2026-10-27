@@ -139,8 +139,8 @@ def _node(raw: dict) -> dict:
         node["option-intx-map"] = raw["option_intx_map"].copy()
     if "bedrock" in raw:
         node["bedrock"] = _kebab_keys(raw["bedrock"])
-    if raw.get("board_kind") == "ip53":
-        node["board-kind"] = "ip53"
+    if raw.get("board_kind") in ("ip53", "ip35"):
+        node["board-kind"] = raw["board_kind"]
     return node
 
 
@@ -203,6 +203,15 @@ def _xio_attachment(raw: dict) -> dict:
         "crossbar-index": raw["crossbar_index"],
         "widget": raw["widget"],
         "node-index": raw["node_index"],
+    }
+
+
+def _xio_cable(raw: dict) -> dict:
+    return {
+        "name": raw["name"],
+        "ends": [{"kind": _enum(end["kind"]), "index": end["index"],
+                  **({"port": end["port"]} if "port" in end else {})}
+                 for end in raw["ends"]],
     }
 
 
@@ -386,6 +395,9 @@ def _render_topology(topology: dict, machine_name: str,
 
     if topology.get("l1_peer_links"):
         result["l1-peer-links"] = _kebab_keys(topology["l1_peer_links"])
+    if topology.get("xio_cables"):
+        result["xio-cables"] = [_xio_cable(cable)
+                                for cable in topology["xio_cables"]]
     if topology.get("io_peers"):
         result["io-peers"] = [_io_peer(peer) for peer in topology["io_peers"]]
     if topology.get("io_assemblies"):

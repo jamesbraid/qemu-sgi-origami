@@ -393,6 +393,60 @@ def _occupied_connectors(model: dict, components: dict[str, dict]) -> dict[str, 
     return occupied
 
 
+def _xio_cable_ends(model: dict, components: dict[str, dict],
+                    node_index: dict[str, int]) -> list[dict]:
+    """Each authored XIO cable's two ends, as the graph index names them.
+
+    Resolution already checked that an end is either a node's XIO (II)
+    connector, on an XIO bus its node ASIC masters, or a connector naming
+    a port of the crossbar it sits on. A node end carries the node's
+    position, a crossbar end its crossbar and port.
+    """
+    buses = {item["id"]: item for item in model["buses"]}
+    cables = []
+    for cable in model.get("xio_cables", []):
+        ends = []
+        for end in cable["ends"]:
+            connector = components[end]
+            port = connector["connector"].get("port")
+            if port is not None:
+                ends.append({"kind": "crossbar", "id": connector["parent"],
+                             "port": port})
+                continue
+            masters = {buses[item["bus"]].get("master")
+                       for item in model["connections"]
+                       if item["component"] == end
+                       and buses.get(item["bus"], {}).get("kind") == "xio"}
+            nodes = sorted(master for master in masters if master in node_index)
+            if len(nodes) != 1:
+                raise CompileError(
+                    f"XIO cable '{cable['id']}' end '{end}' reaches no one "
+                    "node II")
+            ends.append({"kind": "node", "id": nodes[0]})
+        cables.append({"id": cable["id"], "ends": ends})
+    return cables
+
+
+def _cabled_nodes(cables: list[dict]) -> dict[str, set[str]]:
+    """Which node ASICs reach each enclosure crossbar over an XIO cable.
+
+    A crossbar is off-board exactly when a cable ends on one of its ports.
+    The compiler never infers a cable from where a crossbar is contained.
+    A crossbar reached only through another crossbar maps to no node.
+    """
+    reached: dict[str, set[str]] = {}
+    for cable in cables:
+        for end in cable["ends"]:
+            if end["kind"] == "crossbar":
+                reached.setdefault(end["id"], set())
+        crossbars = [end["id"] for end in cable["ends"]
+                     if end["kind"] == "crossbar"]
+        nodes = {end["id"] for end in cable["ends"] if end["kind"] == "node"}
+        for crossbar in crossbars:
+            reached[crossbar] |= nodes
+    return reached
+
+
 def index_graph(model: dict) -> dict:
     """Build the typed graph index a configuration's compile reads.
 
@@ -478,6 +532,8 @@ def index_graph(model: dict) -> dict:
         key=lambda item: item["id"])
     crossbar_index = {item["id"]: index for index, item in enumerate(crossbars)}
     node_index = {item["id"]: index for index, item in enumerate(nodes)}
+    xio_cables = _xio_cable_ends(model, components, node_index)
+    enclosure_crossbars = _cabled_nodes(xio_cables)
     io_peer_index = {item["id"]: index for index, item in enumerate(io_peers)}
     # A XIO attachment's `controlled_by` names the controlling
     # node's *board*, not its Hub component, so a lookup by board id
@@ -705,6 +761,31 @@ def index_graph(model: dict) -> dict:
                     f"XIO attachment '{cid}' is neither an I/O board, "
                     "a node's own host port nor an unpopulated slot"
                 )
+    for record in [*xio_attachments, *xio_slots]:
+        if record["crossbar_index"] < 0:
+            continue
+        crossbar = crossbars[record["crossbar_index"]]["id"]
+        if crossbar not in enclosure_crossbars:
+            continue
+        node = nodes[record.get("node_index", record.get("controlling_node"))]
+        if node["id"] not in enclosure_crossbars[crossbar]:
+            raise CompileError(
+                f"XIO attachment on enclosure crossbar '{crossbar}' names "
+                f"node '{node['id']}', which no XIO cable joins to it")
+        raise CompileError(
+            f"XIO attachments on enclosure crossbar '{crossbar}' are not "
+            "compiled yet")
+    for board in io_boards:
+        crossbar = next(
+            (item["id"] for item in components.values()
+             if item.get("kind") == "crossbar"
+             and item["id"] in enclosure_crossbars
+             and _is_within(components, item, board["id"])), None)
+        if crossbar is not None:
+            raise CompileError(
+                f"I/O board '{board['id']}' carries enclosure crossbar "
+                f"'{crossbar}'; PCI heads on an enclosure crossbar are not "
+                "compiled yet")
     for board in io_boards:
         if "crossbar_index" not in board:
             raise CompileError(f"I/O board '{board['id']}' has no XIO attachment")
@@ -726,6 +807,7 @@ def index_graph(model: dict) -> dict:
         "descriptor_host_ids": descriptor_host_ids,
         "io_boards": io_boards, "xio_attachments": xio_attachments,
         "xio_slots": xio_slots, "links": links,
+        "xio_cables": xio_cables, "enclosure_crossbars": enclosure_crossbars,
         "modules": [{"id": module_id, "index": index} for module_id, index in module_order],
     }
 
@@ -1563,11 +1645,16 @@ def _bedrock_io_configuration(model: dict, board: dict) -> dict:
 _BEDROCK_BOARD_KINDS = {"ip45", "ip34", "ip53"}
 
 
-def _bedrock_board_kind(components: dict[str, dict], node: dict) -> str | None:
-    """Return the authored board identity enclosing this Bedrock node."""
+def _bedrock_board_kind(components: dict[str, dict], node: dict,
+                        board_ip: str | None = None) -> str | None:
+    """Return the authored board identity enclosing this Bedrock node.
+
+    A C-brick authors no board component around its Bedrock, so with no
+    board ancestor an IP35 assembly (`board_ip`) names the board instead.
+    """
     board = _board_ancestor(components, node)
     if board is None:
-        return None
+        return "ip35" if board_ip == "IP35" else None
     hardware_kind = board.get("hardware_kind")
     if hardware_kind is None:
         raise CompileError(
@@ -1593,7 +1680,8 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     # product leaves it unauthored, so "not bedrock" is "hub", the same
     # dispatch the pre-unification pair used.
     asic_kind = "bedrock" if node.get("hardware_kind") == "bedrock" else "hub"
-    board_kind = (_bedrock_board_kind(components, node)
+    board_kind = (_bedrock_board_kind(components, node,
+                                      model["machine"].get("board_ip"))
                   if asic_kind == "bedrock" else None)
 
     cpus = _node_cpus(model, components, node, asic_kind, entry["board_id"])
@@ -2698,7 +2786,8 @@ def _crossbar_module_index(components: dict[str, dict], modules: dict[str, int],
 
 
 def _compile_crossbars(model: dict, components: dict[str, dict], modules: dict[str, int],
-                        crossbars: list[dict]) -> list[dict]:
+                        crossbars: list[dict],
+                        enclosure: set[str] = frozenset()) -> list[dict]:
     """SGIModelCrossbar records: id, containing module, kind and fitted
     silicon revision. A crossbar's manufacturer id, part number and
     initially-populated-links mask are fixed by which chip it is
@@ -2714,6 +2803,11 @@ def _compile_crossbars(model: dict, components: dict[str, dict], modules: dict[s
     generic scan over every `kind: crossbar` component, Origin 300's
     XBridge crossbar included; this is the one place that distinction is
     made, so the same call serves every generation.
+
+    An XBridge crossbar an XIO cable reaches (`enclosure`) is the other
+    case: it sits in an I/O brick, not on the node board, so the machine
+    builds it in that brick's module and it needs its own record, with its
+    fitted revision authored like a Crossbow's.
     """
     kinds = {"xbow": "XBOW", "xbridge": "XBRIDGE"}
     result = []
@@ -2721,7 +2815,7 @@ def _compile_crossbars(model: dict, components: dict[str, dict], modules: dict[s
         kind = (crossbar.get("crossbar") or {}).get("kind")
         if kind not in kinds:
             raise CompileError(f"crossbar '{crossbar['id']}' names unsupported kind '{kind}'")
-        if kind == "xbridge":
+        if kind == "xbridge" and crossbar["id"] not in enclosure:
             continue
         identity = crossbar.get("identity") or {}
         result.append({
@@ -2731,6 +2825,55 @@ def _compile_crossbars(model: dict, components: dict[str, dict], modules: dict[s
             "widget_revision": _integer(identity, "widget_revision", crossbar["id"], 4),
         })
     return result
+
+
+def _compile_xio_cables(model: dict, graph: dict, nodes: list[dict],
+                        crossbars: list[dict]) -> list[dict]:
+    """SGIModelXioCable records, after checking which nodes may take one.
+
+    Only an IP35 node, whose board has no XBridge, has an II free for a
+    cable. An IP35 node with a crossbar on its II that no cable joins to
+    it would be carrying an onboard XBridge the board does not have.
+    """
+    components = graph["components"]
+    node_index = {entry["id"]: index
+                  for index, entry in enumerate(graph["nodes"])}
+    crossbar_index = {item["id"]: index for index, item in enumerate(crossbars)}
+    cabled = graph["enclosure_crossbars"]
+    for entry, node in zip(graph["nodes"], nodes, strict=True):
+        ip35 = node.get("board_kind") == "ip35"
+        reached = {crossbar for crossbar, owners in cabled.items()
+                   if entry["id"] in owners}
+        if reached and not ip35:
+            raise CompileError(
+                f"node '{entry['id']}' is not an IP35 node; only an IP35 "
+                "node's II, with no XBridge on its board, takes an XIO "
+                "cable")
+        if not ip35:
+            continue
+        for bus in model["buses"]:
+            if bus["kind"] != "xio" or bus.get("master") != entry["id"]:
+                continue
+            for attachment in _connections_for_bus(model, bus["id"]):
+                component = components.get(attachment["component"], {})
+                if (component.get("kind") == "crossbar"
+                        and component["id"] not in reached):
+                    raise CompileError(
+                        f"IP35 node '{entry['id']}' has crossbar "
+                        f"'{component['id']}' on its II with no XIO cable; "
+                        "an IP35 board has no XBridge of its own")
+    records = []
+    for cable in graph["xio_cables"]:
+        ends = []
+        for end in cable["ends"]:
+            if end["kind"] == "node":
+                ends.append({"kind": "NODE", "index": node_index[end["id"]]})
+            else:
+                ends.append({"kind": "CROSSBAR",
+                             "index": crossbar_index[end["id"]],
+                             "port": end["port"]})
+        records.append({"name": cable["id"], "ends": ends})
+    return records
 
 
 def _compile_controllers(model: dict, components: dict[str, dict],
@@ -3062,7 +3205,10 @@ def compile_model(model: dict) -> dict:
         # `_compile_crossbars` reads `graph["crossbars"]` either way: its
         # own xbridge-kind check is what excludes Origin 300's XBridge from
         # getting a record, so this one call serves every generation.
-        crossbars = _compile_crossbars(model, components, modules_by_id, graph["crossbars"])
+        crossbars = _compile_crossbars(model, components, modules_by_id,
+                                       graph["crossbars"],
+                                       set(graph["enclosure_crossbars"]))
+        xio_cables = _compile_xio_cables(model, graph, nodes, crossbars)
         ip53_node_indices = [
             index for index, node in enumerate(nodes)
             if node.get("board_kind") == "ip53"
@@ -3084,6 +3230,9 @@ def compile_model(model: dict) -> dict:
                 # shared io-board/xio-attachment compilers below read.
                 io_boards, xio_attachments = [], []
                 for index, entry in enumerate(graph["nodes"]):
+                    if nodes[index].get("board_kind") == "ip35":
+                        # Its I/O is in the brick its XIO cable reaches.
+                        continue
                     boards, attachments = _compile_bedrock_io_boards(
                         model, components, entry["id"], node_index=index,
                         module_index=entry["module_index"],
@@ -3170,6 +3319,8 @@ def compile_model(model: dict) -> dict:
     }
     if io_peers:
         topology["io_peers"] = io_peers
+    if xio_cables:
+        topology["xio_cables"] = xio_cables
     assemblies = _compile_io_assemblies(model, components, io_peers, modules, controllers)
     if assemblies:
         topology["io_assemblies"] = assemblies
