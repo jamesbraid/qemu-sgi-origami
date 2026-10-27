@@ -6,6 +6,19 @@ layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip35.yaml
   - layers/products/origin3200.yaml
+connector_population:
+  - component: c0-link-connector
+    occupancy: cabled
+    peer: c1-link-connector
+    reason: The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"]
+  - component: c1-link-connector
+    occupancy: cabled
+    peer: c0-link-connector
+    reason: The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.
+    provenance: vendor-document
+    sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"]
 module_instances:
   # module_role marks c0, the bottom C-brick that carries the console and
   # the I-brick, as the console node. No source gives the two C-bricks'

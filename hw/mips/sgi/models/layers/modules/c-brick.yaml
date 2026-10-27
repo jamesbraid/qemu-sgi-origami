@@ -98,6 +98,19 @@ layer:
             X-brick. The brick at the far end owns the crossbar and its
             ports; the composition says what is cabled here.
         sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]
+      - id: link-connector
+        name: LINK (NI) connector
+        kind: connector
+        provenance: vendor-document
+        parent: chassis
+        connector:
+          interface: NUMAlink 3
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            The Bedrock's one network-interface connector. The composition
+            says whether it joins another C-brick or an R-brick port.
+        sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"]
     buses:
       - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
       - {id: sysad1, name: "SysAD, processor interface 1", kind: sysad, master: cpu2, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}

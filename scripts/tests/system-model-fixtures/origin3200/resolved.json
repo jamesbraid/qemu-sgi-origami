@@ -373,6 +373,23 @@
       ]
     },
     {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "The Bedrock's one network-interface connector. The composition says whether it joins another C-brick or an R-brick port.",
+        "occupancy": "opaque"
+      },
+      "id": "c0-link-connector",
+      "kind": "connector",
+      "name": "LINK (NI) connector",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"
+      ]
+    },
+    {
       "brick_type": "C",
       "id": "c1-chassis",
       "kind": "module",
@@ -574,6 +591,23 @@
       "sources": [
         "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick",
         "108-0240-002 printed page 2-26: the C-brick has no crossbar; its Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "NUMAlink 3",
+        "location": "rear panel",
+        "notes": "The Bedrock's one network-interface connector. The composition says whether it joins another C-brick or an R-brick port.",
+        "occupancy": "opaque"
+      },
+      "id": "c1-link-connector",
+      "kind": "connector",
+      "name": "LINK (NI) connector",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"
       ]
     },
     {
@@ -799,6 +833,28 @@
   "composition": {
     "architecture": "sn1",
     "assembly": "ip35",
+    "connector_population": [
+      {
+        "component": "c0-link-connector",
+        "occupancy": "cabled",
+        "peer": "c1-link-connector",
+        "provenance": "vendor-document",
+        "reason": "The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.",
+        "sources": [
+          "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+        ]
+      },
+      {
+        "component": "c1-link-connector",
+        "occupancy": "cabled",
+        "peer": "c0-link-connector",
+        "provenance": "vendor-document",
+        "reason": "The two C-bricks join LINK (NI) to LINK (NI), with no R-brick.",
+        "sources": [
+          "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick"
+        ]
+      }
+    ],
     "layers": [
       {
         "id": "sn1",
@@ -967,6 +1023,24 @@
     {
       "bus": "ni-cable",
       "component": "c1-bedrock",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick, as in the Origin 3200"
+      ]
+    },
+    {
+      "bus": "ni-cable",
+      "component": "c0-link-connector",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to another C-brick when the system has no R-brick, as in the Origin 3200"
+      ]
+    },
+    {
+      "bus": "ni-cable",
+      "component": "c1-link-connector",
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [

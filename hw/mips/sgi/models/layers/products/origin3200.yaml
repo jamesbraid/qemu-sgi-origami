@@ -217,6 +217,8 @@ layer:
     connections:
       - {component: c0-bedrock, bus: ni-cable, role: master, provenance: vendor-document, sources: [007-4240-002-link]}
       - {component: c1-bedrock, bus: ni-cable, role: endpoint, provenance: vendor-document, sources: [007-4240-002-link]}
+      - {component: c0-link-connector, bus: ni-cable, role: endpoint, provenance: vendor-document, sources: [007-4240-002-link]}
+      - {component: c1-link-connector, bus: ni-cable, role: endpoint, provenance: vendor-document, sources: [007-4240-002-link]}
     xio_cables:
       - id: c0-to-ibrick
         ends: [c0-xio-ii-connector, ibrick-port-a]
