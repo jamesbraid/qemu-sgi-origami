@@ -3476,6 +3476,64 @@ static void test_tezro_named_serial_profiles_build(void)
     }
 }
 
+/* The IO9 BCM5701's station address, through the config-space window. */
+static uint64_t ip53_bcm_station_address(QTestState *qts)
+{
+    uint32_t hi, lo;
+
+    qtest_writel(qts, IP53_BCM_CFG + 0x78, 0x0410);
+    hi = qtest_readl(qts, IP53_BCM_CFG + 0x80);
+    qtest_writel(qts, IP53_BCM_CFG + 0x78, 0x0414);
+    lo = qtest_readl(qts, IP53_BCM_CFG + 0x80);
+    return (uint64_t)(hi & 0xffff) << 32 | lo;
+}
+
+/*
+ * Every IP53 product's IO9 BCM5701 answers with the machine's mac=, and
+ * with SGI's default address when mac= is not given, the way an IOC3
+ * board does, so the PROM finds an SGI address on its Ethernet.
+ */
+static void test_ip53_bcm5701_takes_machine_mac(void)
+{
+    static const struct {
+        const char *machine;
+        const char *memory;
+        const char *reset_mode;
+    } products[] = {
+        { "origin350,ip53-experimental=on", "2G", "0x009cad85" },
+        { "onyx350,topology=onyx350-compat,ip53-experimental=on", "8G",
+          "0x009caf85" },
+        { "tezro,topology=tezro-tower-multi,ip53-experimental=on", "4G",
+          "0x009bad85" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
+        g_autofree char *with_mac = g_strdup_printf(
+            "%s,mac=08:00:69:aa:bb:cc", products[i].machine);
+        IP53RuntimeTestFixture *fixture =
+            ip53_runtime_test_start_with_binary_profile(
+                NULL, products[i].machine, NULL, "4", products[i].memory,
+                products[i].reset_mode);
+        char *netdev;
+
+        g_assert_cmphex(ip53_bcm_station_address(fixture->qts), ==,
+                        UINT64_C(0x080069123456));
+        ip53_runtime_test_stop(fixture);
+
+        fixture = ip53_runtime_test_start_with_binary_profile(
+            NULL, with_mac, "-nic user,mac=08:00:69:aa:bb:cc", "4",
+            products[i].memory, products[i].reset_mode);
+        g_assert_cmphex(ip53_bcm_station_address(fixture->qts), ==,
+                        UINT64_C(0x080069aabbcc));
+        /* A -nic naming no model binds the IO9's Ethernet. */
+        netdev = qom_get_str(fixture->qts, "/machine/io9-io9-d4-f0",
+                             "netdev");
+        g_assert_cmpstr(netdev, !=, "");
+        g_free(netdev);
+        ip53_runtime_test_stop(fixture);
+    }
+}
+
 static void test_tezro_legacy_experimental_populations(void)
 {
     static const struct {
@@ -3829,9 +3887,10 @@ static void test_ip53_static_bcm5701_network_backend(void)
                                &timeout, sizeof(timeout)), ==, 0);
     nic = g_strdup_printf("-nic socket,fd=%d,mac=52:54:00:bc:57:01",
                           sockets[1]);
+    /* The machine's mac= is the board identity the -nic must match. */
     fixture = ip53_runtime_test_start(
-        "origin350,topology=origin350,ip53-experimental=on",
-        nic);
+        "origin350,topology=origin350,ip53-experimental=on,"
+        "mac=52:54:00:bc:57:01", nic);
     close(sockets[1]);
     ip53_bcm_assert_static_device(fixture->qts);
     {
@@ -4083,7 +4142,8 @@ static void test_ip53_bcm5701_direct64_tx(const void *opaque)
     nic = g_strdup_printf("-nic socket,fd=%d,mac=52:54:00:bc:57:01",
                           sockets[1]);
     fixture = ip53_runtime_test_start(
-        "origin350,topology=origin350,ip53-experimental=on", nic);
+        "origin350,topology=origin350,ip53-experimental=on,"
+        "mac=52:54:00:bc:57:01", nic);
     close(sockets[1]);
     qtest_system_reset(fixture->qts);
     g_assert_cmphex(qtest_readl(fixture->qts, IP53_BCM_CFG + 0x70) & 0x10,
@@ -9684,6 +9744,8 @@ int main(int argc, char **argv)
                    test_tezro_tower_multi_builds_two_pic_hosts);
     qtest_add_func("sn/builder/tezro-named-serial-profiles-build",
                    test_tezro_named_serial_profiles_build);
+    qtest_add_func("sn/builder/ip53-bcm5701-takes-machine-mac",
+                   test_ip53_bcm5701_takes_machine_mac);
     qtest_add_func("sn/builder/tezro-legacy-experimental-populations",
                    test_tezro_legacy_experimental_populations);
     qtest_add_func("sn/builder/ip53-normal-selection-profiles",
