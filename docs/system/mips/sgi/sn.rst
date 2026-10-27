@@ -1244,6 +1244,13 @@ nodes have realized. Only the XIO cards ``pci-carrier``,
 ``pci-shoehorn``, ``menet`` and ``mscsi`` are built at such a port; a
 graphics pipe or BaseIO card cabled there is refused.
 
+An SN1 router is built as ``/machine/module<M>/router`` beside its
+module's L1 and that L1's UART, whether or not the topology carries the
+L1 management registry the Origin 300 PCI expansion experiment uses, so
+an R-brick needs no I/O peer. Its L1 keeps the routed Origin 300
+experiment's type profile described under :ref:`sgi-sn-family-rbrick`;
+an R-brick's own L1 type is unknown.
+
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
 crossbar port, a Bridge, and a board's own widget

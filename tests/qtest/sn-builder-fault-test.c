@@ -1613,6 +1613,63 @@ static void bedrock_test_install_pbrick(void)
 }
 
 /*
+ * An R-brick-shaped module: the two C-bricks, with no XIO, each cabled
+ * to its own port of one SN1 router, which sits in a module of its own
+ * with its own controller. The topology carries no L1 management
+ * record. The router's part and revision are the values the model
+ * presents; its ports and serial are fixture values.
+ */
+static SGIModelRouter rbrick_test_router = {
+    .id = (char *)"rbrick-router", .module_index = 2, .part = 0x3017,
+    .revision = 1, .serial = 0x5200000001ULL,
+};
+static SGIModelRouterList rbrick_test_router_entry = {
+    .value = &rbrick_test_router,
+};
+static SGIModelLinkEnd rbrick_test_ends[2][2];
+static SGIModelCable rbrick_test_cables[] = {
+    { .name = (char *)"c0-to-router", .kind = SGI_MODEL_CABLE_KIND_CABLE },
+    { .name = (char *)"c1-to-router", .kind = SGI_MODEL_CABLE_KIND_CABLE },
+};
+
+static void bedrock_test_install_rbrick(void)
+{
+    SGIModelControllerList **tail = &bedrock_test_topology.controllers;
+
+    cbrick_test_install_nodes(2);
+    cbrick_test_controllers[2] = (SGIModelController) {
+        .id = (char *)"l1-rbrick", .module_index = 2,
+        .kind = SGI_MODEL_CONTROLLER_KIND_L1,
+    };
+    while (*tail) {
+        tail = &(*tail)->next;
+    }
+    QAPI_LIST_APPEND(tail, &cbrick_test_controllers[2]);
+    fixture_remember(*tail);
+    cbrick_test_modules[2] = (SGIModelModule) {
+        .id = (char *)"rbrick", .controller_index = 2,
+    };
+    for (unsigned int i = 0; i < ARRAY_SIZE(rbrick_test_cables); i++) {
+        rbrick_test_ends[i][0] = (SGIModelLinkEnd) {
+            .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = i,
+        };
+        rbrick_test_ends[i][1] = (SGIModelLinkEnd) {
+            .kind = SGI_MODEL_LINK_END_KIND_ROUTER, .index = 0, .port = 2 + i,
+        };
+        rbrick_test_cables[i].ends = link_end_list(
+            rbrick_test_ends[i], ARRAY_SIZE(rbrick_test_ends[i]));
+    }
+    bedrock_test_topology.cables = cable_list(
+        rbrick_test_cables, ARRAY_SIZE(rbrick_test_cables));
+    bedrock_test_topology.routers = &rbrick_test_router_entry;
+    bedrock_test_topology.l1_management = NULL;
+    cbrick_test_publish(3, 0, 0, 0);
+    bedrock_test_topology.node_populations = whole_population(
+        &bedrock_test_topology,
+        cpu_population_list(&cbrick_test_population, 1));
+}
+
+/*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
  */
@@ -1786,6 +1843,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
         cbrick_test_crossbars[0].widget_revision = 3;
     } else if (!strcmp(value, "cbrick-nbrick")) {
         bedrock_test_install_nbrick();
+    } else if (!strcmp(value, "cbrick-rbrick")) {
+        bedrock_test_install_rbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {

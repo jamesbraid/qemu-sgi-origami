@@ -112,10 +112,17 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         }
         return true;
     }
-    if (t->generation != SGI_MODEL_GENERATION_SN1 || (!peers && !vbrick) ||
+    /*
+     * An I/O peer or the V-brick needs the L1 management registry; SN1
+     * routers alone are built without one.
+     */
+    if (t->generation != SGI_MODEL_GENERATION_SN1 ||
         (routers && nodes < 2) ||
-        QAPI_LIST_LENGTH(t->io_assemblies) != peers || !t->l1_management ||
-        QAPI_LIST_LENGTH(t->l1_management->owners) != controllers) {
+        QAPI_LIST_LENGTH(t->io_assemblies) != peers ||
+        (t->l1_management ?
+         (!peers && !vbrick) ||
+         QAPI_LIST_LENGTH(t->l1_management->owners) != controllers :
+         peers || vbrick)) {
         goto unsupported;
     }
     for (router = t->routers; router; router = router->next) {
