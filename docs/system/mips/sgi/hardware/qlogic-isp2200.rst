@@ -157,10 +157,19 @@ Mailboxes and the command window
 The host writes the inputs, mailbox 0 first, and rings the doorbell.
 The command runs then, never on a mailbox write. The model keeps an
 input bank, which commands read, and an output bank, which the host
-reads; a host write lands in both, so a mailbox reads back until a
-result replaces it, and an input the host does not rewrite keeps its
-last value. A result rewrites the whole output bank: mailboxes the
-command does not name read 0.
+reads. A host write always lands in the input bank, and an input the
+host does not rewrite keeps its last value. While the semaphore is free
+the write lands in the output bank too, so a mailbox reads back until a
+result replaces it. While a posted result holds the semaphore it does
+not: the result stays readable until its release, and after it until
+the next write or post. Linux and the IRIX 6.5.30 driver write a
+command's mailboxes and ring without first draining a result the
+adapter has just posted, and both classify the interrupt by mailbox 0,
+so a write that reached the read side would lose that result. Separate
+banks are inferred from the drivers' access patterns; what a real part
+returns for a mailbox read right after a host write is unknown. A
+result rewrites the whole output bank: mailboxes the command does not
+name read 0.
 
 Mailboxes 4 and 5 are also the request and response queue pointers once
 INIT_FIRMWARE has built the rings, and the drivers write them for three

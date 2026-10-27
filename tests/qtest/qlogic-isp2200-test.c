@@ -960,7 +960,8 @@ static void test_completion_interrupt(void *obj, void *data,
 
 /*
  * Approximation: a second result waits until both the semaphore and
- * the latch are released, then appears intact.
+ * the latch are released, then appears intact. The first stays readable
+ * under the second command's writes until then.
  */
 static void test_second_result_waits(void *obj, void *data,
                                      QGuestAllocator *alloc)
@@ -976,11 +977,12 @@ static void test_second_result_waits(void *obj, void *data,
     g_assert_cmphex(isp_call(&t, CMD_ABOUT_FIRMWARE, 0, 0, 0), ==,
                     MBOX_COMPLETE);
     g_assert_cmphex(isp_mbox(&t, second, ARRAY_SIZE(second)), ==,
-                    CMD_REGISTER_TEST);
+                    MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 1);
 
     wr(&t, REG_HCCR, HCCR_CLEAR_RISC);
     g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
-    g_assert_cmphex(rd(&t, MBOX(0)), ==, CMD_REGISTER_TEST);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
     wr(&t, REG_SEMAPHORE, 0);
 
     g_assert_cmphex(rd(&t, REG_SEMAPHORE), ==, SEM_LOCK);
@@ -1903,6 +1905,73 @@ static void test_ring_dma_errors(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmpuint(fc_submissions(&t), ==, 1);
     assert_event(&t, ASYNC_RESPONSE_DMA);
     g_assert_cmphex(rd(&t, REG_RESPONSE), ==, 0);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: a posted result stays readable while the host writes a
+ * command's mailboxes behind it. Linux writes all 24 mailboxes and rings
+ * without draining a result first; the IRIX 6.5.30 driver wrote only
+ * mailbox 0 over a posted event on the model. In both, mailboxes 0..3
+ * read the event until its release, and the command then completes on
+ * what the host wrote. A model that lets the write through to the read
+ * side fails both halves.
+ */
+static void test_writes_behind_posted_result(void *obj, void *data,
+                                             QGuestAllocator *alloc)
+{
+    uint16_t in[MBOX_COUNT];
+    unsigned i;
+    Isp t;
+
+    if (!is_mips64()) {
+        g_test_skip("an unbacked address belongs to the SGI Bridge head");
+        return;
+    }
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    isp_rings_at(&t, 8, 8, guest_alloc(alloc, ICB_SIZE), UNMAPPED_PHYS,
+                 guest_alloc(alloc, 8 * ENTRY_SIZE), 0, 0);
+
+    /* Linux's order: every mailbox, ascending, then the doorbell. */
+    wr(&t, REG_REQUEST, 1);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_REQUEST_DMA);
+    in[0] = CMD_REGISTER_TEST;
+    for (i = 1; i < MBOX_COUNT; i++) {
+        in[i] = 0x5a00 | i;
+    }
+    isp_mbox(&t, in, MBOX_COUNT);
+    for (i = 0; i < 4; i++) {
+        g_assert_cmphex(rd(&t, MBOX(i)), ==,
+                        i == 0 ? ASYNC_REQUEST_DMA : 0);
+    }
+    g_assert_cmphex(rd(&t, MBOX(8)), ==, 0);
+    isp_ack(&t);
+    g_assert_cmphex(rd(&t, REG_SEMAPHORE), ==, SEM_LOCK);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    for (i = 1; i < 8; i++) {
+        g_assert_cmphex(rd(&t, MBOX(i)), ==, in[i]);
+    }
+    isp_ack(&t);
+
+    /* IRIX's case: mailbox 0 alone, then the doorbell. */
+    wr(&t, REG_REQUEST, 2);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_REQUEST_DMA);
+    wr(&t, MBOX(0), CMD_NOP);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_REQUEST_DMA);
+    wr(&t, REG_HCCR, HCCR_SET_HOST);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_REQUEST_DMA);
+    wr(&t, REG_HCCR, HCCR_CLEAR_RISC);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_REQUEST_DMA);
+    wr(&t, REG_SEMAPHORE, 0);
+    g_assert_cmphex(rd(&t, REG_SEMAPHORE), ==, SEM_LOCK);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    isp_ack(&t);
+
+    /* With the lock free and nothing posted, a write reads back. */
+    g_assert_cmphex(rd(&t, REG_SEMAPHORE), ==, 0);
+    wr(&t, MBOX(1), 0x1234);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 0x1234);
     isp_close(&t);
 }
 
@@ -4075,6 +4144,39 @@ static void test_loop_dma_refused(void *obj, void *data,
 }
 
 /*
+ * Approximation: IRIX 6.5.30 rang get firmware state on the model while
+ * the bring-up's loop-up event was posted and unread. The event stays
+ * readable until its release, and the completion then follows with the
+ * loop ready, so neither is lost.
+ */
+static void test_writes_behind_loop_up(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_start(&t);
+    isp_rings(&t, 8, 8);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_LIP);
+    isp_ack(&t);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_LOOP_UP);
+
+    wr(&t, MBOX(0), CMD_GET_FW_STATE);
+    wr(&t, REG_HCCR, HCCR_SET_HOST);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, ASYNC_LOOP_UP);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, 0);
+    isp_ack(&t);
+
+    g_assert_cmphex(rd(&t, REG_SEMAPHORE), ==, SEM_LOCK);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    g_assert_cmphex(rd(&t, MBOX(1)), ==, FW_STATE_READY);
+    isp_ack(&t);
+    isp_expect_no_event(&t);
+    isp_close(&t);
+}
+
+/*
  * OpenBSD writes the port name list's inputs without mailbox 7, so the
  * address takes bits 47:32 from what the host last wrote there. Here
  * that is 1, from an earlier command: the list lands above 4 GiB, and
@@ -4216,6 +4318,8 @@ static void isp2200_register_nodes(void)
                  test_descriptor_dma_errors, NULL);
     qos_add_test("ring-dma-errors", "qlogic-isp2200", test_ring_dma_errors,
                  NULL);
+    qos_add_test("writes-behind-posted-result", "qlogic-isp2200",
+                 test_writes_behind_posted_result, NULL);
     qos_add_test("request-dma-error-waits", "qlogic-isp2200",
                  test_request_dma_error_waits, NULL);
     qos_add_test("bus-master-disabled", "qlogic-isp2200",
@@ -4280,6 +4384,8 @@ static void isp2200_register_nodes(void)
                  test_loop_down_commands, &loop_opts);
     qos_add_test("loop-dma-refused", "qlogic-isp2200", test_loop_dma_refused,
                  &loop_opts);
+    qos_add_test("writes-behind-loop-up", "qlogic-isp2200",
+                 test_writes_behind_loop_up, &loop_opts);
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
                  test_port_name_list_retains_m7, &loop_opts);
 }

@@ -390,9 +390,11 @@ struct QLogicISP2200State {
 
     /*
      * Two banks: commands read what the host last wrote, the host reads
-     * what the firmware last wrote. A host write lands in both, so a
-     * mailbox reads back until a result replaces it, and an input the
-     * host did not rewrite keeps its last value.
+     * what the firmware last wrote. A host write always lands in the
+     * input bank, and an input the host did not rewrite keeps its last
+     * value. It reaches the output bank only while no result holds the
+     * semaphore, so a mailbox reads back then, and a posted result stays
+     * readable under the host's writes until its release.
      */
     uint16_t mbox_in[ISP2200_MAILBOX_COUNT];
     uint16_t mbox_out[ISP2200_MAILBOX_COUNT];
@@ -2370,7 +2372,14 @@ static void isp2200_mailbox_write(QLogicISP2200State *s, int idx,
     }
 
     s->mbox_in[idx] = val;
-    s->mbox_out[idx] = val;
+    /*
+     * Linux and the IRIX 6.5.30 driver write a command's inputs without
+     * draining a result posted just before; reading their own write
+     * back would lose that result.
+     */
+    if (!(s->semaphore & ISP2200_SEMAPHORE_LOCK)) {
+        s->mbox_out[idx] = val;
+    }
 }
 
 static uint16_t isp2200_mailbox_read(QLogicISP2200State *s, int idx)
