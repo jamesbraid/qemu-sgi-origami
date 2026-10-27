@@ -304,6 +304,11 @@ layers):
   inventory does not report the Octane2 Bridge revision, and the value is
   carried over from the earlier Octane.
 
+The machines do not yet pass the catalogue's Bridge revision to the
+Bridge, so on both the chip reports its default, revision 1 (see
+:doc:`hardware/bridge`). This is a model inconsistency, listed under
+:ref:`sgi-ip30-unknowns`.
+
 IOC3 general-purpose input 2 tells the two products apart in software:
 OpenBSD reads it as 1 for Octane and 0 for Octane2 (``ip30.h``,
 ``IP30_GPIO_CLASSIC``; ``ip30_machdep.c`` lines 193-202). The model
@@ -489,8 +494,9 @@ The model's choices, all approximations:
   datasheet, implemented with QEMU's Intel-command-set ``pflash_cfi01``
   and compatibility identifiers. The fitted part is *unknown*, so the
   size is not a hardware claim.
-- The second select reads as a blank, all-ones region and discards
-  writes, which reproduces the one measured word and nothing more.
+- Only one select has a part. A read of the other select fails as an
+  unpopulated widget address does and logs a guest error, so the model
+  does not reproduce the measured ``0xffff`` below.
 
 .. _sgi-ip30-octane2-alt-flash:
 
@@ -612,7 +618,8 @@ Open questions
   smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`,
   :doc:`hardware/heart`).
-- The Octane2 Bridge silicon revision.
+- The Octane2 Bridge silicon revision, and the model's Bridge reporting
+  revision 1 where the catalogue records 3.
 - The expansion Bridge's widget number.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
   public source establishes it, and this page does not state it.
