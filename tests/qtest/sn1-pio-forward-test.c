@@ -10,7 +10,9 @@
  *   places this node's I/O space at node 0;
  * - the I/O interface's big-window entry is re-aimed at another widget;
  * - a store and a load reach the VPro through the widget view a Fuel's
- *   XBridge port presents, whose root is an alias.
+ *   XBridge port presents, whose root is an alias;
+ * - a Bridge board at the same widget switches its window 0 between PCI
+ *   memory and I/O space, which changes the I/O interface's widget view.
  *
  * The target is a VPro register that keeps what is written to it: the
  * interrupt destination's upper half.
@@ -47,6 +49,7 @@
 #define MAILBOX             UINT64_C(0x180000)
 #define OP_STORE            1
 #define OP_LOAD             2
+#define OP_STORE_BYTE       3
 #define FAULT_MARK          0xfa17
 
 #define R_ZERO 0
@@ -86,6 +89,13 @@ static void emit_li64(Image *p, unsigned int rt, uint64_t value)
     }
 }
 
+/* Point the branch at @at to the current position. */
+static void patch(Image *p, unsigned int at)
+{
+    stl_be_p(p->bytes + at, ldl_be_p(p->bytes + at) |
+             (uint16_t)(((int)p->pos - (int)at - 4) / 4));
+}
+
 static void emit_branch_to(Image *p, uint32_t op, unsigned int rs,
                            unsigned int rt, unsigned int dest)
 {
@@ -97,17 +107,18 @@ static void emit_branch_to(Image *p, uint32_t op, unsigned int rs,
 
 /*
  * A server for one request at a time in the mailbox: the operation at +0,
- * the processor address at +8, the word at +16. A store writes the word; a
- * load leaves what it read at +16. Clearing +0 says it is done. A bus error
- * on the access marks +24 and resumes after the access, so a request that
- * reaches nothing still completes.
+ * the processor address at +8, the word at +16. A store writes the word,
+ * a byte store its low byte, and a load leaves the word it read at +16.
+ * Clearing +0 says it is done. A bus error on the access marks +24 and
+ * resumes after the access, so a request that reaches nothing still
+ * completes.
  */
 static char *write_image(void)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *bytes = g_malloc0(PROM_SIZE);
     Image p = { .bytes = bytes };
-    unsigned int loop, store, done;
+    unsigned int loop, store, store_byte, done, done_word;
     char *path = NULL;
     int fd;
 
@@ -139,17 +150,26 @@ static char *write_image(void)
     store = p.pos;
     emit(&p, mips_branch(MIPS_OPC_BEQ, R_T1, R_T3, 0));
     emit(&p, 0);
+    emit(&p, mips_ori(R_T3, R_ZERO, OP_STORE_BYTE));
+    store_byte = p.pos;
+    emit(&p, mips_branch(MIPS_OPC_BEQ, R_T1, R_T3, 0));
+    emit(&p, 0);
     emit(&p, mips_lw(R_T0, R_T2, 0));
     emit(&p, mips_sd(R_T0, R_S0, 16));
     done = p.pos;
     emit(&p, mips_branch(MIPS_OPC_BEQ, R_ZERO, R_ZERO, 0));
     emit(&p, 0);
-    stl_be_p(bytes + store, ldl_be_p(bytes + store) |
-             (uint16_t)(((int)p.pos - (int)store - 4) / 4));
+    patch(&p, store);
     emit(&p, mips_ld(R_T0, R_S0, 16));
     emit(&p, mips_sw(R_T0, R_T2, 0));
-    stl_be_p(bytes + done, ldl_be_p(bytes + done) |
-             (uint16_t)(((int)p.pos - (int)done - 4) / 4));
+    done_word = p.pos;
+    emit(&p, mips_branch(MIPS_OPC_BEQ, R_ZERO, R_ZERO, 0));
+    emit(&p, 0);
+    patch(&p, store_byte);
+    emit(&p, mips_ld(R_T0, R_S0, 16));
+    emit(&p, 0xa0000000 | (R_T2 << 21) | (R_T0 << 16)); /* sb t0, 0(t2) */
+    patch(&p, done);
+    patch(&p, done_word);
     emit(&p, mips_sd(R_ZERO, R_S0, 0));
     emit_branch_to(&p, MIPS_OPC_BEQ, R_ZERO, R_ZERO, loop);
 
@@ -160,16 +180,21 @@ static char *write_image(void)
     return path;
 }
 
-static QTestState *start(void)
+static QTestState *start_with(const char *extra)
 {
     g_autofree char *prom = write_image();
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M "
-                                  "-accel tcg -bios %s -S", quoted);
+                                  "-accel tcg -bios %s -S %s", quoted, extra);
 
     unlink(prom);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
     return qts;
+}
+
+static QTestState *start(void)
+{
+    return start_with("");
 }
 
 /* Run one request; return whether the access raised a bus error. */
@@ -194,6 +219,13 @@ static bool guest_store(QTestState *qts, uint64_t io, uint32_t value)
     uint64_t word = value;
 
     return request(qts, OP_STORE, io, &word);
+}
+
+static bool guest_store_byte(QTestState *qts, uint64_t io, uint8_t value)
+{
+    uint64_t word = value;
+
+    return request(qts, OP_STORE_BYTE, io, &word);
 }
 
 static uint32_t guest_load(QTestState *qts, uint64_t io)
@@ -275,6 +307,87 @@ static void test_alias_rooted_widget_view(void)
     qtest_quit(qts);
 }
 
+/*
+ * A Bridge-based XIO board in the Fuel's widget 13 slot, with a PCI test
+ * device whose memory BAR and I/O BAR sit at the same PCI address. The
+ * Bridge maps its device windows straight into the widget view, and a
+ * Device(n) write switches window n between its PCI memory and I/O
+ * regions. Both of the device's BARs are register regions, so the I/O
+ * interface's page cache can hold either.
+ *
+ * The device's registers take single bytes only; a wider access would be
+ * split, and the cache serves only accesses its region takes whole, so the
+ * processor stores bytes here. Writing a test number to register 0 selects
+ * that test,
+ * counted from 0 in memory space and from 3 in I/O space, and every read
+ * then returns the selected test's header. Its name, from byte 16, starts
+ * "mmio" or "portio".
+ */
+#define SHOEHORN \
+    "-vga none -device sgi-pci-shoehorn,slot=widget-13,pci-bus-name=shoe " \
+    "-device pci-testdev,bus=shoe,addr=0 "
+#define BRIDGE_REG(off)     (((uint64_t)VPRO_WIDGET << 24) + (off) + 4)
+#define BRIDGE_DEVICE0      BRIDGE_REG(0x200)
+#define BRIDGE_CFG0(off)    (((uint64_t)VPRO_WIDGET << 24) + 0x20000 + (off))
+#define WINDOW0(off)        (((uint64_t)VPRO_WIDGET << 24) + 0x200000 + (off))
+#define TESTDEV_PCI         0x20000000u
+#define TESTDEV_NAME        16
+#define PCI_BAR0            0x10
+#define PCI_BAR1            0x14
+#define PCI_COMMAND_IO      0x0001
+
+static void aim_window0(QTestState *qts, bool memory)
+{
+    qtest_writel(qts, SPACE_IO + BRIDGE_DEVICE0,
+                 (memory ? DEV_MEMORY_SPACE : 0) | (TESTDEV_PCI >> 20));
+}
+
+static uint32_t selected_name(QTestState *qts)
+{
+    return qtest_readl(qts, SPACE_IO + WINDOW0(TESTDEV_NAME));
+}
+
+/*
+ * Zero the window's first four bytes, so register 0 is written whichever
+ * byte lane the Bridge puts it on.
+ */
+static void select_test_zero(QTestState *qts)
+{
+    for (unsigned int i = 0; i < 4; i++) {
+        g_assert_false(guest_store_byte(qts, WINDOW0(i), 0));
+    }
+}
+
+/*
+ * Select test 0 by processor stores through window 0 in memory space,
+ * switch the window to PCI I/O space and make the same stores at the same
+ * processor addresses. It must reach the I/O BAR and select the I/O test, so
+ * the name read back afterwards changes.
+ */
+static void test_ii_follows_a_bridge_window_switch(void)
+{
+    QTestState *qts = start_with(SHOEHORN);
+    uint32_t memory_name;
+
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_BAR0), TESTDEV_PCI);
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_BAR1), TESTDEV_PCI);
+    qtest_writel(qts, SPACE_IO + BRIDGE_CFG0(PCI_COMMAND),
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
+    aim_window0(qts, true);
+
+    select_test_zero(qts);
+    memory_name = selected_name(qts);
+
+    aim_window0(qts, false);
+    select_test_zero(qts);
+
+    aim_window0(qts, true);
+    g_test_message("selected name 0x%08x after the memory store, 0x%08x "
+                   "after the I/O store", memory_name, selected_name(qts));
+    g_assert_cmphex(selected_name(qts), !=, memory_name);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -287,5 +400,7 @@ int main(int argc, char **argv)
                    test_ii_follows_a_reaimed_itte);
     qtest_add_func("/sn1-pio-forward/alias-rooted-widget-view",
                    test_alias_rooted_widget_view);
+    qtest_add_func("/sn1-pio-forward/ii-follows-a-bridge-window-switch",
+                   test_ii_follows_a_bridge_window_switch);
     return g_test_run();
 }
