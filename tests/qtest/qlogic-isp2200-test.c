@@ -19,6 +19,7 @@
 #include "qemu/module.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "qobject/qlist.h"
 #include "libqos/qgraph.h"
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -3680,25 +3681,84 @@ static void test_unplug_disconnect(void *obj, void *data,
     isp_close(&t);
 }
 
+/* Reads the drive's backend has finished, cancelled ones included. */
+static int64_t isp_reads_done(Isp *t, const char *drive)
+{
+    QDict *rsp = qtest_qmp(t->qts, "{ 'execute': 'query-blockstats' }");
+    QListEntry *entry;
+    int64_t done = -1;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(rsp, "return"), entry) {
+        QDict *dev = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (qdict_haskey(dev, "device") &&
+            !strcmp(qdict_get_str(dev, "device"), drive)) {
+            done = qdict_get_int(qdict_get_qdict(dev, "stats"),
+                                 "rd_operations");
+        }
+    }
+    qobject_unref(rsp);
+    g_assert_cmpint(done, >=, 0);
+    return done;
+}
+
+/*
+ * Until the drive's backend has finished @want reads. A slow disk's read
+ * still running when the model should have cancelled it ends here, and a
+ * command the model failed to cancel would deliver its data and complete
+ * by the time this returns.
+ */
+static void isp_wait_reads(Isp *t, const char *drive, int64_t want)
+{
+    unsigned i;
+
+    for (i = 0; i < 10000 && isp_reads_done(t, drive) < want; i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmpint(isp_reads_done(t, drive), ==, want);
+}
+
+/* Every byte of the host's buffer still holds @fill. */
+static void assert_untouched(Isp *t, uint64_t buf, size_t len, uint8_t fill)
+{
+    g_autofree uint8_t *data = g_malloc(len);
+    size_t i;
+
+    qtest_memread(t->qts, buf, data, len);
+    for (i = 0; i < len; i++) {
+        g_assert_cmphex(data[i], ==, fill);
+    }
+}
+
 /*
  * A soft reset cancels every command in flight without a status and
- * resets the loop's devices with the adapter.
+ * resets the loop's devices with the adapter. Once the disks' reads are
+ * over, no data has reached the host's buffers: a command that finishes
+ * while the reset waits on another's cancellation moves nothing either.
  */
 static void test_soft_reset_cancels(void *obj, void *data,
                                     QGuestAllocator *alloc)
 {
     uint64_t buf = guest_alloc(alloc, 1024);
+    int64_t reads5, reads1;
     Isp t;
 
     isp_open(&t, obj, alloc);
     isp_loop_up(&t, ICB_OPT_PORT_DB);
     isp_clear_unit_attention(&t, &slow_config);
+    qtest_memset(t.qts, buf, 0xa5, 1024);
+    reads5 = isp_reads_done(&t, "disk0");
+    reads1 = isp_reads_done(&t, "disk2");
 
     isp_submit_read(&t, 0xe5, 5, 0, buf);
     isp_submit_read(&t, 0xe1, 1, 0, buf + 512);
     isp_soft_reset(&t);
     g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
     wr(&t, REG_HCCR, HCCR_RELEASE);
+    isp_wait_reads(&t, "disk0", reads5 + 1);
+    isp_wait_reads(&t, "disk2", reads1 + 1);
+    g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
+    assert_untouched(&t, buf, 1024, 0xa5);
 
     isp_loop_up(&t, ICB_OPT_PORT_DB);
     g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0x06);
