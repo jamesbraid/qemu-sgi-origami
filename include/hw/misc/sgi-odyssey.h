@@ -361,6 +361,8 @@ struct SGIOdysseyState {
     guint work_in_fifo;
     /* qtest: stores from outside a processor count as counted. */
     uint8_t test_counted_stores;
+    /* qtest: each slice on the board's thread first sleeps this long. */
+    uint32_t test_slice_sleep_ms;
     /* Until when (QEMU_CLOCK_VIRTUAL) FIFO stores queue after a long one. */
     int64_t work_queued_until;
     /* Scalar draws run without the big lock, for the qtest. */
