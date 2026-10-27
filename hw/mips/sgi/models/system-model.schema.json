@@ -1860,7 +1860,11 @@
       "required": ["kind"],
       "description": "Which system-controller part this component is: MSC over I2C (ELSC is SGI's own older name for the same part), L1 over a UART, or the MMSC/L2 variants this catalogue does not yet populate.",
       "properties": {
-        "kind": { "enum": ["msc", "l1", "mmsc", "l2"] }
+        "kind": { "enum": ["msc", "l1", "mmsc", "l2"] },
+        "owner": {
+          "enum": ["node", "module"],
+          "description": "Which object the controller belongs to: each node of the module as its own (node, the default, as on an Origin 300), or the module once for all of its nodes."
+        }
       }
     },
 

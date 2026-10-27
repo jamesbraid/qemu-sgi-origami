@@ -2966,6 +2966,8 @@ def _compile_controllers(model: dict, components: dict[str, dict],
             configuration["l1"] = _initialization(
                 model, "l1_controllers", component["id"])
         addresses = controller_addresses.get(kind, {})
+        if system_controller.get("owner") == "module":
+            configuration["owner"] = "module"
         result.append({
             "id": component["id"],
             "kind": kinds[kind],
