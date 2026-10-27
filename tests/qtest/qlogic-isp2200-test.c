@@ -3393,6 +3393,7 @@ static const LoopConfig slow_config = {
 #define CMD_LIP_RESET       0x006c
 #define CMD_LUN_RESET       0x007e
 
+#define COMPLETION_DMA_ERROR    0x0002
 #define COMPLETION_RESET        0x0004
 #define COMPLETION_ABORTED      0x0005
 #define COMPLETION_LOGGED_OUT   0x0029
@@ -3707,6 +3708,53 @@ static void test_soft_reset_cancels(void *obj, void *data,
     isp_close(&t);
 }
 
+/*
+ * A data DMA the host bridge refuses completes the command 0x0002 (DMA
+ * error) with no SCSI status, whether the adapter is delivering read data
+ * or fetching write data, and the port keeps working.
+ */
+static void test_scsi_dma_error(void *obj, void *data,
+                                QGuestAllocator *alloc)
+{
+    uint8_t cdb[10], e[ENTRY_SIZE];
+    ScsiResult r;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &loop_config);
+
+    cdb_rw10(cdb, 0x28, 0, 1);
+    isp_scsi(&t, 0xd0a0, 5, 0, cdb, sizeof(cdb), 0x20, UNMAPPED_PHYS, 512,
+             0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_DMA_ERROR);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+
+    /* The whole command's data, from an unmapped buffer. */
+    cdb_rw10(cdb, 0x2a, 0, 1);
+    isp_scsi(&t, 0xd0a1, 5, 0, cdb, sizeof(cdb), 0x40, UNMAPPED_PHYS, 512,
+             0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_DMA_ERROR);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+
+    /* A buffer shorter than the command's eight blocks, unmapped too. */
+    cdb_rw10(cdb, 0x2a, 0, 8);
+    entry_command(e, ENTRY_CMD64, 0xd0a2, 5, 0, 0x2a);
+    memcpy(e + 20, cdb, sizeof(cdb));
+    stw_le_p(e + 12, 0x40);
+    stl_le_p(e + 36, 512);
+    stw_le_p(e + 18, 1);
+    put_seg64(e + 40, UNMAPPED_PHYS, 512);
+    isp_publish(&t, e);
+    isp_wait_response(&t, e);
+    decode_status(e, 0xd0a2, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_DMA_ERROR);
+    g_assert_cmphex(r.scsi_status, ==, 0);
+
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0);
+    isp_close(&t);
+}
+
 static void isp2200_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -3848,6 +3896,8 @@ static void isp2200_register_nodes(void)
                  test_unplug_disconnect, &slow_opts);
     qos_add_test("soft-reset-cancels", "qlogic-isp2200",
                  test_soft_reset_cancels, &slow_opts);
+    qos_add_test("scsi-dma-error", "qlogic-isp2200", test_scsi_dma_error,
+                 &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);
