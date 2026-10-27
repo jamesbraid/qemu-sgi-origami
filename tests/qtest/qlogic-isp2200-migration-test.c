@@ -430,7 +430,8 @@ static void test_posted_and_waiting(void)
     g_assert_cmphex(rd(&to, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
     isp_ack(&to);
     g_assert_cmphex(isp_take(&to, &m1), ==, MBOX_COMPLETE);
-    g_assert_cmphex(rd(&to, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+    /* Freeing the slot runs the waiting command, which takes the doorbell. */
+    g_assert_cmphex(rd(&to, REG_HCCR) & HCCR_HOST_INT, ==, 0);
     g_assert_cmphex(rd(&to, REG_SEMAPHORE) & SEM_LOCK, ==, SEM_LOCK);
     g_assert_cmphex(rd(&to, MBOX(0)), ==, MBOX_COMPLETE);
     for (i = 1; i < ARRAY_SIZE(test_in); i++) {
