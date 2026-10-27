@@ -329,6 +329,15 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
                 raise ResolutionError(
                     f"assembly '{assembly_id}' DIMM and bank sizes disagree"
                 )
+        # Banks that share one DIMM pair: each pair is fitted whole, at one
+        # size, or left empty.
+        pair = capacity.get("banks_per_dimm_pair")
+        if pair is not None and (
+                not isinstance(pair, int) or pair < 1 or bank_limit % pair):
+            raise ResolutionError(
+                f"assembly '{assembly_id}' banks_per_dimm_pair must divide "
+                f"its {bank_limit} memory banks"
+            )
         if (not isinstance(bank_layouts, list) or
                 len(bank_layouts) != nodes):
             raise ResolutionError(
@@ -367,6 +376,14 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
                     f"node {node} bank population needs "
                     f"{len(populated) * dimms_per_bank} DIMMs, got {dimms[node]}"
                 )
+            if pair:
+                for first in range(0, bank_limit, pair):
+                    if len(set(banks[first:first + pair])) != 1:
+                        raise ResolutionError(
+                            f"node {node} banks {first} to {first + pair - 1} "
+                            f"share DIMM pair {first // pair} and must be "
+                            "fitted alike"
+                        )
         limits["memory_banks_per_node"] = bank_limit
         limits["supported_bank_sizes_mib"] = copy.deepcopy(supported)
 

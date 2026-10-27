@@ -1372,6 +1372,43 @@ class SystemModelResolutionTests(unittest.TestCase):
                 with self.assertRaisesRegex(self.resolver.ResolutionError, message):
                     self.resolver.load_system_model(path)
 
+    def test_memory_banks_on_one_dimm_pair_are_fitted_alike(self):
+        capacity = {"memory_banks_per_node": 4, "dimms_per_bank": 1,
+                    "banks_per_dimm_pair": 2,
+                    "supported_bank_sizes_mib": [128, 256]}
+        for banks, extra, message in (
+                ([256, 128, 0, 0], {},
+                 "node 0 banks 0 to 1 share DIMM pair 0 and must be fitted "
+                 "alike"),
+                ([256, 256, 128, 0], {},
+                 "node 0 banks 2 to 3 share DIMM pair 1 and must be fitted "
+                 "alike"),
+                ([128, 128, 128, 128], {"banks_per_dimm_pair": 3},
+                 "assembly 'ip29' banks_per_dimm_pair must divide its 4 "
+                 "memory banks"),
+                ([256, 256, 128, 128], {}, None),
+        ):
+            with self.subTest(banks=banks), \
+                    tempfile.TemporaryDirectory() as directory:
+                path = self.address_composition(
+                    directory, capacity_metadata={**capacity, **extra})
+                product_path = pathlib.Path(directory) / "product.yaml"
+                product = yaml.safe_load(product_path.read_text())
+                product["layer"]["population"].update(
+                    dimms_per_node=[sum(1 for size in banks if size)],
+                    memory_mib_per_node=[sum(banks)],
+                    memory_bank_mib_per_node=[banks])
+                product_path.write_text(yaml.safe_dump(product))
+                if message is None:
+                    model = self.resolver.load_system_model(path)
+                    self.assertEqual(
+                        model["composition"]["population"]
+                        ["memory_bank_mib_per_node"], [banks])
+                    continue
+                with self.assertRaisesRegex(
+                        self.resolver.ResolutionError, message):
+                    self.resolver.load_system_model(path)
+
     def test_origin200_resolution_is_deterministic_and_complete(self):
         # Two independent fresh loads of the same real file, not real_model()'s
         # single cached copy: this is what tests the loader's own determinism.
