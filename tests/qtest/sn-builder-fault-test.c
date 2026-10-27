@@ -1490,6 +1490,55 @@ static void bedrock_test_install_cbrick_board(uint8_t port)
 }
 
 /*
+ * An N-brick-shaped module: four C-bricks c0..c3 and one module holding
+ * four XBridges, each with neither PCI nor head attachment. Chip k takes
+ * ck's cable on one Crosstown2 port, A for even k and B for odd, and a
+ * board on the other, each board in a G-brick-shaped module of its own
+ * kind. Board presets and identities are fixture values.
+ */
+static void bedrock_test_install_nbrick(void)
+{
+    static const char *const crossbar_ids[] = {
+        "nbrick-xbridge0", "nbrick-xbridge1",
+        "nbrick-xbridge2", "nbrick-xbridge3",
+    };
+    static const char *const board_ids[] = {
+        "pipe-board0", "pipe-board1", "pipe-board2", "pipe-board3",
+    };
+    static const char *const cable_ids[][2] = {
+        { "c0-to-nbrick", "nbrick0-to-pipe" },
+        { "c1-to-nbrick", "nbrick1-to-pipe" },
+        { "c2-to-nbrick", "nbrick2-to-pipe" },
+        { "c3-to-nbrick", "nbrick3-to-pipe" },
+    };
+
+    cbrick_test_install_nodes(CBRICK_TEST_MAX_NODES);
+    cbrick_test_modules[4] = (SGIModelModule) {
+        .id = (char *)"nbrick", .controller_index = -1,
+        .has_controller = true,
+        .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+    };
+    cbrick_test_modules[5] = cbrick_test_modules[4];
+    cbrick_test_modules[5].id = (char *)"gbrick";
+    for (unsigned int k = 0; k < CBRICK_TEST_MAX_NODES; k++) {
+        uint8_t host = k % 2 ? 0xb : 0xa;
+        uint8_t board = k % 2 ? 0xa : 0xb;
+
+        cbrick_test_crossbars[k] = (SGIModelCrossbar) {
+            .id = (char *)crossbar_ids[k], .module_index = 4,
+            .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 2,
+        };
+        cbrick_test_fit_board(k, board_ids[k], 5, k, board, k, k);
+        cbrick_test_add_xio_cable(cable_ids[k][0], cbrick_node_end(k),
+                                  cbrick_crossbar_end(k, host));
+        cbrick_test_add_xio_cable(cable_ids[k][1],
+                                  cbrick_crossbar_end(k, board),
+                                  cbrick_board_end(k));
+    }
+    cbrick_test_publish(6, 4, 4, 4);
+}
+
+/*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
  */
@@ -1653,6 +1702,8 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "cbrick-io7")) {
         bedrock_test_install_cbrick_descriptor(0xa);
         bedrock_test_install_cbrick_io7();
+    } else if (!strcmp(value, "cbrick-nbrick")) {
+        bedrock_test_install_nbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {
         bedrock_test_install_cbrick_board(8);
     } else if (!strcmp(value, "cbrick-board-port-b")) {
@@ -1815,7 +1866,8 @@ static void bedrock_test_class_init(ObjectClass *oc, const void *data)
     mc->desc = "two-node Bedrock topology fixture";
     mc->init = bedrock_test_machine_init;
     mc->valid_cpu_types = bedrock_test_r14000_cpu_types;
-    mc->max_cpus = 2;
+    /* Two nodes, or the four C-bricks of the N-brick-shaped fixture. */
+    mc->max_cpus = CBRICK_TEST_MAX_NODES;
     mc->default_ram_id = "sn-builder-bedrock-test.ram";
     smc->test_topology = &bedrock_test_topology;
     object_class_property_add_bool(oc, "activate", NULL,

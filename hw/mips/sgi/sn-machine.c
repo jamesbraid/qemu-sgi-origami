@@ -3940,7 +3940,8 @@ static bool sgi_machine_instantiate_io_board(
  * property: the host port is the one the cable meets, and the model's
  * external port, which must differ from it, is the other Crosstown2 port,
  * to which no Bedrock widget is linked. PCI sections are named from their
- * bus, so each chip's buses take its module's id as their prefix.
+ * bus, so each chip's buses take its module's id as their prefix. The
+ * N-brick's four chips share it; they carry no PCI device.
  */
 static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
                                                   const SGIModelTopology *t,
@@ -3956,7 +3957,9 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
     for (i = 0; i < crossbar_count; i++) {
         const SGIModelCrossbar *record = crossbars[i];
         g_autofree char *module_name = NULL;
+        g_autofree char *chip_name = NULL;
         g_autofree char *prefix = NULL;
+        unsigned int position = 0, in_module = 0;
         Object *container;
         DeviceState *xbridge;
         unsigned int node;
@@ -3967,21 +3970,25 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
         /* Validation left only crossbars a node's cable reaches. */
         hosted = sgi_machine_crossbar_host(t, i, &node, &port);
         g_assert(hosted && record->module_index < module_count);
-        for (size_t other = 0; other < i; other++) {
+        /*
+         * A brick of one chip names it xbridge. The N-brick's four are
+         * xbridge0 to xbridge3, in record order within the module.
+         */
+        for (size_t other = 0; other < crossbar_count; other++) {
             if (crossbars[other]->module_index == record->module_index) {
-                error_setg(errp, "topology '%s' module '%s' holds crossbars "
-                           "'%s' and '%s'; several crossbars in one brick are "
-                           "not built yet", t->name,
-                           modules[record->module_index]->id,
-                           crossbars[other]->id, record->id);
-                return false;
+                if (other < i) {
+                    position++;
+                }
+                in_module++;
             }
         }
+        chip_name = in_module == 1 ? g_strdup("xbridge") :
+                    g_strdup_printf("xbridge%u", position);
         module_name = g_strdup_printf("module%u", record->module_index);
         container = object_resolve_path_component(OBJECT(s), module_name);
         g_assert(container);
         xbridge = qdev_new(TYPE_SGI_XBRIDGE);
-        object_property_add_child(container, "xbridge", OBJECT(xbridge));
+        object_property_add_child(container, chip_name, OBJECT(xbridge));
         object_unref(OBJECT(xbridge));
         /*
          * The crossbar section's revision is fixed by the device model;

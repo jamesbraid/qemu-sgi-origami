@@ -1180,7 +1180,8 @@ XIO port, as above.
 
 An Origin 3000 C-brick's IP35 board has no XBridge: an XIO cable joins
 its Bedrock to port A or B of the XBridge in an I/O brick. The builder
-creates that chip as ``/machine/module<M>/xbridge``, gives it the cable's
+creates that chip as ``/machine/module<M>/xbridge``, or ``xbridge0`` to
+``xbridge3`` for the N-brick's four chips in one module, gives it the cable's
 port as its host port and its module's catalogue id as its bus prefix,
 and hands it to the cabled node through the node's ``xbridge`` link; the
 node joins and realizes it as an Origin 300 node does its own. The
