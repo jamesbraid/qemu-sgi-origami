@@ -19,6 +19,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_IROUTER_TRANSPORTS 4
 #define SGI_L1_IROUTER_CHANNELS 32
 #define SGI_L1_IROUTER_MAX_FRAGMENT 0x400
+/* The node boards a Cx-brick's one L1 serves, one UART window each. */
+#define SGI_L1_CX_BOARDS 4
 
 typedef struct SGIL1ProductProfile SGIL1ProductProfile;
 typedef struct SGIL1QueryRouter SGIL1QueryRouter;
@@ -184,7 +186,8 @@ struct SGIL1State {
     qemu_irq node_power_out;
     qemu_irq node_reset_out;
     qemu_irq soft_reset_out;
-    qemu_irq nmi_out;
+    /* One line per node board served; only a Cx-brick serves several. */
+    qemu_irq nmi_out[SGI_L1_CX_BOARDS];
     QEMUBH *power_up_bh;
     int32_t revision_major;
     int32_t revision_minor;
@@ -271,6 +274,22 @@ struct SGIL1State {
     uint32_t c_port;
     uint32_t node_position;
     uint8_t port_field;
+    /*
+     * Cx-brick: the node boards fitted and those with processors, one bit
+     * per board, and each board link's own port field, which port_field
+     * holds while that link's request is answered. The console selection
+     * is the brick's: a board and a subchannel, and whether console output
+     * is filtered to that board.
+     */
+    uint32_t cx_boards;
+    uint32_t cx_compute;
+    uint8_t cx_port_field[SGI_L1_CX_BOARDS];
+    uint8_t cx_console_board;
+    uint8_t cx_console_subchannel;
+    bool cx_filter;
+    /* The board link whose request is being answered; not migrated. */
+    bool cx_serving;
+    uint8_t cx_link;
     uint8_t event_subchannel;
     bool events_enabled;
     int64_t clock_offset;

@@ -31,6 +31,7 @@ enum {
     L1_O3K_NONE,
     L1_O3K_CBRICK,
     L1_O3K_IBRICK,
+    L1_O3K_CXBRICK,
 };
 
 /*
@@ -72,6 +73,12 @@ static const SGIL1ProductProfile l1_profiles[] = {
      */
     { "cbrick", 0x43, 0, 0, true, L1_O3K_CBRICK },
     { "ibrick", 0x49, 0, 0, false, L1_O3K_IBRICK },
+    /*
+     * The Origin 3900 and Onyx 3000 Cx-brick: one L1 for one to four IP53
+     * node boards. Its type character is unknown, so it has no default;
+     * brick-type-code supplies one.
+     */
+    { "cxbrick", 0, 0, 0, true, L1_O3K_CXBRICK },
 };
 
 /*
@@ -130,6 +137,36 @@ static bool l1_is_ibrick(const SGIL1State *s)
 {
     return s->profile->o3k == L1_O3K_IBRICK;
 }
+
+static bool l1_is_cxbrick(const SGIL1State *s)
+{
+    return s->profile && s->profile->o3k == L1_O3K_CXBRICK;
+}
+
+/*
+ * The board link a frame leaves on: the one whose request is being
+ * answered, otherwise the console board's. Every other profile has one.
+ */
+static unsigned l1_link(const SGIL1State *s)
+{
+    if (!l1_is_cxbrick(s)) {
+        return 0;
+    }
+    return s->cx_serving ? s->cx_link : s->cx_console_board;
+}
+
+static bool l1_cx_compute_board(const SGIL1State *s, unsigned board)
+{
+    return board < SGI_L1_CX_BOARDS && (s->cx_compute & (1u << board));
+}
+
+static bool l1_cx_fitted_board(const SGIL1State *s, unsigned board)
+{
+    return board < SGI_L1_CX_BOARDS && (s->cx_boards & (1u << board));
+}
+
+/* Each board link is one of the UART windows the transports already index. */
+QEMU_BUILD_BUG_ON(SGI_L1_CX_BOARDS > SGI_L1_IROUTER_TRANSPORTS);
 
 /* Rack and slot are both set: only a C-brick or I-brick can lack them. */
 static bool l1_named(const SGIL1State *s)
@@ -213,14 +250,22 @@ static void l1_prompt(SGIL1State *s)
     l1_printf(s, "%s-L1> ", name);
 }
 
-static const char *l1_designation(SGIL1State *s)
+static char *l1_designation(SGIL1State *s)
 {
     static const char *const names[] = {
         "CPU0", "CPU1", "CPU2", "CPU3", "console"
     };
     unsigned subchannel = s->port_field & 0x1f;
 
-    return names[subchannel <= 4 ? subchannel : 4];
+    if (l1_is_cxbrick(s)) {
+        /* The Origin 3900 names: 0A to 3D, and console0 to console3. */
+        if (s->cx_console_subchannel == 4) {
+            return g_strdup_printf("console%u", s->cx_console_board);
+        }
+        return g_strdup_printf("%u%c", s->cx_console_board,
+                               'A' + s->cx_console_subchannel);
+    }
+    return g_strdup(names[subchannel <= 4 ? subchannel : 4]);
 }
 
 static int l1_compute_unsupported(SGIL1State *s)
@@ -244,13 +289,32 @@ static void l1_mode_message(SGIL1State *s, bool returning)
         return;
     }
     g_autofree char *name = l1_module_name(s);
+    g_autofree char *designation = l1_designation(s);
 
+    if (l1_is_cxbrick(s) && !l1_cx_compute_board(s, s->cx_console_board)) {
+        /*
+         * A board with no processors answers nothing. The two lines are the
+         * Origin 3900 guide's for a console and a processor target; using
+         * them here, and staying in L1 mode, is the model's choice.
+         */
+        s->console_mode = false;
+        s->escaped = false;
+        if (s->cx_console_subchannel == 4) {
+            l1_printf(s, "no response from %s junk bus console "
+                      "UART:UART_TIMEOUT\r\n", name);
+        } else {
+            l1_printf(s, "no response from %s Junk bus CPU%s system not "
+                      "responding\r\n", name, designation);
+        }
+        l1_prompt(s);
+        return;
+    }
     s->console_mode = true;
     s->escaped = false;
     s->warned_off = false;
     l1_printf(s, "%s console mode  %s %s, <CTRL_T> to escape to L1"
               "\r\n", returning ? "returning to" : "entering", name,
-              l1_designation(s));
+              designation);
 }
 
 static void G_GNUC_PRINTF(2, 3) l1_log(SGIL1State *s, const char *fmt, ...)
@@ -455,8 +519,15 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
     l1_reason(s, reason);
     s->node_power = true;
     s->power_down_pending = false;
-    /* The selection returns to CPU 0 at every power-up. */
+    /*
+     * The selection returns to CPU 0 at every power-up. A Cx-brick applies
+     * that to each board link's field; its brick-wide console selection
+     * stays where it was.
+     */
     s->port_field &= 0x60;
+    for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+        s->cx_port_field[i] &= 0x60;
+    }
     l1_display_set(s, 1, "Powered Up");
     l1_log(s, "power up (%s)", source);
     qemu_set_irq(s->node_power_out, 1);
@@ -584,6 +655,25 @@ static void l1_boot_local(SGIL1State *s)
     s->command_len = 0;
     memset(s->frame, 0, sizeof(s->frame));
     s->port_field = s->node_position << 5;
+    /*
+     * A Cx-brick's link positions are its board numbers, and its console
+     * starts on board 0's console subchannel, or on the lowest board with
+     * processors when board 0 has none (a model choice).
+     */
+    for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+        s->cx_port_field[i] = i << 5;
+    }
+    s->cx_console_board = 0;
+    if (l1_is_cxbrick(s) && !l1_cx_compute_board(s, 0)) {
+        for (unsigned i = 1; i < SGI_L1_CX_BOARDS; i++) {
+            if (l1_cx_compute_board(s, i)) {
+                s->cx_console_board = i;
+                break;
+            }
+        }
+    }
+    s->cx_console_subchannel = 4;
+    s->cx_filter = false;
     s->promreq_debug = false;
     s->power_down_pending = false;
     /* A registered event subchannel of 4 or more is non-volatile. */
@@ -655,7 +745,7 @@ static void l1_emit_transport(SGIL1State *s, unsigned transport,
 static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
                            unsigned length)
 {
-    l1_emit_transport(s, 0, payload, length);
+    l1_emit_transport(s, l1_link(s), payload, length);
 }
 
 static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
@@ -874,6 +964,29 @@ static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
     }
 }
 
+/*
+ * A Cx-brick board link reads its own board's records at component 0, the
+ * number a one-node module uses; the model keeps board n's at n. Another
+ * board's records, the router board's and the power entry module's are
+ * not given to it, a model choice.
+ */
+static void l1_cx_eeprom(SGIL1State *s, SGIL1State *recipient,
+                         uint8_t channel, const uint8_t *args)
+{
+    uint8_t copy[20];
+
+    memcpy(copy, args, sizeof(copy));
+    if (!copy[0] && ldl_be_p(copy + 1)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: cxbrick component %u has no record on board "
+                      "%u's link\n", ldl_be_p(copy + 1), s->cx_link);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+        return;
+    }
+    stl_be_p(copy + 1, s->cx_link);
+    l1_eeprom(s, recipient, channel, copy);
+}
+
 /* A destination nobody serves gets the router's own error reply. */
 static void l1_router_error_to(SGIL1State *recipient, uint8_t channel)
 {
@@ -1000,6 +1113,8 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
     case 6:
         if (count < 4 || args_len < 20) {
             l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
+        } else if (l1_is_cxbrick(s)) {
+            l1_cx_eeprom(s, recipient, channel, args);
         } else {
             l1_eeprom(s, recipient, channel, args);
         }
@@ -1069,6 +1184,37 @@ static bool l1_select(SGIL1State *s, const char *word)
         return false;
     }
     s->port_field = (s->port_field & 0x60) | subchannel;
+    return true;
+}
+
+/*
+ * A Cx-brick's selection: "0A" to "3D", or "console" and a board number.
+ * A board with no node fitted is refused. A board without processors is
+ * accepted, since the guide lists all twenty names.
+ */
+static bool l1_cx_select(SGIL1State *s, const char *word)
+{
+    unsigned board, subchannel;
+
+    if (g_str_has_prefix(word, "console") && strlen(word) == 8 &&
+        g_ascii_isdigit(word[7])) {
+        board = word[7] - '0';
+        subchannel = 4;
+    } else if (strlen(word) == 2 && g_ascii_isdigit(word[0]) &&
+               g_ascii_toupper(word[1]) >= 'A' &&
+               g_ascii_toupper(word[1]) <= 'D') {
+        board = word[0] - '0';
+        subchannel = g_ascii_toupper(word[1]) - 'A';
+    } else {
+        return false;
+    }
+    if (!l1_cx_fitted_board(s, board)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-l1: selection names empty board %u\n", board);
+        return false;
+    }
+    s->cx_console_board = board;
+    s->cx_console_subchannel = subchannel;
     return true;
 }
 
@@ -1170,6 +1316,10 @@ static bool l1_o3k_refused(const SGIL1State *s, const char *word)
         "pimm", "select", "sel", "softreset", "softrst", "junkbus",
     };
 
+    if (l1_is_cxbrick(s)) {
+        /* The C-brick table does not transfer to the Cx-brick. */
+        return false;
+    }
     if (!strcmp(word, "router")) {
         return true;
     }
@@ -1312,9 +1462,12 @@ static void l1_o3k_brick_print(SGIL1State *s)
     } else {
         g_strlcpy(bay, "--", sizeof(bay));
     }
+    /* A Cx-brick's letter is unknown unless supplied; "?" is the guide's. */
     l1_printf(s, "rack: %s, slot: %s, partition: %u, type: %c, "
               "source: EEPROM\r\n", rack, bay, s->partition,
-              l1_is_ibrick(s) ? 'I' : 'C');
+              l1_is_ibrick(s) ? 'I' :
+              !l1_is_cxbrick(s) ? 'C' :
+              s->brick_type_code ? (char)s->brick_type_code : '?');
 }
 
 static int l1_run_line(SGIL1State *s, const char *text, bool console)
@@ -1551,7 +1704,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         if (s->node_power) {
             l1_display_set(s, 1, "NMI done");
             l1_log(s, "NMI (COMMAND)");
-            qemu_irq_pulse(s->nmi_out);
+            for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+                qemu_irq_pulse(s->nmi_out[i]);
+            }
         }
     } else if (!strcmp(argv[0], "reboot_l1")) {
         l1_reboot(s);
@@ -1590,10 +1745,22 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (l1_word(argv[0], "select", "sel")) {
         if (argc == 1) {
             g_autofree char *name = l1_module_name(s);
+            g_autofree char *designation = l1_designation(s);
 
             l1_printf(s, "console input: %s %s\r\n"
-                      "console output: not filtered.\r\n", name,
-                      l1_designation(s));
+                      "console output: %s\r\n", name, designation,
+                      s->cx_filter ? "filtered." : "not filtered.");
+        } else if (l1_is_cxbrick(s) && argc == 3 &&
+                   !strcmp(argv[1], "filter") &&
+                   (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+            s->cx_filter = !strcmp(argv[2], "on");
+        } else if (l1_is_cxbrick(s)) {
+            if (argc > 3 ||
+                (argc == 3 && !l1_word(argv[1], "subchannel", "sub") &&
+                 strcmp(argv[1], "s")) ||
+                !l1_cx_select(s, argv[argc - 1])) {
+                l1_printf(s, "ERROR: bad subchanel selection.\r\n");
+            }
         } else if (!l1_select(s, argv[argc - 1]) ||
                    (argc == 3 && !l1_word(argv[1], "subchannel", "sub") &&
                     strcmp(argv[1], "s")) || argc > 3) {
@@ -1734,8 +1901,17 @@ static int l1_console_can_receive(void *opaque)
 {
     SGIL1State *s = opaque;
 
+    SGIL1UARTState *uart = s->uart;
+
+    if (l1_is_cxbrick(s)) {
+        /* Input waits only on the console board's link, when it has one. */
+        uart = s->transport[s->cx_console_board];
+        if (!uart) {
+            return 1;
+        }
+    }
     /* One input byte can expand to an eight-byte escaped console frame. */
-    return s->uart && l1_uart_room(s->uart) >= 8;
+    return uart && l1_uart_room(uart) >= 8;
 }
 
 static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
@@ -1758,7 +1934,13 @@ static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
                               "console unavailable\r\n");
                 }
             } else {
-                uint8_t payload[] = { s->port_field & 0x1f, byte };
+                uint8_t payload[] = {
+                    l1_is_cxbrick(s) ? s->cx_console_subchannel :
+                                       s->port_field & 0x1f,
+                    byte
+                };
+
+                /* A Cx-brick's leaves on the console board's link only. */
                 l1_emit(s, payload, sizeof(payload));
             }
         } else if (byte == 4) {
@@ -2078,6 +2260,41 @@ static bool l1_task_command(uint16_t command)
     }
 }
 
+/*
+ * The Cx-brick profile's codes: those its request-code table grades, and
+ * those the public SN1 header names with the meaning the Origin 300 image
+ * serves (debug switches, firmware revision, the display lines, partition
+ * set and event subchannel). Anything else has no reviewed meaning on a
+ * Cx-brick and is refused.
+ */
+static bool l1_cx_graded(uint16_t command)
+{
+    switch (command) {
+    case 1:
+    case 2:
+    case 3:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+    case 9:
+    case 0xe:
+    case 0x1002:
+    case 0x1003:
+    case 0x1004:
+    case 0x1005:
+    case 0x1006:
+    case 0x1007:
+    case 0x2001:
+    case 0x2005:
+    case 0x2006:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void l1_request_frame(SGIL1State *s, const uint8_t *p,
                              unsigned length, unsigned transport);
 
@@ -2139,7 +2356,20 @@ static void l1_request(SGIL1State *s, unsigned transport)
 {
     SGIL1FrameState *frame = &s->frame[transport];
 
+    if (!l1_is_cxbrick(s)) {
+        l1_request_frame(s, frame->data, frame->length - 2, transport);
+        return;
+    }
+    /*
+     * A Cx-brick answers on the board link that asked, with that link's own
+     * port field in port_field for the length of the request.
+     */
+    s->cx_serving = true;
+    s->cx_link = transport;
+    s->port_field = s->cx_port_field[transport];
     l1_request_frame(s, frame->data, frame->length - 2, transport);
+    s->cx_port_field[transport] = s->port_field;
+    s->cx_serving = false;
 }
 
 static void l1_o300_trace_frame(const SGIL1State *s, bool reply,
@@ -2546,6 +2776,11 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         }
         /* Console output on any subchannel retargets the operator's input. */
         s->port_field = (s->port_field & 0x60) | channel;
+        if (l1_is_cxbrick(s) && s->cx_filter &&
+            s->cx_link != s->cx_console_board) {
+            /* The filter passes the selected board's output alone. */
+            return;
+        }
         if (s->console_mode && s->node_power) {
             qemu_chr_fe_write_all(&s->chr, p + 1, length - 1);
         } else {
@@ -2668,6 +2903,13 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: request 0x%04x unavailable at 0x%08x\n",
                       command, address);
+        l1_reply(s, channel, -101, 0, NULL, 0);
+        return;
+    }
+    if (l1_is_cxbrick(s) && !l1_cx_graded(command)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: request 0x%04x has no reviewed meaning on the "
+                      "cxbrick profile\n", command);
         l1_reply(s, channel, -101, 0, NULL, 0);
         return;
     }
@@ -2802,6 +3044,13 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
          */
         break;
     case 0x2001:
+        if (l1_is_cxbrick(s)) {
+            /* The public SN1 header gives 0x2001 to PCI power-up instead. */
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: cxbrick request 0x2001 served as the "
+                          "Origin 300 reset; its Cx-brick meaning is "
+                          "unknown\n");
+        }
         l1_reply(s, channel, 0, 0, NULL, 0);
         l1_node_reset(s, 3);
         return;
@@ -2862,7 +3111,15 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         }
         break;
     case 0x1003:
-        /* Volunteering the only node changes nothing visible. */
+        /*
+         * Volunteering the only node changes nothing visible. On a Cx-brick
+         * the volunteer's console subchannel takes the console input, a
+         * model choice.
+         */
+        if (l1_is_cxbrick(s)) {
+            s->cx_console_board = s->cx_link;
+            s->cx_console_subchannel = 4;
+        }
         break;
     case 0x1004:
     case 0x1005: {
@@ -3225,6 +3482,10 @@ static int l1_post_load(void *opaque, int version_id)
         (s->profile->o3k && s->pending_partition > 0xffff) ||
         s->command_len >= sizeof(s->command) ||
         s->port_field > 0x7f ||
+        s->cx_console_board >= SGI_L1_CX_BOARDS ||
+        s->cx_console_subchannel > 4 ||
+        (l1_is_cxbrick(s) &&
+         !l1_cx_fitted_board(s, s->cx_console_board)) ||
         s->revision_major < -1 || s->revision_minor < -1 ||
         s->revision_patch < -1 ||
         ((s->revision_major < 0 || s->revision_minor < 0 ||
@@ -3242,6 +3503,11 @@ static int l1_post_load(void *opaque, int version_id)
     }
     for (unsigned i = 0; i < SGI_L1_IROUTER_TRANSPORTS; i++) {
         if (!l1_frame_state_valid(&s->frame[i], 0)) {
+            return -EINVAL;
+        }
+    }
+    for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+        if (s->cx_port_field[i] > 0x7f) {
             return -EINVAL;
         }
     }
@@ -3464,6 +3730,12 @@ static const VMStateDescription vmstate_l1 = {
         VMSTATE_INT64(restart_until, SGIL1State),
         VMSTATE_UINT32_EQUAL(io_port, SGIL1State),
         VMSTATE_UINT32_EQUAL(c_port, SGIL1State),
+        VMSTATE_UINT32_EQUAL(cx_boards, SGIL1State),
+        VMSTATE_UINT32_EQUAL(cx_compute, SGIL1State),
+        VMSTATE_UINT8_ARRAY(cx_port_field, SGIL1State, SGI_L1_CX_BOARDS),
+        VMSTATE_UINT8(cx_console_board, SGIL1State),
+        VMSTATE_UINT8(cx_console_subchannel, SGIL1State),
+        VMSTATE_BOOL(cx_filter, SGIL1State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3874,6 +4146,27 @@ static bool l1_build_o3k_identity(SGIL1State *s, Error **errp)
      * records follow; the printed C-brick header does not satisfy it, so the
      * model uses the Origin 300 rule.
      */
+    if (l1_is_cxbrick(s)) {
+        /*
+         * One node board record per fitted board, board n's at component
+         * n; the board link maps its own to component 0. The DIMM, router
+         * board and power entry module records are not modeled: their
+         * layout is unknown.
+         */
+        for (unsigned board = 0; board < SGI_L1_CX_BOARDS; board++) {
+            if (!l1_cx_fitted_board(s, board)) {
+                continue;
+            }
+            l1_o3k_board(s, board,
+                         s->node_board_name ? s->node_board_name : "NODE",
+                         s->node_board_part ? s->node_board_part :
+                                              "NOTOBSERVED0",
+                         s->node_board_revision ? s->node_board_revision :
+                                                  "00",
+                         NULL, 'N', s->identity_index * 4 + board);
+        }
+        return true;
+    }
     l1_o3k_board(s, 0, s->node_board_name ? s->node_board_name : "NODE",
                  s->node_board_part ? s->node_board_part : "NOTOBSERVED0",
                  s->node_board_revision ? s->node_board_revision : "00",
@@ -3907,7 +4200,7 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
 
     if (!s->profile->o3k) {
         if (s->named) {
-            error_setg(errp, "L1 named applies to the cbrick and ibrick "
+            error_setg(errp, "L1 named applies to the Origin 3000 "
                        "profiles only");
             return false;
         }
@@ -3917,29 +4210,64 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
                        "apply to the C-brick profile only");
             return false;
         }
+        if (s->cx_boards != 1 || s->cx_compute != 1) {
+            error_setg(errp, "L1 boards and compute-boards apply to the "
+                       "cxbrick profile only");
+            return false;
+        }
         s->rack_valid = s->bay_valid = true;
         return true;
     }
-    if (s->brick_type_code) {
+    if (l1_is_cxbrick(s)) {
+        if (s->cx_boards == 0 || s->cx_boards > 0xf) {
+            error_setg(errp, "L1 cxbrick boards must name boards 0 to 3");
+            return false;
+        }
+        if (s->cx_compute & ~s->cx_boards) {
+            error_setg(errp, "L1 cxbrick compute-boards must be fitted "
+                       "boards");
+            return false;
+        }
+        if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
+            s->c_port != 5 || s->mac) {
+            error_setg(errp, "L1 pimm-mask, dimm-mask, io-port, c-port and "
+                       "mac do not apply to the cxbrick profile");
+            return false;
+        }
+        if (s->node_position) {
+            error_setg(errp, "L1 cxbrick link positions are board numbers; "
+                       "node-position does not apply");
+            return false;
+        }
+        if (s->identity_index > 24) {
+            error_setg(errp, "L1 cxbrick identity-index must be 0 to 24");
+            return false;
+        }
+    } else if (s->cx_boards != 1 || s->cx_compute != 1) {
+        error_setg(errp, "L1 boards and compute-boards apply to the "
+                   "cxbrick profile only");
+        return false;
+    }
+    /* A Cx-brick takes a type character only from this explicit input. */
+    if (s->brick_type_code && !l1_is_cxbrick(s)) {
         error_setg(errp, "L1 brick-type-code is not accepted by the C-brick "
                    "and I-brick profiles");
         return false;
     }
     if (s->revision_major >= 0) {
-        error_setg(errp, "L1 firmware revision is unknown for the C-brick "
-                   "and I-brick profiles");
+        error_setg(errp, "L1 firmware revision is unknown for the Origin "
+                   "3000 profiles");
         return false;
     }
     if (s->irouter_compat || s->o300_l1cmd_compat) {
         error_setg(errp, "L1 Origin 300 compatibility is not accepted by the "
-                   "C-brick and I-brick profiles");
+                   "Origin 3000 profiles");
         return false;
     }
     if (s->chassis_count || s->board_count || s->spd_count ||
         s->board_record_count || s->spd_record_count || s->mac_record ||
         s->fuel_mac_eeprom) {
-        error_setg(errp, "L1 C-brick and I-brick profiles take no record "
-                   "files");
+        error_setg(errp, "L1 Origin 3000 profiles take no record files");
         return false;
     }
     if (s->cpu_context_present || s->cpu_mode_word || s->cpu_clock_hz ||
@@ -3952,7 +4280,9 @@ static bool l1_o3k_check(SGIL1State *s, Error **errp)
         error_setg(errp, "L1 partition must fit 16 bits");
         return false;
     }
-    if (l1_is_ibrick(s)) {
+    if (l1_is_cxbrick(s)) {
+        /* Checked above. */
+    } else if (l1_is_ibrick(s)) {
         if (s->pimm_mask != 3 || s->dimm_mask != 0xff || s->io_port != 1 ||
             s->c_port != 5) {
             error_setg(errp, "L1 pimm-mask, dimm-mask, io-port and c-port "
@@ -4205,7 +4535,7 @@ fuel_mac_done:
     if (!s->profile) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, "
                    "unknown, pci-expansion, router, "
-                   "vbrick-discovery-reference, cbrick or ibrick");
+                   "vbrick-discovery-reference, cbrick, ibrick or cxbrick");
         return;
     }
     if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {
@@ -4713,6 +5043,13 @@ static const Property l1_properties[] = {
      */
     DEFINE_PROP_UINT32("io-port", SGIL1State, io_port, 1),
     DEFINE_PROP_UINT32("c-port", SGIL1State, c_port, 5),
+    /*
+     * cxbrick: the node boards fitted and those with processors, one bit
+     * per board 0 to 3. Each fitted board takes a UART window whose
+     * transport-index is its board number.
+     */
+    DEFINE_PROP_UINT32("boards", SGIL1State, cx_boards, 1),
+    DEFINE_PROP_UINT32("compute-boards", SGIL1State, cx_compute, 1),
 };
 
 static bool l1_power_command_reachable_get(Object *obj, Error **errp)
@@ -4747,6 +5084,9 @@ static const char *l1_peer_fault(const SGIL1State *a, const SGIL1State *b)
 {
     if (!a->profile->o3k && !b->profile->o3k) {
         return NULL;
+    }
+    if (l1_is_cxbrick(a) || l1_is_cxbrick(b)) {
+        return "L1 cxbrick profile models no peer link";
     }
     if (!l1_is_cbrick(a) || !l1_is_cbrick(b)) {
         return "L1 peer of a C-brick must be another C-brick";
@@ -4877,7 +5217,8 @@ static void l1_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_power_out, "node-power", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_reset_out, "node-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset_out, "soft-reset", 1);
-    qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
+    qdev_init_gpio_out_named(DEVICE(obj), s->nmi_out, "nmi",
+                             SGI_L1_CX_BOARDS);
     object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
                                   OBJ_PROP_FLAG_READ);
     /*
@@ -5024,6 +5365,13 @@ static void l1_uart_realize(DeviceState *dev, Error **errp)
             error_setg(errp,
                        "L1 UART transport index is invalid or already used");
         }
+        return;
+    }
+    if (DEVICE(u->controller)->realized &&
+        l1_is_cxbrick(u->controller) &&
+        !l1_cx_fitted_board(u->controller, u->transport_index)) {
+        error_setg(errp, "L1 UART transport index names no fitted Cx-brick "
+                   "board");
         return;
     }
     u->controller->transport[u->transport_index] = u;

@@ -423,3 +423,102 @@ next brick's name line, and on task 3 they arrive as separate fields.
        the layout and words differ from the printed form.
      - ``003c01 ERROR: no response from ---i--`` answers the restart
        command itself (007-3938-001 printed page 24).
+
+.. _sgi-l1-cxbrick:
+
+Origin 3900 Cx-brick profile
+============================
+
+``brick-type=cxbrick`` models the one L1 of a Cx-brick, the Origin 3900
+and Onyx 3000 brick that holds one to four IP53 node boards behind a single
+controller on its router board (*SGI Origin 3900 Server User's Guide*
+007-4653-001 printed pages 52-60; *Cx-brick Addendum* 007-4572-001 printed
+pages 2-18). ``boards`` names the fitted node boards and ``compute-boards``
+those with processors, one bit per board 0 to 3. Each fitted board reaches
+the controller through its own UART window, ``sgi-l1-uart`` with
+``transport-index`` the board number. Identity, naming and restart follow
+the C-brick profile above: a brick starts unnamed and prints ``---c--``
+(007-4653-001 printed page 144).
+
+Request codes, the request layout and the framing follow the C-brick rule.
+The profile serves the codes the Linux v2.6.0 ``ksys/l1.h`` header names
+with the Origin 300 meaning (``0x0001`` to ``0x0009``, ``0x1002`` to
+``0x1007``) and the Origin 300 codes ``0x000e``, ``0x2001``, ``0x2005`` and
+``0x2006``. Every other code answers the unknown-request code and is logged
+as unimplemented, the attached-brick requests ``0x000c`` and ``0x000d``
+among them. ``0x2001`` resets, as on the Origin 300; the public header gives
+``0x2001`` to PCI power-up and ``0x2000`` to the full reset, so which a
+fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 12 58
+
+   * - Fact
+     - Rating
+     - Basis
+   * - One L1 per Cx-brick, holding the brick's module and partition
+       identifiers, one display and one log.
+     - established
+     - 007-4426-001 printed page 12; 007-4653-001 printed pages 108 and
+       112.
+   * - The console names twenty subchannels: ``0A`` to ``3D`` and
+       ``console0`` to ``console3``, the number being the node board.
+     - established for the names; inferred for ``console2``,
+       ``console3`` and the board numbering
+     - 007-3938-004 printed pages 16-18; 007-4653-001 printed pages
+       114-115.
+   * - ``select`` at power-on prints ``console input: 001c07 console0``.
+     - established, printed example
+     - 007-4653-001 printed pages 114-115.
+   * - ``select filter on`` passes only the selected target's output.
+     - established at brick level; inferred for a board inside a brick
+     - 007-4653-001 printed page 115.
+   * - ``power``, ``reset`` and ``nmi`` act on the whole brick.
+     - inferred
+     - Every printed unit is the brick (007-4653-001 printed pages 58, 108
+       and 113).
+   * - How the four Bedrocks reach the L1, the integers a Cx-brick uses on
+       the wire for the twenty names, its type character and its record
+       layout.
+     - unknown
+     - No Cx-brick source describes them.
+
+What the model chooses, and the limit of each choice:
+
+- Each board's window is the Origin 300 UART and packet path. A reply goes
+  back only on the window that asked, and on each window subchannels 0 to 3
+  are that board's processors A to D and 4 its console. A shared line or a
+  path through the router could interleave traffic in ways this does not
+  show.
+- Each window keeps its own port field: ``0x000e`` answers the board number
+  after L1 power-on and ``0x1002`` rewrites only the asking window's field,
+  by the Origin 300 rule. A real L1 may keep one value per brick.
+- The console selection is the brick's: a board and a subchannel, changed
+  by ``select`` and by ``0x1003``, which moves it to the volunteer's console
+  subchannel. Console output on a window does not move it, as it does on the
+  Origin 300. It starts on board 0's console, or on the lowest board with
+  processors when board 0 has none; a real L1 may keep ``console0`` and time
+  out. The filter is cleared at L1 power-on.
+- ``select`` refuses a board that is not fitted with ``ERROR: bad subchanel
+  selection.`` and accepts one without processors. Console mode toward a
+  board without processors prints the guide's ``no response from 001c07
+  junk bus console UART:UART_TIMEOUT``, or for a processor subchannel
+  ``no response from 001c07 Junk bus CPU2B system not responding``
+  (007-4653-001 printed pages 115 and 141), and stays in L1 mode.
+- Power, reset and NMI requests from any window, and from the prompt, act on
+  every board at once and log one entry. The machine's own reset carries
+  them out, so the router is reset with the rest, where the profile's
+  contract keeps the router's state; per-board power and reset are not
+  offered. ``nmi`` pulses one ``nmi`` line per board, and only boards with
+  processors are wired to them.
+- Board ``n``'s window reads board ``n``'s synthetic node board record at
+  component 0; every other component answers minus 104. The DIMM, router
+  board and power entry module records are not modelled.
+- The brick has no default type character: ``0x0003`` answers minus 104
+  until ``brick-type-code`` supplies one, and ``brick`` prints the type as
+  ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
+- Peer links are refused. The I/O bricks on the XIO ports, the neighbouring
+  Cx-brick, the L2 and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands
+  are not modelled; an attached-brick destination answers the router's error
+  reply and the commands are reported as unknown.
