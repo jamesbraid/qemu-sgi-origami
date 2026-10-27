@@ -39,6 +39,7 @@
 #define UART_MSR_DCD    0x80
 
 static void sgi_ioc_sdma_run_from(SGIIOCSerialDMAPort *p, int64_t since);
+static void sdma_update_high_water(SGIIOCSerialDMAPort *p);
 
 static uint32_t *sdma_reg(SGIIOCSerialDMAPort *p, hwaddr offset)
 {
@@ -212,6 +213,7 @@ static void sdma_rx_timer_expired(void *opaque)
         sdma_raise(p, SGI_IOC_SDMA_SRC_RX_TIMER);
     }
     p->armed = false;
+    sdma_update_high_water(p);
 }
 
 /* A transmit delay has run out; the walk goes on from when it ended. */
