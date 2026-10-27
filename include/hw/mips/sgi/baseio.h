@@ -47,6 +47,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * midplane takes only the BaseIO-G, widget F. The MENET and MSCSI fit any
  * slot and have none.
  */
+/* The PCI device number of an I-brick's Fibre Channel card on head F. */
+#define SGI_IBRICK_FC_DEVICE      1
+
 #define SGI_BASEIO_XIO_WIDGET(n)  (1u << (n))
 #define SGI_BASEIO_XIO_ANY_WIDGET 0xff00u
 
