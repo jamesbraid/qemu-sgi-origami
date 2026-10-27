@@ -197,9 +197,10 @@ and ``-m`` then select a population within that row.
 keeps the product's default, which is the default topology's: the
 machine cannot tell a default ``-smp`` from an explicit one, so a launch
 with fewer node boards, or the Onyx2 deskside, names it
-(``-M onyx2,topology=onyx2-deskside -smp 4``). ``-smp`` splits evenly
-across nodes when no socket count is given; ``population=4:2`` style
-counts select an uneven split the row accepts. A count no row accepts is
+(``-M onyx2,topology=onyx2-deskside -smp 4``). ``-smp N`` picks the one
+accepted population whose total is N, and ``population=4:2`` style
+per-node counts choose between two that share a total; ``sockets=`` must
+equal ``maxcpus`` (:ref:`sgi-sn-topology`). A count no row accepts is
 refused with the counts that exist. ``nodes`` is part of the machine
 configuration: a snapshot restores only into the same value. The
 general rules for ``topology=``, ``-smp`` and ``-m`` are on
@@ -331,10 +332,12 @@ therefore builds 64, 128 and 512 MiB banks, 23 per-node sizes from 64 to
 512 MiB is then two 256 MiB banks, as on a real 270 MHz machine
 (*observed*, :src:`nekonomicon-16726704`).
 
-**Origin 2000 and Onyx2 (IP27).** Eight banks of DIMM pairs. 16-Mb parts
-give 64 or 128 MB banks and 64-Mb parts 512 MB banks, up to 4 GB a node,
-intermixed as long as each bank is a pair (*established*,
-:src:`007-3439-002 p. 35`). That page is the whole basis for the IP27
+**Origin 2000 and Onyx2 (IP27).** A node board has 16 main-memory DIMM
+slots and 8 directory DIMM slots, filled as eight banks of DIMM pairs,
+and bank 0 must be populated (*established*,
+:src:`007-3439-002 pp. 35-36`). 16-Mb parts give 64 or 128 MB banks and
+64-Mb parts 512 MB banks, up to 4 GB a node, intermixed as long as each
+bank is a pair (*established*, :src:`007-3439-002 p. 35`). That page is the whole basis for the IP27
 sizes. Inventories of 250 MHz and faster nodes show 256 MB banks, but
 those are the later IP31 board on the same Hub. The model builds no 256
 MiB IP27 bank, since the stock PROM disables one at 180 MHz, so every
@@ -471,7 +474,11 @@ midplane with four node-board slots, two Router slots, two Crossbows and
 twelve XIO slots, plus the module system controller (MSC). The deskside
 is equivalent to one rack module (*established*,
 :src:`007-3456-003 p. 30`, :src:`007-3456-003 p. 44`;
-:src:`007-3453-002 p. 19-20`). This section is what the ``origin2000``
+:src:`007-3453-002 p. 19-20`). The wiring summary is two Routers per
+module, two Crossbows per midplane, and the BaseIO board in slot IO1
+(*established*, :src:`108-0170-001 pp. 1-1 to 1-4` and
+:src:`108-0170-001 pp. 6-3 to 6-6`). This
+section is what the ``origin2000``
 and ``onyx2-rack`` models cite for how a module is populated, how its
 management bus is wired and how the processor's reset mode is chosen.
 
