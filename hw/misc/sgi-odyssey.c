@@ -420,8 +420,11 @@
 /*
  * Status register 0x1064 (odsy status0). This model's command FIFO drains
  * in the write handler or, while stores wait for the board's work, behind
- * them; it is always enabled, and empty and below the low-water mark
- * whenever no store waits. The kernel's periodic
+ * them, and the waiting stores are its level (odyssey_fifo_level()): it
+ * is always enabled, empty (bit 16) when no store waits, and below the
+ * low-water mark (bit 17) while fewer than ODSY_CFIFO_LOW_WATER wait. The
+ * names of bits 15, 16 and 17 (high water, empty, below low water) come
+ * from the IRIX 6.5.30 IP35 kernel's status decode table. The kernel's periodic
  * gfx-credits check reads this register and treats a clear low-water or enabled
  * bit as a graphics error, so a board that never answered it (the default
  * no-register path, reading zero) drew a graphics-error alert for board 0 on
@@ -438,16 +441,24 @@
      ODSY_STATUS0_FIFO_EMPTY)
 
 /*
- * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt. The
- * driver enables this source and waits on it to replenish its graphics command
- * credits: on real hardware it fires when the FIFO drains to its low-water
- * mark. This model drains the FIFO in the write handler, or in the board's
- * work behind the stores that wait, so a submission that leaves no store
- * waiting leaves the FIFO empty and below low water. Raise it then (the
- * drain edge). Without it the driver's command credits
- * stay below their threshold, the kernel logs a graphics error for board 0, and
- * it gives up starting Xsgi. The real board's timing-dependent occupancy is not
- * modeled (see the datasheet's approximation ledger).
+ * The command FIFO's low-water mark, in stores: below it bit 17 reads set,
+ * and the level falling below it raises the low-water flag. The mark is
+ * unknown (the IRIX driver's credit-wait recovery rewrites bits 16:12 of
+ * 0x1074 from a driver variable, which may be such a mark); 16, a quarter
+ * of the model's FIFO depth, is the model's choice.
+ */
+#define ODSY_CFIFO_LOW_WATER 16
+
+/*
+ * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt
+ * (the kernel's flags decode names it as the low-water flag bit). The IRIX
+ * driver's high-water path sleeps the writing process, enables this source
+ * and waits on it; it is raised when the FIFO's level falls to the
+ * low-water mark (inferred from that role). The model raises it when the
+ * waiting stores fall below ODSY_CFIFO_LOW_WATER. A store that does not
+ * wait never lifts the level to the mark, so it raises nothing; the
+ * driver, finding the FIFO already below low water, sets the flag itself
+ * through the flags register.
  */
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
 
@@ -2338,26 +2349,27 @@ static void odyssey_update_irq(SGIOdysseyState *s)
     }
 }
 
-static bool odyssey_work_pending(SGIOdysseyState *s);
+/* The command FIFO's level: the stores waiting for the board's work. */
+static guint odyssey_fifo_level(SGIOdysseyState *s)
+{
+    return s->work_queue ? s->work_queue->len : 0;
+}
 
 /*
- * Latch the command-FIFO low-water flag. The FIFO drains synchronously, or
- * in the board's work once no stores wait, so this stands in for the real
- * board raising the flag once its level crosses back below the low-water
- * mark. The flag latches whatever the enable mask says; it reaches the
- * driver only while the source is enabled. The driver enables it from its
- * high-water path and its handler disables it again through
- * ODSY_INTR_ENABLE_SET/_CLEAR, so it fires once per high-water episode,
- * and the driver clears the flag through ODSY_INTR_CLEAR.
+ * The FIFO's level went from 'before' to its current value. Falling below
+ * the low-water mark latches the low-water flag whatever the enable mask
+ * says; it reaches the driver only while the source is enabled. The
+ * driver enables it from its high-water path and its handler disables it
+ * again through ODSY_INTR_ENABLE_SET/_CLEAR, and the driver clears the
+ * flag through ODSY_INTR_CLEAR.
  */
-static void odyssey_raise_lowater(SGIOdysseyState *s)
+static void odyssey_fifo_level_changed(SGIOdysseyState *s, guint before)
 {
-    if (odyssey_work_pending(s)) {
-        /* Stores still wait: the FIFO is not below low water yet. */
-        return;
+    if (before >= ODSY_CFIFO_LOW_WATER &&
+        odyssey_fifo_level(s) < ODSY_CFIFO_LOW_WATER) {
+        s->intr_flags |= ODSY_INTR_FIFO_LOW_WATER;
+        odyssey_update_irq(s);
     }
-    s->intr_flags |= ODSY_INTR_FIFO_LOW_WATER;
-    odyssey_update_irq(s);
 }
 
 /* One bit slot, reported finished inside the write the guest polls after. */
@@ -2670,12 +2682,11 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         value = s->intr_enable;
         break;
     case ODSY_STATUS0:
-        /*
-         * Enabled, empty and below low water, unless stores wait for the
-         * board (see "Command work after the store"); then only enabled.
-         */
-        value = odyssey_work_pending(s) ? ODSY_STATUS0_FIFO_ENABLED :
-                                          ODSY_STATUS0_READY;
+        /* The waiting stores are its level (odyssey_fifo_level()). */
+        value = ODSY_STATUS0_FIFO_ENABLED |
+                (odyssey_fifo_level(s) ? 0 : ODSY_STATUS0_FIFO_EMPTY) |
+                (odyssey_fifo_level(s) < ODSY_CFIFO_LOW_WATER ?
+                 ODSY_STATUS0_FIFO_LOW_WATER : 0);
         break;
     case ODSY_CFIFO_SELFTEST:
         /*
@@ -11834,8 +11845,6 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         odyssey_selftest_track(s, ODSY_CMD_FIFO, size, value);
         s->cmd_from_kernel = true;
         odyssey_cmd_fifo_write(s, value, size);
-        /* The FIFO drained: signal the driver it may submit and credit more. */
-        odyssey_raise_lowater(s);
         return;
     }
     if (addr == ODSY_USER_CMD_FIFO) {
@@ -11843,7 +11852,6 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
          * never carries the self-test preamble, so skip odyssey_selftest_track. */
         s->cmd_from_kernel = false;
         odyssey_cmd_fifo_write(s, value, size);
-        odyssey_raise_lowater(s);
         return;
     }
 
@@ -12160,10 +12168,7 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
         s->work_in_fifo--;
         odyssey_work_admit(s);
         odyssey_write_dispatch(s, q.addr, q.value, q.size);
-        if (!s->work_queue->len) {
-            /* The FIFO has drained: below low water again. */
-            odyssey_raise_lowater(s);
-        }
+        odyssey_fifo_level_changed(s, s->work_queue->len + 1);
         if (sgi_head_work_spent(b)) {
             break;
         }
@@ -13383,8 +13388,7 @@ static void odyssey_test_get_work_waiting(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
                                           Error **errp)
 {
-    SGIOdysseyState *s = SGI_ODYSSEY(obj);
-    uint32_t value = s->work_queue ? s->work_queue->len : 0;
+    uint32_t value = odyssey_fifo_level(SGI_ODYSSEY(obj));
 
     visit_type_uint32(v, name, &value, errp);
 }
