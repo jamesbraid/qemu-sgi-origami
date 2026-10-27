@@ -55,6 +55,7 @@ guest hardware that is specific to QEMU.
    sgi-ioc3-boards
    sgi-ip30
    sgi-ip35-address-map
+   sgi-ip53
    sgi-l1
    sgi-lucent-ohci
    sgi-mscsi
