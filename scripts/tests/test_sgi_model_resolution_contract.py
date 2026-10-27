@@ -2669,27 +2669,29 @@ class Origin3000BrickTests(unittest.TestCase):
                 self.assertTrue(bus["master"].startswith("ibrick-"),
                                 bus["id"])
 
-    def test_rbrick_router_reaches_its_cable_through_bus_bindings(self):
-        # No catalogued composition holds an R-brick, so instance the
-        # layer by itself onto a cable an enclosing product would declare.
+    def test_rbrick_layer_names_only_its_own_enclosure(self):
+        # Instanced by itself, the layer binds nothing: each of its eight
+        # ports has its own cable bus that a composition attaches to.
         layer = yaml.safe_load(
             (INPUTS / "layers/modules/r-brick.yaml").read_text())
         graph = _resolver._instantiate_module_graph(
             copy.deepcopy(layer["layer"]["data"]), prefix="rbrick-",
-            parent="rack", omit_buses=[],
-            bus_bindings={"c-brick-cable": "c0-to-rbrick"})
-        self.assertIn(
-            ("rbrick-router", "c0-to-rbrick", "endpoint"),
-            {(item["component"], item["bus"], item["role"])
-             for item in graph["connections"]})
+            parent="rack", omit_buses=[])
+        self.assertEqual(
+            sorted((item["component"], item["bus"], item["fabric_port"])
+                   for item in graph["connections"]
+                   if item["component"] == "rbrick-router"),
+            sorted(("rbrick-router", f"rbrick-port-{port}-cable", port)
+                   for port in range(1, 9)))
         for bus in graph["buses"]:
-            self.assertTrue(bus["master"].startswith("rbrick-"), bus["id"])
-        with self.assertRaisesRegex(
-                _resolver.ResolutionError,
-                "undeclared bus 'c-brick-cable' with no bus_bindings entry"):
-            _resolver._instantiate_module_graph(
-                copy.deepcopy(layer["layer"]["data"]), prefix="rbrick-",
-                parent="rack", omit_buses=[])
+            self.assertEqual(bus["master"], "rbrick-router", bus["id"])
+            self.assertEqual(bus["link"], {"kind": "cable"}, bus["id"])
+        router = next(item for item in graph["components"]
+                      if item["id"] == "rbrick-router")
+        self.assertEqual(router["router_asic"]["node_ports"], [2, 3, 4, 5])
+        brick = next(item for item in graph["components"]
+                     if item["id"] == "rbrick-brick")
+        self.assertNotIn("brick_type", brick)
 
     def test_module_naming_a_component_outside_its_instance_is_refused(self):
         outside = (
@@ -2901,11 +2903,9 @@ class Origin3000BrickTests(unittest.TestCase):
             return instances + extra
 
         def cbrick_rbrick_ibrick(instances):
-            # One C-brick, one R-brick on the only NUMAlink cable this
-            # product declares, and one I-brick.
+            # One C-brick, one R-brick and one I-brick.
             rbrick = {"model": "layers/modules/r-brick.yaml",
-                      "prefix": "rbrick-", "parent": "rack",
-                      "bus_bindings": {"c-brick-cable": "ni-cable"}}
+                      "prefix": "rbrick-", "parent": "rack"}
             return [instances[0], rbrick, instances[2]]
 
         for name, instances, message in (
@@ -3417,8 +3417,7 @@ class Origin3900Tests(unittest.TestCase):
         def with_rbrick(composition):
             composition["module_instances"].append({
                 "model": "layers/modules/r-brick.yaml", "prefix": "rbrick-",
-                "parent": "rack",
-                "bus_bindings": {"c-brick-cable": "cx0-numalink-g-link"}})
+                "parent": "rack"})
 
         def two_cxbricks(composition):
             first = composition["module_instances"][0]
@@ -3468,6 +3467,7 @@ class Origin3900Tests(unittest.TestCase):
         from sgi_model.model_compile import CompileError, compile_model
         with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
             compile_model(self.resolve())
+
 
 
 if __name__ == "__main__":
