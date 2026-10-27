@@ -178,6 +178,11 @@ bank holds two DIMMs of the same capacity and type (*established*:
   to 2 GiB a bank and at most 8 GiB, highest-density DIMMs in bank 1
   and the rest in descending order.
 
+An SGI engineer wrote in 2000 that the older IP30 board stops at 2 GB and
+that board ``030-1467-001``, which the ``octane2`` profile carries, takes
+2 GB memory kits (:src:`usenet-39b750e0`), *observed*, agreeing with the
+owner's guides.
+
 The catalogue carries each product's rule as ``accepted_bank_sizes_mib``
 (64 to 512 on ``octane``, 64 to 2048 on ``octane2``) and, for
 ``octane2``, ``bank_order: descending``. The generator emits the bank

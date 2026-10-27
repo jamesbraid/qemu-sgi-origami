@@ -563,6 +563,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``us-patent-5721819``
    *US patent 5,721,819, Programmable, distributed network routing*. United States Patent and Trademark Office. Paper, cited by section. `<https://patents.google.com/patent/US5721819A/en>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-usenet-39b750e0:
+
+``usenet-39b750e0``
+   *comp.sys.sgi.hardware, 2000-09-07, HU-\* for Octanes (Alexis Cousein, SGI), Message-ID <39B750E0.CA1E23C4@brussels.sgi.com>*. Usenet. Capture, cited by line. Message-ID ``<39B750E0.CA1E23C4@brussels.sgi.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3be33f04:
 
 ``usenet-3be33f04``
