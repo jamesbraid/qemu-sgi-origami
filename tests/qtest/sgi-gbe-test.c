@@ -11,6 +11,8 @@
 
 #define BASE 0x16000000u
 #define PATH "/machine/peripheral/gbe"
+#define VC(n) (0x80000 + (n) * 4)
+#define VC_MASK 0x00ffffffu
 #define VT(n) (0x10000 + (n) * 4)
 #define WID(n) (0x48000 + (n) * 4)
 #define CMAP(n) (0x50000 + (n) * 4)
@@ -118,6 +120,209 @@ static void setup(QTestState *q)
     wr(q, 0x3000c, LIST | 1);
     wr(q, VT(0), 0);
     frame(q);
+}
+
+static void capture_values(QTestState *q, uint32_t horizontal,
+                            uint32_t vertical)
+{
+    g_assert_cmphex(rd(q, VC(0)) & VC_MASK, ==, horizontal);
+    g_assert_cmphex(rd(q, VC(1)) & VC_MASK, ==, vertical);
+}
+
+static void test_capture_registers(void)
+{
+    const uint32_t values[] = {
+        0, 0x00000fff, 0x00fff000, 0x00ffffff,
+        0x00555555, 0x00a5312c, 0x0012ca53, 0x003d7e46,
+    };
+
+    for (unsigned functional = 0; functional < 2; functional++) {
+        QTestState *q;
+
+        if (functional) {
+            q = start("");
+        } else {
+            q = qtest_init("-M none -cpu R10000 -display none "
+                           "-device sgi-o2-gbe,id=gbe");
+            qtest_sysbus_mmio_map(q, PATH, 0, BASE);
+        }
+        capture_values(q, 0, 0);
+        for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+            wr(q, VC(0), values[i]);
+            wr(q, VC(1), values[ARRAY_SIZE(values) - 1 - i]);
+            capture_values(q, values[i], values[ARRAY_SIZE(values) - 1 - i]);
+        }
+        for (unsigned word = 0; word < 2; word++) {
+            wr(q, VC(word ^ 1), 0x00c87654);
+            for (unsigned field = 0; field < 2; field++) {
+                wr(q, VC(word), 0x987u << (12 * field));
+                g_assert_cmphex(rd(q, VC(word)) & VC_MASK, ==,
+                                0x987u << (12 * field));
+                g_assert_cmphex(rd(q, VC(word ^ 1)) & VC_MASK, ==, 0x00c87654);
+            }
+            for (unsigned upper = 0; upper < 256; upper += 85) {
+                wr(q, VC(word), (upper << 24) | 0x003d7e46);
+                g_assert_cmphex(rd(q, VC(word)) & VC_MASK, ==, 0x003d7e46);
+                /* Unused-bit zeros are model policy, not silicon data. */
+                g_assert_cmphex(rd(q, VC(word)) & ~VC_MASK, ==, 0);
+            }
+            wr(q, VC(word), UINT32_MAX);
+            g_assert_cmphex(rd(q, VC(word)) & VC_MASK, ==, VC_MASK);
+        }
+        wr(q, VC(0), 0x00a5312c);
+        wr(q, VC(1), 0x003d7e46);
+        qtest_system_reset(q);
+        capture_values(q, 0, 0);
+        qtest_quit(q);
+    }
+}
+
+static void test_capture_access(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-capture-access-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *extra = g_strdup_printf(MEMTX_TEST_DEVICE
+                                             " -d guest_errors -D %s", log);
+    g_autofree char *text = NULL;
+    QTestState *q = start(extra);
+    uint64_t value;
+
+    wr(q, VC(0), 0x00a5312c);
+    wr(q, VC(1), 0x003d7e46);
+    for (unsigned word = 0; word < 2; word++) {
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            if (width == 4) {
+                continue;
+            }
+            g_assert_cmpint(memtx_store(q, BASE + VC(word), UINT64_MAX, width),
+                            !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + VC(word), &value, width),
+                            !=, MEMTX_OK);
+            capture_values(q, 0x00a5312c, 0x003d7e46);
+        }
+        for (unsigned delta = 1; delta < 4; delta++) {
+            g_assert_cmpint(memtx_store(q, BASE + VC(word) + delta,
+                                        UINT32_MAX, 4), !=, MEMTX_OK);
+            g_assert_cmpint(memtx_load(q, BASE + VC(word) + delta, &value, 4),
+                            !=, MEMTX_OK);
+            capture_values(q, 0x00a5312c, 0x003d7e46);
+        }
+    }
+    qtest_quit(q);
+    g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text,
+                            "unsupported access write at 0x080000 (8 bytes)"));
+    g_assert_nonnull(strstr(text,
+                            "unsupported access read at 0x080001 (4 bytes)"));
+    g_unlink(log);
+    g_rmdir(dir);
+}
+
+static void capture_unsupported(QTestState *q)
+{
+    const unsigned addresses[] = {
+        0x80008, 0x8000c, 0x80010, 0x80014, 0x80018,
+        0x8001c, 0x80020, 0x800fc, 0x88000,
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(addresses); i++) {
+        wr(q, addresses[i], UINT32_MAX);
+        g_assert_cmphex(rd(q, addresses[i]), ==, UINT32_MAX);
+    }
+}
+
+static void test_capture_no_effects(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-capture-effects-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
+    g_autofree char *text = NULL;
+    QTestState *q = start(extra);
+    uint8_t before[64], after[64];
+    uint32_t counter, active, shadow;
+
+    memset(before, 0x69, sizeof(before));
+    qtest_memwrite(q, 0x90000, before, sizeof(before));
+    setup(q);
+    pixel(q, 0, 0x123456ab);
+    wr(q, VT(0), rd(q, VT(0)) | 0x80000000u);
+    counter = rd(q, VT(0));
+    active = rd(q, 0x30008);
+    shadow = rd(q, 0x3000c);
+    qtest_irq_intercept_out_named(q, PATH, "sysbus-irq");
+    capture_unsupported(q);
+    capture_values(q, 0, 0);
+    wr(q, VC(0), 0x00a5312c);
+    wr(q, VC(1), 0x003d7e46);
+    capture_unsupported(q);
+    capture_values(q, 0x00a5312c, 0x003d7e46);
+    for (unsigned i = 0; i < 3; i++) {
+        capture_values(q, 0x00a5312c, 0x003d7e46);
+        wr(q, VC(0), 0xffa5312c);
+        wr(q, VC(1), 0x003d7e46);
+    }
+    g_assert_cmphex(rd(q, VT(0)), ==, counter);
+    g_assert_cmphex(rd(q, 0x30008), ==, active);
+    g_assert_cmphex(rd(q, 0x3000c), ==, shadow);
+    g_assert_cmphex(screen(q, 31, 4, 0, 0), ==, 0x123456);
+    qtest_memread(q, 0x90000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(q, i), ==, 0);
+    }
+    qtest_quit(q);
+    g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    g_assert_nonnull(strstr(text, "unsupported access write at 0x080008"));
+    g_assert_nonnull(strstr(text, "unsupported access write at 0x088000"));
+    g_unlink(log);
+    g_rmdir(dir);
+}
+
+static void test_capture_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("gbe-capture-migrate-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", sock);
+    QTestState *from = start("");
+    QTestState *to = start("-incoming defer");
+    uint8_t before[64], after[64];
+    uint32_t counter;
+
+    memset(before, 0x96, sizeof(before));
+    qtest_memwrite(from, 0x90000, before, sizeof(before));
+    setup(from);
+    pixel(from, 0, 0x123456ab);
+    wr(from, VT(0), rd(from, VT(0)) | 0x80000000u);
+    counter = rd(from, VT(0));
+    wr(from, VC(0), 0x0012ca53);
+    wr(from, VC(1), 0x003d7e46);
+    wr(to, VC(0), 0x00ffffff);
+    wr(to, VC(1), 0x00555555);
+    qtest_irq_intercept_out_named(to, PATH, "sysbus-irq");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    wr(from, VC(0), 0);
+    wr(from, VC(1), 0);
+    capture_values(to, 0x0012ca53, 0x003d7e46);
+    g_assert_cmphex(rd(to, VT(0)), ==, counter);
+    g_assert_cmphex(rd(to, 0x30008), ==, LIST | 1);
+    g_assert_cmphex(rd(to, 0x3000c), ==, LIST | 1);
+    g_assert_cmphex(screen(to, 31, 4, 0, 0), ==, 0x123456);
+    qtest_memread(to, 0x90000, after, sizeof(after));
+    g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    capture_unsupported(to);
+    capture_values(to, 0x0012ca53, 0x003d7e46);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(to, i), ==, 0);
+    }
+    qtest_system_reset(to);
+    capture_values(to, 0, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(sock);
+    g_rmdir(dir);
 }
 
 static void test_reset(void)
@@ -2294,7 +2499,7 @@ static void test_indexed_coverage(void)
 {
     QTestState *q = start(MEMTX_TEST_DEVICE);
     const unsigned holes[] = { 0x48080, 0x54800, 0x60400, 0x70014,
-                               0x78100, 0x80000, 0x90000, 0x10050 };
+                               0x78100, 0x80008, 0x90000, 0x10050 };
 
     qtest_irq_intercept_out_named(q, PATH, "sysbus-irq");
     indexed_values(q, true, false);
@@ -2463,6 +2668,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/coverage/timing", test_timing_coverage);
     qtest_add_func("/sgi-gbe/coverage/scalars", test_scalar_coverage);
     qtest_add_func("/sgi-gbe/coverage/migration", test_indexed_migration);
+    qtest_add_func("/sgi-gbe/capture/registers", test_capture_registers);
+    qtest_add_func("/sgi-gbe/capture/access", test_capture_access);
+    qtest_add_func("/sgi-gbe/capture/no-effects", test_capture_no_effects);
+    qtest_add_func("/sgi-gbe/capture/migration", test_capture_migration);
     qtest_add_func("/sgi-gbe/reset", test_reset);
     qtest_add_func("/sgi-gbe/dma-reset/registers", test_dma_reset_registers);
     qtest_add_func("/sgi-gbe/dma-reset/planes", test_dma_reset_planes);
