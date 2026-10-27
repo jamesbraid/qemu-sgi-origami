@@ -66,6 +66,8 @@
 #define MBOX_BUSY       0x0004
 
 #define CMD_NOP             0x0000
+#define CMD_LOAD_RAM_32     0x0001
+#define CMD_DUMP_RAM        0x0003
 #define CMD_EXEC_FIRMWARE   0x0002
 #define CMD_WRITE_RAM_WORD  0x0004
 #define CMD_READ_RAM_WORD   0x0005
@@ -781,16 +783,30 @@ static void test_risc_control(void *obj, void *data, QGuestAllocator *alloc)
     isp_close(&t);
 }
 
-/* The doorbell bit stands until the host clears it. */
+/*
+ * The firmware clears the doorbell when it takes the command, so a driver
+ * that waits for bit 7 to drop (the stock PROM's) never has to write the
+ * clear command. A command that cannot run yet keeps the bit set, and
+ * the clear command still clears it.
+ */
 static void test_host_interrupt(void *obj, void *data, QGuestAllocator *alloc)
 {
     Isp t;
 
     isp_open(&t, obj, alloc);
     isp_call(&t, CMD_NOP, 0, 0, 0);
-    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, 0);
     isp_ack(&t);
+
+    wr(&t, REG_HCCR, HCCR_PAUSE);
+    isp_call(&t, CMD_NOP, 0, 0, 0);
     g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, 0);
+    isp_ack(&t);
+
+    wr(&t, REG_HCCR, HCCR_PAUSE);
+    isp_call(&t, CMD_NOP, 0, 0, 0);
     wr(&t, REG_HCCR, HCCR_CLEAR_HOST);
     g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, 0);
     isp_close(&t);
@@ -1027,7 +1043,9 @@ static void test_doorbell_waits_for_slot(void *obj, void *data,
             in[i] = (round << 8) | i;
         }
         isp_mbox(&t, in, ARRAY_SIZE(in));
-        g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+        /* Round 0 is taken at once; the others find the slot full. */
+        g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==,
+                        round ? HCCR_HOST_INT : 0);
     }
 
     /* The posted No-op's release posts round 0 intact. */
@@ -1148,6 +1166,72 @@ static uint16_t isp_read_ram(Isp *t, uint16_t addr)
     val = rd(t, MBOX(2));
     isp_ack(t);
     return val;
+}
+
+/*
+ * The short Load RAM, which the stock PROM uses before any firmware
+ * runs, takes its host address from m2/m3 alone and works from the
+ * boot ROM.
+ */
+static void test_load_ram_32(void *obj, void *data, QGuestAllocator *alloc)
+{
+    const uint8_t bytes[] = { 0x34, 0x12, 0x78, 0x56 };
+    uint64_t src;
+    uint16_t in[8];
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    src = guest_alloc(alloc, sizeof(bytes));
+    g_assert_cmphex(src >> 32, ==, 0);
+    qtest_memwrite(t.qts, src, bytes, sizeof(bytes));
+
+    in[0] = CMD_LOAD_RAM_32;
+    in[1] = 0x1000;
+    in[2] = src >> 16;
+    in[3] = src & 0xffff;
+    in[4] = 2;
+    /* Left over from earlier commands; the short form must not use them. */
+    in[5] = 0;
+    in[6] = 0xabcd;
+    in[7] = 0x1234;
+    g_assert_cmphex(isp_mbox(&t, in, ARRAY_SIZE(in)), ==, MBOX_COMPLETE);
+    isp_ack(&t);
+    g_assert_cmphex(isp_read_ram(&t, 0x1000), ==, 0x1234);
+    g_assert_cmphex(isp_read_ram(&t, 0x1001), ==, 0x5678);
+    isp_close(&t);
+}
+
+/*
+ * Dump RAM, which the stock PROM's DMA self-test runs against the boot ROM
+ * before any firmware: the words Load RAM stored come back as the same
+ * little-endian bytes, and a range past RAM is refused.
+ */
+static void test_dump_ram(void *obj, void *data, QGuestAllocator *alloc)
+{
+    const uint8_t bytes[] = { 0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde };
+    uint8_t back[sizeof(bytes)] = { 0 };
+    uint64_t src, dst;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    src = guest_alloc(alloc, sizeof(bytes));
+    dst = guest_alloc(alloc, sizeof(back));
+    qtest_memwrite(t.qts, src, bytes, sizeof(bytes));
+    qtest_memwrite(t.qts, dst, back, sizeof(back));
+
+    g_assert_cmphex(isp_load_ram(&t, CMD_LOAD_RAM, 0x1000, src, 4, 0), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    g_assert_cmphex(isp_load_ram(&t, CMD_DUMP_RAM, 0x1000, dst, 4, 0), ==,
+                    MBOX_COMPLETE);
+    isp_ack(&t);
+    qtest_memread(t.qts, dst, back, sizeof(back));
+    g_assert_cmpmem(back, sizeof(back), bytes, sizeof(bytes));
+
+    g_assert_cmphex(isp_load_ram(&t, CMD_DUMP_RAM, 0xfffe, dst, 4, 0), ==,
+                    MBOX_PARAM_ERROR);
+    isp_ack(&t);
+    isp_close(&t);
 }
 
 /*
@@ -3050,7 +3134,7 @@ static void test_loop_events(void *obj, void *data, QGuestAllocator *alloc)
      */
     g_assert_cmphex(rd(&t, MBOX(1)), ==, 0);
     isp_call(&t, CMD_INITIATE_LIP, 0, 0, 0);
-    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, HCCR_HOST_INT);
+    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_HOST_INT, ==, 0);
     isp_ack(&t);
     /* Its result, then nothing: loop up from the first one is gone. */
     g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
@@ -4485,6 +4569,8 @@ static void isp2200_register_nodes(void)
     qos_add_test("soft-reset-clears", "qlogic-isp2200",
                  test_soft_reset_clears, NULL);
     qos_add_test("risc-control", "qlogic-isp2200", test_risc_control, NULL);
+    qos_add_test("load-ram-32", "qlogic-isp2200", test_load_ram_32, NULL);
+    qos_add_test("dump-ram", "qlogic-isp2200", test_dump_ram, NULL);
     qos_add_test("host-interrupt", "qlogic-isp2200", test_host_interrupt,
                  NULL);
     qos_add_test("unmodelled-host-commands", "qlogic-isp2200",

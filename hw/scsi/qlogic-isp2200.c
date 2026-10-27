@@ -111,7 +111,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
 #define ISP2200_ROM_REVISION_2200A  0x0004
 
 #define ISP2200_MBOX_NOP                0x0000
+/* Load RAM with a 32-bit host address: m2/m3 only, m4 words. */
+#define ISP2200_MBOX_LOAD_RAM_32        0x0001
 #define ISP2200_MBOX_EXEC_FIRMWARE      0x0002
+#define ISP2200_MBOX_DUMP_RAM           0x0003
 #define ISP2200_MBOX_WRITE_RAM_WORD     0x0004
 #define ISP2200_MBOX_READ_RAM_WORD      0x0005
 #define ISP2200_MBOX_REGISTER_TEST      0x0006
@@ -1833,6 +1836,8 @@ static bool isp2200_rom_command(uint16_t cmd)
 {
     switch (cmd) {
     case ISP2200_MBOX_NOP:
+    case ISP2200_MBOX_LOAD_RAM_32:
+    case ISP2200_MBOX_DUMP_RAM:
     case ISP2200_MBOX_EXEC_FIRMWARE:
     case ISP2200_MBOX_WRITE_RAM_WORD:
     case ISP2200_MBOX_READ_RAM_WORD:
@@ -1858,6 +1863,11 @@ static uint16_t isp2200_load_ram(QLogicISP2200State *s, const uint16_t *in)
     uint16_t count = in[4];
     uint64_t host = isp2200_mbox_addr(in);
     g_autofree uint8_t *bytes = NULL;
+
+    /* The short form names no m6 or m7, whatever an earlier command left. */
+    if (in[0] == ISP2200_MBOX_LOAD_RAM_32) {
+        host &= 0xffffffffu;
+    }
     uint32_t i;
 
     trace_qlogic_isp2200_load_ram(base, count, host);
@@ -1881,6 +1891,34 @@ static uint16_t isp2200_load_ram(QLogicISP2200State *s, const uint16_t *in)
     }
     for (i = 0; i < count; i++) {
         s->risc_ram[base + i] = lduw_le_p(bytes + i * 2);
+    }
+    return ISP2200_MBOX_COMPLETE;
+}
+
+/* The reverse of Load RAM: RAM words out to the host, little-endian. */
+static uint16_t isp2200_dump_ram(QLogicISP2200State *s, const uint16_t *in)
+{
+    uint16_t base = in[1];
+    uint16_t count = in[4];
+    uint64_t host = isp2200_mbox_addr(in);
+    g_autofree uint8_t *bytes = NULL;
+    uint32_t i;
+
+    trace_qlogic_isp2200_dump_ram(base, count, host);
+
+    if ((uint32_t)base + count > ISP2200_RAM_WORDS) {
+        return ISP2200_MBOX_PARAM_ERROR;
+    }
+    if (count == 0) {
+        return ISP2200_MBOX_COMPLETE;
+    }
+
+    bytes = g_malloc(count * 2u);
+    for (i = 0; i < count; i++) {
+        stw_le_p(bytes + i * 2, s->risc_ram[base + i]);
+    }
+    if (isp2200_dma_write(s, host, bytes, count * 2u) != MEMTX_OK) {
+        return ISP2200_MBOX_HOST_INTERFACE_ERROR;
     }
     return ISP2200_MBOX_COMPLETE;
 }
@@ -2007,9 +2045,13 @@ static uint16_t isp2200_dispatch(QLogicISP2200State *s, const uint16_t *in,
         return ISP2200_MBOX_COMPLETE;
 
     case ISP2200_MBOX_LOAD_RAM:
+    case ISP2200_MBOX_LOAD_RAM_32:
     case ISP2200_MBOX_LOAD_RAM_EXTENDED:
         out[1] = in[1];
         return isp2200_load_ram(s, in);
+
+    case ISP2200_MBOX_DUMP_RAM:
+        return isp2200_dump_ram(s, in);
 
     case ISP2200_MBOX_VERIFY_CHECKSUM:
         return isp2200_verify_checksum(s, in, out);
@@ -2071,6 +2113,11 @@ static void isp2200_mailbox_command(QLogicISP2200State *s)
 {
     assert(!s->completion_held);
 
+    /*
+     * The firmware takes the doorbell by clearing it. The stock PROM's
+     * driver waits for bit 7 to drop and never writes the clear command.
+     */
+    s->host_int = false;
     trace_qlogic_isp2200_mbox_command(s->mbox_in[0]);
     memset(s->completion, 0, sizeof(s->completion));
     s->completion[0] = isp2200_dispatch(s, s->mbox_in, s->completion);

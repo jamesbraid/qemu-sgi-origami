@@ -445,6 +445,7 @@ qlogic_isp2200_post_mailbox(uint16_t m0) "m0 0x%04x"
 qlogic_isp2200_event(uint16_t code) "async event 0x%04x"
 qlogic_isp2200_event_waiting(uint16_t code) "async event 0x%04x already waits"
 qlogic_isp2200_load_ram(uint16_t base, uint16_t count, uint64_t host) "ram word 0x%04x count %u host 0x%" PRIx64
+qlogic_isp2200_dump_ram(uint16_t base, uint16_t count, uint64_t host) "ram word 0x%04x count %u host 0x%" PRIx64
 qlogic_isp2200_exec_firmware(uint16_t start) "start 0x%04x"
 qlogic_isp2200_init_firmware(uint64_t icb, uint64_t rqst, uint16_t rqst_len, uint64_t resp, uint16_t resp_len, uint16_t options) "icb 0x%" PRIx64 " request 0x%" PRIx64 "/%u response 0x%" PRIx64 "/%u options 0x%04x"
 qlogic_isp2200_request_ring(uint16_t in, uint16_t out) "request in %u out %u"
