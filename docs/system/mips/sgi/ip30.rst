@@ -119,7 +119,7 @@ Products
      - one R12000, 360 MHz, 2 MiB secondary cache
      - 256 MiB by default; 64 MiB to 8 GiB (:ref:`sgi-ip30-memory`)
      - ``030-1467-001`` revision B
-     - the owner's ``hinv -mvv`` (:ref:`sgi-measured-octane2-hinv`)
+     - the reference Octane2's ``hinv -mvv`` (:ref:`sgi-measured-octane2-hinv`)
 
 ``octane`` (*established*, with one model choice): the Technical Report's
 standard configurations (page 7-1) include 128 MiB single-processor
@@ -282,7 +282,7 @@ Components and connections
    * - RAD1 audio
      - onboard PCI device 3, function 0, identity ``10a9:0005``
      - *observed* for the captured Octane (revision ``0xc0``);
-       *established* for the owner's Octane2, whose PROM-monitor read of
+       *established* for the reference Octane2, whose PROM-monitor read of
        configuration register ``0x08`` returned class ``0x000000`` and
        revision ``0xc0`` (:ref:`measured <sgi-rad1-octane2-config>`). Its
        inventory's ``12.0`` is not a PCI revision byte.
@@ -306,7 +306,7 @@ layers):
   and dotted forms are not the raw register fields, and their mapping is
   *inferred*, not *established*.
 - ``octane2``: HEART widget identification word ``0x6c00106d`` (revision 6,
-  part ``0xc001``, manufacturer ``0x36``), read on the owner's machine from
+  part ``0xc001``, manufacturer ``0x36``), read on the reference Octane2 from
   the PROM monitor (:ref:`measured <sgi-heart-octane2-id>`) and consistent
   with its inventory's HEART revision F (*established*). Crossbow revision
   5, from a PROM-monitor read of its identification word ``0x50000001``
@@ -403,7 +403,7 @@ one-wire bus beside its Ethernet-address part.
      - ``PM10360MHZ``
      - ``030-1590-002``
      - B
-     - owner inventory (:ref:`sgi-measured-octane2-hinv`)
+     - reference Octane2 inventory (:ref:`sgi-measured-octane2-hinv`)
    * - ``octane2`` system board
      - ``IP30``
      - ``030-1467-001``
@@ -566,9 +566,9 @@ These are emulator choices for launchers, not hardware facts.
   fitted was seen only on the model.
 - PROM dialogue ``none``: no launcher-driven PROM dialogue is defined.
 - Disk bus ``scsi``: the boot disk attaches to the first onboard SCSI
-  controller. The owner's hardware graph places its disk at PCI device 0,
-  target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay and channel
-  wiring are *unknown*.
+  controller. The reference Octane2's hardware graph places its disk at PCI
+  device 0, target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay
+  and channel wiring are *unknown*.
 - Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
   media ``disk-image`` and ``netboot``. The stock PROM's "Install System
   Software" netbooted the IRIX 6.5.30 miniroot through it on the model,

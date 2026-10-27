@@ -61,7 +61,7 @@ Sources
   for the meaning of a one-wire reset slot.
 - The IP30 PROM and the IP30 kernel and stock diagnostic shipped with
   IRIX 6.5.30, read as binaries, as software expectations.
-- Reads taken on the owner's Octane2 (:ref:`sgi-heart-measurements`).
+- Reads taken on the reference Octane2 (:ref:`sgi-heart-measurements`).
 
 .. _sgi-heart-identity:
 
@@ -72,7 +72,7 @@ HEART is Crossbow widget 8, *observed* in a published Octane capture
 (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`) and agreed by OpenBSD
 ``ip30.h`` and Linux. Its processor-interface block starts at physical
 ``0x0ff00000`` in OpenBSD ``xheartreg.h`` and Linux ``heart.h``, a
-*software expectation*; the owner's Octane2 answered descriptor reads
+*software expectation*; the reference Octane2 answered descriptor reads
 there (:ref:`sgi-heart-octane2-bank`), *established* for that board.
 RAM starts at physical ``0x20000000`` in OpenBSD ``ip30.h``, a *software
 expectation*. OpenBSD ``xbowdevs.h`` gives the widget manufacturer
@@ -102,7 +102,7 @@ decodes consistently with that layout.
    * - ``octane2``
      - 6
      - ``0x6c00106d``
-     - *Established*: read on the owner's revision F Octane2
+     - *Established*: read on the reference Octane2
        (:ref:`sgi-heart-octane2-id`).
 
 The stock IRIX 6.5.30 IP30 diagnostic reads the word as 64 bits and
@@ -339,7 +339,7 @@ Widget status, control and request timeout
 ------------------------------------------
 
 The widget status word reads ``0x60`` on the ``octane2`` only. The
-owner's revision F Octane2 returned exactly that value after PROM
+reference Octane2 returned exactly that value after PROM
 startup (:ref:`sgi-heart-octane2-status`), so the value is
 *established* for that board at PROM time. It is not a reset value, and
 what the bits mean is *unknown*. The stock 6.5.30 diagnostic reads the
@@ -357,7 +357,7 @@ The request-timeout word is one stored 32-bit value. A 32-bit access at
 its low 32 bits and a 64-bit read returns zero in the upper half. The
 IRIX 6.5.30 kernel reads the 32-bit word while attaching I/O and writes
 ``0x80`` when the value is lower, a *software expectation*; from the
-model's zero it takes that write. The owner's Octane2 read ``0x28``
+model's zero it takes that write. The reference Octane2 read ``0x28``
 after PROM startup (:ref:`sgi-heart-octane2-timeout`). The unit and the
 effect of the timeout are *unknown*; the model times out nothing.
 
@@ -369,7 +369,7 @@ Widget error registers
 The IRIX 6.5.30 kernel reads error status at ``0x60``, writes the value
 back, zeroes the error command word at ``0x44`` and writes
 ``0x3ff62c07`` to the error mask at ``0x68``, a *software expectation*
-that suggests write-one-to-clear status and a writable mask. The owner's
+that suggests write-one-to-clear status and a writable mask. The reference
 Octane2 read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM
 startup (:ref:`sgi-heart-octane2-widget`).
 
@@ -492,7 +492,7 @@ the same upper bits.
      - ``0x81bf0040``
      - 6
 
-These are model results, not measurements. The owner's Octane2 PROM left
+These are model results, not measurements. The reference Octane2 PROM left
 ``0x81470000`` for its 256 MiB bank at base 0
 (:ref:`sgi-heart-octane2-bank`), which matches. The PROM's table pairs its
 rows by density code; that each code names one SDRAM part density is

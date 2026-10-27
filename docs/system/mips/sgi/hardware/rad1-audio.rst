@@ -75,7 +75,7 @@ The 2017 Linux capture reports the same function as ``10a9:0005``, class
 ``0x000000``, revision ``c0``
 :src:`lore-kinard-octane-2017 dmesg line 161, lspci line 44`; the 2019
 capture of the same machine repeats the zero class
-:src:`lore-kinard-octane-2019 dmesg line 151`. The owner's Octane2 returned
+:src:`lore-kinard-octane-2019 dmesg line 151`. The reference Octane2 returned
 the class and revision word ``0x000000c0`` (:ref:`sgi-rad1-octane2-config`),
 *established* for that machine. ``sgi-rad1-octane`` presents class
 ``0x000000`` and revision ``0xc0`` on both the ``octane`` and ``octane2``
@@ -643,11 +643,11 @@ does not show cold reset or write masks.
 Configuration BAR0
 ------------------
 
-The owner reported ``600000`` for ``dump -w -x 0x900000001f023010#1``, a
-read of configuration register ``0x10``. Only the value was reported,
-not the monitor output. It is the base the PROM had assigned to BAR0,
-not a sizing response and not a register inside BAR0, so it says
-nothing about the BAR's size.
+The reference Octane2 returned ``600000`` for ``dump -w -x
+0x900000001f023010#1``, a read of configuration register ``0x10``. Only the
+value was reported, not the monitor output. It is the base the PROM had
+assigned to BAR0, not a sizing response and not a register inside BAR0, so
+it says nothing about the BAR's size.
 
 .. _sgi-rad1-limits:
 
