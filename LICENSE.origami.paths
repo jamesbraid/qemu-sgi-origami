@@ -1,4 +1,3 @@
-.github/CONTRIBUTING.md
 .github/workflows/build.yml
 .github/workflows/merge-queue.yml
 .github/workflows/nightly.yml
