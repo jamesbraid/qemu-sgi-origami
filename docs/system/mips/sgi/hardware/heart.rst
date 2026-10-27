@@ -471,7 +471,7 @@ the same upper bits.
    :header-rows: 1
 
    * - Fitted bank
-     - Final descriptor
+     - Descriptor after the probe
      - Density code
    * - 64 MiB
      - ``0x81010040``

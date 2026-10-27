@@ -21,10 +21,9 @@ R12000 in full and the R14000 and R16000 only where they share that code.
 No single chip revision is modelled: each machine selects the identity
 and reset inputs of the part it fits.
 
-Facts below are rated *established* (a cited manual or a measurement of an
-identified machine), *observed* (a published capture), *inferred*,
-*approximation* (a model choice where the hardware is not known, with its
-limitation stated) or *unknown*.
+Facts below carry the ratings defined on :ref:`sgi-ip30`: *established*,
+*observed*, *software expectation*, *inferred*, *approximation* or
+*unknown*.
 
 .. _sgi-r10000-sources:
 
@@ -330,13 +329,7 @@ interrupt entry and reset close the window, and a later Count access opens
 a new one. No limit applies to the number of instructions between the
 sample and the Compare write.
 
-A window open when the machine is migrated is dropped, and the
-destination applies the ordinary rule to that one Compare write. This is
-deliberate, unlike the adjacent-write recovery, which migrates its
-pending candidate: the virtual clock is frozen while the machine is
-stopped, so a window open across a migration or snapshot loses nothing
-unless a host stall after the resume crosses the target, at a cost of
-one tick.
+A window open at migration is dropped (:ref:`sgi-r10000-migration`).
 
 A target behind the sample, or equal to it, keeps the ordinary rule. That
 covers the read-Count-minus-one disarm public drivers use (OpenBSD writes
@@ -484,9 +477,8 @@ other flags. With FS set, denormal results are flushed to zero.
 also traps a NaN, an infinity or an out-of-range source in place of the
 architectural Invalid result, an *approximation*: the manual gives no
 result for them. The model treats ``ABS`` and ``NEG`` as arithmetic, so a
-NaN operand signals Invalid. That is a model choice: it follows NEC's
-*VR10000 Instruction Set User's Manual*, which the code cites and this
-page has not checked. The
+NaN operand signals Invalid, an *approximation* that follows NEC's
+*VR10000 Instruction Set User's Manual*. The
 R12000 changes FS handling of input denormals and quiet NaNs
 :src:`nec-vr10000-series-um-4 PDF p. 349-351, 353`, *established*; the
 model does not separate it.

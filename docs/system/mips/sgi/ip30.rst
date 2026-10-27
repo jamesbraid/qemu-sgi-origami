@@ -131,11 +131,12 @@ reports 256 MiB; pairing its board and processor with 128 MiB is a
 model choice. A 175 MHz, 128 MiB Octane also exists (the OpenBSD
 capture), so memory size does not fix processor speed.
 
-``octane2`` (*established* for one machine, :ref:`sgi-measured-octane2-hinv`):
-the inventory reports one 360 MHz R12000 chip revision 3.5 with 2 MiB secondary cache,
-256 MiB, HEART revision F, board ``030-1467-001`` revision B and Crossbow
-ASIC revision 1.4. Its V12 graphics board at widget 11 is the
-``octane2`` machine's default pipe (:ref:`sgi-ip30-graphics`).
+``octane2`` (*established* for one machine,
+:ref:`sgi-measured-octane2-hinv`): the inventory reports one 360 MHz R12000
+chip revision 3.5 with 2 MiB secondary cache, 256 MiB, HEART revision F,
+board ``030-1467-001`` revision B and Crossbow ASIC revision 1.4. Its V12
+graphics board at widget 11 is the ``octane2`` machine's default pipe
+(:ref:`sgi-ip30-graphics`).
 
 .. _sgi-ip30-processors:
 
@@ -155,10 +156,10 @@ without CPU options.
 
 CP0 Count runs at half the processor clock
 (:src:`r10000-users-manual-2.0 section 14.8`, *established*), 97.5 MHz on
-``octane`` and 180 MHz on ``octane2``. Both machines turn on the CPU's count-sample
-window, which keeps the IRIX scheduler tick from being lost when the host
-delays a vCPU. :doc:`hardware/r10000` describes the identity words, the
-reset mode word and that window.
+``octane`` and 180 MHz on ``octane2``. Both machines turn on the CPU's
+count-sample window, which keeps the IRIX scheduler tick from being lost
+when the host delays a vCPU. :doc:`hardware/r10000` describes the identity
+words, the reset mode word and that window.
 
 .. _sgi-ip30-memory:
 
@@ -269,9 +270,10 @@ Components and connections
        OpenBSD capture finds the Bridge at widget 15
    * - Two QLogic SCSI controllers
      - onboard PCI devices 0 and 1, function 0
-     - *observed*: the OpenBSD capture (ISP1020 revision 5); the Octane2
-       inventory reports QL1040B parts and its hardware graph places them
-       at devices 0 and 1 (:ref:`sgi-measured-octane2-hinv`,
+     - *observed* in the OpenBSD capture (ISP1020 revision 5);
+       *established* for the Octane2, whose inventory reports QL1040B
+       parts and whose hardware graph places them at devices 0 and 1
+       (:ref:`sgi-measured-octane2-hinv`,
        :ref:`sgi-measured-octane2-graph`)
    * - IOC3
      - onboard PCI device 2, function 0
@@ -279,11 +281,11 @@ Components and connections
        ``pci-xtalk-bridge.c``, and the OpenBSD capture (revision 1)
    * - RAD1 audio
      - onboard PCI device 3, function 0, identity ``10a9:0005``
-     - *observed* for the captured Octane (revision ``0xc0``) and for
-       the owner's Octane2, whose PROM-monitor read of configuration
-       register ``0x08`` returned class ``0x000000`` and revision ``0xc0``
-       (:ref:`measured <sgi-rad1-octane2-config>`); its inventory's ``12.0`` is not a
-       PCI revision byte
+     - *observed* for the captured Octane (revision ``0xc0``);
+       *established* for the owner's Octane2, whose PROM-monitor read of
+       configuration register ``0x08`` returned class ``0x000000`` and
+       revision ``0xc0`` (:ref:`measured <sgi-rad1-octane2-config>`). Its
+       inventory's ``12.0`` is not a PCI revision byte.
    * - DS1685-family clock
      - behind IOC3
      - *observed*: the OpenBSD capture reports a DS1687
@@ -303,22 +305,21 @@ layers):
   prints HEART revision D and Xbow ASIC revision 1.2; IRIX's lettered
   and dotted forms are not the raw register fields, and their mapping is
   *inferred*, not *established*.
-- ``octane2``: HEART widget identification word ``0x6c00106d``
-  (revision 6, part ``0xc001``, manufacturer ``0x36``), read on the
-  owner's machine from the PROM monitor
-  (:ref:`measured <sgi-heart-octane2-id>`) and consistent with its
-  inventory's HEART revision F (*established*). Crossbow
-  revision 5, from a PROM-monitor read of its identification word
-  ``0x50000001`` (:ref:`measured <sgi-xbow-octane2-id>`) beside an inventory
-  revision of 1.4 (*established*). Bridge revision 3 is an *approximation*: the inventory
-  does not report the Octane2 Bridge revision, and the value is carried
-  over from the earlier Octane.
+- ``octane2``: HEART widget identification word ``0x6c00106d`` (revision 6,
+  part ``0xc001``, manufacturer ``0x36``), read on the owner's machine from
+  the PROM monitor (:ref:`measured <sgi-heart-octane2-id>`) and consistent
+  with its inventory's HEART revision F (*established*). Crossbow revision
+  5, from a PROM-monitor read of its identification word ``0x50000001``
+  (:ref:`measured <sgi-xbow-octane2-id>`) beside an inventory revision of
+  1.4 (*established*). Bridge revision 3 is an *approximation*: the
+  inventory does not report the Octane2 Bridge revision, and the value is
+  carried over from the earlier Octane.
 
 IOC3 general-purpose input 2 tells the two products apart in software:
 OpenBSD reads it as 1 for Octane and 0 for Octane2 (``ip30.h``,
 ``IP30_GPIO_CLASSIC``; ``ip30_machdep.c`` lines 193-202). The model
-drives it high on ``octane`` and low on ``octane2``. This is a public
-driver expectation (*inferred*); the electrical wiring is *unknown*.
+drives it high on ``octane`` and low on ``octane2``. This is a *software
+expectation* of a public driver; the electrical wiring is *unknown*.
 
 .. _sgi-ip30-address-map:
 
@@ -557,16 +558,17 @@ Launch metadata
 
 These are emulator choices for launchers, not hardware facts.
 
-- Console ``ioc3-serial-a``. The Octane2 guide assigns a console
-  terminal to serial port 1 (:src:`007-4207-002 p. 148`), OpenBSD's early console uses
-  IOC3 UART A behind the onboard Bridge (``ip30_machdep.c`` lines
-  163-182), and the OpenBSD capture shows ``com0`` at IOC3 offset
-  ``0x20178`` as console. That the stock PROM selects that port with no
-  graphics board fitted was *observed* only on the model.
+- Console ``ioc3-serial-a``. The Octane2 guide assigns a console terminal to
+  serial port 1 (:src:`007-4207-002 p. 148`), OpenBSD's early console uses
+  IOC3 UART A behind the onboard Bridge (``ip30_machdep.c`` lines 163-182),
+  and the OpenBSD capture shows ``com0`` at IOC3 offset ``0x20178`` as
+  console. That the stock PROM selects that port with no graphics board
+  fitted was seen only on the model.
 - PROM dialogue ``none``: no launcher-driven PROM dialogue is defined.
 - Disk bus ``scsi``: the boot disk attaches to the first onboard SCSI
-  controller. The owner's hardware graph places its disk at PCI device
-  0, target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay and channel wiring are *unknown*.
+  controller. The owner's hardware graph places its disk at PCI device 0,
+  target 1 (:ref:`sgi-measured-octane2-graph`); the physical bay and channel
+  wiring are *unknown*.
 - Netboot adapter ``ioc3-ethernet``, the onboard IOC3's Ethernet; install
   media ``disk-image`` and ``netboot``. The stock PROM's "Install System
   Software" netbooted the IRIX 6.5.30 miniroot through it on the model,
