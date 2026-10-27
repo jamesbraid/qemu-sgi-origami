@@ -102,10 +102,23 @@ static int16_t codec_decode(uint16_t slot, unsigned format)
     }
 }
 
+static unsigned codec_law_character(unsigned format, unsigned interval,
+                                     bool negative)
+{
+    unsigned code = format == 2 ? 255 - interval : (128 + interval) ^ 0x55;
+
+    return negative ? code ^ 128 : code;
+}
+
 static uint16_t codec_encode(int16_t sample, unsigned format)
 {
-    unsigned best = 0;
-    int distance = INT_MAX;
+    bool negative = sample < 0;
+    unsigned magnitude = negative ? -(int32_t)sample : sample;
+    unsigned interval = 0, lower = 0;
+    unsigned width = format == 2 ? 4 : 16;
+    unsigned count = format == 2 ? 1 : 32;
+    unsigned code;
+    bool exact = false;
 
     if (format == 0) {
         return ((sample + 32768) >> 8) << 8;
@@ -113,18 +126,37 @@ static uint16_t codec_encode(int16_t sample, unsigned format)
     if (format == 1) {
         return (uint16_t)sample;
     }
-    /* Exhaustive selection keeps clipping and segment boundaries symmetric. */
-    for (unsigned code = 0; code < 256; code++) {
-        int delta = abs(sample - codec_decode(code << 8, format));
+    /* Compare exact PCM16 magnitudes with the scaled G.711 decisions. */
+    while (interval < 128) {
+        unsigned upper = lower + count * width;
 
-        if (delta < distance ||
-            (delta == distance && ((sample >= 0) == !!(code & 128)) &&
-             ((sample >= 0) != !!(best & 128)))) {
-            distance = delta;
-            best = code;
+        if (magnitude < upper) {
+            unsigned offset = (magnitude - lower) / width;
+
+            interval += offset;
+            exact = interval && magnitude == lower + offset * width;
+            break;
+        }
+        lower = upper;
+        interval += count;
+        width *= 2;
+        count = format == 2 && interval == 1 ? 15 : 16;
+    }
+    interval = MIN(interval, 127);
+    code = codec_law_character(format, interval, negative);
+    if (exact) {
+        unsigned previous = codec_law_character(format, interval - 1, negative);
+        int current_distance = abs(sample - codec_decode(code << 8, format));
+        int previous_distance = abs(sample -
+                                    codec_decode(previous << 8, format));
+
+        /* Preserve the selected equipment rule only at shared decisions. */
+        if (previous_distance < current_distance ||
+            (previous_distance == current_distance && previous < code)) {
+            code = previous;
         }
     }
-    return best << 8;
+    return code << 8;
 }
 
 static unsigned codec_selector(const uint16_t *reg, unsigned converter)
