@@ -5,8 +5,8 @@
  * The default 1.5 interface has an explicit legacy software alternative.
  * An opt-in standalone profile decodes eight logical 128 MiB RAM banks.
  * An opt-in synchronous linear transfer approximation uses healthy RAM.
- * The legacy functional profile includes synchronous tiled 2D rendering.
- * Physical ECC, watchdog, 3D rendering and VICE are not modeled.
+ * The legacy profile includes synchronous 2D and bounded flat GL triangles.
+ * Physical ECC, watchdog and VICE are not modeled.
  * Unsupported register operations fail visibly.
  */
 #include "qemu/osdep.h"
@@ -717,7 +717,92 @@ typedef struct CrimeRenderGeometry {
     unsigned opcode, samples, steps, width, thickness, capacity;
     int x0, y0, x1, y1, dx, dy, lower;
     bool xmajor;
+    int64_t vertex[3][2];
 } CrimeRenderGeometry;
+
+
+static int64_t crime_render_edge(const int64_t a[2], const int64_t b[2],
+                                  int64_t x, int64_t y)
+{
+    return (b[0] - a[0]) * (y - a[1]) -
+           (b[1] - a[1]) * (x - a[0]);
+}
+
+static bool crime_render_triangle(const uint64_t *p, CrimeRenderGeometry *g)
+{
+    uint32_t primitive = p[0x60 / 4];
+    int64_t area, xmin, xmax, ymin, ymax;
+
+    if (primitive & 0x00f80000) {
+        return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            uint64_t raw = p[(0x80 + 8 * i + 4 * axis) / 4];
+
+            if (raw < 0x48000000 || raw > 0x4807ffff) {
+                return false;
+            }
+            g->vertex[i][axis] = (int64_t)raw - 0x48040000;
+        }
+    }
+    /* The bounded six-bit transport requires 64-bit edge products. */
+    area = crime_render_edge(g->vertex[0], g->vertex[1],
+                              g->vertex[2][0], g->vertex[2][1]);
+    if (area < 0) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            int64_t v = g->vertex[1][axis];
+
+            g->vertex[1][axis] = g->vertex[2][axis];
+            g->vertex[2][axis] = v;
+        }
+    }
+    xmin = MAX(MIN(g->vertex[0][0],
+                   MIN(g->vertex[1][0], g->vertex[2][0])), 0);
+    ymin = MAX(MIN(g->vertex[0][1],
+                   MIN(g->vertex[1][1], g->vertex[2][1])), 0);
+    xmax = MIN(MAX(g->vertex[0][0],
+                   MAX(g->vertex[1][0], g->vertex[2][0])), 2047 * 64);
+    ymax = MIN(MAX(g->vertex[0][1],
+                   MAX(g->vertex[1][1], g->vertex[2][1])), 2047 * 64);
+    if (!area || xmin > xmax || ymin > ymax) {
+        g->samples = g->capacity = 0;
+        return true;
+    }
+    /* Clipping before division leaves nonnegative signed floor/ceil inputs. */
+    xmin = DIV_ROUND_UP(xmin, 64);
+    ymin = DIV_ROUND_UP(ymin, 64);
+    xmax /= 64;
+    ymax /= 64;
+    if (xmin > xmax || ymin > ymax) {
+        g->samples = g->capacity = 0;
+        return true;
+    }
+    g->dx = primitive & 0x10000 ? -1 : 1;
+    g->dy = primitive & 0x20000 ? 1 : -1;
+    g->x0 = g->dx > 0 ? xmin : xmax;
+    g->y0 = g->dy > 0 ? ymin : ymax;
+    g->width = xmax - xmin + 1;
+    g->samples = g->capacity = g->width * (ymax - ymin + 1);
+    g->thickness = 1;
+    return true;
+}
+
+static bool crime_render_triangle_inside(const CrimeRenderGeometry *g,
+                                          int x, int y)
+{
+    for (unsigned i = 0; i < 3; i++) {
+        const int64_t *a = g->vertex[i], *b = g->vertex[(i + 1) % 3];
+        int64_t dx = b[0] - a[0], dy = b[1] - a[1];
+        int64_t edge = crime_render_edge(a, b, (int64_t)x * 64,
+                                          (int64_t)y * 64);
+
+        if (edge < 0 || (!edge && !(dy < 0 || (!dy && dx > 0)))) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
@@ -725,6 +810,9 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
     bool terminal_span;
 
     g->opcode = primitive >> 24;
+    if (g->opcode == 2) {
+        return crime_render_triangle(p, g);
+    }
     g->x0 = p[0x70 / 4] >> 16;
     g->y0 = p[0x70 / 4] & 0xffff;
     g->x1 = p[0x74 / 4] >> 16;
@@ -777,7 +865,7 @@ static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 static void crime_render_sample(const CrimeRenderGeometry *g, unsigned i,
                                  int *x, int *y)
 {
-    if (g->opcode == 3) {
+    if (g->opcode >= 2) {
         *x = g->x0 + g->dx * (int)(i % g->width);
         *y = g->y0 + g->dy * (int)(i / g->width);
     } else if (g->opcode == 1 && g->steps) {
@@ -822,7 +910,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     unsigned bit = 0, repeat = 0, first = 0, last = 0, max_repeat = 0;
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
-    bool alpha, alpha_pass;
+    bool alpha, alpha_pass, triangle;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     g_autofree CrimeRenderPixel *pixels = NULL;
@@ -842,8 +930,13 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     if (alpha && (p[0x198 / 4] & ~0x7ffULL)) {
         return crime_transfer_fail(offset, "unsupported alpha comparison");
     }
-    if ((draw & ~0x3e0af8U) || p[0x50 / 4] ||
-        (copy ? p[0x58 / 4] != 0 : (p[0x58 / 4] & 0x80008000U)) ||
+    triangle = (p[0x60 / 4] >> 24) == 2;
+    if ((draw & ~(triangle ? 0x5a02f8U : 0x3e0af8U)) ||
+        (triangle ? (!(draw & 0x400000) || p[0x58 / 4] ||
+                      (p[0x8 / 4] & ~0xc00ULL) != 0x228) :
+                    (p[0x50 / 4] ||
+                     (copy ? p[0x58 / 4] != 0 :
+                             (p[0x58 / 4] & 0x80008000U)))) ||
         !crime_render_geometry(p, &geometry)) {
         return crime_transfer_fail(offset, "unsupported primitive state");
     }
@@ -911,7 +1004,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
     }
     if (screen_count > 1 &&
-        ((clip & 31) != (clip >> 5) || transfer)) {
+        (triangle || (clip & 31) != (clip >> 5) || transfer)) {
         return crime_transfer_fail(offset, "unsupported screen mask union");
     }
     scissor = crime_render_clip(p[0x48 / 4]);
@@ -978,6 +1071,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             color = p[0xd8 / 4];
         }
         crime_render_sample(&geometry, i, &cx, &cy);
+        if (triangle && !crime_render_triangle_inside(&geometry, cx, cy)) {
+            continue;
+        }
         if (geometry.opcode == 1) {
             if (!geometry.steps || !geometry.xmajor) {
                 stripe_x = geometry.thickness;
@@ -1082,7 +1178,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
             qemu_log_mask(LOG_UNIMP,
                           "sgi-crime: %s suppressed %u invalid destination "
                           "fragments\n", geometry.opcode == 0 ? "point" :
-                          geometry.opcode == 1 ? "line" : "rectangle",
+                          geometry.opcode == 1 ? "line" :
+                          triangle ? "triangle" : "rectangle",
                           suppressed);
         }
     }
@@ -1260,6 +1357,7 @@ static MemTxResult crime_render_state_write(SGICrimeState *s, hwaddr offset,
             s->render.parameter[index] = value >> 32;
             return MEMTX_OK;
         case 0x070:
+        case 0x080: case 0x088: case 0x090:
         case 0x0a8:
         case 0x0c0: {
             const CrimeRenderRegister *second =
