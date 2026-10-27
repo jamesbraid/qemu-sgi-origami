@@ -201,14 +201,24 @@ the processor it waits for runs at all, and report a live peer dead.
 
 The model's assist is a kick, ``sgi_hub_kick_peer``: it wakes the named
 peer processor and changes no Hub or interrupt state. The current
-processor keeps running. Three register paths kick: an interrupt-modify
-write that changes a pending bit kicks the node's other processors
-(under single-threaded round-robin TCG, every interrupt-modify write
-does); a write into a peer node's scratch registers kicks that node;
-and a read of pending bank 1 by the secondary processor kicks the
-primary unless the primary's write has already been credited. The
-read kick fires only under single-threaded round-robin TCG, where one
-host slice serves every processor.
+processor keeps running. Writes kick in every execution mode:
+
+- an interrupt-modify write that changes a pending bit kicks the
+  node's processors (under single-threaded round-robin TCG, every
+  interrupt-modify write does);
+- a write into a peer node's scratch registers kicks that node;
+- a write to a processor's real-time comparator while its counter
+  interrupt is off kicks the node's other processor.
+
+Reads kick only under single-threaded round-robin TCG, where one host
+slice serves every processor:
+
+- a re-read of a pending bank that returns the value the same
+  processor read last time kicks the node's processors;
+- a read of pending bank 1 by the secondary processor, with bit 113
+  set, kicks the primary unless the primary's write has already been
+  credited;
+- a read of a peer's real-time comparator kicks that peer.
 
 Under multi-threaded TCG every processor has its own host thread, so
 handing slices around helps nobody, but a descheduled thread still
