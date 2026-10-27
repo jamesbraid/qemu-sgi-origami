@@ -7,32 +7,463 @@ SGI IP27: Origin 200, Origin 2000 and Onyx2
 ===========================================
 
 IP27 is the software platform of SGI's first Scalable Node generation,
-built around the Hub node controller. QEMU models it as the ``origin200``,
-``origin2000`` and ``onyx2`` machines on the shared base described in
-:doc:`sn`. This page covers the Origin 2000 module and the Onyx2.
+built around the Hub node controller. The ``origin200``, ``origin2000``
+and ``onyx2`` machines (``hw/mips/sgi/sn-machine.c``, with the node in
+``hw/mips/sgi/sn0.c``) build it on the shared Scalable Node base
+described in :doc:`sn`. An Origin 200 is one or two IP29 system boards
+in towers. An Origin 2000 is one module of one to four IP27 node boards
+joined by Routers, with two Crossbows and twelve XIO slots. An Onyx2 is
+the same IP27 silicon with an InfiniteReality graphics pipe, in a
+deskside of its own or a rack built from the Origin 2000 module. Every
+machine boots a stock IP27 PROM that the user supplies.
+
+This page is the hardware contract the machine models in
+``hw/mips/sgi/models/`` cite for these products: what is fitted, how it
+is wired, what the emulator chose where the hardware is not known, and
+which sources back each statement. Chip registers are on the pages of
+the parts (:ref:`sgi-ip27-devices`).
+
+Facts are rated as described in :ref:`sgi-ratings`.
+
+.. _sgi-ip27-sources:
+
+Sources
+=======
+
+SGI manuals, by document number and printed page:
+
+- *Origin 200 and Origin 200 GIGAchannel Owner's Guide*,
+  :src:`007-3708-002`, and its *Maintenance Guide*, :src:`007-3709-002`.
+- *Origin2000 Deskside Owner's Guide*, :src:`007-3453-002`.
+- *Onyx2 Deskside Workstation Owner's Guide*, :src:`007-3454-005`.
+- *Origin2000 Rackmount Owner's Guide*, :src:`007-3456-003`.
+- *Onyx2 Rackmount Owner's Guide*, :src:`007-3457-005`.
+- *Origin and Onyx2 Theory of Operations Manual*, :src:`007-3439-002`.
+- *Origin200/2000 IP27 PROM Technical Reference Manual*,
+  :src:`108-0170-001`.
+- *Origin2000 and Onyx2 Diagnostic Roadmap*, :src:`108-0164-002`.
+- *Hardware Quick-reference Booklet, Origin and Onyx2 Series*,
+  :src:`origin-onyx2-quick-reference-booklet` (HMQ-380-C).
+- *MIPS R10000 Microprocessor User's Manual*, version 2.0,
+  :src:`r10000-users-manual-2.0`, and NEC's *VR10000 Series User's
+  Manual*, :src:`nec-vr10000-series-um-4`.
+
+Public software:
+
+- Linux at ``db2ddb87143519e20a95aa36c60b36107b736a58``:
+  ``arch/mips/include/asm/sn/addrs.h``, ``asm/sn/sn0/addrs.h`` and
+  ``arch/mips/include/asm/mach-ip27/spaces.h`` (address spaces, node
+  number and windows), ``arch/mips/include/asm/xtalk/xwidget.h`` (widget
+  part numbers).
+- OpenBSD/sgi port, the-machine-hall/openbsd-sgi branch
+  ``sgi-is-alive-at-7.9`` at ``2df91d80c104636deeef8124252ddd5951b55fbf``:
+  ``sys/arch/sgi/xbow/hub.h``, ``sys/arch/sgi/sgi/ip27.h`` and
+  ``ip27_machdep.c`` (Hub windows and the configuration block that names
+  the machine type), ``sys/arch/sgi/xbow/xbowdevs`` (widget part
+  numbers).
+
+The stock IP27 PROM 6.156, :src:`ip27-prom-6.156`, is cited by image
+address where this page states what it does. Those statements are
+*software expectations*: they say what the firmware relies on, not what
+the hardware is.
+
+Captures of real machines, each an owner's posted inventory or console:
+
+- Origin 2000: a stock PROM 6.156 boot of a three-node module and later
+  IRIX listings of it with four (:src:`nekonomicon-16727716`), and a
+  two-node Origin 2200 board list (:src:`nekonomicon-16729560`).
+- Origin 200: one- and two-processor inventories
+  (:src:`nekonomicon-16731033`, :src:`nekonomicon-16726704`,
+  :src:`nekonomicon-16729597`, :src:`usenet-3e2794b8`).
+
+.. _sgi-onyx2-sources:
+
+Onyx2 captures
+--------------
+
+- an Onyx2 deskside PROM ``hinv -v`` (:src:`nekonomicon-16723250`);
+- an Onyx2 deskside PROM and IRIX boot console of a two-node machine
+  (:src:`nekonomicon-16727032`);
+- an Onyx2 deskside IRIX ``hinv``, board list and ``gfxinfo -v``
+  (:src:`irixnet-post-32192`);
+- an Onyx2 deskside inventory and board list
+  (:src:`sgistuff-collection-2200`);
+- an Onyx2 rack IRIX ``hinv -v -m``, board list and ``gfxinfo -v``,
+  module 1 seen with two node boards and later with four
+  (:src:`nekonomicon-16285`).
+
+No physical IP27 machine has been measured for this model.
+
+.. _sgi-ip27-machines:
+
+Machines
+========
+
+.. _sgi-ip27-products:
+
+Products
+--------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Machine
+     - Topologies (default first)
+     - Node boards
+     - Default processors and memory
+   * - ``origin200``
+     - ``origin200``, ``origin200-dual``, ``origin200-gigachannel``,
+       ``origin200-gigachannel-loopback``
+     - one IP29 system board; two, direct-linked, on ``origin200-dual``
+     - one 180 MHz R10000 with 1 MiB secondary cache and 64 MiB a node
+       (128 MiB on ``origin200-gigachannel``)
+   * - ``origin2000``
+     - ``origin2000-rack``, ``origin2000-deskside``
+     - one to four IP27 node boards, four by default
+     - two 180 MHz R10000 with 1 MiB each and 256 MiB (two 128 MiB
+       banks) a node: 8 processors and 1 GiB
+   * - ``onyx2``
+     - ``onyx2-rack``, ``onyx2-deskside``
+     - rack: one to four, four by default; deskside: one or two, two by
+       default
+     - as ``origin2000``; the deskside's two boards give 4 processors and
+       512 MiB
+
+An Origin 200 tower holds one processor module of one or two
+processors, and a two-tower system joins two towers by a CrayLink cable
+(*established*, :src:`007-3708-002 p. 5`, Table 1-1;
+:src:`007-3708-002 p. 6`, Figure 1-4). The Origin 2000
+module holds up to four node boards of one or two R10000 processors each
+(*established*, :src:`007-3456-003 p. 20`; :src:`007-3453-002 p. 1`).
+Onyx2 is Origin 2000 silicon: :ref:`sgi-onyx2` describes what differs.
+
+The default populations are model choices (*approximation*): the
+catalogue's Origin 2000 and Onyx2 rows are selected installations, not
+captured inventories. ``origin2000-two-module-xpress`` describes a
+two-module rack and its Xpress links as a reference configuration the
+emulator does not build (:ref:`sgi-sn-family-origin2000-xpress`).
+
+.. _sgi-ip27-topologies:
+
+Topologies and node populations
+-------------------------------
+
+``topology=`` selects the wiring and ``nodes=`` the number of node boards
+fitted, in SGI's fill order (:ref:`sgi-origin2000-module-nodes`). Each
+topology's catalogue record has one row per accepted node count; the row
+decides which Routers and cables exist and which XIO slots work. ``-smp``
+and ``-m`` then select a population within that row.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topology
+     - ``nodes=``
+     - Fabric
+     - Processors per node
+   * - ``origin200``
+     - 1
+     - none
+     - 1 or 2
+   * - ``origin200-dual``
+     - 2
+     - one CrayLink cable, Hub to Hub
+     - 2 (fixed, 2+2)
+   * - ``origin200-gigachannel``, ``origin200-gigachannel-loopback``
+     - 1
+     - none; a cabinet Crossbow or a loopback cable
+       (:doc:`hardware/gigachannel`)
+     - 1 or 2
+   * - ``origin2000-rack``
+     - 1 to 4
+     - none for one node, two Standard Routers from two
+     - 1 or 2
+   * - ``origin2000-deskside``
+     - 1 to 4
+     - none for one node, a Null Router for two, two Standard Routers
+       for three or four
+     - 1 or 2
+   * - ``onyx2-rack``
+     - 1 to 4
+     - as ``origin2000-rack``
+     - 1 or 2
+   * - ``onyx2-deskside``
+     - 1 or 2
+     - none for one node, the midplane's Null Router for two
+     - 1 or 2
+
+``nodes=`` defaults to the largest count the topology accepts. ``-smp``
+keeps the product's default, which is the default topology's: the
+machine cannot tell a default ``-smp`` from an explicit one, so a launch
+with fewer node boards, or the Onyx2 deskside, names it
+(``-M onyx2,topology=onyx2-deskside -smp 4``). ``-smp`` splits evenly
+across nodes when no socket count is given; ``population=4:2`` style
+counts select an uneven split the row accepts. A count no row accepts is
+refused with the counts that exist. ``nodes`` is part of the machine
+configuration: a snapshot restores only into the same value. The
+general rules for ``topology=``, ``-smp`` and ``-m`` are on
+:ref:`sgi-sn-topology`.
+
+.. _sgi-ip27-processors:
+
+Processor modules
+-----------------
+
+``origin2000`` and ``onyx2`` accept only the R10000 and fit one
+composition, a 180 MHz R10000 with 1 MiB of secondary cache and a 90 MHz
+Hub (:ref:`sgi-origin2000-reset-mode`). ``origin200`` accepts the R10000
+and the R12000, and ``processor=`` selects the processor module (PIMM)
+every node fits, by catalogue id. ``-cpu`` defaults to the module's part
+and must name it when given; ``query-sgi-machines`` lists each topology's
+choices as ``processor-options``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``processor=``
+     - Part, PRId
+     - Secondary cache
+     - Processors a module
+     - Mode word
+   * - ``r10000-180mhz-1mb`` (default)
+     - R10000 rev 2.6, ``0x0926``
+     - 1 MiB at 120 MHz, tap 9
+     - 1 or 2
+     - ``0x1211a785``
+   * - ``r10000-180mhz-2mb``
+     - R10000 rev 2.6, ``0x0926``
+     - 2 MiB at 180 MHz, tap 8
+     - 1 or 2
+     - ``0x100aa785``
+   * - ``r10000-225mhz-2mb``
+     - R10000 rev 3.4, ``0x0934``
+     - 2 MiB at 225 MHz, tap 9
+     - 2
+     - ``0x120aa985``
+   * - ``r12000-270mhz-4mb``
+     - R12000 rev 2.3, ``0x0e23``
+     - 4 MiB at 180 MHz, tap 9
+     - 2
+     - ``0x1213ab85``
+
+An Origin 200 module carries an R10000 or R12000, one or two to a module
+(*established*, :src:`007-3708-002 p. 5`). Real machines' inventories
+establish each module's clock, cache size, cache clock, tap and chip
+revision, all with a 90 MHz Hub (*observed*):
+
+- 180 MHz with 1 MiB: the stock PROM's own configuration block (mode word
+  ``0x1211a785``, 180 MHz) and one- and two-processor inventories
+  (modules ``PIMM_1XT5_1MB`` 013-1895-001 and ``PIMM_2XT5_1MB``
+  013-1896-001).
+- 180 MHz with 2 MiB: a two-processor PROM inventory printing a 180 MHz
+  R10000 revision 2.6 with a 2 MB, 180 MHz, tap 8 secondary cache
+  (:src:`nekonomicon-16729597`); the single-processor module is
+  ``PIMM_1XT5_2MB`` 013-2285-002 (:src:`usenet-3e2794b8`).
+- 225 MHz: IRIX inventories print revision 3.4 and a 2 MB, 225 MHz,
+  tap 9 cache, module ``PIMM_225_2M_2P`` 013-2382-002 revision B
+  (:src:`nekonomicon-16731033`).
+- 270 MHz: four-processor machines print an R12000 revision 2.3 with a
+  4 MB, 180 MHz, tap 9 cache (:src:`nekonomicon-16726704`).
+
+The remaining fields are *inferred*. The system clock divisor is the
+processor clock over the Hub's 90 MHz and the cache divisor the
+processor clock over the printed cache speed. The PRId's low byte is the
+printed revision. The FPU identification is ``0x0900`` for every module.
+Every other mode field is the 180 MHz, 1 MiB word's, and the R12000's
+delayed speculative dirty bit is clear. The R12000 divisor codes are
+NEC's (:src:`nec-vr10000-series-um-4 Table 8-1`). No source shows a
+single-processor 225 or 270 MHz module, so those take two processors
+only.
+
+The machine writes each module's clock and mode word into every node's
+flash configuration block (:ref:`sgi-prom-image-ip27-values`). The mode
+word's bits 24:0 become each processor's Config at cold reset, the clock
+drives CP0 Count, and the PRId and cache size are the CPU model's
+(:doc:`hardware/r10000`). That a real node delivers the module's values
+this way is *inferred*. The PROM's reconfiguration dialogue writes clock
+and mode bits into the block, which supports it, but the stock image also
+prints "Config values loaded from PIMM" from a path that reads another
+source, so where a real Origin 200 node takes its configuration on every
+boot is *unknown*.
+
+Model limits, *approximations*:
+
+- The Origin 200 node keeps Hub revision 3 and the IP29 board record
+  030-1244-001 revision H for every module. Real 225 and 270 MHz
+  inventories show Hub revision 5 and board 030-1389-001; every 180 MHz
+  inventory shows Hub revision 3 (*observed*).
+- A node flash that already exists, such as a bound ``node0-flash``,
+  keeps the block it was written with: ``processor=`` does not rewrite
+  it, as a module swap on real hardware needs the PROM's
+  reconfiguration, and a mismatched block is not refused.
+- The two module records the 180 MHz 2 MiB dual module and the R12000
+  module would carry are not known, so their Hub one-wire part is left
+  unprogrammed.
+
+.. _sgi-ip27-memory:
+
+Memory population rules
+-----------------------
+
+``-m`` splits evenly across nodes, and each node's share must be one of
+its board's accepted sizes. The machine lays each share out in banks from
+bank 0, with no empty bank between two populated ones. A refused size is
+reported with the sizes that are accepted. Without ``-m`` every node gets
+its topology's default kit.
+
+**Origin 200 (IP29).** Four banks of two DIMMs, filled from the outer
+pair, in pairs of matching DIMMs (*established*,
+:src:`007-3709-002 p. 48`; :src:`108-0170-001`). The board takes 64, 128, 256 and 512 MB banks, but
+the stock PROM 6.156 disables a 256 MB bank whenever the configuration
+block gives a 180 or 195 MHz processor (*software expectation*: the
+PROM prints "256 MB dimm banks not allowed on IP27 node boards" as it
+does so, :src:`ip27-prom-6.156`). With a 180 MHz module the model
+therefore builds 64, 128 and 512 MiB banks, 23 per-node sizes from 64 to
+2048 MiB. With a 225 or 270 MHz module it adds 256 MiB banks, 27 sizes;
+512 MiB is then two 256 MiB banks, as on a real 270 MHz machine
+(*observed*, :src:`nekonomicon-16726704`).
+
+**Origin 2000 and Onyx2 (IP27).** Eight banks of DIMM pairs. 16-Mb parts
+give 64 or 128 MB banks and 64-Mb parts 512 MB banks, up to 4 GB a node,
+intermixed as long as each bank is a pair (*established*,
+:src:`007-3439-002 p. 35`). That page is the whole basis for the IP27
+sizes. Inventories of 250 MHz and faster nodes show 256 MB banks, but
+those are the later IP31 board on the same Hub. The model builds no 256
+MiB IP27 bank, since the stock PROM disables one at 180 MHz, so every
+Origin 2000 and Onyx2 topology accepts 55 per-node sizes from 64 to 4096
+MiB.
+
+Bank 0 stays at 128 MiB (256 MiB with a faster Origin 200 module)
+whenever the other banks can hold the rest: 1664 MiB on an Origin 200 is
+128, 512, 512 and 512 MiB, and 1024 MiB on an IP27 node is 128, 512, 128,
+128 and 128 MiB. Only totals that need it get a 512 MiB bank 0: 1024,
+1536 and 2048 MiB on a 180 MHz Origin 200, 2048 MiB with a faster
+module, 3072, 3584 and 4096 MiB on IP27. This preference is the model's
+choice (*approximation*); a real machine's banks follow the DIMMs fitted.
+The default kits, one 64 MiB bank on the Origin 200 and two 128 MiB banks
+on IP27, are also model choices; the IP27 one matches a published node
+(*observed*, :src:`nekonomicon-16727716`).
+
+.. _sgi-ip27-bank0-flash:
+
+A 512 MiB bank 0 and the boot flash
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A 512 MiB bank 0 covers the boot flash's reset address, node offset
+``0x1fc0_0000``. There a cached processor reference reaches the bank and
+an uncached one the flash. The reset fetch through
+``0xffff_ffff_bfc0_0000`` is an uncached memory reference, and the flash
+is mapped into each processor's uncached space alone, at the node-less
+address and at the node's own. That split is *inferred*: the stock
+PROM's memory test covers the offset through cached space, and real
+machines with a 512 MB bank 0 pass it, which they could not if a cached
+reference reached the flash. A write and read-back through a cached
+address at that offset, then an uncached read, on a machine with a
+512 MB bank 0 would settle it.
+
+Three further choices are the model's own, with the hardware *unknown*:
+devices (inbound DMA, the block transfer engines) reach the bank; an
+uncached reference from another node to this node's offset reaches the
+bank; and the node-less address ``0x1fc0_0000`` names the reader's own
+flash on every node. Smaller banks leave the reset address to the flash
+in every view.
+
+.. _sgi-ip27-devices:
+
+Supported devices
+=================
+
+The parts these machines build and the pages that describe them:
+
+- Hub node controller: :doc:`hardware/hub`
+- Router (CrayLink switch): :doc:`hardware/router`
+- module system controller (ELSC and MSC) and its PCF8584 interface:
+  :doc:`hardware/elsc`
+- base I/O boards (BaseIO, BaseIO-G, the IP29 onboard I/O):
+  :doc:`hardware/baseio`
+- IOC3 serial, Ethernet, keyboard and parallel controller:
+  :doc:`hardware/ioc3`
+- IOC3-bearing XIO boards and the MENET board: :doc:`hardware/ioc3-boards`
+- DP83840A Ethernet transceiver: :doc:`hardware/dp8384x`
+- QLogic ISP1040 SCSI controllers: :doc:`hardware/qlogic-isp`
+- Bridge XIO-to-PCI bridge: :doc:`hardware/bridge`
+- Crossbow XIO crossbar: :doc:`hardware/xbow`
+- Origin 200 GIGAchannel cabinet: :doc:`hardware/gigachannel`
+- MSCSI four-channel XIO board: :doc:`hardware/mscsi`
+- PCI expansion boards (PCI carrier and shoehorn):
+  :doc:`hardware/pci-expansion`
+- M48T35 Timekeeper NVRAM and clock: :doc:`hardware/timekeepers`
+- R10000 and R12000 processors: :doc:`hardware/r10000`
+- graphics boards: :doc:`hardware/graphics`, with the IMPACT board on
+  :doc:`hardware/mgras`, the InfiniteReality pipe on
+  :doc:`hardware/kona`, and the PsiTech RAD4 and RAD1 PCI cards on
+  :doc:`hardware/psitech-rad4` and :doc:`hardware/psitech-rad1`
+- Alteon Tigon Gigabit Ethernet PCI adapter: :doc:`hardware/tigon`
+- Neterion Xframe 10-gigabit Ethernet PCI adapter: :doc:`hardware/xframe`
+
+.. _sgi-ip27-components:
+
+Fitted revisions
+----------------
+
+The revisions the module layers fit, each a model choice unless a
+capture is named:
+
+- Hub: revision code 3 on the Origin 200, the earliest IRIX 6.5.30
+  accepts and what every 180 MHz Origin 200 inventory reports. Code 5 on
+  every Origin 2000 and Onyx2 node, as a two-node Origin 2200 prints on
+  both slots and no Origin 2000 capture contradicts (*observed*,
+  :src:`nekonomicon-16729560`).
+- Crossbow: widget revision 2, Crossbow 1.1, the earliest IRIX 6.5.30
+  accepts (*approximation*, not a captured revision).
+- Bridge: widget revision 4, Bridge D (*approximation*).
+- Router: chip revision 1 (*approximation*; :doc:`hardware/router`).
+- BaseIO: part 030-1124-002 on the Origin 2000; BaseIO-G 030-0734-002
+  with its MediaIO daughtercard 030-0880-003 on the Onyx2, the parts
+  real deskside and rack board lists show (*observed*,
+  :src:`irixnet-post-32192`, :src:`nekonomicon-16285`).
+- IOC3 revision 1 and two ISP1040-compatible SCSI controllers at PCI
+  revision 5 on every base I/O board (*approximation*;
+  :doc:`hardware/baseio`).
+
+Board and node one-wire serials carry the ``QEMU`` or ``EMU`` marker and
+are not taken from any real machine.
+
+.. _sgi-ip27-missing:
+
+Missing devices
+===============
+
+- The Star Router: three- and four-node desksides are built with two
+  Standard Routers instead (:ref:`sgi-origin2000-module-routers`).
+- More than one Origin 2000 or Onyx2 module, Xpress links, the
+  MetaRouter and the rack's multimodule system controller (MMSC). The
+  two-module rack is a reference configuration only.
+- IP31 node boards and Origin 2000 processors other than the 180 MHz,
+  1 MiB R10000 (:ref:`sgi-ip27-cache`).
+- More than one graphics pipe in a machine. The Onyx2 graphics module
+  holds two pipes; the model fits one.
+- The Onyx2 rack's Xtown and Ktown boards are not separate devices: the
+  pipe widget answers on the Xtown's Crossbow port
+  (:ref:`sgi-onyx2-pipe-link`).
+- A GIGAchannel cabinet on the slave module of a two-module Origin 200,
+  and a converted module with neither cabinet nor loopback.
+- What drives the UST control port's pins
+  (:ref:`sgi-origin2000-module-management`).
 
 .. _sgi-origin2000-module:
 
-Origin 2000 module: nodes, Routers and management
-=================================================
+Origin 2000 module
+==================
 
 An Origin 2000 module is the deskside chassis or one rack module: a
-midplane with four node-board slots, two Router slots, two Crossbows
-and twelve XIO slots, plus the module system controller. This page is
-the contract the ``origin2000`` machine models cite for how a module is
-populated, how its management bus is wired and how the processor's
-reset mode is chosen. Ratings follow :ref:`sgi-ratings`. The Router chip
-itself is on :doc:`/system/mips/sgi/hardware/router`, the Crossbow on :doc:`/system/mips/sgi/hardware/xbow` and the
-controller's command protocol on :doc:`/system/mips/sgi/hardware/elsc`.
-
-Sources: *Origin2000 Deskside Owner's Guide* (007-3453-002), *Onyx2
-Deskside Workstation Owner's Guide* (007-3454-005), *Origin2000
-Rackmount Owner's Guide* (007-3456-003), *Origin and Onyx2 Theory of
-Operations* (007-3439-002), *Origin200/2000 IP27 PROM Technical
-Reference* (108-0170-001), *Origin2000 and Onyx2 Diagnostic Roadmap*
-(108-0164-002), the *Hardware Quick-reference Booklet*
-(``web:origin-onyx2-quick-reference-booklet``) and two public IRIX
-inventories (``web:nekonomicon-16727716``, ``web:nekonomicon-16285``).
+midplane with four node-board slots, two Router slots, two Crossbows and
+twelve XIO slots, plus the module system controller (MSC). The deskside
+is equivalent to one rack module (*established*,
+:src:`007-3456-003 p. 30`, :src:`007-3456-003 p. 44`;
+:src:`007-3453-002 p. 19-20`). This section is what the ``origin2000``
+and ``onyx2-rack`` models cite for how a module is populated, how its
+management bus is wired and how the processor's reset mode is chosen.
 
 .. _sgi-origin2000-module-nodes:
 
@@ -41,50 +472,54 @@ Node boards and slots
 
 .. list-table::
    :header-rows: 1
-   :widths: 46 12 42
+   :widths: 50 12 38
 
    * - Fact
      - Rating
      - Source
    * - Node boards fill N1 first, then N2, N3, N4, counted from right to
        left. A node board carries one or two R10000 processors.
-     - established
-     - 007-3453-002 printed page 21; 007-3454-005 printed page 21;
-       007-3456-003 printed page 20. The booklet's Table 42 also lists a
+     - *established*
+     - :src:`007-3453-002 p. 21`, :src:`007-3454-005 p. 21`,
+       :src:`007-3456-003 p. 20`. The booklet's Table 42 also lists a
        three-node placement N1, N2, N4 for three graphics pipes; the
        model supports fill order only.
-   * - The deskside is equivalent to one rack module.
-     - established
-     - 007-3456-003 printed pages 30 and 44.
    * - Node 1 activates XIO slots IO1 to IO6 on Crossbow 0 and node 2
-       activates IO7 to IO12 on Crossbow 1. With one node board only
-       the first six slots work.
-     - established
-     - 007-3456-003 printed pages 20-21 and Figure 2-3; 007-3453-002
-       printed page 21 (Table 2-2).
+       activates IO7 to IO12 on Crossbow 1. With one node board only the
+       first six slots work.
+     - *established*
+     - :src:`007-3456-003 p. 20-21`, Figure 2-3;
+       :src:`007-3453-002 p. 21`, Table 2-2.
    * - With four node boards, N1 controls IO1, IO3 and IO5 and N3 IO2,
        IO4 and IO6 on Crossbow 0; N2 controls IO7, IO9 and IO11 and N4
        IO8, IO10 and IO12 on Crossbow 1.
-     - established
-     - Booklet Tables 41 and 42, printed pages 130-131.
-   * - With three node boards, N1 takes IO1, IO3, IO5 and N3 takes IO2,
-       IO4, IO6; N2 takes all of Crossbow 1.
-     - inferred
+     - *established*
+     - :src:`origin-onyx2-quick-reference-booklet p. 130-131`,
+       Tables 41 and 42.
+   * - With three node boards, N1 takes IO1, IO3, IO5, N3 takes IO2, IO4,
+       IO6, and N2 takes all of Crossbow 1.
+     - *inferred*
      - The four-node quadrants with N4 absent. The booklet shows the
        controller within a Crossbow is a placement choice, so this is
-       SGI's recommendation, not wiring; it has no guest-visible effect
-       in the model beyond validating a row.
+       SGI's recommendation, not wiring. In the model it only validates a
+       row and names the node board a refused slot needs.
    * - An absent node board leaves its Crossbow port empty.
-     - inferred
+     - *inferred*
      - A Crossbow port with no widget attached reads as empty
        (:ref:`sgi-xbow-link-registers`).
 
-The widgets are Crossbow 0 and 1 at node widgets 9 and A; which node
-reaches which Crossbow depends on the slot (the deskside model reaches
-Crossbow 0 widget 9 from N1, Crossbow 1 widget A from N2, Crossbow 0
-widget A from N3 and Crossbow 1 widget 9 from N4). That map is the
-emulator's selection: the Theory of Operations and the booklet give the
-widget numbers but no source states the slot-to-widget wiring.
+The module's Crossbows reach node boards at widgets 9 and A: N1 at
+Crossbow 0 widget 9, N2 at Crossbow 1 widget A, N3 at Crossbow 0 widget
+A and N4 at Crossbow 1 widget 9. The node rows are the stock PROM's own
+naming (:ref:`sgi-onyx2-rack-widget-map`, *software expectation*); which
+board is physically wired to which port is *unknown*. Each node's Hub
+reads its slot through the slot-identity register: raw values 7 to 4 for
+N1 to N4 (:ref:`sgi-onyx2-node-slot-codes`; the register is on
+:ref:`sgi-hub-memory`).
+
+An absent node board has no Hub, processors, boot flash or place in the
+module controller's arbitration. A board fitted at launch in a slot the
+row cannot use is refused with the node board it needs.
 
 .. _sgi-origin2000-module-routers:
 
@@ -93,7 +528,7 @@ Router fit
 
 .. list-table::
    :header-rows: 1
-   :widths: 10 36 10 44
+   :widths: 8 34 16 42
 
    * - Nodes
      - Fit
@@ -102,48 +537,51 @@ Router fit
    * - 1
      - No Router, or the first Router board; the deskside guide says
        both. The model fits none.
-     - inferred
-     - 007-3456-003 printed page 30 ("no Router is required"); against
-       007-3453-002 printed page 21 ("all deskside systems ship with the
-       first router board installed") and Figure 2-9 (printed page 22,
-       "None" for one node). Which a one-node deskside carried is
-       unknown; a one-node rack capture would settle it.
+     - *inferred*
+     - "No Router is required" (:src:`007-3456-003 p. 30`) against "all
+       deskside systems ship with the first router board installed"
+       (:src:`007-3453-002 p. 21`) and Figure 2-9's "None" for one node
+       (:src:`007-3453-002 p. 22`). A one-node capture would settle
+       which a one-node module carried.
    * - 2
      - Null Router in R1, a passive Hub-to-Hub link (deskside); two
        Standard Routers (rack module).
-     - established
-     - 007-3453-002 Figure 2-9; ``web:nekonomicon-16285`` lists a
-       two-node module with both Routers, R1 active ports 4, 5, 6 and
-       R2 port 6 alone.
+     - *established*
+     - :src:`007-3453-002 p. 22` Figure 2-9; a two-node rack module
+       lists both Routers, R1 active ports 4, 5 and 6 and R2 port 6
+       alone (*observed*, :src:`nekonomicon-16285`).
    * - 3, 4
      - SGI's deskside fit is a Router board in R1 and a Star Router in
        R2 joined by an IR1 jumper. The model fits two Standard Routers.
-     - rack established, deskside inferred
-     - 007-3453-002 Figure 2-9; 007-3439-002 printed page 57 (3- and
-       4-node configurations use a Standard Router with a Star Router);
-       ``web:nekonomicon-16727716`` boots PROM 6.156 with "5 objects
-       (3 hubs, 2 routers)" on node slots 1 to 3, and its IRIX listing
-       shows four Hubs and both Routers each with active ports 4, 5 and
-       6. The deskside inference chain: a deskside is one module
-       (007-3456-003 page 44); 108-0170-001 section 6.2.1 gives "a
-       typical fully-populated single-module system" two Routers
-       (printed pages 6-2 to 6-3); and the Standard Router joins 2 to
-       32 node boards in 1 to 8 enclosures (007-3439-002 page 57).
+     - rack *established*, deskside *inferred*
+     - :src:`007-3453-002 p. 22` Figure 2-9; "3- and 4-Node
+       configurations are created using a Standard router with a Star
+       router" (:src:`007-3439-002 p. 57`). A stock PROM 6.156 boot finds
+       "5 objects (3 hubs, 2 routers)" on node slots 1 to 3, and a later
+       IRIX listing shows four Hubs and both Routers each with active
+       ports 4, 5 and 6 (*observed*, :src:`nekonomicon-16727716`).
+
+The deskside inference: a deskside is one module
+(:src:`007-3456-003 p. 44`), :src:`108-0170-001 section 6.2.1` gives "a
+typical fully-populated single-module system" two Routers, and the
+Standard Router joins 2 to 32 node boards in 1 to 8 enclosures
+(:src:`007-3439-002 p. 57`).
 
 The Star Router is a carrier with no Router ASIC. With the Router in R1,
 R1 port 5 reaches N1, port 4 N2, port 6 N3 through the midplane, and
 port 3 N4 through an external jumper to the Star's one connector, where
 its XC chip converts the differential cable signals to single-ended;
-ports 1 and 2 stay free (established, 108-0170-001 section 6.2.2,
-printed pages 6-3 to 6-4, PDF 97-98; 007-3456-003 printed page 32). The
-model does not fit the Star Router: the stock PROM 6.156 discovery
-code checks each Hub's partner on the same Crossbow through a fixed
-two-Router vector route (``0x56`` or ``0x46``, Table 6-1), and on the
-Star wiring that vector reaches a Hub with a route step left over. What
-real silicon answers is *unknown*; settling it needs a Hub specification
-or a boot log from a three- or four-node Star deskside. Neither of the
-project's physical SGI systems is an Origin 2000, so a physical test
-cannot answer it.
+ports 1 and 2 stay free (*established*,
+:src:`108-0170-001 section 6.2.2`; :src:`007-3456-003 p. 32`). The model
+does not fit it. The stock PROM checks each Hub's partner on the same
+Crossbow through a fixed two-Router vector route, ``0x56`` or ``0x46``
+(:src:`108-0170-001 Table 6-1`; :src:`ip27-prom-6.156 0x1fc470a0`,
+*software expectation*). On the Star wiring Router port 6 leads straight
+to N3, so that vector reaches a Hub with a route step left over. What a
+real Hub answers is *unknown*, and the model gives no answer: on the
+model the PROM then reports a peer Hub on the Crossbow with no NUMAlink
+connection and stops discovery. A Hub specification, or a boot log from
+a three- or four-node Star deskside, would settle it.
 
 .. _sgi-origin2000-module-management:
 
@@ -152,60 +590,56 @@ Module management bus
 
 .. list-table::
    :header-rows: 1
-   :widths: 46 12 42
+   :widths: 50 14 36
 
    * - Fact
      - Rating
      - Source
-   * - A module has one module system controller (MSC) on one I2C bus
-       with a branch to each of the four nodes; the MSC's NVRAM,
-       voltage-margin and control block sits on the same bus. The
-       diagram shows one MSC, not four, and no private NVRAM copies
-       behind the nodes.
-     - established
-     - 108-0164-002 Figure B-1, printed page B-1 (PDF 55).
+   * - A module has one MSC on one I2C bus with a branch to each of the
+       four nodes; the NVRAM, voltage-margin and UST control block sits
+       on the same bus. The diagram shows one MSC, not four, and no
+       private NVRAM copies behind the nodes.
+     - *established*
+     - :src:`108-0164-002 p. B-1`, Figure B-1.
    * - The MSC has one RS-232 alternate-console port. A deskside
        attaches a terminal directly; a rack can attach the multimodule
        system controller.
-     - established
-     - 108-0170-001 section 1.6 (module system controller) and
-       007-3456-003; no source gives four ports.
-   * - The model therefore builds four node-side PCF8584 adapters, one
-       shared bus, one MSC and one shared NVRAM address space.
-     - approximation
-     - The wiring is the figure above; the number of PCF8584 parts on
-       the node side (one per Hub) is inferred from there being four
-       masters on the bus. The count of physical EEPROM packages is
-       *unknown*.
+     - *established*
+     - :src:`108-0170-001 section 1.6`; :src:`007-3456-003`. No source
+       gives four ports.
+   * - The model builds four node-side PCF8584 adapters, one per Hub, on
+       one shared bus, with one MSC and one shared NVRAM address space.
+     - *approximation*
+     - The wiring is Figure B-1's. One adapter per Hub follows from
+       four masters on the bus. The number of physical EEPROM packages
+       is *unknown*.
    * - The MSC answers at I2C address ``0x08``.
-     - approximation
-     - The model's choice, shared with the Origin 200 controller model
-       (:doc:`/system/mips/sgi/hardware/elsc`). No public source states the address; a bus
-       capture or the controller firmware would settle it.
-   * - The management NVRAM is a 2048-byte store at eight consecutive I2C
-       addresses from ``0x50``, with 1792 to 2047 reserved for the
-       controller.
+     - *approximation*
+     - The model's choice, shared with the Origin 200 controller
+       (:doc:`hardware/elsc`). A bus capture or the controller firmware
+       would settle it.
+   * - The management NVRAM is a 2048-byte store at eight consecutive
+       I2C addresses from ``0x50``, with its top 256 bytes reserved for
+       the controller.
      - see :ref:`sgi-elsc-nvram`
      - Ratings and sources are on the controller page.
-   * - The module's UST control sits on the same bus.
-     - established
-     - 108-0164-002 Figure B-1, printed page B-1 (PDF 55), which groups it
-       with voltage-margin control and the NVRAM.
-   * - The UST control answers at I2C address ``0x20`` as a one-byte port:
-       a single-byte read returns it and a single-byte write replaces it,
-       with no subaddress.
-     - inferred
-     - The stock 6.156 PROM reads and rewrites that byte, changing bits
-       7:6, when it finds two Hubs and no Router, and reports an unanswered
-       address as a boot error. A published two-node Onyx2 deskside console
-       running the same PROM shows no such error.
-   * - The model fits a PCF8574 expander there, with no output wired: a read
-       returns the last byte written, all ones from power-on.
-     - approximation
-     - The access pattern and address are the PCF8574's, but no public
-       source names the part, what drives its pins, or its power-on value.
-       A board photograph, schematic or a read of the byte on a running
-       deskside would settle it.
+   * - The stock PROM reads one byte from I2C address ``0x20`` with no
+       subaddress and writes it back, changing bits 7:6, when discovery
+       finds two Hubs and no Router. It reports an unanswered address as
+       an error.
+     - *software expectation*
+     - :src:`ip27-prom-6.156 0x1fc4899c`. A published two-node Onyx2
+       deskside console on the same PROM shows no such error
+       (*observed*, :src:`nekonomicon-16727032`), so a device answers
+       there (*inferred*).
+   * - The model fits a PCF8574 expander there as the UST control port,
+       with no output wired: a read returns the last byte written, all
+       ones from power-on.
+     - *approximation*
+     - The access pattern is the PCF8574's, but no source names the
+       part, what drives its pins or its power-on value. A board
+       photograph, a schematic or a read on a running two-node deskside
+       would settle it.
 
 .. _sgi-origin2000-module-number:
 
@@ -214,80 +648,65 @@ Module number
 
 Each module is assigned a unique module number from 1 to 255; 0 means
 none has been assigned. IRIX names devices by module number. The number
-is stored in MSC NVRAM, and a backup copy is stored in each node card's
-PROM log, from which it is voted if the NVRAM is inaccessible
-(established, 108-0170-001 section 1.5, printed page 1-4, PDF 18).
-The number sits at NVRAM address 0x708 in the controller's block;
-:ref:`sgi-elsc-nvram` gives the block's layout, its sources, and how a
-store with no backing file is seeded from the product description's
-module number. The selected one-module machine
-numbers its module 1; that value is a selected installation, not a
-hardware reset default.
+is stored in MSC NVRAM, and a backup copy in each node card's PROM log,
+from which it is voted if the NVRAM is inaccessible (*established*,
+:src:`108-0170-001 p. 1-4`). :ref:`sgi-elsc-nvram` gives the controller
+block's layout and how a store with no backing file is seeded. The
+model numbers its one module 1, a selected installation rather than a
+reset default (*approximation*); with 0 the stock PROM votes a number
+and resets once more before it settles.
 
 The per-node PROM logs are separate storage from the shared NVRAM and
-from the BaseIO's own non-volatile store.
+from the BaseIO's own Timekeeper.
 
 .. _sgi-origin2000-module-identity:
 
 Module serial and midplane parts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each module carries two module-level one-wire parts: a family 0x09
-part whose record is named ``MODULEID`` and holds the module serial,
-and a family 0x0b midplane part holding the midplane's board record.
-Real inventories list each once per module, under node slot ``n1``,
-and the firmware and kernel print a record under the node whose Hub
-bus it came from, so the two parts are on the ``n1`` Hub's one-wire
-bus and no other (inferred from software and captures; a continuity
-check on a real midplane would settle it). The firmware can also read
-them through the controller's ``nic`` passthrough when ``n1`` is
-empty, so the controller's midplane line reaches the same two parts
-(inferred).
+Each module carries two module-level one-wire parts: a family ``0x09``
+part whose record is named ``MODULEID`` and holds the module serial, and
+a family ``0x0b`` midplane part holding the midplane's board record.
+Real inventories list each once per module, under node slot ``n1``, and
+the firmware and kernel print a record under the node whose Hub bus it
+came from, so the two parts are on the ``n1`` Hub's one-wire bus and no
+other (*inferred* from software and captures; a continuity check on a
+real midplane would settle it). The firmware can also read them through
+the controller's ``nic`` passthrough when ``n1`` is empty, so the
+controller's midplane line reaches the same two parts (*inferred*).
 
-The model puts both parts on the controller's midplane one-wire net
-and wires the ``n1`` node's Hub line to that net as well, so the ``n1``
-Hub reaches its own node part and both module parts. The connection is
+The model puts both parts on the controller's midplane one-wire net and
+wires the ``n1`` Hub's line to that net as well, so the ``n1`` Hub
+reaches its own node part and both module parts. The connection is
 one-way: the controller's ``nic`` line reaches the two module parts but
-not the ``n1`` node's own part. The datasheet infers a single net, but
-nothing visible depends on the difference, because the firmware uses
-``nic`` only when ``n1`` is empty. The other nodes' Hub buses carry
-only their own node part. A module whose
-``n1`` slot is empty reaches the parts through the controller alone.
-The module-management chip has no part of its own on the line.
+not the ``n1`` node's own part. Nothing visible depends on that, because
+the firmware uses ``nic`` only when ``n1`` is empty. The other nodes'
+Hub buses carry only their own node part.
 
 The ``MODULEID`` pages carry the module serial in the layout the Hub
-module-serial record uses: format byte 0x01, the ten-character serial,
-the name at page one offset sixteen, 0xff in every other field and a
-stored CRC per page. The serial is a marked synthetic one,
-``KORIGAMI01`` for module 1: the kernel takes a module serial only if
-it begins with ``K``, so it cannot carry the ``EMU`` marker other
-synthetic text serials use. The contract names no serial for a second
-module; ``KORIGAMI`` followed by two digits is this model's choice,
-and the catalogue compiler refuses two modules sharing one. The four-node module's
-midplane record is ``8P12_MPLN``, part 030-0762-006 revision H, the
-``030-`` part seen most often in real inventories; which midplane an
-IP27-era module carried is *unknown*, and every held capture uses later
-nodes. Its barcode is marked synthetic, ``EMUL`` and the part's
-instance. The ROM serials are synthetic too: letter ``Y`` for the
-``MODULEID`` part and ``L`` for the midplane, each at the module's
-index in the configuration.
+module-serial record uses: format byte ``0x01``, the ten-character
+serial, the name at page one offset sixteen, ``0xff`` in every other
+field and a stored CRC per page. The serial is a marked synthetic one,
+``KORIGAMI01`` for module 1. It cannot carry the ``EMU`` marker other
+synthetic text serials use, because the IRIX 6.5.30 kernel takes a module
+serial only if it begins with ``K`` (*software expectation*). The
+four-node module's midplane record is ``8P12_MPLN``, part 030-0762-006
+revision H, the ``030-`` part seen most often in real inventories; which
+midplane an IP27-era module carried is *unknown*. Its barcode and both
+ROM serials are synthetic, letter ``Y`` for ``MODULEID`` and ``L`` for
+the midplane.
 
-Limitation: the Onyx2 deskside carries the ``MODULEID`` part only. Its
-two-slot ``4P1G5_MPLN`` midplane's record values -- part number,
-revision and barcode layout -- are *unknown*, so the model fits no
-midplane part there and IRIX should list no midplane record for it. A real
-Onyx2 deskside inventory would settle the values.
+The Onyx2 deskside carries the ``MODULEID`` part only. Its two-slot
+``4P1G5_MPLN`` midplane's record values are *unknown*, so the model fits
+no midplane part there. A real Onyx2 deskside inventory would settle
+them.
 
-The kernel takes the module serial from the first Crossbow master's
-midplane record that has one, and a Hub that does not master its
-Crossbow marks its record a duplicate. With the parts on ``n1`` only,
-the ``n1`` Hub must therefore master its Crossbow, or IRIX warns that
-the module's serial is invalid. The model does not choose the
-Crossbow master: the firmware does, and its choice is what makes
-``n1``'s record the non-duplicate one. Booting IRIX 6.5.30 on the
-four-node Origin 2000 with this model, ``hinv -mvv`` lists
-``MODULEID`` and ``8P12_MPLN`` under ``n1`` only and the boot prints
-no serial warning, which shows the firmware chose ``n1``.
+The IRIX 6.5.30 kernel takes the module serial from the first Crossbow
+master's midplane record that has one, and a Hub that does not master
+its Crossbow marks its record a duplicate (*software expectation*). With
+the parts on ``n1`` only, the ``n1`` Hub must master its Crossbow or IRIX
+warns that the module's serial is invalid. The model does not choose the
+Crossbow master; the firmware does.
 
 .. _sgi-origin2000-module-grants:
 
@@ -296,10 +715,9 @@ Processor grants
 
 The controller's per-processor grant bytes on the shared bus, their
 rotation and recovery are described as model behaviour in
-:ref:`sgi-elsc-arbitration`. No public source documents the
-Origin 2000 controller's grant values, ordering or recovery timer, so
-all of that is *unknown* as hardware and an emulator choice as model
-behaviour.
+:ref:`sgi-elsc-arbitration`. No public source documents the Origin 2000
+controller's grant values, ordering or recovery timer, so all of that is
+*unknown* as hardware and an emulator choice as model behaviour.
 
 .. _sgi-origin2000-reset-mode:
 
@@ -307,37 +725,37 @@ Processor reset mode
 --------------------
 
 The R10000 loads a 25-bit mode word from the system data bus at power-on
-or cold reset; it becomes CP0 Config bits 24:0, a soft reset preserves
-it, and the primary-cache size fields are hardwired (established,
-R10000 User's Manual 2.0, printed pages 160-165 and 256, PDF 190-195 and
-286). The mode word's secondary-cache size field (Config bits 18:16)
-encodes 1 for 1 MB and 3 for 4 MB (established, same manual, printed
-page 165).
+or cold reset. It becomes CP0 Config bits 24:0, a soft reset preserves
+it, and the primary-cache size fields are hardwired (*established*,
+:src:`r10000-users-manual-2.0 p. 160-165`,
+:src:`r10000-users-manual-2.0 p. 256`). The secondary-cache size field,
+Config bits 18:16, encodes 1 for 1 MB and 3 for 4 MB (*established*,
+:src:`r10000-users-manual-2.0 p. 165`).
 
-SGI's booklet pairs the IP27 node-board assemblies as a 1 MB cache with
-a 180 MHz processor and a 4 MB cache with a 195 MHz processor
-(established, booklet printed page 93); it documents no 195 MHz and 1 MB
-Origin 2000 assembly. The stock PROM 6.156 configuration block carries
-mode word ``0x1211a785`` with a 180 MHz processor clock, a 90 MHz Hub
-clock and machine type zero, whose secondary-cache size field is 1
-(measured from the stock image, ``firmware:ip27-prom-6.156``; the block
-layout is on :doc:`/system/mips/sgi/prom-image`). The machine models therefore select
-a 180 MHz R10000, 90 MHz Hub and 1 MiB cache and leave the stock word
-unchanged. The agreement of a published board pairing with the image's
-own record picks a documented real composition; neither alone does.
-A 195 MHz part with 1 MB is not selected, because the booklet pairs 195
-MHz with 4 MB and the 4 MB encoding would change bit 17 and yield
-``0x1213a785``, which does not match the stock image. That the product
-shipped with exactly this configuration is not established: it is the
-configuration the retained image describes.
+SGI's booklet pairs the IP27 node-board assemblies as a 1 MB cache with a
+180 MHz processor and a 4 MB cache with a 195 MHz processor
+(*established*, :src:`origin-onyx2-quick-reference-booklet p. 93`). The
+diagnostic roadmap's reconfiguration examples give the same two
+configurations, 180 MHz with a 90 MHz Hub and 195 MHz with a 97.5 MHz
+Hub, both machine type 0 (*established*, :src:`108-0164-002 p. E-4`).
+The stock PROM 6.156 configuration block carries mode word
+``0x1211a785`` with a 180 MHz processor clock, a 90 MHz Hub clock and
+machine type 0, whose cache size field is 1 (*software expectation*,
+:src:`ip27-prom-6.156 0x1fc00064`; the block layout is on
+:ref:`sgi-prom-image-config-block`). The machines therefore select a
+180 MHz R10000, a 90 MHz Hub and 1 MiB of cache, and leave the stock
+word unchanged. A published pairing agreeing with the image's own record
+picks a documented real composition; neither alone does. The 4 MB
+encoding would change bit 17 and give ``0x1213a785``, which does not
+match the stock image, so the 195 MHz composition is not built.
 
-That the firmware compares the flash word against CP0 Config at start-up
-and reports a mismatch on the node's LEDs is not stated by any public
-source, so the procedure is *unknown* here. Its outcome is visible as a model
-requirement: a processor whose Config disagrees with the node's flash
-word does not start the firmware, so the model's CPU reset
-configuration must equal the flash word (an emulator constraint, with
-the discriminating test being a stock PROM boot).
+The procedure by which the firmware compares the flash word with CP0
+Config is not stated by any public source and is *unknown* here. Its
+outcome is visible on the model: a node flash whose word disagrees with
+the processors' Config stops every processor with boot-progress code
+``0xb4`` before the console opens. The model's processor reset
+configuration must therefore equal the flash word, and a stock PROM boot
+is the discriminating test.
 
 .. _sgi-onyx2:
 
@@ -346,81 +764,28 @@ Onyx2 deskside and rack
 
 An Onyx2 is Origin 2000 silicon with graphics. The node boards, Hub,
 Crossbow, Router and Bridge are the Origin 2000 parts, built by the
-``onyx2`` machine (``hw/mips/sgi/sn-machine.c``) on the same stock IP27
-PROM as the other Scalable Node products (:ref:`sgi-sn-product-family`). What differs is
-physical: a graphics BaseIO (IO6G) in XIO slot 1, and one or more
+``onyx2`` machine on the same stock IP27 PROM. What differs is physical:
+a graphics BaseIO (BaseIO-G) in XIO slot 1 and one or more
 InfiniteReality ("KONA") graphics pipes. The deskside and the rack attach
-a pipe in two different ways, and the firmware names their slots from two
-different tables.
-
-This page is the contract the machine models in ``hw/mips/sgi/models/``
-cite for the Onyx2: the chassis and slot map, the widget numbers, the pipe's
-identity and board records, and what is still unknown. The pipe's register
-behaviour is on :ref:`sgi-graphics`; the BaseIO board and the Crossbow have
-their own pages.
-
-Every fact carries one of four ratings:
-
-established
-  stated by a cited manual or specification, shown by an identified real
-  machine's inventory, or read from the stock firmware image the entry
-  names;
-inferred
-  follows from established facts by a stated step;
-approximation
-  an emulator value standing in for hardware that is not known;
-unknown
-  no available source settles it; the entry says what would.
-
-.. _sgi-onyx2-sources:
-
-Sources
--------
-
-SGI manuals, by document number and printed page:
-
-- *Onyx2 Deskside Workstation Owner's Guide*, 007-3454-005.
-- *Onyx2 Rackmount Owner's Guide*, 007-3457-005.
-- *Origin2000 Deskside Owner's Guide*, 007-3453-002.
-- *Origin and Onyx2 Theory of Operations Manual*, 007-3439-002.
-- *Origin and Onyx2 Hardware Quick-reference Booklet*, HMQ-380-C
-  (``web:origin-onyx2-quick-reference-booklet``).
-
-Captures, each an owner's posted inventory:
-
-- an Onyx2 deskside PROM ``hinv -v`` posted in 2010
-  (``web:nekonomicon-16723250``);
-- an Onyx2 deskside IRIX ``hinv``, board list and ``gfxinfo -v``
-  (``web:irixnet-post-32192``);
-- an Onyx2 deskside inventory and board list on SGIstuff
-  (``web:sgistuff-collection-2200``);
-- an Onyx2 rack IRIX ``hinv -v -m``, board list and ``gfxinfo -v``
-  (``web:nekonomicon-16285``).
-
-Public software: the widget identity tables in Linux
-(``arch/mips/include/asm/xtalk/xwidget.h``) and OpenBSD's sgi port
-(``sys/arch/sgi/xbow/xbowdevs``).
-
-The stock IP27 PROM 6.156 payload (``firmware:ip27-prom-6.156``) is measured from
-the image itself. A fact read from it names the image address. The IRIX
-6.5.30 kernel carries copies of the same tables, byte for byte, which the
-author also read; that kernel is not a registered source and the facts
-below rest on the PROM alone.
+a pipe in two different ways, and the firmware names their slots from
+two different tables. The pipe's registers are on :doc:`hardware/kona`.
 
 .. _sgi-onyx2-role:
 
 Role
 ----
 
-The deskside (regulatory model CMN A015) has its own midplane with two node
-slots, a Null Router, five XIO slots and four graphics slots. The pipe's
-geometry board sits on the midplane and takes XIO slot 4 directly. There is
-no Ktown board. The rack (CMN A017) is an ordinary eight-processor compute
-module plus a separate graphics module holding up to two pipes. Each pipe
-reaches the compute module over a Crosstown cable from an Xtown board in a
-compute-module XIO slot to a Ktown board in the graphics module. Established
-(007-3454-005 printed pages 1-2 and 8-9; 007-3457-005 printed pages 1, 14,
-31 and 48).
+The deskside (regulatory model CMN A015) has its own midplane with two
+node slots, a Null Router, five XIO slots and four graphics slots. The
+pipe's geometry board sits on the midplane and takes XIO slot 4
+directly; there is no Ktown board. The rack (CMN A017) is an ordinary
+eight-processor compute module plus a separate graphics module holding
+up to two pipes. Each pipe reaches the compute module over a Crosstown
+cable from an Xtown board in a compute-module XIO slot to a Ktown board
+in the graphics module (*established*, :src:`007-3454-005 p. 1-2`,
+:src:`007-3454-005 p. 8-9`; :src:`007-3457-005 p. 1`,
+:src:`007-3457-005 p. 14`, :src:`007-3457-005 p. 31`,
+:src:`007-3457-005 p. 48`).
 
 .. _sgi-onyx2-identity:
 
@@ -439,8 +804,8 @@ Product identity
        013-1547-003 rev D in one three-module system
    * - Node boards
      - one or two, up to four processors
-     - up to four per compute module; two to eight processors in a rack, up
-       to 64 across racks
+     - up to four per compute module; two to eight processors in a
+       rack, up to 64 across racks
    * - Node interconnect
      - Null Router, no external ports
      - Star and Rack Routers
@@ -448,21 +813,25 @@ Product identity
      - one pipe, one or two RM assemblies
      - one or two pipes per graphics module, up to 16 across racks
    * - Base I/O
-     - BaseIO-G (IO6G) in XIO slot 1
-     - BaseIO-G (IO6G) in XIO slot 1 of the compute module
+     - BaseIO-G in XIO slot 1
+     - BaseIO-G in XIO slot 1 of the compute module
    * - Graphics BaseIO records
-     - ``BASEIO`` 030-0734-002 with an ``MIO`` 030-0880-003 daughterboard
+     - ``BASEIO`` 030-0734-002 with an ``MIO`` 030-0880-003
+       daughterboard
      - the same two records
 
-Established. The regulatory model, node counts, interconnect, pipe counts
-and base I/O come from 007-3454-005 printed pages 1-2, 7 and 24 and
-007-3457-005 printed pages 1, 14 and 46; the midplane and BaseIO records come from the three
-inventories in :ref:`sgi-onyx2-sources` (``web:irixnet-post-32192``,
-``web:sgistuff-collection-2200`` and ``web:nekonomicon-16285`` board
-lists). The regulatory number names the enclosure, not the Onyx2: the
-Origin 2000 deskside shares CMN A015 (007-3453-002 printed page 1). The
-graphics boards are specific to Onyx2 midplanes and may not move to another
-system (007-3454-005 printed page 7).
+The regulatory model, node counts, interconnect, pipe counts and base
+I/O are *established* (:src:`007-3454-005 p. 1-2`,
+:src:`007-3454-005 p. 7`, :src:`007-3454-005 p. 24`;
+:src:`007-3457-005 p. 1`, :src:`007-3457-005 p. 14`,
+:src:`007-3457-005 p. 46`). The midplane and BaseIO records are
+*observed* in the board lists of :src:`irixnet-post-32192`,
+:src:`sgistuff-collection-2200` and :src:`nekonomicon-16285`. The
+regulatory number names the enclosure, not the Onyx2: the Origin 2000
+deskside shares CMN A015 (:src:`007-3453-002 p. 1`). The graphics boards
+are specific to Onyx2 midplanes (:src:`007-3454-005 p. 7`). The deskside
+midplane is part 013-1839-001 or 030-1066-002 or later
+(:src:`origin-onyx2-quick-reference-booklet p. 95`).
 
 .. _sgi-onyx2-deskside-slots:
 
@@ -470,21 +839,22 @@ Deskside slots
 --------------
 
 From the rear the deskside midplane carries node slots 2 and 1, four
-graphics slots (GE, RM/TM, RM/TM, DG5) and five XIO slots numbered 1, 2, 3, 5
-and 6. XIO slot 4 is the graphics board set. Established (007-3454-005
-printed pages 8-9 and Figure 2-2, printed page 16; the Null Router is on
-printed page 19; 007-3439-002 printed page 57).
+graphics slots (GE, RM/TM, RM/TM, DG5) and five XIO slots numbered 1, 2,
+3, 5 and 6. XIO slot 4 is the graphics board set (*established*,
+:src:`007-3454-005 p. 8-9`, :src:`007-3454-005 p. 16` Figure 2-2; the
+Null Router on :src:`007-3454-005 p. 19`; :src:`007-3439-002 p. 57`).
 
-XIO slot rules, established (007-3454-005 printed page 24): the BaseIO-G
-stays in XIO slot 1; the optional three-slot PCI module goes in slot 2 and a
-SCSI board never does; slots 3 and 5 fill first.
+XIO slot rules (*established*, :src:`007-3454-005 p. 24`): the BaseIO-G
+stays in XIO slot 1; the optional three-slot PCI module goes in slot 2
+and a SCSI board never does; slots 3 and 5 fill first.
 
-The guide also says there is no functional XIO connection below XIO slot 3,
-and its Figure 1-4 draws the position under XIO 3 as a solid blank. The
-reading is that this one physical position has no connector because the
-graphics set uses XIO 4, not that ``io2`` or ``io6`` are dead: a real deskside
-runs boards in both. Inferred (007-3454-005 printed pages 8-9;
-``web:irixnet-post-32192``).
+The guide also says there is no functional XIO connection below XIO
+slot 3, and its Figure 1-4 draws that position as a solid blank. The
+reading is that this one position has no connector because the graphics
+set uses XIO 4, not that ``io2`` or ``io6`` are dead: a real deskside
+runs boards in both (*inferred*, :src:`007-3454-005 p. 8-9`;
+:src:`irixnet-post-32192`). The model offers ``io2``, ``io3``, ``io5``
+and ``io6`` for boards fitted at launch.
 
 .. _sgi-onyx2-deskside-widget-map:
 
@@ -525,70 +895,88 @@ exists only for this chassis:
      - ``io1``
      - BaseIO-G
 
-Established from the stock PROM image (``firmware:ip27-prom-6.156`` table at
-``0x1fcd1dd0``; the companion node-slot-to-widget table at ``0x1fcd1ea8`` and
-the I/O-slot-to-widget table at ``0x1fcd1f88`` give the same rows from the
-other direction). A real deskside's PROM ``hinv -v`` prints ``BASEIO IO
-Board, Module 1, Slot io1`` at widget 15, an ``XTALK_PCI`` board in ``io5`` at
-widget 13 and ``KONA Graphics Board, Module 1, Slot io4``, matching the
-table (``web:nekonomicon-16723250``).
+*Software expectation*, from the stock PROM's table
+(:src:`ip27-prom-6.156 0x1fcd1dd0`); its node-slot-to-widget table
+(:src:`ip27-prom-6.156 0x1fcd1ea8`) and I/O-slot-to-widget table
+(:src:`ip27-prom-6.156 0x1fcd1f88`) give the same rows from the other
+direction. A real deskside's PROM ``hinv -v`` prints the BaseIO in
+``io1`` at widget 15, an ``XTALK_PCI`` board in ``io5`` at widget 13
+and the KONA graphics board in ``io4``, matching the table (*observed*,
+:src:`nekonomicon-16723250`).
 
-That node board 2 is physically cabled to widget 9 and board 1 to widget A
-is inferred from those tables: no capture prints each Hub's widget. The pipe
-therefore attaches at widget 8, which differs from every other Scalable
-Node map: on an eight-processor module's Crossbow 0, widget 8 is ``io1``.
+That node board 2 is cabled to widget 9 and board 1 to widget A is
+*inferred* from those tables: no capture prints each Hub's widget. The
+pipe attaches at widget 8, which differs from every other Scalable Node
+map: on an eight-processor module's Crossbow 0, widget 8 is ``io1``. The
+BaseIO-G accordingly answers at widget F here.
 
 .. _sgi-onyx2-node-slot-codes:
 
 Deskside node slot codes
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-The deskside's two node slots have their own slot codes, ``0x51`` for ``n1``
-and ``0x52`` for ``n2``. The PROM's decoder at ``0x1fc461fc`` turns the low
-three bits of the Hub slot-identity register into them: raw 3 gives ``n1`` and
-raw 2 gives ``n2``, where an eight-processor module uses raw 7 to 4 for
-``n1`` to ``n4``. Only the low three bits decode; raw 0 and 1 decode as
-invalid. Established from the stock PROM image (``firmware:ip27-prom-6.156`` address
-``0x1fc461fc``). A real deskside's IRIX ``hinv`` prints node memory as
-``Module 1/Slot 81`` and ``Slot 82``, the two codes in decimal
-(``web:irixnet-post-32192``). Established.
+The deskside's two node slots have their own slot codes, ``0x51`` for
+``n1`` and ``0x52`` for ``n2``. The PROM's decoder
+(:src:`ip27-prom-6.156 0x1fc461fc`) turns the low three bits of the Hub
+slot-identity register into them: raw 3 gives ``n1`` and raw 2 gives
+``n2``, where an eight-processor module uses raw 7 to 4 for ``n1`` to
+``n4``. Only the low three bits decode; raw 0 and 1 decode as invalid
+(*software expectation*). A real deskside's IRIX ``hinv`` prints node
+memory as ``Module 1/Slot 81`` and ``Slot 82``, the two codes in decimal
+(*observed*, :src:`irixnet-post-32192`). The model's deskside node
+records carry ``hub-slot-bits`` 3 and 2, which the builder hands each
+Hub as its ``slot-bits`` property.
 
 The deskside decode needs bit 0 of the 32-bit word at physical
-``0x100000a8`` clear. That word is the configuration-flags field of the boot
-flash's firmware configuration block, beside the machine-type field at
-``0x90``. With the bit set, raw 3 and 2 decode as ordinary node slots 5 and 6
-instead. A deskside's flash must therefore carry the bit clear, and the real
-deskside's ``Slot 81/82`` shows it clear. Established from the stock PROM image
-(``firmware:ip27-prom-6.156`` address ``0x1fc461fc`` and its caller) and the
-capture. The stock image carries the bit clear, so the model needs no
-setting. What the bit means otherwise is unknown, and what the deskside
-midplane drives on the upper identity bits is unknown. A deskside midplane
-drawing, or a capture that prints the identity register, would settle the
-second.
+``0x100000a8`` clear. That word is the configuration-flags field of the
+boot flash's configuration block. With the bit set, raw 3 and 2 decode
+as ordinary node slots 5 and 6 instead (*software expectation*, the same
+decoder and its caller). The real deskside's ``Slot 81/82`` shows it
+clear, and the stock image carries it clear, so the model needs no
+setting. What the bit means otherwise is *unknown*, and so is what the
+deskside midplane drives on the upper identity bits. A deskside midplane
+drawing, or a capture that prints the identity register, would settle
+the second.
+
+The Origin 2000 deskside is not the Onyx2 deskside. It is the
+eight-processor module in a deskside enclosure and uses the module's
+Crossbow 0 and 1 tables (*established*, :src:`007-3453-002 p. 1`,
+:src:`007-3453-002 p. 19-24`).
 
 .. _sgi-onyx2-two-node:
 
 The two-node deskside
 ~~~~~~~~~~~~~~~~~~~~~
 
-No inventory lists the Null Router: neither the PROM ``hinv -v`` nor IRIX's
-lists one, where the rack lists ``r1`` and ``r2``. Established
-(``web:nekonomicon-16723250``; ``web:irixnet-post-32192``;
-``web:nekonomicon-16285``).
+No inventory lists the Null Router: neither the PROM ``hinv -v`` nor
+IRIX's lists one, where the rack lists ``r1`` and ``r2`` (*observed*,
+:src:`nekonomicon-16723250`, :src:`irixnet-post-32192`,
+:src:`nekonomicon-16285`).
 
-The PROM's partner-node probe (``firmware:ip27-prom-6.156`` routine at
-``0x1fc470a0``, called at ``0x1fc4ff88``) tries an empty route, then a
-one-hop route out of port 4 or 5 chosen by slot parity, for a deskside slot
-code. Otherwise it routes through Router port 6. Established from the stock PROM image. That this models a direct Hub-to-Hub link through the Null
-Router is inferred.
+The PROM's partner-node probe tries an empty route, then a one-hop route
+out of port 4 or 5 chosen by slot parity, for a deskside slot code;
+otherwise it routes through Router port 6 (*software expectation*,
+:src:`ip27-prom-6.156 0x1fc470a0`). That this models a direct
+Hub-to-Hub link through the Null Router is *inferred*.
 
-In both deskside captures ``n2`` holds NASID 0 and ``n1`` NASID 1
-(``web:nekonomicon-16723250``; ``web:irixnet-post-32192``). Established.
-What makes ``n2`` NASID 0 is unknown; the PROM's NASID assignment for class 5
-slots would settle it. One IRIX ``hinv`` also prints ``IO6prom on Global
-Master Baseio in Module 1/Slot io2`` while the BaseIO's hardware-graph path
-is ``io1/baseio``; why it says ``io2`` is unknown
-(``web:irixnet-post-32192``).
+In both deskside captures ``n2`` holds node number 0 and ``n1`` node
+number 1, and ``n2`` is the global master (*observed*,
+:src:`nekonomicon-16723250`, :src:`irixnet-post-32192`,
+:src:`nekonomicon-16727032`). The model's deskside boots the same way.
+What makes ``n2`` node 0 is *unknown*; the PROM's node numbering for
+class 5 slots would settle it. One IRIX ``hinv`` also prints the global
+master BaseIO in ``Module 1/Slot io2`` while the BaseIO's hardware-graph
+path is ``io1/baseio``; why is *unknown* (:src:`irixnet-post-32192`).
+
+Both node boards are host ports of the one Crossbow. The firmware's
+Crossbow record must name each port's Hub by node number: the master
+Hub's processor reads every other Hub port's number through a big
+window addressed with its own node number (*software expectation*,
+:src:`ip27-prom-6.156 0x1fc42758`). In the model a big-window address
+reaches the Hub programmed with the node number it carries, like every
+other node-qualified address (:doc:`hardware/hub`). With that routing
+the record names node 0 at widget 9 and node 1 at widget A, as the real
+console's warning-free boot implies.
 
 .. _sgi-onyx2-rack-widget-map:
 
@@ -596,11 +984,12 @@ Rack compute module
 -------------------
 
 The compute module is the eight-processor module: four node slots, two
-Router slots, twelve XIO slots and two Crossbows. Node 1 activates XIO slots
-1 to 6 and node 2 slots 7 to 12. Nodes 1 and 3 reach slots 1 to 6 through
-Crossbow 0, nodes 2 and 4 reach slots 7 to 12 through Crossbow 1. The BaseIO-G
-stays in slot 1 and the PCI option in slot 2. Established (007-3457-005
-printed pages 33-36; HMQ-380-C Tables 41 and 42, printed pages 130-131).
+Router slots, twelve XIO slots and two Crossbows. Node 1 activates XIO
+slots 1 to 6 and node 2 slots 7 to 12. Nodes 1 and 3 reach slots 1 to 6
+through Crossbow 0, nodes 2 and 4 reach slots 7 to 12 through Crossbow
+1. The BaseIO-G stays in slot 1 and the PCI option in slot 2
+(*established*, :src:`007-3457-005 p. 33-36`;
+:src:`origin-onyx2-quick-reference-booklet p. 130-131`).
 
 .. list-table::
    :header-rows: 1
@@ -633,67 +1022,74 @@ printed pages 33-36; HMQ-380-C Tables 41 and 42, printed pages 130-131).
      - ``io3``
      - ``io9``
 
-Established from the stock PROM image (``firmware:ip27-prom-6.156`` tables at
-``0x1fcd1df0`` for Crossbow 0 and ``0x1fcd1e10`` for Crossbow 1). The
-booklet's ``xbstat`` table (HMQ-380-C printed page 250) agrees on rows B to
-F. It labels widget 8 "BaseIO" only, with no Crossbow 1 entry, and prints
-the node rows as "Node 1 or 2" at widget 9 and "Node 3 or 4" at A, where the
-PROM puts ``n4`` at 9 and ``n2`` at A on Crossbow 1. The booklet's pairing
-reads as loose and the PROM's as the operative naming; that reading is
-inferred. Which node board is physically wired to Crossbow 1 widgets 9 and A
-is unknown; a midplane drawing would settle it.
+*Software expectation*, from the stock PROM's tables
+(:src:`ip27-prom-6.156 0x1fcd1df0` for Crossbow 0,
+:src:`ip27-prom-6.156 0x1fcd1e10` for Crossbow 1). The booklet's
+``xbstat`` table (:src:`origin-onyx2-quick-reference-booklet p. 250`)
+agrees on rows B to F. It labels widget 8 "BaseIO" only, with no
+Crossbow 1 entry, and prints the node rows as "Node 1 or 2" at widget 9
+and "Node 3 or 4" at A, where the PROM puts ``n4`` at 9 and ``n2`` at A
+on Crossbow 1. Reading the booklet's pairing as loose and the PROM's as
+the operative naming is *inferred*. Which node board is physically wired
+to Crossbow 1 widgets 9 and A is *unknown*; a midplane drawing would
+settle it. The Origin 2000 module uses the same tables.
 
 .. _sgi-onyx2-graphics-module:
 
 Graphics module
 ---------------
 
-The graphics module holds up to two pipes. Each pipe's boards plug into the
-rear of the graphics-module midplane, and the Ktown board sits between the
-two board sets. The right-hand pipe, seen from the rear, takes one, two or
-four RM/TM assemblies and uses the Ktown's upper connector; the left-hand
-pipe takes one or two and uses the lower. Established (007-3457-005 printed
-pages 14, 20-22 and 31).
+The graphics module holds up to two pipes. Each pipe's boards plug into
+the rear of the graphics-module midplane, and the Ktown board sits
+between the two board sets. The right-hand pipe, seen from the rear,
+takes one, two or four RM/TM assemblies and uses the Ktown's upper
+connector; the left-hand pipe takes one or two and uses the lower
+(*established*, :src:`007-3457-005 p. 14`, :src:`007-3457-005 p. 20-22`,
+:src:`007-3457-005 p. 31`).
 
-The booklet names a "KCAR midplane" in the graphics troubleshooting chain,
-between the Ktown board and the GE14 (HMQ-380-C printed page 251). That this
-is the graphics-module midplane is inferred from its place in that chain. No
+The booklet names a "KCAR midplane" in the graphics troubleshooting
+chain, between the Ktown board and the GE14
+(:src:`origin-onyx2-quick-reference-booklet p. 251`). That this is the
+graphics-module midplane is *inferred* from its place in that chain. No
 capture shows a graphics-module midplane board record, so that record is
-unknown.
+*unknown*.
 
 .. _sgi-onyx2-pipe-link:
 
 How a pipe reaches the compute module
 -------------------------------------
 
-Each pipe needs its own Crosstown cable from a Crosstown XIO board ("Xtown")
-in a compute-module XIO slot to the Ktown board. Established (007-3457-005
-printed page 48). The Crosstown board converts the XIO link's on-board
-signalling to differential levels for a cable of up to 3 metres, established
-(007-3439-002 printed page 73). The Theory of Operations manual calls the
-XIO-slot board "the Crosstown (KTOWN) conversion board"; the rack guide and
-the captures use KTOWN for the graphics-module board, so this page calls the
-XIO-slot board Xtown and keeps KTOWN for the graphics-module end.
+Each pipe needs its own Crosstown cable from a Crosstown XIO board
+("Xtown") in a compute-module XIO slot to the Ktown board
+(*established*, :src:`007-3457-005 p. 48`). The Crosstown board converts
+the XIO link's on-board signalling to differential levels for a cable of
+up to 3 metres (*established*, :src:`007-3439-002 p. 73`). The Theory of
+Operations manual calls the XIO-slot board "the Crosstown (KTOWN)
+conversion board"; the rack guide and the captures use KTOWN for the
+graphics-module board, so this page calls the XIO-slot board Xtown and
+keeps Ktown for the graphics-module end.
 
 The host's path ends at the GE board's XIO-to-graphics ASIC (XG): the
 booklet's "XBOW-to-GE14 path" lists the midplane, the XIO board, the
-Crosstown cable, the Ktown board, the KCAR midplane and the "GE14 (XGASIC)"
-(HMQ-380-C printed page 251; 007-3454-005 printed page 28). Established.
-The Xtown and Ktown are therefore link extenders and the XIO widget at the end
-of the link is the XG, as on the deskside. That the Xtown and Ktown present
-no widget identity of their own is inferred: nothing in the captures or the
-firmware tables reads one. Whether they have any register a host can read
-is unknown; a rack PROM ``hinv -v`` that prints widget numbers would settle
-it.
+Crosstown cable, the Ktown board, the KCAR midplane and the "GE14
+(XGASIC)" (*established*,
+:src:`origin-onyx2-quick-reference-booklet p. 251`;
+:src:`007-3454-005 p. 28`). The Xtown and Ktown are therefore link
+extenders and the XIO widget at the end of the link is the XG, as on the
+deskside. That they present no widget identity of their own is
+*inferred*: nothing in the captures or the firmware tables reads one. In
+the model the pipe widget answers directly on the Xtown's Crossbow port.
+Whether either board has a register a host can read is *unknown*; a rack
+PROM ``hinv -v`` that prints widget numbers would settle it.
 
 .. _sgi-onyx2-xtown-placement:
 
 Xtown placement and pipe limits
 -------------------------------
 
-A node controls at most one pipe. Established (HMQ-380-C Table 42, printed
-page 131). The booklet's recommended Xtown slots (a node count, then pipes,
-then slots):
+A node controls at most one pipe (*established*,
+:src:`origin-onyx2-quick-reference-booklet p. 131`, Table 42). The
+booklet's recommended Xtown slots:
 
 .. list-table::
    :header-rows: 1
@@ -723,114 +1119,109 @@ then slots):
      - ``io2``, ``io3``, ``io7``, ``io8``
      - adds Crossbow 0 widget F
 
-The slot columns are established; the widget column follows from the rack
-widget map above. The real rack capture has its one pipe at ``io3``,
-Crossbow 0 widget F, in a four-node module (``web:nekonomicon-16285``), so
-the table is a recommendation and the pipe takes whatever XIO slot its Xtown
-occupies. The rack guide draws pipe 0 on the first Crossbow and pipe 1 on the
-second (007-3457-005 Figure 1-2, printed page 5). Multirack systems support
-up to 16 pipes, and each pipe needs one node board (007-3457-005 printed
-pages 1 and 51). Established.
+The slot columns are *established*; the widget column follows from the
+rack widget map. The real rack capture has its one pipe at ``io3``,
+Crossbow 0 widget F, in a four-node module (*observed*,
+:src:`nekonomicon-16285`), so the table is a recommendation and the pipe
+takes whatever XIO slot its Xtown occupies. The rack guide draws pipe 0
+on the first Crossbow and pipe 1 on the second
+(:src:`007-3457-005 p. 5`, Figure 1-2). Multirack systems support up to
+16 pipes, each needing one node board (*established*,
+:src:`007-3457-005 p. 1`, :src:`007-3457-005 p. 51`). The model fits the
+rack's pipe at ``io3``, as the capture has it.
 
 .. _sgi-onyx2-populations:
 
 Node-board populations
 ----------------------
 
-Both chassis ship with fewer node boards than they hold, filled from ``n1``.
+Both chassis ship with fewer node boards than they hold, filled from
+``n1``.
 
 Deskside: the standard deskside has one node board, the entry level one
-processor, and a second board is an option. The first node board always sits
-in the right-hand slot, ``n1``. Established (007-3454-005 printed pages 1-2
-and 21). With one node board, ``n1`` is the only Hub on the one Crossbow
-(widget A), so it controls every widget; that is inferred from its being the
-only Hub. Widget 9, where ``n2`` would be, is an empty port. The rack guide
-says the Null Router is used in desksides with one or two node boards
-(007-3457-005 printed pages 45-47), so a real one-node deskside probably
-carries one with its far end empty. That the two are firmware-equivalent is
-inferred, and so is the model's one-node row, which fits no link at all.
+processor, and a second board is an option. The first node board always
+sits in the right-hand slot, ``n1`` (*established*,
+:src:`007-3454-005 p. 1-2`, :src:`007-3454-005 p. 21`). With one node
+board, ``n1`` is the only Hub on the one Crossbow (widget A), so it
+controls every widget (*inferred*); widget 9, where ``n2`` would be, is
+an empty port. The rack guide says the Null Router is used in desksides
+with one or two node boards (:src:`007-3457-005 p. 45-47`), so a real
+one-node deskside probably carries one with its far end empty. The
+model's one-node row fits no link at all; that the two are the same to
+firmware is *inferred*.
 
-Rack: a single rack holds two to eight processors, and the booklet lists a
-one-node, one-pipe system with node 1 controlling the IO6G and the Xtown in
-``io2`` to ``io6`` (HMQ-380-C Table 42). Established. The rack guide names the
-Null Router for one or two node boards and the Star Router for a
-single-rack Onyx2 with three or four (007-3457-005 printed pages 45-47). A
-real rack capture's module 1 carries ``ROUTER_IR1`` board records, with two
-node boards and later with four (``web:nekonomicon-16285``): established.
-The capture does not name the Router type the guide calls Standard. With one node
-board the model fits no Router; the guide says none is required and no
-capture shows one, so that row is inferred. The pipe's Xtown in ``io3`` is
-Crossbow 0 widget F, which ``n1`` controls at every count, and one pipe needs
-only one node board. The Star Router fit is documented but not modelled.
+Rack: a single rack holds two to eight processors, and the booklet lists
+a one-node, one-pipe system with node 1 controlling the BaseIO-G and the
+Xtown in ``io2`` to ``io6`` (*established*,
+:src:`origin-onyx2-quick-reference-booklet p. 131`). The rack guide
+names the Null Router for one or two node boards and the Star Router for
+a single-rack Onyx2 with three or four (:src:`007-3457-005 p. 45-47`). A
+real rack's module 1 carries Router board records with two node boards
+and later with four (*observed*, :src:`nekonomicon-16285`). The model's
+rack rows are the Origin 2000 rack module's: no Router for one node, two
+Standard Routers from two. The pipe's Xtown in ``io3`` is Crossbow 0
+widget F, which ``n1`` controls at every count, so one pipe needs only
+one node board.
 
 .. _sgi-onyx2-widget-selection:
 
 How firmware chooses the widget map
 -----------------------------------
 
-There is no machine-type word for an Onyx2. The PROM routine at
-``0x1fc419cc`` (its error text names it as the widget-to-slot routine) picks
-a table from the hardware, in this order. Established from the stock PROM image
-(``firmware:ip27-prom-6.156`` address ``0x1fc419cc``):
+There is no machine-type word for an Onyx2. The stock PROM's
+widget-to-slot routine picks a table from the hardware, in this order
+(*software expectation*, :src:`ip27-prom-6.156 0x1fc419cc`):
 
 1. Widgets outside 8 to 15 give an invalid slot.
 2. The routine reads the local node's slot code. A code of class 5, an
-   Onyx2 deskside node slot, selects the deskside table. Only Crossbow 0 is
-   legal on a deskside; any other Crossbow prints an error and gives an
-   invalid slot.
+   Onyx2 deskside node slot, selects the deskside table. Only Crossbow 0
+   is legal on a deskside; any other Crossbow prints an error and gives
+   an invalid slot.
 3. Otherwise a nonzero machine-type word at physical ``0x10000090``
-   selects the Origin 200 GIGAchannel table (:ref:`sgi-gigachannel`).
-4. Otherwise the Crossbow number picks the Crossbow 0 or Crossbow 1 table of
-   the eight-processor module. An Onyx2 rack takes this path and is named
-   exactly as an Origin 2000.
+   selects the Origin 200 GIGAchannel table (:doc:`hardware/gigachannel`).
+4. Otherwise the Crossbow number picks the Crossbow 0 or Crossbow 1
+   table of the eight-processor module. An Onyx2 rack takes this path
+   and is named exactly as an Origin 2000.
 
-No firmware word says "Onyx2": recognition is by slot code. An Onyx2
-deskside is the only chassis whose node slots decode to class 5. An Onyx2
-rack compute module is an Origin 2000 module; what makes it an Onyx2 is the
-hardware in it: a BaseIO-G with MIO, one or more Xtown boards and KONA
-widgets behind them. The Origin 2000 deskside is not the Onyx2 deskside: it is
-the eight-processor module in a deskside enclosure (007-3453-002 printed
-pages 1 and 19-24) and uses the Crossbow 0 and 1 tables. A model therefore
-builds an Onyx2 from components: the deskside from its midplane's slot values
-and a KONA widget at widget 8, the rack from an Origin 2000 module with
-BaseIO-G and KONA widgets on Xtown slots.
+Recognition is by slot code. An Onyx2 deskside is the only chassis whose
+node slots decode to class 5. An Onyx2 rack compute module is an Origin
+2000 module; what makes it an Onyx2 is the hardware in it: a BaseIO-G
+with MediaIO, one or more Xtown boards and KONA widgets behind them. The
+model therefore builds the deskside from its midplane's slot values and
+a KONA widget at widget 8, and the rack from an Origin 2000 module with
+a BaseIO-G and a KONA widget on an Xtown slot.
 
 .. _sgi-onyx2-pipe-identity:
 
 Pipe identity
 -------------
 
-The pipe presents XIO manufacturer ``0x2aa`` and part ``0xc102``, named KONA
-in Linux and OpenBSD. Established (Linux
-``arch/mips/include/asm/xtalk/xwidget.h`` ``WIDGET_KONA_MFGR_NUM`` and
-``WIDGET_KONA_PART_NUM``; OpenBSD ``sys/arch/sgi/xbow/xbowdevs`` lines 22 and
-42; :ref:`sgi-graphics-widget-identities`). The PROM's graphics classifier
-(``firmware:ip27-prom-6.156`` address ``0x1fc4291c``) gives part ``0xc102``
-board type ``0x51`` and the name ``kona``, gives other graphics parts their
-own types and every unknown graphics part a generic name. Established from the stock PROM image.
+The pipe presents XIO manufacturer ``0x2aa`` and part ``0xc102``, named
+KONA in Linux and OpenBSD (*established*, Linux ``xwidget.h``
+``WIDGET_KONA_MFGR_NUM`` and ``WIDGET_KONA_PART_NUM``; OpenBSD
+``xbowdevs`` lines 22 and 42; :ref:`sgi-graphics-widget-identities`).
+The PROM's graphics classifier gives part ``0xc102`` its own board type
+and the name ``kona``, and every unknown graphics part a generic name
+(*software expectation*, :src:`ip27-prom-6.156 0x1fc4291c`).
 
-The deskside pipe presents the same identity: its PROM prints ``KONA
-Graphics Board, Module 1, Slot io4`` and the classifier names a board
-``kona`` only for part ``0xc102`` (``web:nekonomicon-16723250``). The same
-deskside's IRIX ``gfxinfo -v`` reports ``Graphics board 0 is "KONAL"
-graphics`` with its GE, RM, TM and DG records
-(``web:irixnet-post-32192``). Established by capture. That both chassis end
-the host path at the same XG ASIC, which accounts for the shared identity,
-is inferred.
+The deskside pipe presents the same identity: its PROM prints the KONA
+graphics board in ``io4``, and the classifier names a board ``kona``
+only for part ``0xc102`` (*observed*, :src:`nekonomicon-16723250`). The
+same deskside's IRIX ``gfxinfo -v`` reports "KONAL" graphics with its
+GE, RM, TM and DG records (*observed*, :src:`irixnet-post-32192`). That
+both chassis end the host path at the same XG ASIC, which accounts for
+the shared identity, is *inferred*.
 
 The widget revision of a real pipe is not captured. The model answers
-revision 0 from the device itself; that is an emulator choice, not a decoded
-hardware revision.
+revision 0, an *approximation*.
 
-IRIX accepts a widget as a pipe only if firmware wrote a matching graphics
-board record into the node's configuration data: the kernel builds its pipe
-list from those records, keyed by module and ``io`` slot, and rejects a
-widget with no matching entry. There is no deskside or rack test in that
-path; on a deskside the entries come from the deskside table, so the pipe
-must be widget 8 for firmware to name its board ``io4`` and for IRIX to find
-it. This is a reading of the stock IRIX 6.5.30 kernel, which is not a
-registered source here, so it is stated for context and no model entry
-rests on it.
+The IRIX 6.5.30 kernel accepts a widget as a pipe only if firmware wrote
+a matching graphics board record into the node's configuration data: it
+builds its pipe list from those records, keyed by module and ``io``
+slot, and rejects a widget with no matching entry (*software
+expectation*). On a deskside the entries come from the deskside table,
+so the pipe must be widget 8 for firmware to name its board ``io4`` and
+for IRIX to find it.
 
 .. _sgi-onyx2-one-wire:
 
@@ -849,15 +1240,16 @@ IRIX reads the pipe's board records through the pipe itself.
      - ``GE14-4`` 030-1129-002, or ``GE14-2``
      - ``GE16-4`` 030-1398-001
    * - KT (Ktown)
-     - absent; ``gfxinfo -v`` prints ``KT: No NIC serial number available.``
+     - absent; ``gfxinfo -v`` prints ``KT: No NIC serial number
+       available.``
      - ``KTOWN`` 030-1067-001 rev F, under the pipe's slot
    * - RM, TM
      - RM7 030-1054-001, TM7 030-1053-001 per assembly
      - RM9 030-1402-001
    * - DG
-     - 030-1087-001, which reports eight channels: a DG5-8 by a
-       community-compiled list of SGI PCA numbers; or the DG5-2
-       030-1055-001 an owner's board list gives for a two-GE pipe
+     - 030-1087-001, which reports eight channels: a DG5-8 by
+       :src:`sgi-pca-numbers`; or the DG5-2 030-1055-001 an owner's
+       board list gives for a two-GE pipe
      - DG5-2 base 030-1242-001 rev D
    * - DGOPT
      - absent
@@ -869,39 +1261,438 @@ IRIX reads the pipe's board records through the pipe itself.
      - not applicable
      - no record in the board list
 
-Established from the captures (``web:irixnet-post-32192``,
-``web:sgistuff-collection-2200``, ``web:nekonomicon-16285``). IRIX lists the
-rack's Ktown record at ``/hw/module/1/slot/io3/kona``, the Xtown's XIO slot,
-beside the GE record, and lists only the GE record at the deskside's
-``io4/kona``. The driver keeps the GE and KT records from its own one-wire
-reading; the pipe reports the RM, TM, DG and DGOPT records in its answer to
-the configuration request. Serials are placeholders, so the part numbers
-above are the captured identity and the serials are an approximation.
+*Observed* in :src:`irixnet-post-32192`, :src:`sgistuff-collection-2200`
+and :src:`nekonomicon-16285`. IRIX lists the rack's Ktown record at
+``/hw/module/1/slot/io3/kona``, the Xtown's XIO slot, beside the GE
+record, and lists only the GE record at the deskside's ``io4/kona``. The
+driver keeps the GE and KT records from its own one-wire reading; the
+pipe reports the RM, TM, DG and DGOPT records in its answer to the
+configuration request. The model's serials are placeholders, so the part
+numbers above are the captured identity and the serials an
+*approximation*. The default pipes are in :ref:`sgi-ip27-graphics`.
 
-Each chassis fits its catalogue default pipe unless a graphics
-``-device`` replaces it (:ref:`sgi-sn-graphics-pipes`). With ``-vga
-none`` or ``-nodefaults`` and no pipe ``-device`` either starts with no
-graphics, though SGI sold no Onyx2 without a pipe. The rack's default is
-the captured rack's configuration (``web:nekonomicon-16285``) with a
-plain DG5-2 in place of its DG5-2 with GVO, which has no video output in
-the model: ``sgi-kona`` ``product=ir3``, one RM and ``display=dg5-2``, so hinv prints
-``Graphics board: InfiniteReality3`` and ``gfxinfo -v`` prints one RM10
-board with 256MB of texture memory. The plain DG5-2 presents
-030-1055-001, the part an owner's board list gives for a two-GE
-InfiniteReality2, in the rack too, since no capture shows a plain DG5-2
-in an Onyx2 rack (inferred). The deskside's default is the captured
-deskside's (``web:irixnet-post-32192``): ``product=ir2``, GE14-4, two RM7
-boards and ``display=dg5-8``. Both pipes take the slot's own records above, the
-geometry board's part and, on the rack, the Ktown, whichever pipe
-``-device`` names the slot. ``-global`` on ``sgi-kona`` is checked like
-any other property and chooses nothing the catalogue does not offer.
-The ``product`` property and the boards it takes are described in
-``hw/misc/sgi-kona.c``.
+.. _sgi-ip27-address-map:
+
+Address map
+===========
+
+Every node shares one 40-bit physical address space. The node number is
+bits 39:32 (M mode), so each node owns a 4 GiB window and a node's
+resources sit at its base plus the number shifted left 32 (*established*,
+Linux ``asm/sn/sn0/addrs.h``; OpenBSD ``hub.h``). OpenBSD reads the mode
+from a Hub network-interface status bit rather than assuming it, and the
+model resets that bit to M mode (:doc:`hardware/hub`).
+
+The processor drives a two-bit uncached attribute beside the address,
+recorded in virtual-address bits 58:57, which picks one of four spaces
+(*established*, Linux ``mach-ip27/spaces.h``):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Processor address, node 0
+     - Space
+     - Attribute
+   * - ``0xa800_0000_0000_0000``
+     - cached memory
+     - none
+   * - ``0x9600_0000_0000_0000``
+     - uncached memory
+     - 3
+   * - ``0x9000_0000_0000_0000``
+     - Hub special
+     - 0
+   * - ``0x9200_0000_0000_0000``
+     - I/O
+     - 1
+   * - ``0x9400_0000_0000_0000``
+     - memory special (fetch-and-op)
+     - 2
+   * - ``0xffff_ffff_a000_0000``
+     - compatibility uncached segment, node-local physical
+       ``0x0000_0000`` to ``0x1fff_ffff``; the reset vector is
+       ``0xffff_ffff_bfc0_0000``
+     - 3
+
+The bases are the public headers'. Linux states that attribute 3 selects
+uncached memory; the other three numbers follow from bits 58:57 of each
+base (*inferred*). The model carries the attribute as bits 41:40 of a
+42-bit machine bus address, rotated so plain memory is window 0: Hub
+special at ``0x100_0000_0000``, I/O at ``0x200_0000_0000`` and memory
+special at ``0x300_0000_0000``. That is an emulator representation, not
+hardware; qtests and the monitor speak it.
+
+Node offsets in each space (*established* from the Linux and OpenBSD
+headers):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Space and node offset
+     - Size
+     - Contents
+   * - memory, bank × 512 MiB
+     - up to 512 MiB a bank
+     - Node memory: eight banks on IP27, four on IP29
+       (:ref:`sgi-ip27-memory`).
+   * - memory, ``0x1fc0_0000``
+     - 1 MiB
+     - Boot flash reset view (:ref:`sgi-ip27-bank0-flash`).
+   * - I/O, widget × 16 MiB
+     - 16 MiB each
+     - Small window onto widget 0 to 15.
+   * - I/O, ``0x0100_0000``
+     - 8 MiB
+     - Hub registers of the reader's own node, addressed with node
+       number 0.
+   * - I/O, ``0x0180_0000``
+     - 8 MiB
+     - Hub registers of the node named in the address.
+   * - I/O, ``0x2000_0000`` + n × 512 MiB
+     - 512 MiB each
+     - Big windows 0 to 6, each a programmable slice of a widget.
+   * - Hub special, ``0x0000_0000``
+     - 256 MiB
+     - The reader's own node memory, uncached; the low 128 KiB is private
+       to each processor of the pair.
+   * - Hub special, ``0x1000_0000``
+     - 256 MiB
+     - The reader's own boot flash.
+   * - Hub special, ``0x2000_0000``
+     - 256 MiB
+     - The named node's uncached memory.
+   * - Hub special, ``0x3000_0000``
+     - 256 MiB
+     - The named node's boot flash.
+   * - Hub special, ``0x8000_0000`` and ``0xc000_0000``
+     - 1 GiB each
+     - Back doors onto the ECC bytes and the directory entries.
+
+The Hub's own register window splits into its processor, memory,
+I/O and network interfaces at offsets ``0x00_0000``, ``0x20_0000``,
+``0x40_0000`` and ``0x60_0000``; :doc:`hardware/hub` describes them and
+the back doors. The boot flash views are on :doc:`prom-image`.
+
+On the Origin 200 the Hub's XIO link goes straight to the IP29 board's
+Bridge with no Crossbow (*established*, :src:`007-3708-002 p. 6-7`,
+Figures 1-4 and 1-5). The Bridge therefore answers every small window
+except widget 1, the Hub itself; firmware numbers it widget 8. On the
+Origin 2000 and Onyx2 each widget number reaches the port of that number
+on the node's Crossbow (:doc:`hardware/xbow`).
+
+.. _sgi-ip27-power:
+
+Power and reset domains
+=======================
+
+A module has three power domains (*established* except where marked):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Domain
+     - Fed by
+     - Contains
+   * - Standby
+     - the supply's 5 V auxiliary output, present whenever the master
+       switch (Origin 200) or circuit breaker (Origin 2000) is on
+     - the module system controller and its serial port
+       (:src:`007-3708-002 p. 97-98`; :src:`108-0164-002`, appendix A)
+   * - Module
+     - the supply's main outputs, switched by the controller
+     - everything else: node boards, Routers, Crossbows, base I/O, XIO
+       and PCI boards, disk bays (:src:`007-3708-002 p. 97`;
+       :src:`007-3456-003 p. 113`; Router and XIO membership on the
+       Origin 2000 *inferred* from the single switched supply)
+   * - Battery
+     - a cell inside the part
+     - the base I/O Timekeeper's clock and RAM
+
+The controller issues the reset at power-on (:src:`007-3456-003 p. 113`).
+An Origin 2000 rack's modules are independent power domains: "if you
+power off an individual module, the other module(s) in the configuration
+can still operate fully" (:src:`007-3456-003 p. 82`). An Origin 200
+master controller forwards power-up and power-down to its slave
+(:ref:`sgi-elsc-master-slave`). A GIGAchannel cabinet's switched domain
+follows the module it is attached to.
+
+The R10000 distinguishes three entries by its Status register: a cold
+reset (``SR`` clear, mode bits reloaded), a soft reset (``SR`` set,
+``NMI`` clear) and an NMI (both set) (*established*,
+:src:`r10000-users-manual-2.0 p. 337-339`). The stock PROM tests these
+bits first and takes its NMI path, a separate soft-reset path or the
+cold-start path (*software expectation*,
+:src:`ip27-prom-6.156 0x1fc00854`, :src:`ip27-prom-6.156 0x1fc00c20`).
+
+What the model does:
+
+- A controller's ``pwr d``, ``pwr c`` and ``rst`` act on its own module.
+  The machine derives the module's parts from the topology: its node
+  boards with their Hubs, boot flash and everything behind them, its
+  Routers, Crossbows and I/O boards, and any board in its XIO slots. The
+  controller is in none of it.
+- Power off resets and halts the module's processors with their Hub's
+  processor enables clear. Power on, and ``rst``, cold-start the module:
+  every part resets and the processors run from the reset vector. Memory
+  keeps its bytes, an *approximation* the PROM's own memory
+  initialisation hides. Other modules keep running.
+- While a module is off its Hubs refuse register accesses and inbound
+  XIO packets with the bus's unassigned-access result, its I/O windows
+  are disabled and its Routers answer no vector access. Its ports read
+  down to their peers. The Hub's I2C adapter window keeps answering from
+  the module's own view, so the standby controller stays reachable.
+- A Hub network-interface port reset with bit 0 set restarts the whole
+  machine, not one node: every module with power cold-starts together
+  and the standby controllers are not reset, so the PROM sees a warm
+  start. Every software reboot path writes bits 7 and 0 together, so no
+  supported guest sees the difference from the node reset the Hub
+  describes (*approximation*; :ref:`sgi-hub-link-reset`).
+- ``system_reset`` is an AC cycle: every module and controller starts
+  over. Once every module is off with no power-up to come the machine
+  powers down; IRIX 6.5.30 sends ``pwr d 1`` at ``shutdown -p``
+  (:doc:`hardware/elsc`).
+- The controller's NMI output and the Hub's per-processor NMI trigger
+  reach each processor through an OR gate, so neither hides the other.
+
+Whether ``rst`` reaches the Routers, Crossbows and XIO boards, whether it
+gives the processors a cold or a soft entry, and which Hub error
+registers survive it are *unknown*; the model resets every part and gives
+the cold entry.
+
+.. _sgi-ip27-cache:
+
+Cache configuration
+===================
+
+Every Origin 2000 and Onyx2 processor has 1 MiB of secondary cache, the
+size the stock PROM's mode word encodes and the 180 MHz assembly the
+booklet documents (:ref:`sgi-origin2000-reset-mode`). The primary caches
+are 32 KiB each, hardwired (*established*,
+:src:`r10000-users-manual-2.0 p. 165`). A processor's CP0 Config at reset
+is the mode word's bits 24:0 with the hardwired primary-cache fields
+above them: ``0x6c11a785`` for the stock word (*inferred*, arithmetic on
+the manual's fields). :doc:`hardware/r10000` describes the identity
+words and the cache model.
+
+The 4 MiB, 195 MHz composition is documented hardware
+(:src:`108-0164-002 p. E-4`; :src:`007-3439-002 p. 33`), and its mode
+word ``0x1213a785`` is in the architecture layer, but no machine selects
+it, so no test exercises 4 MiB indexing. All node boards in a system
+must be the same speed (*established*, :src:`108-0164-002 p. E-2 to E-3`);
+the model applies one mode word to every processor. The Origin 200
+modules' caches are in :ref:`sgi-ip27-processors`.
+
+.. _sgi-ip27-firmware:
+
+Firmware and boot
+=================
+
+The machines boot only a stock IP27 PROM, given with ``-bios`` or bound
+per node as ``node<N>-flash``. ``-bios`` takes a raw image or SGI's
+distribution container; :doc:`prom-image` describes both, the node
+flash, the template a node with no image starts from and the
+configuration values the machine patches into each block
+(:ref:`sgi-prom-image-ip27-values`). The Origin 200 block carries machine
+type 1, which OpenBSD reads as an Origin 200; the Origin 2000 and Onyx2
+keep the stock image's type 0. ``-kernel`` is refused: a guest reaches
+its kernel through the PROM's netboot or a disk.
+
+The Origin 2000 and Onyx2 BaseIO cards and the GIGAchannel cabinet carry
+their own BASEIO PROM flash. The ``io-prom`` machine property stores an
+original I/O PROM image in every such part with no drive bound, and
+``io<N>-flash`` binds one (:ref:`sgi-baseio-flash`). With neither, the
+IP27 PROM finds no valid image there, reports it, and runs its own
+internal copy of the BASEIO PROM.
+
+Writable stores, each bound through the machine property of the same
+name (:ref:`sgi-sn-storage`):
+
+- ``node<N>-flash``, 1 MiB, one per node board;
+- ``io<N>-flash``, the BASEIO PROM flash of each BaseIO card or
+  GIGAchannel cabinet;
+- ``nvram<N>`` and ``nvram<N>-clock``, each base I/O board's Timekeeper
+  NVRAM and clock record;
+- ``module<N>-nvram``, the 2048-byte NVRAM of each module's system
+  controller (:ref:`sgi-elsc-nvram`).
+
+.. _sgi-ip27-running:
+
+Running
+=======
+
+Each command below boots the stock PROM 6.156 image from the IRIX
+6.5.30 media to the System Maintenance Menu on this tree's emulator,
+with the console on standard output:
+
+.. code-block:: shell
+
+   qemu-system-mips64 -M origin200,debug-leds=off -bios ip27prom.img \
+       -display none -serial stdio -monitor none
+
+   qemu-system-mips64 -M origin2000 -bios ip27prom.img \
+       -display none -serial stdio -monitor none
+
+   qemu-system-mips64 -M onyx2 -bios ip27prom.img \
+       -display none -serial stdio -monitor none
+
+   qemu-system-mips64 -M onyx2,topology=onyx2-deskside -smp 4 \
+       -bios ip27prom.img -display none -serial stdio -monitor none
+
+The PROM's summary before the menu, on the model:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Machine
+     - Nodes
+     - Processors
+     - Memory
+     - Routers
+   * - ``origin200``
+     - 1
+     - 1
+     - 64 MB
+     - 0
+   * - ``origin2000``, ``onyx2``
+     - 4
+     - 8
+     - 1024 MB
+     - 2
+   * - ``onyx2-deskside``
+     - 2
+     - 4
+     - 512 MB
+     - 0
+
+Each ends ``ALL DIAGS PASSED`` and the menu:
+
+.. code-block:: text
+
+   System Maintenance Menu
+
+   1) Start System
+   2) Install System Software
+   3) Run Diagnostics
+   4) Recover System
+   5) Enter Command Monitor
+
+A first boot with fresh stores also reports the NVRAM checksum and the
+hardware inventory as invalid and rewrites both; bind the stores to keep
+them. On the deskside the global master is ``n2``, as on the real
+deskside consoles.
+
+Launch notes, emulator choices rather than hardware facts:
+
+- The console is the first IOC3 UART of the console node's base I/O.
+  Serial backends are assigned node by node, six lines each: IOC3 port
+  A, port B, the system controller's AUX port, the bring-up UART, then
+  two write-only lines recording what each IOC3 port sent
+  (:ref:`sgi-sn-serial-order`). The bring-up UART exists only with
+  ``junk-uart=on``.
+- ``debug-leds`` (on by default) logs the firmware's decoded
+  boot-progress codes; ``debug-leds=off`` quiets them.
+  ``elsc-dip-switches`` sets the controller's eight DIP switches.
+- The boot disk attaches to ``scsi.0``, the first onboard SCSI
+  controller, and the netboot adapter is the IOC3's Ethernet. Complete
+  IRIX 6.5.30 network installs reach the installed system on the
+  Origin 2000 with an IMPACT board and on the Onyx2 rack
+  (:ref:`sgi-sn-launch-disk-bus`).
+
+.. _sgi-ip27-graphics:
+
+Graphics
+========
+
+A graphics pipe is a ``-device`` of its family's type, checked against
+the topology's catalogue record before it realizes
+(:ref:`sgi-sn-graphics-pipes`): ``sgi-mgras`` for IMPACT
+(:doc:`hardware/mgras`), ``sgi-kona`` for InfiniteReality
+(:doc:`hardware/kona`) and ``psitech-rad4`` for the PsiTech RAD4
+(:doc:`hardware/psitech-rad4`). At most one pipe is built.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Topologies
+     - Slots
+     - Default
+     - Offers
+   * - ``origin200``, ``origin200-gigachannel-loopback``
+     - ``pci-5`` to ``pci-7``: ``bus=pci,addr=5`` to ``7``
+     - none
+     - RAD4, RAD4-KM
+   * - ``origin200-dual``
+     - ``m0-pci-5`` to ``m0-pci-7``, the first module's
+     - none
+     - RAD4, RAD4-KM
+   * - ``origin200-gigachannel``
+     - ``io6`` (cabinet Crossbow widget 15), and ``pci-5`` to ``pci-7``
+     - none
+     - every IMPACT product at ``io6``; RAD4 as above
+   * - ``origin2000-rack``, ``origin2000-deskside``
+     - every empty XIO slot, ``io2`` to ``io12``; ``io7`` up from two
+       nodes
+     - none
+     - every IMPACT product
+   * - ``onyx2-deskside``
+     - ``io4``, widget 8
+     - ``ir2``: GE14-4, two RM7, ``dg5-8``
+     - ``ir2``, ``ir2e``; one or two RMs; ``dg5-8``, ``dg5-2``
+   * - ``onyx2-rack``
+     - ``io3``, the Xtown's slot, Crossbow 0 widget F
+     - ``ir3``: GE16-4, one RM, 256 MB texture, ``dg5-2``
+     - ``ir2e``, ``ir3``; one, two or four RMs; ``dg5-2``, ``dg5-8``
+
+The Origin 200 and Origin 2000 fit no pipe by default and may run
+without one. Each Onyx2 topology fits its default unless a graphics
+``-device`` replaces it; ``-vga none`` leaves it out, though SGI sold no
+Onyx2 without a pipe. The deskside default is the captured deskside's
+(:src:`irixnet-post-32192`). The rack default is the captured rack's
+configuration (:src:`nekonomicon-16285`) with a plain DG5-2 in place of
+its DG5-2 with GVO, which has no video output in the model; the plain
+DG5-2 presents 030-1055-001, the part an owner's board list gives for a
+two-GE InfiniteReality2, since no capture shows a plain DG5-2 in an
+Onyx2 rack (*inferred*). A pipe in either slot takes that slot's board
+records (:ref:`sgi-onyx2-one-wire`).
+
+The catalogue refuses, with its reason: an InfiniteReality pipe on an
+Origin 2000 (that machine is an Onyx2) or on the Origin 200; an
+InfiniteReality3 or four RMs in the deskside, which has no Ktown; and a
+GE14 InfiniteReality2 in the rack. On the Origin 2000 a launch that fits
+a pipe should add ``baseio-preset=io6g``: the plain BaseIO has no
+keyboard or mouse port, and the BaseIO-G's MediaIO daughtercard has them
+(:ref:`sgi-baseio-g`). The machine does not add it itself, because the
+BaseIO is built before any ``-device`` exists.
+
+The PsiTech RAD1 is a plain PCI card on the Origin 200's Bridge,
+``-device psitech-rad1,addr=N`` (:doc:`hardware/psitech-rad1`). It is not
+a catalogued pipe, so the machine does not check its placement.
+
+.. _sgi-ip27-unknowns:
+
+Open questions
+==============
+
+Origin 200 and Origin 2000:
+
+- Which source a real Origin 200 node takes its processor configuration
+  from on every boot, flash block or module (:ref:`sgi-ip27-processors`).
+- The processor and device split at a 512 MiB bank 0
+  (:ref:`sgi-ip27-bank0-flash`).
+- What a Hub does with a vector request that arrives with route steps
+  left, which decides whether the stock PROM discovers a Star deskside.
+- Whether a one-node deskside or rack module carries a Router board.
+- Which controller a real three-node module gives IO8, IO10 and IO12.
+- The MSC's I2C address, the physical EEPROM count and the UST control
+  part (:ref:`sgi-origin2000-module-management`).
+- Which midplane record an IP27-era module carried.
+- How the firmware compares the flash mode word with Config.
+- What ``rst`` reaches and which processor entry it gives.
 
 .. _sgi-onyx2-unknowns:
 
-Unknowns
---------
+Onyx2
+-----
 
 .. list-table::
    :header-rows: 1
@@ -909,18 +1700,59 @@ Unknowns
    * - Unknown
      - What would settle it
    * - Which upper Hub slot-identity bits the deskside midplane drives
-     - A deskside ``hinv`` that prints the register, or a midplane pinout
-   * - Why ``n2`` takes NASID 0 on a two-node deskside
-     - The PROM's NASID assignment for class 5 slots, read from the image
+     - A deskside ``hinv`` that prints the register, or a midplane
+       pinout
+   * - What configuration-flags bit 0 means beyond the deskside decode
+     - The PROM's other readers of physical ``0x100000a8``
+   * - Why ``n2`` takes node number 0 on a two-node deskside
+     - The PROM's node numbering for class 5 slots
    * - Which node is wired to Crossbow 1 widgets 9 and A
      - A midplane drawing or wiring table
    * - Whether the Xtown or Ktown has a host-readable register
-     - A rack PROM ``hinv -v`` printing widget numbers, or an ``xbstat``
-       capture on a pipe port
+     - A rack PROM ``hinv -v`` printing widget numbers, or an
+       ``xbstat`` capture on a pipe port
    * - The graphics-module midplane's board record
      - A rack IRIX board list that includes the graphics module
-   * - Whether user-visible pipe numbers follow the kernel's pipe-list order
+   * - Whether user-visible pipe numbers follow the kernel's pipe-list
+       order
      - A two-pipe rack ``gfxinfo -v``
+   * - The deskside ``4P1G5_MPLN`` midplane's own board record
+     - A real Onyx2 deskside inventory
 
-Neither of the project's physical SGI systems is an Onyx2, so a physical
-test cannot answer these.
+Neither the reference Octane2 nor any other measured machine is an IP27
+system, so a physical test cannot answer these.
+
+.. _sgi-ip27-tests:
+
+Tests
+=====
+
+qtests:
+
+- ``tests/qtest/sn0-origin2000-test.c``: the four-node module's remote
+  interrupts, processor mode reset, Crossbow links and warm reset,
+  Router inventory and routes, block transfers, firmware supply checks
+  and migration.
+- ``tests/qtest/sn0-onyx2-test.c``: the pipe at ``io3`` on the rack and
+  ``io4`` on the deskside, each pipe's board-record chain and product,
+  the deskside's peer Hubs naming each other, and a port reset
+  restarting the machine.
+- ``tests/qtest/sn0-module-management-test.c``: the shared Origin 2000
+  module bus, separate adapters, one controller, shared NVRAM, the UST
+  control port, the module serial and midplane parts, grants, and the
+  controller's power, reset and NMI outputs.
+- ``tests/qtest/sn0-module-domain-test.c``: module power and reset
+  reach, off-module gating, Origin 200 master and slave forwarding,
+  port resets and migration of a pending start.
+- ``tests/qtest/sn0-address-map-test.c``: the node address map and back
+  doors.
+
+Functional tests, which boot the stock PROM:
+
+- ``tests/functional/mips64/test_origin200_prom.py`` and
+  ``test_origin200_gigachannel_prom.py``: the Origin 200 topologies.
+- ``tests/functional/mips64/test_onyx2_deskside_prom.py`` and
+  ``test_onyx2_rack_prom.py``: the slots the PROM's ``hinv -v`` names on
+  each Onyx2 chassis.
+- ``tests/functional/mips64/test_origin2000_cache_reset.py``: each
+  processor's secondary-cache field at reset, with test ROMs.
