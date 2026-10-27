@@ -316,11 +316,11 @@ static bool ioc4_pair_quiescent(SGIIOC4State *s, unsigned pair)
 }
 
 /*
- * The DMA profile's mode-switch restrictions, kept for now: no enable over
- * PIO data, no disable over pending work, and no enable over a pair base
- * misaligned for its ring size. They are model policy, not hardware.
+ * The DMA profile used to refuse these mode switches. They are model
+ * policy, not hardware, and with the engine driving the 16550 the UART
+ * orders PIO and DMA itself, so they are only reported now.
  */
-static bool ioc4_control_refused(SGIIOC4State *s, unsigned n, uint32_t value)
+static void ioc4_control_check(SGIIOC4State *s, unsigned n, uint32_t value)
 {
     uint32_t old = ioc4_sdma_control(s, n);
     bool want_dma = value & IOC4_SSCR_DMA_EN;
@@ -328,38 +328,27 @@ static bool ioc4_control_refused(SGIIOC4State *s, unsigned n, uint32_t value)
     uint64_t base = ((uint64_t)s->sdma.base_hi[pair] << 32 |
                      s->sdma.base_lo[pair]) & ~UINT64_C(1);
     unsigned size = (s->sdma.base_lo[pair] & 1) ? IOC4_RING_4K : IOC4_RING_1K;
+    SerialState *uart = &s->uart[n];
 
-    if (value & IOC4_SSCR_RESET) {
-        return false;
+    if ((value & IOC4_SSCR_RESET) || !(old & IOC4_SSCR_DMA_EN) == !want_dma) {
+        return;
     }
-    if (s->serial_dma_experimental && !(old & IOC4_SSCR_DMA_EN) && want_dma &&
-        (base & (size * 4 - 1))) {
+    if (want_dma && (base & (size * 4 - 1))) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc4: misaligned DMA pair base 0x%" PRIx64
-                      " on port %u\n", base, n);
-        s->sdma.port[n].halted = true;
-        return true;
+                      "sgi-ioc4: DMA enabled on port %u with pair base 0x%"
+                      PRIx64 " misaligned for its rings\n", n, base);
     }
-    if (!!(old & IOC4_SSCR_DMA_EN) != want_dma) {
-        SerialState *uart = &s->uart[n];
-
-        if (want_dma) {
-            if (!fifo8_is_empty(&uart->recv_fifo) ||
-                !fifo8_is_empty(&uart->xmit_fifo) ||
-                (uart->lsr & 1) || (uart->lsr & 0x60) != 0x60) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                              "sgi-ioc4: DMA enable rejected with pending "
-                              "PIO data on port %u\n", n);
-                return true;
-            }
-        } else if (!ioc4_port_quiescent(s, n)) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: DMA disable rejected with pending work "
-                          "on port %u\n", n);
-            return true;
-        }
+    if (want_dma && (!fifo8_is_empty(&uart->recv_fifo) ||
+                     !fifo8_is_empty(&uart->xmit_fifo))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc4: DMA enabled on port %u with PIO data in the "
+                      "UART's FIFOs\n", n);
     }
-    return false;
+    if (!want_dma && !ioc4_port_quiescent(s, n)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc4: DMA disabled on port %u with ring work "
+                      "pending\n", n);
+    }
 }
 
 /* Ring bases at 0x300-0x30c, then seven registers a port from 0x310. */
@@ -401,9 +390,8 @@ static void ioc4_sdma_write(SGIIOC4State *s, bool base, unsigned index,
     if (base) {
         if (!ioc4_pair_quiescent(s, index)) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-ioc4: DMA base change rejected while pair %u "
-                          "is active\n", index);
-            return;
+                          "sgi-ioc4: DMA base of pair %u changed while it is "
+                          "active\n", index);
         }
         sgi_ioc_sdma_base_write(&s->sdma, index, offset == 4, value);
         return;
@@ -419,9 +407,7 @@ static void ioc4_sdma_write(SGIIOC4State *s, bool base, unsigned index,
                                     IOC4_SSCR_DMA_EN | IOC4_SSCR_PAUSE |
                                     IOC4_SSCR_RESET), index);
         }
-        if (ioc4_control_refused(s, index, value)) {
-            return;
-        }
+        ioc4_control_check(s, index, value);
         break;
     case SGI_IOC_SDMA_TX_PRODUCE:
     case SGI_IOC_SDMA_RX_CONSUME: {
@@ -666,9 +652,8 @@ static void ioc4_uart_write(void *opaque, hwaddr addr, uint64_t val,
         (ioc4_sdma_control(p->ioc4, p->index) & IOC4_SSCR_DMA_EN) &&
         addr == 0 && !(uart->lcr & 0x80)) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-ioc4: PIO transmit rejected while DMA is enabled on port %u\n",
-                      p->index);
-        return;
+                      "sgi-ioc4: PIO transmit on port %u while DMA is "
+                      "enabled\n", p->index);
     }
     serial_io_ops.write(uart, addr, val, size);
 }

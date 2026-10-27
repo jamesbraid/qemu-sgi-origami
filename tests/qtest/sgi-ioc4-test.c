@@ -756,7 +756,12 @@ static void test_dma_tx_control_entries(void)
     g_assert_nonnull(contents);
 }
 
-static void test_dma_tx_pause_reject_preserves_delay(void)
+/*
+ * Clearing ring DMA over a running delay is no longer refused, only
+ * reported: the paused delay holds where it stood and finishes once DMA is
+ * on and unpaused again.
+ */
+static void test_dma_tx_disable_reports_pending_delay(void)
 {
     g_autofree char *log = ioc4_log_file_new();
     int sv[2];
@@ -777,7 +782,11 @@ static void test_dma_tx_pause_reject_preserves_delay(void)
     reg_write(qts, SDMA_CONTROL(0), SSCR_PAUSE);
     g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) &
                     (SSCR_DMA_EN | SSCR_PAUSE | SSCR_PAUSE_STATE),
-                    ==, SSCR_DMA_EN);
+                    ==, SSCR_PAUSE | SSCR_PAUSE_STATE);
+    qtest_clock_step(qts, 5000000);
+    g_assert_cmphex(reg_read(qts, 0x08) & TX_COMPLETION(0), ==, 0);
+
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
     qtest_clock_step(qts, 2999999);
     g_assert_cmphex(reg_read(qts, 0x08) & TX_COMPLETION(0), ==, 0);
     qtest_clock_step(qts, 1);
@@ -786,7 +795,7 @@ static void test_dma_tx_pause_reject_preserves_delay(void)
     qtest_quit(qts);
     close(sv[0]);
     contents = ioc4_log_file_take(log);
-    g_assert_nonnull(contents);
+    g_assert_nonnull(strstr(contents, "with ring work pending"));
 }
 
 static void test_dma_rx_drain_and_threshold(void)
@@ -1899,7 +1908,11 @@ static void test_dma_port_fault_isolation_and_recovery(void)
                             "serial DMA read failed for port 1"));
 }
 
-static void test_dma_rejects_bad_base_and_pointer(void)
+/*
+ * A misaligned pair base and a base change on a busy pair are reported, not
+ * refused: the enable and the new base both take effect.
+ */
+static void test_dma_reports_bad_base_and_pointer(void)
 {
     g_autofree char *log = ioc4_log_file_new();
     QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
@@ -1907,20 +1920,107 @@ static void test_dma_rejects_bad_base_and_pointer(void)
 
     ioc4_set_pair_base(qts, 0, DMA_PAIR_BASE + 8, 0x1000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
-    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & SSCR_DMA_EN, ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & SSCR_DMA_EN, ==,
+                    SSCR_DMA_EN);
+    reg_write(qts, SDMA_CONTROL(0), 0);
     ioc4_set_pair_base_default(qts, 0, 0x1000);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
     ioc4_set_pair_base(qts, 0, DMA_PAIR_BASE + 0x4000, 0x1000);
     g_assert_cmphex(reg_read(qts, SDMA_BASE_LO), ==,
-                    (uint32_t)DMA_PAIR_BASE | 1);
+                    (uint32_t)(DMA_PAIR_BASE + 0x4000) | 1);
     reg_write(qts, SDMA_CONTROL(0), SSCR_RESET);
     reg_write(qts, SDMA_TX_PRODUCE(0), 4);
     g_assert_cmphex(reg_read(qts, SDMA_TX_PRODUCE(0)), ==, 0);
     qtest_quit(qts);
     contents = ioc4_log_file_take(log);
-    g_assert_nonnull(strstr(contents, "misaligned DMA pair base"));
-    g_assert_nonnull(strstr(contents, "DMA base change rejected"));
+    g_assert_nonnull(strstr(contents, "misaligned for its rings"));
+    g_assert_nonnull(strstr(contents, "changed while it is active"));
     g_assert_nonnull(strstr(contents, "outside the pointer field"));
+}
+
+/*
+ * Clearing DMA_EN stops a running receive timer and discards its remaining
+ * time. The arm stays, so the first character after re-enabling starts it.
+ */
+static void test_dma_rx_disable_stops_timer_keeps_arm(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input[2] = { 0x31, 0x32 };
+    g_autofree char *contents = NULL;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    reg_write(qts, SDMA_RX_TIMER(0), 2);
+    reg_write(qts, SDMA_RX_CONSUME(0), SRCIR_TIMER_ARM);
+    g_assert_cmpint(write(sv[0], &input[0], 1), ==, 1);
+    g_usleep(10000);
+    qtest_clock_step(qts, 60000);
+    reg_write(qts, SDMA_CONTROL(0), 0);
+    qtest_clock_step(qts, 200000);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==, 0);
+
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    qtest_clock_step(qts, 200000);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==, 0);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_CONSUME(0)) & SRCIR_TIMER_ARM, ==,
+                    SRCIR_TIMER_ARM);
+
+    g_assert_cmpint(write(sv[0], &input[1], 1), ==, 1);
+    g_usleep(10000);
+    qtest_clock_step(qts, 124999);
+    g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==, 0);
+    qtest_clock_step(qts, 1);
+    ioc4_wait_reg(qts, 0x08, RX_TIMER_EXPIRED(0), RX_TIMER_EXPIRED(0));
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
+/*
+ * The UART orders PIO and ring DMA itself, so neither enabling DMA over
+ * queued PIO data nor a PIO transmit while DMA is on is refused.
+ */
+static void test_dma_mode_switch_over_pio_is_reported(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    g_autofree char *contents = NULL;
+    int sv[2];
+    QTestState *qts;
+    uint8_t byte = 0x5a;
+    uint8_t got = 0;
+    unsigned i;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+
+    qtest_writeb(qts, UART(0) + 2, 0x07);
+    g_assert_cmpint(write(sv[0], &byte, 1), ==, 1);
+    for (i = 0; i < 1000 && !(qtest_readb(qts, UART(0) + 5) & 1); i++) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 5) & 1, ==, 1);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    g_assert_cmphex(reg_read(qts, SDMA_CONTROL(0)) & SSCR_DMA_EN, ==,
+                    SSCR_DMA_EN);
+
+    qtest_writeb(qts, UART(0), 0xa5);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmpint(read(sv[0], &got, 1), ==, 1);
+    g_assert_cmphex(got, ==, 0xa5);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(strstr(contents, "with PIO data in the UART's FIFOs"));
+    g_assert_nonnull(strstr(contents, "PIO transmit on port 0 while DMA"));
 }
 
 static void test_dma_full_reset_clears_shadow(void)
@@ -3260,8 +3360,8 @@ int main(int argc, char **argv)
                    test_dma_tx_requires_bus_master);
     qtest_add_func("/sgi-ioc4/dma-tx-control-entries",
                    test_dma_tx_control_entries);
-    qtest_add_func("/sgi-ioc4/dma-tx-pause-reject-preserves-delay",
-                   test_dma_tx_pause_reject_preserves_delay);
+    qtest_add_func("/sgi-ioc4/dma-tx-disable-reports-pending-delay",
+                   test_dma_tx_disable_reports_pending_delay);
     qtest_add_func("/sgi-ioc4/dma-rx-drain-threshold",
                    test_dma_rx_drain_and_threshold);
     qtest_add_func("/sgi-ioc4/dma-loopback-pio-mcr",
@@ -3330,8 +3430,12 @@ int main(int argc, char **argv)
                     test_serial_idle_status_nested_dma);
     qtest_add_func("/sgi-ioc4/serial-idle-status-dma-failures",
                     test_serial_idle_status_dma_failures);
-    qtest_add_func("/sgi-ioc4/dma-rejects-bad-base-pointer",
-                   test_dma_rejects_bad_base_and_pointer);
+    qtest_add_func("/sgi-ioc4/dma-reports-bad-base-pointer",
+                   test_dma_reports_bad_base_and_pointer);
+    qtest_add_func("/sgi-ioc4/dma-rx-disable-stops-timer-keeps-arm",
+                   test_dma_rx_disable_stops_timer_keeps_arm);
+    qtest_add_func("/sgi-ioc4/dma-mode-switch-over-pio-is-reported",
+                   test_dma_mode_switch_over_pio_is_reported);
     qtest_add_func("/sgi-ioc4/identity-reset", test_identity_and_reset);
     qtest_add_func("/sgi-ioc4/ata-readback-latch",
                    test_ata_readback_latch);
