@@ -16,8 +16,8 @@ and answers, itself, as logical widget 0. QEMU models it in
 what the model chose where the sources are silent, and where each
 statement comes from.
 
-Ratings follow :ref:`sgi-ip30`: established, inferred, approximation or
-unknown. The sources are the *Crossbow ASIC Specification*, revision
+Ratings follow :ref:`sgi-ip30`: established, observed, software
+expectation, inferred, approximation or unknown. The sources are the *Crossbow ASIC Specification*, revision
 12.0, 18 November 1996 (:src:`crossbow-asic-spec-12.0`; printed and PDF
 page numbers agree, and the page given is the PDF page), the *Origin2000
 Theory of Operations* (007-3439-002), SGI's *Hardware Quick-reference
@@ -162,23 +162,34 @@ slot on a big-endian host; this page uses the aligned offset.
      - established, spec PDF pages 92-93
    * - 0x0078
      - Widget 0 reset fence
-     - Revision 5 and later. Eight-bit mask, reset ``0xff``. An accepted
-       warm reset leaves a programmed fence as it was.
-     - established for existence and warm-reset retention on the
-       measured Octane2 (:ref:`sgi-xbow-measurements`)
+     - Revision 5 and later. Eight-bit mask: bit *n* lets a warm reset
+       from port 8+\ *n* reach the widget 0 core. Each fence decides for
+       its own destination. The model resets it to ``0xff``, passing every
+       source, and an accepted warm reset leaves a programmed fence as it
+       was.
+     - Bit meaning from :src:`xbridge-asic-spec-0.5 p. 81-82`, the XBridge's
+       Crossbow 2.0 half, so *inferred* for Crossbow revision 5. Existence
+       *established* on the measured Octane2 (:ref:`sgi-xbow-measurements`).
+       The reset value and retention across a warm reset are
+       *approximations*; the specification is silent on both.
    * - 0x0080 + 8 * link
      - Per-link reset fence
-     - Revision 5 and later. One eight-bit mask per link, reset ``0xff``.
-       These are separate from the per-link register sets below.
-     - established on the measured Octane2
+     - Revision 5 and later. One eight-bit mask per link, with the same
+       bit meaning for that link as destination. These are separate from
+       the per-link register sets below.
+     - *established* for the widget 11 link fence on the measured
+       Octane2; the other links are *inferred* from the same layout
+       (:src:`xbridge-asic-spec-0.5 p. 57`)
    * - 0x00c0, 0x00c8
      - Resource lock, lock clear
      - Revision 5 and later. A write to ``0x00c0`` is stored only while
        the lock reads zero; any write to ``0x00c8`` clears it. Both
-       offsets read the stored value with no side effect. Reset zero.
-     - existence and zero after power-on established on the measured
-       Octane2; the acquire and release rule is inferred from the
-       XBridge's crossbar, which implements the same two offsets
+       offsets read the stored value with no side effect. Eight bits are
+       stored. Reset zero.
+     - Existence and zero after power-on *established* on the measured
+       Octane2. The acquire and release rule is an *approximation*: the
+       model copies its own XBridge model's rule, and the Crossbow
+       behaviour is unknown.
 
 Below revision 5 the fence and lock offsets are reserved, and an access
 is the reserved-address error described above.
@@ -241,10 +252,11 @@ plugged in.
 Measurements
 ============
 
-.. _sgi-xbow-octane2-id:
-
 These reads come from the :ref:`sgi-measured-octane2`, in the PROM Command
-Monitor after the firmware had initialised the machine.
+Monitor after the firmware had initialised the machine. The chip reports
+revision code 5; the inventory prints ASIC revision 1.4.
+
+.. _sgi-xbow-octane2-id:
 
 .. list-table::
    :header-rows: 1
@@ -252,21 +264,24 @@ Monitor after the firmware had initialised the machine.
    * - Read
      - Width
      - Value
+     - When
      - What it shows
    * - Widget 0 identification, physical ``0x10000004``
      - 32-bit
      - ``0x50000001``
-     - Revision code 5 in bits 31:28; the inventory prints ASIC
-       revision 1.4.
-   * - Widget 0 fence ``0x0078`` and the widget 11 link fence, after
-       the PROM's own fenced warm reset
+     - PROM monitor
+     - Revision code 5 in bits 31:28.
+   * - Widget 0 fence ``0x0078`` and the widget 11 link fence
      - 32-bit
      - bit 3 clear in both
-     - The fences exist on revision 5, and the warm reset they gate does
-       not restore them.
-   * - Resource lock ``0x00c0`` after power-on
+     - PROM monitor, after the PROM's warm reset of widget 11
+     - The fences exist on revision 5. That bit 3 is clear after the
+       reset is consistent with the model's choice that a warm reset
+       leaves fences as programmed; the read alone does not show it.
+   * - Resource lock ``0x00c0``
      - 32-bit
      - zero
+     - PROM monitor after power-on
      - The lock exists on revision 5 and starts released.
 
 None of these is a cold-reset value of the chip.

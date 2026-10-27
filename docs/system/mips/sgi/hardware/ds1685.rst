@@ -8,7 +8,8 @@ DS1685 real-time clock and NVRAM (Octane clock)
 
 The DS1685 is the real-time clock with 242 bytes of battery-backed RAM on
 the Octane and Octane2 system boards. It sits on the IOC3's byte bus
-(:doc:`ioc3`) and also supplies the machine's power-off control. A published
+(:doc:`ioc3`). Linux uses it for the machine's power-off control, an
+*inferred* board function. A published
 Octane boot log reports a DS1687, the same die sealed with its crystal and
 cell. QEMU models the DS1685 die, programming model of Maxim document
 19-5215 revision 10/12, as ``hw/rtc/ds1685.c`` (QOM type ``ds1685``). The
@@ -39,10 +40,10 @@ Sources
   ``drivers/rtc/rtc-ds1685.c``, ``include/linux/rtc/ds1685.h``,
   ``drivers/mfd/ioc3.c``, ``arch/mips/pci/pci-xtalk-bridge.c`` and
   ``arch/mips/include/asm/sn/ioc3.h``.
-- OpenBSD, branch ``sgi-is-alive-at-7.9``: ``sys/arch/sgi/dev/dsrtc.c``,
-  ``dsrtcvar.h`` and ``power.c``, ``sys/dev/ic/ds1687reg.h`` and
-  ``sys/arch/sgi/pci/iocreg.h``. NetBSD ``sys/dev/ic/ds1687reg.h`` is a
-  third transcription of the register map.
+- OpenBSD, tree ``openbsd-sgi`` at
+  ``2df91d80c104636deeef8124252ddd5951b55fbf``:
+  ``sys/arch/sgi/dev/dsrtc.c``, ``dsrtcvar.h`` and ``power.c``,
+  ``sys/dev/ic/ds1687reg.h`` and ``sys/arch/sgi/pci/iocreg.h``.
 
 The drivers are software expectations, not hardware evidence.
 
@@ -81,10 +82,10 @@ byte-wide ports, *established* by Linux ``drivers/mfd/ioc3.c`` and OpenBSD
 
 Each select owns ``0x20000`` bytes of IOC3 address space. The model maps
 four bytes at the base of each, one device region per port, and answers on
-every byte position of that word. The Bridge moves a byte access to the
-byte position a big-endian cycle uses, so a driver's byte access to offset
-0 arrives at offset 3 (Linux does this, OpenBSD does not). A port that
-decoded only offset 0 would never be reached. Beyond the first four bytes
+every byte position of that word. In the model, OpenBSD's byte accesses
+reach offset 0 and Linux's reach offset 3, because Linux inverts the low
+two address bits of every byte access on this machine. A port that decoded
+only offset 0 would never be reached by Linux. Beyond the first four bytes
 the device decodes nothing. How far up its span the real select answers is
 *unknown*; the IOC3 byte-bus timing description or a trace of the PROM
 touching those windows would settle it.
@@ -164,7 +165,8 @@ column is what the model holds after realize and a first machine reset, an
      - Model number
      - ``71h``
      - read-only
-     - ``71h`` is the DS1685 and DS1687 :src:`maxim-ds1685-ds1687-rev-10-12 p. 19`.
+     - ``71h`` is the DS1685 and DS1687, *established*
+       :src:`maxim-ds1685-ds1687-rev-10-12 p. 19`.
    * - ``41h``-``47h``, bank 1
      - Serial number and CRC
      - ``00h``
@@ -229,8 +231,9 @@ just read, so a write that stored ``UIP`` would set it. Writes to registers C
 and D, and to the model number, serial bytes and CRC, are dropped with
 ``LOG_GUEST_ERROR``.
 
-Reading register C returns ``PF``, ``AF`` and ``UF`` and clears them, then
-reports ``IRQF`` as set while any enabled flag remains set
+A read of register C returns ``PF``, ``AF``, ``UF`` and ``IRQF`` as they
+stand, then clears ``PF``, ``AF`` and ``UF`` and recomputes the output.
+``IRQF`` reads one exactly while an enabled flag is set
 :src:`maxim-ds1685-ds1687-rev-10-12 p. 14`, *established*. The extended flags
 in register 4A are not cleared by a read. Software clears each by writing a
 zero, and may write a one to force the condition.
@@ -241,9 +244,10 @@ is refused. The next update cycle rewrites the byte.
 
 Bits 5 and 4 of register 4A are reserved on this part and the datasheet says
 they can be read and written with no effect
-:src:`maxim-ds1685-ds1687-rev-10-12 p. 21`. The model stores both and acts on
-neither. NetBSD names bit 5 as burst-mode enable. Burst mode belongs to the
-DS17x85 family and Linux compiles that definition out for the DS1685.
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. The model stores
+both and acts on neither. Linux defines bit 5 as burst-mode enable and
+compiles that definition out for the DS1685, because burst mode belongs to
+the DS17x85 family.
 
 .. _sgi-ds1685-time:
 
@@ -289,7 +293,7 @@ crystal for rate code ``n``. Code 0 is off and codes 1 and 2 behave as 8
 and 9 :src:`maxim-ds1685-ds1687-rev-10-12 p. 11, 16`, *established*. The flag
 is set regardless of ``PIE``. The daylight-saving enable ``DSE`` is stored, and
 setting it logs ``LOG_UNIMP``: the part's fixed pre-2007 United States rule
-is not applied :src:`maxim-ds1685-ds1687-rev-10-12 p. 12`.
+is not applied :src:`maxim-ds1685-ds1687-rev-10-12 p. 12`, *established*.
 
 Interrupts
 ==========
@@ -298,16 +302,16 @@ Six sources drive one level-sensitive output: ``PF``, ``AF`` and ``UF`` from
 register C, with their enables in register B, and ``RF``, ``WF`` and ``KF``
 from register 4A, with their enables in register 4B
 :src:`maxim-ds1685-ds1687-rev-10-12 p. 14`, *established*. The model
-recomputes the output after every register write, every flag change and
-reset. Flags set regardless of their enables. Enabling an already-set flag
+recomputes the output after every write that can change a flag or an
+enable, a register C read, every timer event, reset and a migration load. Flags set regardless of their enables. Enabling an already-set flag
 asserts the output at once.
 
 Only the update cycle sets ``UF``, ``AF`` and ``WF``. Only the periodic timer
 sets ``PF``. Nothing in the model sets ``KF`` (no kickstart pin) or ``RF`` (no
 ``RCLR`` pin). Software can write either to one.
 
-On the Octane the IOC3 does not connect the clock's output to anything, so the
-guest sees no interrupt from it. Linux asks the Bridge for interrupt pin 6
+In the model the IOC3 leaves the clock's output unconnected, so the guest
+sees no interrupt from it. Linux asks the Bridge for interrupt pin 6
 through slot 6 for the clock, and its power-button path takes a kickstart
 off that line. OpenBSD takes the Octane power button from a HEART interrupt
 and uses the clock only to read and clear ``KF``. Neither is evidence about
@@ -468,7 +472,7 @@ Migration
 =========
 
 The migration stream carries the index latch, all four register arrays, the
-counter state, the update and periodic deadlines and both timers (device
+counter state, the next update time, the periodic period and both timers (device
 version 2). A load recomputes the interrupt output. A load into a running
 machine and a migration that completes then write the backing stores.
 Migration works only between identical builds.
