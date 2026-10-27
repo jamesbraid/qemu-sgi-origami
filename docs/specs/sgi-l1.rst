@@ -6,8 +6,8 @@
 SGI L1 system controller (Origin 300)
 =====================================
 
-The L1 is the per-chassis system controller of the Origin 300, Origin 350
-and Fuel. QEMU models the node-facing side in ``hw/misc/sgi-l1.c``: a
+The L1 is the per-chassis system controller of the Origin 300, Fuel and
+the Origin 350 family (Origin 350, Onyx 350, Tezro and Onyx4). QEMU models the node-facing side in ``hw/misc/sgi-l1.c``: a
 16550-style UART in the Bedrock's Hub special space speaking a framed
 request and response protocol, which the PROM, IRIX and the other
 guests use to read board records, drive the display and carry the
