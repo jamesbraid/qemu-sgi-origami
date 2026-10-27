@@ -1274,12 +1274,14 @@ static inline void cpu_unaligned_access(CPUState *cpu, vaddr addr,
 /*
  * An I/O access that is not the last instruction of its block normally
  * rewinds the block and re-runs the access as a block of its own
- * (cpu_io_recompile()). Instruction counting needs that to count exactly,
- * and any access needs it if its handler can change the memory map, whose
- * TLB flush reaches this vCPU only once the block exits. A store to a
- * region that declared its writes posted
- * (memory_region_enable_posted_writes()) can do neither, so outside
- * instruction counting it completes in place. A fault it reports still
+ * (cpu_io_recompile()). Instruction counting needs that to count exactly.
+ * Any access needs it if its handler can change the memory map, because
+ * the TLB flush reaches this vCPU only once the block exits. A store whose
+ * terminal region declared its writes posted
+ * (memory_region_enable_posted_writes()) promises that its handler changes
+ * no map, touches no CPU state and does not leave the CPU loop. Outside
+ * instruction counting it therefore completes in place. An interrupt it
+ * raises is taken at the next block boundary. A fault it reports still
  * restores state precisely from @retaddr, as every helper fault does.
  */
 static MemoryRegionSection *
