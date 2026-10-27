@@ -3904,6 +3904,9 @@ static bool sgi_machine_instantiate_io7(
     if (record->has_ieee1394_absent && record->ieee1394_absent) {
         qdev_prop_set_bit(io7, "ieee1394-absent", true);
     }
+    if (record->has_fibre_channel && record->fibre_channel) {
+        qdev_prop_set_bit(io7, "fibre-channel-fitted", true);
+    }
     if (record->system_timekeeper) {
         const SGIModelSystemTimekeeper *clock = record->system_timekeeper;
 
@@ -8036,6 +8039,13 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
             error_setg(errp, "topology '%s' board '%s' leaves out an IEEE "
                        "1394 controller; only an io7 board has one", t->name,
                        board->id);
+            return false;
+        }
+        if (board->has_fibre_channel &&
+            board->preset != SGI_MODEL_IO_BOARD_PRESET_IO7) {
+            error_setg(errp, "topology '%s' board '%s' fits an I-brick Fibre "
+                       "Channel card; only an io7 board's head carries one",
+                       t->name, board->id);
             return false;
         }
         if (board->populated &&

@@ -1385,7 +1385,7 @@
       "console": "l1-uart",
       "default_cpu_model": "R12000",
       "default_topology": "origin3200",
-      "disk_bus": "none",
+      "disk_bus": "scsi.0",
       "install_media": [
         "netboot"
       ],
@@ -1402,7 +1402,7 @@
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 3200",
-    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. The C-brick's board-identification word, FPU identification and reset mode are model choices recorded with their values, and the Fibre Channel card is not built."
+    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. The C-brick's board-identification word, FPU identification and reset mode are model choices recorded with their values. The Fibre Channel card is fitted at head F device 1; no internal disk is, so disks join its loop only as a launcher attaches them."
   },
   "model_version": 1,
   "open_questions": [],

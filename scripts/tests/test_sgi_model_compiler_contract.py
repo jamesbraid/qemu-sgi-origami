@@ -4406,9 +4406,12 @@ class XioCableCompileTests(unittest.TestCase):
         self.assertEqual(
             (board["id"], board["board_kind"], board["module_index"],
              board["slot_index"], board["mac_source"],
-             board["ioc3_subsystem_id"], board["ieee1394_absent"]),
-            ("ibrick-xbridge-bridge-f", "IO7", 2, 1, "none", 0xffff, True))
-        self.assertEqual(board["pci"], [{"kind": "IOC3", "ethernet": True},
+             board["ioc3_subsystem_id"], board["ieee1394_absent"],
+             board["fibre_channel"]),
+            ("ibrick-xbridge-bridge-f", "IO7", 2, 1, "none", 0xffff, True,
+             True))
+        self.assertEqual(board["pci"], [{"kind": "QLOGIC_ISP2200"},
+                                        {"kind": "IOC3", "ethernet": True},
                                         {"kind": "LUCENT_OHCI"}])
         self.assertIsNone(board["ioc3_serial"])
         emitted, = _render_topology(entry, "origin3200")["io-boards"]
@@ -4416,6 +4419,7 @@ class XioCableCompileTests(unittest.TestCase):
         self.assertEqual(emitted["carrier"], "machine-placed")
         self.assertEqual(emitted["attachment"], 1)
         self.assertTrue(emitted["ieee1394-absent"])
+        self.assertTrue(emitted["fibre-channel"])
         for field in ("pci-functions", "ioc3-serial", "part", "revision",
                       "serial"):
             self.assertNotIn(field, emitted)
@@ -4427,7 +4431,51 @@ class XioCableCompileTests(unittest.TestCase):
         board, = compile_model(model)["io_boards"]
         self.assertNotIn("ieee1394_absent", board)
         self.assertEqual([item["kind"] for item in board["pci"]],
-                         ["IOC3", "LUCENT_OHCI", "TI_TSB12LV22"])
+                         ["QLOGIC_ISP2200", "IOC3", "LUCENT_OHCI",
+                          "TI_TSB12LV22"])
+
+    def test_ibrick_fibre_channel_loop_is_an_fc_loop_adapter(self):
+        from sgi_model.model_emit import _scsi_adapters_for
+        entry = compile_model(_origin3200_fixture(ibrick_io=True))
+        adapter, = _scsi_adapters_for(entry)
+        self.assertEqual((adapter["type"], adapter["bus"]),
+                         ("fc-loop", "scsi.0"))
+        self.assertEqual(adapter["targets"], list(range(0, 0x7e)))
+
+    def test_ibrick_without_fibre_channel_fits_none(self):
+        from sgi_model.model_emit import _render_topology
+        model = _origin3200_fixture(ibrick_io=True)
+        model["connections"] = [item for item in model["connections"]
+                                if item["component"] != "ibrick-fibre-channel"]
+        model["components"] = [item for item in model["components"]
+                               if item["id"] != "ibrick-fibre-channel"]
+        entry = compile_model(model)
+        board, = entry["io_boards"]
+        self.assertNotIn("fibre_channel", board)
+        emitted, = _render_topology(entry, "origin3200")["io-boards"]
+        self.assertNotIn("fibre-channel", emitted)
+
+    def test_ibrick_fibre_channel_stays_at_device_1(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        connection = next(item for item in model["connections"]
+                          if item["component"] == "ibrick-fibre-channel")
+        connection["pci_device"] = 2
+        with self.assertRaisesRegex(
+                CompileError,
+                "I/O brick head 'ibrick-xbridge-bridge-f' carries a Fibre "
+                r"Channel card at device \[2\]; the I-brick's is at device 1"):
+            compile_model(model)
+
+    def test_ibrick_fibre_channel_needs_the_io7(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        kept = {"ibrick-ioc3", "ibrick-usb", "ibrick-firewire"}
+        model["connections"] = [item for item in model["connections"]
+                                if item["component"] not in kept]
+        with self.assertRaisesRegex(
+                CompileError,
+                "I/O brick head 'ibrick-xbridge-bridge-f' carries a Fibre "
+                "Channel card without the IO7 it shares a head with"):
+            compile_model(model)
 
     def test_brick_head_population_needs_a_preset(self):
         model = _origin3200_fixture(ibrick_io=True)
