@@ -23,7 +23,7 @@ Each family's model covers its topologies, CPUs, memory sizes and boards.
 - **Origin 300, Fuel** (IP35): Boots IRIX 6.5 with VPro graphics.
   [Spec](docs/system/mips/sgi/ip35.rst), [Bedrock](docs/system/mips/sgi/hardware/bedrock.rst).
 - **Origin 350, Onyx 350, Tezro, Onyx4** (IP53): Boots IRIX 6.5 with VPro graphics.
-  [Spec](docs/system/mips/sgi/ip35.rst).
+  [Spec](docs/system/mips/sgi/ip53.rst).
 - **O2** (IP32): WIP - boots IRIX 6.5.
 
 Graphics boards are IMPACT (MGRAS), InfiniteReality (KONA), VPro (Odyssey)
