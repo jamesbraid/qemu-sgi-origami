@@ -809,7 +809,7 @@
       "nodes": 1,
       "provenance": "derived",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
+        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-products",
         "web:nekonomicon-16726611 two-CPU Origin 300 inventory, IP45_2CPU, slices A and C",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
@@ -821,7 +821,7 @@
       "min_nodes": 1,
       "provenance": "derived",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
+        "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-products",
         "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB",
         "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
       ],
@@ -1249,7 +1249,7 @@
           "provenance": "derived",
           "sources": [
             "qemu:hw/mips/sgi/sn1-node.c",
-            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology",
+            "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory",
             "qemu:hw/mips/sgi/sn-machine.c"
           ]
         }

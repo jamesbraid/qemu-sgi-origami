@@ -14,12 +14,12 @@ layer:
     max_nodes: 1
     supported_cpu_populations: [[2], [4]]
     provenance: derived
-    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-products, 007-4365-002, 108-0263-004]
   population:
     nodes: 1
     cpus_per_node: [2]
     provenance: derived
-    sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, owner-2cpu, 007-4365-002, 108-0263-004]
+    sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-products, owner-2cpu, 007-4365-002, 108-0263-004]
   cpu_selection:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
@@ -62,7 +62,7 @@ layer:
             initiator_region: 0
             installed_bank_mask: {mode: fixed, value: 12}
             provenance: derived
-            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology, qemu:hw/mips/sgi/sn-machine.c]
+            sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:
           compute-l1:

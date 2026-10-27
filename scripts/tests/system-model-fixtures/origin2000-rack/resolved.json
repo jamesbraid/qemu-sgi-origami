@@ -5121,7 +5121,7 @@
       "sources": [
         "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
         "web:origin-onyx2-quick-reference-booklet printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly",
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-ip27-processors records the 180 MHz 2 MiB and 225 MHz variants and their evidence"
       ],
       "variants": [
         {
@@ -5223,7 +5223,7 @@
       "part": "r12000",
       "provenance": "derived",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-origin200-processors records the module and its evidence"
+        "qemu:docs/system/mips/sgi/ip27.rst#sgi-ip27-processors records the module and its evidence"
       ],
       "variants": [
         {
