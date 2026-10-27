@@ -1417,6 +1417,13 @@ static bool sgi_machine_controller_module_owned(const SGIModelController *c)
     return c->has_owner && c->owner == SGI_MODEL_CONTROLLER_OWNER_MODULE;
 }
 
+/* A module-owned L1 with the Cx-brick profile: one L1 for its boards. */
+static bool sgi_machine_controller_cx(const SGIModelController *c)
+{
+    return c->has_profile &&
+           c->profile == SGI_MODEL_MODULE_L1_PROFILE_CX_BRICK;
+}
+
 static bool sgi_machine_node_is_memory(const SGIModelNode *node)
 {
     return node->has_role && node->role == SGI_MODEL_NODE_ROLE_MEMORY;
@@ -1459,6 +1466,49 @@ static bool sgi_machine_validate_memory_node(const SGIModelTopology *t,
         error_setg(errp, "topology '%s' memory node '%s' has no populated "
                    "memory bank", t->name, n->id);
         return false;
+    }
+    return true;
+}
+
+/*
+ * A Cx-brick's L1 serves one to four IP53 node boards, each on the link
+ * its slot names, so the slots must be distinct and 0 to 3.
+ */
+static bool sgi_machine_validate_cx_l1(const SGIModelTopology *t,
+                                       const SGIModelController *c,
+                                       const SGIModelModule *m, Error **errp)
+{
+    g_autofree const SGIModelNode **nodes = NULL;
+    const uint32List *entry;
+    size_t node_count;
+    unsigned int seen = 0;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    if (QAPI_LIST_LENGTH(m->nodes) > SGI_L1_CX_BOARDS) {
+        error_setg(errp, "topology '%s' controller '%s' is a Cx-brick L1 for "
+                   "module '%s', which lists %zu nodes; it serves one to "
+                   "four", t->name, c->id, m->id,
+                   (size_t)QAPI_LIST_LENGTH(m->nodes));
+        return false;
+    }
+    for (entry = m->nodes; entry; entry = entry->next) {
+        const SGIModelNode *n = entry->value < node_count ?
+                                nodes[entry->value] : NULL;
+
+        if (!n || !n->has_board_kind ||
+            n->board_kind != SGI_MODEL_BOARD_KIND_IP53) {
+            error_setg(errp, "topology '%s' controller '%s' is a Cx-brick "
+                       "L1; module '%s' lists a node that is not an IP53 "
+                       "board", t->name, c->id, m->id);
+            return false;
+        }
+        if (n->slot >= SGI_L1_CX_BOARDS || (seen & (1u << n->slot))) {
+            error_setg(errp, "topology '%s' Cx-brick node '%s' has slot %u; "
+                       "each board takes a distinct slot 0 to 3", t->name,
+                       n->id, n->slot);
+            return false;
+        }
+        seen |= 1u << n->slot;
     }
     return true;
 }
@@ -1525,6 +1575,13 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
         const SGIModelModule *m;
         size_t nodes;
 
+        if (sgi_machine_controller_cx(c) &&
+            !sgi_machine_controller_module_owned(c)) {
+            error_setg(errp, "topology '%s' controller '%s' has the Cx-brick "
+                       "L1 profile but is not owned by its module", t->name,
+                       c->id);
+            return false;
+        }
         if (!sgi_machine_controller_module_owned(c)) {
             continue;
         }
@@ -1543,9 +1600,15 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
                        t->name, c->id, m->id);
             return false;
         }
+        if (sgi_machine_controller_cx(c)) {
+            if (!sgi_machine_validate_cx_l1(t, c, m, errp)) {
+                return false;
+            }
+            continue;
+        }
         /*
-         * How several Bedrocks reach one L1, and how its serial lines
-         * number, is unknown.
+         * Only the Cx-brick profile says how several Bedrocks reach one
+         * L1; for any other module it is unknown.
          */
         if (nodes > 1) {
             error_setg(errp, "topology '%s' controller '%s' is owned by "
@@ -4433,9 +4496,56 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
 }
 
 /*
- * Create each module-owned L1 unrealized as /machine/module<M>/l1 and
- * hand it to the module's one node, which configures and realizes it as
- * it would its own. Validation left only modules with exactly one node.
+ * Configure and realize a Cx-brick's L1 for its fitted boards, then hand
+ * it to each node on the link its slot names. The brick's one console is
+ * the serial line of the module's first node; the other nodes' L1 lines
+ * stay unused. No type character is set: the Cx-brick's is unknown.
+ */
+static bool sgi_machine_supply_cx_l1(SGIMachineState *s,
+                                     const SGIModelTopology *t,
+                                     const SGIModelModule *m,
+                                     DeviceState *l1, Error **errp)
+{
+    g_autofree const SGIModelNode **nodes = NULL;
+    const uint32List *entry;
+    size_t node_count;
+    unsigned int boards = 0, compute = 0;
+    Chardev *console;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (entry = m->nodes; entry; entry = entry->next) {
+        const SGIModelNode *n = nodes[entry->value];
+
+        boards |= 1u << n->slot;
+        if (!sgi_machine_node_is_memory(n)) {
+            compute |= 1u << n->slot;
+        }
+    }
+    qdev_prop_set_string(l1, "brick-type", "cxbrick");
+    qdev_prop_set_uint32(l1, "boards", boards);
+    qdev_prop_set_uint32(l1, "compute-boards", compute);
+    sgi_machine_set_module_serial(s, m->controller_index, l1);
+    console = serial_hd(sgi_sn1_serial_line(m->nodes->value, 0));
+    if (console) {
+        qdev_prop_set_chr(l1, "chardev", console);
+    }
+    if (!qdev_realize(l1, NULL, errp)) {
+        return false;
+    }
+    for (entry = m->nodes; entry; entry = entry->next) {
+        if (!sn1_node_supply_l1(SN1_NODE(s->bedrock_nodes[entry->value]), l1,
+                                nodes[entry->value]->slot, errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Create each module-owned L1 as /machine/module<M>/l1. A one-node
+ * module's goes unrealized to its node, which configures and realizes it
+ * as it would its own. A Cx-brick's is built here and shared by its
+ * nodes. Validation left only these two shapes.
  */
 static bool sgi_machine_supply_module_l1s(SGIMachineState *s,
                                           const SGIModelTopology *t,
@@ -4458,16 +4568,22 @@ static bool sgi_machine_supply_module_l1s(SGIMachineState *s,
         }
         g_assert(c->module_index < module_count);
         m = modules[c->module_index];
-        g_assert(QAPI_LIST_LENGTH(m->nodes) == 1 &&
-                 m->nodes->value < s->num_nodes);
+        g_assert(m->nodes && m->nodes->value < s->num_nodes);
         module_name = g_strdup_printf("module%u", c->module_index);
         container = object_resolve_path_component(OBJECT(s), module_name);
         g_assert(container);
         l1 = qdev_new(TYPE_SGI_L1);
         object_property_add_child(container, "l1", OBJECT(l1));
         object_unref(OBJECT(l1));
+        if (sgi_machine_controller_cx(c)) {
+            if (!sgi_machine_supply_cx_l1(s, t, m, l1, errp)) {
+                return false;
+            }
+            continue;
+        }
+        g_assert(QAPI_LIST_LENGTH(m->nodes) == 1);
         if (!sn1_node_supply_l1(SN1_NODE(s->bedrock_nodes[m->nodes->value]),
-                                l1, errp)) {
+                                l1, 0, errp)) {
             return false;
         }
     }
@@ -7144,6 +7260,12 @@ static bool sgi_machine_build_sn1_controllers(SGIMachineState *s,
             return false;
         }
         owner = modules[node->module_index]->controller_index;
+        /* A Cx-brick's nodes share one controller. */
+        if (owner >= 0 && owner < s->controller_count &&
+            s->controllers[owner] &&
+            s->controllers[owner] == SN1_NODE(s->bedrock_nodes[index])->l1) {
+            continue;
+        }
         if (owner < 0 || owner >= s->controller_count ||
             s->controllers[owner]) {
             error_setg(errp, "compute L1 needs unique module-owned controller");

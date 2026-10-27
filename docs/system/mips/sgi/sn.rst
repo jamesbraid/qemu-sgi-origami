@@ -493,8 +493,10 @@ The composition cables an I-brick to node board 0's XIO connector at
 its port A, a choice of the composition. It is a reference only and
 never compiles, because these are unknown: which router port each node
 board and each connector uses, the brick's NASIDs and widget numbers,
-the L1's type character and how one L1 serves four Bedrocks, and the
-processors' clock and part.
+the L1's type character and the processors' clock and part. The builder
+can build the brick's one L1 for hand-built topologies through the
+controller's ``profile: cx-brick``; the composition does not yet carry
+that record.
 
 .. _sgi-sn-family-origin350:
 
@@ -1471,10 +1473,14 @@ A controller with ``owner: module`` is built once as
 ``/machine/module<M>/l1`` and linked into the module's node through the
 node's ``l1`` link, in place of the node's own ``/machine/node<N>/l1``.
 The node configures it exactly as it would its own, so the guest sees
-the same L1. Only a module with one node may own its L1: how several
-Bedrocks reach one L1, as in a Cx-brick, and how its serial lines
-number, is unknown, so a module-owned L1 shared by several nodes is
-refused.
+the same L1. A module with several nodes may own its L1 only with
+``profile: cx-brick``: the machine builds the :ref:`Cx-brick L1
+<sgi-l1-cxbrick>` itself for one to four IP53 nodes in distinct slots 0
+to 3, and each node adds its own UART window on the link its slot names.
+A node with the memory role is a board without processors. The brick's
+console is the first listed node's L1 serial line. Every other
+module-owned L1 shared by several nodes is refused, because how several
+Bedrocks reach one L1 is unknown outside that profile.
 
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements -- a Hub's or Bedrock's I/O interface, each Crossbow or XBridge

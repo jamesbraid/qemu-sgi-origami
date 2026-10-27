@@ -9688,6 +9688,140 @@ static void test_rbrick_nodes_reach_remote_memory(const void *data)
     g_unlink(prom);
 }
 
+/* The two IP53 boards of the Cx-brick fixture, one L1 for both. */
+static QTestState *cx_l1_start(const char *variant, char **files)
+{
+    files[0] = create_sized_temp_file("sn-builder-cx-l1-ram-XXXXXX",
+                                      48 * MiB);
+    files[1] = create_sized_temp_file("sn-builder-cx-l1-prom-XXXXXX",
+                                      0x100000);
+    files[2] = create_sized_temp_file("sn-builder-cx-l1-data-XXXXXX", 0x800);
+    files[3] = create_sized_temp_file("sn-builder-cx-l1-clock-XXXXXX", 16);
+    return qtest_initf(
+        "-object memory-backend-file,id=memory,mem-path=%s,size=48M,share=on "
+        "-M sn-builder-bedrock-test,construction-fault=ip53-cx-l1%s,"
+        "memory-backend=memory "
+        "-m 48M -smp %s -cpu R14000 -bios %s "
+        "-drive if=none,id=sgi-ds1742-data-fixture-io9,file=%s,format=raw "
+        "-drive if=none,id=sgi-ds1742-clock-fixture-io9,file=%s,format=raw "
+        "-nodefaults -display none -S", files[0], variant,
+        strcmp(variant, "-memory") ? "2" : "1", files[1], files[2],
+        files[3]);
+}
+
+static void cx_l1_stop(QTestState *qts, char **files)
+{
+    qtest_quit(qts);
+    for (unsigned int i = 0; i < 4; i++) {
+        g_unlink(files[i]);
+        g_free(files[i]);
+    }
+}
+
+/* 0x000e through @cpu's own node: the position its L1 link answers. */
+static uint32_t cx_l1_position(QTestState *qts, unsigned int cpu,
+                               unsigned int other)
+{
+    static const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 0xe, 0 };
+    ModuleL1Uart uart = { qts, cpu };
+    SGIL1TestIO io = { &uart, module_l1_uart_read, module_l1_uart_write };
+    uint8_t reply[32];
+
+    sgi_l1_test_send_io(&io, request, sizeof(request), false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(&io, reply, sizeof(reply)), ==,
+                     11);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    /* The other node's window has nothing waiting. */
+    g_assert_cmphex(ip53_memory_readq_cpu(qts, other, MODULE_L1_UART + 0x28),
+                    ==, 0x60);
+    return ldl_be_p(reply + 7);
+}
+
+/*
+ * A Cx-brick's L1 is built once as /machine/module0/l1 and linked from both
+ * of its nodes, boards 0 and 2. Each node adds its own UART window on its
+ * board's link, and a request through either node's processor is answered
+ * through that node: 0x000e answers the board number.
+ */
+static void test_cx_l1_shared_by_nodes(void)
+{
+    char *files[4];
+    QTestState *qts = cx_l1_start("", files);
+    g_autofree char *in_module = qom_child_type(qts, "/machine/module0",
+                                                "l1");
+    g_autofree char *on_node0 = qom_child_type(qts, "/machine/node0", "l1");
+    g_autofree char *on_node1 = qom_child_type(qts, "/machine/node1", "l1");
+    g_autofree char *linked0 = qom_get_str(qts, "/machine/node0", "l1");
+    g_autofree char *linked1 = qom_get_str(qts, "/machine/node1", "l1");
+    g_autofree char *profile = qom_get_str(qts, "/machine/module0/l1",
+                                           "brick-type");
+
+    g_assert_cmpstr(in_module, ==, "sgi-l1");
+    g_assert_null(on_node0);
+    g_assert_null(on_node1);
+    g_assert_cmpstr(linked0, ==, "/machine/module0/l1");
+    g_assert_cmpstr(linked1, ==, "/machine/module0/l1");
+    g_assert_cmpstr(profile, ==, "cxbrick");
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1", "boards"), ==,
+                     0x5);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
+                                  "compute-boards"), ==, 0x5);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node0/l1-uart",
+                                  "transport-index"), ==, 0);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/l1-uart",
+                                  "transport-index"), ==, 2);
+    g_assert_cmpuint(cx_l1_position(qts, 0, 1), ==, 0);
+    g_assert_cmpuint(cx_l1_position(qts, 1, 0), ==, 2);
+    cx_l1_stop(qts, files);
+}
+
+/* A memory-only board keeps its link, as a board without processors. */
+static void test_cx_l1_memory_board(void)
+{
+    char *files[4];
+    QTestState *qts = cx_l1_start("-memory", files);
+
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1", "boards"), ==,
+                     0x5);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module0/l1",
+                                  "compute-boards"), ==, 0x1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/node1/l1-uart",
+                                  "transport-index"), ==, 2);
+    cx_l1_stop(qts, files);
+}
+
+/* The Cx-brick shapes the builder refuses before building anything. */
+static void test_cx_l1_refusals(void)
+{
+    static const struct {
+        const char *variant;
+        const char *message;
+    } cases[] = {
+        { "-node-owned", "controller 'l1-n0' has the Cx-brick L1 profile but "
+          "is not owned by its module" },
+        { "-slot-reused", "Cx-brick node 'n1' has slot 0; each board takes a "
+          "distinct slot 0 to 3" },
+        { "-slot-4", "Cx-brick node 'n1' has slot 4; each board takes a "
+          "distinct slot 0 to 3" },
+        { "-not-ip53", "module 'module-n0' lists a node that is not an IP53 "
+          "board" },
+    };
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "sn-builder-bedrock-test,construction-fault=ip53-cx-l1%s",
+            cases[i].variant);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-m", "48M",
+            "-smp", "2", "-cpu", "R14000", "-bios", "/dev/null",
+            "-nodefaults", "-qtest", "stdio", "-accel", "qtest",
+            "-display", "none", "-S", NULL
+        };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+}
+
 /* A board Bridge's interrupt enable, the low word of its doubleword. */
 #define NBRICK_INT_ENABLE 0x10c
 
@@ -12411,6 +12545,11 @@ int main(int argc, char **argv)
                         test_rbrick_nodes_reach_remote_memory);
     qtest_add_func("sn/builder/cbrick/module-owned-l1",
                    test_module_owned_l1_for_one_node);
+    qtest_add_func("sn/builder/cxbrick/l1-shared-by-nodes",
+                   test_cx_l1_shared_by_nodes);
+    qtest_add_func("sn/builder/cxbrick/l1-memory-board",
+                   test_cx_l1_memory_board);
+    qtest_add_func("sn/builder/cxbrick/l1-refusals", test_cx_l1_refusals);
     qtest_add_func("sn/builder/cbrick/io7-head-f", test_cbrick_io7_head_f);
     for (size_t i = 0; i < ARRAY_SIZE(cbrick_refusal_cases); i++) {
         const char *fault = strstr(cbrick_refusal_cases[i].machine,

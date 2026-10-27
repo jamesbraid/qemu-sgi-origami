@@ -157,6 +157,11 @@ typedef struct SN1NodeState {
      * (sn1_node_supply_l1()); NULL when the node builds its own.
      */
     DeviceState *supplied_l1;
+    /*
+     * The L1 link this node's UART window takes: its board number on a
+     * Cx-brick's shared L1, otherwise 0.
+     */
+    unsigned int l1_link;
     DeviceState *bedrock;
     DeviceState *xbridge;
     DeviceState *boot_flash;
@@ -316,11 +321,6 @@ bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
                              Error **errp);
 
 /*
- * Hand a node the unrealized L1 its module owns, before the node
- * realizes. The node configures and realizes it in place of building
- * its own, and adds its "l1" link.
- */
-/*
  * Supply an IP35 node with the middle PIC of an I/O enclosure, unrealized,
  * before the node realizes; the node links it, realizes it and decodes
  * every widget number through its host port. At most one of this and
@@ -328,7 +328,16 @@ bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
  */
 bool sn1_node_supply_pic_crossbar(SN1NodeState *node, DeviceState *pic,
                                   Error **errp);
-bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1, Error **errp);
+
+/*
+ * Hand a node the L1 its module owns, before the node realizes, and add
+ * its "l1" link. An unrealized L1 goes on link 0, and the node configures
+ * and realizes it in place of building its own. A realized one is shared
+ * with the module's other nodes; the node adds only its UART window, on
+ * @link.
+ */
+bool sn1_node_supply_l1(SN1NodeState *node, DeviceState *l1,
+                        unsigned int link, Error **errp);
 
 /* The node-owned Bedrock I/O endpoint, available after node realization. */
 SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node);
