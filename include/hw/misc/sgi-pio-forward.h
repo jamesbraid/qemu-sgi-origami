@@ -17,6 +17,12 @@
  * access it cannot serve that way (RAM, an IOMMU, a page the topology
  * splits, an access the region would split, or no BQL) goes through
  * address_space_read() or address_space_write() as before.
+ *
+ * A caller must be inside an RCU read section, as every vCPU access and
+ * every outer address_space_*() call is. A handler that commits a topology
+ * change while its own access is being dispatched drops the cache's
+ * reference to its region, which then stays alive only through the
+ * superseded flat view that section keeps.
  */
 
 #ifndef HW_MISC_SGI_PIO_FORWARD_H
