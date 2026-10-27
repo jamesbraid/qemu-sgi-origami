@@ -196,7 +196,8 @@ static void test_interrupt_reaches_heart(gconstpointer data)
  * and on: the drawn pixels, the board's interrupt flags and the sentinel
  * must match, and only the unposted run may have made the extra
  * single-store blocks. Under instruction counting the posted pages make
- * them too.
+ * them too. A load from a FIFO page in the middle of the posted block still
+ * ends its block: only stores are posted.
  */
 #define OCTANE_RAM 0x20000000ULL
 #define SENTINEL 0x1357
@@ -225,7 +226,8 @@ static uint64_t tb_count(QTestState *qts)
     return g_ascii_strtoull(line + strlen("TB count"), NULL, 10);
 }
 
-static void posted_run(bool posted, bool icount, PostedRun *run)
+static void posted_run(bool posted, bool icount, bool load,
+                       PostedRun *run)
 {
     g_autofree char *dir = g_dir_make_tmp("vpro-posted-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "prom.bin", NULL);
@@ -247,6 +249,9 @@ static void posted_run(bool posted, bool icount, PostedRun *run)
         EMIT(0x3c0c0000 | (posted_words[i] >> 16));     /* lui t4 */
         EMIT(0x358c0000 | (posted_words[i] & 0xffff));  /* ori t4, t4 */
         EMIT(0xad6c0000);                               /* sw t4, 0(t3) */
+        if (load && i == G_N_ELEMENTS(posted_words) / 2) {
+            EMIT(0x8d6d0008);                       /* lw t5, 8(t3) */
+        }
     }
     EMIT(0x340a0000 | SENTINEL);                /* t2 = SENTINEL */
     EMIT(0xad0a0000);                           /* sw t2, 0(t0) */
@@ -290,13 +295,18 @@ static void test_posted_fifo(void)
 {
     PostedRun unposted, posted, counted;
 
-    posted_run(false, false, &unposted);
-    posted_run(true, false, &posted);
+    PostedRun loaded;
+
+    posted_run(false, false, false, &unposted);
+    posted_run(true, false, false, &posted);
     /* Instruction counting needs every I/O access to end its block. */
-    posted_run(true, true, &counted);
+    posted_run(true, true, false, &counted);
+    /* A load from a FIFO page still ends its block when stores do not. */
+    posted_run(true, false, true, &loaded);
     g_test_message("pixels %s, flags 0x%x, blocks %" PRIu64 " unposted, %"
-                   PRIu64 " posted", posted.pixels, posted.intr_flags,
-                   unposted.tbs, posted.tbs);
+                   PRIu64 " posted, %" PRIu64 " posted with a load",
+                   posted.pixels, posted.intr_flags, unposted.tbs,
+                   posted.tbs, loaded.tbs);
     g_assert_cmpstr(posted.pixels, ==, unposted.pixels);
     g_assert_cmpuint(posted.intr_flags, ==, unposted.intr_flags);
     /* Every unposted store but the block's last ends a block of its own. */
@@ -305,9 +315,12 @@ static void test_posted_fifo(void)
     g_assert_cmpstr(counted.pixels, ==, unposted.pixels);
     g_assert_cmpuint(counted.tbs, >=,
                      posted.tbs + G_N_ELEMENTS(posted_words) - 1);
+    g_assert_cmpstr(loaded.pixels, ==, unposted.pixels);
+    g_assert_cmpuint(loaded.tbs, >, posted.tbs);
     g_free(unposted.pixels);
     g_free(posted.pixels);
     g_free(counted.pixels);
+    g_free(loaded.pixels);
 }
 
 int main(int argc, char **argv)
