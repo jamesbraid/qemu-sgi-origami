@@ -18,6 +18,7 @@ chip or board each, with the evidence behind every modelled behaviour.
    ip30
    ip35
    prom-image
+   references
 
 Hardware
 --------
