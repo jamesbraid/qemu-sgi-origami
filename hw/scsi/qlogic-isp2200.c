@@ -22,6 +22,7 @@
 #include "qemu/timer.h"
 #include "hw/core/hotplug.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/pci-64bit.h"
 #include "hw/scsi/scsi.h"
 #include "migration/qemu-file-types.h"
 #include "migration/qemu-file.h"
@@ -3128,6 +3129,7 @@ static const TypeInfo isp2200_info = {
     .class_init = isp2200_class_init,
     .interfaces = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+        { INTERFACE_PCI_64BIT_DEVICE },
         { TYPE_HOTPLUG_HANDLER },
         { },
     },

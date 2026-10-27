@@ -4029,6 +4029,38 @@ static bool sgi_machine_instantiate_io_board(
 }
 
 /*
+ * An I-brick's Fibre Channel card is a 64-bit adapter, and the stock
+ * PROM lays its control block out for the doubleword reversal a REQ64#
+ * slot gives, so head F's slot for the card drives REQ64#. Inferred from
+ * that PROM behaviour alone: no held document gives the slot's wiring.
+ */
+static void sgi_machine_set_enclosure_req64(const SGIModelTopology *t,
+                                            size_t crossbar_index,
+                                            DeviceState *xbridge)
+{
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t board_count, attachment_count, b;
+
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    for (b = 0; b < board_count; b++) {
+        const SGIModelIoBoard *board = boards[b];
+
+        if (board->populated &&
+            board->preset == SGI_MODEL_IO_BOARD_PRESET_IO7 &&
+            board->has_fibre_channel && board->fibre_channel &&
+            board->attachment < attachment_count &&
+            attachments[board->attachment]->crossbar_index ==
+            (int64_t)crossbar_index) {
+            qdev_prop_set_uint8(xbridge, "req64-slots-f",
+                                BIT(SGI_IBRICK_FC_DEVICE));
+        }
+    }
+}
+
+/*
  * Create each I/O brick's XBridge in its brick's module and hand it to
  * the node whose XIO cable reaches it. The chip is left unrealized: the
  * Bedrock's widget links are fixed when the Bedrock realizes, inside node
@@ -4110,6 +4142,7 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
         }
         qdev_prop_set_uint8(xbridge, "host-port", port);
         qdev_prop_set_uint8(xbridge, "xio-port", port == 0xa ? 0xb : 0xa);
+        sgi_machine_set_enclosure_req64(t, i, xbridge);
         prefix = g_strdup_printf("%s-", modules[record->module_index]->id);
         qdev_prop_set_string(xbridge, "bus-prefix", prefix);
         if (!sn1_node_supply_xbridge(SN1_NODE(s->bedrock_nodes[node]),

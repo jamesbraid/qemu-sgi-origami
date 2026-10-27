@@ -9662,6 +9662,8 @@ static void test_origin3200_io7_without_ieee1394(void)
 #define ISP2200_HCCR_SET_HOST 0x5000
 #define ISP2200_HCCR_CLEAR_RISC 0x7000
 #define ISP2200_MBOX_NOP 0x0000
+#define ISP2200_MBOX_READ_RAM_WORD 0x0005
+#define ISP2200_MBOX_LOAD_RAM 0x0009
 #define ISP2200_MBOX_COMPLETE 0x4000
 
 static void origin3200_fc_writew(QTestState *qts, unsigned int offset,
@@ -9718,6 +9720,71 @@ static void test_origin3200_fibre_channel_card(void)
     origin3200_fc_writew(qts, ISP2200_REG_HCCR, ISP2200_HCCR_CLEAR_RISC);
     origin3200_fc_writew(qts, ISP2200_REG_SEMAPHORE, 0);
     g_assert_cmpuint(origin3200_head_f_pin(qts, ORIGIN3200_FC_DEVICE), ==, 0);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+static uint16_t origin3200_fc_mailbox(QTestState *qts, const uint16_t *in,
+                                      unsigned int count, unsigned int out)
+{
+    uint16_t value;
+    unsigned int i;
+
+    for (i = 0; i < count; i++) {
+        origin3200_fc_writew(qts, ISP2200_REG_MAILBOX0 + i * 2, in[i]);
+    }
+    origin3200_fc_writew(qts, ISP2200_REG_HCCR, ISP2200_HCCR_SET_HOST);
+    g_assert_cmphex(origin3200_fc_readw(qts, ISP2200_REG_MAILBOX0), ==,
+                    ISP2200_MBOX_COMPLETE);
+    value = origin3200_fc_readw(qts, ISP2200_REG_MAILBOX0 + out * 2);
+    origin3200_fc_writew(qts, ISP2200_REG_HCCR, ISP2200_HCCR_CLEAR_RISC);
+    origin3200_fc_writew(qts, ISP2200_REG_SEMAPHORE, 0);
+    return value;
+}
+
+/*
+ * The card runs 64-bit data phases in its slot, so a DMA read through
+ * the 64-bit direct window with the swap bit clear reverses each aligned
+ * doubleword of fabric memory: the stock PROM's control block depends on
+ * it. With 32-bit phases the words would reverse in four bytes instead.
+ */
+static void test_origin3200_fibre_channel_doubleword_dma(void)
+{
+    static const uint8_t bytes[8] = { 0x11, 0x22, 0x33, 0x44,
+                                      0x55, 0x66, 0x77, 0x88 };
+    static const uint16_t words[4] = { 0x7788, 0x5566, 0x3344, 0x1122 };
+    const uint64_t memory = 0x100000;
+    /* The first locational bank, enabled by the memory configuration. */
+    const uint64_t md_config = CBRICK_IO_SPACE + UINT64_C(0x1000000) +
+                               UINT64_C(0x780008);
+    /* Widget a, the host port: a 64-bit window address, swap bit clear. */
+    const uint64_t window = (UINT64_C(0xa) << 60) | memory;
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    uint64_t config = CBRICK_CONFIG(15, ORIGIN3200_FC_DEVICE);
+    uint16_t load[8] = { ISP2200_MBOX_LOAD_RAM, 0x2000,
+                         (window >> 16) & 0xffff, window & 0xffff, 4, 0,
+                         window >> 48, (window >> 32) & 0xffff };
+    unsigned int i;
+
+    qtest_writel(qts, config + PCI_BASE_ADDRESS_1, ORIGIN3200_FC_MMIO);
+    qtest_writel(qts, config + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, ORIGIN3200_XBRIDGE_REG(
+                     ORIGIN3200_XBRIDGE_DEVICE(ORIGIN3200_FC_DEVICE)),
+                 ORIGIN3200_XBRIDGE_DEVICE_MEMORY |
+                 (ORIGIN3200_FC_MMIO >> 20));
+    ip53_memory_writeq_cpu(qts, 0, md_config, 0x11);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, memory, bytes, sizeof(bytes)));
+
+    g_assert_cmphex(origin3200_fc_mailbox(qts, load, ARRAY_SIZE(load), 0), ==,
+                    ISP2200_MBOX_COMPLETE);
+    for (i = 0; i < ARRAY_SIZE(words); i++) {
+        uint16_t read[] = { ISP2200_MBOX_READ_RAM_WORD, 0x2000 + i };
+
+        g_assert_cmphex(origin3200_fc_mailbox(qts, read, ARRAY_SIZE(read), 2),
+                        ==, words[i]);
+    }
     qtest_quit(qts);
     g_unlink(prom);
 }
@@ -11016,6 +11083,8 @@ int main(int argc, char **argv)
                    test_origin3200_brick_l1s);
     qtest_add_func("sn/builder/origin3200/io7-without-ieee1394",
                    test_origin3200_io7_without_ieee1394);
+    qtest_add_func("sn/builder/origin3200/fibre-channel-doubleword-dma",
+                   test_origin3200_fibre_channel_doubleword_dma);
     qtest_add_func("sn/builder/origin3200/fibre-channel-card",
                    test_origin3200_fibre_channel_card);
     qtest_add_func("sn/builder/origin3200/loop-disk",

@@ -754,7 +754,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
                              SGI_IOC3_POPULATION_SERIAL_A)
 #define IO7_USB_DEVICE      5
 #define IO7_1394_DEVICE     6
-#define IBRICK_FC_DEVICE    1
+#define IBRICK_FC_DEVICE    SGI_IBRICK_FC_DEVICE
 
 static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
 {
