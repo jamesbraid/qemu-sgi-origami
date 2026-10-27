@@ -77,11 +77,12 @@ Public software:
   ``arch.h``, ``bedrock.h``, ``hubpi.h``, ``hubpi_next.h``, ``hubio.h``,
   ``hubio_next.h``, ``hublb.h``, ``hubni.h``, ``hubni_next.h``,
   ``hubmd.h``, ``include/asm-ia64/sn/kldir.h`` and
-  ``arch/ia64/sn/io/sn1/ip37.c``; and v2.5.0 at ``381ab1f53816``. SGI
-  generated these from its register database for an Itanium port. They
-  are a register-definition source, not a MIPS guest, and not independent
-  corroboration of anything else SGI wrote.
-- The out-of-tree MIPS IP35 port at ``9f613a321ea0``:
+  ``arch/ia64/sn/io/sn1/ip37.c``; and v2.5.0 at ``381ab1f53816``. They
+  are written for an Itanium port: a register-definition source, not a
+  MIPS guest, and not independent corroboration of anything else SGI
+  wrote.
+- Alastair Bridgewater's out-of-tree MIPS IP35 Linux port (``linux-ip35``,
+  branch ``sgi-ip35``) at ``9f613a321ea0``:
   ``arch/mips/include/asm/mach-ip35/spaces.h``,
   ``arch/mips/include/asm/sn/sn1/addrs.h``, ``arch/mips/sgi-ip35/`` and
   ``arch/mips/pci/pci-sgipic.c``. Nothing records it booting.
@@ -113,7 +114,7 @@ Published captures:
   :src:`graphica-tezro-hinv`; an 800 MHz four-processor inventory,
   :src:`irixnet-post-26015`; a 1 GHz PROM transcript,
   :src:`irixnet-thread-3613`.
-- Onyx 4: an owner's inventory of a system labelled Onyx 350 with an IP59
+- Onyx 4: a published inventory of a system labelled Onyx 350 with an IP59
   board, :src:`irixnet-thread-2263`.
 
 The stock firmware is :src:`ip35-prom-6.210`. What it does is a
@@ -232,7 +233,9 @@ its total. The bank positions are model choices unless stated.
      - Basis
    * - Origin 300
      - 256, 256 at banks 2 and 3
-     - *approximation*; two 256 MB DIMMs give the guide's 512 MB minimum
+     - *approximation*; two 256 MB DIMMs give the guide's 512 MB minimum.
+       The positions follow the example SPD records reported at DIMM 2
+       and DIMM 3 (:src:`007-4365-001 p. 9-11, 75-76`).
    * - Fuel
      - 256, 256 at banks 0 and 1
      - *observed* software bank numbers of a revision F Fuel
@@ -240,10 +243,14 @@ its total. The bank positions are model choices unless stated.
    * - Origin 350
      - 1024, 1024 at banks 0 and 1
      - *approximation*; no DIMM part or SPD is supplied
-   * - Onyx 350, Onyx 4 host
+   * - Onyx 350
      - eight banks of 1024 at 0-7
      - *observed* logical banks of the captured Onyx 350 module
        (:src:`graphica-onyx350-hinv`)
+   * - Onyx 4 host
+     - eight banks of 1024 at 0-7
+     - *approximation*; the bank map is borrowed from the Onyx 350
+       capture
    * - Tezro
      - 1024, 1024, 512, 512, 512, 512 at 0-5
      - *observed* logical banks of the captured 700 MHz Tezro
@@ -297,9 +304,9 @@ Components and connections
      - Rating and basis
    * - Bedrock
      - both processor interfaces; enters the crossbar at widget ``0xa``
-     - Origin 300: *observed*, a published verbose PROM trace prints the
-       Bedrock attached as widget ``0xa``. Fuel: *observed*
-       (:src:`graphica-o350-chimera-notes`). IP53: *approximation*
+     - Origin 300: *approximation*; the model uses ``0xa`` as on the
+       Fuel. Fuel: *observed* (:src:`graphica-o350-chimera-notes`). IP53:
+       *approximation*
    * - XBridge (Origin 300, Fuel)
      - crossbar at widget 0, PCI heads at widgets 14 (head E) and 15
        (head F)
@@ -313,7 +320,7 @@ Components and connections
        :src:`108-0264-004 p. 2-11`, Table 2-4)
    * - Origin 300 option slots on head E
      - PCI devices 1 and 2
-     - *observed* (:src:`007-4365-002 p. 9, 12`); empty by default
+     - *established* (:src:`007-4365-002 p. 9, 12`); empty by default
    * - Fuel onboard I/O on head F
      - ISP12160 at device 1, IOC3 at 4, Lucent OHCI ``11c1:5802`` at 5
      - *observed* (:src:`miod-openbsd-sgi-story`,
@@ -322,8 +329,9 @@ Components and connections
        ``1045:c861`` there
    * - Fuel head E
      - empty
-     - the Intel 82550 an OpenBSD capture shows at device 2 is an add-in
-       card, *observed*
+     - the Intel 82550 an OpenBSD capture shows at device 2 on head E is
+       an add-in card, not a board part
+       (:src:`miod-openbsd-sgi-story lines 5548-5552`), *observed*
    * - PIC (IP53)
      - one at widget 15; on ``tezro-tower-multi``, two, at widgets 11
        and 15
@@ -336,10 +344,11 @@ Components and connections
      - the Bedrock's register window; the system console
      - :doc:`hardware/l1`
 
-The IOC3's timekeeper on the Origin 300 and Fuel is an M48T35-compatible
-32 KiB part on byte-bus select 0, read with the 1968 year base OpenBSD's
-``dsrtc.c`` (lines 169-174) applies on IP35. The Fuel board carries a
-DS1742W, so on the Fuel this is an *approximation* (:ref:`sgi-ip35-fuel`).
+The model fits the IOC3 on the Origin 300 and Fuel with an
+M48T35-compatible 32 KiB timekeeper on byte-bus select 0, read with the
+1968 year base OpenBSD's ``dsrtc.c`` (lines 169-174) applies on IP35, an
+*approximation*. The part on the Origin 300 IO-8 is *unknown*. The Fuel
+board carries a DS1742W (:ref:`sgi-ip35-fuel`).
 
 .. _sgi-ip35-identity:
 
@@ -349,7 +358,10 @@ Board identity inputs
 Each product carries the values its firmware reads to recognise it. They
 are catalogue defaults. Machine properties of the same names override
 them: ``board-id-word``, ``l1-type-code``, ``l1-revision``,
-``bedrock-revision`` and ``ioc3-subsystem-id``.
+``bedrock-revision`` and ``ioc3-subsystem-id``. On the Fuel the catalogue
+also keeps a mask of ``0xf000`` requiring ``0x4000``, so a
+``board-id-word`` override must keep the Fuel's product code in bits
+15:12.
 
 .. list-table::
    :header-rows: 1
@@ -434,7 +446,8 @@ Missing devices
   keyboard and mouse ports beyond what :doc:`hardware/ioc4` lists; every
   G2 and G2N brick; any NUMAlink peer; the second enclosure of a Tezro
   rack.
-- The Fuel's DS1742W decode. Its clock is an M48T35-compatible stand-in.
+- The Fuel's DS1742W decode and the Origin 300 IO-8's timekeeper part.
+  Both boards get an M48T35-compatible stand-in.
 
 .. _sgi-ip35-address-map:
 
@@ -459,7 +472,7 @@ inside it: an R10000-family processor takes the uncached attribute from
 virtual-address bits 58:57 of an uncached xkphys address and drives it
 with the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113;
 linux-ip35 ``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines
-40-44), *established*.
+40-44), a *software expectation*.
 
 .. list-table::
    :header-rows: 1
@@ -468,7 +481,7 @@ linux-ip35 ``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines
    * - Space
      - Attribute
      - Base an unmapped R10000 guest uses
-     - Source (all *established*)
+     - Source (all *software expectation*)
    * - cached memory
      - none
      - ``0xa800_0000_0000_0000``
@@ -511,7 +524,7 @@ The node number
    * - Item
      - M mode
      - N mode
-     - Source (*established*)
+     - Source (*software expectation*)
    * - node field
      - bits 39:33 (7 bits)
      - bits 39:32 (8 bits)
@@ -537,18 +550,10 @@ The field diagnostics manual prints a sample configuration for an Origin
 (:src:`108-0264-004 p. A-2`), agreeing with the seven-bit field at bit
 33, *established*.
 
-How a guest learns the mode differs across consumers. OpenBSD takes bit
-18 of the network-interface port status register (offset ``0x680000``)
-as "more nodes than M mode holds" (``sginode.c`` lines 100-103,
-``hub.h`` line 218), the Origin 200 rule. The Bedrock register file
-defines only bits 2:0 of that register (Linux SN1 ``sn1/hubni.h`` lines
-1015-1033). The Itanium port reads the local block's system-size field,
-bits 47:46 of its revision register, where 2 means N mode
-(``hublb_next.h`` lines 19-32, ``ip37.c`` lines 34-38). OpenBSD prints
-"Machine is in M mode" on real Origin 300s, one chassis and two cabled,
-so bit 18 reading clear is *observed*. The model reads bit 18 clear and
-resets the local-block field to 0. What an N-mode Bedrock returns, and
-which register the PROM consults, are *unknown*.
+How a guest learns the mode differs across consumers, and the registers
+involved are on :ref:`sgi-bedrock-ni-link` and :ref:`sgi-bedrock-lb-node`.
+The model presents M mode. What an N-mode Bedrock returns, and which
+register the PROM consults, are *unknown*.
 
 .. _sgi-ip35-address-map-memory:
 
@@ -559,11 +564,11 @@ Memory is reported per bank in 1 GB steps (OpenBSD ``sginode.c`` lines
 549-590). The Linux SN1 headers give a 1 GB slot shift, a 64 MB minimum
 and eight slots per node (``sn1/arch.h`` lines 47 and 53-54). OpenBSD
 does not manage the first 64 MB of a node on IP35, against 32 MB on IP27
-(``sginode.c`` lines 566-575, 519-528). All *established*.
+(``sginode.c`` lines 566-575, 519-528). All *software expectation*.
 
 The firmware's low-memory map, as the Linux SN1 tree draws it
 (``kldir.h`` lines 164-283 for the diagram, 310-361 for the constants),
-*established*:
+a *software expectation*:
 
 .. list-table::
    :header-rows: 1
@@ -614,9 +619,10 @@ The directory slot numbers are unchanged from the Origin 200 (0 launch,
 1 KLCONFIG, 2 NMI, 3 GDA, 4 free memory, 5 symmon stack, 6 PI error,
 7 kernel variables, 8 kernel cross-partition, 9 partition id: OpenBSD
 ``mnode.h`` lines 91-100; both Linux trees). The stock IP35 PROM places
-its configuration graph at ``0x30000``: the image reports
-``init_klcfg: nasid 0 start 9600000000030000`` (:src:`ip35-prom-6.210`),
-a *software expectation*. The Origin 200's offsets (NMI save area
+its configuration graph at ``0x30000``: a diagnostic message in the image
+places node 0's configuration graph at ``0x9600000000030000``, the
+uncached-memory alias of that offset (:src:`ip35-prom-6.210`), a *software
+expectation*. The Origin 200's offsets (NMI save area
 ``0x11400``, GDA ``0x11000``, KLCONFIG ``0x4000``, kernel ``0x19000``)
 do not apply to IP35.
 
@@ -631,7 +637,7 @@ Crosstalk windows
 
    * - Item
      - Value
-     - Source (*established* unless marked)
+     - Source (*software expectation* unless marked)
    * - small window
      - 16 MB per widget; widget ``w`` at node I/O base ``+ w << 24``;
        devices are widgets 8 to 15.
@@ -643,14 +649,9 @@ Crosstalk windows
      - OpenBSD ``ip27_machdep.c`` lines 69, 236-237, 493-497; linux-ip35
        ``sn1/addrs.h`` lines 65 and 51; Linux SN1 lines 86 and 72.
    * - translation entries
-     - seven, at hub offsets ``0x400160`` to ``0x400190`` in 8-byte
-       steps; software numbers them 0 to 6, hardware manuals 1 to 7.
-     - OpenBSD ``hub.h`` lines 191-193; Linux SN1 ``hubio.h`` lines
-       132-174.
-   * - entry encoding
-     - bit 12 space (1 device, 0 memory), bits 11:8 widget, low bits the
-       XIO address above the window size.
-     - OpenBSD ``hub.h`` lines 195-201; Linux ``sn/io.h`` lines 20-46.
+     - seven, one per big window; the registers and their encoding are on
+       :ref:`sgi-bedrock-io-pio`.
+     - OpenBSD ``hub.h``; Linux SN1 ``hubio.h``.
    * - widget 0
      - reached through big window 6, which the PROM programs for it.
      - OpenBSD ``ip27_machdep.c`` lines 478-486, 535-536; both Linux
@@ -680,7 +681,7 @@ The Bedrock's registers are XIO widget 1 of its own node.
 
    * - Form
      - Address
-     - Source (*established*)
+     - Source (*software expectation*)
    * - local register ``r``
      - ``0x9200_0000_0100_0000 + r``
      - OpenBSD ``hub.h`` lines 28-29; both Linux trees' ``IALIAS_BASE``.
@@ -691,7 +692,8 @@ The Bedrock's registers are XIO widget 1 of its own node.
      - remote form ``+ 0x200000``
      - ``hub.h`` lines 32-34 and 110-114; ``hubpi_next.h`` lines 16-19.
 
-Unit bases inside the 8 MB window (hub-relative), *established*:
+Unit bases inside the 8 MB window (hub-relative), a *software
+expectation*:
 processor interface 0 at ``0x000000`` (OpenBSD ``hub.h`` line 85);
 processor interface 1 at ``0x200000`` (lines 110-114); I/O interface
 ``0x400000`` (line 189); local block ``0x600000`` (line 208); network
@@ -716,47 +718,49 @@ Hub special space
      - Source
    * - local register window, ``0x1000_0000``
      - 128 MB
-     - *established*: OpenBSD ``hub.h`` lines 63-64; Linux SN1
+     - *software expectation*: OpenBSD ``hub.h`` lines 63-64; Linux SN1
        ``sn/addrs.h`` lines 123-125.
    * - boot window, ``0x1800_0000``
      - 128 MB
-     - *observed*: Linux SN1 ``sn/addrs.h`` lines 126-128; OpenBSD
-       defines it and never uses it. A published verbose PROM trace from
-       a Tezro shows the PROM copying itself from ``0x9000000018000000``.
+     - *software expectation*: Linux SN1 ``sn/addrs.h`` lines 126-128;
+       OpenBSD defines it and never uses it. A published verbose PROM
+       trace from a Tezro shows the PROM copying itself from
+       ``0x9000000018000000`` (:src:`irixnet-thread-3613`), *observed*.
    * - second PROM, boot-window offset ``0x0200_0000``
      - 32 MiB stride
-     - *established*: Linux SN1 defines two PROMs on 32 MiB boundaries.
+     - *software expectation*: Linux SN1 defines two PROMs on 32 MiB
+       boundaries.
        The model maps the upper 8 MiB of the 16 MiB boot-flash store
        there, an *approximation*.
    * - remote register window of node ``n``, ``0x3000_0000``
      - 128 MB
-     - *established*: OpenBSD ``hub.h`` lines 48-49; Linux SN1
+     - *software expectation*: OpenBSD ``hub.h`` lines 48-49; Linux SN1
        ``sn/addrs.h`` line 148.
    * - remote boot window of node ``n``, ``0x3800_0000``
      - 128 MB
-     - *observed*: Linux SN1 ``sn/addrs.h`` line 153; OpenBSD never
-       forms it.
+     - *software expectation*: Linux SN1 ``sn/addrs.h`` line 153;
+       OpenBSD never forms it.
    * - directory backdoor, ``0x1c000_0000``
      - 1 GB aperture
-     - *observed*: Linux v2.5.0 ``sn/addrs.h`` maps one Bedrock directory
-       word at ``+0`` and names ``+8`` as the page-counter address.
+     - *software expectation*: Linux v2.5.0 ``sn/addrs.h`` maps one
+       Bedrock directory word at ``+0`` and names ``+8`` as the
+       page-counter address.
 
 The uncached alias of the reader's own node memory at offset 0 is
 inherited text from the Origin 200 headers, and no IP35 consumer uses it
-(linux-ip35 ``sn/addrs.h`` lines 119-133), *observed*. The cached-alias
-size register in each processor interface (``0x28``) takes a 4-bit code,
-0 off and 1 to 15 for 4 KB doubling to 64 MB (``hubpi_next.h`` lines
-199-215; OpenBSD ``hub.h`` lines 89-90). OpenBSD writes 0 to both
-interfaces and all ones to both region-present registers at setup
-(``ip27_machdep.c`` lines 338-345). Whether IP35 flips the bottom 128 KB
+(linux-ip35 ``sn/addrs.h`` lines 119-133), a *software expectation*. The
+cached-alias size and region-present registers are on
+:ref:`sgi-bedrock-pi`. Whether IP35 flips the bottom 128 KB
 of the uncached alias per processor as the Origin 200 does is *unknown*;
 where a stock PROM places each processor's handler copies would settle
 it.
 
 Inside both register windows the model answers the L1 UART at ``0x80``,
 four per-processor LED registers at ``0xc0`` and the board-identification
-word at ``0x0400_0000``, and refuses the other offsets it does not decode
-with a bus error. The evidence for each is on :doc:`hardware/bedrock`
+word at ``0x0400_0000``. Offsets below ``0x80`` read as zero, accept
+writes and log ``LOG_UNIMP``. The board-identification word answers only
+an aligned eight-byte read and refuses other widths with
+``LOG_GUEST_ERROR``. The evidence for each is on :doc:`hardware/bedrock`
 and :doc:`hardware/l1`.
 
 .. _sgi-ip35-address-map-interrupt:
@@ -767,15 +771,13 @@ Interrupt send
 A widget raises a Bedrock interrupt by writing to an XIO address naming
 the node, the Bedrock's own widget 1, the remote form and the
 interrupt-pending-modify register: bit 47, the node shifted by 39 (38 on
-IP27) and ``0x0180_0090`` (OpenBSD ``ip27_machdep.c`` lines 350-353;
-Linux ``sn/xtalk/xtalkaddrs.h`` lines 66-91, adding ``0x200000`` for a
-target on the second interface, ``hub_intr.c`` line 145). Writing
-``0x100 | level`` sets, ``level`` alone clears (``hub.h`` lines 98-100;
-Linux ``sn1/intr.h`` lines 122-143). The bridge's interrupt-destination
-registers carry the Bedrock's crossbar widget number in bits 51:48
-(``xbridge.c`` lines 2177-2191), from the configuration graph's crossbar
-record, default ``0xa`` (``sginode.c`` lines 159-160, 338). All
-*established*. For a Bridge-class bridge on a node other than 0, OpenBSD
+IP27) and the register offset (OpenBSD ``ip27_machdep.c`` lines 350-353;
+Linux ``sn/xtalk/xtalkaddrs.h`` lines 66-91). The register and its value
+word are on :ref:`sgi-bedrock-pi-interrupts`. The bridge's
+interrupt-destination registers carry the Bedrock's crossbar widget
+number in bits 51:48 (``xbridge.c`` lines 2177-2191), from the
+configuration graph's crossbar record, default ``0xa`` (``sginode.c``
+lines 159-160, 338). All a *software expectation*. For a Bridge-class bridge on a node other than 0, OpenBSD
 places the node at bit 9 and linux-ip35 at bit 8 (``xbridge.c`` lines
 1393-1394; ``pci-sgipic.c`` line 77); which is right is *unknown*.
 
@@ -792,38 +794,33 @@ Firmware hand-off, reset and launch
      - Value
      - Source
    * - firmware operation request on halt or reboot
-     - local block scratch register 2, hub offset ``0x608010``: magic
-       ``0x0ead0000`` or-ed with a command (halt ``0x10``, power down
-       ``0x20``, restart ``0x30``, reboot ``0x40``, interactive monitor
-       ``0x50``) and options (no diagnostics ``0x100``, no memory init
-       ``0x200``, no device init ``0x400``).
-     - *established*: OpenBSD ``ip27_machdep.c`` lines 680-704,
+     - local block scratch register 2, hub offset ``0x608010``
+       (:ref:`sgi-bedrock-lb`): magic ``0x0ead0000`` or-ed with a command
+       (halt ``0x10``, power down ``0x20``, restart ``0x30``, reboot
+       ``0x40``, interactive monitor ``0x50``) and options (no
+       diagnostics ``0x100``, no memory init ``0x200``, no device init
+       ``0x400``).
+     - *software expectation*: OpenBSD ``ip27_machdep.c`` lines 680-704,
        ``mnode.h`` lines 456-466. The Origin 200 uses
        processor-interface ``0x418`` (line 703); both Linux SN1 trees
        name ``0x418`` here and never write it. Which one the stock IP35
        PROM reads on a warm reset is *unknown*.
-   * - network port reset
-     - hub offset ``0x680008``: bit 0 link reset, bit 1 port (warm)
-       reset, bit 2 local Bedrock reset.
-     - *established*: OpenBSD ``hub.h`` lines 219-225; Linux
-       ``hubni_next.h`` lines 28-30.
-   * - reset enable
-     - hub offset ``0x680010``, bit 0 = 1 allows the reset.
-     - *established*: ``hub.h`` lines 226-227; ``hubni.h`` line 35.
-   * - halt sequence
-     - for each other node write reset-enable 1 then the reset register,
-       then the local node last; the reset value is local plus link
-       reset in OpenBSD (``0x5``) and local plus port reset in the
-       Itanium port (``0x6``).
-     - ``ip27_machdep.c`` lines 706-729; ``ip37.c`` lines 45-46.
+   * - reset registers and halt sequence
+     - the network-interface port reset and reset-enable registers
+       (:ref:`sgi-bedrock-reset`). For a halt, each other node is reset
+       first and the local node last.
+     - *software expectation*: OpenBSD ``hub.h`` lines 219-227,
+       ``ip27_machdep.c`` lines 706-729; Linux ``hubni_next.h``,
+       ``ip37.c`` lines 45-46.
    * - secondary-processor launch
      - OpenBSD calls the PROM's launch-slave entry at compatibility
        address ``0x1fc0_0038`` with node, slice, function, parameter,
        stack and global pointer; no public MIPS consumer uses a
        register-level launch. The launch area holds four entries of
        ``0x100`` on IP35 against two of ``0x200`` on the Origin 200.
-     - *established*: ``ip27.h`` lines 60-64; ``ip27_machdep.c`` lines
-       1083-1085; Linux ``kldir.h`` lines 310-313.
+     - *software expectation*: ``ip27.h`` lines 60-64;
+       ``ip27_machdep.c`` lines 1083-1085; Linux ``kldir.h`` lines
+       310-313.
 
 .. _sgi-ip35-fuel:
 
@@ -853,9 +850,10 @@ replaces it with a 512-byte record image, and a ``-nic mac=`` that
 disagrees with the record is refused. Where a physical Fuel stores this
 record is *unknown*. :doc:`hardware/l1` has the record format.
 
-A revision B Fuel board photograph shows a DS1742W, a 2 KiB clock part,
-and OpenBSD's ``dsrtc.c`` comment names the same package, *observed*.
-Its decode on the IOC3 byte bus is *unknown*, and OpenBSD calls its own
+A photograph of a revision B Fuel board shows a DS1742W, a 2 KiB clock
+part (:src:`graphica-o350-chimera-notes`, board photograph), *observed*.
+OpenBSD's ``dsrtc.c`` comment names the same package, a *software
+expectation*. Its decode on the IOC3 byte bus is *unknown*, and OpenBSD calls its own
 mapping a guess. The model fits the flat 32 KiB M48T35-compatible
 timekeeper the Origin 300 uses, an *approximation*.
 
@@ -919,9 +917,9 @@ The Origin 300 topologies beyond one chassis:
   One base module cabled from its LINK connector to a PCI expansion
   module (:src:`007-4499-002 p. 12`), *established*. The expansion's
   Bedrock interface card (:doc:`hardware/bic`) has no processors or
-  memory. Every launch binds a caller-owned 16 MiB raw image as the
-  expansion's configuration storage with
-  ``expansion-storage.0=expansion-enclosure=<drive>``. Its startup,
+  memory. Every launch binds the expansion's 16 MiB configuration
+  storage, the ``expansion-enclosure-flash`` store
+  (:ref:`sgi-sn-storage`). Its startup,
   power, register visibility, interrupt map and identity are
   *approximations* listed on :doc:`hardware/pci-expansion`.
 
@@ -934,7 +932,10 @@ The Origin 300 topologies beyond one chassis:
   (:src:`007-4498-002 p. 10-11, 96`), *established*. The router answers
   as chip revision 1, *inferred* from a six-chassis inventory's router
   "Revision 1" (:src:`nekonomicon-16727514`), and its L1 type ``0x52``
-  is a choice. USB and L2 transport, router main power and reset
+  is the router type letter ``R`` in the Linux SN1 headers
+  (``include/asm-ia64/sn/ksys/l1.h`` line 266, v2.5.0 at
+  ``381ab1f53816``), a *software expectation*; no captured router reply
+  exists. USB and L2 transport, router main power and reset
   propagation between modules are not modelled.
 
 The NUMAlink module has eight external ports, A to H on the rear panel.
@@ -1032,8 +1033,8 @@ bytes.
 Origin 350
 ~~~~~~~~~~
 
-The Origin 350 compute module holds two or four R16000 with 4 MB of
-secondary cache each, eight DIMM slots in four pairs for 1 to 8 GB, one
+The Origin 350 compute module holds two or four R16000, eight DIMM
+slots in four pairs for 1 to 8 GB, one
 Bedrock, one external NUMAlink 3 port, an L1 with a display, and the IO9
 in the lowermost PCI slot (:src:`007-4566-001 p. 68-75, 114, 116`),
 *established*. One published inventory reports the board
@@ -1041,8 +1042,10 @@ in the lowermost PCI slot (:src:`007-4566-001 p. 68-75, 114, 116`),
 ``030-1771-005`` revision A (:src:`nekonomicon-16724207`), and another
 reports Bedrock revision 2 (:src:`nekonomicon-16729141`), *observed*.
 
-The profile's 8 MiB cache departs from the guide's 4 MB, and its 2 GiB
-in two banks is not a captured population. Both are *approximations*.
+The profile's four 700 MHz R16000 with 8 MiB of secondary cache each
+are the catalogue's choice, an *approximation*; the cache fitted to each
+processor option is *unknown*. Its 2 GiB in two banks is not a captured
+population, also an *approximation*.
 The Bedrock's entry widget on an Origin 350 is *unknown*; the model uses
 ``0xa``. The profile names no netboot adapter.
 
@@ -1092,8 +1095,8 @@ routes its widget-0 view through the PIC that owns the IO9, an
 *approximation*: through the widget-11 PIC, the stock PROM could not
 build its configuration for the node on the model. ``tezro-tower-one``
 and ``tezro-rack`` build one PIC, at widget 15. The rack profile models
-the first enclosure only. The netboot adapter is the BCM5701 on
-``tezro-tower-multi`` and none on the other two.
+the first enclosure only. All three topologies build the IO9
+BCM5701, and the netboot adapter is the BCM5701 on each.
 
 .. _sgi-ip35-onyx4:
 
@@ -1164,7 +1167,7 @@ PIC
 Each PIC is one widget with two PCI-X heads, the second head's
 registers ``0x800000`` above the first (OpenBSD ``xbridgereg.h`` lines
 24-28 and ``xbowdevs``: part ``0xd102``, second head ``0xd112``,
-manufacturer ``0x024``), *established*. The profiles select revision 3
+manufacturer ``0x024``), a *software expectation*. The profiles select revision 3
 behaviour and their direct-DMA settings as named compatibility profiles.
 These do not establish the fitted PIC revision, its reset image or the
 Bedrock-to-PIC wiring. :doc:`hardware/pic` describes the model and its
@@ -1204,10 +1207,11 @@ Every IP53 profile links a DS1744-compatible 32 KiB timekeeper
 offset ``0x80000`` with the clock in its last eight bytes, the span
 OpenBSD's driver uses. A fresh or blank clock starts from the 1968 year
 base. Its data and clock record are the ``nvram0`` and ``nvram0-clock``
-stores. The fitted IO9 part and its address wiring are *unknown*. The
-older DS1742 selection, which exposed only the clock bytes of a 2 KiB
-part, is not chosen by any profile. :doc:`hardware/timekeepers`
-describes both parts.
+stores. Fitting this part to IO9 is an *approximation*: the datasheet supports
+the part's behaviour, not its presence on the board. The fitted IO9 part
+and its address wiring are *unknown*. The model also has a DS1742
+selection exposing only the clock bytes of a 2 KiB part; no profile uses
+it. :doc:`hardware/timekeepers` describes both parts.
 
 .. _sgi-ip53-io-profile:
 
@@ -1258,9 +1262,10 @@ be left out.
      - 16 bytes
      - zero
 
-A two-node topology adds ``node1-flash``, and ``origin300-pci-expansion``
-adds the expansion's own storage. :ref:`sgi-sn-storage` describes how
-stores bind.
+A two-node topology adds ``node1-flash``, ``nvram1`` and
+``nvram1-clock``. Both topologies with a PCI expansion module add
+``expansion-enclosure-flash``, 16 MiB, starting from zero.
+:ref:`sgi-sn-storage` describes how stores bind.
 
 Where the processor's reset fetch reaches flash, which flash part is
 fitted, and what answers outside the image are *unknown*.
@@ -1277,8 +1282,8 @@ choice in the boot flash, so it is firmware state, not a board property.
 Running
 =======
 
-Each command below reached the stock 6.210 PROM's "System Maintenance
-Menu" on the L1 line, on the model, within a 150-second timeout. Create
+Each command below reaches the stock 6.210 PROM's "System Maintenance
+Menu" on the L1 line. Create
 the stores once per machine, naming the selection as
 ``qemu-sgi-machine-init --machine help`` spells it:
 
@@ -1310,7 +1315,7 @@ the start of ``-M`` change:
      - PROM reports
    * - Fuel
      - ``fuel,topology=fuel,nodes=1``
-     - ``fuel``, with or without ``-vga none``
+     - ``fuel``
      - one processor, 512 MB
    * - Origin 350
      - ``origin350,topology=origin350,nodes=1``
@@ -1329,6 +1334,11 @@ the start of ``-M`` change:
      - ``onyx4-host``
      - four processors, 8192 MB
 
+The commands pass ``-nodefaults``, which leaves the Fuel's graphics
+connector empty, as ``-vga none`` does (:ref:`sgi-ip35-graphics`). Drop
+``-nodefaults`` or add ``-device sgi-odyssey,slot=widget-13,product=v12``
+to fit a V12.
+
 Booting IRIX from here needs a disk on ``scsi.0``, the first onboard SCSI
 controller, or a netboot through the IOC3 on the Origin 300 and Fuel or
 the BCM5701 where the profile names it. :ref:`sgi-sn-launch-metadata`
@@ -1340,8 +1350,8 @@ Graphics
 ========
 
 ``fuel`` fits a V12 VPro at its graphics connector by default, as
-``-device sgi-odyssey,slot=widget-13,product=v12`` would; ``-vga none``
-leaves the slot empty. A Fuel IRIX inventory and an OpenBSD capture both
+``-device sgi-odyssey,slot=widget-13,product=v12`` would. Both
+``-vga none`` and ``-nodefaults`` leave the slot empty. A Fuel IRIX inventory and an OpenBSD capture both
 place the VPro at widget 13 (:src:`tingo-fuel-irix-console`,
 :src:`miod-openbsd-sgi-story`), *observed*. The captured Fuel carried a
 V10, so fitting a V12 there is a choice.
@@ -1350,8 +1360,11 @@ V10, so fitting a V12 there is a choice.
 ``widget-12``, ``-device sgi-odyssey,slot=widget-12,product=v12``, and
 fit none by default. The published 700 MHz Tezro inventory reports its
 V12, part ``030-1884-002`` revision D, at widget 12
-(:src:`graphica-tezro-hinv`), *observed*. On the Onyx 350 the same
-position is an alternative to its InfiniteReality, a choice. The pipe
+(:src:`graphica-tezro-hinv`), *observed*. The same Onyx 350 module, 001c01, was also published with a V12, part
+``030-1909-008`` revision B, at widget 12 (:src:`graphica-onyx350-hinv`,
+section "Origin / Onyx O350, Numalink'ed, V12 & DMedia DM3 etc"),
+*observed*. The InfiniteReality section of the same page lists the module
+with that pipe instead. The pipe
 links to that port of the crossbar of the PIC that owns widget 0, uses
 the Bedrock's graphics-credit handling, and is marked alive once it
 realizes. The route from either physical XIO connector to the Bedrock is
@@ -1379,6 +1392,7 @@ Open questions
   are.
 - The R16000 reset mode word for each profile's clock and cache, and the
   Origin 350's fitted cache size.
+- The Origin 300 IO-8's timekeeper part.
 - The Fuel's DS1742W decode, its interrupt wiring on revision G, where
   its Ethernet-address record lives, and its L1 type reply.
 - The physical-to-software memory bank mapping on every product.
