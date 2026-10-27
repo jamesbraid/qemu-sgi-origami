@@ -3794,6 +3794,10 @@ static void test_rx_host_admission(void)
         rx_retirement_config(qts, 2, 0, false);
         for (unsigned i = 0; i < 4; i++) {
             rx_host_offer(sv[0], i);
+            if (i == 2) {
+                /* Queue the first offer after RX empties before checking it. */
+                sgi_wait_socket_read(sv[0]);
+            }
             if (!grouped && i < 2) {
                 rx_host_packet(qts, 0x8000 + 4096 * i, i, i);
             }
@@ -3808,12 +3812,14 @@ static void test_rx_host_admission(void)
             uint64_t status;
 
             qtest_memwrite(qts, FAULT_MEMORY + offset, guard, sizeof(guard));
-            if (i >= 4) {
+            /* Ensure a held host offer has reached QEMU before checking RX. */
+            if (i == 3) {
+                sgi_wait_socket_read(sv[0]);
+            } else if (i >= 4) {
                 rx_host_offer(sv[0], i);
+                sgi_wait_socket_read(sv[0]);
             }
-            /* This flush retries the held offer without a readiness query. */
             qtest_writeq(qts, ETH_BASE + DMA_CONTROL, control);
-            qtest_clock_step(qts, 0);
             status = qtest_readq(qts, ETH_BASE + INT_STATUS);
             g_assert_cmpuint((status >> 25) & 31, ==, i & 31);
             g_assert_cmphex(status & 0xc0, ==, 0);
