@@ -1933,13 +1933,9 @@ class Origin3000BrickValidationTests(unittest.TestCase):
                  "crossbar"),
         ):
             with self.subTest(name=name):
+                # The C-brick's LINK (NI) connector is on its NUMAlink
+                # cable, not an XIO bus.
                 model = self.model()
-                model["components"].append({
-                    "id": "c0-link-connector", "name": "LINK (NI) connector",
-                    "kind": "connector", "parent": "c0-chassis",
-                    "provenance": "derived",
-                    "connector": {"interface": "NUMAlink 3",
-                                  "occupancy": "opaque"}})
                 model["xio_cables"] = [self.cable("bad", ends)]
                 self.assertFails(model, message)
 
