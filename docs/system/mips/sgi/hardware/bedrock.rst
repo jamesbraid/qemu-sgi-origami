@@ -10,8 +10,8 @@ The Bedrock is the node controller of SGI's second Scalable Node
 generation, the successor to the Origin 200's Hub (:doc:`hub`). It joins
 up to four processors, node memory and its directory, one crosstalk port
 and one NUMAlink 3 port. Every machine on :doc:`/system/mips/sgi/ip35`
-carries one per node: ``origin300``, ``fuel``, ``origin350``,
-``onyx350``, ``tezro`` and ``onyx4-host``. QEMU models it as
+and :doc:`/system/mips/sgi/ip53` carries one per node: ``origin300``,
+``fuel``, ``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host``. QEMU models it as
 ``sgi-bedrock`` in ``hw/misc/sgi-bedrock.c``, a parent that composes
 seven unit devices: two processor interfaces (``sgi-bedrock-pi.c``),
 the memory and directory interface (``sgi-bedrock-md.c``), the I/O

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 sources:
-  tezro-runtime-inputs: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
-  tezro-runtime-inputs-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
+  tezro-runtime-inputs: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected 700 MHz and 4 MiB Tezro runtime inputs"
+  tezro-runtime-inputs-review: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Tezro runtime inputs and unmeasured hardware limits"
   tezro-l1-version-compatibility: "web:ip35-patch-sg0007149 SG0007149 README identifies IP35 support; decoded L1 member has image identifier 1.48.1"
   tezro-board-guide: '007-4564-001 printed pages 26-29 and 38; 007-4643-003 printed pages 21-29: supported
     processor populations and PCI/IO9 location'
@@ -10,7 +10,7 @@ sources:
   tezro-four-cpu-board-second: "web:nekonomicon-16726767  Tezro inventory, four 700 MHz R16000 with 4 MB secondary cache: IP53_4CPU Board part 030-1868-001 rev -C"
   tezro-two-and-four-cpu-boards: "web:nekonomicon-16727444  two Tezro inventories, 700 MHz R16000 with 4 MB secondary cache: IP53_2CPU Board part 030-1869-001 rev -C on slices A and C, and IP53_4CPU Board part 030-1868-001 rev -C"
   tezro-two-cpu-board: "web:preterhuman-tezro  Tezro inventory, two 700 MHz R16000 with 4 MB secondary cache on slices A and C: IP53_2CPU part 030-1869-001 revision C"
-  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Tezro and Tezro rack software limits"
+  tezro-software-choice-limit: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Tezro and Tezro rack software limits"
 layer:
   kind: product
   id: tezro-rack

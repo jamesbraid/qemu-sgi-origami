@@ -14,7 +14,7 @@ behind the PIC. QEMU models the MAC as ``hw/net/bcm570x.c`` (QOM type
 ``hw/net/bcm570x_phy.c``, a child object of the MAC. The same type with
 ``model=bcm5704`` is a dual-port BCM5704; this page covers the BCM5701
 only. :ref:`sgi-ip53-bcm570x` is the short entry in the IP53 platform
-page; this page is the reference behind it. Facts are rated as described
+page (:doc:`/system/mips/sgi/ip53`); this page is the reference behind it. Facts are rated as described
 in :ref:`sgi-ratings`.
 
 .. _sgi-bcm570x-sources:

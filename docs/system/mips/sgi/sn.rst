@@ -94,7 +94,7 @@ The Onyx2 is Origin 2000 silicon with graphics: the same IP27 node
 boards, memory and stock PROM, told apart only by the hardware its
 topologies fit. The IP53 machines are software profiles of one capture
 or manual each, not qualified models of every configuration of the
-product (:ref:`sgi-ip35-ip53`). The IP35 machine classes parent
+product (:ref:`sgi-ip35-ip53`). The IP35 and IP53 machine classes parent
 ``sgi-sn`` like the IP27 ones and take the same ``topology=`` contract
 and compiled catalogue. Only the node device is product-specific.
 
@@ -626,7 +626,8 @@ population within that wiring. Topologies are product-scoped:
 ``origin200`` never builds the ``origin2000`` wiring. The compiled
 descriptor carries more topologies than any one launch needs, and each
 platform page lists the ones its products accept
-(:ref:`sgi-ip27-topologies`, :ref:`sgi-ip35-products`). Naming a topology
+(:ref:`sgi-ip27-topologies`, :ref:`sgi-ip35-products`,
+:ref:`sgi-ip53-products`). Naming a topology
 that is not one of the product's own, or any other unknown name,
 including ``topology=help``, makes the machine report every topology
 that product accepts and exit, since QEMU has no generic help path for a
@@ -692,8 +693,9 @@ the shared builder.
 
 The accepted node counts, populations and memory sizes of each product
 are on the platform pages: :ref:`sgi-ip27-topologies`,
-:ref:`sgi-ip27-memory`, :ref:`sgi-ip35-products` and
-:ref:`sgi-ip35-memory`.
+:ref:`sgi-ip27-memory`, :ref:`sgi-ip35-products`,
+:ref:`sgi-ip35-memory`, :ref:`sgi-ip53-products` and
+:ref:`sgi-ip53-memory`.
 
 .. _sgi-sn-origin200-processors:
 
@@ -773,7 +775,8 @@ the default, whichever slot it names, so an Octane with
 ``-device sgi-mgras,slot=widget-9`` leaves ``widget-11`` empty. A
 ``-device`` that leaves a setting unset takes the slot's default for it.
 Each machine's slots and defaults are on :ref:`sgi-ip27-graphics`,
-:ref:`sgi-ip35-graphics` and :ref:`sgi-ip30-graphics`.
+:ref:`sgi-ip35-graphics`, :ref:`sgi-ip53-graphics` and
+:ref:`sgi-ip30-graphics`.
 
 ``-vga none`` and ``-nodefaults`` skip the default pipe. With no pipe
 ``-device``, every topology then starts with no graphics. The machine

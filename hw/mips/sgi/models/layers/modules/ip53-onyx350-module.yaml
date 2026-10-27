@@ -2,7 +2,7 @@
 # Onyx 350 captured-module compatibility projection; selected runtime choices remain pending independent review.
 layer_version: 1
 sources:
-  onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
+  onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
   onyx350-hinv: "web:graphica-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad: public inventory for module 001c01"
 layer:
   kind: module
@@ -171,7 +171,7 @@ layer:
         parent: io9
         provenance: derived
         fresh_year_base: 1968
-        sources: [onyx350-compatibility-proposal, "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles"]
+        sources: [onyx350-compatibility-proposal, "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles"]
         notes: >-
           Synthetic 32 KiB timekeeper geometry selected for this software
           profile. The fitted IO9 part and physical address wiring remain
