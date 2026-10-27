@@ -648,7 +648,7 @@ static uint32_t cursor_color(SGIO2GBEState *s, unsigned x, unsigned y,
     if (s->crs[1] & 2) {
         return (x == cx || y == cy) ? s->crs[2] >> 8 : under;
     }
-    int gx = (int)x - (cx - 31), gy = (int)y - (cy - 31);
+    int gx = (int)x - cx, gy = (int)y - cy;
     if (gx < 0 || gy < 0 || gx >= 32 || gy >= 32) {
         return under;
     }
