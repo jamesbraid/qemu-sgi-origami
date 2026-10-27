@@ -1,0 +1,661 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-dp8384x:
+
+==============================================================
+DP83840A and DP83843 Ethernet transceivers (Origin 200, 300)
+==============================================================
+
+The National Semiconductor DP83840A is the 10/100 Mb/s Ethernet
+transceiver on the Origin 200 and Origin 2000 base I/O boards. The
+DP83843 PHYTER is the transceiver on the Origin 300 IO-8 board and, in
+the model, on Fuel. Both sit behind the IOC3's MII management registers
+(:doc:`ioc3`) and are reached only through them. QEMU models both as one
+type, ``dp83840``, in ``hw/net/dp83840.c`` and
+``include/hw/net/dp83840.h``. The ``dp83843`` property selects the
+DP83843. The IOC3 sets it from its ``phy-dp83843`` property and sets the
+MII address from ``phy-addr``.
+
+The DP83840A is modelled at the revision its identity register reports,
+revision 1. The DP83843 is modelled as the DP83843BVJE, revision B
+datasheet, identity revision 0. The model is a functional profile of the
+management registers, not a revision-matched copy of either chip. Facts
+are rated as described in :ref:`sgi-ratings`.
+
+.. _sgi-dp8384x-sources:
+
+Sources
+=======
+
+- The DP83840A datasheet, :src:`national-dp83840a-datasheet registers`,
+  for register meanings.
+- The DP83843BVJE datasheet, revision B, :src:`ti-dp83843-snls021b`. Page
+  numbers in this page are its printed page numbers, which exclude the
+  literature cover.
+- A published Origin 200 inventory, :src:`dmesgd-8994`, and the OpenBSD
+  ``openbsd-sgi`` list capture :src:`marc-openbsd-sgi-139223952727384`
+  (an Origin 300).
+- OpenBSD ``sys/dev/mii/nsphy.c`` and ``nsphyreg.h`` (DP83840A),
+  ``nsphyter.c`` and ``nsphyterreg.h`` (DP83843), ``miidevs.h`` and
+  ``mii.h``, in the ``openbsd-sgi`` tree at branch
+  ``sgi-is-alive-at-7.9``, and Linux
+  ``drivers/net/ethernet/sgi/ioc3-eth.c``, as software expectations.
+
+Identity and placement
+======================
+
+.. list-table::
+   :header-rows: 1
+
+   * - Board
+     - Part
+     - MII address
+     - Identity words (2, 3)
+     - Rating
+   * - Origin 200 base I/O
+     - DP83840A
+     - 31
+     - ``0x2000``, ``0x5c01``
+     - *observed*
+   * - Origin 2000 base I/O
+     - DP83840A
+     - 31
+     - ``0x2000``, ``0x5c01``
+     - *inferred*
+   * - Origin 300 IO-8
+     - DP83843
+     - 1
+     - ``0x2000``, ``0x5c10``
+     - *observed*
+   * - Fuel
+     - DP83843
+     - 1
+     - ``0x2000``, ``0x5c10``
+     - *approximation*
+
+Published OpenBSD boot logs of Origin 200 machines print one transceiver
+at MII address 31, ``nsphy0 at iec0 phy 31: DP83840 10/100 PHY, rev. 1``
+(:src:`dmesgd-8994 nsphy line`), *observed*. OpenBSD prints that string
+from the identity words, so the words ``0x2000`` and ``0x5c01`` follow:
+OUI bits in word 2, and in word 3 the OUI remainder, model 0 and
+revision 1, *inferred*. A photograph of an Origin 200 system board marks
+the chip DP83840AVCE (:src:`theretroweb-origin200-image-1 Ethernet
+section`), *observed*. That the Origin 2000 base I/O board carries the
+same part at the same address is *inferred* from the shared IOC3 design.
+No capture of an Origin 2000 transceiver was read for this page.
+
+An Origin 300 capture prints ``nsphyter0 at iec0 phy 1: DP83843 10/100
+PHY, rev. 0`` (:src:`marc-openbsd-sgi-139223952727384 line 173`),
+*observed*. The DP83843 model number is 1 and the revision 0, which with
+the shared OUI gives word 3 ``0x5c10`` :src:`ti-dp83843-snls021b p. 49`,
+*established* for the documented product. That the board carries the
+BVJE package, and not another DP83843 package, is *unknown*. The stock
+Origin 300 PROM's power-on Ethernet diagnostic addresses only MII
+address 1 and warns when word 3 is not ``0x5c10``, a *software
+expectation*. Fuel uses the same selection. No inventory of a Fuel
+transceiver was read, so its part and address are an *approximation*.
+
+Software finds the transceiver by scanning all 32 addresses and taking
+the first that answers, so exactly one address must answer. The model
+answers only at its own address. At any other address the IOC3 returns
+``0xffff`` and drops writes. The DP83840A address is fixed at the
+``phy-addr`` value. The DP83843 address is the low five bits of
+register ``0x19`` (see below) and starts at the configured value.
+
+While the transceiver is in loopback, or (DP83843 only) isolated,
+powered down or held in reset, the IOC3 exchanges no frames with the
+network backend (:ref:`sgi-dp8384x-datapath`).
+
+DP83840A register map
+=====================
+
+Register numbers are MII word numbers. Each register is 16 bits. The
+DP83840A has no register ``0x07`` or ``0x10``-``0x16`` in the model.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Reg
+     - Name
+     - Reset
+     - Access
+     - Notes
+   * - ``0x00``
+     - Control (BMCR)
+     - ``0x3100``
+     - RW
+     - 100 Mb/s, full duplex, autonegotiation enabled. Bit 15 resets
+       and self-clears. Bit 9 (restart) is never stored.
+   * - ``0x01``
+     - Status (BMSR)
+     - ``0x7809``
+     - RO
+     - Capability bits fixed. Link and completion are live (below).
+   * - ``0x02``
+     - Identity 1
+     - ``0x2000``
+     - RO
+     -
+   * - ``0x03``
+     - Identity 2
+     - ``0x5c01``
+     - RO
+     -
+   * - ``0x04``
+     - Advertisement (ANAR)
+     - ``0x01e1``
+     - RW
+     - All 16 bits stored.
+   * - ``0x05``
+     - Partner ability (ANLPAR)
+     - ``0``
+     - RO
+     - ``0x01e1`` once negotiation completes.
+   * - ``0x06``
+     - Expansion (ANER)
+     - ``0``
+     - RO
+     - ``0x0001`` once negotiation completes.
+   * - ``0x17``
+     - PCS configuration
+     - ``0x8040``
+     - RW
+     - Storage.
+   * - ``0x18``
+     - Loopback, bypass and receiver error mask
+     - ``0x8020``
+     - RW
+     - Storage. Bits ``0x0300`` and ``0x0800`` select loopback.
+   * - ``0x19``
+     - PHY address
+     - 31
+     - RO
+     - Reads the configured address. The other fields read zero.
+   * - ``0x1c``
+     - 10BASE-T configuration
+     - ``0x80b9``
+     - RW
+     - Storage.
+
+Writes to the read-only registers are dropped and log
+``LOG_GUEST_ERROR``. Every other register reads zero and ignores writes,
+and logs ``LOG_UNIMP``. A zero read, not ``0xffff``, keeps the part
+looking present.
+
+The reset values of registers ``0x00``, ``0x17`` and ``0x1c`` are the
+DP83840A's documented defaults
+(:src:`national-dp83840a-datasheet registers`), *established*. The
+Origin 200 PROM's power-on transceiver test compares registers ``0x00``, ``0x17`` and ``0x1c``
+against the same values and reads registers ``0x01``, ``0x05`` and
+``0x06`` before it writes any control register, expecting no link, no
+completed negotiation and no partner: BMSR ``0x7809`` under its mask,
+and zero in the other two. These are *software expectations*, and the
+model returns them. The register ``0x18`` reset value ``0x8020`` copies
+the datasheet's default with its pin-latched bits modelled as normal
+operation, an *approximation*: no source gives the strapping of the
+board. The same test requires registers ``0x17``, ``0x18`` and ``0x1c``
+to read back what was written, and the model stores them for that
+reason. Their other functions are not modelled.
+
+OpenBSD's ``nsphy`` driver read-modify-writes register ``0x17`` once on a
+media change, setting the LED, congestion-control and transmit-ready
+bits, restoring normal link-good operation and clearing the carrier
+integrity monitor. Nothing reads it back for a decision, a *software
+expectation*. Bit 5 of register ``0x17`` on this part is the carrier
+integrity monitor disable, so writing it must not select loopback.
+
+DP83843 register map
+====================
+
+The DP83843 shares registers ``0x00``-``0x06`` with the DP83840A and
+adds ``0x07`` and ``0x10``-``0x19``. Masks are the software-writable
+bits; other written bits are dropped. Datasheet pages are given in the
+last column.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Reg
+     - Name
+     - Reset
+     - Writable
+     - Notes
+     - Page
+   * - ``0x00``
+     - Control (BMCR)
+     - ``0x3100``
+     - ``0xff80``
+     - Reset and restart bits act as below. Reset sets isolate (bit 10)
+       when the configured address is zero. Bit 9 reads one during a
+       restart's break-link interval.
+     - 46-47
+   * - ``0x01``
+     - Status (BMSR)
+     - ``0x7849``
+     - none
+     - Adds preamble suppression (bit 6) to the DP83840A value.
+     - 47-48
+   * - ``0x02``
+     - Identity 1
+     - ``0x2000``
+     - none
+     -
+     - 49
+   * - ``0x03``
+     - Identity 2
+     - ``0x5c10``
+     - none
+     -
+     - 49
+   * - ``0x04``
+     - Advertisement (ANAR)
+     - ``0x01e1``
+     - ``0xa5ff``
+     - Reserved bits 14 and 12:11 read zero.
+     - 49-50
+   * - ``0x05``
+     - Partner ability (ANLPAR)
+     - ``0``
+     - none
+     - ``0x01e1`` once negotiation completes.
+     - 50-52
+   * - ``0x06``
+     - Expansion (ANER)
+     - ``0x0004``
+     - none
+     - Next-page able (bit 2) always reads one. Bit 0 reads one once
+       negotiation completes.
+     - 52
+   * - ``0x07``
+     - Next page transmit (ANNPTR)
+     - ``0x2001``
+     - ``0xb7ff``
+     - Read-only toggle (bit 11) keeps its value.
+     - 53
+   * - ``0x10``
+     - PHY status (PHYSTS)
+     - ``0x0200``
+     - none
+     - See below.
+     - 54-55
+   * - ``0x11``
+     - Interrupt control (MIPSCR)
+     - ``0``
+     - ``0x0003``
+     - Bit 1 interrupt enable, bit 0 test interrupt.
+     - 55
+   * - ``0x12``
+     - Interrupt status (MIPGSR)
+     - ``0``
+     - none
+     - Bit 15 pending, clears on read.
+     - 55
+   * - ``0x13``
+     - Disconnect counter
+     - ``0``
+     - ``0xffff``
+     - Clears on read.
+     - 56
+   * - ``0x14``
+     - False carrier counter
+     - ``0``
+     - ``0xffff``
+     - Clears on read.
+     - 56
+   * - ``0x15``
+     - Receive error counter
+     - ``0``
+     - ``0xffff``
+     - Clears on read.
+     - 56
+   * - ``0x16``
+     - PCS sub-layer control (PCSR)
+     - ``0x0020``
+     - ``0xffef``
+     - Bit 14 is forced, see below.
+     - 56-58
+   * - ``0x17``
+     - Loopback (LBR)
+     - ``0``
+     - ``0x7fb0``
+     - Bits 5 and 4 select loopback. Bit 12 reads one when fibre is
+       selected.
+     - 58-60
+   * - ``0x18``
+     - 10BASE-T status and control (10BTSCR)
+     - ``0``
+     - ``0x1ffc``
+     - Bit 7 reads one in full duplex or repeater mode.
+     - 60-61
+   * - ``0x19``
+     - PHY control (PHYCTRL)
+     - configured address
+     - ``0x3bff``
+     - Bits 4:0 are the MII address. Bit 9 repeater, bit 5 fibre.
+     - 61-62
+
+Reset values and masks are *established* for the documented DP83843BVJE
+and follow the page numbers above. Where the datasheet's strap inputs
+choose a reset value, the model picks one profile: copper, normal
+encoding, nibble-mode 10 Mb/s, node (not repeater), all four modes
+advertised. The actual board straps are *unknown*, so the reset values
+that depend on them are an *approximation*. The datasheet's own strap
+prose for the BMCR reset value contradicts its table. The model keeps
+``0x3100``.
+
+The Fuel PROM's power-on Ethernet diagnostic expects zero in register
+``0x17`` and zero in register ``0x18`` under mask ``0xc77f``, a *software
+expectation*. The profile's reset values satisfy it. The model's BMSR
+``0x7849`` and ANER ``0x0004`` follow the datasheet's permanent bits.
+
+ANNPTR resets to ``0x2001``, not the nominal table's ``0x2801``. The
+datasheet's published erratum for the BVJE initialises the transmit
+toggle to zero :src:`ti-dp83843-snls021b p. 43`, *established*. The
+model does not exchange next pages. The toggle never changes.
+
+Registers ``0x08``-``0x0f``, ``0x1a``, ``0x1b`` and ``0x1d``-``0x1f``
+read zero and ignore writes. Register ``0x1c`` (the DP83840A's
+10BASE-T configuration) is reserved on this part. All of them log
+``LOG_UNIMP``. The datasheet gives no reset readback for them, so the
+zero is an *approximation*.
+
+PHY status
+----------
+
+Register ``0x10`` reports the state the model has, from the same
+predicates BMSR uses:
+
+- bit 0, link: set when the live link is up;
+- bit 1, 10 Mb/s, and bit 2, full duplex: valid only with link up, and
+  either autonegotiation disabled or negotiation complete. They come
+  from BMCR when forced and from the resolved mode when negotiated;
+- bit 3, loopback: set when the model is in loopback;
+- bit 5, autonegotiation complete: set with link up and autonegotiation
+  enabled;
+- bit 8, interrupt pending: reads the shared pending flag and clears
+  it;
+- bit 9, autonegotiation enabled: follows BMCR;
+- bit 11, device ready: set with link up and not isolated, an
+  *approximation*. The datasheet's timing for ready is not modelled.
+
+The receive-error, carrier-integrity, false-carrier, remote-fault,
+jabber and page-received bits read zero. The model generates none of
+those events.
+
+Counters and control fields
+---------------------------
+
+The three counters store any value written and clear on read. The model
+never increments them.
+
+Register ``0x16`` bit 14 (far-end fault indication) reads zero while
+autonegotiation is enabled. With autonegotiation disabled and fibre
+selected in register ``0x19`` bit 5 it reads one. Writes cannot change
+it. Register ``0x17`` bit 12 reads one when fibre is selected. The
+datasheet's carrier-integrity status bit (register ``0x16`` bit 4)
+reads zero because no event sets it.
+
+Register ``0x18`` bit 7 reads one when the link is full duplex or
+register ``0x19`` bit 9 selects repeater mode, whatever was written to
+it.
+
+Transmit-quiet, test-pattern, LED, equalizer, baseline-wander and other
+analogue controls keep their written bits but do nothing. The model
+logs ``LOG_UNIMP`` for a write to register ``0x16`` with any bit set but
+bit 5, to ``0x17`` with bit 14, to ``0x18`` with any of ``0x055c``, to
+``0x19`` with any bit above the address, and to BMCR with the collision
+test bit (bit 7).
+
+.. _sgi-dp8384x-reset:
+
+Reset
+=====
+
+BMCR bit 15 resets the transceiver at once and the bit never reads set.
+The datasheet gives a reset time of about 1.2 ms in one place and about
+500 microseconds in another :src:`ti-dp83843-snls021b p. 37`. The model
+does not delay either.
+
+Reset restores every register to its reset value, drops pending
+negotiation and the pending interrupt flag, and cancels the timers. The
+DP83843 reset also restores the configured MII address even if software
+had moved it. Device reset does the same. A management reset sent to
+the old address after software moved the DP83843 does not reach it.
+
+The Origin 300 IO-8 composition holds the DP83843 in reset from the
+IOC3's GPIO5 line. With GPIO5 configured as an output and driven low the
+IOC3 asserts a logical reset request. Driving it high, or disabling the
+output, releases it. Release does not restart anything. The public
+OpenBSD IOC3 driver pulses GPIO5 low and high before it attaches the
+Ethernet driver, a *software expectation*. The board's wiring and polarity are
+*unknown*. The connection is an *approximation*. Fuel has no such
+connection, and the DP83840A ignores the line.
+
+While held, the DP83843:
+
+- reads as absent (``0xffff``) and ignores writes, so no register side
+  effect runs;
+- reports no link, completion or readiness;
+- passes no frames.
+
+A MAC reset leaves the transceiver alone.
+
+.. _sgi-dp8384x-link:
+
+Link and negotiation
+====================
+
+There is no cable in the model. Link, partner ability and timing are
+synthesised, an *approximation* throughout. The partner is a
+cooperative far end that advertises ``0x01e1`` (all four modes plus the
+selector) and does not fail. Link state follows the network backend: a
+backend link-down clears the live link, and link-up restores the
+retained result without renegotiating.
+
+DP83840A
+--------
+
+Out of reset the link reads down with negotiation incomplete. The
+Origin 200 PROM's power-on test requires that state, a *software
+expectation*. Two things bring the link up:
+
+- a BMSR read with autonegotiation enabled starts a 2 second
+  virtual-time timer, once per reset. When it fires negotiation reads as
+  complete and link as up. Two seconds lies in the datasheet's range for
+  negotiation and outlasts the PROM test's reset-value sweep, which
+  takes about a tenth of a second, an *approximation*. Starting it from
+  reset instead would expire before the PROM test's probe, and starting
+  it from a control write never fires under Linux's phylib;
+- any BMCR write that does not isolate the transceiver brings link up
+  and marks negotiation complete at once and cancels the timer. A write
+  that sets isolate marks negotiation incomplete and cancels the timer.
+  A later BMSR read starts it again.
+
+Both drivers read BMSR twice and combine the reads, because hardware
+latches link low. The model reports the live level in both reads, an
+*approximation*, so nothing latches and nothing needs clearing.
+
+With the link up, OpenBSD's ``nsphy`` checks the completion bit when
+autonegotiation is enabled, then reads ANER. If the partner can
+autonegotiate it intersects ANAR and ANLPAR to get 100BASE-TX full
+duplex. Only otherwise does it read register ``0x19`` to tell 10 from
+100 Mb/s, and its own comment says that register does not report
+duplex. The model reports a capable partner, so a guest takes the first
+route. A forced-speed write also reports completion in BMSR, which a
+real chip would not.
+
+DP83843
+-------
+
+The first-BMSR-read timer works as on the DP83840A. Negotiation resolves
+ANAR against the partner in priority order 100BASE-TX full duplex,
+100BASE-TX half duplex, 10BASE-T full duplex, 10BASE-T half duplex
+:src:`ti-dp83843-snls021b p. 29`, *established*. The result is held until
+reset, a restart, or autonegotiation being disabled. A later ANAR write
+changes the next negotiation, not the held result, an *approximation*:
+the datasheet does not fix the update point. With no common mode, link
+and completion stay down and the model logs ``LOG_UNIMP``.
+
+A BMCR write that enables autonegotiation without the restart bit, and
+does not isolate, completes negotiation at once, as on the DP83840A.
+
+A BMCR write that sets autonegotiation enable with restart (bit 9) and
+does not isolate begins a timed restart, an *approximation*:
+
+1. negotiation reads as incomplete and link as down;
+2. for 1.5 seconds of virtual time, the break-link interval, BMCR bit 9
+   reads one;
+3. bit 9 then clears and the model negotiates for 2 seconds more;
+4. negotiation completes 3.5 seconds after the write.
+
+The datasheet gives about 1.5 seconds of break-link and about 2 to 3
+seconds of negotiation :src:`ti-dp83843-snls021b p. 30-31`,
+*established*. It does not say whether the negotiation time includes
+break-link, when bit 9 clears, or how loopback changes the start. The
+model's values, and clearing bit 9 at the end of break-link, are its
+choice. Reading BMSR neither starts nor advances the timers. Clearing
+bit 9 in software leaves the restart running. Clearing autonegotiation
+enable cancels it and forces the link up at once to the BMCR speed and
+duplex, provided the backend link is up and the media configuration is
+supported. A forced link reports link up and completion down.
+Disabling autonegotiation is therefore not a cancel of a physical
+break-link wait, an *approximation*.
+
+The "unsupported media configuration" test used throughout is:
+repeater or fibre selected in register ``0x19`` (mask ``0x0220``),
+serial 10 Mb/s, autoswitch or AUI selected in register ``0x18`` (mask
+``0x1a20``), or a bypass or non-normal 100 Mb/s data-path selection in
+register ``0x17`` (mask ``0x3f80``). Any of them leaves the link down
+with the written value kept, logs ``LOG_UNIMP`` and invalidates the held
+negotiation result. Returning to a supported setting does not restore
+it by itself.
+
+Power-down (BMCR bit 11) drops link. Isolate is covered below.
+
+.. _sgi-dp8384x-datapath:
+
+Data path and loopback
+======================
+
+BMCR bit 14 loops transmit back to receive on both parts. The IOC3
+delivers the looped frame through its own receive path and sends nothing
+to the backend, whatever the link state. Frames arriving from the
+backend are refused while the loop is selected.
+
+Other loopback selections are part-specific:
+
+- DP83840A: register ``0x18`` bits ``0x0300`` or ``0x0800``. The
+  DP83840A's register ``0x17`` is storage, so a write to it never
+  selects loopback. Origin 200 software depends on that, because OpenBSD
+  writes the carrier-integrity bit there on every media change;
+- DP83843: register ``0x17`` bits 5 (twister loopback) and 4 (10 Mb/s
+  ENDEC loopback). Register ``0x18`` is storage here. The Origin 300
+  PROM's twister loopback test writes BMCR ``0x2100`` and then ORs 0x20
+  into register ``0x17``, a *software expectation*. OpenBSD never
+  writes the register. Setting BMCR bit 14 sets both LBR bits and
+  clears the 100 Mb/s data-path selection (bits 9:7)
+  :src:`ti-dp83843-snls021b p. 33`, *established*. The datasheet does
+  not say what bits 5 and 4 read after BMCR loopback is cleared again. The model leaves them set,
+  so loopback stays selected until software clears them or the
+  transceiver resets, an *approximation*.
+
+Isolate (BMCR bit 10) and power-down (bit 11) stop frames in both
+directions on the DP83843 while management access keeps working
+*(established)*. An unsupported media configuration and reset hold do
+the same in the model. On the DP83840A the data path is always on.
+Clearing the condition re-opens receive and the IOC3 flushes frames it
+queued meanwhile.
+
+Interrupts
+==========
+
+Neither part drives an interrupt line in the model. The DP83840A has an
+interrupt facility the board does not use. On the DP83843 the pending
+flag exists only in registers ``0x10`` bit 8 and ``0x12`` bit 15, which
+share one flag. Reading either returns the old value and clears it.
+Writing either does nothing.
+
+With register ``0x11`` bit 1 (enable) set, the flag is raised by a
+change of live link in either direction and by negotiation completion
+going from clear to set. Clearing completion on a restart or a forced
+write is not an event. Reset clears the flag and the enable. Clearing
+the enable later leaves a raised flag in place, an *approximation*: the
+datasheet gives no rule.
+
+Register ``0x11`` bit 0 (test interrupt) raises the flag at the end of
+every access to the transceiver, independent of the enable. A read first
+returns its value and clears the flag, and then bit 0 raises it again.
+Accesses that miss the address do not count. The order is a model
+choice for deterministic tests, not a measured timing.
+
+Errors and logging
+==================
+
+- Writes to read-only registers (BMSR, the identity registers, ANLPAR,
+  ANER, and on the DP83840A register ``0x19``): ``LOG_GUEST_ERROR``. The
+  DP83843 drops writes to registers ``0x10`` and ``0x12`` silently.
+- Registers and fields the model does not implement: ``LOG_UNIMP``, as
+  listed above.
+- Reads of unimplemented DP83840A registers return zero, not ``0xffff``.
+- A DP83843 with no common advertised mode, or with an unsupported media
+  configuration, logs ``LOG_UNIMP`` and leaves the link down.
+- Management accesses at an unmatched address return ``0xffff`` or are
+  dropped without logging.
+
+Migration
+=========
+
+Identical builds only. The DP83840A state (control, advertisement, next
+page, the three storage registers, negotiation and link flags, restart
+phase and deadline, and the settle timer) migrates. A subsection
+carries the DP83843 registers, counters, resolved mode, pending flag and
+reset hold. The configured address and the part selection are
+properties, not state. Saving during a pending restart or settle timer
+and restoring on the same build resumes it.
+
+Model limits
+============
+
+- No analogue behaviour: signal quality, polarity, squelch, jabber,
+  carrier integrity, remote fault generation and the test patterns.
+  Selecting them logs ``LOG_UNIMP``.
+- No real link partner. Negotiation always succeeds against an
+  all-capable partner when ANAR shares a mode. Next-page exchange,
+  parallel detection and partner faults do not exist.
+- Link status is the live level and never latches low.
+- The DP83840A's registers ``0x17``, ``0x18`` and ``0x1c`` are storage.
+  Its register ``0x19`` does not report speed.
+- The strap-dependent reset values of both parts are the model's profile,
+  not measurements of any board.
+- Reset time, break-link and negotiation times are the model's choices
+  within the datasheet's ranges.
+- The Fuel board's transceiver is a catalogue selection, and it has no
+  GPIO reset connection.
+
+Tests
+=====
+
+``tests/qtest/sn0-ioc3-test.c`` covers the DP83840A on the Origin 200
+IOC3: the single answering address
+(``sn0/ioc3/phy-answers-at-one-address``), the identity words, the
+self-clearing reset, the bench state before a control write, a usable
+link after one, the 2 second settle on a status read, the configuration
+register read-back and address field, the diagnostic's reset values and
+the loopback register.
+
+``tests/qtest/sgi-ioc3-eth-test.c`` covers both parts through the IOC3's
+Ethernet engine. DP83843 tests cover the twister loopback turning a
+frame round, loopback requiring bit 5, a reset re-opening the backend,
+the next-page transmit register, BMCR loopback selecting LBR, the
+restart timing, cancel and repeat cases, the forced-mode link, the
+register subset (reset values, masks, modes, events and address) and
+migration at each restart phase. Two tests assert that the DP83840A is
+unchanged: bit 5 of register ``0x17`` does not select loopback, and a
+restart behaves as before.
+
+``tests/qtest/sn1-address-map-test.c`` has ``origin300/ioc3/phy-gpio-reset``
+for the IO-8 GPIO5 reset, including the held and released states, the
+unrelated-pin and disabled-output cases, and that a MAC reset does not
+reset the transceiver. ``tests/qtest/sn1-fuel-test.c`` has
+``fuel/ioc3-phy``, which checks the DP83843 identity and reset values at
+address 1 on Fuel and that the IO-8 GPIO5 reset is not connected.

@@ -6,34 +6,84 @@
 SGI L1 system controller (Origin 300, Fuel, Origin 350 family)
 ===============================================================
 
-The L1 is the per-chassis system controller of the Origin 300, Fuel and
-the Origin 350 family (Origin 350, Onyx 350, Tezro and Onyx4). QEMU models the node-facing side in ``hw/misc/sgi-l1.c``: a
-16550-style UART in the Bedrock's Hub special space speaking a framed
-request and response protocol, which the PROM, IRIX and the other
-guests use to read board records, drive the display and carry the
-operator console. The controller's board-side interfaces (environmental
-monitoring, JTAG scan, USB to an upstream controller, the RS-422
-peer links) are not modelled. This page states what public sources
-establish, what the model chose, and what has no public source.
-Ratings follow :ref:`sgi-ratings`.
+The L1 is the per-chassis system controller of the Origin 300, the Fuel
+and the Origin 350 family (Origin 350, Onyx 350, Tezro and the Onyx 4
+host). It runs from standby power, keeps the chassis identity, watches
+fans, supplies and temperatures, drives node power, reset and NMI, and
+carries the operator console. The node's Bedrock reaches it through a
+16550-style UART and a framed request and response protocol, which the
+IP35 PROM, IRIX and the public kernels use to read board records, write
+the display and pass console text. The same controller sits in NUMAlink
+router modules and the Origin 300 PCI expansion module.
 
-Sources: OpenBSD sgi at
-``openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf``
-(``sys/arch/sgi/sgi/l1.c``, ``l1.h``, ``sys/arch/sgi/xbow/hub.h``); SGI's
-Linux SN1 port at ``linux-history:7570df54ef8c`` (tag v2.5.40,
-``arch/ia64/sn/io/l1.c``, ``l1_command.c``, ``include/asm-ia64/sn/ksys/l1.h``);
-the out-of-tree MIPS port ``linux-ip35:9f613a321ea0``
-(``arch/mips/sgi-ip35/ip35-l1.c``); *SGI L1 and L2 Controller Software
-User's Guide* (007-3938-001 and -006, printed pages cited below); *Origin
-300 User's Guide* (007-4365-002); *Origin 300 System with NUMAlink Module
-User's Guide* (007-4498-002); *Origin 3000 System Architecture*
-(108-0240-002); *PCI Expansion Module User's Guide* (007-4499-002);
-*Fuel Visual Workstation Hardware User's Guide* (007-4480-001).
+QEMU models the node-facing side as two objects in
+``hw/misc/sgi-l1.c``: ``sgi-l1``, the controller (frame parser, request
+dispatch, operator console, display, log and power state), and
+``sgi-l1-uart``, the eight-register UART window a Bedrock or router
+maps. The controller's own processor, its environmental bus, JTAG scan,
+flash and management USB are not modelled. No controller board or
+firmware revision is modelled. Where this page says what "the 1.44.0
+image" does, it states what the shipped L1 firmware image version 1.44.0
+for the Origin 300 product group, :src:`l1-firmware-1.44.0`, was read to
+do. Those statements are rated *inferred*: the image is the controller's
+software, and its behaviour on a fitted chassis follows only if that
+image runs there. Captures show Origin 300s running L1 1.18.5 and 1.48.1,
+and other versions may differ. Facts are rated as described in
+:ref:`sgi-ratings`.
+
+.. _sgi-l1-sources:
+
+Sources
+=======
+
+- SGI's *L1 and L2 Controller Software User's Guide*,
+  :src:`007-3938-001` (2001) and :src:`007-3938-006` (2006): operator
+  commands, console mode, brick types, the event texts, the
+  ``l1dbg promreq`` request log and the ``uart`` listing.
+- SGI's *Origin 300 User's Guide*, :src:`007-4365-002`: the L1 logic and
+  console connector, the power-on procedure, console mode and the
+  two-chassis setup. :src:`007-4365-001 p. 75` prints an IP45 board
+  record.
+- SGI's *Origin 300 System with NUMAlink Module User's Guide*,
+  :src:`007-4498-002`: the 2001 L1 command appendix and printed board
+  record dumps.
+- SGI's *Origin 3000 System Architecture*, :src:`108-0240-002`: the
+  controller's role, its RS-422 ports and its battery-backed clock.
+- SGI's *PCI Expansion Module User's Guide*, :src:`007-4499-002`, and the
+  *Fuel Visual Workstation Hardware User's Guide*, :src:`007-4480-001`.
+- The shipped L1 firmware image, :src:`l1-firmware-1.44.0`, and the L1
+  1.48.1 image in the published IP35 patch carrier
+  :src:`ip35-patch-sg0007149`. Facts from these are *inferred* as stated
+  above.
+- National Semiconductor's *PC16550D UART* datasheet, June 1995,
+  :src:`ns-pc16550d-1995`, for the UART interrupt rules.
+- Motorola's *MCF5206e User's Manual*, revision 1, :src:`nxp-mcf5206eum-1`,
+  and its revision-3 errata :src:`nxp-mcf5206eumad-3`, for the M-Bus
+  register file the 1.44.0 image programs.
+- OpenBSD ``sys/arch/sgi/sgi/l1.c``, ``l1.h``, ``ip27_machdep.c`` and
+  ``sys/arch/sgi/xbow/hub.h`` at ``2df91d80c104``; SGI's Linux SN1 port at
+  ``7570df54ef8c`` (tag v2.5.40), ``arch/ia64/sn/io/l1.c``,
+  ``l1_command.c`` and ``include/asm-ia64/sn/ksys/l1.h``; the out-of-tree
+  MIPS port ``linux-ip35`` at ``9f613a321ea0``,
+  ``arch/mips/sgi-ip35/ip35-l1.c`` and ``ip35-console.c``. These are
+  *software expectations*.
+- The public Linux IP35 machine-identification patch,
+  :src:`lore-kaloz-ip35-35`, for the brick-type characters it maps to
+  products, a *software expectation*.
+- The IP35 PROM 6.210, :src:`ip35-prom-6.210`, and the IRIX 6.5.30 kernel
+  objects, read as binaries, for what the stock software sends and
+  accepts. These are *software expectations*.
+- Published captures: a two-chassis Origin 300 under OpenBSD,
+  :src:`marc-openbsd-sgi-139223952727384`; a two-chassis Origin 300
+  ``cfg`` listing, :src:`nekonomicon-17314`; an Origin 350 L1 log,
+  :src:`nekonomicon-16729141`; Origin 350 and Fuel L1 sessions,
+  :src:`graphica-o350-chimera-notes`; Fuel ``l1cmd`` output,
+  :src:`tingo-fuel-irix-console`.
 
 .. _sgi-l1-role:
 
-Role
-====
+Role and placement
+==================
 
 .. list-table::
    :header-rows: 1
@@ -42,107 +92,289 @@ Role
    * - Fact
      - Rating
      - Source
-   * - The Origin 300 has IP45 L1 logic for fans, temperature and LEDs, and
-       an I/O-8 assembly with a rear L1 console connector and a separate
-       management USB port toward an optional upstream controller. The
-       display reads "L1 running" on mains power before the rest of the
-       chassis is powered.
+   * - The Origin 300 has IP45 L1 logic for fans, temperature and LEDs,
+       and an I/O-8 assembly with a rear L1 console connector and a
+       separate management USB port toward an optional upstream
+       controller. The display reads "L1 running" on mains power before
+       the rest of the chassis is powered.
      - established
-     - 007-4365-002 printed pages 10, 12 and 35; 007-3938-001 printed
-       page 3 (the USB connection as a slave port).
+     - :src:`007-4365-002 p. 10, 12, 35`; the USB connection is a slave
+       port, :src:`007-3938-001 p. 3`.
+   * - The L1 console connector is the console for the L1 and the PROM.
+       It runs at 38,400 baud, eight data bits, no parity, one stop bit,
+       with hardware flow control.
+     - established
+     - :src:`007-4365-002 p. 35`
    * - The Fuel has an L1 as a dedicated diagnostic connection, separate
        from the external serial ports, and two USB ports.
      - established
-     - 007-4480-001 printed pages 6 and 127-130.
+     - :src:`007-4480-001 p. 6, 127-130`
    * - The PCI expansion module has its own L1: display hardware at the
-       front, control logic on the power board; it monitors the module
-       and controls power to its PCI slots, runs on 12 V standby, and can
-       report that power is insufficient for all fitted cards.
+       front, control logic on the power board. It monitors the module,
+       controls power to its PCI slots and runs on 12 V standby.
      - established
-     - 007-4499-002 printed pages 36, 48 and 50. Its controller protocol,
-       identity and the guest-visible effect of slot-power changes are
-       unknown.
-   * - Three public consumers speak to the L1 over its UART: OpenBSD sends
-       four request kinds and never uses it as a console; the Linux SN1
-       port sends more and uses it as its early console; the out-of-tree
+     - :src:`007-4499-002 p. 36, 48, 50`
+   * - A C-brick L1 has two RS-422 ports. With no router, one joins two
+       C-bricks over the NUMAlink cable and carries console and
+       diagnostic data, resets, NMI and power between them.
+     - established
+     - :src:`108-0240-002 p. 2-47`. That an Origin 300 pair uses this
+       path is *inferred* from the same cable shape,
+       :src:`007-4365-002 p. 14, 38`.
+   * - The controller is a ColdFire microcontroller. The 1.44.0 image
+       names an MCF5206e build target and programs M-Bus registers at
+       the MCF5206e offsets.
+     - inferred
+     - :src:`l1-firmware-1.44.0 reset entry and M-Bus driver`. No board
+       has been inspected for the fitted part.
+   * - Three public consumers speak to the L1 over its UART. OpenBSD
+       sends four request kinds and never uses it as a console. The
+       Linux SN1 port sends more and uses it as its early console. The
        MIPS port uses it only as a console.
-     - established
+     - software expectation
      - The three consumers' sources above.
-   * - What the stock IP35 PROM and IRIX 6.5.30 send.
-     - unknown
-     - No public source states it. The model's replies to those requests
-       come from tracing the stock PROM's and IRIX's accesses; a
-       capture of an L1 session from a real chassis would settle them.
 
-.. _sgi-l1-uart:
-
-UART window
-===========
-
-The UART is reached in Hub special space at the node's remote register
-window plus ``0x80``, that is the node's Hub special base plus
-``0x3000_0080``, one 16550 register per 8 bytes, accessed as 64-bit loads
-and stores of which only the low byte is significant (established: OpenBSD
-``hub.h`` lines 68-73 and ``l1.c`` lines 97-142; Linux SN1 ``l1.c`` lines
-61-77; ``ip35-l1.c`` lines 28-50). All three consumers use the remote form;
-none uses the local form. What no public source states is whether the
-Bedrock's memory and directory unit decodes this window or another unit
-forwards it (unknown; the unit's junk-bus timing register carries setup and
-hold fields for the UART, Linux SN1 ``hubmd.h`` lines 1059-1097).
+The model places one controller in each compute node (Origin 300, Fuel,
+Origin 350 family), one in each NUMAlink router module
+(:doc:`sn1-router`) and one in each PCI expansion module
+(:doc:`pci-expansion`). The ``brick-type`` property picks a profile:
 
 .. list-table::
    :header-rows: 1
-   :widths: 14 30 56
+   :widths: 24 14 62
+
+   * - ``brick-type``
+     - Type code
+     - Profile
+   * - ``ip45`` (default)
+     - ``0x34``
+     - Compute chassis: console, power, reset and two board-record
+       positions.
+   * - ``ip34``
+     - none
+     - Compute chassis with no default type. The machine supplies one.
+   * - ``ip35``
+     - ``0x43``
+     - Compute chassis.
+   * - ``ip37``
+     - ``0x33``
+     - Compute chassis.
+   * - ``unknown``
+     - none
+     - Compute chassis that answers the identity request with minus 104
+       unless a type code is supplied.
+   * - ``pci-expansion``
+     - ``0x25``
+     - Expansion module: four board-record positions of at most 512
+       bytes, no console, power or reset of a node.
+   * - ``router``
+     - ``0x52``
+     - Router module: no board records, no console, power or reset.
+   * - ``vbrick-discovery-reference``
+     - none
+     - A controller with no identity, kept for a future graphics-brick
+       topology. It refuses every request (see
+       :ref:`sgi-l1-routing`).
+
+A non-zero ``brick-type-code`` overrides the profile's code. A profile
+without compute services refuses ``power``, ``reset``, ``softreset``,
+``nmi`` and ``select`` with an ``INFO:`` line and ``LOG_UNIMP``, and
+answers the compute requests (``0x1002``, ``0x1003``, ``0x100b``,
+``0x100c``, ``0x2001``, ``0x2005`` to ``0x2008``) with minus 101.
+
+.. _sgi-l1-identity:
+
+Identity
+========
+
+The identity request ``0x0003`` returns the rack and bay packed as rack
+shifted left 6 or-ed with bay, then the brick-type character. The 1.44.0
+image keeps the character in non-volatile memory and answers ``0x34``
+(``4``) for an IP45 chassis, *inferred*. The machines select these
+characters:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 12 58
+
+   * - Machine
+     - Character
+     - Basis
+   * - Origin 300
+     - ``0x34``
+     - The 1.44.0 image, *inferred*; the Linux header's IP45 code and
+       :src:`lore-kaloz-ip35-35`, a *software expectation*.
+   * - Fuel
+     - ``0x41`` (``A``)
+     - :src:`lore-kaloz-ip35-35`, a *software expectation*. The IP35
+       PROM accepts ``4`` or ``A`` here. No Fuel L1 reply is captured.
+   * - Origin 350, Onyx 350, Onyx 4 host
+     - ``0x37``
+     - A retained L1 firmware image selects ``0x37`` when the integrated
+       board's record names the Origin 350 interconnect board,
+       *inferred*; published Origin 350 inventories show that board,
+       :src:`nekonomicon-16724207`. The Onyx 350 and Onyx 4 reuse the
+       value, an *approximation*.
+   * - Tezro deskside
+     - ``0x39`` (``9``)
+     - :src:`lore-kaloz-ip35-35`, a *software expectation*.
+   * - Tezro rack
+     - ``0x51`` (``Q``)
+     - :src:`lore-kaloz-ip35-35`, a *software expectation*.
+   * - Router module
+     - ``0x52`` (``R``)
+     - The Linux SN1 header's router character, a *software
+       expectation*.
+   * - PCI expansion module
+     - ``0x25``
+     - The 1.44.0 image, *inferred*.
+
+No physical L1 identity reply has been captured for any of these
+products, so each value is the model's choice from the basis given.
+
+The prompt names the chassis as rack, type letter and slot, ``001c01``
+for a stock single chassis. The letter is one of c, i, p, r, x, n, g, or
+``?`` :src:`007-3938-006 p. 60`. Rack and slot are kept in non-volatile
+memory and a change takes effect at the next L1 boot
+:src:`007-3938-001 p. 23`, *established*. A second chassis is given slot
+02 before cabling :src:`007-4365-002 p. 38`, and a cabled pair appears as
+``Module 001c01`` and ``Module 001c02``
+:src:`marc-openbsd-sgi-139223952727384 lines 17-62`, *observed*.
+
+The model takes rack and bay from the ``rack`` and ``bay`` properties
+(both default 1; rack below ``0x3ff``, bay below ``0x3f``). ``brick rack``
+and ``brick slot`` store a pending value applied at the next controller
+restart. The brick serial (``0x0004``) comes from ``brick-serial`` and
+the system serial (``0x0008``) from ``system-serial``, or from a station
+address (see :ref:`sgi-l1-records`). Without them both requests answer
+minus 104. The firmware revision (``0x0005``) comes from
+``revision-major``, ``-minor`` and ``-patch``. All three must be set or
+none; without them the request answers minus 104 and logs ``LOG_UNIMP``.
+The Origin 300, Origin 350, Onyx 350 and Onyx 4 machines select 1.18.5,
+a version Origin 300 captures show. The Tezro profiles select 1.48.1,
+the version in :src:`ip35-patch-sg0007149`. The Fuel selects none. These
+are compatibility choices, not measured factory values.
+
+.. _sgi-l1-uart:
+
+Register map
+============
+
+The UART sits in Hub special space at the node's remote register window
+plus ``0x80``: the node's Hub special base plus ``0x3000_0080``. Each
+16550 register occupies eight bytes and is reached with 64-bit loads and
+stores whose low byte carries the data (OpenBSD ``hub.h`` lines 68-73
+and ``l1.c`` lines 97-142; Linux SN1 ``l1.c`` lines 61-77;
+``ip35-l1.c`` lines 28-50), a *software expectation*. All three
+consumers use the remote form. The stock IP35 PROM's L1 client uses it
+too. Which Bedrock unit decodes the window is *unknown*; the
+memory-directory unit's junk-bus timing register carries UART setup and
+hold fields (Linux SN1 ``hubmd.h`` lines 1059-1097).
+
+The model also decodes the same eight registers at the local form's
+``+0x80`` (the node's Hub special base plus ``0x1000_0080``), sharing
+one state. No public consumer reads the UART there. The Origin 300
+field diagnostic monitor writes its console there when booted headless
+under the stock PROM, observed on the model only. The local decode is
+an *approximation*. A read of Hub special local offset ``0x80`` on a
+physical Origin 300 or 350 would settle whether real silicon answers.
+A router module maps the same window in its own register space
+(:doc:`sn1-router`).
+
+``sgi-l1-uart`` accepts only eight-byte accesses, big-endian, with the
+register in the low byte. A narrower access is refused by QEMU's memory
+core and logged under ``LOG_GUEST_ERROR``; through the Hub windows the
+processor sees a decode error. The Hub's region protection applies to
+both forms.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 9 22 9 60
 
    * - Offset
-     - 16550 register
-     - What the consumers require
+     - Register
+     - Reset
+     - Model
    * - ``0x00``
-     - receive and transmit data
-     - A write hands a byte to the frame parser; a read pops the next
-       byte the L1 has for the processor.
+     - receive / transmit; divisor low with DLAB
+     - ``0``
+     - A write hands one byte to the frame parser. A read pops the next
+       byte queued for the processor, or returns 0 when the queue is
+       empty.
    * - ``0x08``
-     - interrupt enable
-     - Accepts writes; the SN1 port writes 0.
+     - interrupt enable; divisor high with DLAB
+     - ``0``
+     - Bits 0 and 1 are honoured. Setting bits 7-2 logs ``LOG_UNIMP``.
    * - ``0x10``
-     - interrupt identification, FIFO control
-     - The SN1 port writes ``0x01`` then ``0x07``; read ``0x01`` (none
-       pending) in polled operation.
+     - interrupt identification (read), FIFO control (write)
+     - ``0x01``
+     - Reads ``0x04`` (received data), ``0x02`` (transmitter empty) or
+       ``0x01`` (none). A write with bit 1 set empties the queue toward
+       the processor. No FIFO identification bits.
    * - ``0x18``
      - line control
-     - Read-write latch; the SN1 port writes ``0x80`` for the divisor then
-       ``0x03``.
+     - ``0``
+     - Read-write latch. Bit 7 selects the divisor latches.
    * - ``0x20``
      - modem control
-     - Accepts writes; the SN1 port writes ``0x22``.
+     - ``0``
+     - Read-write latch with no effect.
    * - ``0x28``
      - line status
-     - Bits 5 and 6 set whenever a byte can be accepted; bit 0 set
-       exactly while a received byte waits; bits 2 and 3 clear.
+     - ``0x60``
+     - Bits 5 and 6 always set. Bit 0 set while a byte waits. No error
+       bits. Writes log ``LOG_GUEST_ERROR``.
    * - ``0x30``
      - modem status
-     - Bit 4 (clear to send) set; the SN1 early path and the MIPS port
-       spin forever without it (``l1.c`` line 1973; ``ip35-l1.c`` lines
-       56-57).
+     - ``0x10``
+     - Clear-to-send always set. Writes log ``LOG_GUEST_ERROR``.
    * - ``0x38``
      - scratch
-     - Unused.
+     - ``0``
+     - Read-write.
 
-The SN1 port programs a divisor of 13 against a 12 MHz clock for 57,600
-baud, and the L1's own ``uart`` command reports the Bedrock-side port at
-57,692 baud, exactly that divisor (007-3938-006 printed pages 110-111);
-the SN1 port's raw-byte configuration uses a baud base of 124,800
-(``kernel/setup.c`` lines 236-259), so the model enforces no divisor. OpenBSD
-never programs the UART and polls line status up to a million times per
-byte with no wall-clock bound (``l1.c`` lines 100-144), so a silent UART
-costs it nine such waits per node (established). The model also decodes the
-same eight registers at the local form's ``+0x80`` (node Hub special base
-plus ``0x1000_0080``), sharing state: an *approximation* with no public
-consumer, kept because the vendor field-diagnostic monitor sMDK writes its
-console there when booted headless under the stock PROM (observed on the
-model; no public source documents it). A read of Hub special
-local offset ``0x80`` on a physical Origin 300 or 350 would settle whether
-real silicon answers there.
+The register set and the consumers' demands on it are *software
+expectations*: line status bits 5 and 6 whenever a byte can be accepted,
+bit 0 exactly while a byte waits, and clear-to-send, without which the
+SN1 early path and the MIPS port spin forever (``l1.c`` line 1973;
+``ip35-l1.c`` lines 56-57). The constant values are an *approximation*:
+the window accepts every byte at once and has no transmit delay.
+
+Divisor
+-------
+
+The SN1 port programs divisor 13 against a 12 MHz clock for 57,600 baud.
+The L1's ``uart`` command reports the Bedrock-side port at 57,692 baud,
+exactly that divisor :src:`007-3938-006 p. 110-111`, *established*. The
+stock PROM programs the same divisor and eight data bits, no parity, one
+stop bit, a *software expectation*. Another SN1 build drives the same
+window as a raw 8250 with a baud base of 124,800 (``kernel/setup.c``
+lines 236-259), so the model stores the divisor and enforces nothing.
+
+Interrupt
+---------
+
+The window's ``uart`` output follows the PC16550D rules for the two
+causes it implements :src:`ns-pc16550d-1995 p. 11, 13-18`,
+*established* for that part:
+
+- Interrupt-enable bit 0 with a byte waiting selects cause ``0x04``,
+  ahead of transmitter-empty. Reading the last byte clears it. Reading
+  identification does not.
+- Setting interrupt-enable bit 1 while it was clear raises a
+  transmitter-empty occurrence. Reading identification while it is the
+  selected cause acknowledges it. A data write clears it and, once the
+  parser has taken the byte, raises one new occurrence if bit 1 is set.
+- The output is high while an enabled cause remains.
+
+The immediate re-arm after each written byte is an *approximation*: no
+character time passes. Line errors, receive timeouts and modem-status
+interrupts are not modelled. The node wires the output to Bedrock
+interrupt pending bank 0 bit 4 on both processor interfaces. The bit is
+the SN1 header's UART bit, a *software expectation*; delivery to both
+interfaces is an *approximation*, since no source says which interface
+real silicon targets. OpenBSD, the SN1 port and the stock PROM poll and
+never enable the interrupt.
 
 .. _sgi-l1-framing:
 
@@ -151,139 +383,799 @@ Framing and packets
 
 .. list-table::
    :header-rows: 1
-   :widths: 46 12 42
+   :widths: 46 14 40
 
    * - Fact
      - Rating
      - Source
-   * - Frames are HDLC-like, as in PPP: a ``0x7e`` flag on each end, ``0x7d``
-       escaping ``0x7e`` and ``0x7d`` by exclusive-or ``0x20``, and a
-       16-bit frame check initialised ``0xffff``, complemented and sent low
-       byte first over every payload byte from the header to the last
-       argument; a receiver's running check over payload plus the two check
-       bytes equals ``0xf0b8``. Frames shorter than two bytes are dropped.
-     - established
+   * - Frames are HDLC-like, as in PPP: a ``0x7e`` flag at each end,
+       ``0x7d`` escaping ``0x7e`` and ``0x7d`` by exclusive-or ``0x20``,
+       and a 16-bit check (reflected polynomial ``0x8408``) initialised
+       ``0xffff``, complemented and sent low byte first, over every byte
+       from the header to the last argument. A receiver's running check
+       over payload and check bytes equals ``0xf0b8``.
+     - software expectation
      - All three consumers agree: OpenBSD ``l1.c`` lines 156-306 with
        ``ppp_defs.h``; Linux SN1 ``l1.c`` lines 737-1006 and 1186-1474;
        ``ip35-l1.c`` lines 99-238.
-   * - Only the SN1 receiver tolerates repeated flags between frames
-       (``l1.c`` lines 1239-1242, 1327); OpenBSD reads to the next flag
-       and the MIPS port loses the next frame after a doubled or shared
-       flag (``l1.c`` lines 266-293, 525-526; ``ip35-l1.c`` lines
-       193-217). The model therefore sends exactly one opening and one
-       closing flag per frame and never shares a flag.
-     - established
-     - The same lines.
-   * - Payloads are at most 127 bytes (the SN1 send-side clamp and the
-       seven-bit binary length).
-     - established
-     - Linux SN1 ``l1.c``.
+   * - Only the SN1 receiver tolerates repeated flags. OpenBSD and the
+       MIPS port lose the next frame after a doubled or shared flag.
+     - software expectation
+     - OpenBSD ``l1.c`` lines 266-293, 525-526; ``ip35-l1.c`` lines
+       193-217; SN1 ``l1.c`` lines 1239-1242.
    * - The header byte carries the packet type in bits 7:5 and the
        subchannel in 4:0: request ``0x00``, response ``0x20``, event
        ``0x40``. Subchannels 0 to 3 are per-processor consoles, 4 the
-       system console, 16 to 31 operating-system requests (OpenBSD uses
-       16 for everything). A response returns on the request's
-       subchannel.
-     - established
+       system console, 16 to 31 operating-system requests. A response
+       returns on the request's subchannel.
+     - software expectation
      - OpenBSD ``l1.h``; Linux SN1 ``ksys/l1.h``.
-   * - A request payload after the header is a four-byte big-endian
-       destination, a two-byte request code, an argument count byte, then
-       typed arguments (``0x00`` plus four bytes an integer, ``0x01`` plus
-       text and a zero a string, ``0x80`` with the low seven bits the
-       length a binary). The SN1 port omits the count byte on
-       zero-argument requests, OpenBSD always includes it, and a
-       responder must accept both.
-     - established
-     - OpenBSD ``l1.c``; Linux SN1 ``l1.c``.
-   * - A response payload is a four-byte signed code, a field count, then
-       typed fields. Codes: 0 success, minus 100 wrong argument count,
-       minus 101 unknown request, minus 104 data not available, minus 105
-       argument out of range, minus 107 data invalid. OpenBSD decodes the
-       whole word; the SN1 port keeps only the low byte and tests for a
-       negative result, so it never sees a negative code (``l1.c`` lines
-       133-139, 2467-2471).
-     - established
-     - OpenBSD ``l1.h``; Linux SN1 ``ksys/l1.h`` and ``l1.c``. The
-       firmware also sends minus 1 (router error), minus 102, minus 106
-       and minus 108: known only from the stock L1 firmware image, not a
-       registered source, so unknown here as a public fact.
-   * - The 32-bit destination: bits 31:28 controller type (0 L1, 1 L2, 2
-       L3, 3 attached C-brick, 4 attached I/O brick), 27:18 rack with
-       ``0x3ff`` meaning local, 17:12 bay with ``0x3f`` meaning local,
-       4:0 task (3 command interpreter, 4 environmental monitor, 5
-       Bedrock console, 6 general). The local general address is
-       ``0x0ffff006``, the command interpreter ``0x0ffff003``, the
-       attached I/O brick's general task ``0x4ffff006``.
-     - established
-     - Linux SN1 ``ksys/l1.h``; OpenBSD ``l1.h``;
-       linux-ip35 ``sn/l1.h``.
-   * - The prompt names the chassis as rack, type letter and slot,
-       ``001c01`` for a stock single chassis; the letter is one of c, i,
-       p, r, x, n, g, or ``?``. A second chassis is given slot 02 before
-       cabling and the pair appears in the PROM inventory as ``Module
-       001c01`` and ``Module 001c02``.
-     - established
-     - 007-3938-006 printed page 60 ("Valid Brick Types");
-       007-4365-002 printed page 38; the 2014 two-chassis OpenBSD
-       capture ``web:marc-openbsd-sgi-139223952727384``.
+   * - A request payload is a four-byte big-endian destination, a
+       two-byte code, a count byte and typed arguments: ``0x00`` and four
+       bytes an integer, ``0x01`` and text ending in a zero, ``0x80`` with
+       the length in the low seven bits a binary field. The SN1 port and
+       the stock PROM omit the count byte on zero-argument requests;
+       OpenBSD always sends it.
+     - software expectation
+     - OpenBSD ``l1.c``; Linux SN1 ``l1.c``; :src:`ip35-prom-6.210 L1
+       request builder`.
+   * - A response payload is a four-byte signed code, a field count and
+       typed fields. OpenBSD and the stock PROM decode the whole word. The
+       SN1 port keeps only the low byte, so it never sees a negative
+       code.
+     - software expectation
+     - OpenBSD ``l1.h``; SN1 ``l1.c`` lines 133-139, 2467-2471.
+   * - The receiver accepts up to 256 payload bytes plus the check, drops
+       one- and two-byte frames, resynchronises after a bad check,
+       ``0x7d`` before a flag, or overflow without losing the next frame,
+       and treats ``0x7d 0x7d`` as one escape.
+     - inferred
+     - :src:`l1-firmware-1.44.0 link frame reader`
+   * - A reply field is written only while its offset plus its length
+       stays below 128, counting the header but not the tag. The largest
+       binary field is therefore 116 bytes.
+     - inferred
+     - :src:`l1-firmware-1.44.0 reply serializer`
+
+The model's receiver follows the 1.44.0 reading: bytes before the first
+flag are discarded, a frame of three bytes or more whose check passes is
+delivered, and anything else is dropped silently with no reply. Frames
+over 258 bytes are discarded up to the next flag. Its emitter sends one
+opening and one closing flag per frame and never shares a flag, because
+the consumers are less tolerant than the controller. It escapes
+``0x7e``, ``0x7d`` and carriage return (``0x0d``); it does not escape
+``0x11`` or ``0x13``. The 1.44.0 image escapes carriage return only when
+the port's carriage-return option is on; the image's serial start-up
+selects that option, *inferred*. Frames from the processor typed
+response (``0x20``) or ``0x60`` to ``0xe0``, and requests shorter than
+seven bytes, are discarded without a reply. Malformed typed arguments
+(a count that runs past the frame, an unknown tag) answer minus 100. The
+1.44.0 image does not check them and reads stale bytes instead, so that
+answer is an *approximation*.
+
+Reply codes
+-----------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 50 38
+
+   * - Code
+     - Model's condition
+     - 1.44.0 image (*inferred*)
+   * - 0
+     - Success.
+     - Same.
+   * - minus 1
+     - Router error (see :ref:`sgi-l1-routing`): ``ff ff ff ff`` then a
+       four-byte detail, no count byte. Also the command interpreter's
+       status for an unknown command, and the console task's warning
+       with the node off.
+     - Same encoding. Detail 8 means no receiver, 10 a queueing error.
+   * - minus 100
+     - Too few arguments, malformed arguments, a command-interpreter
+       request whose single argument is not text, and the PCI slot
+       requests ``0x2002`` to ``0x2004``.
+     - Too few arguments; the PCI slot requests when their hook is
+       absent.
+   * - minus 101
+     - Unknown code on task 6; a compute request on a non-compute
+       profile.
+     - Unknown code on task 6.
+   * - minus 102
+     - A display request whose argument is not text.
+     - Same.
+   * - minus 104
+     - No data: absent record, wrong record kind, absent serial or
+       revision, empty inventory.
+     - Same.
+   * - minus 105
+     - Out of range: EEPROM area above 4 or offset past the area, the
+       ``0x1009`` selector above 2, and a non-integer argument to an
+       integer setter.
+     - Area and offset; ``0x1009`` selector. A non-integer argument is
+       taken as a pointer value with no error.
+   * - minus 106
+     - ``0x0011`` only, with one integer status 1.
+     - An action failed, with one integer status.
+   * - minus 107
+     - The requested EEPROM area failed its checksum.
+     - Same.
+   * - minus 108
+     - ``0x2007``, ``0x2008``; ``0x0010`` with no processors.
+     - Same, on brick types other than four router and I/O types.
+
+The 1.44.0 image never sends minus 103. A local delivery failure (an
+unknown task or one with no receiver) produces no reply at all.
+
+Requests
+========
+
+The model routes each request by its destination (see
+:ref:`sgi-l1-routing`). A local request goes to the task in bits 4:0.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 45 45
+
+   * - Task
+     - 1.44.0 image (*inferred*)
+     - Model
+   * - 3
+     - Command interpreter: any code with one text argument runs the
+       text as an operator command.
+     - Same, with the model's command set (see
+       :ref:`sgi-l1-console`).
+   * - 5, 21
+     - Bedrock console: the low byte of the first argument is sent back
+       as one console-input byte; with the node off, a minus-1 reply
+       with ``WARNING: power on <id> appears off!``.
+     - Same. On a non-compute profile, minus 101.
+   * - 6
+     - General requests, below.
+     - Below.
+   * - 18
+     - Loopback: reply code equals the request code, up to three
+       arguments echoed.
+     - Same.
+   * - 2, 14, 15, 16, 19
+     - Command relay, configuration exchange, JTAG scan, flash
+       programming.
+     - Dropped with ``LOG_UNIMP``, no reply.
+   * - others
+     - No receiver: dropped, logged in the L1's own log.
+     - Dropped with ``LOG_UNIMP``, no reply.
+
+General requests (task 6)
+-------------------------
+
+An unlisted code answers minus 101 before its arguments are checked.
+Extra arguments are accepted. "Sent by" names the known senders, all
+*software expectations*.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 26 32 32
+
+   * - Code
+     - Request and senders
+     - Model reply
+     - Basis
+   * - ``0x0001``
+     - Read debug switches. Stock PROM.
+     - One integer, the 16-bit ``debug-switches`` value.
+     - Shape *inferred* from the image.
+   * - ``0x0002``
+     - Read rack and bay.
+     - One integer, rack << 6 | bay.
+     - *inferred*
+   * - ``0x0003``
+     - Read rack, bay and type. SN1 port, stock PROM, IRIX.
+     - Rack << 6 | bay, then the type character
+       (:ref:`sgi-l1-identity`).
+     - *inferred*
+   * - ``0x0004``
+     - Read brick serial. Stock PROM.
+     - One text field, ``brick-serial``; minus 104 without it.
+     - *inferred*
+   * - ``0x0005``
+     - Read firmware revision. Stock PROM, IRIX.
+     - Three integers; minus 104 without revision properties.
+     - Shape *inferred*; the image answers 1, 44, 0.
+   * - ``0x0006``
+     - Read an EEPROM area: component, area, offset, length. OpenBSD,
+       SN1 port, stock PROM, IRIX.
+     - See :ref:`sgi-l1-records`.
+     - *inferred*
+   * - ``0x0007``
+     - Read EEPROM format: component.
+     - For a supplied whole-image record: the kind, then for a board
+       record the lengths of areas 1, 2, 3 and 0 and their four status
+       values; for a memory module its length and status. Minus 104
+       otherwise.
+     - The image returns nine or three integers; their meaning beyond
+       the kind is *unknown*. The model's fields are an
+       *approximation*.
+   * - ``0x0008``
+     - Read system serial. Stock PROM, IRIX.
+     - One text field; minus 104 when empty.
+     - *inferred*
+   * - ``0x0009``
+     - Read partition id. Stock PROM.
+     - One integer, ``partition``.
+     - *inferred*
+   * - ``0x000a``
+     - Read port speeds. Stock PROM.
+     - Two integers, ``port-speed-first`` then 0.
+     - Shape *inferred*; values an *approximation* (below).
+   * - ``0x000b``
+     - Read a two-bit setting. Stock PROM.
+     - One integer, initially 0.
+     - Shape *inferred*; meaning *unknown*.
+   * - ``0x000c``
+     - Read attached bricks on ports 1 to 4. Stock PROM on the
+       attached-I/O address.
+     - Eight zero integers.
+     - Shape *inferred*; zeros an *approximation* for no attached
+       bricks.
+   * - ``0x000d``
+     - Read attached bricks on ports 5 and 10.
+     - Four zero integers.
+     - As ``0x000c``.
+   * - ``0x000e``
+     - Node position of the requester. Stock PROM, IRIX.
+     - One integer, the position bits of the console field (below).
+     - *inferred*
+   * - ``0x000f``
+     - Read the last two event reasons.
+     - Two integers, newest first: 1 command, 2 front panel, 3
+       operating system.
+     - Shape *inferred*; order an *approximation*.
+   * - ``0x0010``
+     - Read processor masks.
+     - 1, the ``processors`` count, then two masks with every processor
+       set; minus 108 with no processors.
+     - Shape *inferred*; masks an *approximation*.
+   * - ``0x0011``
+     - Read a 64-byte scan record.
+     - Minus 106 with status 1: the scan master is not modelled.
+     - Success shape *inferred*.
+   * - ``0x1001``
+     - Write debug switches.
+     - Stores the low 16 bits.
+     - *inferred*
+   * - ``0x1002``
+     - Select console subchannel. SN1 port.
+     - Field becomes ``((field & 0x60) | argument) & 0x7f``.
+     - *inferred*
+   * - ``0x1003``
+     - Volunteer as console node.
+     - Accepted with no effect.
+     - Shape *inferred*.
+   * - ``0x1004``, ``0x1005``
+     - Write display text. OpenBSD sends ``0x1005``.
+     - Writes display line 2; unprintable bytes become ``?``.
+     - *inferred*
+   * - ``0x1006``
+     - Set partition id. Stock PROM after a non-zero ``0x000b``.
+     - Stores it.
+     - *inferred*
+   * - ``0x1007``
+     - Set event subchannel. IRIX sends 23.
+     - Stores it and enables events.
+     - *inferred*
+   * - ``0x1008``
+     - Set the two-bit setting.
+     - Stores the low two bits.
+     - *inferred*
+   * - ``0x1009``
+     - Front-panel control: value, selector. Stock PROM.
+     - Accepted; minus 105 for a selector above 2. No panel action.
+     - Shape *inferred*; meaning *unknown*.
+   * - ``0x100a``
+     - Clear event subchannel. Stock PROM.
+     - Disables events.
+     - *inferred*
+   * - ``0x100b``
+     - Report PROM version: exactly three integers.
+     - Logs ``N0: PROM <major>.<minor> (PR <patch>)`` and disables
+       events.
+     - *inferred*; the image clears events only when they were on this
+       port.
+   * - ``0x100c``
+     - Per-processor setting: exactly two integers. Stock PROM, IRIX.
+     - Accepted, not stored.
+     - Shape *inferred*; meaning *unknown*.
+   * - ``0x2001``
+     - System reset. IRIX at reboot.
+     - Success, then the node reset with reason 3.
+     - *inferred*
+   * - ``0x2002`` to ``0x2004``
+     - PCI slot operations.
+     - Minus 100.
+     - Which code is up, down or reset is *unknown*.
+   * - ``0x2005``
+     - Power down. IRIX at halt.
+     - Success, then power-off (:ref:`sgi-l1-power`).
+     - *inferred*
+   * - ``0x2006``
+     - Power cycle. Stock PROM on failure paths.
+     - Success, then power-off and power-on.
+     - *inferred*
+   * - ``0x2007``, ``0x2008``
+     - Read and write an expander byte.
+     - Minus 108.
+     - *inferred* for an Origin 300.
+   * - ``0x4000``
+     - Read processor and memory inventory.
+     - Minus 104: the model keeps no inventory.
+     - Shape *inferred*.
+   * - ``0x4002``
+     - Reboot the L1.
+     - Success, log ``L1REQ_REBOOT requested...``, controller restart.
+     - *inferred*
+
+The SN1 header's full reset ``0x2000`` is not a code the 1.44.0 image
+serves, *inferred*; it answers minus 101 in the model too.
+
+``0x000e`` and the console field
+--------------------------------
+
+The 1.44.0 image keeps a seven-bit field per Bedrock port: node position
+in bits 6:5 and console subchannel in 4:0. It stamps every request with a
+source address whose bits 11:5 hold that position and the request's
+subchannel, and ``0x000e`` returns the position, *inferred*. On a
+single-node Origin 300 the position is 0. The stock PROM discards the
+value on an Origin 300 and uses it only for type ``6``, a *software
+expectation*. The model starts the field at ``node-position`` shifted
+left five (0 to 3, default 0), at every controller restart. ``0x1002``
+updates it without masking its argument, as the image does, so an
+argument of 32 or more lands in the position bits.
+
+Port speeds
+-----------
+
+The stock PROM shows the first ``0x000a`` integer as the I/O link rate:
+zero is 400 MHz and any other value 600 MHz. It ignores the second, a
+*software expectation*. The model answers ``(0, 0)`` by default. The
+Origin 350, Onyx 350, Tezro and Onyx 4 profiles set ``port-speed-first``
+to 1, which removes the PROM's "set to 400Mhz. Expected 600Mhz" warning.
+Both are *approximations*; no physical reply is captured.
+
+.. _sgi-l1-records:
+
+EEPROM records
+==============
+
+The 1.44.0 image registers six records on an Origin 300: 0 the node
+board, 1 the I/O-8 board, then memory modules 0, 2, 1 and 3 as
+components 2 to 5, *inferred*. An index of 6 or more answers minus 104.
+A board record has area 0 (the eight-byte common header), 1 (chassis),
+2 (board) and 3 (internal use); a memory-module record has area 4 (SPD).
+``0x0006`` answers a size probe (length 0) with the remaining count, and
+a read with the remaining count after the chunk and one binary field.
+The image validates each board area by a zero byte sum and each SPD by
+byte 63 equalling the sum of bytes 0 to 62, and marks a failing area
+invalid, *inferred*. The stock PROM and IRIX read components 0 and 1 in
+64-byte chunks; OpenBSD reads SPD records and the I/O board's area for
+its Ethernet address, *software expectations*. OpenBSD's Origin 300 arm
+numbers memory modules differently from the image (``l1.c`` lines
+996-1015).
+
+The model takes records three ways, and never more than one way per
+component.
+
+Raw area files
+  ``chassis-eeprom``, ``board-eeprom`` and ``spd-eeprom`` are arrays of
+  file paths by component (0 to 15) serving areas 1, 2 and 4. A chassis
+  or board file is invalid when its byte sum is not zero, an SPD file
+  (at least 64 bytes) when byte 63 is not the sum of bytes 0 to 62. Areas
+  0 and 3 answer minus 104. A chunk above 116 bytes answers minus 105
+  and logs ``LOG_UNIMP``.
+
+Whole-image records
+  ``board-record-eeprom`` and ``spd-record-eeprom`` take a whole EEPROM
+  image per component (0 to 5). A board image's header bytes 1, 2 and 3,
+  times eight, locate areas 3, 1 and 2. Each area must sum to zero and
+  end below the configured capacity. A missing or failing area answers
+  minus 107. An SPD image is exactly 160 bytes. A chunk above 116 bytes
+  answers with the count 2 and the remaining-count integer only, as the
+  1.44.0 serializer does. The expansion profile takes four board images
+  of at most 512 bytes (power board, PCI logic board, two interface
+  boards) and no SPD.
+
+Built identity records
+  When no file names component 0, and ``node-board-name``,
+  ``node-board-part`` and ``node-board-revision`` (or
+  ``cpu-context-present``) are set, the controller builds a chassis
+  area and a board area. The board area carries the given name, part
+  and revision, the manufacturer ``SYNTHETIC``, a marked synthetic
+  serial such as ``EMUN00`` (``N`` and the ``identity-index``), and zero
+  placeholder fields, and sums to zero. ``cpu-context-present`` adds the
+  processor and hub clocks and a mode word for the Origin 350 family.
+  ``mac-record`` adds the station address (``mac``): ``io8-board``
+  builds component 1 as an ``IO8`` board with serial ``EMUI00`` and the
+  address as twelve hex digits; ``mac-text`` makes the system serial the
+  address text; ``system-board`` does both for the Fuel's single board.
+  ``fuel-mac-eeprom`` instead reads a 512-byte Fuel record image and
+  takes the address from its ``MAC`` field. The address is handed to
+  the node's Ethernet model.
+
+The built records are *approximations*: names, parts and revisions come
+from published inventories (``IP45_2CPU``, ``030-1780-001`` revision C,
+:src:`nekonomicon-16726611`), everything else is a placeholder. With
+the marked serial the stock PROM keeps its NVRAM across resets on the
+model; with ``000000`` it reinitialised it on every boot, a *software
+expectation* observed on the model. The Origin 300 machine supplies no
+SPD records, so the PROM's SPD reads answer minus 104, an
+*approximation* that OpenBSD sees as absent memory modules.
+
+.. _sgi-l1-console:
+
+Console, display and operator commands
+======================================
+
+The L1 has two modes. In L1 mode its console shows the prompt and input
+goes to the command processor. In console mode system output is shown
+and input goes to the system :src:`007-4365-002 p. 41`, *established*.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Operator input
+     - Model
+   * - Ctrl-D (``0x04``) at the prompt
+     - Prints ``entering console mode  001c01 CPU0, <CTRL_T> to escape
+       to L1`` and enters console mode.
+   * - Ctrl-T (``0x14``) in console mode
+     - Prints ``escaping to L1 system controller`` and the prompt. The
+       next command runs, then the L1 prints ``returning to console mode
+       ...`` and returns.
+   * - ``l1`` when escaped
+     - Holds L1 mode until the next Ctrl-D.
+   * - Any byte in console mode, node on
+     - Sent to the processor as a two-byte request frame on the
+       selected subchannel: header, then the byte.
+   * - Any byte in console mode, node off
+     - ``WARNING: power appears off, console unavailable`` once per entry
+       into console mode; the byte is dropped.
+   * - Return or line feed in L1 mode
+     - Runs the line (at most 127 characters; more logs
+       ``LOG_GUEST_ERROR``). Backspace and delete edit.
+
+The texts are those real firmware prints: two spaces before the brick
+id, ``<CTRL_T>`` with an underscore, ``returning`` after an escape
+(:src:`graphica-o350-chimera-notes lines 1792, 2030`), *observed*. The
+manuals print ``re-entering`` and ``<CTRL-T>``
+:src:`007-4365-002 p. 41`. The designation after the id is ``CPU0`` to
+``CPU3`` or ``console`` for subchannel 4.
+
+Console output from the processor is an event-type (``0x40``) frame on
+any subchannel. Its bytes go to the operator console in console mode
+with the node on. Its subchannel becomes the console-input subchannel,
+as in the 1.44.0 image, *inferred*. Output that arrives while the
+operator is at the prompt is discarded with ``LOG_UNIMP``. What real
+firmware does with it is *unknown*; escaping during PROM output and
+watching what appears on return would settle it.
+
+The model implements this command subset of the 2001-2002 vocabulary
+:src:`007-4498-002 p. 177-206`. ``*`` before a command broadcasts it to
+the cabled peer; ``ctc`` runs it on the peer (see :ref:`sgi-l1-routing`).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Command
+     - Model
+   * - ``power`` / ``pwr`` ``up``\|``u``, ``down``\|``d``, ``check``
+     - See :ref:`sgi-l1-power`.
+   * - ``reset`` / ``rst``, ``softreset`` / ``softrst``, ``nmi``
+     - See :ref:`sgi-l1-power`.
+   * - ``reboot_l1``
+     - Controller restart.
+   * - ``select`` / ``sel`` [``subchannel``\|``sub``\|``s``]
+       ``console``\|``0``-``4``\|``a``-``d``
+     - Sets the console subchannel. Alone, prints the selection. Other
+       forms print ``ERROR: bad subchanel selection.``
+   * - ``display`` / ``dsp`` [``1``\|``2`` *text*]
+     - Prints or writes a display line.
+   * - ``log`` [``clear``\|``reset``\|``insert`` *text*]
+     - Prints, clears or appends to the log.
+   * - ``brick`` [``rack`` *n*\|``slot`` *n*]
+     - Prints the identity line, or sets the pending rack (below
+       ``0x3ff``) or slot (1 to 39).
+   * - ``version`` / ``ver``
+     - ``L1 x.y.z (Image A) [Fuel/PE/O300 1MB image]``, or a line saying
+       the revision is unavailable.
+   * - ``debug`` [*value*]
+     - Prints or sets the debug switches.
+   * - ``l1dbg`` [``promreq``\|``req`` ``on``\|``off``]
+     - Prints or sets request logging.
+   * - ``l1``, ``help`` / ``hlp``
+     - As above; a fixed help list.
+   * - anything else
+     - ``ERROR: command not found.``, ``LOG_UNIMP``, status minus 1.
+
+Through task 3 each output line becomes one text field and the reply
+code is the command's status. A malformed ``debug`` value answers minus
+1200 with a not-found line, the 1.44.0 image's unmodified path,
+*inferred*. ``* pwr d``, which OpenBSD, the SN1 port and IRIX send at
+power-off, powers the node down at once. ``display`` writes line 1 or
+2 of a 12-character view; line 1 holds ``001c01     /``, where the
+hardware spins a heartbeat in the last place, and line 2 the status
+(``L1 running``, ``Powered Up``, ``Powered Down``, ``Reset done``,
+``Sft rst done``, ``NMI done``) until software writes it. Both lines are
+readable as the ``display-line-1`` and ``display-line-2`` properties.
+
+The log is a ring of 128 entries of 47 characters stamped from QEMU's
+clock as ``MM/DD/YY HH:MM:SS``, oldest dropped first. It records L1
+boots, power and reset events with their reason, ``0x100b`` and
+``log insert``. With ``l1dbg promreq on`` every task-6 request adds
+``L1REQ: <source> - <code>`` with the source address built from the
+console field, as :src:`007-3938-006 p. 102` describes, *established*
+for the line's form. The real log lives in NVRAM and survives L1 boots
+:src:`nekonomicon-16729141`, *observed*.
+
+Events
+------
+
+The 1.44.0 image sends environmental events (supply, fan, temperature,
+power-down countdown) to the processor only on the subchannel the
+processor registered with ``0x1007``, as an event-type frame from task 4
+with a code, an integer diagnostic number and a text line
+``\r\n<id> ATTN: <message>\r\n``, *inferred*. The model generates one
+event: the first ``power down`` while the node is up sends code
+``0x8000``, diagnostic 0 and ``Power Down: issue 'pwr d' again to
+immediately power down.``, and waits for the second. No environmental
+event is generated. A registered event subchannel of 4 or more survives
+a controller restart; a lower one is cleared, as in the image.
 
 .. _sgi-l1-routing:
 
-Routing outcomes
-================
+Routing
+=======
 
-No public source states how the firmware handles destination forms that
-are not local (a foreign rack or bay, a mixed local sentinel, controller
-types 1 to 4 and above, unregistered tasks). These outcomes are *unknown*
-and are the model's choice; a reply capture from a real controller would
-settle them,
-recorded in the checks of ``hw/misc/sgi-l1.c``: a local key (type 0 with the
-own rack and bay, or both sentinels) is delivered to the addressed task; a
-foreign or mixed key gets a router error reply (code minus 1 with a
-detail number); an unregistered local task gets no reply. What a real
-standalone Origin 300 answers to a type-4 (attached I/O brick) request is
-open: the IO-8 is not an attached I/O brick to the firmware and real
-``cfg`` output lists those positions as ``not connected``. A matching
-stock-PROM request, L1 handle status and Bedrock reply capture would settle
-it.
+The destination's bits 31:28 are the controller type (0 L1, 1 L2, 2 L3,
+3 attached C-brick, 4 attached I/O brick), 27:18 the rack (``0x3ff``
+local), 17:12 the bay (``0x3f`` local) and 4:0 the task (3 command
+interpreter, 4 environment, 5 Bedrock console, 6 general). The local
+general address is ``0x0ffff006`` (Linux SN1 ``ksys/l1.h``; OpenBSD
+``l1.h``), a *software expectation*.
 
-.. _sgi-l1-model:
+The 1.44.0 image routes on bits 31:12. A request is local when they
+equal the controller's own type-0 rack and bay or ``0xffff``. Bits 11:5
+are ignored. Anything else goes to a catch-all that tries the cabled
+peer, the attached I/O port or an L2, and a failure there answers a
+router error reply: ``0x20 | subchannel``, ``ff ff ff ff``, ``00 00 00
+08``. A mixed form, one coordinate concrete and one the sentinel, is not
+local, *inferred*. On a standalone Origin 300 a type-4 request is
+forwarded toward a software peer slot; whether it gets an immediate
+router error or no reply depends on handle state the image reading
+could not settle, *unknown*. A matching stock-PROM type-4 request with
+the L1's handle status and the Bedrock reply captured would settle it.
+The stock PROM sends ``0x0003`` and ``0x000c`` to ``0x4ffff006``, a
+*software expectation*.
 
-Emulator choices
-================
+The model:
 
-- The device answers reviewed node-facing requests for one chassis; the
-  M-Bus environmental monitoring, JTAG scan, flash programming, USB device
-  to an L2 and RS-422 peer routing are not modelled
-  (approximation: the controller has them, no revision-matched contract is
-  public).
-- The two-chassis pair relies on the operator procedure of 007-4365-002
-  printed pages 34-41 and 007-4498-002 (system ids, cabling with both
-  servers off); the model's inter-L1 link is an emulator construction.
-- Console multiplexing, the management console and the power and reset
-  lifecycle are approximations built from the stock PROM's and IRIX's
-  observed requests; no public document describes them beyond the user
-  guides' operator-side commands (007-3938-006 printed pages 9-12, 19, 28,
-  46-48, 63-64, 77-79, 100-103 and 110-111).
+- A local key goes to the addressed task.
+- With a cabled peer (below), a type-0 request for the peer's rack and
+  bay, or any type-3 request rewritten to type 0, is answered by the
+  peer as if local there, on the requester's subchannel and UART.
+- With a query router (below), type-0 requests and, when an attached
+  owner is configured, ``0x4ffff006`` requests go to it.
+- Everything else gets the router error reply with detail 8 and logs
+  ``LOG_UNIMP``. This includes type 4 on a standalone chassis, an
+  *approximation* of the unknown above.
+
+Two-chassis peer
+----------------
+
+A two-chassis Origin 300 links its two controllers through the ``peer``
+property, standing for the RS-422 pair in the NUMAlink cable. The link
+works only while both have compute services and ``network-422`` set
+(default on, the mode the manual requires for a pair,
+:src:`007-4365-002 p. 38`). The link carries no wire format: a forwarded
+request is an in-process call, an *approximation*, since nothing public
+describes what the two L1s exchange. ``* power up`` and ``* power down``
+act locally and then on the peer :src:`007-4365-002 p. 36-37`,
+*established*; ``* reset`` doing the same is a model choice. Both chassis
+are one QEMU machine, so the peer only records its power state, display
+and log entry. A power-down reaches the peer only once the requesting
+chassis is down. ``ctc <command>`` runs the command on the peer and
+prints the peer's id line first; a nested ``ctc`` is refused with
+``INFO: nested ctc is unsupported.`` and ``LOG_UNIMP``. ``* debug``,
+``ctc debug``, ``* nmi`` and console forwarding from the second chassis
+are not modelled.
+
+Query router
+------------
+
+For the Origin 300 PCI expansion topologies the machine registers each
+controller with a synthetic owner registry and declares which owners can
+reach which. A type-0 request with concrete coordinates that match
+exactly one reachable associated owner is served by that owner and the
+reply returns through the issuer's UART. An issuer may also have one
+attached owner that serves ``0x4ffff006``; the request reaches it as
+``0x0ffff006``. Only read-only task-6 requests pass: ``0x0003``,
+``0x0006``, ``0x0007``, and ``0x0004`` for concrete addresses or
+``0x000c`` for the attached address. Everything else, a missing,
+disconnected or ambiguous owner, mixed sentinels and nested routing gets
+the router error reply with detail 8 and ``LOG_UNIMP``. The registry is
+an *approximation* standing for the controllers' configuration
+exchange, which is not modelled; it does not claim a physical cable
+pairing.
+
+The ``vbrick-discovery-reference`` profile answers every well-formed
+task-6 request with minus 104 and other tasks with minus 101, refuses
+operator commands, and logs ``LOG_UNIMP``.
+
+Multi-frame transport
+---------------------
+
+Codes ``0x3001`` to ``0x3003`` behind a zero destination word are a
+multi-frame transport: ``0x3001`` starts a message with a fragment
+count and length, ``0x3002`` starts another fragment and ``0x3003``
+continues one. The inner message has a 20-byte header (length, version
+2, status, sequence, fragment count, type, source metadata, destination,
+source, descriptor count, command field) and eight-byte descriptors,
+and replies go back in pieces of at most 113 inner bytes, *inferred*
+from the 1.48.1 image in :src:`ip35-patch-sg0007149`. IRIX 6.5.30
+``l1cmd`` uses it, a *software expectation*.
+
+The model assembles one inner fragment per UART and subchannel and
+answers only when a profile selects it:
+
+- ``irouter-compat`` (Origin 350 family profiles): types ``0x37``,
+  ``0x39`` and ``0x51`` answer the local commands ``brick`` and
+  ``brick`` with a trailing space with ``rack: 001, slot: 01, partition:
+  none, type: <label> [?MB flash], serial:<serial>, source: OTHER``.
+- ``o300-l1cmd-compat`` (the ``origin300-l1cmd-compat`` machine option):
+  type ``0x34`` answers ``brick``, ``version`` and ``serial all``, each
+  with a trailing space, with text whose missing fields read
+  ``EMU-UNKNOWN``.
+
+The reply address packs the UART index and subchannel into bits 11:5
+with task 21. The 1.48.1 image does so for the Origin 350 family types;
+for type ``0x34`` it is an *approximation*. All reply text beyond the
+configured identity is model policy, not firmware output. Multi-fragment
+messages, other commands and malformed chunks are dropped with
+``LOG_UNIMP`` or ``LOG_GUEST_ERROR`` and get no reply.
+
+Board-side interfaces
+=====================
+
+The 1.44.0 image drives an M-Bus (the ColdFire's I2C-style bus) through
+the MCF5206e registers at ``MBAR+0x1e0`` to ``+0x1f0``
+:src:`nxp-mcf5206eum-1 p. 13-6-13-11`, with divider selector ``0x13``,
+which the manual maps to 480 :src:`nxp-mcf5206eum-1 p. 13-7`. It polls
+monitors at bus addresses ``0x58``, ``0x5a`` and ``0x5c``, I/O
+expanders, supplies, fans and temperatures, and reads the board
+EEPROMs into RAM at start, *inferred*. ``0x0006`` serves that RAM copy.
+The SCL rate, fitted parts and bus topology are *unknown*.
+
+The model has none of this. Its only board-side action is an
+experiment for the PCI expansion module: when the machine binds an
+interface board, each controller restart writes the packed rack and bay
+to that board through two operations (bus 0, address ``0x8c`` for
+position 0 or ``0x8e`` for position 1, command ``0x13`` with the high
+byte and ``0x12`` with the low). A failed operation logs
+``LOG_GUEST_ERROR`` and the other still runs. This is an
+*approximation*; the operation is a function call, not an M-Bus
+transaction.
+
+The management USB port is a USB 1.0 device toward an optional L2. The
+1.44.0 image declares one interface with 64-byte bulk endpoints OUT 1
+and IN 2, *inferred*. The model has no USB device. Test-only properties
+under qtest compute the image's ``GET_STATUS`` and ``GET_DESCRIPTOR``
+bytes for cached endpoint states; no transfer takes place.
+
+.. _sgi-l1-power:
+
+Power, reset and NMI
+====================
+
+The L1 runs whenever the chassis has mains power, before the node is
+powered :src:`007-4365-002 p. 35`, and drives reset, soft reset and NMI
+to the node on its commands and the front-panel buttons
+:src:`007-3938-006 p. 80, 91, 94`, *established*. No public guest asks
+it to reset; OpenBSD reboots through the Bedrock and uses the L1 only to
+power off.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Event
+     - Model
+   * - Realize (mains applied)
+     - Controller boot. With ``auto-power`` (default on) the node is
+       powered at once with no countdown, logging ``auto power up
+       initiated`` and printing ``INFO: 001c01 powering up the system.``
+   * - ``power up``
+     - With the node off: node power on, console selection back to CPU
+       0, ``Powered Up``, a log entry, the console-mode text, then a
+       QEMU system reset; the machine resumes once that reset has run.
+       With the node on: ``Power is already on``.
+   * - ``power down``
+     - First request while up: the ``0x8000`` event and nothing else.
+       Second: node power off, ``Powered Down``, a log entry and a QEMU
+       shutdown request. Through task 3 or ``0x2005`` it acts at once.
+       With the node off it does nothing.
+   * - ``0x2006``
+     - Power-off without shutdown when the node is on, then power-on as
+       for ``power up``, both with reason 3.
+   * - ``reset``, ``0x2001``
+     - With the node on: ``Reset done``, a log entry, a pulse on
+       ``node-reset`` and a QEMU system reset.
+   * - ``softreset``
+     - With the node on: ``Sft rst done``, a log entry and a pulse on
+       ``soft-reset``.
+   * - ``nmi``
+     - With the node on: ``NMI done``, a log entry and a pulse on
+       ``nmi``, which the node routes to every fitted processor's NMI
+       input.
+
+Each machine action is queued on the processor whose write reached the
+UART and every processor is paused before QEMU handles it; from the
+host console the main thread pauses all processors first. A reply queued
+before a reset may be cleared with the UART before the guest reads it.
+Resetting the whole machine, keeping the QEMU process alive for a power
+cycle, the hold times and the missing countdown are *approximations*.
+The ``node-power``, ``node-reset`` and ``soft-reset`` outputs report
+what the L1 did and drive nothing; no source says what a soft reset
+reaches in the node. The front-panel buttons are not modelled.
+
+Reset
+=====
+
+A controller restart (realize, ``reboot_l1``, ``0x4002``) applies the
+pending rack and slot, leaves console mode, clears the command line,
+the frame parsers and request logging, sets the console field from
+``node-position``, clears a registered event subchannel below 4, writes
+``001c01     /`` and ``L1 running`` and logs ``L1 booting x.y.z``. It
+keeps node power, the log, the debug switches, partition and the
+records. The router, expansion and reference controllers are on the
+machine's reset tree and restart on a system reset. A compute node's
+controller is not: a node reset leaves it running, as the manuals
+describe :src:`007-3938-006 p. 91`, *inferred*.
+
+A reset of ``sgi-l1-uart`` clears its registers, divisor and queue,
+lowers its interrupt and discards the controller's partial frame and
+multi-frame assembly for that UART.
+
+Migration
+=========
+
+``sgi-l1`` migrates its power and console state, settings, rack and bay,
+pending values, console field, event subchannel, log, display, partial
+frames, multi-frame assemblies and record bytes. Loading checks that the
+destination has the same profile, port-speed value, multi-frame
+selection, power and interface-board bindings and query owner identity,
+and rejects a stream whose records or indices are out of range. The
+records travel in the stream, so the destination's files are not read.
+Saving is refused while a routed or bound call is in progress.
+``sgi-l1-uart`` migrates its registers, transmitter-empty occurrence and
+queue, checks its UART index and recomputes the interrupt line. The peer
+link, ``network-422`` and ``auto-power`` are configuration and are not
+migrated. Migration works only between identical builds.
 
 .. _sgi-l1-origin3000:
 
-Origin 3000 C-brick, I-brick and V-brick profiles
-=================================================
+Origin 3000 C-brick and I-brick profiles
+========================================
 
 ``brick-type=cbrick`` and ``brick-type=ibrick`` model the L1 of the Origin
-3000 compute brick and system I/O brick; ``brick-type=vbrick`` models the
-Onyx 3000 V-brick's, described after the table. Each brick has its own controller
-with its own rack, slot, type and records (007-4240-002 printed pages 69,
-72, 118 and 128). The profiles reuse this page's request encoding, framing
+3000 compute brick and system I/O brick. Each brick has its own controller
+with its own rack, slot, type and records (:src:`007-4240-002 p. 69, 72, 118, 128`). The profiles reuse this page's request encoding, framing
 and task-6 request codes, which the public Linux and OpenBSD headers name
 for the Origin 3000 products; that a fitted C-brick frames bytes the same
-way is *unknown*. ``brick-type-code`` is refused. The C-brick, I-brick,
-N-brick and V-brick profiles answer request ``0x0005`` with the firmware
-revision ``revision-*`` configures and minus 104 without one; every brick
-personality of the L1 firmware answers it with the firmware's revision.
+way is *unknown*. No firmware version is modelled: ``revision-*`` and
+``brick-type-code`` are refused, and request ``0x0005`` stays unavailable.
 
-Ratings follow :ref:`sgi-ip30`; the choices below are approximations, not
+Facts are rated as described in :ref:`sgi-ratings`; the choices below are approximations, not
 captured controller output.
 
 .. list-table::
@@ -296,11 +1188,11 @@ captured controller output.
    * - A brick is named rack, type letter and slot (``003c01``); a brick
        with neither set shows ``---c--`` or ``---i--`` in ``config``.
      - established
-     - 007-4240-002 printed pages 112-113.
+     - :src:`007-4240-002 p. 112-113`.
    * - ``brick rack``, ``brick slot`` and ``brick partition`` take effect
        at the next L1 restart.
      - established
-     - 007-3938-001 printed page 39.
+     - :src:`007-3938-001 p. 39`.
    * - ``0x0003`` answers the packed rack and bay and the letter ``C`` or
        ``I``.
      - inferred
@@ -309,39 +1201,11 @@ captured controller output.
        module name only: which controller answers the I/O side's
        identity request on a C-brick is unknown. The case of the I-brick
        letter is the model's choice.
-   * - The machine configures firmware revision 1.44.0 on every C-brick,
-       Cx-brick, I-brick, N-brick and V-brick L1 for request ``0x0005``,
-       and the machine's ``l1-revision`` replaces it. ``version`` prints the
-       number as ``L1 1.44.0 (Image EMU-UNKNOWN)``, naming no image bank
-       or product image.
-     - established for the firmware; inferred for a fitted brick
-     - Every brick image packaged in the IRIX 6.5.30 L1 firmware composite
-       is version 1.44.0 and answers ``0x0005`` with 1, 44 and 0 whatever
-       the brick. Which of its two Origin 3000 images (the 1 MB base image
-       or the 2 MB MIPS image) a brick runs depends on its L1 board's flash
-       and is inferred, so the profiles name neither; no fitted brick's
-       revision is captured. IRIX 6.5.30 labels each module's and I/O
-       brick's hardware-graph entry with the reply, its ``numastatd`` logs
-       an error at every start without one, and on a node with R14000
-       processors the kernel wants at least 1.3.20; the stock PROM warns
-       below 1.12.5. 1.44.0 passes both.
-   * - ``0x000a`` answers two integers; the first is 0 for a 400 MHz I/O
-       link and 1 for 600 MHz (``port-speed-first``, default 0).
-     - established for the meaning
-     - The stock IP35 PROM 6.210 compares the first integer with the speed
-       it expects for the attached brick's letter, 400 MHz for ``I``,
-       ``N`` and ``X`` and 600 MHz for ``P`` and ``V``, and warns on a
-       mismatch; an Origin 300 board skips the comparison. Every C-brick
-       answers 0, which matches its I-brick or N-brick, and the V-brick,
-       which answers ``X``. That agrees with the V-brick's guide rate,
-       800 MB/s per port (007-4264-002 printed page 54), which reads as a
-       400 MHz link on 16 bits (inferred). Which a real C-brick answers is
-       unknown.
    * - A C-brick's records: node board at component 0, two PIMMs at 1 and
        2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
-     - approximated
+     - approximation
      - OpenBSD ``l1.h``. Linux uses ``3 + n``; the only published
-       C-brick dump (007-3938-001 printed page 47) lists DIMMs in the
+       C-brick dump (:src:`007-3938-001 p. 47`) lists DIMMs in the
        OpenBSD order, which is a print order, not a component index.
    * - An I-brick's records: power board at 0, logic board at 1 with the
        base I/O Ethernet address.
@@ -350,87 +1214,10 @@ captured controller output.
    * - Which attached-brick port each cable appears at in ``0x000c``,
        ``0x000d`` and ``config``.
      - unknown
-     - The guides number it differently by edition (007-3938-001 printed
-       page 41, 007-4240-002 printed pages 105-106), so ``io-port`` and
-       ``c-port`` configure it. An I/O brick's own answer is the next
-       row.
-   * - What an I-brick, V-brick or N-brick lists in ``0x000c``, and its
-       type letters.
-     - approximated
-     - The L1 firmware answers ``0x000c`` from its link table whatever
-       the brick's letter. The stock IP35 PROM 6.210 sends it to the
-       attached I/O address only from its crossbar arbitration, which it
-       enters only when the widget at the node's widget-0 window reports
-       a crossbow part, ``0xd000`` or ``0xd100`` (OpenBSD ``xbowdevs``
-       names them XXBow and PXBow); there, an error reply
-       abandons the arbitration. An I-brick's and a V-brick's widget 0 is
-       an XBridge, so that PROM never asks either one, on hardware or on
-       the model (established from that PROM; boots of the ``onyx3000``
-       topology log no ``0x000c``). An I-brick or V-brick answers with
-       the C-brick that asked at port 1 and, when that C-brick's chip has
-       a G-brick on its other port, the G-brick at port 2, in the
-       C-brick's own reply shape, with letters ``C`` and ``G``; the other
-       ports are empty. An N-brick answers so only with a G-brick, and the
-       unknown-request code otherwise. Without a G-brick, ``0x000d`` on
-       any of them keeps the unknown-request code. Which ports and letters
-       a real brick uses are unknown. The N-brick
-       profile reports ``N``, a candidate from the command set's brick
-       type list (007-4240-002 printed page 235); the PROM stops printing
-       ``Unexpected I/O brick type`` for it, which shows the letter is
-       accepted, not that it is the hardware's. One N-brick controller
-       serves all of its C-bricks (N-brick Overview, revision 10/24/01,
-       printed page 5) and answers each about its own chip.
-
-The V-brick profile (``brick-type=vbrick``) is reached from the C-brick
-its XIO cable joins, as an I-brick's is, and knows only that C-brick. The
-V-brick has its own L1 (007-4264-002 printed pages 52 and 128 to 129). It
-is the X-brick's chassis and midplane XBridge with V12 boards in the slots,
-and the Origin 3000 L1 firmware has no personality of its own for it: the
-firmware picks a brick's type letter from the name field of its power and
-logic board EEPROMs and installs that letter's personality. A logic board
-named ``XBRICK`` gives ``X``. The firmware's only ``V`` belongs to a
-PIC-based graphics brick of a later family, which IRIX 6.5.30 and the stock
-PROM name ``CGbrick``, and no firmware command can store ``V``. So the
-profile answers as the X-brick personality. No V-brick L1 reply has been
-captured, and its address and ID PROM contents are unknown:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 12 58
-
-   * - Fact
-     - Rating
-     - Basis
-   * - ``0x0003`` answers the packed rack and bay and the letter ``X``;
-       ``brick`` prints ``type: X`` and ``config`` names the brick
-       ``001x10``.
-     - inferred
-     - That the V-brick's logic board carries the X-brick's name, which
-       would make the firmware answer ``X``, is inferred from the guides'
-       description of the shared chassis. Of the letters IRIX 6.5.30 and
-       the stock PROM handle, ``X`` alone names a brick of this chassis
-       ``Xbrick``, draws no unknown-brick-type warning at the XBridge
-       attach and matches the 400 MHz link the guide's port rate implies.
-       A V-brick's ``brick`` or ``eeprom`` output would settle it.
-   * - Two records: the power board at component 0 and the logic board,
-       named ``XBRICK``, at component 1, both read through both areas.
-       Other components answer minus 104.
-     - inferred for the components; approximated for the contents
-     - The X-brick personality registers these two records, and the stock
-       PROM and IRIX read the logic board of a brick that answers ``X`` as
-       component 1. The logic board's name is the one that gives ``X``;
-       the parts are unobserved and the serials synthetic, lettered as the
-       I-brick's. The builder sets the V-brick's ``identity-index`` to its
-       module index so its serials differ from the I-brick's.
-   * - ``0x000a`` answers 0 and 0, port A and port B at 400 MHz.
-     - approximated
-     - The X-brick personality answers with its two port speed settings,
-       which default to 400 MHz when no C-brick is attached. What a cabled
-       V-brick stores is unknown; 400 MHz agrees with the guide's rate.
-   * - Operator commands, power and reset are refused as on any brick with
-       no compute services.
-     - approximated
-     - No command output of a V-brick is published.
+     - The guides number it differently by edition (:src:`007-3938-001 p. 41`,
+       :src:`007-4240-002 p. 105-106`), so ``io-port`` and ``c-port``
+       configure it. An I-brick answers ``0x000c`` and
+       ``0x000d`` with the unknown-request code.
 
 What the model chooses, and the limit of each choice:
 
@@ -445,12 +1232,11 @@ What the model chooses, and the limit of each choice:
   format, baud rate or detection. A C-brick has two links: ``peer`` for the
   other C-brick and ``io-peer`` for its I-brick. Both are checked against the
   two profiles: a C-brick pairs only with a C-brick, and ``io-peer`` joins a
-  C-brick to an I-brick or N-brick. The check holds whether the link is
-  given with the device (it runs when the device realizes) or set afterwards
-  (it runs when the link is set). An I-brick takes one C-brick: the fitted system's cabling
+  C-brick to an I-brick. The check holds whether the link is given with the
+  device (it runs when the device realizes) or set afterwards (it runs when
+  the link is set). An I-brick takes one C-brick: the fitted system's cabling
   of a second is unknown, so a second is refused with an error, and the first
-  link stays. An N-brick takes several; the model does not count its
-  connectors. After ``reboot_l1`` a brick answers no peer for one second of
+  link stays. After ``reboot_l1`` a brick answers no peer for one second of
   virtual time.
 - ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
   keeps the single-node power and reset behaviour above. ``*`` runs a
@@ -486,14 +1272,14 @@ next brick's name line, and on task 3 they arrive as separate fields.
      - A C-brick with no I-brick of its own omits the other C-brick's I/O
        brick, which the guides imply is listed. The port set is the
        configured one.
-     - ``:0 - 003c01`` style lines (007-3938-006 printed page 25); the
+     - ``:0 - 003c01`` style lines (:src:`007-3938-006 p. 25`); the
        model's spacing, punctuation and order match none of them.
    * - ``*``, ``ctc`` and ``cti`` print the target's name and a colon on its
        own line, then its output. ``*`` runs on this brick, the other
        C-brick and the I-brick, in that order, and prints a block only for
        a brick that is cabled.
      - The order is the model's: the guides print two different orders
-       (007-3938-001 printed pages 17-18; 007-3938-006 printed page 27).
+       (:src:`007-3938-001 pp. 17-18`; :src:`007-3938-006 p. 27`).
        ``*`` does not reach the other C-brick's I-brick, which the guides
        imply it should. ``ctci`` is not implemented: it is reported as an
        unknown command and nothing runs. The other C-brick runs the plain
@@ -502,13 +1288,12 @@ next brick's name line, and on task 3 they arrive as separate fields.
        model does not propagate between bricks, and the sender's own part
        of ``* power down`` skips the two-step first request that a plain
        ``power down`` gives.
-     - Name, then output (007-3938-006 printed page 27).
+     - Name, then output (:src:`007-3938-006 p. 27`).
    * - An attached brick with no rack and slot is absent in ``0x000c`` and
        ``0x000d`` and shown as ``---i--`` or ``---c--`` in ``config``.
      - What a controller returns for an unnamed attached brick is not
        published.
-     - ``config`` shows the unnamed brick (007-4240-002 printed pages
-       112-113).
+     - ``config`` shows the unnamed brick (:src:`007-4240-002 p. 112-113`).
    * - The partition is limited to 16 bits, as a property, by ``brick
        partition`` and by the request that sets it.
      - The manuals name no width; this is the width of the stored value.
@@ -525,13 +1310,13 @@ next brick's name line, and on task 3 they arrive as separate fields.
      - Whether a real L1 relays a command back through its peer is not
        published. Without the bound, each extra ``*`` doubled the work. The
        refusals carry no brick-name prefix, where the guide prints one for
-       a remote reply (007-3938-001 printed page 18).
+       a remote reply (:src:`007-3938-001 p. 18`).
      - None.
    * - A relay to a restarting brick prints its name, then ``no response``.
      - The interval is one second of virtual time, chosen by the model;
        the layout and words differ from the printed form.
      - ``003c01 ERROR: no response from ---i--`` answers the restart
-       command itself (007-3938-001 printed page 24).
+       command itself (:src:`007-3938-001 p. 24`).
 
 .. _sgi-l1-cxbrick:
 
@@ -541,21 +1326,20 @@ Origin 3900 Cx-brick profile
 ``brick-type=cxbrick`` models the one L1 of a Cx-brick, the Origin 3900
 and Onyx 3000 brick that holds one to four IP53 node boards behind a single
 controller on its router board (*SGI Origin 3900 Server User's Guide*
-007-4653-001 printed pages 52-60; *Cx-brick Addendum* 007-4572-001 printed
-pages 2-18). ``boards`` names the fitted node boards and ``compute-boards``
-those with processors, one bit per board 0 to 3. Each fitted board reaches
+007-4653-001 p. 52-60; *Cx-brick Addendum*
+:src:`007-4572-001 p. 2-18`). ``boards`` names the fitted node boards
+and ``compute-boards`` those with processors, one bit per board 0 to 3. Each fitted board reaches
 the controller through its own UART window, ``sgi-l1-uart`` with
 ``transport-index`` the board number. Identity, naming and restart follow
 the C-brick profile above: a brick starts unnamed and prints ``---c--``
-(007-4653-001 printed page 144).
+(007-4653-001 p. 144).
 
 Request codes, the request layout and the framing follow the C-brick rule.
 The profile serves the codes the Linux v2.6.0 ``ksys/l1.h`` header names
 with the Origin 300 meaning (``0x0001`` to ``0x0009``, ``0x1002`` to
-``0x1007``), the I/O link speed ``0x000a`` that the stock PROM reads from
-its node's own L1, and the Origin 300 codes ``0x000e``, ``0x2001``,
-``0x2005`` and ``0x2006``. Every other code answers the unknown-request
-code and is logged as unimplemented, the attached-brick requests ``0x000c`` and ``0x000d``
+``0x1007``) and the Origin 300 codes ``0x000e``, ``0x2001``, ``0x2005`` and
+``0x2006``. Every other code answers the unknown-request code and is logged
+as unimplemented, the attached-brick requests ``0x000c`` and ``0x000d``
 among them. ``0x2001`` resets, as on the Origin 300; the public header gives
 ``0x2001`` to PCI power-up and ``0x2000`` to the full reset, so which a
 fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
@@ -570,24 +1354,21 @@ fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
    * - One L1 per Cx-brick, holding the brick's module and partition
        identifiers, one display and one log.
      - established
-     - 007-4426-001 printed page 12; 007-4653-001 printed pages 108 and
-       112.
+     - :src:`007-4426-001 p. 12`; 007-4653-001 p. 108, 112.
    * - The console names twenty subchannels: ``0A`` to ``3D`` and
        ``console0`` to ``console3``, the number being the node board.
      - established for the names; inferred for ``console2``,
        ``console3`` and the board numbering
-     - 007-3938-004 printed pages 16-18; 007-4653-001 printed pages
-       114-115.
+     - 007-3938-004 p. 16-18; 007-4653-001 p. 114-115.
    * - ``select`` at power-on prints ``console input: 001c07 console0``.
-     - established, printed example
-     - 007-4653-001 printed pages 114-115.
+     - established
+     - 007-4653-001 p. 114-115.
    * - ``select filter on`` passes only the selected target's output.
      - established at brick level; inferred for a board inside a brick
-     - 007-4653-001 printed page 115.
+     - 007-4653-001 p. 115.
    * - ``power``, ``reset`` and ``nmi`` act on the whole brick.
      - inferred
-     - Every printed unit is the brick (007-4653-001 printed pages 58, 108
-       and 113).
+     - Every printed unit is the brick (007-4653-001 p. 58, 108, 113).
    * - How the four Bedrocks reach the L1, the integers a Cx-brick uses on
        the wire for the twenty names, its type character and its record
        layout.
@@ -615,7 +1396,7 @@ What the model chooses, and the limit of each choice:
   board without processors prints the guide's ``no response from 001c07
   junk bus console UART:UART_TIMEOUT``, or for a processor subchannel
   ``no response from 001c07 Junk bus CPU2B system not responding``
-  (007-4653-001 printed pages 115 and 141), and stays in L1 mode.
+  (007-4653-001 p. 115 and 141), and stays in L1 mode.
 - Power, reset and NMI requests from any window, and from the prompt, act on
   every board at once and log one entry. The machine's own reset carries
   them out, so the router is reset with the rest, where the profile's
@@ -624,25 +1405,75 @@ What the model chooses, and the limit of each choice:
   processors are wired to them.
 - Board ``n``'s window reads board ``n``'s synthetic node board record at
   component 0; every other component answers minus 104. The DIMM, router
-  board and power entry module records are not modelled. With
-  ``cpu-context-present`` each board's record carries the CPU context the
-  Origin 350's carries, which the stock PROM compares with its flash.
-- Board ``n``'s window answers the identity requests with the brick's slot
-  plus ``n``, and the serial request with the brick's serial and ``.n``,
-  because the stock PROM refuses two modules at one slot and tells hubs apart
-  by the serial. No source says how a Cx-brick numbers its boards or what it
-  returns; this is an approximation.
+  board and power entry module records are not modelled.
 - The brick has no default type character: ``0x0003`` answers minus 104
   until ``brick-type-code`` supplies one, and ``brick`` prints the type as
-  ``?``. Request ``0x0005`` answers the firmware revision ``revision-*``
-  configures, 1.44.0 in the Origin 3900 catalogue as on the other brick
-  profiles, and minus 104 without one; ``version`` prints it as ``L1
-  1.44.0 (Image EMU-UNKNOWN)``. Request ``0x000a`` answers as the C-brick
-  profile does, 400 MHz unless ``port-speed-first`` says otherwise, which
-  matches the I-brick the Cx-brick's L1 reaches.
-- A neighbouring Cx-brick link is refused. The L2, the neighbouring Cx-brick
-  and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands are not modelled.
-  One I-brick may be named as ``io-peer``: the attached I/O brick request
-  then goes to it in the C-brick's request form, because the addressing of a
-  Cx-brick's four I/O ports is unknown. Without a peer an attached-brick
-  destination answers the router's error reply.
+  ``?``. The firmware revision is unknown, so ``revision-*`` is refused.
+- Peer links are refused. The I/O bricks on the XIO ports, the neighbouring
+  Cx-brick, the L2 and the ``iia`` to ``iid``, ``nia`` and ``nib`` commands
+  are not modelled; an attached-brick destination answers the router's error
+  reply and the commands are reported as unknown.
+
+Measurements
+============
+
+No L1 has been measured for this model. The captures named under
+:ref:`sgi-l1-sources` are published sessions; none records a framed
+exchange on the Bedrock UART.
+
+.. _sgi-l1-model:
+
+Model limits
+============
+
+- The controller does not run L1 firmware. Its replies are a responder
+  built from the readings above; a reply or a version line does not mean
+  firmware ran.
+- No M-Bus, environmental monitoring, events other than the deferred
+  power-down, JTAG scan, flash, management USB device, task-14
+  configuration exchange or RS-422 wire protocol.
+- The operator commands ``env``, ``date``, ``config``, ``uart``,
+  ``flash``, ``network``, ``cpu``, ``port``, ``serial``, ``autopower``,
+  ``history``, ``l1dbg console`` and ``select filter`` are not modelled.
+  Unknown commands log ``LOG_UNIMP``.
+- The prompt, display and ``brick`` line always use the letter ``c``,
+  and ``brick`` always prints ``type: C (IP45) [1MB flash], serial:
+  unavailable, source: EEPROM``, whatever the profile.
+- Display hardware, LEDs and the heartbeat are not modelled; ``display``
+  reports fixed LED texts.
+- Malformed frames, bad checks and unrouted local tasks are dropped with
+  no entry in the L1 log, where the 1.44.0 image logs them.
+- The UART has no character timing, line errors or FIFO identification.
+- Accesses: unsupported interrupt-enable bits and unrouted tasks log
+  ``LOG_UNIMP``; writes to the status registers, a full queue toward the
+  processor (4096 bytes; the frame is dropped) and an over-long command
+  line log ``LOG_GUEST_ERROR``; a narrower access to the window is a
+  decode error.
+
+Tests
+=====
+
+``tests/qtest/sn1-l1-test.c`` covers the UART registers, interrupts and
+their migration, framing and receive tolerance, output escaping, every
+general request and reply code, the command interpreter, console mode,
+retargeting and short frames, the power, reset, NMI and power-cycle
+paths, controller restart and node position, raw, whole-image and built
+EEPROM records, the Fuel station-address record, the peer pair, the
+query and attached routing experiments (with
+``tests/qtest/l1-query-routing-fixture.c``), the expansion, router and
+reference profiles, the interface-board start-up (with
+``tests/qtest/l1-bic-startup-fixture.c``), the multi-frame transport for
+both selections, the management USB byte calculations and migration of
+each. ``tests/qtest/sn1-address-map-test.c`` checks the window at both
+Hub forms, the interrupt reaching the processor, the operator console,
+revisions, type codes and built records on the machines.
+``tests/qtest/sn1-bedrock-test.c`` checks the Bedrock's refusals and
+protection for the window, ``tests/qtest/sn1-cross-node-test.c`` the
+local form on a second node, ``tests/qtest/sn1-fuel-test.c`` the Fuel
+type code and NMI routing, ``tests/qtest/sn-builder-test.c`` the peer
+wiring and the Origin 350 family type selection, and
+``tests/qtest/sgi-sn1-router-test.c`` the router module's window.
+``tests/functional/mips64/test_sn1_l1_reset.py`` runs real guest code:
+one processor sends a framed ``0x2001`` while another spins, across
+repeated resets, and power cycles through the host console stop every
+processor. It needs the stock IP35 PROM image.

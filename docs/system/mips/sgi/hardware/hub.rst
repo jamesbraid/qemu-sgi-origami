@@ -1,618 +1,1515 @@
 .. SPDX-License-Identifier: BSD-3-Clause
 
-================
-SGI SN0 Hub ASIC
-================
+.. _sgi-hub:
 
-The Hub is the node controller of the SN0 family: a processor
-interface, a memory and directory controller, an I/O interface and a
-network interface behind one 8 MB register window per node. The
-window is reached two ways through the crossbar's widget 1 space --
-one half resolves to whichever node the reading processor sits on,
-the other names a node explicitly. QEMU models it in
-``hw/misc/sgi-hub.c``, implementing the registers guests touch on the
-way to a console and reporting anything else rather than answering
-it.
+=====================================================
+Hub node controller (Origin 200, Origin 2000, Onyx2)
+=====================================================
 
-Two registers decide things a guest cannot recover from: the
-processor-number register (which of a node's two processors it is,
-hence which copy of every per-processor register) and the network
-interface status register (whether nodes are numbered in M or N
-mode, on which every node-relative address depends). Both read zero
-on an unprogrammed Origin 200.
+The Hub is the node controller of the SN0 machines: the Origin 200
+(IP29 system board) and the Origin 2000 and Onyx2 (IP27 node board).
+One Hub per node joins the node's two R10000-family processors, its
+memory and directory, one XIO port and one CrayLink network port
+(:src:`007-3439-002 Figure 2-1`). QEMU models it as ``sgi-hub`` in
+``hw/misc/sgi-hub.c``, with the graphics flow-control block in
+``hw/mips/sgi/pi-gfx.c``. The ``origin200`` machines and the plain
+``origin2000`` reference report Hub revision code 3 (Hub 2.1); the
+Origin 2000 rack and deskside and the Onyx2 models report code 5
+(Hub 2.3). The model is a functional profile: it gives the stock IP27
+PROM 6.156, IRIX 6.5.30, Linux and OpenBSD the registers they use, and
+it is not a revision-matched description of the chip. Facts are rated
+as described in :ref:`sgi-ratings`. No Hub specification is public, so
+most register behaviour here is a *software expectation* or an
+*approximation*.
 
-Register access width
-=====================
+.. _sgi-hub-sources:
 
-Every register is a 64-bit doubleword on a big-endian bus, and a
-32-bit access names half of the aligned doubleword: offset 0 carries
-bits 63:32, offset 4 bits 31:0. The model composes halves itself
-rather than letting the memory core do it, because the core's
-composition of a 32-bit write is a read-modify-write cycle whose
-read half would fire read-to-clear side effects on a store that
-reads nothing on real hardware. A 32-bit write replaces its half
-against stored state and then takes the ordinary full-width write
-path; for the interrupt-modify register -- an instruction, not a
-value -- and every register that stores nothing, the unwritten half
-contributes zero.
+Sources
+=======
 
-What a 32-bit read of a read-to-clear register does on real hardware
-is unobserved -- no guest we hold issues one -- so the three such
-registers take a *conservative choice*, not a transcribed fact: only
-a full-width read clears, and a half read returns its half with the
-latch intact. The same choice governs a 32-bit store to a clear
-alias: only a full-width access operates the latch.
+- SGI's *Origin and Onyx2 Theory of Operations Manual*,
+  :src:`007-3439-002 Figure 2-1`: the Hub's four interfaces and its
+  single XIO port. It gives no register values.
+- The *Origin 200 and Origin 200 GIGAchannel Owner's Guide*,
+  :src:`007-3708-002 p. 6`: the direct Hub-to-Hub CrayLink cable of a
+  two-module Origin 200.
+- The *Origin200/2000 IP27 PROM Technical Reference Manual*,
+  :src:`108-0170-001`: node numbering and the address spaces that reach
+  the Hub.
+- Linux ``arch/mips/include/asm/sn/sn0/hubpi.h``, ``hubmd.h``,
+  ``hubio.h``, ``hubni.h``, ``hub.h`` and ``addrs.h``,
+  ``arch/mips/include/asm/sn/io.h`` and
+  ``arch/mips/include/asm/xtalk/xwidget.h``, and
+  ``arch/mips/sgi-ip27/ip27-init.c``, ``ip27-timer.c``, ``ip27-irq.c``,
+  ``ip27-berr.c`` and ``ip27-reset.c``, at ``db2ddb871435``, as software
+  expectations: every register offset on this page, most field layouts,
+  the revision code table and the two composite reset constants they
+  carry. The headers say they derive from SGI's own, so they are one
+  account of the chip, not two.
+- OpenBSD ``sys/arch/sgi/xbow/hub.h``, ``xbowdevs.h`` and
+  ``sys/arch/sgi/sgi/ip27_machdep.c`` and ``sginode.c`` at
+  ``2df91d80c104``, as software expectations: the widget identity, the
+  counter rate, the mode bit and the reboot path. This is the one source
+  written independently of SGI's headers.
+- The *Crossbow ASIC Specification*, revision 12.0,
+  :src:`crossbow-asic-spec-12.0 p. 132-133`, for what a warm reset does
+  at the far end of the XIO link.
+- Mike Galles, *Spider: A High-Speed Network Interconnect*,
+  :src:`galles-spider-1997`, for the link layer's width negotiation.
+- The DS2505 datasheet, :src:`ds2505-datasheet`, for the part on the
+  Hub's one-wire bus.
+- The stock IP27 PROM, :src:`ip27-prom-6.156`, and the IP27 kernel and
+  graphics objects shipped with IRIX 6.5.30, read as binaries, as
+  software expectations.
+- Published inventories reporting the Hub revision,
+  :src:`nekonomicon-16726704`, :src:`nekonomicon-16723250`,
+  :src:`nekonomicon-16727716` and :src:`nekonomicon-16729560`, and
+  published inventories of node board records,
+  :src:`ebbes-parallelrechner-dissertation p. 93`,
+  :src:`usenet-6kd8bj` and :src:`irixnet-thread-4337`.
 
-Widget identity and control
-===========================
+.. _sgi-hub-identity:
 
-The identification register uses the common XIO layout --
-revision, part, manufacturer, and a lowest bit that always reads
-one. That bit is declared by no Hub source; it is inherited from the
-XIO contract the Bridge and crossbar both state. The control
-register resets with this Hub's own widget number at 1 (the
-register-level counterpart of the address map) and the crossbar
-credit at 2; the tag-mode bit reports hardware and is not writable.
-The two XIO timeouts are the first registers Linux writes and
-accept a write at reset with no unlock step.
+Identity and placement
+======================
 
-The widget status register always reads zero: this model retries
-nothing, completes every request before it returns, and never fails
-its link. Bit 4 reads zero because SGI's own table records it as
-undefined, preserved rather than resolved; the firmware's one
-power-on write of zero to it is logged as unimplemented, not as a
-guest error. The I/O interface's two scratch registers are 36-bit
-words of four packed sub-fields, everything above bit 35 reading
-zero -- the layout SGI's own table and Linux agree on -- and the
-firmware uses register 0 as private boot state (a measured 234 reads
-against 6 writes per boot). Of the incoming-XIO request buffer
-array (fifteen slots of four sub-registers), only slots 7-14's C
-sub-register is decoded, matching the firmware's measured diagnostic
-sweep; every field a real slot would hold is zero in a model that
-has never tracked an incoming transaction, and the firmware's early
-zero write to all eight is a generic range clear, logged
-unimplemented.
+Each node's Hub registers fill one 8 MiB window. A processor reaches it
+two ways inside the uncached I/O space: at offset ``0x0100_0000`` with a
+node field of zero, which every Hub answers for its own processors, and
+at offset ``0x0180_0000`` of a named node's I/O space (Linux ``addrs.h``,
+``LOCAL_HUB_ADDR`` and ``REMOTE_HUB_ADDR``), a *software expectation*.
+The model maps the register region at both places for each node.
 
-Writes to the processor-number register are a documented vendor
-convention aimed at a logic analyzer or RTL simulation -- the
-standalone firmware's Hub header and IRIX's own drivers store marker
-values there, nothing ever read back -- and log as unimplemented, not
-as guest misbehavior.
+The Hub carries two separate revision fields, and the model sets them
+separately.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Model value
+     - Basis
+   * - Network-interface status bits 7:4 (chip revision)
+     - 3 on ``origin200`` and plain ``origin2000``; 5 on the Origin 2000
+       rack and deskside and the Onyx2 models
+     - Linux ``hub.h`` maps codes 1 to 6 to Hub 1.0, 2.0, 2.1, 2.2, 2.3
+       and 2.4, a *software expectation*. Published inventories show
+       code 5 on a two-node Origin 2200, an Origin 2000 deskside, an
+       Onyx2 and a two-module Origin 200 with InfiniteReality2 graphics,
+       *observed* (:src:`nekonomicon-16729560 board list`,
+       :src:`nekonomicon-16727716 hinv`,
+       :src:`nekonomicon-16723250 hinv`,
+       :src:`nekonomicon-16726704 hinv`). The IRIX 6.5.30 kernel warns
+       about a code below 3, so 3 is the earliest it accepts, a
+       *software expectation*. Which code a given Origin 200 shipped
+       with is *unknown*.
+   * - Widget identification bits 31:28
+     - 1
+     - *Approximation*. No published capture of this field is known.
+
+The widget identification word at ``0x40_0000`` reads ``0x1c10106d``:
+revision 1, part ``0xc101``, manufacturer ``0x036`` and bit 0 set.
+OpenBSD ``xbowdevs.h`` lists the Hub as part ``0xc101`` of vendor
+``0x0036``, and Linux ``xwidget.h`` gives the Hub manufacturer as
+``0x036``, a *software expectation*. Bit 0 is the bit every XIO widget
+identification register sets
+(:src:`crossbow-asic-spec-12.0 widget identification register`); no Hub
+source declares it, so it is *inferred*. A machine may override the
+manufacturer with the ``manufacturer`` property.
+
+The widget control register's number field resets to 1, the Hub's own
+widget number, and its crossbar credit to 2. The reset value is an
+*approximation*; that the Hub is widget 1 is a *software expectation*
+(Linux ``addrs.h`` places the Hub register alias at widget 1's small
+window).
+
+.. _sgi-hub-registers:
+
+Register map
+============
+
+Offsets are from the base of the Hub window. Every register is 64 bits,
+big-endian. Names follow Linux. Reset values are the model's, an
+*approximation*, except the two composite constants Linux carries; no
+other Hub reset value is published. Access codes: R read, RW read and
+write, WO write-only, T a write that acts and stores nothing, RC a read
+that clears, W1C writing ones clears.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Width
+     - Reset
+     - Access
+     - Notes
+   * - ``0x00_0018``
+     - ``PI_REGION_PRESENT``
+     - 64
+     - all ones
+     - RW
+     - Stored, not consulted.
+   * - ``0x00_0020``
+     - ``PI_CPU_NUM``
+     - 1
+     - per reader
+     - R
+     - 0 for processor A, 1 for B. Writes log ``LOG_UNIMP``.
+   * - ``0x00_0028``
+     - ``PI_CALIAS_SIZE``
+     - 4
+     - 15
+     - RW
+     - Sizes the cached alias (:ref:`sgi-hub-calias`).
+   * - ``0x00_0040``, ``0x00_0048``
+     - ``PI_CPU_PRESENT_A``, ``_B``
+     - 1
+     - per node
+     - R
+     - One for each populated socket.
+   * - ``0x00_0050``, ``0x00_0058``
+     - ``PI_CPU_ENABLE_A``, ``_B``
+     - 1
+     - 0
+     - RW
+     - Clearing a bit stops the processor.
+   * - ``0x00_0070``, ``0x00_0078``
+     - ``PI_NMI_A``, ``_B``
+     - 64
+     - none
+     - T
+     - Non-maskable interrupt to one processor.
+   * - ``0x00_0080``
+     - ``PI_SOFTRESET``
+     - 64
+     - none
+     - T
+     - Soft reset to the node's enabled processors.
+   * - ``0x00_0090``
+     - ``PI_INT_PEND_MOD``
+     - 9
+     - none
+     - WO
+     - Sets or clears one pending bit. A read logs
+       ``LOG_GUEST_ERROR``.
+   * - ``0x00_0098``, ``0x00_00a0``
+     - ``PI_INT_PEND0``, ``1``
+     - 64
+     - 0
+     - R
+     - Writes log ``LOG_GUEST_ERROR``.
+   * - ``0x00_00a8`` to ``0x00_00c0``
+     - ``PI_INT_MASK0_A``, ``1_A``, ``0_B``, ``1_B``
+     - 64
+     - 0
+     - RW
+     -
+   * - ``0x00_0108``, ``0x00_0110``
+     - ``PI_RT_COMPARE_A``, ``_B``
+     - 52
+     - 0
+     - RW
+     -
+   * - ``0x00_0120``, ``0x00_0128``
+     - ``PI_RT_PEND_A``, ``_B``
+     - 1
+     - 0
+     - RW
+     - Writing zero acknowledges.
+   * - ``0x00_0140``, ``0x00_0148``
+     - ``PI_RT_EN_A``, ``_B``
+     - 1
+     - 0
+     - RW
+     -
+   * - ``0x00_0160``
+     - ``PI_RT_LOCAL_CTRL``
+     - 17
+     - ``0x10000``
+     - RW
+     - Bits 16 and 7:0 store; the rest read zero.
+   * - ``0x00_0300`` to ``0x00_0348``
+     - ``PI_GFX_*_A``, ``PI_GFX_*_B``
+     - see :ref:`sgi-hub-graphics`
+     - 0
+     - RW
+     - Graphics flow control, five registers per processor slot.
+   * - ``0x00_0400``
+     - ``PI_ERR_INT_PEND``
+     - 25
+     - 0
+     - R
+     - Reads zero; a write does nothing.
+   * - ``0x00_0408``, ``0x00_0410``
+     - ``PI_ERR_INT_MASK_A``, ``_B``
+     - 25
+     - 0
+     - RW
+     - Stored, not consulted.
+   * - ``0x00_0418``, ``0x00_0420``
+     - ``PI_ERR_STACK_ADDR_A``, ``_B``
+     - bits 31:3
+     - 0 at power-on
+     - RW
+     - Survive reset.
+   * - ``0x00_0428``
+     - ``PI_ERR_STACK_SIZE``
+     - 4
+     - 0
+     - RW
+     - Stored; nothing is spooled.
+   * - ``0x00_0430``, ``0x00_0450``
+     - ``PI_ERR_STATUS0_A``, ``_B``
+     - 64
+     - 0
+     - R
+     - Valid, overrun and address of a failed processor read.
+   * - ``0x00_0438``, ``0x00_0458``
+     - ``PI_ERR_STATUS0_A_RCLR``, ``_B_RCLR``
+     - 64
+     - 0
+     - RC
+     - A 64-bit store of zero also clears.
+   * - ``0x00_0440``, ``0x00_0460``
+     - ``PI_ERR_STATUS1_A``, ``_B``
+     - 64
+     - 0
+     - R
+     - Always zero.
+   * - ``0x00_0448``, ``0x00_0468``
+     - ``PI_ERR_STATUS1_A_RCLR``, ``_B_RCLR``
+     - 64
+     - 0
+     - R
+     - Reads zero. A 64-bit store of zero clears that processor's
+       status 0.
+   * - ``0x00_0480``, ``0x00_0488``
+     - timed-out request buffers A, B
+     - 12
+     - 0
+     - R
+     - Read zero; writes log ``LOG_UNIMP``.
+   * - ``0x02_0068``
+     - ``PI_HARDRESET_BIT``
+     - 1
+     - none
+     - WO
+     - A zero store is taken; any other value logs ``LOG_UNIMP``.
+   * - ``0x03_0100``
+     - ``PI_RT_COUNT``
+     - 52
+     - 0
+     - RW
+     - Free-running counter.
+   * - ``0x20_0018``
+     - ``MD_MEMORY_CONFIG``
+     - 54
+     - ``0x001e7fbc3fffffff``
+     - RW
+     - Linux ``MMC_RESET_DEFAULTS``. Stored only.
+   * - ``0x20_0050`` to ``0x20_0088``
+     - ``MD_DIR_ERROR`` to ``MD_MISC_ERROR_CLR``
+     - 64
+     - 0
+     - R
+     - Eight registers, all read zero. Writes log ``LOG_UNIMP``.
+   * - ``0x20_0090``, ``0x20_0098``
+     - ``MD_MEM_DIMM_INIT``, ``MD_DIR_DIMM_INIT``
+     - 64
+     - none
+     - WO
+     - Writes log ``LOG_UNIMP``.
+   * - ``0x20_00a8``
+     - ``MD_MLAN_CTL``
+     - 34
+     - ``0x18c3100000``
+     - RW
+     - One-wire master. Linux ``MLAN_RESET_DEFAULTS``.
+   * - ``0x21_0010``
+     - ``MD_PERF_CNT0``
+     - 20
+     - 0
+     - RW
+     - Stored; never counts.
+   * - ``0x22_0000``, ``0x22_0008``
+     - PCF8584 S0, S1
+     - 8
+     - see :doc:`elsc`
+     - RW
+     - The node's I2C controller, where fitted.
+   * - ``0x22_0048``
+     - ``MD_SLOTID_USTAT``
+     - 8
+     - per machine
+     - R
+     - Slot identity and boot-flash ready.
+   * - ``0x22_0050``, ``0x22_0058``
+     - ``MD_LED0``, ``MD_LED1``
+     - 8
+     - none
+     - WO
+     - Diagnostic indicator for processor A, B.
+   * - ``0x22_0080``, ``0x22_00a0``
+     - Origin 200 indicators A, B
+     - 8
+     - none
+     - WO
+     - Traced like ``MD_LED0`` and ``MD_LED1``.
+   * - ``0x22_00c0`` to ``0x22_00f8``
+     - bring-up UART
+     - 8
+     - 16550
+     - RW
+     - Only with ``junk-uart=on``.
+   * - ``0x40_0000``
+     - ``IIO_WID``
+     - 32
+     - ``0x1c10106d``
+     - R
+     - Writes log ``LOG_GUEST_ERROR``.
+   * - ``0x40_0008``
+     - ``IIO_WSTAT``
+     - 33
+     - 0
+     - R
+     - Always zero. Writes log ``LOG_UNIMP``.
+   * - ``0x40_0020``
+     - ``IIO_WCR``
+     - 23
+     - ``0x4001``
+     - RW
+     - Bit 4 (tag mode) reads zero.
+   * - ``0x40_0100``
+     - ``IIO_ILAPR``
+     - 64
+     - all ones
+     - RW
+     - Stored, not enforced.
+   * - ``0x40_0108``
+     - ``IIO_ILAPO``
+     - 64
+     - none
+     - WO
+     - Accepted; reads zero.
+   * - ``0x40_0110``, ``0x40_0118``
+     - ``IIO_IOWA``, ``IIO_IIWA``
+     - 16
+     - 0
+     - RW
+     - Bits 15:8 and 0 store. Not enforced.
+   * - ``0x40_0120``
+     - ``IIO_IIDEM``
+     - 64
+     - all ones
+     - RW
+     - Stored, not enforced.
+   * - ``0x40_0128``
+     - ``IIO_ILCSR``
+     - 42
+     - ``0x3fc03ff200a``
+     - RW
+     - Link state reads up. Bit 8 sends a warm reset.
+   * - ``0x40_0130``
+     - ``IIO_ILLR``
+     - 32
+     - 0
+     - RW
+     - Reads zero; writes are dropped.
+   * - ``0x40_0138``
+     - ``IIO_IIDSR``
+     - 29
+     - 0
+     - RW
+     - Mask ``0x1101ff7f``. Stored; the Hub never sends it.
+   * - ``0x40_0140``, ``0x40_0148``
+     - ``IIO_IGFX_0``, ``_1``
+     - 21
+     - 0
+     - RW
+     - Graphics node-widget map.
+   * - ``0x40_0150``, ``0x40_0158``
+     - ``IIO_SCRATCH_REG0``, ``1``
+     - 36
+     - 0
+     - RW
+     - Mask ``0xf00f11fff`` (Linux ``IIO_SCRATCH_MASK``).
+   * - ``0x40_0160`` to ``0x40_0190``
+     - ``IIO_ITTE(0)`` to ``(6)``
+     - 13
+     - 0
+     - RW
+     - Big-window translation entries.
+   * - ``0x40_01e8``
+     - ``IIO_IMEM``
+     - 64
+     - none
+     - RW
+     - Reads zero. Bits 12, 8, 4 and 0 written as one log ``LOG_UNIMP``.
+   * - ``0x40_01f8``
+     - ``IIO_IECLR``
+     - 64
+     - none
+     - WO
+     - Bits 17 and 18 clear an engine's error. Other bits log
+       ``LOG_UNIMP``.
+   * - ``0x40_0388``, ``0x40_0390``
+     - ``IIO_IPDR``, ``IIO_ICDR``
+     - 64
+     - 0
+     - R
+     - Read zero. Writes log ``LOG_UNIMP``.
+   * - ``0x40_0398``
+     - ``IIO_IFDR``
+     - 64
+     - 0
+     - R
+     - Reads zero. Writes log ``LOG_UNIMP``.
+   * - ``0x40_03a8``, ``0x40_03b0``
+     - ``IIO_ICMR``, ``IIO_ICCR``
+     - 64
+     - 0
+     - R
+     - Read zero. Writes log ``LOG_UNIMP``.
+   * - ``0x40_03b8``
+     - ``IIO_ICTO``
+     - 8
+     - 0
+     - RW
+     - Request time-out. Stored only.
+   * - ``0x40_03c0``
+     - ``IIO_ICTP``
+     - 24
+     - 0
+     - RW
+     - Request time-out prescaler. Stored only.
+   * - ``0x40_04f0`` to ``0x40_05d0``, stride ``0x20``
+     - ``IIO_ICRB_C(7)`` to ``(14)``
+     - 64
+     - 0
+     - R
+     - Read zero. Writes log ``LOG_UNIMP``.
+   * - ``0x41_0000`` to ``0x41_0028``
+     - ``IIO_IBLS_0`` to ``IIO_IBIA_0``
+     - see :ref:`sgi-hub-bte`
+     - 0
+     - RW
+     - Block transfer engine 0.
+   * - ``0x42_0000`` to ``0x42_0028``
+     - ``IIO_IBLS_1`` to ``IIO_IBIA_1``
+     - see :ref:`sgi-hub-bte`
+     - 0
+     - RW
+     - Block transfer engine 1.
+   * - ``0x60_0000``
+     - ``NI_STATUS_REV_ID``
+     - 31
+     - see :ref:`sgi-hub-network`
+     - RW
+     - Node number, mode, region size, link state, revision.
+   * - ``0x60_0008``
+     - ``NI_PORT_RESET``
+     - 8
+     - none
+     - T
+     - Bits 7, 1 and 0.
+   * - ``0x60_0010``
+     - ``NI_PROTECTION``
+     - 1
+     - 1
+     - RW
+     - Stored, not consulted.
+   * - ``0x60_0100``, ``0x60_0108``
+     - ``NI_SCRATCH_REG0``, ``1``
+     - 64
+     - 0
+     - RW
+     -
+   * - ``0x60_0110``
+     - ``NI_DIAG_PARMS``
+     - 19
+     - 0
+     - RW
+     - Bits 0 and 12 act; the rest are stored.
+   * - ``0x60_0200``
+     - ``NI_VECTOR_PARMS``
+     - 64
+     - none
+     - T
+     - Launches a vector operation.
+   * - ``0x60_0208``, ``0x60_0210``
+     - ``NI_VECTOR``, ``NI_VECTOR_DATA``
+     - 64
+     - 0
+     - RW
+     -
+   * - ``0x60_0300``
+     - ``NI_VECTOR_STATUS``
+     - 64
+     - 0
+     - R
+     - A write of zero clears it.
+   * - ``0x60_0308``, ``0x60_0310``
+     - ``NI_RETURN_VECTOR``, ``NI_VECTOR_READ_DATA``
+     - 64
+     - 0
+     - RW
+     -
+   * - ``0x60_0380``
+     - ``NI_VECTOR_CLEAR``
+     - 64
+     - 0
+     - RC
+     - Reads zero and clears the status. A write also clears.
+   * - ``0x60_0400``
+     - ``NI_IO_PROTECT``
+     - 64
+     - all ones
+     - RW
+     - Stored, not consulted.
+   * - ``0x60_0408``
+     - ``NI_IO_PROT_OVRRD``
+     - 64
+     - none
+     - WO
+     - Anything but the password logs ``LOG_UNIMP``.
+   * - ``0x60_0500`` to ``0x60_0538``
+     - ``NI_AGE_*``
+     - 12
+     - 0
+     - RW
+     - Eight ageing controls, stored only.
+   * - ``0x60_8000``
+     - ``NI_PORT_PARMS``
+     - 16
+     - ``0x1bf0``
+     - RW
+     - Stored only.
+   * - ``0x60_8008``
+     - ``NI_PORT_ERROR``
+     - 38
+     - 0
+     - W1C
+     - Bit 37 link reset; bits 15:8 a check-bit count.
+   * - ``0x60_8088``
+     - ``NI_PORT_ERROR_CLEAR``
+     - 38
+     - 0
+     - RC
+     - Returns and clears the port error.
+   * - ``0x63_8000`` to ``0x63_80f8``
+     - ``NI_META_TABLE(0)`` to ``(31)``
+     - 4
+     - 0
+     - RW
+     - Routing tables (:ref:`sgi-hub-network`).
+   * - ``0x63_8100`` to ``0x63_8178``
+     - ``NI_LOCAL_TABLE(0)`` to ``(15)``
+     - 4
+     - 0
+     - RW
+     -
+
+Every other offset reads zero and logs ``LOG_UNIMP`` on a read or a
+write, as does a read of a write-only register above. The unimplemented
+set includes the profiling compare and its pending and enable bits, the
+cross-call registers, the processor-bus checking and
+negative-acknowledge registers, the refresh and page-migration
+registers, the other five performance counters and their selector, the
+processor and memory protection registers, the global link parameters,
+the I/O request-buffer tables and the I/O performance counter.
+
+.. _sgi-hub-access-width:
+
+Access width
+============
+
+The register region takes 4- and 8-byte accesses; narrower ones are
+refused by QEMU's memory core. A 32-bit access names half of the aligned
+doubleword: offset 0 carries bits 63:32 and offset 4 bits 31:0, as on a
+big-endian bus. The model composes the halves itself. A 32-bit write
+replaces its half of the stored value and then takes the ordinary 64-bit
+write path. For the interrupt-modify register, the port error register
+and any register that stores nothing, the other half contributes zero.
+
+A 32-bit read of a read-to-clear register returns its half without
+clearing. Only a full-width read clears, and only a full-width store of
+zero clears a status 0 record. What hardware does for the narrower
+access is *unknown*; this is an *approximation* that keeps a latch until
+software reads all of it.
 
 .. _sgi-hub-processor-interface:
 
 Processor interface
 ===================
 
-The real-time counter is a free-running 52-bit up-counter at
-1.25 MHz -- a rate corroborated three ways (the shipped firmware's
-configuration block, OpenBSD's registered frequency, Linux's coded
-tick). OpenBSD needs only that it advance monotonically; Linux needs
-it to tick *between* two reads a few instructions apart, because it
-reads the counter, adds a delta, arms the comparator and re-reads to
-check the deadline has not already passed. The model derives it from
-the virtual clock, so it cannot drift from the timer a comparator is
-armed against; a write moves the origin, not the count, so it never
-runs backwards on its own.
+Real-time counter
+-----------------
 
-Each processor has a comparator. A match sets the pending bit
-whether or not the enable bit is set -- the enable only gates pending
-onto the processor's line, which lets a guest poll with the
-interrupt off. The counter's clock-control register resets with bit
-16 (internal clock) set; the network-clock observation bits are
-read-only and read zero on a machine with nothing driving a
-network-wide clock.
+``PI_RT_COUNT`` is a 52-bit up-counter shared by the node's two
+processors. The machine drives it at 1,250,000 Hz. OpenBSD registers its
+Hub time source at exactly that rate (``ip27_machdep.c``), and the
+stock PROM's configuration block states it
+(:src:`ip27-prom-6.156 configuration block`), *software expectations*.
+Linux hard-codes an 800 ns tick in ``ip27-timer.c`` beside a comment
+saying the right value is not known, so it does not corroborate the
+rate. The counter wraps after about 114 years.
 
-A comparator the counter has already passed does not fire at once:
-the model arms it for the full forward distance, so a comparator
-written behind the count matches only when the counter genuinely
-reaches it, up to a near-full revolution later -- 114 years at
-1.25 MHz. This was an open failure-mode choice until the two-node
-IRIX miniroot settled it: a secondary processor parks its tick by
-writing zero to its comparator with the counter high and no
-read-back guard, and depends on silence -- a model that matched a
-behind comparator at once turned that write into a permanent
-interrupt storm, and real Origin 200s boot IRIX, so the silicon
-wraps. Moving the counter under a reset-zero comparator remains a
-change of origin, not two unrequested interrupts. A matched
-comparator is not re-armed: the arm that reaches its deadline fires
-once, its timer is deleted so the deadline cannot pend a second
-time, and guests rewrite it from every handler. An unpopulated
-slice never arms a timer. Of the clock-control register, bits 7:1
-(maximum count) and bit 0 (network-clock enable) are writable; bit
-15 and bits 14:8 observe the network-wide clock and read zero.
+The model derives the count from QEMU's virtual clock, so it advances
+between two reads a few instructions apart. Linux depends on that: it
+arms a comparator by reading the counter, adding a delta, writing the
+comparator and re-reading the counter to check the deadline has not
+passed (``ip27-timer.c``), a *software expectation*. A write moves the
+counter's origin, so the counter keeps running from the written value
+and every armed comparator re-arms against it. ``PI_RT_LOCAL_CTRL``
+resets with bit 16 set and stores bits 16 and 7:0; the network-clock
+observation bits read zero. Nothing written there changes the rate, an
+*approximation*.
 
-Each processor's error-status record is modelled to its first
-doubleword; the second pair reads zero. The plain registers refuse
-writes; the clear alias accepts only a full-width store of zero as a
-clear, so a nonzero store cannot clear what its own bits assert. A
-guest clears a timed-out request buffer by writing it, which is
-accepted with nothing to clear.
+Comparators
+-----------
 
-Processor enable is a behavior, not stored state: clearing a
-processor's bit removes it, which is how the firmware's halt routine
-never returns on real hardware; the halt is requested rather than
-forced because it runs inside a memory write, the idiom MIPS's own
-power controller uses. The error-spool address registers
-survive reset deliberately -- the firmware parks a marker in
-processor B's across its own reset to learn which pass it is on.
-Timed-out-request-buffer registers read zero: nothing times out in a
-model that completes every request instantly.
+Each processor has a comparator, a pending bit and an enable bit. When
+the counter reaches the comparator the pending bit sets, whether or not
+the enable bit is set; the enable bit only gates the pending bit onto
+the processor's interrupt line (Linux ``hubpi.h``). Writing zero to the
+pending bit acknowledges it, which Linux's handler does first
+(``ip27-timer.c``), a *software expectation*.
 
-The port reset register carries three resets, each bit acting when
-written, nothing stored, and it reads zero. Bit 0 restarts the machine.
-Approximation: the datasheet describes the Hub resetting its node, and a
-warm reset (bit 7) sent over the link to the nodes the Routers' reset masks
-and each Hub's protection register let it reach. The model restarts every
-module that has power, together: all processors stop at the write and the
-machine cold-starts the modules from the main loop (:doc:`/system/mips/sgi/sn`, "Module
-power and reset"), whichever Hub was written and whatever the masks and
-protection say. No supported guest depends on the difference: every
-software reset path writes bits 7 and 0 together (Linux and the PROM's own
-self-reset 0x81, IRIX the same), which on an unpartitioned machine is the
-whole machine, and OpenBSD writes bits 1 and 0 to each node in turn after
-arming the protection bit, so its first write restarts the machine and the
-rest find it already running again. The protection register's reset bit
-(``0x60_0010`` bit 0, set at reset) and the Routers' reset masks and
-permits are kept as registers and no longer steer a reset. A restart is not
-an AC cycle: the standby controllers keep their state, so a reboot leaves
-``pwr q`` at zero and the PROM sees a warm start. Bit 1 without bit 0
-resets the network link, described under the network interface below, and
-a restart supersedes it. Bit 7 without bit 0 is unknown on hardware and no
-software writes it: the model logs it as unimplemented and does nothing.
-The Hub keeps its error-spool addresses across the restart with the rest:
-they keep bits 31:3, start at zero from construction (the datasheet's
-power-on value), and survive reset for the marker the firmware parks in
-processor B's and the operation word OpenBSD parks in processor A's.
-Memory survives as well. The boot flash and the I/O each node hosts restart
-with their module, a model approximation described in :doc:`/system/mips/sgi/sn`.
-
-The Hub's per-processor triggers act on processors. A store to ``0x70``
-or ``0x78`` raises the non-maskable interrupt of processor A or B and the
-value is dropped. A store to ``0x80`` gives both of the node's enabled
-processors the soft reset entry the CPU model provides, Status.SR set and
-NMI clear, with their state kept; the register table says it resets
-"both processors on the node", which the model takes literally. The
-Hub's own state is untouched by either.
+A comparator written at or behind the counter does not match until the
+counter wraps round to it, up to 114 years later. The IRIX 6.5.30
+kernel parks a secondary processor's tick by writing zero to its
+comparator with the counter high and depends on no interrupt following,
+a *software expectation*; matching at once turns that write into a
+continuous interrupt. Linux's re-read guard handles the same case from
+the other side. A match fires once; nothing re-arms the comparator until
+software writes it again. Moving the counter does not make a comparator
+pend. A socket with no processor never arms a timer.
 
 .. _sgi-hub-interrupts:
 
 Interrupts
 ==========
 
-Two pending banks of 64 interrupt numbers each are node-wide state;
-each processor has a mask per bank, and a processor's line for a
-bank is raised when any bit is set in both the bank and its mask.
-The lines are level-triggered and recomputed on every change to a
-bit or a mask: raising on set and never recomputing would leave a
-line asserted after software cleared the last bit it could see -- an
-interrupt storm, not a lost interrupt. The interrupt-modify register
-is the only way to change a bit -- seven bits of number, the top bit
-selecting the bank, one bit for set or clear -- and it is where a
-device interrupt arrives, as an XIO write from the Bridge.
+Two pending banks of 64 bits each, ``PI_INT_PEND0`` and
+``PI_INT_PEND1``, are node-wide. Interrupt numbers 0 to 63 are bank 0
+and 64 to 127 bank 1. The only way to change a pending bit is
+``PI_INT_PEND_MOD``: bits 6:0 name the interrupt, and bit 8 set means set
+and clear means clear (Linux ``hubpi.h`` and ``intr.h``; OpenBSD
+``hub.h``), a *software expectation*. A device interrupt arrives the
+same way, as an XIO write from a Bridge to the node's interrupt-modify
+register (:ref:`sgi-hub-inbound`).
 
-Scheduling assist
-=================
+Each processor has one mask per bank. A processor's line for a bank is
+raised while any bit is set in both the bank and its mask. The lines are
+levels, recomputed on every change to a pending bit, a mask, a counter
+pending bit or an enable. The model wires three lines into each
+processor's Cause register:
 
-The stock PROM rendezvouses its processors through Hub registers --
-pending-bank bits as barrier and lock mailboxes, the peer's scratch
-and comparator registers as progress mailboxes -- polling with a
-timeout it measures in its own retired instructions. Under TCG a
-poller can spend that whole budget inside one scheduled slice before
-the processor it waits for runs at all, and report a live peer dead.
+.. list-table::
+   :header-rows: 1
 
-The model's assist is a kick, ``sgi_hub_kick_peer``: it wakes the named
-peer processor and changes no Hub or interrupt state. The current
-processor keeps running. Writes kick in every execution mode:
+   * - Hardware interrupt
+     - Source
+   * - 0
+     - Bank 0 under the processor's mask 0.
+   * - 1
+     - Bank 1 under the processor's mask 1.
+   * - 2
+     - The processor's counter comparator, when enabled.
 
-- an interrupt-modify write that changes a pending bit kicks the
-  node's processors (under single-threaded round-robin TCG, every
-  interrupt-modify write does);
-- a write into a peer node's scratch registers kicks that node;
-- a write to a processor's real-time comparator while its counter
-  interrupt is off kicks the node's other processor.
+That assignment is Linux's (``ip27-irq.c``) and OpenBSD's, a *software
+expectation*. The profiling interrupt (line 3) and the Hub error
+interrupt (line 4) are not modelled. Bank 0 bits 1 and 2 carry the
+graphics flow-control interrupts (Linux ``intr.h``); bank 1 bit 62
+would be the network-interface error and never sets.
 
-Reads kick only under single-threaded round-robin TCG, where one host
-slice serves every processor:
+.. _sgi-hub-processor-control:
 
-- a re-read of a pending bank that returns the value the same
-  processor read last time kicks the node's processors;
-- a read of pending bank 1 by the secondary processor, with bit 113
-  set, kicks the primary unless the primary's write has already been
-  credited;
-- a read of a peer's real-time comparator kicks that peer.
+Processor enable, NMI and reset
+===============================
 
-Under multi-threaded TCG every processor has its own host thread, so
-handing slices around helps nobody, but a descheduled thread still
-misses a short post. The comparator rendezvous is where that shows:
-each of a node's two processors posts the same value to its own
-comparator, with its counter interrupt off, and polls the other's.
-The second to arrive finds the match at once and withdraws its post
-a little later; the first, if its thread was not running across that
-window, polls on to its budget and disables its partner. A second race
-follows the match. The node's first processor -- slice A, in every
-traced boot -- then gives an alive signal: it sets bit 23 of I/O
-scratch register 0 and raises interrupt 113. The second processor's
-next accesses test for that signal, and if it gets there first it
-steps one exchange out of the counting handshake that follows, and
-the node is disabled much later.
+``PI_CPU_PRESENT_A`` and ``_B`` read one for each populated socket.
+Linux reads them to decide whether a node has a processor
+(``ip27-init.c``), a *software expectation*. ``PI_CPU_ENABLE_A`` and
+``_B`` reset to zero. Clearing a bit halts that processor and setting it
+releases it; the change is queued on the processor's own thread. The
+stock PROM halts a processor by clearing its enable, a *software
+expectation*. On a node with one processor, ``_B`` stores its value and
+reaches no processor.
 
-The model holds three things, each at the holder's next block
-boundary and never so that a register takes a value it would not
-otherwise have taken:
+A store to ``PI_NMI_A`` or ``_B`` raises the non-maskable interrupt of
+that processor and drops the value. A store to ``PI_SOFTRESET`` gives
+each enabled processor of the node the soft-reset entry the CPU model
+provides: Status.SR set, its other state kept. Linux describes the
+register as "Softreset (to both CPUs)" (``hubpi.h``); the model takes
+that literally, an *approximation*. Neither store changes Hub state.
 
-- The second processor, reading its own posted value back from the
-  first processor's comparator before the first has given its alive
-  signal since reset, is held until the signal. It is held at the
-  match read because a hold lets the access that takes it complete:
-  holding it at the scratch read would hand it the unset bit first.
-  Whether the signal has been given is kept from reset and migrated,
-  because firmware clears the bit again much later.
-- The first processor is never held at its match; it is the one that
-  must publish. A processor that writes zero over a post the other has
-  not read is held until the other reads it, and the value it wrote
-  lands on that read. On hardware the other processor, running
-  continuously, reads the post before the write; the held processor
-  cannot read the old value back, because a read of its own comparator
-  lands the write first. Only a write of zero over a standing post is
-  held: firmware steps these registers through progress codes nothing
-  waits on.
-- A processor that has posted and re-reads anything but its own value,
-  with no write in between, is held once per partner write until the
-  partner writes again.
+``PI_CPU_NUM`` returns the reading processor's slice. Writes to it log
+``LOG_UNIMP`` and change nothing, an *approximation*; what a store does
+on hardware is *unknown*.
 
-A hold also ends when the partner can no longer run, or after two
-seconds. It is queued work on the held processor's own thread,
-outside the execution loop and with the big lock released; it waits
-on that vCPU's halt condition, so a stop or a deliverable interrupt
-ends it. Other work queued on that processor runs before its next
-instruction, and the hold resumes behind it; a memory map change
-anywhere in the machine queues such work on every processor, and the
-stock PROM makes dozens while a node's processors meet. A Hub holds
-at most one processor at a time, and round-robin execution holds
-nobody. Migration lands a
-withheld withdrawal before saving, so the destination sees what a
-machine with no hold would have had. The limitation that leaves: any
-multi-threaded guest that uses the comparators this way, with their
-interrupts off, can be delayed by up to two seconds per partner write,
-two seconds when it clears its own post, and -- on a second processor
-before an alive signal that never comes -- two seconds at its match.
+The error stack address registers keep bits 31:3, start at zero and
+survive a reset. OpenBSD parks a PROM-operation word in processor A's
+before it reboots, and the stock PROM parks a marker in processor B's
+to tell a warm start from a cold one, both *software expectations*.
+
+``NI_PORT_RESET`` carries three resets, each acting when written,
+nothing stored (Linux ``hubni.h``: bit 7 sends a warm reset, bit 1 a
+link reset, bit 0 resets the whole Hub). In the model:
+
+- Bit 0 restarts the machine. Every processor stops at the write and
+  the machine cold-starts every powered module from the main loop,
+  whichever Hub was written. On hardware bit 0 resets the Hub's own node
+  and bit 7 carries a warm reset to the nodes the link reaches; the
+  model does not separate them, an *approximation*. Linux writes bits 7
+  and 0 together (``ip27-reset.c``), as do the PROM's own self-reset and
+  IRIX; OpenBSD writes bits 1 and 0 to each node in turn. On an
+  unpartitioned machine each ends in a whole-machine restart. The
+  standby system controllers keep their state, so the PROM sees a warm
+  start (:doc:`/system/mips/sgi/sn`, "Module power and reset").
+- Bit 1 alone resets the network link (:ref:`sgi-hub-link-reset`). A
+  restart supersedes it.
+- Bit 7 without bit 0 logs ``LOG_UNIMP`` and does nothing. No supported
+  software writes it, and its effect alone is *unknown*.
+
+``NI_PROTECTION`` and the Routers' reset masks are stored and do not
+steer a reset.
+
+.. _sgi-hub-pi-errors:
+
+Processor errors and the bus-error probe
+========================================
+
+Every uncached I/O-space request a processor makes passes through its
+Hub: the machine places a Hub region over each processor's view of the
+I/O space, which forwards the request on. When a processor read fails,
+at the Hub or downstream at a Crossbow or Bridge, the processor takes a
+bus error and the Hub records it in that slice's status 0: bit 63
+(valid) and the processor physical address bits 39:3 in bits 61:25
+(Linux ``hubpi.h``). A failed read while the record is valid sets bit 62
+(overrun) and keeps the first record. Recording every failed read is
+*inferred* from the register's purpose; keeping the first record is
+*inferred* from Linux's description of overrun. The type, request,
+supplemental and command fields stay zero, an *approximation*. A
+debugger's access, a device's DMA and a qtest access do not take this
+path and record nothing.
+
+The Hub fails one address itself: a doubleword read at node offset
+``0x0240_0208``. Linux ``hubio.h`` names it ``IIO_IIBUSERR``, "Reads here
+cause a bus error", and ``addrs.h`` makes it the error-status workaround
+address, a *software expectation*. The model ignores the node number in
+the match, so the issuing Hub fails the read whichever node it names
+(*inferred*), and nothing goes out on the XIO link. A narrower read
+there goes on down the link.
+
+The stock PROM 6.156 clears processor status 0 through its ``_RCLR``
+alias with a 64-bit zero store, then reads ``0x0240_0208`` inside a
+fault guard, leaving a valid record naming that address. The IRIX
+6.5.30 kernel checks that each booting processor's status 0 is valid
+with bits 61:25 equal to ``0x480041``, and selects a conservative mode
+and warns about old firmware if not. It later stores 64-bit zero to the
+status 1 ``_RCLR`` alias and walks the error stack until status 0 reads
+not valid. All three are *software expectations* read from the shipped
+binaries. That a zero store to status 1's alias ends the status 0
+record is *inferred* from that loop; Linux says only that the alias
+clears on read. The model honours a 64-bit zero store at either alias
+and nothing narrower or nonzero.
+
+``PI_ERR_INT_PEND`` reads zero because no error source sets it. The
+masks and stack size are stored, and the two timed-out request buffer
+registers read zero. Linux zeroes them during setup and does not depend
+on them otherwise (``ip27-berr.c``).
+
+.. _sgi-hub-rendezvous:
+
+Processor rendezvous assist
+===========================
+
+The stock PROM makes a node's processors meet through Hub registers:
+pending-bank bits as barrier and lock mailboxes, the other processor's
+comparator and scratch registers as progress mailboxes. It times its
+polls in retired instructions, a *software expectation*. Under TCG a
+poller can spend that budget before the processor it waits for has run,
+and report a live partner dead. The model adds scheduling help that
+changes no register value; only when a waiting processor runs moves.
+
+In every execution mode these writes wake ("kick") a partner:
+
+- an interrupt-modify write that changes a pending bit wakes the node's
+  processors (under single-threaded round-robin TCG every such write
+  does);
+- a write into another node's network scratch registers wakes that
+  node's processors;
+- a comparator write while that processor's counter interrupt is off
+  wakes the other processor.
+
+Under single-threaded round-robin TCG, where one host thread runs every
+processor, reads also kick: re-reading a pending bank unchanged, the
+second processor reading bank 1 with bit 113 set, and reading the other
+processor's comparator.
+
+Under multi-threaded TCG a descheduled host thread can miss a short
+post. The comparator rendezvous shows it: each processor posts the same
+value to its own comparator with its counter interrupt off and polls the
+other's, and the second to arrive withdraws its post soon after the
+match. The first processor then sets bit 23 of I/O scratch register 0
+and raises interrupt 113, an alive signal the second processor tests
+next. The model holds a processor, at its next block boundary, in three
+cases:
+
+- the second processor, reading its own posted value from the first
+  processor's comparator before the alive signal since reset, waits for
+  the signal;
+- a processor writing zero over its own post that the other has not
+  read waits until the other reads it, and the zero lands on that read;
+- a processor that has posted and re-reads anything but its own value,
+  with no partner write since, waits for the partner's next write.
+
+A hold also ends when the partner stops, when the held processor has a
+stop request or a deliverable interrupt, or after two seconds of host
+time. Work queued on the held processor runs first and the hold resumes
+behind it. A Hub holds at most one processor at a time, and round-robin
+execution holds nobody. Whether the alive signal has been given is kept
+from reset and migrated. This is host scheduling, not hardware
+behaviour; its cost is listed under :ref:`sgi-hub-limits`.
+
+.. _sgi-hub-graphics:
+
+Graphics flow control
+=====================
+
+Each processor slot has five registers that pace its uncached stores to
+an attached graphics pipe (Linux ``hubpi.h``, ``PI_GFX_*``): a page at
+``0x300`` (``0x328`` for slot B), a credit counter, a bias, an interrupt
+counter and an interrupt compare. The field widths follow the later
+chip's header and are *inferred* for this one: page enable in bit 40
+(Linux ``PI_GFX_PAGE_ENABLE``) and address in bits 39:17, credit and
+bias twelve bits, the two interrupt registers 26 bits. All reset to
+zero, an *approximation*.
+
+An uncached I/O store of up to eight bytes by the processor in slot S,
+to an address whose bits 39:17 match slot S's enabled page, costs slot S
+one credit. The store goes on to its target marked as counted. A
+graphics head returns credits by widget number, and ``IIO_IGFX_0`` and
+``_1`` (Linux ``IIO_IGFX_INIT``: widget 3:0, node 12:4, slot 16, valid
+20) send them to a slot on the named node's Hub. The first valid entry
+naming the widget wins; a return no valid entry names logs
+``LOG_GUEST_ERROR``. A head returns credit only for stores that were
+counted. The counter wraps at either end and logs ``LOG_GUEST_ERROR``. A
+guest write replaces the count.
+
+When a counted store leaves the counter below the bias, the model sets
+bank 0 bit 1 plus the slot once, and re-arms when the counter rises
+above the bias again. The processor stall that goes with it on the chip
+is zero length here and the interrupt counter and compare are stored
+only, both *approximations*, logged once per slot with ``LOG_UNIMP``.
+The IRIX 6.5.30 graphics objects attach a pipe by writing its page with
+bit 40 set, the saved count and then the map entry, and detach in the
+reverse order, a *software expectation*.
+
+``PI_HARDRESET_BIT`` at ``0x02_0068`` is a hard-reset bit in Linux and
+the graphics credit mode in the later chip's header. IRIX 6.5.30 stores
+zero there on Hubs of revision code 4 and later, selecting doubleword
+credits, the only mode modelled, a *software expectation*. The model
+takes a zero store; any other value logs ``LOG_UNIMP``. Its read value is
+*unknown* and a read logs as unimplemented.
+
+.. _sgi-hub-memory:
 
 Memory and directory
 ====================
 
-The memory configuration register is masked storage -- eight bank
-descriptors, a reply-guarantee count, the directory-format and
-error-correction-ignore bits, an arbitration bit, an I/O-protection
-enable, a module select and two timing-field pairs, dual-sourced
-against SGI's composite reset constant -- whose reset value is the
-fact that matters: the count at full, directory-format set,
-error-correction-ignore set, and a model zeroing it misreports all of
-them at once. The four error registers and their clear aliases,
-evenly strided eight bytes apart from 0x200050, always read zero; the
-firmware's memory test reads every alias and aborts on any valid
-bit. The aliases are inferred, not proven, to clear on read; writes
-to any of the eight are accepted and logged unimplemented. The
-per-DIMM mode-initialisation registers (DIMM_SELECT at bits 35:32,
-DIMM_MODE at 11:0) are write-only in both public sources and the
-firmware writes each sixteen times, stepping the select through
-every slot. Performance counter 0 is a 20-bit event counter kept as
-storage that never advances: nothing here tracks bus activity for it
-to count, inventing an increment would fabricate a measurement, and
-its selecting sibling register is not implemented.
+``MD_MEMORY_CONFIG`` is masked storage over 54 bits. It resets to
+``0x001e7fbc3fffffff``, Linux's ``MMC_RESET_DEFAULTS``, a *software
+expectation*: every bank descriptor 7, the reply-guarantee count full,
+the directory-premium and ignore-ECC bits set, and the boot-flash and
+microcontroller timing pairs at their defaults. No write resizes memory
+or changes error reporting.
 
-The slot-identity and microcontroller status register samples board
-signals: the machine supplies the master/slave sense and the XIO
-jumper; the bus-fault line and processor-speed strap read clear. The
-table declares no reset value for any of its fields, so what the
-absent signals read is this machine's decision.
+The eight directory, protocol, memory and miscellaneous error registers
+and their clear aliases read zero; the model never latches a memory
+error. Writes log ``LOG_UNIMP``. The two DIMM mode-initialisation
+registers are write-only and log their writes. ``MD_PERF_CNT0`` stores
+20 bits and never counts, since the model tracks no event to count; its
+event selector is not decoded.
 
-The node's one-wire bus master register is 34 bits wide, and that
-width is a correctness requirement: the upper timing phase occupies
-bits 33:27, so truncating to 32 bits rewrites that field from 44 to
-12 with every field below it intact. Starting a slot clears the
-completion bit, so the disputed reset value of that bit does not
-matter; the slot must not complete inside the write that starts it.
-A write cannot set the register's two status bits. The two documents
-describing the register disagree, unsourced both ways, on whether
-completion resets set or clear; the reset phase constant is taken
-from the memory/directory page because the one-wire page -- the
-authority on the fields -- does not carry it while asking for an
-exact assertion, a discrepancy reported rather than papered over. A
-slot's duration is nominal and chosen: what the timing encodings mean
-in real time is not established, and the contract needs only that a
-slot not complete inside the write. A slot armed before a reset must
-not complete after it.
+Slot identity and indicators
+----------------------------
 
-The bus carries one responder: a DS2505-compatible part holding the
-installed PIMM's manufacturing record. The firmware
-reads its ROM identity as a remote node's NIC -- its name for this
-Number-In-a-Can identity chip, not a network device -- during
-headless bring-up, and without it that read reported nothing present
-and the peer node's identity never resolved. The part answers a bus
-reset with a presence pulse and speaks the family's ROM protocol:
-search, match and skip, least-significant bit first, with the public
-DS2505 datasheet's family code and its CRC-8 check byte over family
-and serial. The 48-bit serial is a synthetic per-unit value the
-machine wires per node; a real machine's serial must never be
-copied. The pulse-width thresholds sorting a slot into reset, zero
-or one are the same model choices the Bridge's one-wire master uses.
-The memory reads -- plain, status and extended, with the public part
-specification's geometry and CRC16 framing, 2 KB in sixty-four
-32-byte data pages, and a status field addressed at that same width
-whose implemented regions are scattered below 0x13f with gaps
-between them, everything above it to 0x7ff unimplemented -- serve the
-record below and otherwise an unprogrammed part: every other byte
-reads 0xff behind a correct check pair, implemented or not, and
-a redirection byte of 0xff means no redirection by the part's own
-definition. An Origin 200 node's part holds the fitted PIMM's
-two-page board record, in the fixed-offset layout the Bridge's board
-records use: format byte 0x01, a marked synthetic barcode (``EMUU``
-and the part's instance), the PIMM's real part number, revision and
-name, and group, capability and variety bytes of 0xff, as every real
-record carries them. The one-processor 180 MHz, 1 MiB module is
-``PIMM_1XT5_1MB``, part 013-1895-001 revision C; the two-processor
-one is ``PIMM_2XT5_1MB``, part 013-1896-001 revision D. IRIX formats
-page data only when page A's first byte is 0x01 and otherwise
-reports it missing, which is what a population with no known record
-still shows. An Origin 2000 or Onyx2 node's part holds its IP27 node
-board's record in the same layout: ``IP27``, part 030-0733-003
-revision G, a marked synthetic barcode (``EMUN`` and the part's
-instance), and group, capability and variety bytes of 0xff. An IP27
-node carries no separate processor-module record. The programming
-commands are not answered. On an Origin 2000 or Onyx2 the ``n1`` node's
-line also reaches its module's midplane one-wire net, which carries
-the module's ``MODULEID`` part and its midplane part: the two are one
-open-drain line, so a search from the ``n1`` Hub finds three parts and
-from any other node's Hub one (see :ref:`sgi-origin2000-module-identity`).
+``MD_SLOTID_USTAT`` samples board signals. Linux ``hubmd.h`` names bit
+4 flash ready, bits 2:0 the Origin 2000 slot identity and bit 7 the
+Origin 200 slot identity, a *software expectation*. The model reads:
 
-The PCF8584 is mapped as a subregion of the Hub's own register region
-at higher priority, so both of the machine's mappings of the window
-reach it; it has no interrupt line, since the port is polled. The
-optional bring-up UART takes its 16550 clock argument as the
-oscillator divided by sixteen. The character-device assignment is
-fixed in one place: IOC3 ports A and B at 0 and 1, the system
-controller's AUX port at 2, the bring-up UART at 3, and the IOC3
-transmit-record backends for ports A and B at 4 and 5 -- the IRIX
-console (``console=d``) is IOC3 serial A, not the AUX port. The
-system controller's 2 KB NVRAM answers eight consecutive I2C
-addresses of one 256-byte page each (one part or several is not
-established and invisible on the wire); page 7 is the
-controller-reserved page the PROM reads before probing a console,
-and only its validity marker has a required value.
+- on the Origin 200, ``0x95`` on the master module and ``0x15`` on the
+  slave module of a two-module machine: bit 7 is the master sense, bits
+  0 and 4 both read flash ready and bit 2 is set;
+- on the Origin 2000 and Onyx2, ``0x90`` with bits 2:0 replaced by the
+  slot code the module wiring supplies for the node's slot
+  (:ref:`sgi-origin2000-module-identity`).
+
+Bits 0 and 2 on the Origin 200, bit 7 on the Origin 2000 and the bits
+the model leaves clear are *approximations*: no public source gives their
+values on these boards.
+
+``MD_LED0`` and ``MD_LED1`` are write-only diagnostic indicators, one
+per processor (Linux ``hubmd.h``). The model also treats ``0x22_0080``
+and ``0x22_00a0`` as the Origin 200 indicator pair, an *approximation*:
+Linux names those offsets microcontroller/UART registers. Every write
+to the four is traced (``sgi_hub_led``) and decoded against the stock
+PROM's progress and failure codes when it matches one; any other value
+is traced as undecoded, which is not a fault. Nothing is stored and a
+read logs as unimplemented.
+
+I2C, system controller and bring-up UART
+----------------------------------------
+
+Where a node has one, its PCF8584 I2C controller sits at ``0x22_0000``,
+mapped over the Hub window at higher priority so both mappings of the
+window reach it; it has no interrupt line. On the Origin 200 the module
+system controller answers on that bus at I2C address 8 and its 2 KiB
+configuration NVRAM at addresses 80 to 87 (:doc:`elsc`). On the Origin
+2000 the controller and its NVRAM sit on the module bus instead.
+
+With the machine's ``junk-uart=on``, node 0's Hub fits a 16550 at
+``0x22_00c0`` with an eight-byte register stride, the port SGI's
+operator booklet calls the junk bus UART
+(:src:`origin-onyx2-quick-reference-booklet`). The stock PROM probes it
+as a first console. No shipped Origin 200 has the part, so it is off by
+default. Its clock is the model's choice.
+
+Serial lines are assigned per node in blocks of six: IOC3 ports A and
+B, the system controller's AUX port, the bring-up UART, and the IOC3
+transmit records for ports A and B. Node *n*'s block starts at
+``-serial`` index 6\ *n*. The IRIX console is IOC3 serial A, not the AUX
+port.
+
+.. _sgi-hub-onewire:
+
+One-wire master and node record
+===============================
+
+``MD_MLAN_CTL`` is the node's one-wire bus master (Linux ``hubmd.h``):
+bit 0 received data, bit 1 done, bits 9:2 sample time, bits 19:10 pulse
+width, and bits 26:20 and 33:27 two timing phases. The register is 34
+bits wide; truncating it to 32 bits would rewrite the upper phase. It
+resets to ``0x31`` in both phases, Linux's ``MLAN_RESET_DEFAULTS``, a
+*software expectation*. Linux's ``MLAN_PHI0_MASK`` repeats the upper
+phase's shift, a typo; the model uses bits 26:20.
+
+A write stores the timing fields and starts a slot. Starting clears
+done, and a write cannot set done or received data. The slot completes
+one microsecond of virtual time later, and only a read after that sees
+done and the sampled level. How long a slot takes on hardware is
+*unknown*; the model needs only that a slot does not complete inside
+the write that starts it. A reset cancels a slot in progress. The pulse
+widths that classify a slot as reset, write-zero or write-one are the
+same model choices as the Bridge's one-wire master (:doc:`bridge`).
+
+The bus carries one DS2505-compatible part with family code ``0x0b``
+(:src:`ds2505-datasheet family code`). It answers reset with a presence
+pulse and implements the ROM search, match and skip commands and the
+memory, status and extended reads, with CRC-8 and CRC-16 framing as the
+datasheet defines. The 48-bit serial is a synthetic per-node value the
+machine wires; a real machine's serial is never used. Unprogrammed
+bytes read ``0xff``. Programming commands are not answered.
+
+The part holds the node's board record, in the fixed-offset layout of
+the Bridge's board records (:doc:`bridge`):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Node
+     - Name
+     - Part
+     - Revision
+     - Basis
+   * - Origin 200, one processor
+     - ``PIMM_1XT5_1MB``
+     - ``013-1895-001``
+     - C
+     - *Observed*, a published 1998 sale listing of a dual-module
+       machine (:src:`usenet-6kd8bj`).
+   * - Origin 200, two processors
+     - ``PIMM_2XT5_1MB``
+     - ``013-1896-001``
+     - D
+     - *Observed*, a published inventory
+       (:src:`ebbes-parallelrechner-dissertation p. 93`).
+   * - Origin 2000 and Onyx2
+     - ``IP27``
+     - ``030-0733-003``
+     - G
+     - *Observed* for a 195 MHz, 4 MB node
+       (:src:`irixnet-thread-4337 hinv -mvvv`); *inferred* for the
+       model's 180 MHz, 1 MB node.
+
+Every record carries group, capability and variety bytes of ``0xff``,
+as published records do, and a barcode marked synthetic (``EMUU`` or
+``EMUN`` and the instance number). Revision letters vary between units
+of one part, so each is one shipped revision. The IRIX 6.5.30 kernel
+formats page A only when its first byte is ``0x01``, a *software
+expectation*; a processor module with no known record leaves the part
+unprogrammed and IRIX reports missing page data. On an Origin 2000 or
+Onyx2 the n1 node's line also reaches its module's midplane one-wire
+net, so a search from that Hub finds the module identity and midplane
+parts as well (:ref:`sgi-origin2000-module-identity`).
+
+.. _sgi-hub-io:
 
 I/O interface
 =============
 
-The seven big windows are 512 MB each, aimed by a thirteen-bit
-translation entry naming a widget, one of its two address spaces and
-a 512 MB slice. There is no valid bit: a window is disabled by naming
-a widget that is not there, which is what both guests do. Bits 7:5
-of an entry are inside its width and named by no source, so they are
-stored rather than dropped. Every entry
-resets to zero, and that zero is load-bearing twice over -- a guest
-looking for a spare entry calls zero free, and zero spells widget 0
-in memory space, which is OpenBSD's only route to widget 0 (it
-redirects every widget-0 access onto the last big window and never
-programs the entry). A disabled window must not fault: guests disable
-windows deliberately, so the model floors the windows with a region
-that answers zero and logs -- a choice, not the hardware's behavior,
-which no source gives; the floor logs the window number, since an
-offset alone does not say which of the seven was disabled, and it
-covers the big windows only -- a crossbar port with no widget is an
-unmodelled device, not a disabled window, and keeps faulting. A
-window aimed at a widget's I/O space forwards byte writes to widgets
-8-15. Wider writes and general reads remain unsupported; the outgoing
-path otherwise admits only an eight-byte widget-identity read.
+The Hub has one XIO port (:src:`007-3439-002 p. 53`), cabled to a Bridge
+on the Origin 200 and to a Crossbow on the Origin 2000.
 
-The block transfer engines (BTE0, BTE1) copy or zero-fill ranges of
-128-byte cache lines through the node-local memory view the machine
-hands the Hub -- an address carrying no node number names this node,
-exactly as it does for the node's processors. Three facts are
-load-bearing: the engines work from reset gated on nothing (the
-firmware's diagnostic launches without writing any enable); stored
-addresses keep bits 39:7 and nothing else (the firmware stores
-cached-window virtual addresses and depends on the high bits being
-dropped); and a transfer completes inside the control store that
-launches it (the diagnostic observes both completion bits together
-and never loops back). Completion is either a pending interrupt on a
-named processor interface or an eight-byte status doubleword written
-to the notification address. A failed transfer latches error beside
-busy and wedges the engine; a length/status store clears busy and
-never error; only the I/O error-clear register's engine bit absolves
-it. The model moves whole chunks through one bounce buffer rather
-than issuing a call per 128-byte line, with the line-at-a-time
-engine's register-visible contract unchanged: the transfer completes
-inside the launching store, a failed chunk is retried line by line so
-the count of lines that never moved is exact, and overlapping source
-and destination keep the line-at-a-time propagation order. A chunk
-is 4096 lines (512 KB), so the diagnostic's transfer is one call
-each way and the 8 MB maximum takes sixteen. Several launch shapes
-are stated-open choices: a zero-length armed launch (never
-programmed by any observed driver) completes as zero lines; whether
-zero-fill reads its source is open, and the model does not; a
-control store with busy clear does nothing, the datasheet's own
-proposal; what a control/terminate load returns is unobserved and
-answered with the written bits; poison mode launches, but the
-directory state it would poison belongs to the unmodelled directory.
-An engine's source, destination and notification addresses resolve
-by programmed node number through the Hub's own engine view of the
-claim layer, exactly as a processor's addresses do, so a
-node-field-zero address names whichever Hub holds number zero and
-never the engine's own board by position. The notification is exactly
-eight bytes in guest byte order -- whether hardware writes more of
-the line is unobserved -- and in interrupt mode the node field names
-a processor interface on whichever Hub the fabric's map holds for
-that number, this Hub included; the completion is a direct call into
-that Hub, so the launching store never re-enters this Hub's own
-register region, and a number no reachable Hub holds is logged and
-dropped. On hardware a failed transfer
-surfaces through the Hub's error machinery, not a completion signal;
-a notification write on error is not established, so neither
-completion path runs, and the Hub error interrupt is not modelled.
-The engine enable mask stays unimplemented: the sense of its bits is
-open and nothing writes them before first use.
+Widget registers
+----------------
 
-The deallocation, queue-depth and CRB registers read zero because
-nothing is ever in flight; for the two deallocation registers the
-clear read is required, since a guest polls a written pending bit to
-clear. The queue-depth register has no write case -- the datasheet's
-one conditional rewrite never fires because the register always
-reads below its threshold; the arbitration register is not decoded
-(no guest path reads it); the per-widget response buffers are
-excluded because their credit field resets to one. Which visible bits
-the I/O error-clear register touches is open in the datasheet; the
-engines' error bits are the only latches this model has, and the
-firmware writes it three times per boot on its normal error path. The link-status register's state field has a counter-intuitive
-encoding -- 0 failed, 1 never came up, 2 and 3 working -- so testing
-the field's high bit answers "is the link up", which is the test
-Linux performs; reporting 2 rather than 3 is a choice, nothing
-distinguishing them. The link-enable bit is left clear at reset:
-firmware operates it itself with a load-modify-store once it has
-identified a part, and presetting it would model that write. Burst,
-retry count and null-packet timeout are writable configuration, the
-warm-reset trigger a one-shot the model accepts and drops; the state
-field and eight-bit mode are read-only, since a guest that could
-write the state could tell the machine its own link was down. The link comes up reporting itself up, a knowing
-departure from the documented reset value: a link that reads down
-makes Linux return before it identifies anything, and this machine's
-link is permanently connected to something always present. That
-departure is a ratified machine-contract decision.
+``IIO_WSTAT`` always reads zero: the model completes every request
+before it returns, retries nothing and never fails its link. The stock
+PROM writes it once at power-on; the write logs ``LOG_UNIMP``. Linux
+gives the retry count as eight bits in its structure and seven in its
+mask; nothing reads it nonzero here.
+
+``IIO_WCR`` stores bits 22:0 except bit 4, which reads zero. The stock
+PROM sets bit 17 (direct connect) with a crossbar credit of 3 or 4 when
+it finds a Bridge on the link, and IRIX 6.5.30 reads bit 17 to size its
+request credits, a *software expectation*. The model gives the bit and
+the credit no effect, since it models no credits.
+
+``IIO_ICTO`` and ``IIO_ICTP`` are the first registers Linux writes
+(``ip27-init.c``, ``0xff`` and ``0x800``) and accept a write at reset
+with no unlock step. The two scratch registers store the 36 bits of
+``IIO_SCRATCH_MASK``; the stock PROM uses register 0 as boot state.
+
+Access protection
+-----------------
+
+``IIO_ILAPR`` resets to all ones, the widget access pair to zero and
+``IIO_IIDEM`` to all ones. The stock PROM writes all ones to
+``IIO_ILAPR`` and ``0xff01`` to both widget access registers, opening
+widget 0 and widgets 8 to 15. IRIX 6.5.30 saves, zeroes and restores the
+outbound register while it programs its request buffers, and clears and
+sets a device's ``IIO_IIDEM`` bit when it removes and re-enables the
+device. All are *software expectations*. The model stores the registers
+and enforces none, an *approximation*: enforcement and what a refused
+request does are *unknown*. ``IIO_IIDSR`` stores its 29 bits; the model
+raises none of the conditions that send the Hub's own error interrupt.
+The ``SGIrules`` password writes to ``IIO_ILAPO`` and
+``NI_IO_PROT_OVRRD`` are accepted (Linux ``IIO_PROTECT_OVRRD_KEY``);
+there is nothing to unlock.
+
+``IIO_IMEM`` reads zero. Linux names bits 0, 4 and 8 as widget 0, BTE 0
+and BTE 1 shut down after an error; nothing here shuts down, so they
+read clear and a write of ones logs ``LOG_UNIMP``. Bit 12 clears a
+precise-error latch the model does not have.
+
+Link control
+------------
+
+``IIO_ILCSR`` (Linux ``hubii_ilcsr_t``) resets with maximum burst
+``0x3fc``, maximum retry ``0x3ff``, null timeout ``0xa`` and the link
+state field (bits 13:12) at 2. In that field 0 means failed, 1 never
+came up, and 2 and 3 working, so bit 13 alone answers "is the link up",
+the test Linux makes (``IIO_LLP_CSR_IS_UP``), a *software expectation*.
+The link reads up from reset because a link that reads down makes Linux
+abandon its XIO probe; the field's real reset value is not published, so
+this is an *approximation*. The state field and bit 11 (eight-bit mode)
+are read-only. Burst, retry, null timeout and bit 10 (link enable) are
+writable; bit 10 resets clear because firmware sets it itself with a
+read-modify-write.
+
+Bit 8 (Linux ``ILCSR_WARM_RESET``) sends a warm-reset pulse to the far
+end of the XIO link on every write with it set, and reads zero. A
+Crossbow treats an arriving warm reset as a reset of its own core and
+resets every link (:src:`crossbow-asic-spec-12.0 p. 132-133`). That the
+Hub bit sends that pattern is *inferred* from its name; that it reads
+zero is *inferred* from the stock PROM, which sets it from its reset
+vector and later sets bit 10 with a read-modify-write that would
+otherwise send a second reset. With nothing on the link the write logs
+``LOG_UNIMP``.
+
+A link reset arriving from the Crossbow changes nothing in the model and
+logs ``LOG_UNIMP``. The Crossbow specification says it clears the
+transmit buffer and link protocol state and restarts width negotiation;
+the model has neither, and the value the state field reads during
+negotiation is *unknown*.
+
+``IIO_ILLR`` counts link check-bit and sequence errors. The model's link
+commits none, so it reads zero and writes are dropped. The IRIX 6.5.30
+kernel reads it about once a second and evaluates the counts, a
+*software expectation*, so the model never serves an error the link did
+not make.
+
+Big windows
+-----------
+
+Seven translation entries, ``IIO_ITTE(0)`` to ``(6)``, aim seven 512 MiB
+big windows (Linux ``asm/sn/io.h``): bits 4:0 supply XIO address bits
+33:29, bits 11:8 the widget, and bit 12 selects the widget's I/O space,
+a *software expectation*. Bits 7:5 are stored as written. There is no
+valid bit: guests disable a window by aiming it at a widget that is not
+there. Every entry resets to zero, which names widget 0 in memory space.
+OpenBSD reaches widget 0 only through the last big window and never
+programs that entry, so it relies on the zero reset, a *software
+expectation*.
+
+A window aimed at an absent widget reads zero and drops writes, logging
+``LOG_UNIMP`` with the window number. That is an *approximation*: what a
+real Hub does there is *unknown*, and guests disable windows on purpose.
+A Crossbow port with no widget is not a disabled window and still
+fails. An entry with bit 12 set is modelled only for entry 0 at slice
+0, which the stock PROM uses to read a peer Hub's identity; it turns the
+access into an XIO I/O-space packet. Any other I/O-space entry logs
+``LOG_UNIMP`` and reaches nothing.
+
+.. _sgi-hub-inbound:
+
+Inbound XIO
+-----------
+
+A packet arriving on the XIO link is decoded by address. A memory
+address below 2\ :sup:`40` goes to the node's memory view, resolved by
+programmed node number as a processor's access is. A doubleword write
+to a node's interrupt-modify register, with bit 47 set and the node in
+bits 46:38, is a device interrupt and lands on that node's Hub. A
+doubleword read at I/O-view offset ``0x0160_0000`` with node field zero
+is a peer's identity probe and returns this Hub's ``NI_STATUS_REV_ID``.
+Anything else logs ``LOG_GUEST_ERROR`` and fails.
+
+A peer's programmed I/O to the Hub's own widget number answers only a
+4-byte read at offset 4, from the widget identification register, as
+IRIX 6.5.30 issues it. This alias is an *approximation*; every other
+access fails with ``LOG_GUEST_ERROR``. What the short widget offsets do
+on a Hub is *unknown*.
+
+``IIO_IPDR``, ``IIO_ICDR``, ``IIO_IFDR``, ``IIO_ICMR``, ``IIO_ICCR`` and
+the C register of request buffers 7 to 14 read zero because nothing is
+ever in flight; a guest that polls a written pending bit to clear needs
+that zero. Writes log ``LOG_UNIMP``.
+
+.. _sgi-hub-bte:
+
+Block transfer engines
+======================
+
+The I/O interface has two block transfer engines, at ``0x41_0000`` and
+``0x42_0000``, each with six registers (Linux ``hubio.h``):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Fields the model keeps
+   * - ``+0x00``
+     - ``IBLS`` length and status
+     - Bit 20 busy, bit 16 error, bits 15:0 length in 128-byte lines.
+   * - ``+0x08``, ``+0x10``
+     - ``IBSA``, ``IBDA`` source, destination
+     - Bits 39:7.
+   * - ``+0x18``
+     - ``IBCT`` control
+     - Bit 8 poison, bit 4 notify, bit 0 zero-fill.
+   * - ``+0x20``
+     - ``IBNA`` notification address
+     - Bits 39:7.
+   * - ``+0x28``
+     - ``IBIA`` interrupt address
+     - Bits 22:16 level, bits 8:0 node.
+
+Addresses keep bits 39:7 and higher bits drop silently, an
+*approximation*; the stock PROM's engine diagnostic passes when they do.
+Bits 6:0 set log ``LOG_GUEST_ERROR``. A
+store to ``IBLS`` sets busy and length but never clears a latched error.
+
+A store to ``IBCT`` while busy is set runs the whole transfer inside
+that store. The engines work from reset with no enable written, an
+*approximation*; the sense of the ``IIO_IMEM`` engine bits is *unknown*.
+Source, destination and
+notification addresses resolve through the node's memory view by
+programmed node number, as a processor's do, so a node field of zero
+names whichever Hub holds number zero. A store with busy clear stores
+the control bits and does nothing.
+
+On completion busy and the count clear. With notify set the engine
+writes the 8-byte ``IBLS`` value, big-endian, to the notification
+address. Otherwise it sets interrupt *level* through the
+interrupt-modify register of the Hub programmed with *node*, this one
+included; a node no reachable Hub holds logs ``LOG_GUEST_ERROR``.
+
+A line that cannot be read or written fails the transfer: busy and
+error stay set with the count of lines not moved, neither completion
+runs, and the model logs ``LOG_GUEST_ERROR``. Only writing bit 17 or 18
+of ``IIO_IECLR`` (Linux ``IECLR_BTE0`` and ``IECLR_BTE1``) clears that
+engine's error. The Hub error interrupt is not modelled.
+
+The model moves 4096 lines (512 KiB) per call through one buffer. A
+failed chunk is retried a line at a time so the remaining count is
+exact, and an overlapping source and destination run a line at a time,
+keeping the engine's forward order. Other choices, each an
+*approximation*: a zero-length launch completes at once and logs
+``LOG_GUEST_ERROR``; zero-fill does not read the source; poison mode
+copies and logs ``LOG_UNIMP``, since the directory is not modelled; a
+read of ``IBCT`` returns the stored bits and stops nothing, because no
+transfer is ever in progress; the notification writes eight bytes and
+no more.
+
+.. _sgi-hub-network:
 
 Network interface
 =================
 
-The status register stays in M mode; the node field and region size
-are the writable fields, programmed by firmware (synthesized firmware
-may supply the node through the nasid property), while the link state
-and chip identity are read-only; the region-size bit resets set and
-link-up reports whether the product wires a link. Vector PIO goes
-through the machine's fabric, on which this Hub's network interface
-is one endpoint: the fabric walks the route from that endpoint's port
-and performs the access on whatever the route ends at. On the direct
-adapter, the fabric of two Hubs joined by one link, a null route
-names the other Hub and any other route, which would need a Router,
-fails with the hardware's address-error response, so the direct
-topology never pretends it can route an Origin 2000 network. A route
-nothing answers -- no link, or the link down -- latches nothing and
-lets the requester's poll time out, the datasheet's no-response
-proposal for its open no-peer question, not an observed silicon
-behavior. A remote vector access decodes through the target Hub's
-pure store or peek, never its write hook, so it has no local side
-effects; the fabric is serialised only by BQL MMIO dispatch, which
-the launch path asserts before it calls in.
+Status, node number and mode
+----------------------------
 
-A link reset, port reset bit 1, completes at the moment it is
-written. With a peer across the cable, the two ends settle the width
-from both ends' forced-width bits (diagnostic parameters bit 12 here,
-the Router's per-port bit in its diagnostic parameters on the other
-end): the link comes up eight bits wide if either end forces it,
-sixteen otherwise. Status bit 30 reads that width at both ends, link-up
-stays set and the down reason clear, and both Hub ends latch bit 37,
-"link reset", in their port error registers; a Router end latches
-nothing, its error registers having no such bit. A Router resetting
-the port a Hub is cabled to latches bit 37 in that Hub the same way.
-With no peer the link stays down with the reason "never came out of
-reset" and only this Hub latches bit 37. A plain read of the port
-error register leaves the bit and a read of the clearing alias clears
-it, so the IRIX power-off path, which reads the clearing alias with
-no bound until the bit reads clear, and the PROM's single clearing
-read both see it set once and then clear. Node number, mode, routing,
-vector, protection, diagnostic and port parameters keep their values,
-since software keeps running across the reset. Writing bit 12 alone
-changes nothing on a running link: the width is a property of the
-link, settled when it comes up, at a reset exit (from the force bits
-as every reset's enter phase left them) and at a link reset.
+``NI_STATUS_REV_ID`` (Linux ``hubni.h``) holds bit 30 eight-bit link,
+bit 29 link up, bit 28 down reason (0 failed, 1 never came out of
+reset), bit 18 more nodes (M mode when clear), bit 17 region size, bits
+16:8 the node number, bits 7:4 the chip revision and bits 3:0 the chip
+identity. The node number, region size and more-nodes bits are
+writable; the rest are not. Linux reads the node number before anything
+node-relative, and OpenBSD reads bit 18 to choose M or N mode
+(``sginode.c``), a *software expectation*.
 
-These are approximations, not silicon behaviour: no Hub specification
-or capture is held. The reset's duration, the link-down interval
-during it, and the latch on a peerless Hub are unknown; finishing at
-once is chosen because it satisfies every software wait observed.
-Because both ends latch, a link reset written after a node has already
-done its clearing read leaves that node's bit 37 set; the IRIX 6.5.7
-kernel on a two-module Origin 200, where both module owners reset the
-link, and two PROMs running in parallel can do this. The IRIX 6.5.30
-power-off path resets the link from one module owner only, so it does
-not. The network-interface error interrupt is not modelled: bit 62 of
-the second pending bank never sets, so a leftover bit 37 raises no
-interrupt here, though IRIX's bus-error path still reads it as a fatal
-CrayLink error. Whether the hardware interrupt is a level of the fatal
-port-error bits or a separate latch is unknown. The warm reset across the
-link, power-on latching of bit 37, in-flight traffic and the port
-disable and port-timeout diagnostics are not modelled.
+At reset the node number is zero (or the ``nasid`` a synthesized
+firmware supplies), the mode M, region size set, the chip identity zero
+and bit 28 set. The link-up and eight-bit bits follow the cable: a Hub
+with a powered peer reads link up; a Hub with none, as on the Origin 200
+and the one-node Origin 2000, reads down with bit 28 set. The IRIX
+6.5.30 kernel treats down with bit 28 clear as a lost CrayLink on every
+bus error, a *software expectation*. The reset values are
+*approximations*. The model stays in M mode; node numbers 0 to 255 are
+routed.
 
-The node field is what the Hub decodes node-qualified addresses
-against, not the board position. The fabric gives each Hub a
-reachability map -- for every node number, the endpoint programmed
-with that number that the fabric connects, the Hub itself first --
-and in each attached processor's view, and in its own engines' view,
-the Hub places one alias per reachable endpoint at that endpoint's
-number stride, aimed at the endpoint's board stride in the canonical
-map, over an error floor across every stride; a number no reachable
-Hub holds answers with a decode error, never by board position and
-never from a Hub the number does not name. The Hub knows no peer,
-Router, module or cable: it holds its endpoint and its map. The
-machine wires the per-view overlay containers, the canonical map, the
-address geometry and the endpoint at build time; the Hub owns the
-overlay aliases and re-aims them inside one memory transaction
-whenever its map changes, which the fabric recomputes when any Hub's
-field is stored, at reset exit, and after a migration load. At reset
-every Hub answers node zero, so each node's
-early self-addressed initialisation stays on its own Hub until the
-global master assigns real numbers. The rule is that the node number
-a Hub answers to is programmed, not fixed.
+Node numbering and the claim layer
+----------------------------------
 
-The cached-alias size register bounds each processor view's nameless
-low window in the memory space, and only there: the register's
-domain is the cached space alone -- Linux's sn0 addrs.h defines
-CALIAS as "the first n bytes of memory on the reader's node" based
-at the cached base. Zero disables the window, one is 4 KiB, and each
-further code doubles it, up to 64 MiB at fifteen (sn0 hubpi.h).
-Within the window a node-field-zero memory access names the reader's
-own node; beyond it the access falls to the claim overlays, which
-route stride zero by programmed number -- the node's own Hub before
-assignment, the global master's after. The machine pre-creates one
-window per view at the largest encodable size and hands it over at
-build time; the Hub resizes and gates it inside one memory
-transaction whenever the register is stored, at reset exit, and
-after a migration load. The other spaces' nameless windows are the
-position-independent aliases of asm/sn/addrs.h and stay wide and
-reader-local regardless of the register: the Hub-special space is
-the UALIAS (uncached references to the memory of the reader's node,
-its bottom 128 KiB flipped per processor), the I/O space's
-window is the IALIAS (the local Hub's registers), and the
-memory-special and LBOOT paths are likewise local. Every guest we
-hold drives the register: the PROM stores the 4 KiB code once in its
-earliest per-processor bring-up and never reads it back, OpenBSD
-disables it at kernel initialisation, and Linux zeroes every node's
-copy before bringing processors up, then sets 8 KiB per node to
-switch to node-local exception handlers.
+The node number a Hub answers to is programmed, not its board position.
+Every Hub starts at zero, so each node's early accesses to node zero
+stay on its own Hub until the boot master numbers the others. For each
+attached processor's view and for its own engines' view, the Hub places
+one alias per Hub its link reaches, at that Hub's programmed number,
+over a floor that fails every number no reachable Hub holds with a
+decode error and ``LOG_GUEST_ERROR``. The machine wires the views and
+the address geometry; the Hub moves its aliases whenever any Hub's
+number or routing changes, at reset exit and after a migration load.
+Failing rather than timing out an unclaimed number is an
+*approximation*.
 
-Diagnostic indicators and the boot-status word
-==============================================
+Vector PIO
+----------
 
-The indicator register is write-only; every write is traced, decoded
-against the firmware's own progress and failure enumerations when it
-matches one and flagged undecoded otherwise -- a run with the event
-armed and no output means no write reached the register. Values
-outside 0x00-0x60 and 0x81-0xb5 are not in the enumeration, and the
-pattern the firmware flashes while waiting for a character is 0x80
-XORed with a per-device bit pattern, so an undecoded value is not a
-fault. The boot-status word the
-firmware keeps is a *software convention held in FPR0*, not a
-hardware register of this chip.
+A write to ``NI_VECTOR_PARMS`` launches a vector operation: bits 19:3
+address a register in the target's network-interface block, bits 1:0
+give the type (read, write, exchange), and ``NI_VECTOR`` holds the
+route, four bits per hop (Linux ``hubni.h``). Firmware uses it to reach
+a Hub before node numbers exist. The fabric walks the route from this
+Hub's port. On the direct cable of a two-module Origin 200
+(:src:`007-3708-002 p. 6`) a zero route names the other Hub; a nonzero
+route would need a Router and completes with the address-error type. On
+a Router fabric each Router forwards by the route (:doc:`router`).
 
-Migration
-=========
+The target answers from its own register store with no local side
+effects: the status, protection, scratch, diagnostic, I/O protection,
+ageing and port registers and both routing tables. An exchange writes
+only over a zero. A register outside that set completes with type 4,
+address error. On completion ``NI_VECTOR_STATUS`` holds bit 63 valid,
+the answering node in bits 60:51, the request's identifiers, address
+bits 31:3 and the type, and a read's data lands in
+``NI_VECTOR_READ_DATA`` (Linux ``NVS_*``). A route nothing answers
+leaves the status untouched and logs ``LOG_UNIMP``, so the requester's
+poll times out, an *approximation*. Overrun (bit 62) never sets.
 
-The big-window aim is re-derived from the restored table entries, and
-the cached-alias windows from the restored size code;
-the BTE registers are the whole of an engine's state, so nothing is
-in flight to carry. The interrupt outputs are re-driven on load,
-which is sound here because each drives an idempotent level input on
-the CPU that migrates its own cause bits -- the same re-drive was
-rejected for the IOC3's line into the Bridge, whose consumer
-edge-detects.
+Routing tables
+--------------
 
-The one-wire part on the bus migrates its own state in its own
-section.
+32 meta entries at ``0x63_8000`` and 16 local entries at ``0x63_8100``
+hold four-bit exit ports (Linux ``hubni.h``). A destination in this
+Hub's own group of sixteen node numbers uses the local entry for its
+low four bits; any other uses the meta entry for its high bits. An entry
+not written since reset routes nothing. The tables drive the claim
+layer and vector routing.
+
+.. _sgi-hub-link-reset:
+
+Link reset
+----------
+
+A link reset, ``NI_PORT_RESET`` bit 1, completes when it is written.
+With a peer across the cable the ends settle the width from both ends'
+force-eight-bit bits (``NI_DIAG_PARMS`` bit 12 here, the Router's
+per-port bit at the other end): eight bits if either end forces it,
+sixteen otherwise. The link layer negotiates its width at reset
+(:src:`galles-spider-1997`). Link up stays set, bit 30 reports the
+width at both ends, and both Hub ends latch ``NI_PORT_ERROR`` bit 37
+(Linux ``NPE_LINKRESET``); a Router end latches nothing. With no peer
+the link stays down with bit 28 set and only this Hub latches bit 37.
+Node number, mode, routing, vector, protection and diagnostic state
+keep their values. Writing bit 12 alone changes nothing until the next
+link reset.
+
+The IRIX power-off path reads ``NI_PORT_ERROR_CLEAR`` until bit 37 reads
+clear, and the stock PROM reads it once, *software expectations*;
+completing at once satisfies both. The reset's duration, the link-down
+interval and the latch on a Hub with no peer are *unknown*. Because both
+ends latch, a link reset written after a node has done its clearing
+read leaves that node's bit 37 set. The IRIX 6.5.30 power-off path
+resets the link from one module only, so it does not meet this.
+
+Port registers and protection
+-----------------------------
+
+``NI_PORT_PARMS`` stores 16 bits and resets to ``0x1bf0``.
+``NI_PORT_ERROR`` holds 38 bits; writing ones clears them, and
+``NI_PORT_ERROR_CLEAR`` returns and clears them. On a Router fabric
+``NI_DIAG_PARMS`` bit 0 makes this Hub's vector writes count a check-bit
+error at the first Router, and a Router counting one against this Hub
+increments bits 15:8, saturating at 255. The other diagnostic bits, the
+protection and I/O protection registers and the ageing controls are
+stored and never consulted; enforcing protection a firmware forgot to
+open would leave a dead machine with no diagnostic. The stock PROM's
+link diagnostic vector-writes a peer's ``NI_IO_PROTECT`` and
+vector-reads its ``NI_PORT_ERROR``, and IRIX 6.5.30 vector-reads and
+writes ``NI_DIAG_PARMS`` at boot, *software expectations*; all three
+answer the vector decode.
+
+.. _sgi-hub-power:
+
+Module power
+------------
+
+When the machine powers a module down its Hubs answer nothing: register
+accesses fail with a decode error, the big windows switch off, inbound
+XIO fails and the network port reads disabled, so the peer sees its link
+fail. The I2C controller keeps answering, so the standby system
+controller stays reachable over its own bus, an *approximation*.
+
+.. _sgi-hub-calias:
+
+Cached alias
+============
+
+``PI_CALIAS_SIZE`` bounds the reader-local low window of the cached
+memory space (Linux ``addrs.h``: CALIAS "points to the first n bytes of
+memory" on the reader's node). Code 0 disables it, code 1 is 4 KiB and
+each further code doubles it, to 64 MiB at 15 (Linux ``hubpi.h``,
+``PI_CALIAS_SIZE_*``). Within the window a memory access with node field
+zero stays on the reader's node; beyond it the access goes to the claim
+layer, which routes number zero to whichever Hub holds it. The register
+resets to 15, an *approximation*; every guest writes it first. The
+stock PROM writes code 1, OpenBSD writes 0, and Linux writes 0 on the
+boot node and 2 (8 KiB) on the others (``ip27-init.c``), all *software
+expectations*. The machine creates each window at 64 MiB and the Hub
+resizes and gates it on a store, at reset exit and after a load. The
+other spaces' reader-local windows do not depend on the register.
+
+.. _sgi-hub-migration:
+
+Reset and migration
+===================
+
+Reset sets every register to the values above, stops every comparator
+timer, ends every rendezvous hold, cancels a one-wire slot in progress
+and clears both processor enables in the hold phase. The error stack
+addresses, memory and the one-wire part's contents survive. The node
+numbers, claim aliases and cached-alias windows re-derive in the exit
+phase, once every Hub's enter phase has run.
+
+The device's state saves as ``sgi-hub`` version 31. The big windows,
+claim aliases and cached-alias windows re-derive from the restored
+registers, and the interrupt lines are re-driven from the restored
+state, which is sound because each drives a level input on a processor
+whose Cause bits migrate with it. A withdrawal the rendezvous assist is
+holding back lands before the state is saved, so the destination sees
+what a machine with no hold would have had; the holds themselves are
+not carried. The one-wire part migrates in its own section. Migration
+works only between identical builds.
+
+.. _sgi-hub-measurements:
+
+Measurements
+============
+
+No register of this part has been read on a physical machine for this
+project; neither machine the project measures carries a Hub. The only
+hardware evidence is the published inventories cited under
+:ref:`sgi-hub-identity` and :ref:`sgi-hub-onewire`.
+
+.. _sgi-hub-limits:
+
+Model limits
+============
+
+- Every reset value is the model's choice except the two Linux
+  composite constants. The real power-on values are *unknown*.
+- Protection, access and error-mask registers are stored, never
+  enforced. No refusal path exists.
+- No error latch other than the processor status 0 record and the
+  engines' error bit is modelled. The Hub error interrupt, the profiling
+  interrupt, cross-calls and the network-interface error interrupt never
+  fire.
+- Only the first doubleword of each processor error record is kept;
+  its type, request, supplemental and command fields stay zero.
+- Bit 0 of ``NI_PORT_RESET`` restarts the whole machine, not one node;
+  bit 7 alone is not implemented.
+- The I/O link never retries, times out or renegotiates; the link log
+  reads zero and an arriving link reset changes nothing.
+- I/O-space big windows work only for entry 0 at slice 0. A peer's
+  programmed I/O answers only the 4-byte identity read.
+- The graphics stall and the graphics interrupt counter are not
+  modelled; the interrupt is raised at once when the credit counter
+  falls below the bias.
+- The block transfer engines complete inside the launching store; the
+  directory, poison and engine enable mask are not modelled.
+- The network interface stays in M mode. Vector overrun, the warm reset
+  across CrayLink, the port-disable and port-timeout diagnostics and
+  in-flight traffic are not modelled.
+- ``MD_SLOTID_USTAT`` bits 0 and 2 read set on the Origin 200, and bit
+  7 reads set on the Origin 2000, where Linux names it a core-clock test
+  bit; their hardware values are *unknown*.
+- The rendezvous assist can delay a multi-threaded guest that polls the
+  comparators with their interrupts off by up to two seconds per partner
+  write, two seconds when it clears its own post, and two seconds at its
+  match on a second processor whose alive signal never comes.
+- Unimplemented offsets read zero and log ``LOG_UNIMP``. A powered-down
+  Hub fails every access with a decode error.
+
+.. _sgi-hub-tests:
+
+Tests
+=====
+
+``tests/qtest/sn0-hub-test.c`` (``/sn0/hub/*``) covers reset values,
+the 32-bit halves, processor number, presence and enable, the error
+stack address mask, the counter's rate, width and writes, comparator
+matching and wrap, pending banks, masks and lines, the rendezvous holds
+and their migration, the indicators, the bring-up UART, the slot
+identity on every machine, widget identity and control, the access and
+protection registers, the link register and link log, the inbound link
+reset, the scratch registers, vector PIO and its decode, the port
+registers and link reset, routing tables and node numbering, the claim
+floor, the cached alias, memory configuration, the error and DIMM
+registers, the one-wire master, the DS2505 part and the node records,
+the big windows, the engines' registers, modes, completion, errors and
+routing, and the graphics flow-control registers.
+
+``tests/qtest/sn0-hub-inbound-test.c`` (``/sn0/hub-inbound/*``) covers
+inbound XIO DMA from a Bridge and directly, the decoded address ranges,
+node-qualified routing, reset and migration.
+``tests/qtest/sn0-pi-error-test.c`` runs processors through the stock
+PROM's bus-error probe and checks the status 0 record.
+``tests/qtest/sn0-pi-gfx-test.c`` charges and returns graphics credits
+from running processors, and ``tests/unit/test-sgi-pi-gfx.c`` checks the
+flow-control block alone. ``tests/qtest/sn0-pio-forward-test.c`` checks
+that a processor store follows a re-aimed big window.
+``tests/qtest/sgi-migration-roundtrip-test.c`` saves and restores a
+running Hub.
+
+The functional tests ``tests/functional/mips64/test_sn0_smp.py`` and
+``test_sn0_smp_rendezvous.py`` run processor rendezvous through the Hub
+on one and two nodes; ``test_sn0_reset.py`` and
+``test_sn0_warm_reset.py`` check the port reset and the guest-requested
+machine restart.
