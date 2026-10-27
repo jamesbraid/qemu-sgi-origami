@@ -2922,6 +2922,67 @@ class Origin3000BrickTests(unittest.TestCase):
             _resolver.resolve_system_model(self.ORIGIN3200_XBRICK,
                                            composition)
 
+    ORIGIN3200_PBRICK = INPUTS / "origin3200-pbrick.yaml"
+
+    def test_pbrick_layer_carries_the_figure_2_24_links(self):
+        model = self.resolve(self.ORIGIN3200_PBRICK)
+        components = {item["id"]: item for item in model["components"]}
+        self.assertEqual(
+            sorted(cid for cid, item in components.items()
+                   if item["kind"] == "crossbar" and cid.startswith("pbrick-")),
+            ["pbrick-u0-crossbar", "pbrick-u1-crossbar",
+             "pbrick-u2-crossbar"])
+        # One cable record per link, two per downstream chip, each on
+        # distinct ports at both ends (108-0240-002 Figure 2-24).
+        links = {}
+        for cable in model["xio_cables"]:
+            if not cable["id"].startswith("pbrick-"):
+                continue
+            ends = [components[end] for end in cable["ends"]]
+            links[cable["id"]] = tuple(
+                (end["parent"].removeprefix("pbrick-").removesuffix(
+                    "-crossbar"), end["connector"]["port"]) for end in ends)
+        self.assertEqual(links, {
+            "pbrick-u0-d-to-u2-d": (("u0", 0xd), ("u2", 0xd)),
+            "pbrick-u0-c-to-u2-8": (("u0", 0xc), ("u2", 0x8)),
+            "pbrick-u0-9-to-u1-8": (("u0", 0x9), ("u1", 0x8)),
+            "pbrick-u0-8-to-u1-d": (("u0", 0x8), ("u1", 0xd)),
+        })
+        self.assertEqual(components["pbrick-port-a"]["connector"]["port"],
+                         0xa)
+        self.assertEqual(components["pbrick-port-b"]["parent"],
+                         "pbrick-u0-crossbar")
+
+    def test_pbrick_layer_puts_two_slots_on_each_chips_buses(self):
+        model = self.resolve(self.ORIGIN3200_PBRICK)
+        buses = {item["id"]: item["master"] for item in model["buses"]
+                 if item["id"].startswith("pbrick-pci-")}
+        self.assertEqual(buses, {
+            "pbrick-pci-1": "pbrick-u1", "pbrick-pci-2": "pbrick-u1",
+            "pbrick-pci-3": "pbrick-u0", "pbrick-pci-4": "pbrick-u0",
+            "pbrick-pci-5": "pbrick-u2", "pbrick-pci-6": "pbrick-u2",
+        })
+        slots = sorted((item["bus"], item["component"])
+                       for item in model["connections"]
+                       if item["bus"] in buses)
+        self.assertEqual(slots, [
+            (f"pbrick-pci-{bus}", f"pbrick-bus-{bus}-slot-{slot}")
+            for bus in range(1, 7) for slot in (1, 2)])
+
+    def test_origin3200_pbrick_hangs_the_pbrick_off_the_second_cbrick(self):
+        model = self.resolve(self.ORIGIN3200_PBRICK)
+        attachments = {(item["component"], item["bus"], item["role"])
+                       for item in model["connections"]}
+        self.assertIn(("pbrick-u0-crossbar", "c1-xio-ii", "bridge-upstream"),
+                      attachments)
+        self.assertIn(("c1-to-pbrick", ["c1-xio-ii-connector",
+                                        "pbrick-port-a"]),
+                      [(item["id"], item["ends"])
+                       for item in model["xio_cables"]])
+        from sgi_model.model_compile import CompileError, compile_model
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(model)
+
     def test_origin3200_xbrick_never_compiles(self):
         from sgi_model.model_compile import CompileError, compile_model
         with self.assertRaisesRegex(CompileError, "model_role 'reference'"):

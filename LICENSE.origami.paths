@@ -109,6 +109,7 @@ hw/mips/sgi/models/layers/modules/origin300-base.yaml
 hw/mips/sgi/models/layers/modules/origin300-pci-expansion-experiment.yaml
 hw/mips/sgi/models/layers/modules/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/layers/modules/origin350-module.yaml
+hw/mips/sgi/models/layers/modules/p-brick.yaml
 hw/mips/sgi/models/layers/modules/pci-carrier.yaml
 hw/mips/sgi/models/layers/modules/pci-shoehorn.yaml
 hw/mips/sgi/models/layers/modules/r-brick.yaml
@@ -169,6 +170,7 @@ hw/mips/sgi/models/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/origin300-pci-expansion.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
 hw/mips/sgi/models/origin300.yaml
+hw/mips/sgi/models/origin3200-pbrick.yaml
 hw/mips/sgi/models/origin3200-xbrick.yaml
 hw/mips/sgi/models/origin3200.yaml
 hw/mips/sgi/models/origin350-reference.yaml

@@ -221,6 +221,24 @@ from the cabled C-brick at its slot's port. Unknown: the brick's L1 type
 character, the XBridge revision, and the widget numbers a C-brick sees
 for the slots, which only an X-brick widget inventory would settle.
 
+.. _sgi-sn-family-pbrick:
+
+P-brick chips and links
+-----------------------
+
+The P-brick has twelve PCI slots on six buses and three XBridges. U0
+serves buses 3 and 4 and takes the C-brick on Crosstown2 port A or B.
+U1 serves buses 1 and 2, U2 buses 5 and 6, and U0 joins each by two
+links: U0 D to U2 D, U0 C to U2 8, U0 9 to U1 8 and U0 8 to U1 D
+(established, 108-0240-002 printed pages 2-30 and 2-31, Figure 2-24).
+The ``p-brick`` layer records those chips, ports, buses and slots, and
+lists one XIO cable per link. ``origin3200-pbrick`` hangs it off the
+second C-brick at U0 port A, the same way ``origin3200-xbrick`` places
+the X-brick. The builder still refuses the four links, so no P-brick is
+built: whether U1 and U2 present each head on its own link, which head
+rides which link, the PCI device number of each slot and the slots'
+interrupt wiring all lack a reviewed contract.
+
 .. _sgi-sn-family-rbrick:
 
 R-brick and NUMAlink module ports
