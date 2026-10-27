@@ -161,7 +161,8 @@ static bool o2_storage_event_write(O2MachineState *s, const char *line,
         errno = EIO;
         return false;
     }
-    return written == (ssize_t)length && fdatasync(s->storage_event_fd) == 0;
+    return written == (ssize_t)length &&
+           qemu_fdatasync(s->storage_event_fd) == 0;
 }
 
 static void o2_storage_event_fail(O2MachineState *s)
@@ -243,7 +244,7 @@ static void o2_storage_exit(Notifier *notifier, void *data)
 
             if (complete_offset >= 0 &&
                 (ftruncate(s->storage_event_fd, complete_offset) < 0 ||
-                 fdatasync(s->storage_event_fd) < 0)) {
+                 qemu_fdatasync(s->storage_event_fd) < 0)) {
                 error_report("o2-test cannot remove incomplete storage "
                              "completion record: %s", g_strerror(errno));
             }
@@ -1473,9 +1474,9 @@ static void o2_init(MachineState *machine)
                          "storage-diagnostic-event-file path");
             exit(1);
         }
-        s->storage_event_fd = g_open(s->storage_event_file,
-                                     O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-                                     0600);
+        s->storage_event_fd = qemu_create(s->storage_event_file,
+                                         O_WRONLY | O_EXCL | O_BINARY,
+                                         0600, NULL);
         if (s->storage_event_fd < 0) {
             error_report("o2-test cannot create storage diagnostic event "
                          "file '%s': %s", s->storage_event_file,
