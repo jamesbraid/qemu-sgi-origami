@@ -146,9 +146,9 @@ the C-brick's. The processors, DIMM banks and cabling are on
 
 The eight DIMM slots form four pairs. Banks 2n and 2n+1 sit on pair n
 and both DIMMs of a pair match, so the two banks of a pair are fitted
-alike; pairs may differ (established, 108-0240-002 printed pages 2-5
-and 2-6). The Origin 3200 catalogue entry fixes each C-brick at the fit
-a :ref:`posted Origin 3200 inventory <sgi-ref-web-nekonomicon-16723604>`
+alike; pairs may differ (:src:`108-0240-002 pp. 2-5, 2-6`),
+*established*. The Origin 3200 catalogue entry fixes each C-brick at the fit
+a posted Origin 3200 inventory (:src:`nekonomicon-16723604`, *observed*)
 reports, four 400 MHz R12000s with 8 MB secondary caches on two PIMMs
 and 4096 MB in eight 512 MB banks, and resolution refuses any other
 processor or bank population for that product.
@@ -1110,7 +1110,7 @@ module's L1 and that L1's UART, whether or not the topology carries the
 L1 management registry the Origin 300 PCI expansion experiment uses, so
 an R-brick needs no I/O peer. Its L1 keeps the routed Origin 300
 experiment's type profile described under :ref:`sgi-sn-family-rbrick`;
-an R-brick's own L1 type is unknown. A router record's ``node-ports``
+an R-brick's own L1 type is *unknown*. A router record's ``node-ports``
 lists the only ports a node's cable may use; the builder checks every
 cable against it before any device exists.
 
@@ -1120,7 +1120,7 @@ with no CPUs, its boot flash image left as supplied, and answers other
 nodes' memory traffic once they have configured and numbered it, as the
 firmware reaches a peer through its vector engine. It cannot be the
 console node, and a population that fits it a processor is refused.
-Whether such a board carries boot flash is unknown, so the builder still
+Whether such a board carries boot flash is *unknown*, so the builder still
 requires one.
 
 A controller with ``owner: module`` is built once as
