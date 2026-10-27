@@ -939,6 +939,8 @@ struct SGIMgrasState {
     bool gl_renderer_unavailable; /* Failure latched for this device. */
     bool gl_renderer_scalar; /* No Mesa on this host: every draw scalar. */
     uint32_t gl_render_create_fault; /* Host-only qtest creation result. */
+    /* Host-only: GL draws may run in bands of rows (x-raster-bands). */
+    bool raster_bands;
     /* The current checked command ended on Mesa, accepted or failed. */
     bool gl_render_validated;
     uint32_t gl_render_op; /* The GL command decoding, for traces. */

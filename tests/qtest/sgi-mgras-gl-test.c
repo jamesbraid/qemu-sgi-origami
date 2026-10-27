@@ -1900,6 +1900,29 @@ static void test_gl_large_clear_draws_in_bands(void)
     g_assert_cmpint(workers, >, 0);
 }
 
+/*
+ * With x-raster-bands off the same clear draws on the calling thread
+ * alone: no band worker is started, and the window still fills.
+ */
+static void test_gl_raster_bands_off_draws_on_one_thread(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS ",x-raster-bands=off");
+    int workers;
+
+    gl_scene_start(s, GL_FLAT);
+    gl_clear_color(s, 0, 1, 0, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(s, 256, 256), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_pixel(s, 383, 383), ==, 0x00ff00);
+    workers = sgi_raster_band_workers(s);
+    qtest_quit(s);
+    if (workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(workers, ==, 0);
+}
+
 /* A shallow back buffer keeps showing bank 1 on the same board. */
 static void test_gl_shallow_swap_still_shows_bank_one_ssi(void)
 {
@@ -2651,6 +2674,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-large-clear-draws-in-bands",
         test_gl_large_clear_draws_in_bands, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-raster-bands-off-draws-on-one-thread",
+        test_gl_raster_bands_off_draws_on_one_thread, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/hq-query-flag-only-from-query",
         test_hq_query_flag_only_from_query, true);
