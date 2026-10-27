@@ -7,9 +7,10 @@ HEART processor and memory controller (Octane)
 =================================================
 
 HEART is the processor, memory and I/O controller of the Octane and
-Octane2 IP30 system board. It sits between the processor's SysAD bus,
-the SDRAM banks and the Crossbow crossbar, where it is widget 8
-(:src:`octane-technical-report p. 2-15`). QEMU models it as
+Octane2 IP30 system board. It sits between the processor, the SDRAM
+banks and the Crossbow crossbar (:src:`octane-technical-report p. 2-15`),
+where it is widget 8 (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`).
+QEMU models it as
 ``sgi-heart`` in ``hw/misc/sgi-heart.c``. The ``octane`` machine fits
 HEART revision 4 and the ``octane2`` machine HEART revision 6, which
 IRIX reports as revision F (:ref:`sgi-ip30`). The model is a functional
@@ -31,10 +32,11 @@ Sources
 =======
 
 - SGI's *OCTANE Technical Report*,
-  :src:`octane-technical-report p. 2-15`, printed pages 2-15 to 2-19: HEART's processor, memory and
-  I/O units, its place between processor, memory and Crossbow, and its
-  monitoring of I/O writes for cache coherence. Printed pages 2-21 to
-  2-23 describe memory banks. It gives no register values.
+  :src:`octane-technical-report p. 2-15-2-19`: HEART's processor,
+  memory and I/O units, its place between processor, memory and
+  Crossbow, and its monitoring of I/O writes for cache coherence.
+  Printed pages 2-21 to 2-23 describe memory banks. It gives no register
+  values.
 - The owner's guides :src:`007-3435-004 p. 54` (Octane) and
   :src:`007-4207-002 p. 47` (Octane2): DIMM pairs, bank order and bank
   capacities.
@@ -52,6 +54,9 @@ Sources
 - Miod Vallat's OpenBSD boot capture of a 128 MiB Octane,
   :src:`miod-openbsd-sgi-story-4 lines 1308-1352`: HEART at widget 8,
   revision 4.
+- The *Crossbow ASIC Specification*, revision 12.0,
+  :src:`crossbow-asic-spec-12.0 p. 64-65`, for the interrupt packet
+  fields.
 - The DS2505 one-wire EEPROM datasheet, :src:`ds2505-datasheet p. 15`,
   for the meaning of a one-wire reset slot.
 - The IP30 PROM and the IP30 kernel and stock diagnostic shipped with
@@ -63,15 +68,19 @@ Sources
 Identity and placement
 ======================
 
-HEART is Crossbow widget 8 on IP30 (OpenBSD ``ip30.h``), and its
-processor-interface register block starts at physical ``0x0ff00000``
-(OpenBSD ``xheartreg.h``), both *established* as public software
-expectations and agreed by Linux. RAM starts at physical
-``0x20000000``. OpenBSD ``xbowdevs.h`` gives the widget manufacturer
-``0x036`` and part ``0xc001``. The widget identification word holds
-revision in bits 31:28, part in bits 27:12 and manufacturer in bits
-11:1. OpenBSD reads it as 32 bits at widget offset ``0x04`` and as
-64 bits at ``0x00``.
+HEART is Crossbow widget 8, *observed* in a published Octane capture
+(:src:`miod-openbsd-sgi-story-4 lines 1308-1352`) and agreed by OpenBSD
+``ip30.h`` and Linux. Its processor-interface block starts at physical
+``0x0ff00000`` in OpenBSD ``xheartreg.h`` and Linux ``heart.h``, a
+*software expectation*; the owner's Octane2 answered descriptor reads
+there (:ref:`sgi-heart-octane2-bank`), *established* for that board.
+RAM starts at physical ``0x20000000`` in OpenBSD ``ip30.h``, a *software
+expectation*. OpenBSD ``xbowdevs.h`` gives the widget manufacturer
+``0x036`` and part ``0xc001``, and OpenBSD and Linux put revision in
+bits 31:28, part in bits 27:12 and manufacturer in bits 11:1 of the
+identification word, read as 32 bits at widget offset ``0x04`` or as 64
+bits at ``0x00``, a *software expectation*. The Octane2 read below
+decodes consistently with that layout.
 
 .. list-table::
    :header-rows: 1
@@ -86,8 +95,10 @@ revision in bits 31:28, part in bits 27:12 and manufacturer in bits
      - Revision 4 *observed* at widget 8 in the OpenBSD capture
        (:src:`miod-openbsd-sgi-story-4 lines 1308-1352`). A published
        195 MHz inventory prints HEART revision D
-       (:src:`usenet-3be33f04`); how IRIX's letters map to the raw field
-       is *inferred*. Bit 0 set is an *approximation*.
+       (:src:`usenet-3be33f04`). That D is revision 4 is *inferred*:
+       counting A as 1 makes D 4 and F 6, and the Octane2's revision F
+       reads widget revision 6 (:ref:`sgi-heart-octane2-id`). Bit 0 set is
+       an *approximation*.
    * - ``octane2``
      - 6
      - ``0x6c00106d``
@@ -413,19 +424,22 @@ shipped IP30 PROM. It clears the four descriptors with two 64-bit
 writes, writes a temporary descriptor ``0x81bf0040`` (valid, 2 GiB,
 density 6, base ``0x40``) to each bank, and tests presence at offsets 0
 and 8. It then picks the capacity from a sixteen-word table of
-candidate descriptors whose largest is 2 GiB. Below HEART revision 6 it compares
-a word at base + ``0x80`` with one at base + 32 MiB + ``0x80``; on
-revision 6 and later it reads at half the provisional size and halves
-the descriptor when that reads zero. Last, it assigns bases largest
+candidate descriptors whose largest is 2 GiB. Below HEART revision 6,
+when the provisional density code is odd, it compares a word at
+base + ``0x80`` with one at base + 32 MiB + ``0x80`` and drops the bank
+on a match. On revision 6 and later it writes zero at the bank base,
+writes all ones at half the provisional size and reads the base back:
+a nonzero read shows the write aliased onto the base and halves the
+descriptor, and a zero read keeps it. Last, it assigns bases largest
 bank first and writes the final descriptors. The IRIX 6.5.30 kernel
 only reads the descriptors: it sums ``(size + 1) * 32 MiB`` over the
 valid ones in banks 0-3 and never reads the density code.
 
-Plain modulo mapping makes that probe choose a descriptor larger than
-the bank. Under a valid 2 GiB descriptor with density code 6, the model
-therefore maps a bank offset ``o`` onto the fitted RAM with this
-projection, an *approximation* chosen so that the PROM's own table
-names the fitted size on both revision paths:
+For banks of 64 to 512 MiB, plain modulo mapping makes the below-revision-6
+path choose a descriptor larger than the bank. Under a valid 2 GiB
+descriptor with density code 6, the model therefore maps a bank offset ``o``
+onto the fitted RAM with this projection, an *approximation* chosen so that
+the PROM's own table names the fitted size on both revision paths:
 
 .. list-table::
    :header-rows: 1
@@ -448,8 +462,10 @@ to each byte of an access, so a multi-byte access that crosses a
 discontinuity is split correctly. It is not a measured HEART address
 decoder.
 
-On the model, the PROM then ends on these final descriptors for a single
-bank at base 0, on both revision paths:
+On the model, the probe leaves these descriptors, still at the
+temporary base ``0x40``, on both revision paths. The PROM's base
+assignment then removes ``0x40``, so a single bank ends at base 0 with
+the same upper bits.
 
 .. list-table::
    :header-rows: 1
@@ -458,33 +474,33 @@ bank at base 0, on both revision paths:
      - Final descriptor
      - Density code
    * - 64 MiB
-     - ``0x81010000``
+     - ``0x81010040``
      - 4
    * - 128 MiB
-     - ``0x81030000``
+     - ``0x81030040``
      - 4
    * - 256 MiB
-     - ``0x81470000``
+     - ``0x81470040``
      - 5
    * - 512 MiB
-     - ``0x814f0000``
+     - ``0x814f0040``
      - 5
    * - 1 GiB
-     - ``0x819f0000``
+     - ``0x819f0040``
      - 6
    * - 2 GiB
-     - ``0x81bf0000``
+     - ``0x81bf0040``
      - 6
 
-These are model results, not measurements. The owner's Octane2 PROM
-wrote ``0x81470000`` for its 256 MiB bank (:ref:`sgi-heart-octane2-bank`),
-which matches. The PROM's table pairs its rows by density code; that
-each code names one SDRAM part density is *inferred* from the table
-alone. What the density code does to HEART's address decoding, how a smaller DIMM
-answers under the temporary descriptor, and the descriptors' reset
-values are *unknown*. A revision-matched specification, or the final
-descriptors of a known DIMM population on a real board, would settle
-them.
+These are model results, not measurements. The owner's Octane2 PROM left
+``0x81470000`` for its 256 MiB bank at base 0
+(:ref:`sgi-heart-octane2-bank`), which matches. The PROM's table pairs its
+rows by density code; that each code names one SDRAM part density is
+*inferred* from the table alone. What the density code does to HEART's
+address decoding, how a smaller DIMM answers under the temporary descriptor,
+and the descriptors' reset values are *unknown*. A revision-matched
+specification, or the final descriptors of a known DIMM population on a real
+board, would settle them.
 
 The PROM also writes mode bits 21, 11 and 4 before its probe and clears
 bit 21 after it, writes ``0x00084000`` to memory refresh and eight
@@ -515,27 +531,30 @@ without a new event. Masks 1-3 are stored and drive nothing. These
 output and retention rules are *approximations* compatible with the
 drivers; HEART's assertion timing is *unknown*.
 
-Devices raise interrupts with a Crosstalk write to HEART's widget
-offset ``0x80``, the destination OpenBSD and Linux program into the
-onboard Bridge. In the packet, data bits 7:0 select the vector and
-bit 8 chooses set or clear, as the Bridge's interrupt packet format
-gives them (:doc:`bridge`). The model takes only 64-bit writes there
-with vector below 64 and nothing above bit 8; it sets or clears that
-one pending bit. Anything else fails and logs ``LOG_UNIMP``. This
-packet side is separate from the processor's view of the widget
-window, where offset ``0x80`` is not a register.
+Devices raise interrupts with a Crosstalk write to HEART's widget offset
+``0x80``, the destination OpenBSD and Linux program into the onboard Bridge,
+a *software expectation*. The Crossbow specification gives the interrupt
+packet's data the vector in bits 7:0 and assertion in bit 8, set for an
+interrupt and clear for its withdrawal
+(:src:`crossbow-asic-spec-12.0 p. 64-65`), *established* for Crossbow's own
+packets. That Bridge packets to HEART carry the same fields is *inferred*
+from the shared Crosstalk packet format. The model takes only 64-bit writes
+there with vector below 64 and nothing above bit 8; it sets or clears that
+one pending bit. Anything else fails and logs ``LOG_UNIMP``. This packet
+side is separate from the processor's view of the widget window, where
+offset ``0x80`` is not a register.
 
 .. _sgi-heart-timer:
 
 Counter and compare
 ===================
 
-OpenBSD ``xheartreg.h`` describes the count register at ``0x20000`` as
-52 bits advancing at 12.5 MHz, and names a 24-bit compare at
-``0x30000`` and a trigger at ``0x40000``; Linux agrees on width and
-rate. The model's count advances one tick per 80 ns of virtual time
-from zero at reset and wraps at 52 bits, *approximation* for the phase:
-the chip's starting value is *unknown*.
+OpenBSD ``xheartreg.h`` describes the count register at ``0x20000`` as 52
+bits advancing at 12.5 MHz, and names a 24-bit compare at ``0x30000`` and a
+trigger at ``0x40000``; Linux agrees on width and rate. These are *software
+expectations*. The model's count advances one tick per 80 ns of virtual time
+from zero at reset and wraps at 52 bits, *approximation* for the phase: the
+chip's starting value is *unknown*.
 
 Compare stores the low 24 bits of a 64-bit write and reads them back.
 It raises no interrupt and does not touch the counter. The trigger
@@ -548,7 +567,8 @@ and reads compare, which is why it is stored.
 One-wire master
 ===============
 
-HEART has a MicroLAN (one-wire) master at ``0xb8``. The model hangs the
+OpenBSD ``xheartreg.h`` and Linux ``heart.h`` place a MicroLAN
+(one-wire) master at ``0xb8``, a *software expectation*. The model hangs the
 processor module's board record on it (:ref:`sgi-ip30-board-identity`).
 OpenBSD writes a 64-bit command with the pulse width in bits 19:10 and
 the sample point in bits 9:2, polls bit 1 for completion and reads the
@@ -557,17 +577,17 @@ write one (6, 110) and write zero (80, 30), *software expectation*.
 The IP30 PROM writes ``0x82104``, a reset slot, to the 32-bit low word
 at ``0xbc`` and polls bit 1 there.
 
-A write to ``0xb8`` (64-bit) or ``0xbc`` (32-bit) starts one slot on
-the device's one-wire bus and clears bits 1 and 0. The model takes one
-command unit as one microsecond and completes the slot after pulse plus
-sample units of virtual time, then sets bit 1 and the sampled level in
-bit 0. An empty bus samples one; a present part pulls the reset sample
-low, as a DS2505 presence pulse does after a reset low of at least
-480 µs (:src:`ds2505-datasheet p. 15`). The unit scale and the clock
-divider at ``0xb0``, which the model stores but ignores, are
-*approximations*; HEART's real slot timing is *unknown*. A command
-written while a slot is busy replaces it and logs ``LOG_GUEST_ERROR``.
-Reset clears the control word and cancels a slot.
+A write to ``0xb8`` (64-bit) or ``0xbc`` (32-bit) starts one slot on the
+device's one-wire bus and clears bits 1 and 0. The model takes one command
+unit as one microsecond and completes the slot after pulse plus sample units
+of virtual time, then sets bit 1 and the sampled level in bit 0. An empty
+bus samples one; a present part pulls the reset sample low, as a DS2505
+presence pulse does after a reset low of at least 480 µs
+(:src:`ds2505-datasheet p. 15`), *established* for that part. The unit scale
+and the clock divider at ``0xb0``, which the model stores but ignores, are
+*approximations*; HEART's real slot timing is *unknown*. A command written
+while a slot is busy replaces it and logs ``LOG_GUEST_ERROR``. Reset clears
+the control word and cancels a slot.
 
 .. _sgi-heart-ecc:
 
@@ -578,7 +598,8 @@ Linux ``heart.h`` names the mode bits involved: 0 enables corrected
 memory error reports, 1 uncorrectable reports, 15 global ECC, 19
 single-bit error generation, 20 double-bit generation, 21 forced write
 and 25 correction lock. It places the memory error address and data at
-``0x98`` and ``0xa0`` and cause at ``0x10040``. None of these sources
+``0x98`` and ``0xa0`` and cause at ``0x10040``. These names and
+placements are *software expectations*. None of these sources
 gives HEART's encoder, correction or latch rules, so the ECC model is a
 functional subset, *approximation* throughout. It covers aligned
 eight-byte processor accesses to fitted RAM only.
@@ -645,7 +666,7 @@ monitor them for coherence (:src:`octane-technical-report p. 2-15`),
 but no public source gives HEART's request decode, response format or
 coherence rules. OpenBSD programs the onboard Bridge's direct map for
 widget 8 and adds ``0x80000000`` to a physical address to make a PCI
-DMA address (:doc:`bridge`).
+DMA address (:doc:`bridge`), a *software expectation*.
 
 The model accepts a Crosstalk read or write addressed to HEART when
 every byte falls in a valid descriptor window of a fitted bank. It uses
@@ -696,30 +717,44 @@ was preceded by a write.
      - Width
      - Value
      - Register
+     - Revision
+     - When
    * - ``0x18000000``
      - 64
      - ``0x000000006c00106d``
      - widget identification
+     - F (field 6)
+     - PROM monitor, after initialisation
    * - ``0x00002000``
      - 64
      - ``0``
      - low memory
+     - F (field 6)
+     - PROM monitor, after initialisation
    * - ``0x18000008``
      - 64
      - ``0x0000000000000060``
      - widget status
+     - F (field 6)
+     - PROM monitor, after initialisation
    * - ``0x0ff00020``-``0x0ff0002c``
      - 32, four words
      - ``0x81470000``, ``0``, ``0``, ``0``
      - bank descriptors 0-3
+     - F (field 6)
+     - PROM monitor, after initialisation
    * - ``0x18000060``, ``0x18000068``
      - 64, two words
      - ``0``, ``0x3ff7fc0f``
      - widget error status and mask
+     - F (field 6)
+     - PROM monitor, after initialisation
    * - ``0x18000028``
      - 64
      - ``0x28``
      - widget request timeout
+     - F (field 6)
+     - PROM monitor, after initialisation
 
 .. _sgi-heart-octane2-id:
 
@@ -812,7 +847,7 @@ Model limits
   processor-interface access error word and the widget error registers
   never record anything. Bridge errors do not reach HEART.
 - No timer interrupt: compare is stored only and trigger is absent.
-  Level 3 rises only when software sets bit 50.
+  Level 3 rises only when software or an interrupt packet sets bit 50.
 - The descriptor projection, the modulo wrap and the absent-bank
   responses are functional choices, not HEART's address decoder.
 - No processor cache coherence protocol; DMA and the processor share
@@ -826,8 +861,9 @@ Model limits
   ``LOG_UNIMP``; reads return zero and writes are dropped, without a bus
   error. Widget-window accesses to an unmodelled offset or width log
   ``LOG_UNIMP`` and fail, so the processor takes a bus error. The stock
-  6.5.30 graphics diagnostic's 64-bit read at widget ``0x10`` fails this
-  way.
+  6.5.30 graphics diagnostic reads widget ``0x10`` as 64 bits and
+  branches on zero, a *software expectation*; on the model that read
+  fails this way. HEART's value there is *unknown*.
 - Busy one-wire replacement logs ``LOG_GUEST_ERROR``.
 - The Octane's HEART revision 4 has no measured status word, so the
   ``octane`` refuses that read.
@@ -838,16 +874,17 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-heart-test.c`` drives a standalone ``sgi-heart``.
-It covers descriptors for 64, 128 and 256 MiB banks, two-bank isolation,
-rejected capacities and the 64-bit descriptor clear, the probe
-projection, and the PROM's sizing sequence on both revision paths for
-every bank size from 64 MiB to 2 GiB (``/heart/prom-probe/*``, which
-plain modulo mapping fails). It also covers widget identity, control,
-request timeout, error and diagnostic registers, interrupt packets,
-pending and mask behaviour on all five levels, processor status, the
-one-wire master with and without a part, slot replacement, Crosstalk
-routing and DMA through a Bridge, the ECC subsets, reset and migration.
+``tests/qtest/sgi-heart-test.c`` drives a standalone ``sgi-heart``. It
+covers descriptors for 64, 128 and 256 MiB banks, two-bank isolation,
+rejected capacities and the 64-bit descriptor clear, the probe projection,
+and the PROM's sizing sequence on both revision paths for every bank size
+from 64 MiB to 2 GiB (``/heart/prom-probe/*``). These check the descriptor
+the probe leaves at base ``0x40``; the revision-4 cases for 64 to 512 MiB
+fail under plain modulo mapping. It also covers widget identity, control,
+request timeout, error and diagnostic registers, interrupt packets, pending
+and mask behaviour on all five levels, processor status, the one-wire master
+with and without a part, slot replacement, Crosstalk routing and DMA through
+a Bridge, the ECC subsets, reset and migration.
 
 ``tests/qtest/sgi-heart-cpu-test.c`` runs code on R10000 and R12000
 processors: a DMA into RAM the processor then executes, and double-bit

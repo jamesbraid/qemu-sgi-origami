@@ -66,7 +66,7 @@ Family members and selection
      - Reset mode input
      - Default secondary cache
    * - ``R10000``
-     - ``octane``, ``origin200``, ``origin2000``, ``onyx2``
+     - ``octane``, ``origin200``, ``origin2000``, ``onyx2``, ``o2-test``
      - ``r10000-prid``, default ``0x00000926``
      - ``reset-mode``, optional
      - 1 MiB, 128-byte blocks
@@ -117,7 +117,8 @@ software expectation.
 ``r10000-prid``, ``r14000-prid`` and ``r12000-prid`` each take the whole
 32-bit word and keep the revision byte the caller gives. Setting
 ``r10000-prid`` or ``r14000-prid`` fails unless bits 31:16 are zero and
-the implementation byte is ``0x09`` or ``0x0f``. An R12000 fails to
+the implementation byte is ``0x09`` for ``r10000-prid`` and ``0x0f`` for
+``r14000-prid``. An R12000 fails to
 realize unless bits 15:8 are ``0x0e``; its upper 16 bits are not
 checked. Reset installs the configured word every time, and an ``MTC0``
 to PRId leaves it unchanged.
@@ -154,7 +155,8 @@ The values each machine selects:
        inventory state, not raw CP0 or CP1 reads. Whether the fitted die
        is a VR12000, VR12000L or VR12000A is *unknown*.
    * - ``origin200``
-     - ``0x00000926`` (R10000), ``0x00000e23`` (R12000)
+     - ``0x00000926`` or ``0x00000934`` (R10000, by module),
+       ``0x00000e23`` (R12000)
      - ``0x00000900``
      - :ref:`sgi-sn-origin200-processors`
 
@@ -242,12 +244,14 @@ what software put there.
 
 The branch prediction table the Diagnostic register (CP0 22) reads and
 writes has 512 two-bit entries on the R10000 and 2,048 on the R12000
-:src:`nec-vr10000-series-um-4 PDF p. 351`. The model predicts no branches;
+:src:`nec-vr10000-series-um-4 PDF p. 351`, *established*. The model
+predicts no branches;
 the entries hold what software wrote. The R12000 Diagnostic register also
 makes bit 26 writable, which Linux sets during its R12000 probe.
 
 The manual leaves cache and TLB contents undefined after cold reset
-:src:`r10000-users-manual-2.0 p. 336`. The model clears every array to
+:src:`r10000-users-manual-2.0 p. 336`, *established*. The model clears
+every array to
 zero (invalid) at reset, an *approximation*: software that initialises the
 caches before use, as the manual requires, cannot tell the difference.
 
@@ -256,7 +260,8 @@ caches before use, as the manual requires, cannot tell the difference.
 Count and Compare
 =================
 
-Count advances every other processor clock. Compare is compared with
+Count advances every other processor clock
+:src:`r10000-users-manual-2.0 section 14.8`. Compare is compared with
 Count continuously, equality sets Cause IP7, and a Compare write clears
 that interrupt :src:`r10000-users-manual-2.0 p. 244`, *established*. The
 timer and the performance counters share IP7. The manual does not say
@@ -325,6 +330,14 @@ interrupt entry and reset close the window, and a later Count access opens
 a new one. No limit applies to the number of instructions between the
 sample and the Compare write.
 
+A window open when the machine is migrated is dropped, and the
+destination applies the ordinary rule to that one Compare write. This is
+deliberate, unlike the adjacent-write recovery, which migrates its
+pending candidate: the virtual clock is frozen while the machine is
+stopped, so a window open across a migration or snapshot loses nothing
+unless a host stall after the resume crosses the target, at a cost of
+one tick.
+
 A target behind the sample, or equal to it, keeps the ordinary rule. That
 covers the read-Count-minus-one disarm public drivers use (OpenBSD writes
 Compare to the Count it read minus one), the kernel's Count=1, Compare=0
@@ -359,7 +372,8 @@ the other events measure. This is a functional *approximation* of cycle
 counting. The manual describes a two-cycle delay between an event and the
 counter update and requires an instruction between writing a control
 register and initialising its counter
-:src:`nec-vr10000-series-um-4 PDF p. 247, 250`. The model updates at
+:src:`nec-vr10000-series-um-4 PDF p. 247, 250`, *established*. The
+model updates at
 once and does not model events in flight when software changes a
 counter, a control register or the processor mode.
 
@@ -463,14 +477,19 @@ The model applies the input check to ``ADD.S`` and ``DIV.S`` only. It
 applies the result check to ``ADD``, ``SUB``, ``MUL``, ``DIV``, the four
 multiply-add forms and ``RECIP`` in both precisions, to ``CVT.S.D`` and
 to ``ABS`` and ``NEG``, raising E alone and discarding the operation's
-other flags. With FS set, denormal results are
-flushed to zero. ``CVT.L`` takes Unimplemented Operation for a result
-wider than 51 bits, a NaN or an infinity
-:src:`r10000-users-manual-2.0 section 15.5`. ``ABS`` and ``NEG`` are
-arithmetic: a NaN operand signals Invalid. The R12000's changed FS
-handling of input denormals and quiet NaNs
-:src:`nec-vr10000-series-um-4 PDF p. 349-351, 353` is not modelled
-separately.
+other flags. With FS set, denormal results are flushed to zero.
+
+``CVT.L`` of a result wider than 51 bits takes Unimplemented Operation
+:src:`r10000-users-manual-2.0 section 15.5`, *established*. The model
+also traps a NaN, an infinity or an out-of-range source in place of the
+architectural Invalid result, an *approximation*: the manual gives no
+result for them. The model treats ``ABS`` and ``NEG`` as arithmetic, so a
+NaN operand signals Invalid. That is a model choice: it follows NEC's
+*VR10000 Instruction Set User's Manual*, which the code cites and this
+page has not checked. The
+R12000 changes FS handling of input denormals and quiet NaNs
+:src:`nec-vr10000-series-um-4 PDF p. 349-351, 353`, *established*; the
+model does not separate it.
 
 .. _sgi-r10000-lwr:
 
@@ -512,7 +531,8 @@ behind the CPU in its own subsections:
   stream.
 - On the R10000 and R14000, loading fails if the incoming PRId differs
   from the destination's configured PRId, so its next reset cannot
-  restore another identity. Loading also fails if Config SS differs.
+  restore another identity.
+- On every family member, loading fails if Config SS differs.
 - A pending adjacent-write candidate travels with its age. An open
   Count-sample window does not: the destination applies the ordinary rule
   to the next Compare write. The virtual clock is frozen while the
@@ -610,7 +630,11 @@ Model limits
   :src:`nec-vr10000-series-um-4 PDF p. 247, 358`, are not modelled.
 - Cold and soft reset differ only in the generic MIPS way: a QEMU system
   reset is a cold reset. A Soft Reset exception keeps WatchLo on the
-  R10000 and R16000 and clears it on the R12000 and R14000.
+  R10000 and R16000 and clears it on the R12000 and R14000, a model
+  choice; whether the R12000 and R14000 keep WatchLo is *unknown*.
+- On the R10000 the secondary arrays follow a reset-mode SS of 1 to 5
+  (1 to 16 MiB); SS 0, 6 and 7 leave 1 MiB. The R14000's arrays stay at
+  2 MiB whatever SS says. Config SS then disagrees with the arrays.
 - An unhandled CP0 register 25 selector logs ``LOG_UNIMP`` and reads
   zero. Setting Status RE logs ``LOG_UNIMP``.
 - Migration works only between identical builds.
@@ -640,8 +664,8 @@ Tests
   vCPU held from a debugger between the two writes, across interrupts,
   delay slots, single stepping, resets, migration and holds past half
   the counter range.
-- ``tests/qtest/sn0-r10k-test.c``: the secondary capacity a reset mode
-  word selects, secondary block sizes, soft-reset state, coherent
+- ``tests/qtest/sn0-r10k-test.c``: the R10000 secondary capacity a
+  reset mode word selects, secondary block sizes, soft-reset state, coherent
   prefetch hints and Status RE logging.
 - ``tests/qtest/sn0-r10k-perf-migration-test.c``: counter migration, the
   secondary-cache arrays across migration and Index Store Data padding.

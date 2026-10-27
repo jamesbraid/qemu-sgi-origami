@@ -42,12 +42,13 @@ Sources
   Deskside Workstation Owner's Guide*: the IO6G panel's two AES3 BNCs and
   two video-sync loop-through BNCs :src:`007-3454-005 p. 26-27`.
 - Published inventories and boot logs: an OpenBSD 4.3-beta boot on an
-  Octane with HEART revision 4 :src:`miod-openbsd-sgi-story-4 OpenBSD
-  4.3-beta boot`; Linux boots of one dual-R14000, HEART revision F Octane
-  in 2017 :src:`lore-kinard-octane-2017 dmesg and lspci attachments` and
-  2019 :src:`lore-kinard-octane-2019 attached dmesg`; a BaseIO-G Origin
-  2000 ``hinv -v`` :src:`nekonomicon-17194 hinv -v`; an Onyx2 inventory
-  :src:`sgistuff-collection-2200 hinv`.
+  Octane with HEART revision 4
+  :src:`miod-openbsd-sgi-story-4 line 965`; Linux boots of one
+  dual-R14000, HEART revision F Octane in 2017
+  :src:`lore-kinard-octane-2017 dmesg line 161, lspci line 44` and 2019
+  :src:`lore-kinard-octane-2019 dmesg line 151`; a BaseIO-G Origin 2000
+  ``hinv -v`` :src:`nekonomicon-17194 owner's hinv -v post`; an Onyx2
+  inventory :src:`sgistuff-collection-2200 hinv section`.
 - PROM-monitor reads on the :ref:`sgi-measured-octane2`, listed under
   :ref:`sgi-rad1-measurements`.
 - OpenBSD sgi port at ``2df91d80c104636deeef8124252ddd5951b55fbf``:
@@ -69,28 +70,32 @@ Identity and placement
 ======================
 
 The OpenBSD Octane boot prints ``"SGI Rad1" rev 0xc0`` at Bridge device 3,
-function 0, *observed*. The 2017 Linux capture reports the same function
-as ``10a9:0005``, class ``0x000000``, revision ``c0``; the 2019 capture
-of the same machine repeats the zero class. The owner's Octane2 returned
+function 0 :src:`miod-openbsd-sgi-story-4 line 965`, *observed*.
+The 2017 Linux capture reports the same function as ``10a9:0005``, class
+``0x000000``, revision ``c0``
+:src:`lore-kinard-octane-2017 dmesg line 161, lspci line 44`; the 2019
+capture of the same machine repeats the zero class
+:src:`lore-kinard-octane-2019 dmesg line 151`. The owner's Octane2 returned
 the class and revision word ``0x000000c0`` (:ref:`sgi-rad1-octane2-config`),
 *established* for that machine. ``sgi-rad1-octane`` presents class
 ``0x000000`` and revision ``0xc0`` on both the ``octane`` and ``octane2``
 machines. That every Octane board carries this revision is *inferred*
 from three machines.
 
-The BaseIO-G ``hinv -v`` lists ``0x10a9:0x0005`` at PCI slot 7,
-*observed*, and the ``io6g`` preset of :doc:`baseio` places
-``sgi-rad1-audio`` there. Both IRIX drivers read configuration word
-``0x08`` and split the revision byte into a board number (high nibble)
-and a chip revision (low nibble), *software expectation*; the inventory
-prints the pair, so ``0xc0`` appears as "RAD revision 12.0" on the
-Octane2 and a BaseIO-G inventory shows "RAD revision 7.0"
-:src:`sgistuff-collection-2200 hinv`. The drivers choose their board
-programming from that number: 7 for MediaIO, 12 for the Octane, and a
-third value, 13, for another board. MediaIO revision ``0x70`` is
-*inferred* from the printed "7.0". The MediaIO class code is *unknown*;
-the model presents ``0x0401``, multimedia audio, an *approximation*.
-Class and revision are read-only and survive reset in both types.
+The BaseIO-G ``hinv -v`` lists ``0x10a9:0x0005`` at PCI slot 7
+:src:`nekonomicon-17194 owner's hinv -v post`, *observed*, and the
+``io6g`` preset of :doc:`baseio` places ``sgi-rad1-audio`` there. Both
+IRIX drivers read configuration word ``0x08`` and split the revision byte
+into a board number (high nibble) and a chip revision (low nibble),
+*software expectation*; the inventory prints the pair, so ``0xc0`` appears
+as "RAD revision 12.0" on the Octane2 and a BaseIO-G inventory shows "RAD
+revision 7.0" :src:`sgistuff-collection-2200 hinv section`. The drivers
+choose their board programming from that number: 7 for MediaIO, 12 for the
+Octane, and a third value, 13, for another board. MediaIO revision
+``0x70`` is *inferred* from the printed "7.0". The MediaIO class code is
+*unknown*; the model presents ``0x0401``, multimedia audio, an
+*approximation*. Class and revision are read-only and survive reset in
+both types.
 
 BAR0 is a 32-bit memory BAR of ``0x2000`` bytes in the model; a sizing
 write reads back ``0xffffe000``. Both drivers map exactly ``0x2000`` bytes
@@ -595,7 +600,9 @@ Measurements
 ============
 
 These reads come from the :ref:`sgi-measured-octane2` in the PROM Command
-Monitor, before IRIX loaded. No read is a reset value.
+Monitor, before IRIX loaded. No read is a reset value. The configuration
+word read has its full monitor output below. The BAR0 read was reported
+as a value only, without the monitor output.
 
 .. list-table::
    :header-rows: 1
