@@ -51,8 +51,9 @@ LOCATORS = {
 }
 
 
-def label(group: str, key: str) -> str:
-    return "sgi-ref-" + re.sub(r"[^a-z0-9]+", "-", f"{group}-{key}".lower()).strip("-")
+def label(key: str) -> str:
+    """The page label for a source id; docs/sphinx/sgiref.py derives the same."""
+    return "sgi-ref-" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")
 
 
 def escape(text: str) -> str:
@@ -65,7 +66,7 @@ def link(url: str) -> str:
 
 
 def entry_lines(group: str, key: str, entry: dict) -> list[str]:
-    lines = [f".. _{label(group, key)}:", "", f"``{key}``"]
+    lines = [f".. _{label(key)}:", "", f"``{key}``"]
     body = []
     if group == "trees":
         body.append(escape(entry["title"]) + ".")
@@ -124,7 +125,8 @@ def render(registry: dict) -> str:
         "",
         "The public sources the SGI machine models and these pages cite. A",
         "citation names a source by the id shown here and adds a locator: a",
-        "page, a line, a post or an address.",
+        "page, a line, a post or an address. In these pages a citation reads",
+        "``[id, locator]`` and links to the source's entry below.",
         "",
     ]
     for group, title, intro in GROUPS:
