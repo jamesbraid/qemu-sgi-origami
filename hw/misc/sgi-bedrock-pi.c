@@ -360,6 +360,140 @@ void sgi_bedrock_pi_set_memory_uncorrectable(SGIBedrockPIState *s)
     sgi_bedrock_pi_recompute(s);
 }
 
+/*
+ * ---- Graphics flow control: the stall below the bias ----
+ *
+ * The SN1 header's credit-counter comment: when the counter is below the
+ * bias the processor's write-ready is withheld, a graphics interrupt is
+ * sent, and write-ready is then allowed again. Which pending bit that
+ * interrupt reaches and how long the processor is held are unknown. The
+ * model's choices, inferred:
+ *
+ * - Every counted store that leaves the counter below the bias raises
+ *   first-bank pending bit 1 + slot. The bit is a latch software clears,
+ *   so a raise while it is pending changes nothing; a raise after the
+ *   processor has cleared it while the counter is still low sends a fresh
+ *   interrupt.
+ * - That store completes, and the slot is stopped: its next counted store
+ *   waits until the processor has taken the interrupt or the counter has
+ *   risen above the bias. A processor holding its interrupts off, as a
+ *   kernel command-issue site at raised priority does, therefore waits for
+ *   the board to return credits. One that takes interrupts takes this one
+ *   as the crossing store ends its block, before its next store; a posted
+ *   store in the middle of a block waits for credits instead, since the
+ *   processor cannot take an interrupt while it is held.
+ * - The processor has taken the interrupt when software clears the
+ *   pending bit through the pending-modify register or writes the slot's
+ *   interrupt counter, which the IRIX 6.5.30 IP35 kernel's graphics
+ *   interrupt handler zeroes.
+ *
+ * The wait releases the big lock, so the board can go on returning
+ * credits. It ends early when the machine stops, so that a stop or reset
+ * never waits for a board that is stopped with it, and after
+ * PI_GFX_STALL_MAX_NS, a bound the model sets because the chip's hold is
+ * not known to be unbounded.
+ */
+#define PI_GFX_STALL_MAX_NS     (1000 * SCALE_MS)
+#define PI_GFX_STALL_POLL_MS    5
+
+/* The stop ends: taken, or the counter above the bias. */
+static void pi_gfx_release(SGIBedrockPIState *s, unsigned slot,
+                           const char *why)
+{
+    if (s->gfx.stopped[slot]) {
+        s->gfx.stopped[slot] = false;
+        trace_sgi_bedrock_pi_gfx_release(s->interface, slot, why,
+                                         s->gfx.credit[slot]);
+        qemu_cond_broadcast(&s->gfx_cond);
+    }
+}
+
+static void pi_gfx_release_if_above(SGIBedrockPIState *s, unsigned slot)
+{
+    if (s->gfx.credit[slot] > s->gfx.bias[slot]) {
+        pi_gfx_release(s, slot, "credits");
+    }
+}
+
+/* A counted store waits out the stop of its slot. Called with the BQL. */
+static void pi_gfx_stall(SGIBedrockPIState *s, unsigned slot)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    const char *why = "released";
+
+    trace_sgi_bedrock_pi_gfx_stall(s->interface, slot, s->gfx.credit[slot]);
+    while (s->gfx.stopped[slot]) {
+        if (!current_cpu || qatomic_read(&current_cpu->stop)) {
+            why = "machine stop";
+            break;
+        }
+        if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - start >=
+            PI_GFX_STALL_MAX_NS) {
+            why = "time limit";
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: graphics slot %c "
+                          "held for %d ms with the counter at 0x%x and "
+                          "the interrupt not taken; letting the store go\n",
+                          'A' + slot, (int)(PI_GFX_STALL_MAX_NS / SCALE_MS),
+                          s->gfx.credit[slot]);
+            s->gfx.stopped[slot] = false;
+            break;
+        }
+        qemu_cond_timedwait_bql(&s->gfx_cond, PI_GFX_STALL_POLL_MS);
+    }
+    trace_sgi_bedrock_pi_gfx_stalled(s->interface, slot, why,
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - start, s->gfx.credit[slot]);
+}
+
+bool sgi_bedrock_pi_gfx_store(SGIBedrockPIState *s, unsigned slot,
+                              hwaddr addr)
+{
+    SGIPIGfx *g = &s->gfx;
+
+    g_assert(slot < SGI_BEDROCK_PI_PROCESSORS);
+    if (!sgi_pi_gfx_covers(g, slot, addr)) {
+        return false;
+    }
+    if (g->stopped[slot]) {
+        pi_gfx_stall(s, slot);
+        /* The page may have moved while the big lock was let go. */
+        if (!sgi_pi_gfx_covers(g, slot, addr)) {
+            return false;
+        }
+    }
+    sgi_pi_gfx_count_store(g, slot, addr, "sgi-bedrock-pi");
+    if (g->credit[slot] < g->bias[slot]) {
+        trace_sgi_bedrock_pi_gfx_below_bias(s->interface, slot,
+                                            g->credit[slot], g->bias[slot]);
+        g->stopped[slot] = true;
+        sgi_bedrock_pi_set_pending(s, 0, 1 + slot);
+    }
+    return true;
+}
+
+void sgi_bedrock_pi_gfx_return(SGIBedrockPIState *s, unsigned slot,
+                               uint32_t credits)
+{
+    g_assert(slot < SGI_BEDROCK_PI_PROCESSORS);
+    sgi_pi_gfx_add_credits(&s->gfx, slot, credits, "sgi-bedrock-pi");
+    pi_gfx_release_if_above(s, slot);
+}
+
+static void pi_gfx_write(SGIBedrockPIState *s, unsigned n, uint64_t value)
+{
+    unsigned slot = n / SGI_PI_GFX_SLOT_REGS;
+
+    sgi_pi_gfx_write(&s->gfx, n, value);
+    switch (n % SGI_PI_GFX_SLOT_REGS) {
+    case SGI_PI_GFX_CREDIT:
+    case SGI_PI_GFX_BIAS:
+        pi_gfx_release_if_above(s, slot);
+        break;
+    case SGI_PI_GFX_INT_COUNT:
+        pi_gfx_release(s, slot, "counter write");
+        break;
+    }
+}
+
 static void pi_modify(SGIBedrockPIState *s, uint64_t value, bool reissue)
 {
     unsigned bank = (value >> 6) & 1;
@@ -562,7 +696,7 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
     if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
-        sgi_pi_gfx_write(&s->gfx, (offset - SGI_PI_GFX_BASE) / 8, value);
+        pi_gfx_write(s, (offset - SGI_PI_GFX_BASE) / 8, value);
         return;
     }
     switch (offset) {
@@ -640,6 +774,11 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
     case PI_PENDING_MODIFY:
     case PI_PENDING_ALIAS:
         pi_modify(s, value, true);
+        /* A clear of a graphics bit: the processor took the interrupt. */
+        if (!(value & 0x140) && (value & 0x3f) >= 1 &&
+            (value & 0x3f) <= SGI_BEDROCK_PI_PROCESSORS) {
+            pi_gfx_release(s, (value & 0x3f) - 1, "taken");
+        }
         if (trace_event_get_state_backends(
                 TRACE_SGI_BEDROCK_PI_PENDING_MODIFY)) {
             trace_sgi_bedrock_pi_pending_modify(
@@ -1102,6 +1241,7 @@ static void pi_init(Object *obj)
     }
     s->profile_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_profile_expire, s);
     s->level_rearm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pi_level_rearm, s);
+    qemu_cond_init(&s->gfx_cond);
     memory_region_init_io(&s->mmio, obj, &pi_ops, s, TYPE_SGI_BEDROCK_PI,
                           SGI_BEDROCK_PI_SIZE);
     /*
@@ -1129,6 +1269,7 @@ static void pi_finalize(Object *obj)
     timer_free(s->rt_timer[1]);
     timer_free(s->profile_timer);
     timer_free(s->level_rearm_timer);
+    qemu_cond_destroy(&s->gfx_cond);
 }
 
 static void pi_class_init(ObjectClass *klass, const void *data)

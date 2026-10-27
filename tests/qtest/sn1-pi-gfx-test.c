@@ -27,6 +27,7 @@
 #define BEDROCK_NODE(n) (SPACE_IO + NODE(n) + UINT64_C(0x01800000))
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define PI1 UINT64_C(0x200000)
+#define PI_PENDING_MODIFY UINT64_C(0x90)
 #define PI_PENDING_0 UINT64_C(0x98)
 #define PI_GFX_PAGE(s) (UINT64_C(0x300) + 0x28 * (s))
 #define PI_GFX_CREDIT(s) (UINT64_C(0x308) + 0x28 * (s))
@@ -267,19 +268,36 @@ static void run(QTestState *qts)
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
 }
 
+static uint64_t mailbox(unsigned int node, unsigned int slot)
+{
+    return SPACE_HUB + NODE(node) + MAILBOX + slot * MAILBOX_STRIDE;
+}
+
+/* The processor in physical 'slot' of 'node' starts 'count' stores. */
+static void stores_start(QTestState *qts, unsigned int node, unsigned int slot,
+                         uint64_t addr, uint64_t count)
+{
+    qtest_writeq(qts, mailbox(node, slot) + 8, addr);
+    qtest_writeq(qts, mailbox(node, slot), count);
+}
+
+/* ... and has made them all. */
+static void stores_wait(QTestState *qts, unsigned int node, unsigned int slot)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    while (qtest_readq(qts, mailbox(node, slot))) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 /* The processor in physical 'slot' of 'node' makes 'count' stores. */
 static void stores(QTestState *qts, unsigned int node, unsigned int slot,
                    uint64_t addr, uint64_t count)
 {
-    uint64_t box = SPACE_HUB + NODE(node) + MAILBOX + slot * MAILBOX_STRIDE;
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    qtest_writeq(qts, box + 8, addr);
-    qtest_writeq(qts, box, count);
-    while (qtest_readq(qts, box)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    stores_start(qts, node, slot, addr, count);
+    stores_wait(qts, node, slot);
 }
 
 static void head_returns(QTestState *qts, uint32_t credits)
@@ -583,6 +601,64 @@ static void test_ip53_odyssey_credit_return(void)
     qtest_quit(qts);
 }
 
+/*
+ * A counted store that leaves the counter below the bias raises the
+ * processor's graphics interrupt, pending bit 1 + slot, and stops the
+ * slot: its next counted store waits until the processor has taken the
+ * interrupt or the counter has risen above the bias (the SN1 header's
+ * credit-counter comment: write-ready withheld, interrupt sent, then
+ * allowed again; the hold's end is the model's choice). The processor
+ * here runs with its interrupts off, as a kernel command-issue site at
+ * raised priority does, so only returned credits, or software clearing
+ * the bit, let it go on. A store while the counter stays below the bias
+ * raises the bit again once software has cleared it.
+ */
+static void test_stall_below_bias(void)
+{
+    QTestState *qts = start(ONE_NODE);
+
+    prime(qts, 0, 0, 0, PAGE_ENABLE | PAGE, 6);
+    qtest_writeq(qts, reg(0, 0, PI_GFX_BIAS(0)), 5);
+    map(qts, 0, MAP(0, 0, 0, HEAD_WIDGET));
+    run(qts);
+
+    stores(qts, 0, SLOT_A, STORE_IO, 1);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 5);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 0);
+    stores(qts, 0, SLOT_A, STORE_IO, 1);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 4);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 2);
+
+    /* Held: the board has returned nothing and the bit is still set. */
+    stores_start(qts, 0, SLOT_A, STORE_IO, 2);
+    g_usleep(200 * 1000);
+    g_assert_cmpuint(qtest_readq(qts, mailbox(0, SLOT_A)), ==, 2);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 4);
+
+    /*
+     * Two credits lift the counter to 6, above the bias: both stores go,
+     * and the second leaves it below again.
+     */
+    head_returns(qts, 2);
+    stores_wait(qts, 0, SLOT_A);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 4);
+
+    /* Software clears the bit: taken, so the next store goes at once. */
+    qtest_writeq(qts, reg(0, 0, PI_PENDING_MODIFY), 1);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 0);
+    stores(qts, 0, SLOT_A, STORE_IO, 1);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 3);
+    g_assert_cmphex(qtest_readq(qts, reg(0, 0, PI_PENDING_0)) & 6, ==, 2);
+
+    /* A store held when the machine stops lets the stop finish. */
+    stores_start(qts, 0, SLOT_A, STORE_IO, 1);
+    g_usleep(50 * 1000);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 3);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 2);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -599,6 +675,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/pi-gfx/map-matching", test_map_matching);
     qtest_add_func("sn1/pi-gfx/wrap-mode-and-interrupt",
                    test_wrap_mode_and_interrupt);
+    qtest_add_func("sn1/pi-gfx/stall-below-bias", test_stall_below_bias);
     qtest_add_func("sn1/pi-gfx/cross-node", test_cross_node);
     qtest_add_func("sn1/pi-gfx/head-returns-only-counted-stores",
                    test_head_returns_only_counted_stores);
