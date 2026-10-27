@@ -75,6 +75,7 @@ struct SGIBedrockIOState {
     uint16_t inbound_widget_mask;
     uint8_t inbound_device;
     uint64_t device_mask_reset;
+    bool xio_peer;
     uint64_t widget_control;
     uint64_t local_protect;
     uint64_t outbound_access;

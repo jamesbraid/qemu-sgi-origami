@@ -1323,6 +1323,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint8(DEVICE(&s->io), "inbound-device", s->inbound_device);
     qdev_prop_set_uint64(DEVICE(&s->io), "device-mask-reset",
                          s->device_mask_reset);
+    qdev_prop_set_bit(DEVICE(&s->io), "xio-peer", s->xio_peer);
     sgi_bedrock_io_set_dma_as(&s->io, &s->dma_as);
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_mr); i++) {
         if (s->widget_mr[i]) {
@@ -1474,9 +1475,9 @@ static int bedrock_post_load(void *opaque, int version_id)
  * mutated afterward (processor_count, processor_mask,
  * cpu_enable_initial_mask, cpu_base, revision, local_region,
  * installed_memory_bank_mask, installed_memory_bank_mib, inbound_widget_mask,
- * inbound_device, device_mask_reset, initiator_region), or the host-only
- * park scheduling state documented on hold_scratch1_seen and the fields
- * after it in sgi-bedrock.h: bounded, and never itself a value the guest
+ * inbound_device, device_mask_reset, xio_peer, initiator_region), or the
+ * host-only park scheduling state documented on hold_scratch1_seen and the
+ * fields after it in sgi-bedrock.h: bounded, and never itself a value the guest
  * reads. That state -- hold_cpu, hold_scratch1_seen, hold_scratch1_seq,
  * presence_seen, presence_abandoned, hold_scratch1_released,
  * hold_scratch1_joined, presence_posted, presence_released, park_kind,
@@ -1601,6 +1602,7 @@ static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockState,
                        device_mask_reset, UINT64_MAX),
+    DEFINE_PROP_BOOL("xio-peer", SGIBedrockState, xio_peer, true),
     DEFINE_PROP_LINK("dma-memory", SGIBedrockState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("node-memory", SGIBedrockState, node_mr,

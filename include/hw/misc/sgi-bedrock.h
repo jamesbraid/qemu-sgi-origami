@@ -106,6 +106,7 @@ struct SGIBedrockState {
     uint16_t inbound_widget_mask;
     uint8_t inbound_device;
     uint64_t device_mask_reset;
+    bool xio_peer;
     MemoryRegion *dma_mr;
     MemoryRegion *node_mr;
     MemoryRegion *l1_uart_mr;
