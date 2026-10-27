@@ -19145,6 +19145,47 @@ static void test_render_mode_feed_completes(gconstpointer opaque)
 }
 
 /*
+ * glGetIntegerv(GL_NAME_STACK_DEPTH), 0x4c 0xd70, is answered on the
+ * return page like the attribute stack's depth: the names on the current
+ * context's stack. Unanswered, the client waits for the reply for ever,
+ * as GLperf did for an unanswered GL_DRAW_BUFFER.
+ */
+static void assert_name_stack_depth(QTestState *s, uint8_t count)
+{
+    uint8_t bytes[12];
+    const uint8_t expected[] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0, 0, 0, count,
+        0xa5, 0xa5, 0xa5, 0xa5,
+    };
+
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    qtest_memset(s, RETURN_PAGE + 4, 0xa5, sizeof(bytes));
+    kona_command(s, 0x4c, (uint32_t[]){ 0xd70 }, 1);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 4, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+}
+
+static void test_name_stack_depth_query(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    assert_name_stack_depth(s, 0);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c02 }, 1);
+    kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
+    for (uint32_t n = 0; n < 3; n++) {
+        kona_command(s, 0xc3, &n, 1);
+    }
+    assert_name_stack_depth(s, 3);
+    kona_command(s, 0xc2, (uint32_t[]) { 0 }, 1);
+    assert_name_stack_depth(s, 2);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    assert_name_stack_depth(s, 0);
+    qtest_quit(s);
+}
+
+/*
  * The name stack's errors in selection mode: a pop of the empty stack is
  * GL_STACK_UNDERFLOW, a load into it GL_INVALID_OPERATION, and a push
  * past 64 names GL_STACK_OVERFLOW. Outside selection mode the same
@@ -19935,6 +19976,8 @@ int main(int argc, char **argv)
                   GUINT_TO_POINTER(2), test_render_mode_feed_completes);
     add_case("sn0/origin2000/kona-3d/render-mode-name-stack-errors",
              test_name_stack_errors);
+    add_case("sn0/origin2000/kona-3d/render-mode-name-stack-depth",
+             test_name_stack_depth_query);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
     add_case("sn0/origin2000/kona-3d/stencil-visual/copy",
