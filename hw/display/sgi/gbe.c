@@ -33,7 +33,7 @@ static const QEnumLookup dma_view_lookup = {
 };
 #define FREEZE BIT(31)
 #define FIELDS 0xffffffu
-#define RGB 0xffffff00u
+#define GBE_RGB_MASK 0xffffff00u
 #define POINTER 0xffffffe1u
 #define DID_MASK 0x1ffffu
 #define CMAP_COUNT 4608
@@ -912,20 +912,21 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     if (addr >= 0x50000 && addr < 0x54800) {
         index = (addr - 0x50000) / 4;
         s->palette_pending++;
-        s->cmap[index] = v & RGB;
+        s->cmap[index] = v & GBE_RGB_MASK;
         s->cmap_written[index] = 1;
         s->palette_pending--;
         goto done;
     }
     if (addr >= 0x60000 && addr < 0x60400) {
         index = (addr - 0x60000) / 4;
-        s->gmap[index] = v & RGB;
+        s->gmap[index] = v & GBE_RGB_MASK;
         s->gmap_written[index] = 1;
         goto done;
     }
     if (addr >= 0x70000 && addr < 0x70014) {
         index = (addr - 0x70000) / 4;
-        s->crs[index] = v & (!index ? UINT32_MAX : index == 1 ? 3 : RGB);
+        s->crs[index] = v & (!index ? UINT32_MAX :
+                             index == 1 ? 3 : GBE_RGB_MASK);
         if (index >= 2) {
             s->crs_written[index - 2] = 1;
         }
