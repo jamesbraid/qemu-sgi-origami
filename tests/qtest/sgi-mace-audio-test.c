@@ -550,6 +550,143 @@ static void dma_formats(void)
     fixture_stop(&t);
 }
 
+static unsigned g711_table_character(unsigned format, unsigned interval)
+{
+    return format == 2 ? 255 - interval : (128 + interval) ^ 0x55;
+}
+
+static void g711_capture_check(AudioFixture *t, int32_t left, int32_t right,
+                                unsigned left_code, unsigned right_code)
+{
+    uint8_t data[32];
+    unsigned codes[2] = { left_code, right_code };
+
+    qtest_writeq(t->qts, AUDIO + 0x20, 0x400);
+    qtest_writeq(t->qts, FIXTURE, left);
+    qtest_writeq(t->qts, FIXTURE + 8, right);
+    step(t, 100000);
+    qtest_writeq(t->qts, AUDIO + 0x20, 0x200);
+    step(t, 125000);
+    g_assert_cmpuint(qtest_readq(t->qts, AUDIO + 0x30), >=, 32);
+    g_assert_cmpint(pread(t->fd, data, sizeof(data), 0), ==, sizeof(data));
+    for (unsigned pair = 0; pair < 4; pair++) {
+        for (unsigned side = 0; side < 2; side++) {
+            uint32_t expected = (codes[side] & 128 ? 0xff000000U : 0) |
+                                (codes[side] << 16) | 255;
+            uint32_t actual = ldl_be_p(data + pair * 8 + side * 4);
+
+            if (actual != expected) {
+                g_test_message("input %d/%d, character %02x/%02x, pair %u",
+                               left, right, left_code, right_code, pair);
+            }
+            g_assert_cmphex(actual, ==, expected);
+        }
+    }
+}
+
+static void g711_encoding(void)
+{
+    /* G.711 tables 1a/1b/2a/2b: normalized upper decisions and widths. */
+    static const unsigned a_ranges[][2] = {
+        { 64, 2 }, { 128, 4 }, { 256, 8 }, { 512, 16 },
+        { 1024, 32 }, { 2048, 64 }, { 4096, 128 },
+    };
+    static const unsigned mu_ranges[][2] = {
+        { 1, 1 }, { 31, 2 }, { 95, 4 }, { 223, 8 }, { 479, 16 },
+        { 991, 32 }, { 2015, 64 }, { 4063, 128 }, { 8159, 256 },
+    };
+    AudioFixture t = fixture_start("");
+
+    codec_power(&t);
+    for (unsigned format = 2; format < 4; format++) {
+        const unsigned (*ranges)[2] = format == 2 ? mu_ranges : a_ranges;
+        unsigned groups = format == 2 ? ARRAY_SIZE(mu_ranges) :
+                                       ARRAY_SIZE(a_ranges);
+        unsigned scale = format == 2 ? 4 : 8;
+        unsigned lower = 0, intervals = 0;
+        int32_t decisions[129], levels[128];
+        unsigned positive = format == 2 ? 0xcf : 0x95;
+        int32_t interior = format == 2 ? 896 : 2056;
+        uint8_t playback[0xfe0];
+
+        g_test_message("G.711 format %u", format);
+        codec_set(&t, 27, 0);
+        codec_set(&t, 25, 0);
+        codec_set(&t, 26, 0x50 | format | (format << 2));
+        codec_set(&t, 27, 0x83);
+        step(&t, 500000);
+        g711_capture_check(&t, interior, -interior, positive, positive ^ 128);
+        interior = format == 2 ? 893 : 2050;
+        g711_capture_check(&t, interior, -interior, positive, positive ^ 128);
+        for (unsigned group = 0; group < groups; group++) {
+            unsigned width = ranges[group][1];
+
+            for (; lower < ranges[group][0]; lower += width) {
+                g_assert_cmpuint(intervals, <, 128);
+                decisions[intervals] = lower * scale;
+                levels[intervals] = (2 * lower + width) * scale / 2;
+                intervals++;
+            }
+        }
+        g_assert_cmpuint(intervals, ==, 128);
+        decisions[128] = lower * scale;
+        if (format == 2) {
+            levels[0] = 0;
+        }
+        for (unsigned interval = 0; interval < intervals; interval++) {
+            int32_t first = decisions[interval] + 1;
+            int32_t last = decisions[interval + 1] - 1;
+            unsigned code = g711_table_character(format, interval);
+
+            g711_capture_check(&t, first, -first, code, code ^ 128);
+            g711_capture_check(&t, last, -last, code, code ^ 128);
+            if (interval) {
+                int32_t boundary = decisions[interval];
+                int32_t below = boundary - levels[interval - 1];
+                int32_t above = levels[interval] - boundary;
+                unsigned previous = g711_table_character(format, interval - 1);
+                unsigned selected = below < above ? previous :
+                    above < below ? code : MIN(previous, code);
+
+                g711_capture_check(&t, boundary, -boundary, selected,
+                                     selected ^ 128);
+            }
+        }
+        positive = g711_table_character(format, 0);
+        g711_capture_check(&t, 0, 0, positive, positive);
+        positive = g711_table_character(format, 127);
+        g711_capture_check(&t, decisions[128], -decisions[128],
+                             positive, positive ^ 128);
+        g711_capture_check(&t, INT16_MAX, INT16_MIN, positive, positive ^ 128);
+        g711_capture_check(&t, 40000, -40000, positive, positive ^ 128);
+
+        /* Check strict interiors through real signed16 DAC serial DMA too. */
+        codec_set(&t, 27, 0);
+        qtest_writeq(t.qts, AUDIO + 0x20, 0x400);
+        qtest_writeq(t.qts, AUDIO + 0x40, 0x400);
+        interior = format == 2 ? 896 : 2056;
+        positive = format == 2 ? 0xcf : 0x95;
+        for (unsigned offset = 0; offset < sizeof(playback); offset += 8) {
+            stl_be_p(playback + offset, ((uint32_t)interior << 8) | 0x12);
+            stl_be_p(playback + offset + 4, ((uint32_t)-interior << 8) | 0x34);
+        }
+        g_assert_cmpint(pwrite(t.fd, playback, sizeof(playback), 0x1000), ==,
+                        sizeof(playback));
+        codec_set(&t, 25, 0xa0);
+        codec_set(&t, 26, 0x150 | format | (format << 2));
+        qtest_writeq(t.qts, AUDIO + 0x40, 0);
+        qtest_writeq(t.qts, AUDIO + 0x50, 0xfe0);
+        qtest_writeq(t.qts, AUDIO + 0x40, 0x200);
+        codec_set(&t, 27, 0x103);
+        step(&t, 2000000);
+        g711_capture_check(&t, interior, -interior, positive, positive ^ 128);
+        codec_set(&t, 27, 0);
+        qtest_writeq(t.qts, AUDIO + 0x20, 0x400);
+        qtest_writeq(t.qts, AUDIO + 0x40, 0x400);
+    }
+    fixture_stop(&t);
+}
+
 static void capture_nodes(void)
 {
     AudioFixture t = fixture_start("");
@@ -1728,6 +1865,7 @@ int main(int argc, char **argv)
     qtest_add_func("/mace-audio/rates-and-domains", rates_and_domains);
     qtest_add_func("/mace-audio/serial-start-status", serial_start_and_status);
     qtest_add_func("/mace-audio/dma-formats", dma_formats);
+    qtest_add_func("/mace-audio/g711-encoding", g711_encoding);
     qtest_add_func("/mace-audio/capture-nodes", capture_nodes);
     qtest_add_func("/mace-audio/analog-routing", analog_routing);
     qtest_add_func("/mace-audio/dac-graph-gains", dac_graph_and_gains);
