@@ -317,7 +317,7 @@ static void mace_id_realize(DeviceState *dev, Error **errp)
     uint64_t serial = 0;
     size_t length;
     DeviceState *part;
-    struct stat image_stat;
+    GStatBuf image_stat;
 
     if (s->no_responder) {
         if (s->test_serial || s->eprom_file || s->status_hex) {
