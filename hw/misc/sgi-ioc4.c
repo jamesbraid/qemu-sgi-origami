@@ -81,6 +81,16 @@ typedef struct SGIIOC4Class {
 
 static void sgi_ioc4_update_irq(SGIIOC4State *s)
 {
+    /*
+     * The UARTs load before the interrupt words, and their post_load
+     * signals transmit-ready and their interrupt line. Driven from the
+     * half-loaded words, the line would fall and rise again under a
+     * source that was pending all along, which the PIC would pass on as
+     * a second interrupt. post_load drives it once, from the full state.
+     */
+    if (s->loading) {
+        return;
+    }
     pci_set_irq(&s->parent_obj,
                 !!((s->serial_pending & s->serial_enable) |
                    (s->uart_level & s->serial_enable) |
@@ -624,6 +634,7 @@ static void sgi_ioc4_reset_hold(Object *obj, ResetType type)
         ic->parent_phases.hold(obj, type);
     }
 
+    s->loading = false;
     s->serial_pending = 0;
     s->serial_enable = 0;
     s->other_pending = 0;
@@ -656,7 +667,16 @@ static int sgi_ioc4_post_load(void *opaque, int version_id)
         sgi_ioc_sdma_kick(&s->sdma, i);
     }
     sgi_ioc_sdma_refresh(&s->sdma);
+    s->loading = false;
     sgi_ioc4_update_irq(s);
+    return 0;
+}
+
+static int sgi_ioc4_pre_load(void *opaque)
+{
+    SGIIOC4State *s = opaque;
+
+    s->loading = true;
     return 0;
 }
 
@@ -664,6 +684,7 @@ static const VMStateDescription vmstate_ioc4 = {
     .name = "sgi-ioc4",
     .version_id = 3,
     .minimum_version_id = 3,
+    .pre_load = sgi_ioc4_pre_load,
     .post_load = sgi_ioc4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(dma_migration_mode, SGIIOC4State),
