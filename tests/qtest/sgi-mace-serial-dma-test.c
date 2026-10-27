@@ -40,11 +40,10 @@ static SerialFixture fixture_start_config(const char *extra,
 {
     SerialFixture t = { 0 };
     bool o2 = profile == SERIAL_O2_LITERAL || profile == SERIAL_O2_LEGACY;
-    g_autofree char *cwd = g_get_current_dir();
     struct sockaddr_un addr = { .sun_family = AF_UNIX };
 
-    t.dir = g_build_filename(cwd, ".serial-dma-XXXXXX", NULL);
-    g_assert_nonnull(g_mkdtemp(t.dir));
+    t.dir = g_dir_make_tmp("serial-dma-XXXXXX", NULL);
+    g_assert_nonnull(t.dir);
     t.ram = g_build_filename(t.dir, "ram", NULL);
     t.fd = g_open(t.ram, O_CREAT | O_EXCL | O_RDWR, 0600);
     g_assert_cmpint(t.fd, >=, 0);
@@ -107,25 +106,6 @@ static SerialFixture fixture_start(void)
     return fixture_start_extra("");
 }
 
-/*
- * On NFS an unlinked file that the client still had open or mapped is
- * renamed to a ".nfsXXXX" placeholder and removed a few milliseconds later,
- * once the kernel drops its last reference.  QEMU has exited by now, but the
- * placeholder can outlive waitpid(), so rmdir() transiently fails with
- * ENOTEMPTY.  Retry for a bounded time; anything else is a real failure.
- */
-static void remove_fixture_dir(const char *dir)
-{
-    int rc = g_rmdir(dir);
-
-    for (unsigned tries = 0; rc && errno == ENOTEMPTY && tries < 500;
-         tries++) {
-        g_usleep(10000);
-        rc = g_rmdir(dir);
-    }
-    g_assert_cmpint(rc, ==, 0);
-}
-
 static void fixture_stop(SerialFixture *t)
 {
     for (unsigned p = 0; p < 2; p++) {
@@ -138,7 +118,7 @@ static void fixture_stop(SerialFixture *t)
         g_unlink(t->path[p]);
         g_free(t->path[p]);
     }
-    remove_fixture_dir(t->dir);
+    g_assert_cmpint(g_rmdir(t->dir), ==, 0);
     g_free(t->dir);
     g_free(t->ram);
 }
