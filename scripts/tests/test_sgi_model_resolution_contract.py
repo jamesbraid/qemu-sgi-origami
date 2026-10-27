@@ -3168,6 +3168,24 @@ class Origin3000BrickTests(unittest.TestCase):
                     _resolver.ResolutionError,
                     "may set model_role reference only"):
                 _resolver.load_system_model(path)
+    def test_origin3200_dbrick_adds_an_enclosure_without_a_controller(self):
+        plain = self.resolve()
+        model = self.resolve(INPUTS / "origin3200-dbrick.yaml")
+        components = {item["id"]: item for item in model["components"]}
+        added = sorted(set(components) -
+                       {item["id"] for item in plain["components"]})
+        # The D-brick is one module record: no L1, node, bus or port.
+        self.assertEqual(added, ["dbrick-brick"])
+        brick = components["dbrick-brick"]
+        self.assertEqual((brick["kind"], brick["controller"], brick["parent"]),
+                         ("module", "absent", "rack"))
+        self.assertNotIn("brick_type", brick)
+        self.assertEqual(model["buses"], plain["buses"])
+        self.assertEqual(model["connections"], plain["connections"])
+        self.assertEqual(model["xio_cables"], plain["xio_cables"])
+        # The I-brick's Fibre Channel adapter the D-brick's loop reaches.
+        self.assertEqual(components["ibrick-fibre-channel"]["hardware_kind"],
+                         "qlogic-isp2200")
 
     ORIGIN3200_XBRICK = INPUTS / "origin3200-xbrick.yaml"
 

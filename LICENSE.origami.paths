@@ -85,6 +85,7 @@ hw/mips/sgi/models/layers/assemblies/ip53-tezro.yaml
 hw/mips/sgi/models/layers/assemblies/ip53.yaml
 hw/mips/sgi/models/layers/modules/c-brick.yaml
 hw/mips/sgi/models/layers/modules/cx-brick.yaml
+hw/mips/sgi/models/layers/modules/d-brick.yaml
 hw/mips/sgi/models/layers/modules/fuel-base.yaml
 hw/mips/sgi/models/layers/modules/fuel-vpro.yaml
 hw/mips/sgi/models/layers/modules/i-brick.yaml
@@ -173,6 +174,7 @@ hw/mips/sgi/models/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/origin300-pci-expansion.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
 hw/mips/sgi/models/origin300.yaml
+hw/mips/sgi/models/origin3200-dbrick.yaml
 hw/mips/sgi/models/origin3200-pbrick.yaml
 hw/mips/sgi/models/origin3200-xbrick.yaml
 hw/mips/sgi/models/origin3200.yaml
