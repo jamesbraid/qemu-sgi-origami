@@ -175,6 +175,8 @@ typedef struct SN1NodeState {
     /* Used in place of the aliases above once a flash part is attached. */
     SN1PromView prom_view_reset;
     IOMMUMemoryRegion reset_router;
+    /* The router's place in the system space while notifiers register. */
+    MemoryRegion reset_probe;
     MemoryRegion reset_memory;
     MemoryRegion reset_prom_alias;
     MemoryRegion reset_ram_alias;
@@ -248,6 +250,14 @@ bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
  */
 void sn1_node_reset_cpus(SN1NodeState *node);
 void sn1_node_release_cpus(SN1NodeState *node);
+
+/*
+ * Registers every processor's TCG notifier on the reset router of each of
+ * @nodes. The machine calls this once every node and processor exists and
+ * before any vCPU runs.
+ */
+void sn1_register_reset_notifiers(SN1NodeState *const *nodes,
+                                  unsigned int count);
 
 /*
  * Attaches the node's boot flash: a part over the node's node<N>-flash

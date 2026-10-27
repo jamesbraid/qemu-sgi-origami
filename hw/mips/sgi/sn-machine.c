@@ -8209,6 +8209,14 @@ static void sgi_machine_done(Notifier *notifier, void *data)
         sn1_node_set_ip53_pic_widget(SN1_NODE(s->bedrock_nodes[0]),
                                      s->pic_pipe_widget, route, &error_fatal);
     }
+    if (s->bedrock_nodes) {
+        g_autofree SN1NodeState **nodes = g_new(SN1NodeState *, s->num_nodes);
+
+        for (i = 0; i < s->num_nodes; i++) {
+            nodes[i] = SN1_NODE(s->bedrock_nodes[i]);
+        }
+        sn1_register_reset_notifiers(nodes, s->num_nodes);
+    }
 }
 
 /*
