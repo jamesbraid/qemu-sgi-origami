@@ -5519,6 +5519,13 @@ static void odyssey_gl_stipple_background(SGIOdysseyState *s,
     }
 }
 
+/*
+ * The callbacks may run on band workers (concurrent_pixels): each stores
+ * only its own pixel's bytes, and reads the clip rectangles, the display
+ * ID planes, the fog words and the per-draw texture chain, which only
+ * FIFO commands on the waiting processor change. Their once-only reports
+ * are made before the draw (odyssey_gl_report_refusals()).
+ */
 static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
 {
     SGIRasterTarget t = {
@@ -5532,6 +5539,7 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .store_stencil = odyssey_gl_store_stencil,
         .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
+        .concurrent_pixels = true,
     };
 
     odyssey_gl_stipple_background(s, &t);
