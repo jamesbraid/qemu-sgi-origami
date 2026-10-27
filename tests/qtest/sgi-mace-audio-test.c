@@ -1030,6 +1030,85 @@ static void dma_full_ring(void)
     fixture_stop(&t);
 }
 
+static void capture_staged_resume(void)
+{
+    AudioFixture t = fixture_start("");
+    uint8_t guard[96], data[sizeof(guard)];
+
+    codec_power(&t);
+    codec_set(&t, 26, 0x55);
+    codec_set(&t, 17, 8000);
+    codec_set(&t, 28, 0x4c00);
+    codec_set(&t, 15, 5);
+    qtest_writeq(t.qts, FIXTURE + 0x198, 4);
+    for (unsigned paused = 0; paused < 2; paused++) {
+        uint64_t stamp;
+
+        memset(guard, 0x59, sizeof(guard));
+        g_assert_cmpint(pwrite(t.fd, guard, sizeof(guard), 0xfc0), ==,
+                        sizeof(guard));
+        qtest_writeq(t.qts, AUDIO + 0x20, 0x400);
+        qtest_writeq(t.qts, AUDIO + 0x20, 0);
+        qtest_writeq(t.qts, AUDIO + 0x30, 0xfe0);
+        qtest_writeq(t.qts, AUDIO + 0x20, 0x220);
+        qtest_writeq(t.qts, FIXTURE, 1111);
+        qtest_writeq(t.qts, FIXTURE + 8, -2222);
+        codec_set(&t, 27, 0x83);
+        for (unsigned pair = 0; pair < 4; pair++) {
+            qtest_writeq(t.qts, FIXTURE, 1111 + 17 * pair);
+            qtest_writeq(t.qts, FIXTURE + 8, -2222 - 29 * (int)pair);
+            for (unsigned event = 0; event < 2000; event++) {
+                if ((uint32_t)observe(&t, 0x400) == pair + 1) {
+                    break;
+                }
+                next_serial(&t);
+            }
+            g_assert_cmpuint((uint32_t)observe(&t, 0x400), ==, pair + 1);
+        }
+        /* Disable before the next 8 kHz pair can overflow the held stage. */
+        codec_set(&t, 27, 0x80);
+        step(&t, 250000);
+        stamp = observe(&t, 0x400);
+        g_assert_cmpuint((uint32_t)stamp, ==, 4);
+        g_assert_cmphex(observe(&t, 0x168) & 255, ==, 0);
+        g_assert_cmphex(qtest_readq(t.qts, AUDIO + 0x30), ==, 0xfe0);
+        if (paused) {
+            qtest_writeq(t.qts, AUDIO + 0x20, 0x20);
+        }
+        /* Leave 31 blocks: publication must restore the 32-block threshold. */
+        qtest_writeq(t.qts, AUDIO + 0x28, 0xc00);
+        step(&t, 50000);
+        if (paused) {
+            g_assert_cmphex(qtest_readq(t.qts, AUDIO + 0x30), ==, 0xfe0);
+            g_assert_false(qtest_get_irq(t.qts, 0));
+            g_assert_cmpint(pread(t.fd, data, sizeof(data), 0xfc0), ==,
+                            sizeof(data));
+            g_assert_cmpmem(guard, sizeof(guard), data, sizeof(data));
+            qtest_writeq(t.qts, AUDIO + 0x20, 0x220);
+            step(&t, 50000);
+        }
+        g_assert_cmphex(qtest_readq(t.qts, AUDIO + 0x30), ==, 0);
+        g_assert_cmphex(qtest_readq(t.qts, AUDIO + 0x38), ==, 0x400);
+        g_assert_cmphex(observe(&t, 0x400), ==, stamp);
+        g_assert_cmphex(observe(&t, 0x168) & 255, ==, 0);
+        g_assert_true(qtest_get_irq(t.qts, 0));
+        g_assert_cmpint(pread(t.fd, data, sizeof(data), 0xfc0), ==,
+                        sizeof(data));
+        g_assert_cmpmem(guard, 32, data, 32);
+        g_assert_cmpmem(guard + 64, 32, data + 64, 32);
+        for (unsigned pair = 0; pair < 4; pair++) {
+            int32_t right = -2222 - 29 * (int)pair;
+
+            g_assert_cmphex((uint32_t)ldl_be_p(data + 32 + pair * 8), ==,
+                            ((1111 + 17 * pair) << 8) | 255);
+            g_assert_cmphex((uint32_t)ldl_be_p(data + 36 + pair * 8), ==,
+                            ((uint32_t)right << 8) | 255);
+        }
+        qtest_writeq(t.qts, AUDIO + 0x20, 0x400);
+    }
+    fixture_stop(&t);
+}
+
 static void digital_attenuation(void)
 {
     AudioFixture t = fixture_start("");
@@ -1661,6 +1740,7 @@ int main(int argc, char **argv)
     qtest_add_func("/mace-audio/fifo-requests", fifo_requests);
     qtest_add_func("/mace-audio/partial-capture", partial_capture);
     qtest_add_func("/mace-audio/dma-full-ring", dma_full_ring);
+    qtest_add_func("/mace-audio/capture-staged-resume", capture_staged_resume);
     qtest_add_func("/mace-audio/digital-attenuation", digital_attenuation);
     qtest_add_func("/mace-audio/actual-phase", actual_phase);
     qtest_add_func("/mace-audio/bit-conv-frequencies",

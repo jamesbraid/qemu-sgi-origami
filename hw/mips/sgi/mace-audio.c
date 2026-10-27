@@ -330,6 +330,16 @@ static bool audio_dma(MACEAudio *s, unsigned channel, bool write)
     return true;
 }
 
+static void audio_capture_drain(MACEAudio *s)
+{
+    MACEAudioChannel *c = &s->channel[0];
+
+    if ((c->control & (AUDIO_RESET | AUDIO_ENABLE)) == AUDIO_ENABLE &&
+        !c->fault && c->count == 4 && audio_depth(c) != AUDIO_POINTER) {
+        audio_dma(s, 0, true);
+    }
+}
+
 static uint16_t audio_playback_slot(uint32_t raw)
 {
     unsigned extension = raw >> 24;
@@ -373,9 +383,7 @@ static void audio_capture(MACEAudio *s, uint16_t left, uint16_t right)
         c->fault) {
         return;
     }
-    if (c->count == 4 && audio_depth(c) != AUDIO_POINTER) {
-        audio_dma(s, 0, true);
-    }
+    audio_capture_drain(s);
     if (c->fault) {
         return;
     }
@@ -388,9 +396,7 @@ static void audio_capture(MACEAudio *s, uint16_t left, uint16_t right)
     stl_be_p(c->data + c->count * 8, lanes[0]);
     stl_be_p(c->data + c->count * 8 + 4, lanes[1]);
     c->count++;
-    if (c->count == 4 && audio_depth(c) != AUDIO_POINTER) {
-        audio_dma(s, 0, true);
-    }
+    audio_capture_drain(s);
 }
 
 static double codec_gain(uint16_t reg, unsigned side, unsigned bits,
@@ -1356,6 +1362,9 @@ void mace_audio_write(MACEAudio *s, hwaddr offset, uint64_t value,
             break;
         case 3:
             break;
+        }
+        if (!channel && (reg & 3) != 3) {
+            audio_capture_drain(s);
         }
         break;
     }
