@@ -199,6 +199,28 @@ Unknown: the I-brick XBridge revision, and which host port a booting
 I-brick uses; a verbose Origin 3000 PROM boot would settle both, and
 none is published.
 
+.. _sgi-sn-family-xbrick:
+
+X-brick XIO slots
+-----------------
+
+The X-brick holds one XBridge. Its Crosstown2 ports A and B go to
+compute nodes, and its Crosstalk ports 8, 9, C and D each serve one XIO
+slot, slots 1 to 4 in that order (established, 108-0240-002 printed
+pages 2-32 and 2-33, Figure 2-25). The figure draws nothing on the PCI
+ports E and F, so the ``x-brick`` layer declares no PCI bus. In an
+Origin 3200 each C-brick has one ``XIO (II)`` connector (established,
+007-4240-002 printed page 125), so with the I-brick on the first C-brick
+an X-brick hangs off the second; ``origin3200-xbrick`` is that reference
+composition. It cables the X-brick at port A by choice: whether the rear
+connector ``XIO 10`` or ``XIO 11`` is port A is unknown, because the
+sources disagree. The slots stay unresolved in the catalogue, since no
+X-brick board has a reviewed contract. The builder test places Origin
+2000 PCI carrier cards in three slots as stand-ins, each reached only
+from the cabled C-brick at its slot's port. Unknown: the brick's L1 type
+character, the XBridge revision, and the widget numbers a C-brick sees
+for the slots, which only an X-brick widget inventory would settle.
+
 .. _sgi-sn-family-rbrick:
 
 R-brick and NUMAlink module ports

@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Origin 3000 X-brick: one XBridge, Crosstown2 ports A and B to compute
+# nodes, and four XIO slots on its Crosstalk ports 8, 9, C and D.
+layer_version: 1
+layer:
+  kind: module
+  id: x-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: X-brick
+        kind: module
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
+        notes: >-
+          The brick's L1 type character is unknown, so the layer carries no
+          brick_type.
+      - id: xbridge
+        name: XBridge
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
+        notes: >-
+          Figure 2-25 draws nothing on the chip's PCI ports E and F, so the
+          layer declares no PCI bus. Whether they are unused or merely
+          unwired, and the chip's revision, are unknown.
+      - id: xbridge-crossbar
+        name: XBridge crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: xbridge
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
+      - id: port-a
+        name: Crosstown2 port A connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xa
+          notes: >-
+            A compute-node port. Which rear connector, XIO 10 or XIO 11, is
+            port A is unknown; the composition says which brick's cable
+            ends here.
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
+      - id: port-b
+        name: Crosstown2 port B connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xb
+          notes: >-
+            The second Crosstown2 port: a second C-brick, or a G-brick pipe.
+            Nothing is cabled here in this layer.
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D", "007-4240-002 printed page 153: the second connector can go to another C-brick"]
+      - id: slot-1
+        name: XIO slot 1
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector: {interface: XIO, location: slot 1, occupancy: opaque, port: 0x8}
+        sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 1 on XBridge port 8"]
+      - id: slot-2
+        name: XIO slot 2
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector: {interface: XIO, location: slot 2, occupancy: opaque, port: 0x9}
+        sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 2 on XBridge port 9"]
+      - id: slot-3
+        name: XIO slot 3
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector: {interface: XIO, location: slot 3, occupancy: opaque, port: 0xc}
+        sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 3 on XBridge port C"]
+      - id: slot-4
+        name: XIO slot 4
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector: {interface: XIO, location: slot 4, occupancy: opaque, port: 0xd}
+        sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 4 on XBridge port D"]
+    buses:
+      - id: port-b-xio
+        name: XBridge Crosstown2 port B
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]
+        notes: >-
+          The crossbar's port B, out to its connector. A composition that
+          cables a brick here attaches that brick's widget to this bus.
+      - {id: slot-1-xio, name: "XBridge Crosstalk port 8, slot 1", kind: xio, master: xbridge-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 1 on XBridge port 8"]}
+      - {id: slot-2-xio, name: "XBridge Crosstalk port 9, slot 2", kind: xio, master: xbridge-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 2 on XBridge port 9"]}
+      - {id: slot-3-xio, name: "XBridge Crosstalk port C, slot 3", kind: xio, master: xbridge-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 3 on XBridge port C"]}
+      - {id: slot-4-xio, name: "XBridge Crosstalk port D, slot 4", kind: xio, master: xbridge-crossbar, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 4 on XBridge port D"]}
+    connections:
+      # host-port-a-xio is the attached C-brick's XIO bus, which the
+      # composition binds with bus_bindings.
+      - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"], notes: "Host port A, widget 0xA (10 decimal)."}
+      - {component: port-a, bus: host-port-a-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]}
+      - {component: port-b, bus: port-b-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-32 and 2-33, Figure 2-25: one XBridge; ports A (10) and B (11) to compute nodes; four XIO slots on ports 8, 9, C and D"]}
+      - {component: slot-1, bus: slot-1-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 1 on XBridge port 8"]}
+      - {component: slot-2, bus: slot-2-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 2 on XBridge port 9"]}
+      - {component: slot-3, bus: slot-3-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 3 on XBridge port C"]}
+      - {component: slot-4, bus: slot-4-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed page 2-33, Figure 2-25: slot 4 on XBridge port D"]}

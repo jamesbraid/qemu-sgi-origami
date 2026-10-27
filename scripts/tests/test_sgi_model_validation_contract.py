@@ -1840,6 +1840,15 @@ class Origin3000BrickValidationTests(unittest.TestCase):
     def test_reference_passes(self):
         self.assertEqual(self.problems(self.model()), [])
 
+    def test_xbrick_reference_passes(self):
+        model = self.checker.load_system_model(
+            INPUTS / "origin3200-xbrick.yaml")
+        self.assertEqual(self.problems(model), [])
+        # A slot's port is unique on the X-brick's crossbar.
+        self.component(model, "xbrick-port-a")["connector"]["port"] = 0x8
+        self.assertFails(model, "crossbar 'xbrick-xbridge-crossbar' port 0x8 "
+                         "is named by 'xbrick-port-a' and 'xbrick-slot-1'")
+
     def test_ibrick_connectors_record_their_xbridge_ports(self):
         model = self.model()
         for ident, port in (("ibrick-port-a", 0xa), ("ibrick-port-b", 0xb)):
