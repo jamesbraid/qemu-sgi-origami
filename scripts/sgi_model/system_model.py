@@ -865,7 +865,8 @@ def _expand_nested_module_instances(
 def _merge_module_instances(
         path: pathlib.Path, composition: dict[str, Any], resolved: dict[str, Any],
         selected: dict[str, dict[str, Any]],
-        population: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        population: dict[str, Any] | None = None,
+        bricks: list[str] | None = None) -> list[dict[str, Any]]:
     declarations = composition.get("module_instances")
     if declarations is None:
         return []
@@ -945,6 +946,8 @@ def _merge_module_instances(
         if layer["kind"] != "module":
             raise ResolutionError(f"module instance source '{model_path}' is not a module layer")
         _require_layers({**selected, "module": layer})
+        if bricks is not None:
+            bricks.append(layer["id"])
         contract = copy.deepcopy(layer["data"])
         _attach_cpu_selection(
             contract.get("components", []), resolved.get("processors", []),
@@ -1200,9 +1203,14 @@ def resolve_system_model(
     routed = model_composition.reject_routed_firmware_graphs(resolved)
     population = selected["product"]["population"]
     check_population = machine.get("model_role") == "emulation-target" and not routed
+    bricks = [selected["module"]["id"]] if "module" in selected else []
     module_instances = _merge_module_instances(
         path, composition, resolved, selected,
-        population if check_population else None)
+        population if check_population else None, bricks)
+    rules = selected["product"].get("composition_rules")
+    if rules is not None:
+        model_composition.validate_composition_rules(
+            selected["product"]["id"], rules, bricks)
     if "links" in composition:
         if not isinstance(composition["links"], list):
             raise ResolutionError("configuration links must be a list")

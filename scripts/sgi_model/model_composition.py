@@ -373,6 +373,97 @@ def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> di
     return limits
 
 
+COMPOSITION_RULE_FIELDS = {"counts", "exclusive", "requires", "provenance",
+                           "sources", "notes"}
+
+
+def validate_composition_rules(
+        product_id: str, rules: Any, bricks: list[str]) -> None:
+    """Check which bricks a product may combine.
+
+    A brick is counted by the id of the module layer it was built from,
+    once per instance, so the rules hold however the composition spells
+    its prefixes. `counts` bounds a group of brick types and may require
+    one type among the group, `exclusive` lists types that cannot appear
+    together, and `requires` makes one type depend on another.
+
+    Two limits. A rule may name a brick id that no module layer has, and
+    counts zero of it, because the Origin 3200 and Onyx 3000 rules name
+    P-, X-, G-, V- and N-bricks before their layers exist; a misspelled
+    id in a max-only, exclusive or requires rule therefore passes
+    silently. Only top-level module instances (and a composition's own
+    module layer) are counted: a brick placed through a nested module
+    instance is not.
+    """
+    if not isinstance(rules, dict):
+        raise ResolutionError(
+            f"product '{product_id}' composition_rules must be a mapping")
+    unknown = sorted(set(rules) - COMPOSITION_RULE_FIELDS)
+    if unknown:
+        raise ResolutionError(
+            f"product '{product_id}' composition_rules has unsupported field "
+            f"'{unknown[0]}'")
+
+    def names(value: Any) -> bool:
+        return (isinstance(value, list) and
+                all(isinstance(item, str) and item for item in value))
+
+    present = {brick: bricks.count(brick) for brick in set(bricks)}
+    for index, rule in enumerate(rules.get("counts", [])):
+        label = f"product '{product_id}' count rule {index}"
+        if (not isinstance(rule, dict) or not names(rule.get("bricks")) or
+                not rule["bricks"]):
+            raise ResolutionError(f"{label} names no bricks")
+        if set(rule) - {"bricks", "min", "max", "require"}:
+            raise ResolutionError(f"{label} has an unsupported field")
+        minimum, maximum = rule.get("min", 0), rule.get("max")
+        if (type(minimum) is not int or minimum < 0 or
+                (maximum is not None and
+                 (type(maximum) is not int or maximum < 0))):
+            raise ResolutionError(f"{label} min and max must be counts")
+        if maximum is not None and minimum > maximum:
+            raise ResolutionError(
+                f"{label} min {minimum} exceeds max {maximum}")
+        required = rule.get("require")
+        if required is not None and required not in rule["bricks"]:
+            raise ResolutionError(
+                f"{label} requires '{required}', which it does not count")
+        group = ", ".join(rule["bricks"])
+        count = sum(present.get(brick, 0) for brick in rule["bricks"])
+        if count < minimum:
+            raise ResolutionError(
+                f"product '{product_id}' requires at least {minimum} of "
+                f"{group}, got {count}")
+        if maximum is not None and count > maximum:
+            raise ResolutionError(
+                f"product '{product_id}' allows at most {maximum} of {group}, "
+                f"got {count}")
+        if required is not None and not present.get(required):
+            raise ResolutionError(
+                f"product '{product_id}' requires at least one {required} "
+                f"among its {group} bricks")
+    for index, group in enumerate(rules.get("exclusive", [])):
+        if not names(group) or len(set(group)) < 2:
+            raise ResolutionError(
+                f"product '{product_id}' exclusive rule {index} names fewer "
+                "than two bricks")
+        found = [brick for brick in group if brick in present]
+        if len(found) > 1:
+            raise ResolutionError(
+                f"product '{product_id}' does not allow {found[0]} and "
+                f"{found[1]} together")
+    for index, rule in enumerate(rules.get("requires", [])):
+        if (not isinstance(rule, dict) or set(rule) != {"brick", "with"} or
+                not names([rule["brick"], rule["with"]])):
+            raise ResolutionError(
+                f"product '{product_id}' requires rule {index} names brick "
+                "and with")
+        if rule["brick"] in present and rule["with"] not in present:
+            raise ResolutionError(
+                f"product '{product_id}' allows {rule['brick']} only with "
+                f"{rule['with']}")
+
+
 def validate_model_cpu_populations(model: dict[str, Any]) -> None:
     composition = model.get("composition")
     if not isinstance(composition, dict):

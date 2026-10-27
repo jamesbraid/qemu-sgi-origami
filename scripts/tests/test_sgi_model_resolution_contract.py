@@ -2701,6 +2701,84 @@ class Origin3000BrickTests(unittest.TestCase):
             _resolver._instantiate_module_graph(
                 contract, prefix="p-", parent="rack", omit_buses=[])
 
+    def check_rules(self, rules, bricks):
+        _resolver.model_composition.validate_composition_rules(
+            "fixture", rules, bricks)
+
+    def test_composition_rules_count_each_brick_group(self):
+        rules = {"counts": [
+            {"bricks": ["c-brick"], "min": 1, "max": 2},
+            {"bricks": ["r-brick"], "max": 0},
+            {"bricks": ["i-brick", "p-brick", "x-brick"], "max": 2,
+             "require": "i-brick"},
+        ]}
+        self.check_rules(rules, ["c-brick", "c-brick", "i-brick", "p-brick"])
+        for name, bricks, message in (
+                ("three C-bricks", ["c-brick"] * 3 + ["i-brick"],
+                 "allows at most 2 of c-brick, got 3"),
+                ("no C-brick", ["i-brick"],
+                 "requires at least 1 of c-brick, got 0"),
+                ("an R-brick", ["c-brick", "r-brick", "i-brick"],
+                 "allows at most 0 of r-brick, got 1"),
+                ("three I/O bricks",
+                 ["c-brick", "i-brick", "p-brick", "x-brick"],
+                 "allows at most 2 of i-brick, p-brick, x-brick, got 3"),
+                ("no I-brick", ["c-brick", "p-brick"],
+                 "requires at least one i-brick among its i-brick, p-brick, "
+                 "x-brick"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                self.check_rules(rules, bricks)
+
+    def test_composition_rules_refuse_exclusive_and_unaccompanied_bricks(self):
+        rules = {"exclusive": [["g-brick", "v-brick"]],
+                 "requires": [{"brick": "n-brick", "with": "g-brick"}]}
+        self.check_rules(rules, ["c-brick", "i-brick", "g-brick", "n-brick"])
+        self.check_rules(rules, ["c-brick", "v-brick"])
+        for name, bricks, message in (
+                ("a G-brick and a V-brick", ["c-brick", "g-brick", "v-brick"],
+                 "does not allow g-brick and v-brick together"),
+                ("an N-brick without a G-brick", ["c-brick", "n-brick"],
+                 "allows n-brick only with g-brick"),
+        ):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                self.check_rules(rules, bricks)
+
+    def test_composition_rules_must_be_well_formed(self):
+        for rules, message in (
+                ([], "must be a mapping"),
+                ({"limits": []}, "unsupported field 'limits'"),
+                ({"counts": [{"bricks": []}]}, "names no bricks"),
+                ({"counts": [{"bricks": ["c-brick"], "min": 3, "max": 2}]},
+                 "min 3 exceeds max 2"),
+                ({"counts": [{"bricks": ["c-brick"], "require": "i-brick"}]},
+                 "requires 'i-brick', which it does not count"),
+                ({"exclusive": [["g-brick"]]}, "names fewer than two bricks"),
+                ({"requires": [{"brick": "n-brick"}]}, "names brick and with"),
+        ):
+            with self.subTest(rules=rules), self.assertRaisesRegex(
+                    _resolver.ResolutionError, message):
+                self.check_rules(rules, ["c-brick"])
+
+    def test_product_composition_rules_count_module_layers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            shutil.copytree(INPUTS, root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("*.json"))
+            shutil.copy(INPUTS / "system-model.schema.json", root)
+            product = root / "layers/products/origin3200.yaml"
+            document = yaml.safe_load(product.read_text())
+            document["layer"]["composition_rules"] = {
+                "counts": [{"bricks": ["i-brick"], "max": 0}]}
+            product.write_text(yaml.safe_dump(document, sort_keys=False))
+            with self.assertRaisesRegex(
+                    _resolver.ResolutionError,
+                    "product 'origin3200' allows at most 0 of i-brick, "
+                    "got 1"):
+                _resolver.load_system_model(root / "origin3200.yaml")
+
 
 if __name__ == "__main__":
     unittest.main()
