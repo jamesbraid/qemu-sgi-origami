@@ -3534,6 +3534,49 @@ static bool sgi_machine_ds1742_backing(SGIMachineState *s,
     return true;
 }
 
+/*
+ * The IO9's BCM5701 takes its -nic backend and the board's station
+ * address: mac=, or the shared SGI default, plus the onboard Ethernets
+ * before it, as the IOC3 boards do. A -nic that names a different
+ * address is refused rather than leaving the board's identity and the
+ * NIC disagreeing; one whose address QEMU generated takes the board's.
+ */
+static bool sgi_machine_io9_ethernet(SGIMachineState *s,
+                                     const SGIModelTopology *t,
+                                     const SGIModelIoBoard *board,
+                                     DeviceState *nic, Error **errp)
+{
+    const SGIModelIoBoardList *entry = t->io_boards;
+    NICInfo *nd = qemu_find_nic_info(object_get_typename(OBJECT(nic)),
+                                     true, NULL);
+    unsigned int board_index = 0;
+    g_autofree char *mac = NULL;
+    MACAddr address;
+
+    for (; entry && entry->value != board; entry = entry->next) {
+        board_index++;
+    }
+    mac = sgi_machine_onboard_mac(s, t, board_index, errp);
+    if (!mac) {
+        return false;
+    }
+    if (net_parse_macaddr(address.a, mac) < 0) {
+        error_setg(errp, "IO9 board '%s' has no valid station address",
+                   board->id);
+        return false;
+    }
+    if (nd && !nd->mac_generated &&
+        memcmp(nd->macaddr.a, address.a, sizeof(address.a))) {
+        error_setg(errp, "IO9 board '%s' NIC MAC conflicts with board "
+                   "identity %s; set the machine's mac= instead", board->id,
+                   mac);
+        return false;
+    }
+    qemu_configure_nic_device(nic, true, NULL);
+    qdev_prop_set_macaddr(nic, "mac", address.a);
+    return true;
+}
+
 static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                                       const SGIModelTopology *t,
                                       Error **errp)
@@ -3740,7 +3783,10 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             } else if (function->kind ==
                        SGI_MODEL_PCI_FUNCTION_KIND_BCM5701) {
                 qdev_prop_set_string(DEVICE(pci), "model", "bcm5701");
-                qemu_configure_nic_device(DEVICE(pci), true, NULL);
+                if (!sgi_machine_io9_ethernet(s, t, board, DEVICE(pci),
+                                              errp)) {
+                    return false;
+                }
             }
             qdev_connect_gpio_out_named(head, "pci-intx", irq_line,
                                         qdev_get_gpio_in(head,
