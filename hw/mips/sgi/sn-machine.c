@@ -1403,6 +1403,84 @@ static bool sgi_machine_ip53_normal_tuple(
 }
 
 /*
+ * Refuse catalogue records this builder cannot build yet, before anything
+ * is created: an XIO cable between bricks, a C-brick's IP35 board, a
+ * memory-only node, a module with no controller or one that owns its L1
+ * for its nodes, a module's catalogued L1 brick type and the I-brick's
+ * IO7. Building any of them as the nearest existing shape would show the
+ * guest hardware the topology does not describe.
+ */
+static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
+                                               Error **errp)
+{
+    const SGIModelNodeList *node;
+    const SGIModelModuleList *module;
+    const SGIModelControllerList *controller;
+    const SGIModelIoBoardList *board;
+
+    if (t->has_xio_cables) {
+        error_setg(errp, "topology '%s': XIO cables are not built yet",
+                   t->name);
+        return false;
+    }
+    for (node = t->nodes; node; node = node->next) {
+        const SGIModelNode *n = node->value;
+
+        if (n->has_board_kind && n->board_kind == SGI_MODEL_BOARD_KIND_IP35) {
+            error_setg(errp, "topology '%s' node '%s' selects board kind "
+                       "'ip35', which is not built yet", t->name, n->id);
+            return false;
+        }
+        if (n->has_role && n->role == SGI_MODEL_NODE_ROLE_MEMORY) {
+            error_setg(errp, "topology '%s' node '%s' is a memory node; "
+                       "memory nodes are not built yet", t->name, n->id);
+            return false;
+        }
+        if (!n->flash) {
+            error_setg(errp, "topology '%s' node '%s' has no boot flash",
+                       t->name, n->id);
+            return false;
+        }
+    }
+    for (module = t->modules; module; module = module->next) {
+        const SGIModelModule *m = module->value;
+
+        if (m->has_controller) {
+            error_setg(errp, "topology '%s' module '%s' has no controller; "
+                       "modules without a controller are not built yet",
+                       t->name, m->id);
+            return false;
+        }
+        if (m->brick_type) {
+            error_setg(errp, "topology '%s' module '%s' names L1 brick type "
+                       "'%s'; brick types from the catalogue are not built "
+                       "yet", t->name, m->id, m->brick_type);
+            return false;
+        }
+    }
+    for (controller = t->controllers; controller;
+         controller = controller->next) {
+        const SGIModelController *c = controller->value;
+
+        if (c->has_owner && c->owner == SGI_MODEL_CONTROLLER_OWNER_MODULE) {
+            error_setg(errp, "topology '%s' controller '%s' is owned by its "
+                       "module; module-owned controllers are not built yet",
+                       t->name, c->id);
+            return false;
+        }
+    }
+    for (board = t->io_boards; board; board = board->next) {
+        if (board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO7) {
+            error_setg(errp, "topology '%s' I/O board '%s' selects preset "
+                       "'io7', which is not built yet", t->name,
+                       board->value->id);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
  * The topology this machine builds: the chassis topology= names, with
  * the node-population row nodes= selects, or its largest by default. A
  * row resting on unsettled evidence is refused, not built on a guess.
@@ -1421,6 +1499,7 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         return NULL;
     }
     if (!sgi_model_check_runtime_endpoints(chassis, errp) ||
+        !sgi_machine_refuse_unbuilt_records(chassis, errp) ||
         !sgi_machine_ip53_experiment_policy(
             s, smc, chassis, &allow_ip53_experiment, errp)) {
         return NULL;
