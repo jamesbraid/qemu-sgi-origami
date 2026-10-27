@@ -2491,6 +2491,11 @@ void memory_region_enable_lockless_io(MemoryRegion *mr)
     mr->disable_reentrancy_guard = true;
 }
 
+void memory_region_enable_posted_writes(MemoryRegion *mr)
+{
+    mr->posted_writes = true;
+}
+
 void memory_region_add_eventfd(MemoryRegion *mr,
                                hwaddr addr,
                                unsigned size,

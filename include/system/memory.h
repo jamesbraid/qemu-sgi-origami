@@ -619,6 +619,8 @@ struct MemoryRegion {
 
     /* For devices designed to perform re-entrant IO into their own IO MRs */
     bool disable_reentrancy_guard;
+    /* Stores complete without ending the translation block (TCG only) */
+    bool posted_writes;
     /* RAM device region that does not require IOMMU mapping for P2P */
     bool ram_device_skip_iommu_map;
 };
@@ -2051,6 +2053,21 @@ void memory_region_clear_flush_coalesced(MemoryRegion *mr);
  * @mr: the memory region to be updated.
  */
 void memory_region_enable_lockless_io(MemoryRegion *mr);
+
+/**
+ * memory_region_enable_posted_writes: Let TCG store here mid-block.
+ *
+ * TCG normally ends a translation block at any I/O access that is not its
+ * last instruction, and re-executes that access as a block of its own, so
+ * that the access cannot change what the rest of the block would see. A
+ * region whose write handler never changes the memory map, never reads or
+ * changes the storing CPU's state, and raises interrupts only as
+ * asynchronous events can declare its stores posted. TCG then performs
+ * them in place when instruction counting is off. Reads are unaffected.
+ *
+ * @mr: the memory region to be updated.
+ */
+void memory_region_enable_posted_writes(MemoryRegion *mr);
 
 /**
  * memory_region_add_eventfd: Request an eventfd to be triggered when a word

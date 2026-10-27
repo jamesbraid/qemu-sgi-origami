@@ -1271,9 +1271,20 @@ static inline void cpu_unaligned_access(CPUState *cpu, vaddr addr,
                                           mmu_idx, retaddr);
 }
 
+/*
+ * An I/O access that is not the last instruction of its block normally
+ * rewinds the block and re-runs the access as a block of its own
+ * (cpu_io_recompile()). Instruction counting needs that to count exactly,
+ * and any access needs it if its handler can change the memory map, whose
+ * TLB flush reaches this vCPU only once the block exits. A store to a
+ * region that declared its writes posted
+ * (memory_region_enable_posted_writes()) can do neither, so outside
+ * instruction counting it completes in place. A fault it reports still
+ * restores state precisely from @retaddr, as every helper fault does.
+ */
 static MemoryRegionSection *
 io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
-           vaddr addr, uintptr_t retaddr)
+           vaddr addr, uintptr_t retaddr, bool store)
 {
     MemoryRegionSection *section;
     hwaddr mr_offset;
@@ -1281,7 +1292,8 @@ io_prepare(hwaddr *out_offset, CPUState *cpu, CPUTLBEntryFull *full,
     section = full->section;
     mr_offset = full->xlat_offset + addr;
     cpu->mem_io_pc = retaddr;
-    if (!cpu->neg.can_do_io) {
+    if (!cpu->neg.can_do_io &&
+        !(store && section->mr->posted_writes && !icount_enabled())) {
         cpu_io_recompile(cpu, retaddr);
     }
 
@@ -1998,7 +2010,7 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
 
     tcg_debug_assert(size > 0 && size <= 8);
 
-    section = io_prepare(&mr_offset, cpu, full, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full, addr, ra, false);
     mr = section->mr;
 
     g_autoptr(BQLLockAuto) bql G_GNUC_UNUSED = mmio_lock(mr);
@@ -2017,7 +2029,7 @@ static Int128 do_ld16_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
 
     tcg_debug_assert(size > 8 && size <= 16);
 
-    section = io_prepare(&mr_offset, cpu, full, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full, addr, ra, false);
     mr = section->mr;
 
     g_autoptr(BQLLockAuto) bql G_GNUC_UNUSED = mmio_lock(mr);
@@ -2512,7 +2524,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
 
     tcg_debug_assert(size > 0 && size <= 8);
 
-    section = io_prepare(&mr_offset, cpu, full, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full, addr, ra, true);
     mr = section->mr;
 
     g_autoptr(BQLLockAuto) bql G_GNUC_UNUSED = mmio_lock(mr);
@@ -2530,7 +2542,7 @@ static uint64_t do_st16_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
 
     tcg_debug_assert(size > 8 && size <= 16);
 
-    section = io_prepare(&mr_offset, cpu, full, addr, ra);
+    section = io_prepare(&mr_offset, cpu, full, addr, ra, true);
     mr = section->mr;
 
     g_autoptr(BQLLockAuto) bql G_GNUC_UNUSED = mmio_lock(mr);
