@@ -135,9 +135,11 @@ and are *observed*. The ``ip29`` record is the revision the model keeps
 for every Origin 200 node. Inventories of faster Origin 200 nodes print
 ``030-1389-001`` (:doc:`/system/mips/sgi/sn`), so the model value is an
 *approximation*. The Bridge revisions are model defaults, except the
-MSCSI's, which published PROM output shows (:doc:`mscsi`). The ``io8``
-part number is a model default whose source this page does not cite, and
-the Fuel's board identity is *unknown* here.
+MENET's and the MSCSI's, which published inventories show
+(:doc:`ioc3-boards`, :doc:`mscsi`). The ``io8`` part prefix
+``030-1673-`` is the one Linux matches for the IO-8, a *software
+expectation*, and the ``-003`` suffix is a model choice. The Fuel's board
+identity is *unknown* here.
 
 .. _sgi-baseio-composition:
 
@@ -240,9 +242,9 @@ PCI placement and interrupts
        BaseIO-G part prefix ``030-0734-``. It attaches no Ethernet to the
        device 6 IOC3 when the MediaIO record ``030-0880-`` is present.
      - *software expectation*
-     - Behaviour of the shipped kernel on the model. With no MediaIO
-       record, IRIX's default population turned Ethernet on for device 6
-       and the attach failed.
+     - The kernel's enable words for these prefixes
+       (:ref:`sgi-ioc3-boards-population`). Without the MediaIO record
+       the kernel's default word enables Ethernet on device 6.
    * - On the plain BaseIO and the BaseIO-G board IOC3, the SuperIO
        interrupt (serial, keyboard and mouse, real-time) reaches Bridge
        input 4. On the MediaIO IOC3 it reaches input 6. Ethernet uses
@@ -267,7 +269,7 @@ PCI placement and interrupts
        of devices 0 to 2 reaches Bridge input device + 4. Device 3 has
        Ethernet only and raises none. The MSCSI's four ISP1040s sit at
        devices 0 to 3.
-     - *inferred*
+     - devices *established*; SuperIO inputs *inferred*
      - :doc:`ioc3-boards` and :doc:`mscsi`.
    * - The IO-8 and Fuel wire each function's interrupt explicitly onto
        an XBridge head F input: ISP12160 INTA to input 1, IOC3 Ethernet
@@ -393,8 +395,8 @@ board's letter and the Bridge's serial. The values are in the preset
 table. IRIX names the slot in the hardware graph after the record's
 name in lower case (``baseio``, ``menet``, ``mscsi``), *inferred* from
 published inventories (:src:`nekonomicon-17194`,
-:src:`preterhuman-origin-200`). On the model, a record without a name
-left the slot as underscores. The IRIX 6.5.30 kernel finds the
+:src:`preterhuman-origin-200`). A record with an empty name gives a slot
+of underscores, so the name comes from the record, not the board type. The IRIX 6.5.30 kernel finds the
 Timekeeper through a path that includes the slot name ``baseio``, so a
 plain BaseIO whose slot lacked that name could not store NVRAM
 variables, a *software expectation*. The ``io8`` XBridge carries no such
@@ -502,8 +504,8 @@ refuse ``flash-drive`` and ``firmware``.
 Measurements
 ============
 
-No register of this board was read from a physical machine for this
-project. The facts rated *observed* above come from published
+No register of this board has been read from an identified physical
+machine. The facts rated *observed* above come from published
 inventories and photographs of other people's machines:
 
 .. list-table::
@@ -592,7 +594,7 @@ Tests
 - ``tests/qtest/sn0-gigachannel-test.c`` covers the same part in the
   GIGAchannel cabinet and the ``io-prom`` image paths.
 - ``tests/qtest/sgi-machine-storage-test.c`` covers ``io<N>-flash``
-  binding, the deprecated drive form and refusals.
+  binding, the legacy ``-drive`` form and refusals.
 - ``tests/qtest/sn-builder-test.c`` checks that the card fits only slot
   ``io1`` and that an Origin 2000 builds an ``sgi-xio-baseio``.
 - ``tests/qtest/sn0-menet-test.c`` and ``tests/qtest/sn0-mscsi-test.c``

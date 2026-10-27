@@ -13,7 +13,8 @@ decides what each chip fits, and specifies two boards that have no page of
 their own: the MENET XIO board, with a Bridge and four IOC3s that give a
 module four Fast Ethernet ports and six serial ports, and SGI's
 dual-serial PCI card. QEMU builds the MENET as the ``menet`` preset of
-``sgi-xio-baseio`` (``hw/mips/sgi/baseio.c``) and the dual-serial card as
+``sgi-xio-baseio`` (``hw/mips/sgi/xio-baseio.c`` and
+``hw/mips/sgi/baseio.c``) and the dual-serial card as
 the ``sio-slot`` property of ``sgi-pci-shoehorn``
 (``hw/mips/sgi/board-pci-shoehorn.c``). The chip's population comes from
 the ``subsystem-id`` and ``population`` properties of ``sgi-ioc3``
@@ -105,8 +106,8 @@ follows the board manuals, published inventories and the IRIX words, not
 Linux's narrower populations. The IRIX words agree with Linux's prefix
 table wherever Linux has the prefix, *inferred*.
 
-The stock PROM types a board from a part-prefix table :src:`ip27-prom-6.156`,
-*observed* in the shipped image. ``030-1250-``, ``-1252-`` and ``-1062-``
+The stock PROM types a board from a part-prefix table in the shipped
+image :src:`ip27-prom-6.156`, a *software expectation*. ``030-1250-``, ``-1252-`` and ``-1062-``
 are PCI boards. ``030-0734-`` and the BaseIO prefixes are BaseIO.
 ``030-0872-``, ``-1243-`` and ``-1281-`` are MSCSI (:doc:`mscsi`).
 ``030-0873-`` is type ``0x23``, which Linux ``klconfig.h`` names
@@ -118,7 +119,9 @@ A function other than Ethernet needs a second interrupt line. Where the
 Bridge's board record declares a second slot for the chip, the IRIX 6.5.30
 kernel takes that interrupt from the second slot's line. Otherwise it
 takes line B of the chip's own slot, which the Bridge routes to pin
-``slot ^ 4``. The second-slot pins agree with Linux's overrides for the
+``slot ^ 4``. The exception is a chip with no Ethernet and no
+dual-serial card record, which takes line A, as the MediaIO chip does.
+The second-slot pins agree with Linux's overrides for the
 IP29 board (``int_mapping[2][1] = 3``) and the BaseIO (``4``) and with its
 default for the MENET. That the chip's line B reaches ``slot ^ 4`` is
 *inferred* from Linux ``int_mapping`` and OpenBSD ``xbridge_intr_map``;
@@ -137,7 +140,7 @@ Board catalogue
      - Model
      - IOC3 placement and source
    * - Origin 200 IP29 system board
-     - ``sgi-xio-baseio`` preset ``ip29``
+     - ``sgi-baseio`` preset ``ip29``
      - Device 2, SuperIO on Bridge pin 3. Ethernet, both serial ports,
        keyboard and mouse, parallel, one-wire identity and an M48T35
        Timekeeper (Linux ``int_mapping[2][1] = 3``).
@@ -155,7 +158,7 @@ Board catalogue
      - ``sgi-pci-shoehorn`` properties ``cad-duo-slot`` and ``sio-slot``
      - The card's slot (:doc:`pci-expansion`).
    * - Origin 300 IO8 and Fuel
-     - preset ``io8``, preset ``fuel``
+     - ``sgi-baseio`` presets ``io8`` and ``fuel``
      - Device 4 on the XBridge (Linux ``bridge_setup_io8``,
        ``bridge_setup_ip34_fuel_sysboard``). Both fit Ethernet, both
        serial ports, parallel and an M48T35 Timekeeper, with a DP83843
@@ -170,12 +173,15 @@ Board catalogue
      - Device 2, pin 4 (Linux ``bridge_setup_ip30_sysboard``). Outside
        the ``sgi-sn`` family.
 
-The subsystem ids the model presents for the boards with a Linux id are
-``0xc300`` (BaseIO-G), ``0xc301`` (MediaIO), ``0xc302`` (BaseIO),
-``0xc303`` (IP29), ``0xc304`` (Octane), ``0xc305`` (MENET devices 0 to 2)
-and ``0xc306`` (MENET device 3). ``sgi-ioc3`` keeps a table from each id to
-a population. An id it does not list gets the Cad Duo population, the
-fall-through Linux uses. What the physical MENET chips return in their
+``sgi-ioc3`` keeps a table from the Linux ids ``0xc300`` (BaseIO-G),
+``0xc301`` (MediaIO), ``0xc302`` (BaseIO), ``0xc303`` (IP29), ``0xc304``
+(Octane), ``0xc305`` (MENET devices 0 to 2) and ``0xc306`` (MENET device 3)
+to populations. It uses the table only when a board leaves the population
+automatic. An id the table does not list gets the Cad Duo population, the
+fall-through Linux uses. The presets set the population explicitly. They
+present ``0xc303`` on the IP29 chip, ``0xc301`` on the MediaIO chip and
+``0xc305`` and ``0xc306`` on the MENET chips. The BaseIO and BaseIO-G
+chips present ``0xffff``, the placeholder for an unobserved value. What the physical MENET chips return in their
 own subsystem register is *unknown* (see above).
 
 .. _sgi-ioc3-boards-menet:
@@ -183,7 +189,7 @@ own subsystem register is *unknown* (see above).
 MENET
 =====
 
-The MENET (MENET/MSER) is an XIO board with a Bridge and four IOC3s. The
+The MENET is an XIO board with a Bridge and four IOC3s. The
 rows below are the board's hardware facts.
 
 .. list-table::
@@ -214,9 +220,12 @@ rows below are the board's hardware facts.
    * - Devices 0 to 2 enable Ethernet and both serial ports. Device 3
        enables Ethernet only. There is no clock, keyboard, mouse or
        parallel port.
+     - *software expectation*
+     - Linux ``bridge_setup_menet``, OpenBSD ``ioc.c`` and the IRIX
+       6.5.30 words above.
+   * - The board has no clock, keyboard, mouse or parallel connector.
      - *established*
-     - Linux ``bridge_setup_menet`` and OpenBSD ``ioc.c``. The manual
-       lists no such connectors (:src:`108-0151-001`).
+     - The manual lists none (:src:`108-0151-001`).
    * - The SuperIO interrupt of device ``d`` (0 to 2) reaches Bridge pin
        ``d + 4``. Device 3 raises none. Each chip's Ethernet interrupt
        uses its own line A, pin ``d``.
@@ -340,8 +349,10 @@ Tests
 =====
 
 ``tests/qtest/sn0-menet-test.c`` runs the following for a board added with
-``-device``, for a catalogue-placed board and, for the first two, for a
-board in the Origin 200 GIGAchannel cabinet:
+``-device``. The catalogue-placed board (``placed/``) runs only
+``widget-alive``, ``ioc3s-enumerate``, ``populations`` and
+``superio-reaches-hub``. A board in the Origin 200 GIGAchannel cabinet
+runs ``ioc3s-enumerate`` and ``populations``:
 
 - ``ioc3s-enumerate``: IOC3s answer ``0x000310a9`` at devices 0 to 3, with
   subsystem dwords ``0xc30510a9`` for devices 0 to 2 and ``0xc30610a9``

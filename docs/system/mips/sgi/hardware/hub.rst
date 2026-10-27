@@ -323,7 +323,7 @@ that clears, W1C writing ones clears.
    * - ``0x20_00a8``
      - ``MD_MLAN_CTL``
      - 34
-     - ``0x18c3100000``
+     - ``0x18b100000``
      - RW
      - One-wire master. Linux ``MLAN_RESET_DEFAULTS``.
    * - ``0x21_0010``
@@ -624,8 +624,9 @@ the I/O request-buffer tables and the I/O performance counter.
 Access width
 ============
 
-The register region takes 4- and 8-byte accesses; narrower ones are
-refused by QEMU's memory core. A 32-bit access names half of the aligned
+Outside the I2C controller and the bring-up UART, which are mapped over
+it and take narrower accesses, the register region takes 4- and 8-byte
+accesses; narrower ones are refused by QEMU's memory core. A 32-bit access names half of the aligned
 doubleword: offset 0 carries bits 63:32 and offset 4 bits 31:0, as on a
 big-endian bus. The model composes the halves itself. A 32-bit write
 replaces its half of the stored value and then takes the ordinary 64-bit
@@ -763,9 +764,10 @@ link reset, bit 0 resets the whole Hub). In the model:
   whichever Hub was written. On hardware bit 0 resets the Hub's own node
   and bit 7 carries a warm reset to the nodes the link reaches; the
   model does not separate them, an *approximation*. Linux writes bits 7
-  and 0 together (``ip27-reset.c``), as do the PROM's own self-reset and
-  IRIX; OpenBSD writes bits 1 and 0 to each node in turn. On an
-  unpartitioned machine each ends in a whole-machine restart. The
+  and 0 together (``ip27-reset.c``); OpenBSD sets ``NI_PROTECTION`` and
+  writes bits 1 and 0 to each node in turn (``ip27_machdep.c``), both
+  *software expectations*. In the model either ends in a whole-machine
+  restart. The
   standby system controllers keep their state, so the PROM sees a warm
   start (:doc:`/system/mips/sgi/sn`, "Module power and reset").
 - Bit 1 alone resets the network link (:ref:`sgi-hub-link-reset`). A
@@ -967,8 +969,9 @@ I2C, system controller and bring-up UART
 Where a node has one, its PCF8584 I2C controller sits at ``0x22_0000``,
 mapped over the Hub window at higher priority so both mappings of the
 window reach it; it has no interrupt line. On the Origin 200 the module
-system controller answers on that bus at I2C address 8 and its 2 KiB
-configuration NVRAM at addresses 80 to 87 (:doc:`elsc`). On the Origin
+system controller answers on that bus at I2C address ``0x08`` and its
+2 KiB configuration NVRAM at addresses ``0x50`` to ``0x57``
+(:doc:`elsc`). On the Origin
 2000 the controller and its NVRAM sit on the module bus instead.
 
 With the machine's ``junk-uart=on``, node 0's Hub fits a 16550 at
@@ -1327,7 +1330,8 @@ Routing tables
 --------------
 
 32 meta entries at ``0x63_8000`` and 16 local entries at ``0x63_8100``
-hold four-bit exit ports (Linux ``hubni.h``). A destination in this
+hold the four-bit direction the first Router takes
+(:ref:`sgi-router-routing`; offsets from Linux ``hubni.h``). A destination in this
 Hub's own group of sixteen node numbers uses the local entry for its
 low four bits; any other uses the meta entry for its high bits. An entry
 not written since reset routes nothing. The tables drive the claim
@@ -1351,9 +1355,9 @@ Node number, mode, routing, vector, protection and diagnostic state
 keep their values. Writing bit 12 alone changes nothing until the next
 link reset.
 
-The IRIX power-off path reads ``NI_PORT_ERROR_CLEAR`` until bit 37 reads
-clear, and the stock PROM reads it once, *software expectations*;
-completing at once satisfies both. The reset's duration, the link-down
+The IRIX 6.5.30 power-off path reads ``NI_PORT_ERROR_CLEAR`` until bit
+37 reads clear, a *software expectation*; completing at once satisfies
+it. A single clearing read sees the bit set once and then clear. The reset's duration, the link-down
 interval and the latch on a Hub with no peer are *unknown*. Because both
 ends latch, a link reset written after a node has done its clearing
 read leaves that node's bit 37 set. The IRIX 6.5.30 power-off path

@@ -10,7 +10,8 @@ The Alteon Tigon is a gigabit Ethernet controller with an on-chip MAC and
 two embedded RISC processors. SGI sold it as the IRIS Gigabit Ethernet
 board, a single-port PCI card in a fibre and a copper variant, for the
 Octane, Octane2, Origin 200, Origin 300, Origin 2000 and Onyx2 (both with
-an XIO adapter), Onyx 300, Origin 3000 and Fuel :src:`007-3819-004 p. 1`.
+an XIO adapter), Onyx 300, Origin 3000, Onyx 3000 and Fuel
+:src:`007-3819-004 p. 1`.
 IRIX binds it with its ``eg`` driver. QEMU models a Tigon 2 as
 ``hw/net/tigon.c`` (header ``include/hw/net/tigon.h``, type ``tigon``).
 It is an add-in PCI card: ``-device tigon`` puts it in a free slot behind
@@ -95,8 +96,10 @@ SRAM the firmware download lands in. The real board's SRAM is 512 KB to
 :ref:`sgi-tigon-receive`.
 
 Both board variants share one driver and one register interface, so the
-model has one. The board and chip are 32- or 64-bit PCI at 33 or 66 MHz
-:src:`007-3819-004 p. 27`, *established*. The width a given slot gives the
+model has one. The board is 32- or 64-bit PCI at 33 or 66 MHz
+:src:`007-3819-004 p. 27`, and the chip finds the host's width by the PCI
+protocol :src:`alteon-tigon-pci-controller-rev-1.04 s. 2.2.6, p. 17`,
+both *established*. The width a given slot gives the
 card is covered under :ref:`sgi-tigon-byte-order`.
 
 .. _sgi-tigon-registers:
@@ -152,8 +155,8 @@ before use, and no read of a real board is available, so a reset value is
      - 32
      - 0
      - R/W
-     - Stored. Bit 20 also reads set when the slot is narrow. Bit 18
-       disables the DMA word swap.
+     - Stored. Bit 20 also reads set when the slot is narrow. Bit 18 is
+       acted on only by the direct DMA channels and the wide-slot rule.
    * - ``0x068``
      - WINBASE
      - 32
@@ -368,7 +371,7 @@ with bit 1 set clears it, and bit 0 reflects the pin
 :src:`alteon-tigon-pci-controller-rev-1.04 Tables 27, 29, pp. 72, 74`,
 *established*. None of this needs a downloaded firmware or a populated
 event ring. MISC_HOST_CTL bit 6 masks
-the pin, first implemented in revision 5 (same pages), *established*.
+the pin, first implemented in revision 5 (pp. 73-74), *established*.
 Applying it to the Tigon 2 model is *inferred* from the common register
 map.
 
@@ -382,8 +385,9 @@ through MISC_LOCAL_CTL: bit 20 is the clock, bit 21 enables the master's
 data line, bit 22 is the master's data and bit 23 is the card's reply
 (*software expectation*, ``if_tireg.h``). The model implements the slave
 as an I2C state machine: START and STOP are data-line changes while the clock
-is high, bits are sampled on the rising clock edge, and read data and
-the acknowledge are presented on the falling edge. The control byte's bit 0
+is high, bits are sampled on the rising clock edge, the acknowledge is
+driven on the rising edge that samples the eighth bit, and read data
+changes on the falling edge. The control byte's bit 0
 selects a read. Two address bytes follow.
 
 The six address bytes sit at EEPROM offset ``0x8e``, behind two zero bytes
@@ -440,8 +444,10 @@ bits 31-24, a code in 23-12 and an index in 11-0 (NetBSD, OpenBSD and
 Linux agree), *software expectation*. The model consumes words from its
 own consumer index to the producer, then writes the consumer index to
 CMDCONS_IDX. A producer index of 64 or more logs ``LOG_GUEST_ERROR`` and
-is reduced modulo 64. It never raises an interrupt for a command, because
-a command has no host-memory ring the interrupt handler could acknowledge.
+is reduced modulo 64. Command completion itself raises no interrupt,
+because a command has no host-memory ring the interrupt handler could
+acknowledge. A command that posts an event (refresh, or link negotiation
+when its timer fires) interrupts through that event.
 
 .. list-table::
    :header-rows: 1
@@ -474,10 +480,10 @@ a command has no host-memory ring the interrupt handler could acknowledge.
      - Same effect as the jumbo mailbox, with the index in the word.
 
 Other nonzero words log ``LOG_UNIMP`` and are consumed. The public header
-marks opcode ``0x10`` obsolete in favour of the mailbox, but the IRIX
-6.5.30 driver is written to post its jumbo buffers through the command, so
-the model honours both (*software expectation*). The exact opcode set
-the SGI firmware answers is *unknown*; the model answers the public set.
+marks opcode ``0x10`` obsolete in favour of the mailbox. The model honours
+both, an *approximation*: no available source says which the SGI firmware
+answers. The exact opcode set the SGI firmware answers is *unknown*; the
+model answers the public set.
 
 .. _sgi-tigon-interrupts:
 
@@ -485,8 +491,10 @@ Interrupts
 ==========
 
 One level-triggered INTA, raised when the card has advanced a host-memory
-producer index (event, receive-return, transmit-consumer). There is no
-per-cause status register; the cause is the set of indices in host memory.
+producer index (event, receive-return, transmit-consumer), by a
+MISC_LOCAL_CTL bit 2 write, or by a write-channel completion with state
+bit 21. There is no per-cause status register; the cause is the set of
+indices in host memory.
 The model keeps one pending latch and drives the pin with it when
 MB_HOSTINTR is zero, MASK_INTRS is zero and MISC_HOST_CTL bit 6 is clear.
 MISC_HOST_CTL bit 0 and MISC_LOCAL_CTL bit 0 read the resulting level.
@@ -495,8 +503,9 @@ A write to MB_HOSTINTR stores bit 0. Writing one acknowledges and masks
 (clears the latch). Writing zero re-enables, and clears the latch unless
 the previous value was one, so a completion that arrived while the line
 was held off is still delivered on unmasking. This is the NetBSD sequence
-(``ti_intr``), *software expectation*. The IRIX 6.5.30 driver writes only
-zero and uses that write as its acknowledge, *software expectation*.
+(``ti_intr``), *software expectation*. A write of zero while the previous
+value was zero also clears the latch, so a driver that only ever writes zero
+acknowledges with it, an *approximation*.
 MISC_HOST_CTL bit 1 and MISC_LOCAL_CTL bit 1 also clear the latch.
 
 Ring completions are coalesced per direction, as the driver programs. If
@@ -550,7 +559,8 @@ and clear interrupt), OPMODE ``0x4000020c`` (descriptor word swap set,
 descriptor byte swap and data byte swap clear) and PCI State
 ``0x760600b4``. Every set bit of the last is named by public Linux
 ``acenic.h`` except bit 18, which the Alteon manual defines as no word swap
-DMA. IRIX therefore turns the card's DMA word swap off. It writes PCI State
+DMA. IRIX therefore sets the bit that the manual says turns the card's DMA
+word swap off. It writes PCI State
 without reading it and does not test bit 20, so it neither acts on the
 slot's width nor forces 32-bit operation. By the manual the card runs at
 the width the slot gives it. The IRIX driver keeps Linux's big-endian
@@ -571,10 +581,10 @@ descriptors are 32 bytes. Event descriptors are 8 bytes. A descriptor is read
 or written in one request and decoded from a temporary copy, so a failed
 read never publishes a partly decoded descriptor.
 
-OPMODE bit 2, descriptor word swap, has no effect in a narrow slot. The
-public drivers and IRIX all set it, and the model's fixed high-word-first
-address is the arrangement they write. What the bit does to descriptor
-words other than address pairs is *unknown*.
+OPMODE bit 2, descriptor word swap, acts only in the wide, swap-clear case
+below. The public drivers and IRIX all set it, and the model's fixed
+high-word-first address is the arrangement they write. What the bit does
+to descriptor words other than address pairs is *unknown*.
 
 Frame data
 ----------
@@ -601,10 +611,11 @@ path is *unknown*.
 Slot width
 ----------
 
-The card is a 64-bit capable PCI agent. A slot owner that drives REQ64#
-tells the card at the end of reset, and the card then runs 64-bit data
-phases (the interface is ``pci-64bit-device``). PCI State bit 20 reads
-clear for such a slot and set for any other. In ``origin200`` the Bridge
+The card is a 64-bit capable PCI agent. A host bridge that asserts REQ64#
+for a slot tells the card at the end of reset (the interface is
+``pci-64bit-device``). The model carries no data-phase width: it records
+the sampled REQ64#, which makes PCI State bit 20 read clear instead of set
+and enables the wide-slot rule below. In ``origin200`` the Bridge
 slots 5, 6 and 7 drive REQ64#, and ``origin300`` marks two slots of each
 expansion head the same way. Whether the physical option slots drive REQ64#
 is *unknown*. A write of PCI State bit 20 overrides the
@@ -650,12 +661,14 @@ memory. Lengths are 16 bits.
 
 The model runs a transfer when the state register is written with Active
 (bit 2) set, using the addresses and length present at that moment, in
-256-byte chunks, and clears Active when done. The manual's instructions on
+256-byte chunks, and clears Active when done. A length written afterwards
+starts nothing. The manual's instructions on
 whether state or length is written first conflict for a transfer started
 through the state register
 :src:`alteon-tigon-pci-controller-rev-1.04 ss. 9.6.3-9.6.6, pp. 82-85`.
-The model accepts either order. The order on revision-6 silicon is
-*unknown*.
+The length and an Active-clear state write may come in either order, but
+the state write that sets Active must come last. The order on revision-6
+silicon is *unknown*.
 
 .. list-table::
    :header-rows: 1
@@ -677,7 +690,8 @@ The model accepts either order. The order on revision-6 silicon is
      - Completion interrupt, honoured when the chip revision is 5 or
        later.
    * - 23
-     - Progress. The read channel sets it during a transfer.
+     - Progress. The read channel sets it during a transfer, and it stays
+       set until the next state write or channel reset.
    * - 24, 25
      - Target abort and master abort, read-only.
    * - 27
@@ -692,7 +706,9 @@ bit layout is from the manual's Tables 34 and 35 (pp. 82-84),
 
 - Each channel swaps data in four-byte groups unless No Swap is set, and
   exchanges the two words of each eight-byte unit unless PCI State bit 18
-  is set. How a host bridge then places the bytes needs its own test.
+  is set. Only these channels and the wide-slot rule read bit 18. Ring,
+  descriptor, statistics and frame DMA never word-swap, whatever it holds.
+  How a host bridge then places the bytes needs its own test.
 - A transfer that would cross a 4 GiB boundary does not run, sets bit 27
   and logs ``LOG_GUEST_ERROR``. A local range beyond the card SRAM logs
   ``LOG_GUEST_ERROR`` and clears Active without an error bit.
@@ -721,9 +737,10 @@ At the end flag the model:
 1. fills checksums if the frame's descriptors asked for it. Flag ``0x0001``
    requests TCP and UDP and ``0x0002`` the IP header checksum. The model
    calculates them only when the frame is a well-formed IPv4 packet whose
-   header length and total length fit inside the frame. IRIX leaves the
-   fields zero and relies on this (*software expectation*), so skipping it
-   makes every TCP segment leave with a zero checksum;
+   header length and total length fit inside the frame. A driver that sets
+   the flags and leaves the fields zero depends on this, and without it
+   every TCP segment would leave with a zero checksum. This is an
+   *approximation*: no source says what the firmware computes;
 2. writes the consumer index to the transmit-consumer pointer in host
    memory;
 3. sends the frame to the network backend and counts it;
@@ -780,19 +797,19 @@ capacity. The frame is written to the buffer with the data-swap rules of
 :ref:`sgi-tigon-byte-order`. It is clamped to the buffer capacity. A
 descriptor claiming a buffer under 60 bytes is not a posted buffer: the
 model logs ``LOG_GUEST_ERROR``, counts a discard and drops the frame. A
-larger buffer is not suspect, since IRIX posts 16 KB buffers on its jumbo
-ring.
+larger buffer is not suspect, since the length is the buffer's capacity
+(*approximation*).
 
 The model then writes a 32-byte receive-return descriptor: the buffer
 address, the buffer index and landed length, the ring type
 (``0x0002`` standard, ``0x0003`` jumbo) with the cast, end-of-frame
 (``0x0004``) and jumbo-ring (``0x0010``) flags, and a word of checksums. The
-IRIX driver frees a received frame whose return descriptor lacks the end
-flag without counting it (*software expectation*), so the flag is always
-set. The checksum word has the sum over the IP header in its high half and
-over the rest of the IP packet in its low half. Both sums are not
-inverted, since the driver inverts them itself, so a well-formed header
-reads ``0xffff``. A frame that is not plain IPv4 reports zero. The return
+model sets the end flag on every return descriptor, since each frame
+occupies one buffer (*approximation*). The checksum word has the sum
+over the IP header in its high half and over the rest of the IP packet in
+its low half. Both sums are not inverted, since the driver inverts them
+itself, so a well-formed header reads ``0xffff``. A frame that is not
+plain IPv4 reports zero. The return
 ring wraps at the length in its control block.
 
 Arrival latency
@@ -801,7 +818,8 @@ Arrival latency
 The descriptors and payload are written as the frame arrives, but the
 return-ring producer index and the interrupt wait until a fixed minimum
 after the backend handed over the frame (``rx-arrival-latency-us``, default
-200 microseconds, on a delay line shared by the SGI Ethernet adapters). The
+200 microseconds, on a delay line built from code shared with the other SGI
+Ethernet adapters). The
 producer index is the held item, because the driver cannot see the
 descriptor before it. A write to a receive producer mailbox also retries a
 completion refused for a full delay line. The floor is an *approximation*:
@@ -896,7 +914,8 @@ IRIX programs the five-second period, sends no refresh command and still
 reads the head, so a head rewritten on that period alone would show
 counters from before the traffic being measured (*software expectation*).
 What cadence real firmware uses is *unknown*.
-Each refresh announces a statistics-updated event (type ``0x04``). A clear
+Each refresh other than the 100 ms head rewrite announces a
+statistics-updated event (type ``0x04``). A clear
 command marks the head dirty, so the zeroes reach a reader that does not
 request a refresh.
 
@@ -974,6 +993,9 @@ Model limits
   descriptor, payload and pointer DMA failures, undersized receive
   buffers, direct DMA range errors and invalid access sizes. None raises
   a bus error.
+- Only the direct DMA channels and the wide-slot rule act on PCI State bit
+  18. A guest that leaves it clear gets no DMA word swap on rings,
+  descriptors, statistics or frames, where the hardware would apply one.
 - The wide, swap-clear placement is a synthetic compensation. The
   Tigon-to-Bridge byte path is *unknown* for 64-bit data phases.
 

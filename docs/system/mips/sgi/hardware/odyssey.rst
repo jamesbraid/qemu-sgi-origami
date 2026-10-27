@@ -6,8 +6,13 @@
 VPro graphics (Odyssey)
 ==========================
 
-VPro is the graphics family SGI sold as V6, V8, V10 and V12 for the
-Octane2, Fuel, Tezro and Onyx 350. Each board is one XIO widget whose
+VPro is the graphics family SGI sold as V6, V8, V10 and V12. SGI's
+upgrade guide fits it to both the Octane and the Octane2, given Crossbow
+1.4 and the ER power supply (:src:`007-4210-003 preface`),
+*established*. Published inventories name Octane V6, V8, V10 and V12
+boards and a Fuel V10, *observed* (:ref:`sgi-odyssey-identity`). The
+model places it in the Octane2, Fuel, Tezro and Onyx 350 machines, and
+in the Octane only on request (:ref:`sgi-odyssey-placement`). Each board is one XIO widget whose
 graphics engine gfxinfo calls BUZZ and whose display back end it calls
 PB&J. QEMU models the board as ``sgi-odyssey`` in
 ``hw/misc/sgi-odyssey.c``, with the optional Mesa drawing path in
@@ -35,7 +40,8 @@ Sources
 - Linux ``arch/mips/include/asm/xtalk/xwidget.h`` at ``2f9060b1db4a``,
   as a software expectation: the widget manufacturer and part names.
 - The *Octane/Octane2 VPro Graphics Upgrade Kit Installation Guide*,
-  :src:`007-4210-003 preface`: which Octanes take VPro.
+  :src:`007-4210-003 preface`: VPro in the Octane and Octane2, and
+  the Crossbow and power-supply conditions.
 - Published inventories and gfxinfo listings of real boards:
   :src:`usenet-1154846834` (an Octane2 V12),
   :src:`usenet-au03s8` (an Octane V6),
@@ -44,12 +50,15 @@ Sources
   :src:`usenet-hvh0d` (an Octane V10 board name) and
   :src:`tingo-fuel-irix-console gfxinfo` (a Fuel V10).
 - The IRIX 6.5.30 IP30 kernel, gfxinfo, hinv, X server and GL library,
-  read as shipped binaries, as software expectations: how the guest
-  decodes the identity and memory words, and the register and command
-  traffic the model answers.
+  read as shipped binaries, as software expectations. This page credits
+  them only for the identity and memory-word decode, the back-end
+  version word, the id-plane layout, the shadow-page replay layout, the
+  backing-store transfer forms, the ``0x0a5a`` fence word and one DMA
+  header bit. Every other register role on this
+  page is stated as what the model does.
 - The same software run on the model, recorded with QEMU's
-  ``sgi_odyssey_mmio`` trace event. These are software expectations
-  observed on the model.
+  ``sgi_odyssey_mmio`` trace event: what the guest sent the model, not
+  what a board does.
 - The reference Octane2's inventory
   (:ref:`sgi-measured-octane2-hinv`).
 
@@ -168,11 +177,13 @@ registers, memory and display.
      - *Established* on the reference Octane2, whose inventory shows a
        V12 at widget 11 (:ref:`sgi-measured-octane2-hinv`).
    * - ``octane``
-     - none
-     - refused
+     - Crossbow widget 11
+     - none: the catalogue refuses VPro, and
+       ``x-uncatalogued-graphics=on`` places any product
      - The upgrade guide asks for Crossbow 1.4 and the ER supply
-       (:src:`007-4210-003 preface`), which this machine does not
-       present (:ref:`sgi-ip30-graphics`).
+       (:src:`007-4210-003 preface`, *established*), which this
+       machine's Crossbow revision and supply do not present
+       (:ref:`sgi-ip30-graphics`).
    * - ``fuel``
      - XBridge widget 13
      - V12
@@ -182,7 +193,10 @@ registers, memory and display.
    * - ``onyx350-compat``, ``tezro-tower-multi``
      - PIC widget 12
      - none
-     - Optional, ``slot=widget-12`` (:ref:`sgi-ip35`).
+     - Optional, ``slot=widget-12``. The IP35 page takes widget 12
+       from published Tezro and Onyx 350 inventories (:ref:`sgi-ip35`);
+       none is in the source registry, so here it is a model choice
+       (*approximation*).
 
 On the Octane2 the processor reaches the board through the short
 window at physical ``0x1b000000`` and the long window at
@@ -204,7 +218,8 @@ larger one. A mapped aperture is not evidence of a linear framebuffer.
 Every reset value below is the model's choice (*approximation*) unless
 the notes say otherwise. Widths are bits. The configuration block below
 ``0x60`` takes an aligned 64-bit access or an aligned 32-bit access to
-either half; every other register takes aligned 32-bit accesses only.
+either half. The FIFO and port rows take the widths their row gives;
+every other register takes aligned 32-bit accesses only.
 
 .. list-table::
    :header-rows: 1
@@ -385,12 +400,11 @@ Only four of these are public. OpenBSD reads command FIFO status at
 threshold states, reads ``0x106c`` as a data-engine status whose low
 seven bits it waits to see zero, and writes command words to
 ``0x110000`` and data to ``0x400000`` (``odysseyreg.h`` lines 23-31), a
-*software expectation*. The other offsets and their meanings come from
-the IRIX 6.5.30 kernel's accesses, also *software expectations*. The
-stock IP35 PROM's graphics diagnostic writes and reads back the six
-BUZZ scratch registers with walking patterns; the model keeps them as
-storage so that test passes, and their real function is *unknown*. The
-request-timeout and flow-control reset values are *approximations*.
+*software expectation*. Every other offset, name and role in the table
+is the model's (*approximation*), except where a section below ties it
+to shipped software. The six BUZZ scratch registers are plain storage;
+their real function is *unknown*. The request-timeout and flow-control
+reset values are *approximations*.
 
 .. _sgi-odyssey-memory-config:
 
@@ -418,21 +432,21 @@ Its target is ``0x30``/``0x38``: widget in bits 19:16 and vector in bits
 upper word and all of the lower. This decode is borrowed from the IMPACT
 board's destination register, an *approximation*.
 
-The routed sources share a second target at ``0x1044``/``0x104c``,
-widget in bits 28:25 of the upper word, with one vector byte per source
-in ``0x1054``: softsync in bits 31:24, retrace in bits 23:16, DMA-done
-in bits 15:8 and the flag source in bits 7:0, which nothing raises. A
-routed source sends a single set packet with no matching clear. The
-IRIX 6.5.30 kernel programs this layout, a *software expectation*; the
-board's own behaviour is *approximation*. A source raised with no
-target programmed logs ``LOG_GUEST_ERROR`` and sends nothing.
+The model keeps the flags at ``0x1014``, clears them by writing ones
+to ``0x101c``, and sets and clears the enable mask through ``0x1034``
+and ``0x103c``. The routed sources share a second target at
+``0x1044``/``0x104c``, widget in bits 28:25 of the upper word, with one
+vector byte per source in ``0x1054``: softsync in bits 31:24, retrace in
+bits 23:16, DMA-done in bits 15:8 and the flag source in bits 7:0,
+which nothing raises. A routed source sends a single set packet with no
+matching clear. All of these roles and layouts are the model's
+(*approximation*). A source raised with no target programmed logs
+``LOG_GUEST_ERROR`` and sends nothing.
 
-The only flag the model raises is bit 9 (``0x200``), command FIFO low
-water. It is set at reset and after every command FIFO store, because
-the FIFO drains at once. The IRIX 6.5.30 kernel waits for this
-interrupt after a board reset and after its FIFO reaches high water,
-and abandons the board without it, a *software expectation*. Raising it
-per store is an *approximation* of the real FIFO's level crossing.
+The only flag the model raises is bit 9 (``0x200``), which it treats as
+command FIFO low water. It is set at reset and after every command FIFO
+store, because the model's FIFO drains at once. Raising it per store is
+an *approximation*; the real FIFO's level crossings are *unknown*.
 
 .. _sgi-odyssey-onewire:
 
@@ -444,10 +458,12 @@ the layout HEART, Bridge and Hub use: pulse width in bits 19:10, sample
 offset in bits 9:2, completion in bit 1 and the sampled level in bit 0.
 The slot completes inside the write. On the wire sits an emulated
 DS2505 with family code ``0x0b`` and the ``nic-serial`` property as its
-48-bit serial, a synthetic value by default. Its 160-byte image holds
-one record, ``Name:<board>;`` after a format byte, padded to one
-32-byte page. ``nic-record`` replaces the record; otherwise the product
-supplies its board name. The record layout and the two aliases are
+48-bit serial, a synthetic value by default. Its 160-byte image starts
+with byte ``0x01``, four spaces and ``;``, then the field text and a
+closing ``;``. Spaces pad it to one 32-byte page and the rest of the
+image is ``0xff``. ``nic-record`` supplies the field text; without it
+the product's ``Name:<board>`` is used, and without a product
+``Name:ODY128VERSIONB``. The record layout and the two aliases are
 *approximations*; the serial is synthetic.
 
 .. _sgi-odyssey-backend:
@@ -460,10 +476,9 @@ The display back end is an indexed register file reached through a
 half first; a 4-byte store is one. A header word has tag ``0b11`` in
 bits 29:28, a starting index in bits 27:14 and a count in bits 13:0.
 The next ``count`` words go to consecutive indices; a zero count is a
-pad. A word without the tag where a header is due logs ``LOG_UNIMP``.
-The framing is *inferred* from the X server's and kernel's records on
-the model; OpenBSD writes this port with 64-bit stores in its setup
-stream, a *software expectation*.
+pad. A word without the tag where a header is due is dropped. This
+framing is the model's (*approximation*); OpenBSD writes this port with
+64-bit stores in its setup stream, a *software expectation*.
 
 The model decodes these indices:
 
@@ -475,20 +490,21 @@ The model decodes these indices:
   ``0x233a08`` and ``0x233c08``. Status reads bit 22 (ready) always and
   bit 9 (done) when the last command was nonzero. No device sits on
   either bus, so every transfer acknowledges and returns zero
-  (*approximation*). This is enough for the kernel's attach-time polling
-  but says nothing about the board's PLL, DDC EEPROM or monitor.
+  (*approximation*). A guest polling for completion sees it at once;
+  this says nothing about the board's PLL, DDC EEPROM or monitor.
 - ``0x2802`` and ``0x2803``: the display channel's width and height
   (:ref:`sgi-odyssey-channel`).
 - ``0x2900``-``0x291f``: display modes for main drawable ids 0 to 31.
 - ``0x2920``-``0x2927``: display modes for overlay ids 0 to 7.
 
-Every other index logs ``LOG_UNIMP`` once.
+The first undecoded index or untagged header word logs ``LOG_UNIMP``;
+all later ones, whatever their index, are silent.
 
 ``0x23380c`` returns the ``backend-version`` property in bits 2:0 and
 zero elsewhere. gfxinfo prints those bits as the PB&J version, a
 *software expectation*, and every capture in the identity table reads 1.
-The kernel's back-end initialisation also returns early when bit 10 is
-set. The model answers 0 there; the bit's meaning is *unknown*, and a
+The IRIX 6.5.30 kernel's back-end initialisation also returns early
+when bit 10 is set, a *software expectation* from the shipped kernel. The model answers 0 there; the bit's meaning is *unknown*, and a
 read of the whole word on a real board would settle it.
 
 .. _sgi-odyssey-selftest:
@@ -496,14 +512,12 @@ read of the whole word on a real board would settle it.
 Command FIFO self-test
 ----------------------
 
-The IRIX 6.5.30 kernel pushes a fixed nine-word preamble through the
-kernel command FIFO, waits, then reads ``0x201594`` and requires
-``0x003d0046``, retrying six times before it gives up on the board, a
-*software expectation*. The model watches the kernel FIFO for exactly
-that preamble and answers ``0x003d0046`` once it has seen it, zero
-before. This is a recognised-sequence answer, not a computed one
-(*approximation*): what the board computes, and what it would return
-for any other stream, is *unknown*.
+``0x201594`` reads zero until the kernel command FIFO has taken one
+fixed nine-store sequence (four 4-byte and five 8-byte stores, 14 words)
+in order; it then reads ``0x003d0046``. A break in the sequence restarts
+the match. This is a recognised-sequence answer, not a computed one
+(*approximation*): what the board computes there, and what it would
+return for any other stream, is *unknown*.
 
 .. _sgi-odyssey-commands:
 
@@ -511,8 +525,8 @@ Command path
 ============
 
 Two ports take command words: the kernel FIFO at ``0x110000`` and the
-per-context user FIFO at ``0x100000``, which the X server maps into
-client processes. Both carry the same grammar. A 4-byte store is one
+user FIFO at ``0x100000``. The model gives both the same grammar; only
+the kernel FIFO feeds the self-test match. A 4-byte store is one
 word and an 8-byte store is two, upper half first, an *approximation*
 by analogy with the back-end port. Other widths log ``LOG_UNIMP`` and
 are dropped. The FIFO is sequenced, not addressed: every store is the
@@ -544,31 +558,33 @@ is outside this page.
 Context switch
 --------------
 
-The kernel switches graphics contexts with one 8-byte store to
-``0x118000``: opcode 7 in bits 47:40, the new context id in bits 31:16
-and a valid bit 0. Before the store it writes the outgoing context's
-shadow page address to ``0x4004``/``0x400c`` (bits 15:0 of the upper
-word and all of the lower). The model saves its open-primitive and
-current-attribute state into that page in guest memory, then writes 1
-to the word at offset ``0x8fc``, which the kernel polls for up to 15
-seconds. The store layout and the polled word are *software
-expectations*; that the board fills the page is *inferred*, and the
-page layout the model writes is the kernel's own template. A store with
-another opcode or the valid bit clear logs ``LOG_UNIMP``. A switch with
-no shadow address programmed logs ``LOG_GUEST_ERROR`` and writes
-nothing.
+The model takes an 8-byte store to ``0x118000`` with opcode 7 in bits
+47:40 and bit 0 set as a context switch; it ignores the context id in
+bits 31:16. It saves its open-primitive and current-attribute state
+into the shadow page whose guest physical address is in
+``0x4004``/``0x400c`` (bits 15:0 of the upper word and all of the
+lower), then writes 1 to the 32-bit word at page offset ``0x8fc``. The
+port, the word layout, the address pair and the completion word are the
+model's (*approximation*). The page's ring and descriptor layout is
+the one the IRIX 6.5.30 kernel reads back when it rebuilds an open
+primitive, a *software expectation* from the shipped kernel; that the
+board writes the page is *inferred*. A store with another opcode or bit
+0 clear logs ``LOG_UNIMP``. A switch with no shadow address programmed
+logs ``LOG_GUEST_ERROR`` and writes nothing.
 
 .. _sgi-odyssey-fence:
 
 Completion fence
 ----------------
 
-Command ``0x0a5a`` takes two operands: a fence slot in bits 14:0 with
-bit 15 requesting an interrupt, and a 16-bit token. The model writes
-the token big-endian to guest memory at the host-write base
+The IRIX 6.5.30 GL library sends command ``0x0a5a`` as a host-write
+fence, a *software expectation* from the shipped library. The model
+reads its two operands as a fence slot in bits 14:0 with bit 15
+requesting an interrupt, and a 16-bit token. It writes the token
+big-endian to guest memory at the host-write base
 (``0x4034``/``0x403c``) plus twice the slot, then sends the softsync
-interrupt if asked. The kernel's DMA wait polls that halfword from its
-softsync handler, a *software expectation*. The write uses the
+interrupt if asked. The operand layout, the base pair and the
+interrupt are the model's (*approximation*). The write uses the
 machine's physical address space directly, not an XIO DMA path
 (*approximation*).
 
@@ -577,36 +593,36 @@ machine's physical address space directly, not an XIO DMA path
 DMA
 ===
 
-Large image and texture transfers use a page-table engine. The kernel
-pushes a descriptor through the command FIFO: opcode ``0xe01`` and three
-operand words that pack the physical address of a translation table.
-The opcode values and the kernel's packing are *software expectations*;
-the model's unpacking is *inferred*. The table is a 32-byte header of
-eight big-endian words followed by 8-byte entries, each a byte address
-in bits 63:16 and a length in bits 15:0, at 16 KiB page granularity,
-ended by a zero-length entry. The header and entry sizes are *software
-expectations*; the entry layout is *observed* in tables the X server
-built on the model. A table with no terminator within 256 entries
-logs ``LOG_GUEST_ERROR`` and fails the transfer.
+The model has a page-table engine for large image and texture
+transfers. Command word ``0xe01`` and three operand words start it; the
+model unpacks a translation-table physical address from operands 0 and
+1, taking bits 16:0 and 29:23 of each as one 24-bit half. The table is a
+32-byte header of eight big-endian words followed by 8-byte entries,
+each a byte address in bits 63:16 and a length in bits 15:0, at 16 KiB
+page granularity, ended by a zero-length entry. A table with no
+terminator within 256 entries logs ``LOG_GUEST_ERROR`` and fails the
+transfer.
 
-The header names the board buffer (word 0, in 16-byte units, ``0x2000``
-for the screen), the rectangle origin and size (words 1 and 3), the
-source row length and skip (words 5 and 6), the pixel size code (word 7
-bits 18:16) and the DMA-done interrupt request (word 7 bit 31). Word 7
-bit 24 set moves pixels from the board to host memory. These field
-positions are *software expectations* read from the kernel; the
-direction bit and the rest of the read-back rules are
-*approximations*. A completed transfer that asked for it sends the
-DMA-done interrupt; the kernel follows each descriptor with its own
-``0x0a5a`` fence. Opcode ``0xe03``, which only a diagnostic path emits,
-logs ``LOG_UNIMP`` and does nothing.
+The model reads the header as the board buffer (word 0, in 16-byte
+units, ``0x2000`` for the screen), the rectangle origin and size (words
+1 and 3), the source row skip and row length (words 5 and 6), a pixel
+size code (word 7 bits 18:16), the DMA-done interrupt request (word 7
+bit 31) and the direction (word 7 bit 24 set for board to host). The
+descriptor packing, the table and header layouts and the direction bit
+are the model's (*approximation*). Word 7 bit 30 set puts the bottom
+row first; the IRIX 6.5.30 GL library sets it when source and
+destination descriptions differ, a *software expectation* from the
+shipped library. A completed transfer that asked for it sends the
+DMA-done interrupt. Command word ``0xe03`` logs ``LOG_UNIMP`` and does
+nothing.
 
 Transfers that name a buffer other than the screen land in the model's
-board-memory object store (:ref:`sgi-odyssey-memory`). The kernel also
-pages objects between board memory and host memory on small boards.
-The model performs the 2- and 4-byte-per-texel page transfers in a
-layout of its own choosing and logs the 8-byte form as ``LOG_UNIMP``
-(*approximation*). Both directions use the machine's physical address
+board-memory object store (:ref:`sgi-odyssey-memory`). The IRIX 6.5.30
+kernel pages objects between board memory and host memory when a small
+board's memory fills, with headers that give 2, 4 or 8 bytes a texel, a
+*software expectation* from the shipped kernel. The model performs the
+2- and 4-byte forms in a texel layout of its own choosing and logs the
+8-byte form as ``LOG_UNIMP`` (*approximation*). Both directions use the machine's physical address
 space directly, not an XIO DMA path (*approximation*).
 
 .. _sgi-odyssey-memory:
@@ -615,8 +631,9 @@ Framebuffer and planes
 ======================
 
 Every VPro board keeps commands, framebuffers and textures in one
-SDRAM pool, a *software expectation* from the kernel's board-memory
-manager. The board's address map, framebuffer base, stride, tiling and
+SDRAM pool with no separate texture memory. The IRIX 6.5.30 kernel
+manages that pool and pages objects out to host memory when it fills, a
+*software expectation* from the shipped kernel. The board's address map, framebuffer base, stride, tiling and
 pixel packing are *unknown*. The model therefore keeps its own planes,
 each 1280 by 1024, none reachable through the aperture:
 
@@ -629,22 +646,20 @@ each 1280 by 1024, none reachable through the aperture:
 - an object store for off-screen buffers and texture levels.
 
 The object store holds at most 1024 objects in 128 MiB of 32-bit
-texels, whatever the product. When it fills, the model packs the live
-objects and then forgets the least recently used, logging the first one
-under ``LOG_UNIMP``. A board keeps a level until something overwrites
+texels, whatever the product. When an object needs more room than is
+free, the model forgets the least recently used other objects until it
+fits, then packs the store. A new object beyond the 1024 slots also
+forgets the least recently used one. The first object forgotten each
+way is logged under ``LOG_UNIMP``. A board keeps a level until something overwrites
 it, so a forgotten texture that a client still samples draws
 untextured here (*approximation*). A destination base beyond the
 product's memory size logs ``LOG_GUEST_ERROR`` once per reset.
 
-Register ``0x0424`` in the command stream selects which colour buffers
-a write reaches: bits 1:0 buffer 0 and bits 3:2 buffer 1. The kernel
-sends the GL library's front-left, front-right, back-left, back-right
-mask there, with the pairs exchanged while the drawable's buffer state
-is nonzero, a *software expectation*. Reading the exchange as naming
-buffers rather than roles is *inferred*. Stereo is not modelled: a
-right-eye bit draws to the same buffer as its left-eye bit. Out of reset
-the mask draws buffer 0 (*approximation*), so firmware and console
-drawing is visible.
+In the model, register ``0x0424`` in the command stream selects which
+colour buffers a write reaches: bits 1:0 buffer 0 and bits 3:2 buffer 1
+(*approximation*). Stereo is not modelled: a right-eye bit draws to the
+same buffer as its left-eye bit. Out of reset the mask draws buffer 0
+(*approximation*), so firmware and console drawing is visible.
 
 .. _sgi-odyssey-display:
 
@@ -667,14 +682,14 @@ entries from 0 for group 0. A pixel whose overlay id's mode has bit 0
 set and whose overlay byte is nonzero shows overlay colormap entry
 ``256 * (mode bits 7:3) + byte`` instead.
 
-The X server installs a colormap by rewriting a display mode and blanks
-the screen by zeroing the gamma table and colormaps, *software
-expectations*; that the board resolves ids, modes and the lookup RAM per
-pixel at scanout is *inferred*, since it is the only reading under which
-those work. The overlay mode fields come from one observed value and
-are *inferred*. Group 25 resolves as an index table and logs
-``LOG_UNIMP`` once as unverified. The 12-bit widening and the gamma
-ranges are *approximations*.
+The id byte's layout, main id in bits 7:3 and overlay id in bits 2:0,
+is how the IRIX 6.5.30 X server writes it, a *software expectation*
+from the shipped server; it also allocates main id 0 like any other.
+The overlay mode fields come from one value a guest wrote on the model
+and are *inferred*. The rest of this resolution rule, including that it
+happens per pixel at scanout, the group numbering, the 12-bit widening
+and the gamma ranges, is the model's (*approximation*). Group 25
+resolves as an index table and logs ``LOG_UNIMP`` once as unverified.
 
 .. _sgi-odyssey-channel:
 
@@ -707,11 +722,9 @@ kernel's immediate path. ``0x10bc`` is stored with no effect. A direct
 write to ``0x10d4`` is stored.
 
 Once the routed target is programmed, every retrace sends the retrace
-interrupt, armed or not; the kernel counts vertical blanks in that
-handler. The kernel's swap and retrace code fixes these accesses, a
-*software expectation*. The displayed-buffer encoding, when the board
-latches within the retrace and whether it can mask the retrace source
-are *inferred* or *unknown*; the model's choices are *approximations*.
+interrupt, armed or not. These register roles, the displayed-buffer
+encoding and the latch point are the model's (*approximation*); whether
+the board can mask the retrace source is *unknown*.
 
 OpenBSD's console uses 1280 by 1024 at 32 bits per pixel and draws its
 cursor in software, a *software expectation*. The model has no hardware
@@ -754,18 +767,18 @@ reloads the board's widget number. Properties, the identity, the memory
 word and the one-wire image are configuration and survive reset. With
 the Mesa renderer on, reset recreates it; a failure stops the machine.
 
-The IRIX 6.5.30 kernel writes ``0x1004`` six times as a memory reset
-sequence, a *software expectation*; the model logs and ignores those
-writes. The board's warm, link and board-local resets are *unknown*.
+Writes to ``0x1004`` log ``LOG_UNIMP`` and change nothing
+(*approximation*). The board's warm, link and board-local resets are
+*unknown*.
 
 .. _sgi-odyssey-migration:
 
 Migration
 =========
 
-The device migrates its registers, lookup RAM, display modes, parser
-and context state, both colour buffers, the depth, stencil and id
-planes, the used part of the object store, buffer selection, the
+The device migrates its registers, lookup RAM, display modes, overlay
+display modes, parser and context state, both colour buffers, the
+depth, stencil, id and overlay pixel planes, the used part of the object store, buffer selection, the
 scanout's mode and retrace phase, and the GL state it keeps in its own
 registers. The presented frame is not migrated; the destination repaints
 from the planes. Derived state, including the object index and the
@@ -802,20 +815,23 @@ Model limits
 - Command status is constant and the low-water flag is raised after
   every store; FIFO occupancy, back-pressure and execution time are not
   modelled.
-- The self-test register answers only the kernel's exact preamble.
+- The self-test register answers only one exact store sequence.
 - Interrupt delivery reuses the IMPACT destination decode, and routed
   sources send set packets only.
 - The identity record names the Octane board on every machine.
 - Stereo and the right-eye bits are folded onto the left eye.
 - Back-end indices outside the lookup RAM, display modes, channel size
-  and I2C commands, and the rest of the read-back window at
-  ``0x200000``, are not decoded.
+  and I2C commands are not decoded, and the back-end read window at
+  ``0x220000`` answers only the I2C words and ``0x23380c``.
 - Accesses to an offset or width the map does not list log
   ``LOG_UNIMP``, read zero and drop writes without a bus error. Each
   offset and direction reports once, up to 64 distinct reports;
-  undecoded command words have their own budget of 64. Reads of
-  write-only registers and writes to read-only registers log
-  ``LOG_GUEST_ERROR``. Every access is traced with ``sgi_odyssey_mmio``,
+  undecoded command words have their own budget of 64. Reads of the
+  write-only address registers and ``0x1004``, and writes to the
+  identity, status, error address, memory configuration, I2C read-back
+  and back-end version registers, log ``LOG_GUEST_ERROR``. Reads of
+  ``0x101c`` and ``0x103c`` and writes to ``0x1064`` and ``0x201594``
+  log ``LOG_UNIMP``, as does any write to ``0x1014``. Every access is traced with ``sgi_odyssey_mmio``,
   including the ones whose report is suppressed.
 
 .. _sgi-odyssey-tests:
@@ -827,21 +843,23 @@ Tests
 Fuel with the device's own defaults and split into groups by
 ``tests/qtest/sn1-odyssey-test-groups.txt``. The ``board`` group covers
 identity, the configuration block's two spellings, widget control,
-reset values, the interrupt registers and packet composition, the
-one-wire part, the I2C ports, command status, unmodelled offsets,
-scanout, colour resolution, the channel size, swaps and retrace, and
-buffer migration. The ``profile`` group covers the four products'
-identity, memory word, board name and back-end version. The ``fifo``
-group covers command framing and unknown words, the self-test preamble,
-the low-water interrupt, the console primitives, image transfers, the
-fence, DMA and object-store migration. The ``context`` group covers the
-context switch and shadow page. The ``gl`` and ``texture`` groups cover
-the OpenGL command stream. ``tests/qtest/sn1-odyssey-query-test.c``
+reset values, the interrupt registers and packet composition, the I2C
+ports, command status, unmodelled offsets, scanout, colour resolution,
+the channel size, swaps and retrace, buffer migration, texture DMA and
+object-store migration. The ``profile`` group covers the four products'
+identity, memory word, board name, back-end version and the one-wire
+part. The ``fifo`` group covers command framing and unknown words, the
+self-test sequence, the low-water interrupt, the console primitives,
+image transfers, the fence and page-table DMA. The ``context`` group
+covers the context switch and shadow page. The ``gl`` group and the
+``texture``, ``texture-1d-clamp``, ``texture-1d-stored``,
+``texture-1d-wide``, ``texture-2d-clamp``, ``texture-2d-stored`` and
+``texture-3d`` groups cover the OpenGL command stream. ``tests/qtest/sn1-odyssey-query-test.c``
 covers the current-attribute query records.
 
-``tests/qtest/octane-vpro-test.c`` checks each product's identity,
-memory size and interrupt path to HEART at Crossbow widget 11 on the
-``octane`` and ``octane2`` machines. ``tests/qtest/sn1-fuel-vpro-test.c``
+``tests/qtest/octane-vpro-test.c`` checks each product's identity and
+memory size, and the default board's interrupt path to HEART, at
+Crossbow widget 11 on the ``octane`` and ``octane2`` machines. ``tests/qtest/sn1-fuel-vpro-test.c``
 does the same at XBridge widget 13 on the Fuel, and that a headless Fuel
 has no board. ``tests/qtest/sgi-graphics-pipes-test.c`` checks the
 catalogue's VPro offers and refusals and the widget 12 board on the

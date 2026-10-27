@@ -85,9 +85,11 @@ Identity
        guide call it two-port :src:`007-4365-002 printed pages 9, 12 and 14`.
        The type sets the inherited ``num-ports`` property to 2.
    * - OHCI revision register
-     - ``0x10`` (OHCI 1.0)
-     - *Observed* in both captures, with legacy support indicated. This is
-       distinct from the PCI revision. The core supplies it.
+     - ``0x00000010`` (OHCI 1.0, Legacy bit clear)
+     - Both captures report OHCI 1.0 with legacy support indicated,
+       *observed*. The model returns a bare ``0x10`` from the core, so the
+       Legacy bit differs from the captures (see Model limits). This is
+       distinct from the PCI revision.
    * - Subsystem vendor and device
      - ``0xffff:0xffff``
      - *Unknown* on SGI's boards. The data sheet gives ``0x11c1`` and
@@ -152,7 +154,7 @@ Placement and interrupts
 INTA is level-sensitive through the ordinary PCI path. Fixed wiring ends at
 the XBridge pin. The XBridge status and enable registers then send a
 crosstalk write to the target and pending-bit address the guest programmed.
-The Bedrock interrupt number 59 in the 2014 capture is OpenBSD's allocation
+The Bedrock interrupt number 59 in :src:`marc-openbsd-sgi-139223952727384` is OpenBSD's allocation
 on that boot, not wiring, and the model assumes no fixed pending bit.
 
 DMA goes through the endpoint's PCI bus address space, so XBridge direct-map
@@ -168,8 +170,11 @@ The register file is the OpenHCI 1.0a operational block at BAR 0 of the
 generic core, with its transfer behaviour. Only the registers below differ
 from the core. Every other register, reset value and access width is the
 core's, which is QEMU's reading of OpenHCI and not a fact about this part.
-The model replaces each listed register with a thin overlay that hands every
-access to the core first, so the core's traces and side effects stay.
+The model overlays HcControl, HcCommandStatus, HcFmNumber, the root-hub
+descriptors, HcRhStatus and HcRhPortStatus. Each overlay passes the access
+to the core, after dropping power commands the switching mode does not
+allow. The HcInterruptEnable and HcFmInterval values are set by the reset
+hook.
 
 .. list-table::
    :header-rows: 1
@@ -370,11 +375,12 @@ re-applies the first two and leaves the root hub alone.
 
 The core still decodes the PXA27x HcHReset register at offset ``0x64``,
 which the USS-312 does not have. A write of its reset bit takes the core's
-hard reset and its own root-hub values, bypassing the subtype's.
+hard reset with all its own values, including HcInterruptEnable
+``0x80000000``, FSLargestDataPacket ``0x2778`` and NoPowerSwitching,
+bypassing the subtype's.
 
 Migration works only between identical builds. The core's state migrates
-with the device. The core has no post-load hook that recomputes the PCI
-interrupt level.
+with the device, and the PCI core restores the INTx level.
 
 Measurements
 ============
@@ -392,10 +398,12 @@ Model limits
   NoOverCurrentProtection are stored and have no effect.
 - PowerOnToPowerGoodTime is stored and nothing waits on it.
 - The USS-312's own configuration registers, power management and legacy
-  support behaviour are *unknown* and not modelled. Min_Gnt ``0x03``,
-  Max_Lat ``0x56`` and an HcLSThreshold reset of ``0x628`` are in the data
-  sheet :src:`lucent-uss312-ds Tables 3 and 44`. The model uses none of
-  them.
+  registers and behaviour are *unknown* and not modelled. The HcRevision
+  Legacy bit is clear, unlike the captures.
+- Min_Gnt ``0x03`` and Max_Lat ``0x56`` are in the data sheet
+  :src:`lucent-uss312-ds Table 3`. The model leaves both zero. The core's
+  HcLSThreshold reset, ``0x628``, matches the data sheet's
+  :src:`lucent-uss312-ds Table 44`.
 - The core's reset values other than those listed are QEMU's, not hardware
   facts.
 - A write to HcFmNumber while the controller is operational logs

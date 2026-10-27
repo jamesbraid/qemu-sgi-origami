@@ -9,10 +9,9 @@ TI TSB12LV22 IEEE 1394 OHCI link controller (I-brick)
 The TSB12LV22 is Texas Instruments' PCI-to-1394 link controller, an IEEE
 1394 OpenHCI 1.00 part with the PCI identity ``104c:8009``. Published
 IRIX inventories of the Onyx 3000 and Origin 3000 I-brick list it at PCI
-slot 6 of the base I/O bus (:ref:`sgi-sn-family-ibrick`), *observed*. A real
-I-brick has a CD-ROM behind it on the 1394 bus. QEMU models revision 01 as
+slot 6 of the base I/O bus (:ref:`sgi-sn-family-ibrick`), *observed*. QEMU models revision 01 as
 ``hw/misc/tsb12lv22.c``, the ``tsb12lv22`` type, a standalone register model.
-No SGI machine instantiates it yet. It can be added to any PCI bus with
+No SGI machine model instantiates it. It can be added to any PCI bus with
 ``-device tsb12lv22``. Facts are rated as described in :ref:`sgi-ratings`.
 
 The model has no PHY, no 1394 bus, no configuration ROM, no DMA engine and
@@ -36,8 +35,8 @@ Sources
   soft-resets the controller on resume.
 
 The datasheet describes a link controller that needs a separate PHY. The
-original 1394 OHCI 1.00 specification was not used. Behaviour the datasheet
-does not state is rated *unknown* or *approximation*.
+Behaviour that only the 1394 OHCI 1.00 specification would settle, and
+that the datasheet does not state, is rated *unknown* or *approximation*.
 
 Identity and placement
 ======================
@@ -112,7 +111,9 @@ Identity and placement
        whatever software wrote, which the model keeps until device reset.
    * - GPIO control (``0xfc``)
      - reset ``0x1010``, writable ``0x3131b1b1``
-     - The reset value is *established* :src:`ti-tsb12lv22-slls290 pp. 16-17`. The writable mask is the model's. The GPIOs drive nothing.
+     - The reset value is *established*
+       :src:`ti-tsb12lv22-slls290 pp. 16-17`. The writable mask is the
+       model's. The GPIOs drive nothing.
 
 Config bytes outside the table read zero and ignore writes. PCI reset
 clears Command, the BARs' decode and the other writable fields as for any
@@ -128,10 +129,12 @@ and ``clr`` are a write-one-to-set and write-one-to-clear pair that share
 one stored value, and writing zero to either has no effect
 :src:`ti-tsb12lv22-slls290 p. 7`. A reader of the clear address of an event
 register sees the pending bits ANDed with the mask. Every other read returns
-the stored value, and both addresses of a pair read the same value. The
+the stored value, and both addresses of a pair read the same value, except
+that interrupt event reads include the derived bits 7 and 6. The
 writable column is the mask of bits software can change. Offsets and
-access types are *established* :src:`ti-tsb12lv22-slls290 table 20, pp. 17-19`. Where the datasheet leaves reset bits unspecified (an ``X`` in its
-reset diagram) the model resets them to zero, an *approximation* that is not
+access types are *established*
+:src:`ti-tsb12lv22-slls290 table 20, pp. 17-19`. Where the datasheet leaves
+reset bits unspecified (an ``X`` in its reset diagram) the model resets them to zero, an *approximation* that is not
 a claim about silicon.
 
 .. list-table::
@@ -315,7 +318,8 @@ ignores writes, including a first write of zero. This is *established* for
 the no-ROM case :src:`ti-tsb12lv22-slls290 p. 23`. A hard reset clears both
 values and both locks. A software reset keeps both, *inferred* from the
 datasheet's statement that GUIDs are immutable once written and its
-exception for reset behaviour specified elsewhere. The Linux driver
+exception for reset behaviour specified elsewhere
+:src:`ti-tsb12lv22-slls290 pp. 23, 25`. The Linux driver
 restores missing GUIDs before it soft-resets the controller on resume,
 which would be pointless if the reset cleared them.
 
@@ -328,14 +332,16 @@ and base + 4. Asynchronous contexts sit at ``0x180 + 0x20 n`` (n = 0-3).
 Isochronous transmit contexts sit at ``0x200 + 0x10 n`` (n = 0-7).
 Isochronous receive contexts sit at ``0x400 + 0x20 n`` (n = 0-3). The
 command pointer is at base + ``0xc`` in every family, and a receive context
-has a match register at base + ``0x10``. Other offsets in these ranges,
-such as ``0x190`` or ``0x480``, are unsupported.
+has a match register at base + ``0x10``. Other offsets, such as ``0x190``
+inside a context or ``0x480`` past the last receive context, are
+unsupported.
 
 Control registers keep no run or active state. Asynchronous control bits
 are not writable. Transmit control stores bits ``0xffff0000`` (cycle match
-and its enable). Receive control stores bits ``0xf0000000``. A write that
-sets bit 15 (run) or bit 12 (wake) logs ``LOG_UNIMP`` and has no other
-effect, and neither dead nor active ever sets. Command pointers store
+and its enable). Receive control stores bits ``0xf0000000``. A write with
+bit 15 (run) or bit 12 (wake) set, at either address, logs ``LOG_UNIMP``.
+Those bits are not stored. The write's other writable bits are. Neither
+dead nor active ever sets. Command pointers store
 all 32 bits. The receive match register stores ``0xf1ffff7f``.
 
 The datasheet conflicts with itself on four points. The model's choice for
@@ -360,10 +366,11 @@ Only aligned four-byte accesses reach the registers, in little-endian
 order. This is the software interface the Linux driver uses. Behaviour of
 the silicon for other widths is *unknown*. Any other width or alignment is
 refused, logs ``LOG_UNIMP``, and does not change state. A wider access is
-never split into several register accesses. BAR 1 refuses every read and
-write the same way. A refused access reaches the guest as the interconnect
-reports a failed transaction, so what the guest sees depends on the bus
-above the card.
+never split into several register accesses. A refused access reaches the
+guest as the interconnect reports a failed transaction, so what the guest
+sees depends on the bus above the card. An aligned four-byte access to
+BAR 1 is not refused: it reads zero, ignores the write and logs
+``LOG_UNIMP``. Other widths are refused as for BAR 0.
 
 Interrupts
 ==========
@@ -438,9 +445,9 @@ Model limits
 - Registers marked read/update in the datasheet (cycle timer, node ID, error
   address and self-ID size) are plain storage or fixed zero. No bus event
   updates them.
-- The 1394 OHCI 1.00 specification was not read, so physical behaviour for
-  subword, unaligned and wide accesses and for reserved addresses is
-  *unknown*.
+- Physical behaviour for subword, unaligned and wide accesses and for
+  reserved addresses is *unknown*. Only the 1394 OHCI 1.00 specification
+  would settle it.
 
 Tests
 =====

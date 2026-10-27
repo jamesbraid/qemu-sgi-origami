@@ -6,10 +6,13 @@
 SN1 router (eight-port NUMAlink switch)
 ========================================
 
-The SN1 router is the eight-port NUMAlink switch that joins the Bedrock
-nodes of an Origin 300 configuration larger than one module. In the
-Origin 300 NUMAlink module it carries the ports for two base modules and a
-PCI expansion module. QEMU models it as the ``sgi-sn1-router`` type in
+The SN1 router is the eight-port NUMAlink switch of the Origin 300
+NUMAlink module. Two base modules can be cabled to each other directly,
+*established* :src:`007-4499-002 pp. 12, 36, 52`. A larger system joins
+two to eight base modules and up to four PCI expansion modules through
+the NUMAlink module's eight ports, *established*
+:src:`007-4498-002 pp. 2, 10, 93, 98`. QEMU's one routed topology uses
+three of those ports. QEMU models it as the ``sgi-sn1-router`` type in
 ``hw/misc/sgi-sn1-router.c``, with the interface in
 ``include/hw/misc/sgi-sn1-router.h``. The SN1 machine builder in
 ``hw/mips/sgi/sn-machine.c`` creates one per router in the topology and
@@ -19,13 +22,16 @@ topology ``origin300-numalink-pci-expansion`` has a router. An ordinary
 Origin 300 does not acquire one. This is the SN1 router, not the six-port
 Origin 2000 router in :doc:`router`.
 
-The router has no window in any processor's address space. Guests reach its
-registers through vector operations launched from a Bedrock node
+The router has no window in any processor's address space: the machine
+does not map its register region, so a processor never reaches it. Guests reach
+its registers through vector operations launched from a Bedrock node
 (:doc:`bedrock`). The model does not carry packets, virtual channels or
 credits. It decodes the register target, applies the route tables guests
 program and follows cabled links. No ASIC or chip revision is established
 for the part fitted to the NUMAlink module. The model reports revision 1,
-the only value it accepts. Facts are rated as described in
+the only value it accepts, which matches the ``Revision 1`` a published
+Origin 300 inventory reports for the router (*observed*,
+:src:`nekonomicon-16727514`). Facts are rated as described in
 :ref:`sgi-ratings`.
 
 .. _sgi-sn1-router-sources:
@@ -75,11 +81,13 @@ No measurement of the part exists, so this page has no measurements
 section.
 
 The topology ``origin300-numalink-pci-expansion`` (machine options
-``origin300,topology=origin300-numalink-pci-expansion,nodes=2``) is an explicit model
-choice, an *approximation*. It cables the first base module to router
-port 1, the second to port 6 and the PCI expansion module to port 4. The
-manual permits two base modules and one expansion module on a NUMAlink
-module but gives no ASIC port map. The router owns no memory and no
+``origin300,topology=origin300-numalink-pci-expansion,nodes=2``) is an
+explicit model choice, an *approximation*. It cables the first base
+module to router port 1, the second to port 6 and the PCI expansion
+module to port 4. The manual allows an expansion module only on
+connectors 2 to 5, so port 4 is permitted, and base modules on any of
+the eight :src:`007-4498-002 pp. 10-11, 96, 132-133`, *established*. It
+gives no map from connectors to ASIC links. The router owns no memory and no
 processors. Each router sits in its own module with a module L1 controller
 (brick type ``router``) and an L1 UART.
 
@@ -88,8 +96,8 @@ following properties.
 
 ``chip-revision``
   Defaults to 1. Realize fails for any other value, so the status word
-  always reports revision 1. This number is the model's chosen value, an
-  *approximation*, not a measured one.
+  always reports revision 1. The inventory label is a software-reported
+  one, not a silicon revision, so the value is an *approximation*.
 
 ``port1-cable`` to ``port8-cable``
   Links to ``sgi-net-cable`` objects. The machine builder fixes them after
@@ -115,7 +123,8 @@ Register map
 Offsets are within the router register space. The space is 0x600008 bytes
 and every access is a naturally aligned 64-bit word. A narrower or
 unaligned access made through the memory region fails as a decode error.
-A vector operation with an unaligned offset is refused. Registers are
+The Bedrock local block masks a vector address to whole words, so only the
+test adapter can send an unaligned offset, and the router refuses it. Registers are
 big-endian when read through the memory region; a vector payload is a
 plain 64-bit value.
 
@@ -227,8 +236,8 @@ The register names and the offsets of the status, protection, global
 parameter, port reset, link, error and table registers are the public
 header's, *software expectation*. Which bits each register keeps is a
 model choice for every row, an *approximation*. The header gives field
-names but no readback masks. For protection configuration the stock Origin 300 router diagnostic
-expects an all-ones write to read back
+names but no readback masks. For protection configuration the stock
+Origin 300 router diagnostic expects an all-ones write to read back
 ``0x3fff``, a *software expectation*, and that is the only reason the
 diagnostic profile keeps bits 13-0. An access to any other offset,
 including every unlisted link register, is refused.
@@ -340,10 +349,12 @@ router, ingress and turn combination, and it ends within 15 routers on a
 Bedrock port whose node is ready and carries the requested number. A
 failure leaves no partial effect and the access fails. The model reads
 the local table only. It never reads the global table, the protection
-configuration or any other register while routing. A write to the protection word, global parameters, bus control,
-scratch words or either route table makes the machine recompute its
-remote-memory mappings. Writes to link parameter, channel test, remote
-reset mask, barrier and diagnostic registers do not.
+configuration or any other register while routing. A write to the
+protection word, global parameters, bus control, scratch words or either
+route table makes the machine recompute its remote-memory mappings, and
+so does the local reset. Writes to link parameter, channel test, remote
+reset mask, global port definition, barrier and diagnostic registers do
+not.
 
 The public header gives the turn arithmetic. Neither it nor the cited
 patents define destination-indexed local-table selection, the three-bit
@@ -364,8 +375,8 @@ Under the diagnostic profile, writing exactly 1 to offset ``0x008`` is a
 router-local reset, an *approximation* drawing on the header's distinction
 between a local bit and per-link selections. It clears the protection
 word, the bus control word, both global parameter words, the global port
-definition, scratch 0-4, all barrier images and the debug and data path
-registers. It leaves the per-link parameter, channel test and remote reset
+definition, scratch 0-4, all barrier images, the debug address
+and diagnostic words 1 and 2. It leaves the per-link parameter, channel test and remote reset
 words, both route tables, the cables and the L1 UART untouched. It adds no
 delay. The stock router diagnostic expects a nonzero global parameter 0
 value after a local reset, a *software expectation*. The model returns
@@ -378,8 +389,8 @@ Errors and unexpected accesses
 An unsupported offset, a refused write, an unsupported packet command, an
 oversize ingress and an unaligned offset make the router return an error
 with an address failure code (4) or command failure code (5), and log
-``LOG_UNIMP`` ("refusing operation"). Through the memory region this is a
-decode error, which the processor sees as a bus error. Through a vector
+``LOG_UNIMP`` ("refusing operation"). Through the memory region, which only
+tests reach, this is a decode error. Through a vector
 operation the Bedrock local block logs ``LOG_GUEST_ERROR`` and leaves its
 reply registers as they were. The failure codes are internal. They are not
 a hardware error reply, which is *unknown*.
@@ -389,7 +400,8 @@ Migration
 
 State is the registers, tables and images above, saved at version 4. The
 revision and the profile must match between source and destination, and
-loading checks the masks. Migration is supported only between identical
+loading checks the per-link masks, scratch 3 and 4 and the global
+port definition. Migration is supported only between identical
 builds.
 
 .. _sgi-sn1-router-limits:

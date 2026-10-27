@@ -8,8 +8,9 @@ PsiTech RAD4 and RAD4-KM PCI graphics heads
 
 The PsiTech RAD4 is a third-party PCI graphics card for SGI systems: an
 8 MB framebuffer behind a PLX PCI 9060-compatible bus interface, with an
-IBM RGB561 RAMDAC. The RAD4-KM is the same product line with two keyboard
-and mouse connectors on the card. PsiTech's owner's guide puts the RAD4 in
+RGB561-compatible RAMDAC, *inferred* from the driver's register use. The
+RAD4-KM is the same product line with keyboard and mouse connectors on
+the card. PsiTech's owner's guide puts the RAD4 in
 the Origin 200 and the RAD4-KM in the Origin 2000, which has no keyboard
 or mouse port of its own
 (:src:`psitech-rad4-owners-guide-1.3 Description`). QEMU models both as one
@@ -249,8 +250,9 @@ The four RGB561 ports in address order match the chip's index-low,
 index-high, data and multi-cycle ports
 (:src:`ibm-rgb561-architecture-1.1 p. 1, 27`), *inferred* from the
 driver's use of them. The ports take their payload from the low eight bits
-of the store. Bank ``0xa02000``, and ``0xc00000`` and ``0xe00000``, are
-unsupported: no driver path uses them.
+of the store. The driver's mode loader does not use bank ``0xa02000``,
+and no observed driver path touches ``0xc00000`` or ``0xe00000``; the
+model leaves all three unsupported.
 
 Expansion ROM: DMA channel 0
 ----------------------------
@@ -267,8 +269,8 @@ Expansion ROM: DMA channel 0
      - DMAMODE0
      - ``0``
      - RW
-     - Bits 9 (chaining) and 10 (done interrupt) act; the rest is
-       stored.
+     - Bit 10 (done interrupt) acts. The rest, including bit 9
+       (chaining), is stored; the model always chains.
    * - ``0x110``
      - DMADPR0
      - ``0``
@@ -427,6 +429,8 @@ can produce, held in the generated table
   selects that mode: the display takes its geometry and stride and frame
   events start at its refresh label. An interrupt handler's acknowledging
   control write in mid-sequence is ignored.
+- If the first write after arming is not the write of index ``0x21``,
+  the model disarms without logging.
 - Any other mismatch fails recognition, logs ``LOG_GUEST_ERROR`` and
   leaves the display unchanged until the next arming write. A timing-bank
   write, or a data-port write at index ``0x20`` to ``0x22``, outside a
@@ -565,8 +569,9 @@ significant byte first. The model reads it at realize and writes each
 programmed word through, so a guest's mode choice survives a restart of
 QEMU.
 
-A nonzero mailbox at BAR0 ``0x40`` tells the driver that the card's own
-firmware has set the mode and RAMDAC, and the driver then skips its own
+A nonzero mailbox at BAR0 ``0x40`` tells the driver that a firmware
+initializer has already set the mode and RAMDAC, and the driver skips its
+own
 setup, *software expectation*. The model's mailbox resets to zero, so the
 driver always programs the card. What a real card holds there after power
 on is *unknown*.
@@ -603,10 +608,13 @@ address, byte count (23 bits) and next pointer. The next-pointer word is
 loaded into DMADPR0 and describes its own descriptor: bit 1 ends the chain
 after it, bit 2 asks for an interrupt when it completes, bit 3 sets the
 direction (1 local to PCI), bits 31-4 address the next descriptor
-(:src:`plx-pci9060-data-sheet-1.2 section 3.6.2, Table 51`),
-*established*. The driver writes one descriptor per scanline at the top
-of local memory and ends with a next-pointer word of ``0x6``, *software
-expectation*. Local memory in the model is the framebuffer.
+(:src:`plx-pci9060-data-sheet-1.2 section 3.6.2, Table 51`; the 23-bit
+count, :src:`plx-pci9054-data-book-1.0 Table 11-79`), *established*. The
+model walks the chain on every start, whatever DMAMODE0 bit 9 holds; block
+(non-chaining) mode is not implemented. The driver writes one descriptor per
+scanline at the top of local memory and ends with a next-pointer word of
+``0x6``, *software expectation*. Local memory in the model is the
+framebuffer.
 
 - Bit 0 of a pointer is reserved on the 9060; the 9054 uses it to fetch
   descriptors from host memory. The model always reads local memory and
@@ -788,7 +796,9 @@ decode, *inferred*.
      - (none)
      - Command
      - Receiver and transmitter enable and disable; command 1 resets the
-       MR pointer. Commands 2 to 5 are accepted with no effect.
+       MR pointer. Commands 2 to 5 are accepted with no effect, an
+       *approximation*: on the chip family, resetting the receiver or
+       transmitter also disables it. Commands 6 and 7 log ``LOG_UNIMP``.
    * - ``0x3``, ``0xb``
      - Receive data
      - Transmit data
@@ -814,6 +824,8 @@ decode, *inferred*.
      - Counter, interrupt vector
      - same
      - Never used by the driver. Log ``LOG_UNIMP``.
+
+A read of an index marked "(none)" logs ``LOG_UNIMP`` and returns zero.
 
 The driver resets each channel with the PS/2 reset command and assigns
 the keyboard or mouse role from the reply, *software expectation*. The
@@ -855,9 +867,11 @@ Model limits
 - Overlay formats with an underlay, serializer modes other than 4:1 basic,
   the 16-bit and variable overlay ports, overlay modes other than index,
   index and grey-scale pixels other than eight bits, direct RGB mode,
-  buffer B of a 24-bit pixel and BGR order are not implemented. The first
-  such pixel in each display pass logs ``LOG_UNIMP`` and the frame-buffer
-  layer, or the pixel's low bits, are shown.
+  buffer B of a 24-bit pixel and buffer B of an 8-bit overlay are not
+  implemented. The first such pixel in each display pass logs
+  ``LOG_UNIMP`` and the frame-buffer layer, or the pixel's low bits, are
+  shown. CONF/3 is never read: BGR order is ignored silently and RGB
+  order is always used.
 - Cursor and cross-hair blinking and the cross-hair are not implemented.
   The cursor position's upper bits read back as written, not as the sign
   value the specification gives.
@@ -869,7 +883,8 @@ Model limits
   value and cold, warm and PCI reset of a real card are unknown.
 - The RAD4-KM register layout is the plain RAD4's. Its controller part,
   connectors and board-level interrupt gate are unknown, and keyboard and
-  mouse sit on fixed channels.
+  mouse sit on fixed channels. The controller's reset-receiver and
+  reset-transmitter commands do not disable the channel.
 - Unlisted register offsets and RGB561 indices log ``LOG_UNIMP``;
   recognition failures, rejected DMA descriptors and EEPROM writes without
   enable log ``LOG_GUEST_ERROR``; accesses of other widths fail as decode

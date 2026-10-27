@@ -25,8 +25,7 @@ Sources
 - A one-module Origin 200 GIGAchannel ``hinv -vm``,
   :src:`preterhuman-origin-200`.
 - An Origin 2000 PROM ``hinv -v``, :src:`nekonomicon-16727716`.
-- An Origin 2000 ``hinv -m``, :src:`usenet-9uhh6o`, and an Octane
-  ``hinv -m``, :src:`usenet-8ns2m5`.
+- An Origin 2000 ``hinv -m``, :src:`usenet-9uhh6o`.
 - A two-module Origin 200 ``hinv -vm``, :src:`nekonomicon-16731033`.
 - The Origin 2000 XIO configuration rules, :src:`108-0175-001`.
 - The stock IP27 PROM, :src:`ip27-prom-6.156`.
@@ -48,7 +47,7 @@ Composition
    * - Part numbers
      - ``030-0872-004`` PCA MSCSI and ``030-1243-001`` PCA MSCSI B.
        ``030-1281-001`` also prints as MSCSI, at revision D
-       (:src:`usenet-8ns2m5`). ``030-1243-001`` prints at revisions F
+       (:src:`preterhuman-origin-200`). ``030-1243-001`` prints at revisions F
        (:src:`preterhuman-origin-200`), G (:src:`usenet-9uhh6o`) and M
        (:src:`nekonomicon-16731033`). How the three parts differ is
        unknown.
@@ -60,17 +59,22 @@ Composition
        and ``MSCSI Board: ... part 030-1243-001 rev F``.
      - *established*, :src:`preterhuman-origin-200`.
    * - Bridge revision
-     - Revision 3 on the rev D, rev F and rev G boards, printed by IRIX
-       as the board revision (``Origin MSCSI board, module 1 slot N:
-       Revision 3``) and by the PROM as ``ASIC BRIDGE Rev 3, (widget
-       14)``. Revision 4 on the rev M boards.
+     - Revision 3 on the rev D and rev F boards of the Origin 200
+       inventory and on the Origin 2000 board of the PROM capture, whose
+       board revision is not printed. IRIX prints it as the board
+       revision (``Origin MSCSI board, module 1 slot N: Revision 3``) and
+       the PROM as ``ASIC BRIDGE Rev 3, (widget 14)``. Revision 4 on the
+       rev M boards. The rev G board's Bridge revision is *unknown*: its
+       ``hinv -m`` prints none.
      - *established*, :src:`preterhuman-origin-200`,
        :src:`nekonomicon-16727716` and :src:`nekonomicon-16731033`.
    * - SCSI controllers
-     - Four QLogic ISP1040 at PCI devices 0 to 3, PCI revision 5,
-       vendor ``0x1077``, device ``0x1020``. The PROM prints four
-       ``adapter PCI-SCSI Rev 5`` at ``pci id`` 0 to 3 under the
-       board's Bridge. IRIX names each ``QL1040B (rev. 2)``.
+     - Four QLogic ISP1040 at PCI devices 0 to 3, PCI revision 5. The
+       PROM prints four ``adapter PCI-SCSI Rev 5`` at ``pci id`` 0 to 3
+       under the board's Bridge (:src:`nekonomicon-16727716`). IRIX names
+       each ``QL1040B (rev. 2)`` and lists vendor ``0x1077``, device
+       ``0x1020`` at slots 0 to 3 under the board
+       (:src:`preterhuman-origin-200`).
      - *established*, :src:`nekonomicon-16727716` and
        :src:`preterhuman-origin-200`.
    * - Other PCI functions, external flash
@@ -95,8 +99,9 @@ Composition
      - A record whose part starts ``030-0872-``, ``030-1243-`` or
        ``030-1281-`` is board type ``0x22``. Linux names it
        ``KLTYPE_MSCSI``, an alias of ``KLTYPE_4CHSCSI``.
-     - *established*: the type name from Linux ``klconfig.h``; the
-       prefix table from the stock PROM, :src:`ip27-prom-6.156`.
+     - *software expectation*: the type name from Linux
+       ``klconfig.h``; the prefix table in the stock PROM,
+       :src:`ip27-prom-6.156`.
 
 .. _sgi-mscsi-slots:
 

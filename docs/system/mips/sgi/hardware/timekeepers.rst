@@ -8,12 +8,15 @@ Battery-backed timekeepers (M48T35, DS1742 and DS1744)
 
 The SGI Origin-family boards keep their wall clock and a block of
 configuration RAM in a byte-wide, battery-backed SRAM with a clock in its
-top eight bytes. The Origin 200 IP29 board and the Origin 2000 and Onyx2
-BaseIO boards carry an M48T35 behind the IOC3 (:doc:`ioc3`). The Origin 300
-IO8 board and the Fuel system board carry an M48T35-compatible part at the
-same place. The IP53 products (Origin 350, Onyx 350, Tezro and the Onyx4
-host) carry a part behind the IOC4 that the model fits as a DS1744. The
-Octane and Octane2 use a different clock, the DS1685 (:doc:`ds1685`).
+top eight bytes. The Origin 200 IP29 board carries an M48T35 behind the IOC3
+(:doc:`ioc3`), *observed* on a published photograph (see
+:ref:`sgi-timekeepers-parts`). The model fits an M48T35 to the Origin 2000
+and Onyx2 BaseIO boards, and an M48T35-compatible part at the same place on
+the Origin 300 IO8 and Fuel system boards. The physical parts on those
+boards are *unknown*. For the IP53 products (Origin 350, Onyx 350, Tezro and
+the Onyx4 host) the model fits a DS1744 behind the IOC4; the physical part
+is *unknown* too. The Octane and Octane2 use a different clock, the DS1685
+(:doc:`ds1685`).
 
 QEMU models the M48T35 family as ``hw/rtc/m48t35.c`` (QOM type
 ``m48t35``, 32 KiB, with the IOC3 mapping it) and the DS1742 and DS1744 as
@@ -32,17 +35,21 @@ Sources
   STMicroelectronics document 2611 revision 10, :src:`st-m48t35-rev-10`.
   Page numbers below are its printed numbers. The SNAPHAT M48T35Y differs
   from the M48T35 in supply and write-protect voltage, not in clock or
-  storage behaviour :src:`st-m48t35-rev-10 p. 25`. - *DS1742 Y2KC
+  storage behaviour :src:`st-m48t35-rev-10 p. 25`.
+- *DS1742 Y2KC
   Nonvolatile Timekeeping RAM*, Maxim/Analog Devices document 19-6715
   revision 6/13, :src:`analog-ds1742-rev-6-13`, and *DS1744/DS1744P
   Y2K-Compliant, Nonvolatile Timekeeping RAMs*, document 19-5502 revision
-  6/13, :src:`analog-ds1744-rev-6-13`. - OpenBSD, tree ``openbsd-sgi`` at
+  6/13, :src:`analog-ds1744-rev-6-13`.
+- OpenBSD, tree ``openbsd-sgi`` at
   ``2df91d80c104636deeef8124252ddd5951b55fbf``:
   ``sys/arch/sgi/dev/dsrtc.c``, ``sys/dev/ic/mk48txxreg.h``,
-  ``sys/arch/sgi/pci/ioc.c`` and ``sys/arch/sgi/pci/iof.c``. - Linux at
+  ``sys/arch/sgi/pci/ioc.c`` and ``sys/arch/sgi/pci/iof.c``.
+- Linux at
   ``db2ddb871435`` (v7.2-rc7): ``drivers/rtc/rtc-m48t35.c``,
   ``drivers/mfd/ioc3.c``, ``arch/mips/include/asm/mach-ip27/mangle-port.h``
-  and ``arch/mips/include/asm/io.h``. - A published photograph of the Origin
+  and ``arch/mips/include/asm/io.h``.
+- A published photograph of the Origin
   200 IP29 board, :src:`theretroweb-origin200-image-1`.
 
 The drivers are software expectations, not hardware evidence.
@@ -93,34 +100,35 @@ in a transposed order on IP27, but its byte accessor XORs the address with 3
 *software expectation*. A model presenting the declared order would hand
 Linux a clock with transposed fields.
 
-The photograph of the IP29 board shows a part marked ``M48T35-70PCI``,
-most likely ``M48T35-70PC1``, the 70 ns PCDIP28 part of the ST ordering
-table :src:`st-m48t35-rev-10 p. 25`, *observed* on that board
-(:src:`theretroweb-origin200-image-1`). The
-part on the other boards, the Origin 300 IO8 and Fuel boards included, their
-capacity, and their chip-select and address wiring are *unknown*: OpenBSD
-prints ``DS1742W`` for the IP35 clock, but its driver does not probe the
-part and calls its own IOC3 mapping a guess. A schematic or an address
-capture would settle it. The model therefore fits the same M48T35-compatible
-32 KiB window to those boards, an *approximation* with no aliasing at
-multiples of ``0x800``. The same holds for the IO9 board: the DS1744 is a
-compatibility choice, and the fitted package and the address wiring behind
-IOC4 are *unknown*.
+The photograph of the IP29 board shows a part marked ``M48T35-70PCI``
+(:src:`theretroweb-origin200-image-1`), *observed* on that board. The
+marking is most likely ``M48T35-70PC1``, the 70 ns PCDIP28 part of the ST
+ordering table :src:`st-m48t35-rev-10 p. 25`, *inferred*. No cited source
+shows the part on the BaseIO boards. The part on the other boards, the
+Origin 300 IO8 and Fuel boards included, their capacity, and their
+chip-select and address wiring are *unknown*: OpenBSD prints ``DS1742W`` for
+the IP35 clock, but its driver does not probe the part and calls its own
+IOC3 mapping a guess. A schematic or an address capture would settle it. The
+model therefore fits the same M48T35-compatible 32 KiB window to those
+boards, an *approximation* with no aliasing at multiples of ``0x800``. The
+same holds for the IO9 board: the DS1744 is a compatibility choice, and the
+fitted package and the address wiring behind IOC4 are *unknown*.
 
 .. _sgi-timekeepers-m48t35:
 
 M48T35 and compatible parts
 ===========================
 
-The part is 32,768 byte cells. Cells ``0x0000`` to ``0x7fef`` are
-battery-backed storage. The last sixteen cells hold, at ``0x7ff0`` to
-``0x7ff7``, a bank whose purpose no source identifies, and at ``0x7ff8`` to
-``0x7fff`` the clock :src:`st-m48t35-rev-10 p. 13`, *established*. OpenBSD's
-shared header names the bank ``X0`` to ``X7`` and says only that it exists on
-some models (OpenBSD ``sys/dev/ic/mk48txxreg.h``). No driver here
-touches it. QEMU's ``m48t59`` model puts alarm and watchdog registers in the
-eight bytes below its clock, which makes them the likely match, an *inferred*
-reading that changes nothing the model does.
+The part is 32,768 byte cells. The clock occupies the top eight,
+``0x7ff8`` to ``0x7fff``, and the cells below it are battery-backed storage
+:src:`st-m48t35-rev-10 p. 13`, *established*. OpenBSD's shared header maps
+the last sixteen cells as one block and names the eight at ``0x7ff0`` to
+``0x7ff7`` ``X0`` to ``X7``, saying only that they exist on some models
+(OpenBSD ``sys/dev/ic/mk48txxreg.h``), *software expectation*. No driver
+here touches them. Whether they are more than ordinary storage on this part
+is *unknown*; the ST map shows only the clock above them, so ordinary
+storage is *inferred*. The model treats them as storage. A part-level
+measurement or the full ST register map would settle it.
 
 .. _sgi-timekeepers-m48t35-regs:
 
@@ -143,7 +151,7 @@ Offsets are within the 32 KiB window. Every access is one byte wide.
      - RW
      - Ordinary cells. A reset does not change them.
    * - ``0x7ff0``-``0x7ff7``
-     - Unidentified bank
+     - Bank X0-X7
      - kept
      - RW
      - Modelled as storage.
@@ -172,7 +180,7 @@ Offsets are within the 32 KiB window. Every access is one byte wide.
      - Day of week
      - kept
      - RW
-     - Stored, not counted. Reads zero until written.
+     - Stored, not counted. Reads the stored byte, zero on a fresh image.
    * - ``0x7ffd``
      - Date
      - kept
@@ -265,9 +273,11 @@ expectation*, which a calendar following the real dates would contradict.
 
 The cell wraps from 99 to 00 after 100 cell years, in 2070 for base 1970 and
 after 2067 for base 1968. The day-of-week cell also holds a century-enable
-bit and a century bit :src:`st-m48t35-rev-10 p. 13-14`. The model keeps the
+bit (bit 5) and a century bit (bit 4) :src:`st-m48t35-rev-10 p. 13-14`,
+*established*. The model keeps the
 cell as plain storage and does not toggle the century bit. The
-frequency-test bit in the same cell is also plain storage. No guest here
+frequency-test bit, bit 6 of the same cell :src:`st-m48t35-rev-10 p. 14`,
+*established*, is also plain storage. No guest here
 sets either.
 
 A fresh clock follows the host. It starts at the date of the clock ``-rtc``
@@ -299,9 +309,11 @@ Two optional block devices back the part.
   The clock record: 16 bytes or more, holding the magic ``M48TREF1`` and
   the instant of the last save, as 64-bit little-endian seconds of the
   ``-rtc`` clock. It is a model construct. It lets a restart add the time
-  that passed while QEMU was not running. It needs ``nvram-drive``; the
-  other way round is refused at realize. A drive shorter than 16 bytes is
-  refused.
+  that passed while QEMU was not running. A clock record without
+  ``nvram-drive`` is refused at realize. An NVRAM drive without a clock
+  record is accepted. A drive the block layer reports as
+  shorter than 16 bytes is refused. For a raw file that means an empty one;
+  a shorter nonempty file grows on the first save.
 
 The IOC3 exposes these as aliases of the child ``rtc``'s ``drive`` and
 ``clock-drive`` properties on boards that fit the M48T35, and removes them
@@ -359,15 +371,18 @@ ones included. For the all-zero image that gives ``0x2d``. The record is 2
 for cell years that are 2 modulo 4 from March on, for cell years that are 3
 modulo 4, and for cell years that are 0 modulo 4 in January and February. It
 is 1 otherwise. A record of 1 gives checksum ``0x6d`` and a record of 2
-gives ``0xad``. The layout and algorithm are model constants. No public
-source documents them, an *approximation*; the model's fixture is what its
-tests pin.
+gives ``0xad``. The image is a model fixture, an *approximation*: a real
+part has no factory contents. Its checksum follows the algorithm the stock
+BASEIO PROM checks, and its record follows what the IRIX 6.5.30 kernel
+reads, both *software expectation*, stated below. The model's tests pin the
+fixture.
 
-What guest software does with these bytes is a software expectation. The
-IRIX 6.5.30 kernel reads the record while reading the clock and warns that
-the clock was lost when it holds neither 1 nor 2. The BASEIO PROM checks an
+What guest software does with these bytes: the IRIX 6.5.30 kernel reads the
+record while reading the clock and warns that the clock was lost when it
+holds neither 1 nor 2, *software expectation*. The BASEIO PROM checks an
 environment revision and the checksum, and on a mismatch prints ``NVRAM
-checksum is incorrect: reinitializing.`` and writes its own defaults. A new
+checksum is incorrect: reinitializing.`` and writes its own defaults,
+*software expectation*. A new
 image has a valid record and a blank revision, so a new store shows that
 PROM message once. The model does not construct PROM defaults and does not
 repair either check. Origin 300, Fuel and the DS1744 machines get a zero
@@ -389,17 +404,15 @@ failure.
 
 At realize the model restores the clock from the saved cells.
 
-- Cells that are all zero, or not valid BCD, count as never saved, and the
-  clock follows the host.
-- A saved seconds cell with bit 7 set restores a stopped clock at the saved
-  instant, with no time added.
-- A saved calendar with a clock record advances by the host time since the
+- Cells that are all zero, or not valid BCD in range, count as never saved,
+  and the clock follows the host. - A saved seconds cell with bit 7 set
+  restores a stopped clock at the saved instant, with no time added. - A
+  saved calendar with a clock record advances by the host time since the
   record's instant, counted in the part's calendar so it crosses February as
-  the part would.
-- A saved calendar with no record or a record without the magic is restored
-  as saved, with no time added, and logs ``LOG_UNIMP``. It does not fall back
-  to the host time. An old record against a later date would break the
-  pairing with the leap-cycle record in storage.
+  the part would. - A saved calendar with no record or a record without the
+  magic is restored as saved, with no time added, and logs ``LOG_UNIMP``. It
+  does not fall back to the host time. An old record against a later date
+  would break the pairing with the leap-cycle record in storage.
 
 Reset and migration
 -------------------
@@ -510,8 +523,9 @@ they were. Clearing W may change them. Clearing R alone does not
 
 R freezes the readable image while the clock runs on. The model latches the
 image when R rises. After R falls the readable image tracks the running
-clock again. The datasheet says the image catches up within a second. The
-model catches up at once.
+clock again. The datasheet says the image catches up within a second
+:src:`analog-ds1744-rev-6-13 p. 4`, *established*. The model catches up at
+once, an *approximation*.
 
 W makes the model start from the current image. Reads of the clock while W
 is set return the staged values, unlike the M48T35. Clearing W commits them.
@@ -529,18 +543,19 @@ The model's calendar is Gregorian. The year is century and year digits
 combined. A day register carries the day of the week and advances with the
 date; the model keeps the written value and counts forward from it. BF reads
 as one, so the model reports a healthy battery and never simulates a flat one.
-With FT set and the oscillator running, seconds bit 0 toggles at 512 Hz of
-virtual time as the datasheet describes
-:src:`analog-ds1744-rev-6-13 p. 6`. The phase is unmeasured, *approximation*.
+The part toggles seconds bit 0 at 512 Hz with FT set and the oscillator
+running :src:`analog-ds1744-rev-6-13 p. 6`, *established*. The model does so
+in virtual time. The phase is unmeasured, an *approximation*.
 
 Time source and fresh state
 ---------------------------
 
 The clock counts virtual time. A fresh instance (no image, or an image whose
 seconds, minutes, hours, date, month and year cells are all zero) starts at
-the date of the clock ``-rtc`` selects, with the day of week from that date
-and a zero SRAM. The specification gives no factory contents
-:src:`analog-ds1744-rev-6-13 p. 3`, so this is a model policy.
+the date of the clock ``-rtc`` selects, with the day of week from that date.
+Without an image the SRAM starts at zero. With one, the SRAM is the image's.
+The specification gives no factory contents :src:`analog-ds1744-rev-6-13 p.
+3`, so this is a model policy.
 
 ``fresh-year-base`` is ``0`` or ``1968``. With 1968 the fresh seed maps the
 host year ``Y`` to ``2000 + (Y - 1968) mod 100``, so 2026 is seeded as 2058
@@ -559,7 +574,8 @@ Stores
 into a ``ds1744``. SRAM writes go through to the drive byte by byte, and an
 unchanged byte is not rewritten unless an earlier write failed.
 
-``clock-drive`` is a record of at least 16 bytes, the magic ``DS1742R1``
+``clock-drive`` is a record the block layer must report as at least 16
+bytes (for a raw file, anything but an empty one), the magic ``DS1742R1``
 followed by the host's wall-clock seconds in little-endian 64-bit. It
 requires ``drive``. It uses the wall clock, not ``-rtc``.
 
@@ -613,21 +629,22 @@ Model limits
 
 - The M48T35 calendar rule (leap when the year cell is a multiple of four)
   is *inferred*. The DS1742 and DS1744 use the Gregorian rule.
-- Battery state, oscillator-fail reporting, write protection on supply loss,
-  calibration, the frequency-test output of the M48T35 and the century bits
-  of the M48T35 are not modelled. They are stored as plain bytes.
+- Battery state, oscillator-fail reporting and write protection on supply
+  loss are not modelled. On the M48T35, calibration, the frequency-test bit
+  and the century bits are stored as plain bytes.
 - The M48T35 day of week is storage, never counted.
-- The M48T35's unidentified bank is storage. No alarm, watchdog or
-  interrupt exists.
+- The M48T35's block at ``0x7ff0`` to ``0x7ff7`` is storage. No alarm,
+  watchdog or interrupt exists.
 - Neither model raises an interrupt or does DMA. A guest cannot arm an
   alarm.
 - The clock records are model constructs, not part of any chip. The
   M48T35 and DS1742 records use different magic values and clocks.
-- Only byte accesses are valid. The M48T35 region declares a one-byte
-  maximum and the memory core rejects wider accesses; no test pins that.
-  The DS1742 region refuses any other size, and an IOC4 test pins that.
-- The M48T35 fresh image, its offsets and checksum are model constants with
-  no public source. Base 1968 with the fresh image on is refused at
+- The M48T35 region is declared one byte wide. A wider access reaching it
+  through the address space, as the SGI PIO forwarding path does, is split
+  into byte accesses and not refused; no test pins that. The DS1742 region
+  refuses any other size, and an IOC4 test pins that.
+- The M48T35 fresh image is a model fixture; a real part has no factory
+  contents. Base 1968 with the fresh image on is refused at
   realize, because the leap-cycle record is defined for base 1970.
 - Physical part, capacity and wiring of the Origin 300, Fuel and IP53
   timekeepers are not established. The model maps a flat 32 KiB window.
@@ -648,7 +665,7 @@ M48T35, qtests:
   the freeze, the year wrapping below its base, the control register reading
   back, a guest-set time, storage surviving a system reset and persisting
   with a drive, February following the part's rule, century and month
-  carry, a short or missing clock record, restore after a restart with the
+  carry, an empty or missing clock record, restore after a restart with the
   record and the fallbacks, the stop bit written by a guest and held across a
   save, backing writes that are no-ops or retried, storage that holds a write,
   migration with a backed clock (running and stopped), and the ``year-base``,

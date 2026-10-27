@@ -60,10 +60,13 @@ Sources
   for the meaning of a one-wire reset slot.
 - The IP30 PROM and the IP30 kernel and stock diagnostic shipped with
   IRIX 6.5.30, read as binaries, as software expectations.
-- The same PROM, :src:`ip30-prom-4.17 memory sizing`, and the IRIX
-  6.5.30 kernel it boots, run on the ``octane2`` model with QEMU's
-  trace events recording every HEART and Bridge register access. These
-  are software expectations observed on the model.
+- The same PROM, :src:`ip30-prom-4.17`, and the IRIX 6.5.30 IP30
+  kernel it boots, run on the ``octane2`` model with QEMU's trace events
+  recording every HEART and Bridge register access. These are software
+  expectations observed on the model. The trace separates PROM from
+  kernel accesses only by a gap in timing after the disk load, so which
+  of the two made an access near that boundary is *inferred*, and a
+  loader stage in between is not ruled out.
 - Reads taken on the reference Octane2 (:ref:`sgi-heart-measurements`).
 
 .. _sgi-heart-identity:
@@ -372,16 +375,16 @@ writes ``0x4008``, and later reads that back and writes ``0x4c08``
 returns them; zero reset and full writability are *approximations*.
 
 The request-timeout word is one stored 32-bit value. A 32-bit access at
-``0x2c`` and a 64-bit access at ``0x28`` reach it; a 64-bit write keeps
-its low 32 bits and a 64-bit read returns zero in the upper half. On
-the model the PROM writes ``0x28`` to the 32-bit word and the IRIX
-6.5.30 kernel later writes ``0x9c40`` and reads it back
-(:src:`ip30-prom-4.17 widget registers`), *software expectations*
-observed on the model. Neither writes the 64-bit view. The reference
-Octane2 read ``0x28`` after PROM startup
-(:ref:`sgi-heart-octane2-timeout`); that its PROM wrote that value is
-*inferred* from the same value on the model. The unit and the
-effect of the timeout are *unknown*; the model times out nothing.
+``0x2c`` and a 64-bit access at ``0x28`` reach it; a 64-bit write keeps its
+low 32 bits and a 64-bit read returns zero in the upper half. On the model
+the PROM writes ``0x28`` to the 32-bit word
+(:src:`ip30-prom-4.17 widget registers`), and the IRIX 6.5.30 IP30 kernel,
+observed on the model, later writes ``0x9c40`` and reads it back. Both are
+*software expectations*. Neither writes the 64-bit view. The reference
+Octane2 read ``0x28`` after PROM startup (:ref:`sgi-heart-octane2-timeout`);
+that its PROM wrote that value is *inferred* from the same value on the
+model. The unit and the effect of the timeout are *unknown*; the model times
+out nothing.
 
 .. _sgi-heart-widget-errors:
 
@@ -396,11 +399,12 @@ as the common widget error command word
 
 On the model the PROM writes ``0x3ff7fc0f`` to the error mask at
 ``0x68``, later writes zero to ``0x44``, writes ``0x3ff7fc0f`` to error
-status at ``0x60`` and acknowledges pending bits 51-58. The IRIX 6.5.30
-kernel writes zero to the mask, reads status and writes the value back,
-zeroes ``0x44``, reads cause and writes zero to it, then writes
-``0x3ff62c07`` to the mask (:src:`ip30-prom-4.17 widget registers`).
-These are *software expectations* observed on the model; they suggest
+status at ``0x60`` and acknowledges pending bits 51-58
+(:src:`ip30-prom-4.17 widget registers`). The IRIX 6.5.30 IP30 kernel,
+observed on the model, writes zero to the mask, reads status (zero on
+the model) and writes zero to it, zeroes ``0x44``, reads cause and
+writes zero to it, then writes ``0x3ff62c07`` to the mask. These are
+*software expectations*; they suggest
 write-one-to-clear status and a writable mask. The reference Octane2
 read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM startup
 (:ref:`sgi-heart-octane2-widget`); that the PROM wrote that mask is
@@ -415,9 +419,10 @@ takes only a zero write.
 After a bus error, including the one a guarded probe of an absent PCI
 device takes, the IRIX 6.5.30 kernel reads ``0x60`` (64-bit), ``0x44``,
 ``0x14`` and ``0x1c`` (32-bit), then ``0x90``, ``0x70`` and ``0x78``
-(64-bit), a *software expectation*; on the model it reads each of
-these, and processor-interface ``0x88``, ``0x90``, ``0x98``, ``0xa0``
-and ``0xa8``, three times before the login prompt. Linux names
+(64-bit), a *software expectation*. Observed on the model, the kernel
+reads each of these, and processor-interface ``0x88``, ``0x90``,
+``0x98``, ``0xa0`` and ``0xa8``, at least three times before the login
+prompt. Linux names
 ``0x14``, ``0x1c`` and ``0x44`` as common widget registers, and the
 processor-interface words as bus-error address and miscellaneous,
 memory-error address and data, and processor-interface access error,
@@ -559,9 +564,13 @@ values ``(index << 16) | 0x21`` to SDRAM mode
 observed on the model. Every mode write is a read-modify-write. Later
 it sets mode bits 61-63, which Linux names processor disables for
 processors 1-3, then bit 17 (Linux ``HM_CACHED_PROM_EN``), bit 13
-(interrupt enable), and finally the error-enable bits 0-3, 5-8, 10, 12,
-14-16 and bit 25, leaving ``0xe00000000203fdff``. The kernel reads that
-value and does not change it. The model stores these writes with no
+(``HM_INT_EN``), and finally bits 0-3, 5-8, 10, 12, 14-16 and 25,
+leaving ``0xe00000000203fdff``. Linux ``heart.h`` names bits 0-10 and 16
+error enables, of which the PROM leaves 4 and 9 clear, bit 12
+``HM_DATA_CHK_EN``, 14 ``HM_IO_COH_EN``, 15 ``HM_GLOBAL_ECC_EN`` and 25
+``HM_COR_ECC_LCK`` (``arch/mips/include/asm/sgi/heart.h`` at
+``db2ddb871435``). The IRIX 6.5.30 IP30 kernel, observed on the model,
+reads that value and does not change it. The model stores these writes with no
 electrical effect, except as :ref:`sgi-heart-interrupts` and
 :ref:`sgi-heart-ecc` describe.
 
@@ -592,14 +601,15 @@ On the model, the PROM zeroes masks 0-2 after walking a one through all 64
 bits of mask 3, then enables bit 41, the processor 0 bus error (59) and the
 HEART exception (63) in mask 0. It polls pending rather than enabling a
 source it is waiting on, reads cause, writes zero to it and acknowledges
-through ``0x10028`` (:src:`ip30-prom-4.17 interrupt masks`). The IRIX
-6.5.30 kernel clears all four masks, writes ``0x8800440000000000`` (bits 42,
-46, 59, 63) to processor 0's mask, adds bits 16, 17, 41, 57 and 58 and the
-level-0 device bits 3-6 as it attaches, reads ``0x10038`` in its dispatcher
-and acknowledges a source by writing its bit to ``0x10028``. It writes
-``0x10020`` only for device bits, reads cause and writes zero to it, and
-leaves masks 1-3 at zero. These are *software expectations* observed on the
-model.
+through ``0x10028``. It later writes ``0x8c00020000000039`` to mask 0,
+adding bit 58 and device bits 0 and 3-5, and toggles bit 41 off and on
+(:src:`ip30-prom-4.17 interrupt masks`). The IRIX 6.5.30 IP30 kernel,
+observed on the model, clears all four masks, writes ``0x8800440000000000``
+(bits 42, 46, 59, 63) to processor 0's mask, adds bits 16, 17, 41, 57 and 58
+and the level-0 device bits 3-6 as it attaches, reads ``0x10038`` in its
+dispatcher and acknowledges a source by writing its bit to ``0x10028``. It
+writes ``0x10020`` only for device bits, reads cause and writes zero to it,
+and leaves masks 1-3 at zero. These are *software expectations*.
 
 The model drives five outputs to CPU IP2-IP6. Each is high while some
 bit of its level is both pending and set in mask 0. Bit 63 also needs
@@ -764,12 +774,12 @@ address, with widget 8 in bits 63:60 (``pci-xtalk-bridge.c`` lines 29-40
 and 663). These are *software expectations*.
 
 On the model the PROM writes the same ``0x00800000`` and all of its DMA
-uses the 32-bit direct window. The IRIX 6.5.30 kernel writes
+uses the 32-bit direct window (:src:`ip30-prom-4.17 Bridge direct map`).
+The IRIX 6.5.30 IP30 kernel, observed on the model, writes
 ``0x00820000``, which sets the bit Linux names ``BRIDGE_DIRMAP_ADD512``,
 but all of its DMA before the login prompt uses 64-bit addresses to
-widget 8 (:src:`ip30-prom-4.17 Bridge direct map`). These are
-*software expectations* observed on the model. Either way the physical
-address arrives at HEART unchanged.
+widget 8. These are *software expectations*. On the model, either way
+the physical address arrives at HEART unchanged.
 
 The model accepts a Crosstalk read or write addressed to HEART when
 every byte falls in a valid descriptor window of a fitted bank. It uses

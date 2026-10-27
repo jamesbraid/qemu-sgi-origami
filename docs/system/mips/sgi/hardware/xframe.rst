@@ -15,8 +15,8 @@ endpoint that any machine with a PCI bus can carry. The model is
 Xframe I, codename Xena, PCI device ID ``0x5831``. A property selects the
 Xframe II device ID but not Xframe II behaviour. No machine fits the card
 by default. It goes in a free slot with ``-device xframe``, for example
-at PCI device 5 on the ``origin200`` machine, the slot the model wires
-to the Bridge's 64-bit data path (:doc:`bridge`). Facts are rated as
+at PCI device 5 on the ``origin200`` machine, one of the slots the model
+wires to the Bridge's 64-bit data path (:doc:`bridge`). Facts are rated as
 described in :ref:`sgi-ratings`.
 
 .. _sgi-xframe-sources:
@@ -83,7 +83,7 @@ systems`, *established*.
      - *Unknown*. No source states the SGI card's subsystem device ID.
    * - Class, revision
      - Ethernet controller ``0x0200``, revision ``0``
-     - *Approximation*. The hardware listing above shows revision 3.
+     - *Approximation*. The SGI card's revision is *unknown*.
    * - BAR 0 (config ``0x10``)
      - 64-bit memory, 16 KiB, the PIF register window
      - Both drivers map it as memory. The size is an *approximation*:
@@ -118,8 +118,8 @@ on the Xframe I as two 32-bit writes, *software expectation*. The IRIX
 driver reads the byte-swapper register with 32-bit cycles, *software
 expectation*, observed on the model. Behind the Bridge a slot that
 leaves the 64-bit-device bit clear delivers every register access as
-32-bit cycles, and a window that served only 8-byte accesses returned
-zero for the swapper constant and aborted the IRIX attach. A 1-byte or
+32-bit cycles, and the IRIX attach fails unless those cycles return the
+swapper constant. A 1-byte or
 2-byte access is outside the window's valid sizes and the memory system
 refuses it.
 
@@ -169,8 +169,9 @@ is bit ``63 - n``.
    * - ``0x0110``
      - ADAPTER_CONTROL
      - ``0``
-     - Stored. Bit 56 is ADAPTER_EN. Its edges start and stop the link
-       and interrupt timers.
+     - Stored. Bit 56 is ADAPTER_EN. A rising edge starts the link
+       timer and the continuous traffic interrupts. A falling edge
+       cancels those and the scheduled interrupt.
    * - ``0x0800``
      - PIC_INT_STATUS
      - ``0``
@@ -337,7 +338,7 @@ Interrupts
 ==========
 
 The model drives one level-sensitive line, INTA. The line is high when
-any of four sources is pending and every mask above it is open.
+any of five sources is pending and every mask above it is open.
 
 .. list-table::
    :header-rows: 1
@@ -413,11 +414,11 @@ backend and from ADAPTER_EN.
   interrupt and clears any link event not yet acknowledged.
 
 GPIO_INT_REG clears when a read covers its high half. A write clears the
-bits it carries. The receive-MAC latch clears by write one. When the
-latch is masked, so it cannot reach the line, a read covering the high
-half also clears it. The IRIX driver masks the MAC path, takes its link
-interrupt through the GPIO path and still reads MAC_RMAC_ERR_REG during
-periodic service. Without the read-clear it would see the settled link
+bits it carries. The receive-MAC latch clears by write one. When
+MAC_RMAC_ERR_MASK bit 32 or MAC_INT_MASK bit 62 is set, a read covering
+the high half also clears it. The GENERAL mask does not enter into
+this. The IRIX driver leaves the MAC path masked and still reads
+MAC_RMAC_ERR_REG during periodic service. Without the read-clear it would see the settled link
 change on every pass and flap carrier. This is a *software expectation*
 observed on the model. Whether silicon clears either latch on a read is
 *unknown*.
@@ -452,10 +453,10 @@ carrier.
 A read covering the high half of TXPIC_INT_REG clears the latch, which
 is how Linux and OpenBSD acknowledge a polled leaf. A write reaching the
 high half also clears it. IRIX acknowledges by writing: it dispatches
-from GENERAL_INT_STATUS and writes TXPIC_INT_REG without reading it. With
-only the read-clear in place, the latch stayed set, the interrupt handler
-re-entered about 2000 times at once and ``ifconfig`` hung. This is a
-*software expectation*, measured on the model. The model does not require
+from GENERAL_INT_STATUS and writes TXPIC_INT_REG without reading it. Without
+the write acknowledgement the latch would stay set and the handler would
+re-enter continuously. This is a *software expectation*, observed on the
+model. The model does not require
 the write to carry the latch bit, since the scheduled interrupt is the
 only source it raises on this leaf.
 
@@ -524,9 +525,10 @@ count, capping the frame at 9600 bytes, and truncates with
 words are read for offload requests. A failed descriptor or buffer read
 abandons the list with ``LOG_GUEST_ERROR`` and leaves it card-owned.
 
-After the frame is sent, the model clears the owner bit of every walked
-descriptor, the first last, then sets the FIFO's TX_TRAFFIC_INT bit (or
-holds it, see above) and recomputes INTA. It writes no status or error
+The model clears the owner bit of every walked descriptor, the first
+last, then sends the frame, then sets the FIFO's TX_TRAFFIC_INT bit (or
+holds it, see above) and recomputes INTA. A failed owner-bit write logs
+``LOG_GUEST_ERROR``, sends nothing and completes nothing. It writes no status or error
 field. A transmit completion therefore never reports a failure,
 *approximation*. A reply the backend returns during the send is held
 until the completion has been published, so the guest never sees a reply
@@ -543,18 +545,17 @@ frame must be a well-formed IPv4 packet: Ethertype ``0x0800``, version 4,
 header length of at least 20, total length at least the header length and
 within the gathered bytes. Otherwise the model logs ``LOG_GUEST_ERROR``
 and sends the frame unchanged. The IRIX driver asks for insertion on
-every TCP and UDP segment. A model that ignores the request leaves the
-IRIX guest in SYN_RCVD, because its software computes only ICMP and ARP
-checksums, a *software expectation* seen on the model.
+every TCP and UDP segment and computes only ICMP and ARP checksums in
+software, so it relies on the card to insert the others, *software
+expectation* observed on the model.
 
 Segmentation offload
 --------------------
 
 Bit 33 of the first control word asks the card to cut a large TCP send
 into segments, with the segment size in bits 29:16 (Linux
-``TXD_TCP_LSO_EN`` and ``TXD_TCP_LSO_MSS``), *software expectation*. The
-IRIX interface carries the L2TCPSEG flag, so IRIX uses it on bulk
-transfers and hands over buffers of about 32 KB. The gathered buffer is
+``TXD_TCP_LSO_EN`` and ``TXD_TCP_LSO_MSS``), *software expectation*. A
+driver that uses it on bulk transfers hands over buffers of about 32 KB. The gathered buffer is
 then one datagram, not a frame, and the model caps it at 65549 bytes,
 the largest IPv4 datagram plus an Ethernet header, instead of 9600.
 
@@ -566,7 +567,8 @@ advanced by the segment index, a sequence number advanced by the payload
 already sent, and recomputed IP and TCP checksums, whatever the checksum
 bits say. FIN and PSH stay only on the last segment. A buffer that is not
 IPv4 over TCP, has a zero segment size, or holds no more than one
-segment's payload goes out unchanged. How the silicon rewrites headers
+segment's payload is not segmented. It takes the ordinary path above, so
+any checksum the second control word asks for is still inserted. How the silicon rewrites headers
 per segment is *unknown*. The page's rule is the standard reading of the
 field, and the evidence is that IRIX sets the bit and the segment size
 and that its bulk transfers complete only when segments are cut this way.
@@ -630,8 +632,8 @@ bits 55:48 (8 bits), buffer 1 in bits 47:32 and buffer 2 in bits 31:16.
 Buffers 0 to 2 have their addresses in words 3 to 5. The IRIX driver
 posts about 14, 128 and a jumbo payload, followed by two 4-byte buffers,
 *software expectation*, observed on the model. The model splits a
-classified frame by protocol layer, a layout that the IRIX driver
-accepts and that other layouts broke:
+classified frame by protocol layer, a layout the IRIX driver accepts,
+*software expectation* observed on the model:
 
 - The 14-byte Ethernet header goes to buffer 0.
 - The IP header, with its options, and any recognised TCP or UDP header
@@ -641,8 +643,8 @@ accepts and that other layouts broke:
 
 Placing the IP header of every IPv4 frame in buffer 1, ICMP and
 fragments included, is *inferred* from the layer-split design and from
-IRIX dropping every echo reply when buffer 1 was left empty. No source
-states it. The public Linux driver puts a layer-3 header and a layer-4
+the IRIX driver reading the IP header from buffer 1. No source states
+it. The public Linux driver puts a layer-3 header and a layer-4
 header in separate buffers and has no layer-2 buffer, which differs from
 what IRIX posts, so the model does not follow it. The offload status is
 the same in this mode as in one-buffer mode.
@@ -658,8 +660,7 @@ low 32 bits of word 0 and keeps the upper half, which holds the
 driver's own value. Left stale, the driver adds the posted sizes of those
 buffers to the frame length and rejects the frame as an input error. This
 rule holds only in five-buffer mode: other drivers keep a pointer in word
-0. It comes from the descriptor layout and a measured failure and is
-*inferred*.
+0. It comes from the descriptor layout and is *inferred*.
 
 .. _sgi-xframe-dma:
 
@@ -702,10 +703,10 @@ XMSI_ADDRESS scratch back as ``0x0123456789abcdef``, *software
 expectation*, observed on the model. Decoded with the OpenBSD bit names,
 all the flip-enable bits are set, the PIF read and write, TxP and MSI
 swap-enable bits are set, and the descriptor, frame and statistics
-swap-enables are clear. On the same boot the Bridge's device register for
-the slot read ``0x12091002``, bit 19 set, which puts the driver's DMA on a
-byte-stream mapping that places bytes the same way at either data-phase
-width. How the card itself places bytes under that value is *unknown* for
+swap-enables are clear. The IRIX driver maps its DMA as a byte stream,
+which on a Bridge sets bit 19 of the slot's device register (``0x12091002``
+on the model), *software expectation*. That mapping places bytes the same
+way at either data-phase width. How the card itself places bytes under that value is *unknown* for
 lack of a document.
 
 Statistics block
@@ -748,14 +749,13 @@ a word holding the first-listed counter in its high half looks like. The
 model writes a pair as one 64-bit word and orders the whole word by the
 statistics swap-enable, bit 14 of SWAPPER_CTRL: little-endian when set,
 which is Linux, and big-endian when clear, which is IRIX. IRIX
-takes its frame counts from the words at ``0x000`` and ``0x060``. Under an
-older layout of two separate 32-bit fields, its ``netstat -i`` read the
-transmit octet count as the output packet count, *software expectation*,
-observed on the model. The half order of the overflow words at ``0x218`` and
+takes its frame counts from the words at ``0x000`` and ``0x060``, and its
+``netstat -i`` reads the frame count from the high half of each word,
+*software expectation* observed on the model. The half order of the overflow words at ``0x218`` and
 ``0x260`` has no evidence either way, since reaching them takes more than
 4 GiB of counted traffic. Setting exactly one of bits 15 and 14 is not
-modelled: the enable logs ``LOG_UNIMP`` and the block is written in
-place.
+modelled: the enable logs ``LOG_UNIMP`` and the word order follows
+bit 14 alone.
 
 Writing STAT_CFG with bit 63 set, through the high half, takes a snapshot
 at once and arms a periodic DMA unless bit 62 asks for a single transfer.
@@ -795,8 +795,8 @@ instant as the transmit doorbell that provoked it, which no real part can
 do across a bus, a DMA engine and a coalescing timer. The model therefore
 writes a received frame's payload and byte counts at once but releases
 the descriptor's ownership, sets RX_TRAFFIC_INT and raises the line only
-after a minimum delay on an arrival line shared by the four SGI Ethernet
-adapters. The ``rx-arrival-latency-us`` property sets the delay, 200
+after a minimum delay on an arrival line, code that the four SGI Ethernet
+models share. The ``rx-arrival-latency-us`` property sets the delay, 200
 microseconds by default. It is an *approximation*. Unlike the other
 adapters, no register write here retries a completion the bus refused. A
 stalled completion recovers only through the line's own backoff, which
@@ -823,11 +823,9 @@ masks. Migration works only between identical builds.
 Measurements
 ============
 
-No register of this part has been read on a physical machine. The only
-observation of real hardware is the secondhand IRIX PCI listing in
-:ref:`sgi-xframe-sources`, which gives the SGI card's vendor, device and
-revision and nothing more. The register contract above rests on the
-published driver sources.
+No register of this part has been read on a physical machine, and no
+observation of this part on real hardware is cited. The register contract
+above rests on the published driver sources.
 
 Model limits
 ============
