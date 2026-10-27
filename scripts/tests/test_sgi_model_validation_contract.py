@@ -1867,6 +1867,79 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         self.assertFails(model, "crossbar 'ibrick-xbridge-crossbar' port 0xa "
                          "is named by 'ibrick-port-a' and 'ibrick-port-b'")
 
+    def cable(self, ident, ends):
+        return {"id": ident, "ends": ends, "provenance": "derived",
+                "sources": ["108-0240-002 printed page 2-26"]}
+
+    def test_origin3200_cables_the_cbrick_to_ibrick_port_a(self):
+        self.assertEqual(
+            [(item["id"], item["ends"]) for item in self.model()["xio_cables"]],
+            [("c0-to-ibrick",
+              ["c0-xio-ii-connector", "ibrick-port-a"])])
+
+    def test_xio_cable_cannot_join_two_node_iis(self):
+        model = self.model()
+        second = copy.deepcopy(
+            self.component(model, "c0-xio-ii-connector"))
+        second["id"] = "second-xio-ii-connector"
+        model["components"].append(second)
+        model["connections"].append({
+            "component": "second-xio-ii-connector", "bus": "c0-xio-ii",
+            "role": "endpoint", "provenance": "derived",
+            "sources": ["108-0240-002 printed page 2-26"]})
+        model["xio_cables"] = [self.cable(
+            "two-nodes", ["c0-xio-ii-connector",
+                          "second-xio-ii-connector"])]
+        self.assertFails(model, "XIO cable 'two-nodes' joins two node IIs")
+
+    def test_xio_connector_carries_one_cable(self):
+        model = self.model()
+        model["xio_cables"].append(self.cable(
+            "second", ["c0-xio-ii-connector", "ibrick-port-b"]))
+        self.assertFails(model, "connector 'c0-xio-ii-connector' carries "
+                         "XIO cables 'c0-to-ibrick' and 'second'")
+
+    def test_xio_cable_ends_are_two_distinct_xio_connectors(self):
+        for name, ends, message in (
+                ("one end", ["ibrick-port-a"], "names exactly two connectors"),
+                ("the same connector twice", ["ibrick-port-a", "ibrick-port-a"],
+                 "names exactly two connectors"),
+                ("an unknown end", ["ibrick-port-a", "nowhere"],
+                 "end 'nowhere' is not a connector"),
+                ("a device end", ["ibrick-port-a", "ibrick-xbridge"],
+                 "end 'ibrick-xbridge' is not a connector"),
+                ("a connector on no XIO bus",
+                 ["ibrick-port-b", "c0-link-connector"],
+                 "end 'c0-link-connector' is neither a node II nor a "
+                 "crossbar"),
+        ):
+            with self.subTest(name=name):
+                model = self.model()
+                model["components"].append({
+                    "id": "c0-link-connector", "name": "LINK (NI) connector",
+                    "kind": "connector", "parent": "c0-chassis",
+                    "provenance": "derived",
+                    "connector": {"interface": "NUMAlink 3",
+                                  "occupancy": "opaque"}})
+                model["xio_cables"] = [self.cable("bad", ends)]
+                self.assertFails(model, message)
+
+    def test_xio_cable_ends_share_an_xio_bus(self):
+        model = self.model()
+        model["xio_cables"] = [self.cable(
+            "unbound", ["c0-xio-ii-connector", "ibrick-port-b"])]
+        self.assertFails(model, "XIO cable 'unbound' ends share no XIO bus")
+
+    def test_xio_cable_ids_are_unique(self):
+        model = self.model()
+        model["xio_cables"].append(copy.deepcopy(model["xio_cables"][0]))
+        self.assertFails(model, "duplicate XIO cable id 'c0-to-ibrick'")
+
+    def test_xio_cable_requires_evidence(self):
+        model = self.model()
+        del model["xio_cables"][0]["sources"]
+        self.assertFails(model, "schema:")
+
 
 if __name__ == "__main__":
     unittest.main()

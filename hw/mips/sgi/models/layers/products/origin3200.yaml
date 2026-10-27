@@ -6,6 +6,8 @@ sources:
   007-4311-002-3200: "007-4311-002 printed page 87, Appendix A: an Origin 3200 has one or two C-bricks, at most two I/O bricks of which one must be an I-brick, and no R-brick"
   007-4311-002-pimm: "007-4311-002 printed page 83, section 8.1: an Origin 3200 C-brick holds two or four processors, and a two-processor C-brick takes a second two-processor PIMM"
   007-4311-002-rack: "007-4311-002 printed page 87, Appendix A: an Origin 3200 is housed in a single 17-U high short rack"
+  007-4240-002-xio: "007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"
+  108-0240-002-ports: "108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"
 layer:
   kind: product
   id: origin3200
@@ -48,3 +50,9 @@ layer:
         provenance: vendor-document
         description: The 17U short rack that holds the whole system.
         sources: [007-4311-002-rack]
+    xio_cables:
+      - id: c0-to-ibrick
+        ends: [c0-xio-ii-connector, ibrick-port-a]
+        provenance: vendor-document
+        sources: [007-4240-002-xio, 108-0240-002-ports]
+        notes: Port A is this composition's choice; which port a boot I-brick uses is unknown.

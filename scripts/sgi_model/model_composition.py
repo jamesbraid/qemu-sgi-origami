@@ -783,6 +783,68 @@ def validate_connector_population(model: dict[str, Any]) -> None:
                 raise ResolutionError(f"implemented target has unresolved connector '{cid}'")
 
 
+def validate_xio_cables(model: dict[str, Any]) -> None:
+    """Each XIO cable joins two XIO connectors that share a bus.
+
+    An end is a node II, a connector on a bus a node ASIC masters, or a
+    crossbar port, a connector naming its XBridge port. Two node IIs
+    cannot be cabled together, and a connector takes one cable. The
+    shared bus ties the cable to the graph the bus bindings built, so the
+    two records cannot disagree about what is attached.
+    """
+    cables = model.get("xio_cables", [])
+    if not isinstance(cables, list):
+        raise ResolutionError("xio_cables must be a list")
+    components = {item["id"]: item for item in model.get("components", [])}
+    buses = {item["id"]: item for item in model.get("buses", [])}
+    attached: dict[str, set[str]] = {}
+    for connection in model.get("connections", []):
+        bus = buses.get(connection.get("bus"), {})
+        if bus.get("kind") == "xio":
+            attached.setdefault(
+                connection.get("component"), set()).add(bus["id"])
+    seen: set[str] = set()
+    carried: dict[str, str] = {}
+    for cable in cables:
+        if not isinstance(cable, dict) or not isinstance(cable.get("id"), str):
+            raise ResolutionError("XIO cable requires an id")
+        cid = cable["id"]
+        if cid in seen:
+            raise ResolutionError(f"duplicate XIO cable id '{cid}'")
+        seen.add(cid)
+        ends = cable.get("ends")
+        if (not isinstance(ends, list) or len(ends) != 2 or
+                not all(isinstance(end, str) for end in ends) or
+                ends[0] == ends[1]):
+            raise ResolutionError(
+                f"XIO cable '{cid}' names exactly two connectors")
+        kinds = []
+        for end in ends:
+            connector = components.get(end, {})
+            if connector.get("kind") != "connector":
+                raise ResolutionError(
+                    f"XIO cable '{cid}' end '{end}' is not a connector")
+            if "port" in connector["connector"]:
+                kinds.append("crossbar")
+            elif any(components.get(buses[bus].get("master"), {}).get("kind")
+                     == "node-asic" for bus in attached.get(end, ())):
+                kinds.append("node")
+            else:
+                raise ResolutionError(
+                    f"XIO cable '{cid}' end '{end}' is neither a node II nor "
+                    "a crossbar port")
+        if kinds == ["node", "node"]:
+            raise ResolutionError(f"XIO cable '{cid}' joins two node IIs")
+        for end in ends:
+            if end in carried:
+                raise ResolutionError(
+                    f"connector '{end}' carries XIO cables '{carried[end]}' "
+                    f"and '{cid}'")
+            carried[end] = cid
+        if not attached.get(ends[0], set()) & attached.get(ends[1], set()):
+            raise ResolutionError(f"XIO cable '{cid}' ends share no XIO bus")
+
+
 def validate_synthetic_identities(model: dict[str, Any]) -> None:
     if _fabric_topology(model) != "router":
         return
@@ -1304,9 +1366,9 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     The order matches what a resolved model must satisfy end to end: routed
     firmware graphs, reference-model purity, the emulation profile, CPU and
     memory populations, direct references, physical slots, connector
-    population, connector ports, synthetic identities, initial module
-    numbers, hub NI revision overrides, board identity overrides, and the
-    excluded_components ledger the resolved model itself carries. Each
+    population, connector ports, XIO cables, synthetic identities, initial
+    module numbers, hub NI revision overrides, board identity overrides,
+    and the excluded_components ledger the resolved model itself carries. Each
     check raises on its own first violation; nothing here collects a list,
     matching the resolver's fail-fast style.
     """
@@ -1321,6 +1383,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_physical_slots(model)
     validate_connector_population(model)
     validate_connector_ports(model)
+    validate_xio_cables(model)
     validate_synthetic_identities(model)
     validate_initial_module_numbers(model)
     validate_hub_ni_revision_overrides(model)
