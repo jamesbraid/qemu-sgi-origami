@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# One InfiniteReality3 pipe in a G-brick: a GE16-4 geometry board, one RM10
+# raster manager and a DG5-2 display generator, the default Onyx 3000 board
+# set with the fewest raster managers either pipe position takes. The host
+# reaches the pipe through the XG ASIC on the geometry board. A composition
+# fits this layer under a layers/modules/g-brick.yaml instance and binds the
+# placeholder `upstream` bus to the same I/O brick port bus as the Ktown2
+# connector serving this pipe.
+layer_version: 1
+layer:
+  kind: module
+  id: g-brick-ir3-pipe
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: pipe
+        name: InfiniteReality3 graphics pipe
+        kind: board
+        hardware_kind: kona
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-38: the default G-brick board set is one GE16-4, RM10 boards and one DG5 per pipe", "007-4264-002 printed pages 39 and 40: pipe 0 takes one, two or four RMs and pipe 1 one or two"]
+        notes: >-
+          A selected minimal population, one RM, not a captured inventory.
+          One RM fits both pipe positions. The guide's other statement, first
+          pipe one or two RMs and second up to four (007-4264-002 printed
+          page 10), does not change that.
+      - id: xg
+        name: XIO-to-graphics ASIC (XG)
+        kind: io-controller
+        hardware_kind: xg
+        parent: pipe
+        provenance: derived
+        identity:
+          widget_mfg: "0x2aa"
+          widget_part: "0xc102"
+          widget_revision: 0
+        sources: ["linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"]
+        notes: >-
+          The Onyx2 pipe's identity, carried over. No Onyx 3000 widget
+          listing is captured, so the identity is inferred, and 0 is a
+          placeholder revision.
+      - id: ge
+        name: GE16-4 geometry board
+        kind: board
+        hardware_kind: ge16-4
+        parent: pipe
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-38: one GE16-4 per pipe"]
+        notes: No Origin 3000 part number is captured.
+      - id: rm
+        name: RM10 raster manager
+        kind: board
+        hardware_kind: raster-manager
+        parent: pipe
+        provenance: vendor-document
+        sources: ["108-0240-002 printed page 2-38: RM10 boards with 256 MB of texture memory each"]
+      - id: dg
+        name: DG5-2 display generator
+        kind: board
+        hardware_kind: display-generator
+        parent: pipe
+        provenance: vendor-document
+        sources: ["007-4264-002 printed page 43, Table 2-1: DG5-2, two monitor outputs"]
+    connections:
+      - component: xg
+        bus: upstream
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 8 and 62: a G-brick pipe connects to a C-brick through an I-, X- or N-brick"]
+        notes: >-
+          A placeholder each instance binds to the I/O brick port bus its
+          Ktown2 connector is cabled to.
