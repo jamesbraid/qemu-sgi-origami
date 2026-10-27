@@ -1,12 +1,13 @@
 .. _sgi-elsc:
 
-==========================================
-SGI Origin 200 module system controller
-==========================================
+==========================================================
+SGI module system controller (Origin 200 and Origin 2000)
+==========================================================
 
 The module system controller (MSC, historically "ELSC") is a
-microcontroller on the Origin 200 midplane, reached over the module's
-I2C bus. Guests use it for console input before any real serial
+microcontroller on the Origin 200 midplane and, in a second build, the
+Origin 2000 and Onyx2 module controller, reached over the module's I2C
+bus. Guests use it for console input before any real serial
 driver is running, for reading the front-panel DIP switches, and as
 the console of last resort after a failed power-on diagnostic. QEMU
 models it as an I2C slave (``hw/misc/sgi-elsc.c``) on the same bus as
@@ -669,7 +670,7 @@ proof that the action happened -- it will not fall back to its own
 hardware reset afterwards -- so acknowledging an action that will not
 happen is a lie with nothing in the protocol to expose it. With no module
 owner, which is the Origin 200, the controller is the whole module and
-answers for itself exactly as it always did.
+answers for itself.
 
 A destructive command that arrives while another is already *committed*
 cannot change it: the committed action wins and fires. The new command
@@ -850,10 +851,10 @@ AUX serial port
 
 The master controller is the far end of the Origin 200's external AUX
 serial port. The ``-serial`` lines remain node-major with a fixed stride
-of four: node *n* owns the block ``[4n, 4n+4)``, and its nominal AUX slot
+of six: node *n* owns the block ``[6n, 6n+6)``, and its nominal AUX slot
 is the third line in that block. The external AUX backend attaches only
 to the master, node 0 at index 2. A backend provisioned at the slave's
-nominal index 6 remains unattached. Node 0's index 3 is the bring-up UART,
+nominal index 8 remains unattached. Node 0's index 3 is the bring-up UART,
 which exists on node 0 only.
 
 The operator's command line
@@ -931,8 +932,8 @@ always takes input and its output never stalls.
   silently and never runs it. The slave's line is not attached to a
   backend in this machine.
 
-QEMU continues to model the slave controller and its internal I2C command
-path. That preserves existing model behavior. It is not a hardware claim,
+QEMU models the slave controller and its internal I2C command
+path. It is not a hardware claim,
 because the available Origin 200 evidence does not establish slave-local
 I2C or arbitration behavior.
 
@@ -1045,8 +1046,7 @@ device. Ratings follow :ref:`sgi-ip30`.
        so its seed is guest-visible; keeping the master's seed leaves that
        behaviour unchanged.
    * - A sequential read or write past a block's last byte wraps to that
-       block's first byte, as the previous model's eight 256-byte parts
-       did. A write of any length is accepted. Writes complete at once and
+       block's first byte. A write of any length is accepted. Writes complete at once and
        are never refused as busy. The part does not accept a general call.
      - approximation
      - Block-end behaviour, the write buffer and the write-cycle time are

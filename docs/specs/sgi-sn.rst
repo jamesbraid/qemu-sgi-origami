@@ -41,15 +41,17 @@ and its clock record ``ds1742-<board>-clock``, module system controller
 configuration NVRAM ``module<N>-nvram``, each with its exact size and
 what a new machine's copy starts from) and the firmware images that
 initial content is built from (``init-inputs``).
-Four products stand on this base today:
-``origin200``, ``origin2000`` and ``onyx2`` (SN0), and ``origin300``
-(SN1). ``onyx2`` is Origin 2000 silicon with graphics: the same IP27
-node boards, memory and stock PROM, told apart only by the hardware its
-topologies fit. ``origin300``'s own product class (``hw/mips/sgi/sn1.c``)
-parents ``sgi-sn`` like the others and names the same ``topology=``
-contract and compiled descriptor this page describes; only its node
-device (``sgi-sn1-node``, ``hw/mips/sgi/sn1-node.c``) is
-product-specific, the way each SN0 node's own device is.
+Nine products stand on this base:
+``origin200``, ``origin2000`` and ``onyx2`` (SN0,
+``hw/mips/sgi/sn-machine.c``), and ``origin300``, ``fuel``,
+``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host`` (SN1,
+``hw/mips/sgi/sn1.c``). ``onyx2`` is Origin 2000 silicon with graphics:
+the same IP27 node boards, memory and stock PROM, told apart only by the
+hardware its topologies fit. The SN1 product classes parent ``sgi-sn``
+like the others and name the same ``topology=`` contract and compiled
+descriptor this page describes; only their node device
+(``sgi-sn1-node``, ``hw/mips/sgi/sn1-node.c``) is product-specific, the
+way each SN0 node's own device is.
 
 .. _sgi-sn-product-family:
 
@@ -66,9 +68,9 @@ printed page; forum captures by site and thread number. Origin 350 hardware
 facts below describe the product; the ``origin350`` catalogue entry is an
 implemented one-node software profile with explicit approximations and
 unresolved hardware behavior. It does not qualify every Origin 350
-configuration or establish stock PROM behavior. The captured Onyx 350
-compatibility profile remains a proposed cross-version software experiment
-pending its independent review. The Onyx 4 host/G2 and host/G2N entries remain
+configuration or establish stock PROM behavior. The ``onyx350``,
+``tezro`` and ``onyx4-host`` catalogue entries are software profiles of the
+same kind. The Onyx 4 host/G2 and host/G2N entries remain
 reference models, as does the optional second Tezro rack enclosure. Origin
 3000 brick arrangements and the NUMAlink module also remain reference
 configurations.
@@ -336,7 +338,7 @@ A product's ``topology=`` machine property selects which configuration
 of it to build; ``-smp``, ``-m`` and ``-cpu`` then select and validate
 a population within that wiring. The compiled descriptor carries more
 topologies than this table; these are each product's default and the
-Onyx2 deskside:
+Onyx2 deskside. ``-M <product>,topology=help`` lists the rest:
 
 .. list-table::
    :header-rows: 1
@@ -382,6 +384,31 @@ Onyx2 deskside:
      - 1
      - 2 or 4
      - 512 MiB (fixed)
+   * - ``fuel`` (default)
+     - ``fuel``
+     - 1
+     - 1 (fixed)
+     - 512 MiB (fixed)
+   * - ``origin350`` (default)
+     - ``origin350``
+     - 1
+     - 4 (fixed)
+     - 2048 MiB (fixed)
+   * - ``onyx350-compat`` (default)
+     - ``onyx350``
+     - 1
+     - 4 (fixed)
+     - 8192 MiB (fixed)
+   * - ``tezro-deskside-700mhz-4mib-serial-trial`` (default)
+     - ``tezro``
+     - 1
+     - 4 (fixed)
+     - 4096 MiB (fixed)
+   * - ``onyx4-host-serial-compat`` (default)
+     - ``onyx4-host``
+     - 1
+     - 4 (fixed)
+     - 8192 MiB (fixed)
 
 ``-M origin200,topology=origin200-dual`` selects the second row. Each
 topology describes one chassis, and its catalogue record carries a
@@ -424,8 +451,9 @@ KLCONFIG memory entries; that remains full-composition boot acceptance for
 any later unequal-memory IP53 profile.
 A refused size is reported with the per-node sizes that are accepted.
 ``nodes`` is part of the machine configuration: a snapshot
-restores only into a machine with the same value. ``origin300`` accepts
-only R14000 for ``-cpu``; ``origin2000`` and ``onyx2`` accept only
+restores only into a machine with the same value. ``origin300`` and
+``fuel`` accept only R14000 for ``-cpu``; ``origin350``, ``onyx350``,
+``tezro`` and ``onyx4-host`` accept only R16000; ``origin2000`` and ``onyx2`` accept only
 R10000, the default and the only member of their own
 ``valid_cpu_types``; ``origin200`` accepts R10000 and R12000, as its
 ``processor=`` option below selects.
@@ -583,7 +611,7 @@ another node to this node's offset reaches the bank. And the node-less
 address ``0x1fc0_0000`` names the reader's own flash on every node,
 whereas with a smaller bank 0 an uncached reference there goes through
 the claim layer to whichever node holds number 0. Smaller banks leave
-the reset address to the flash in every view, as before.
+the reset address to the flash in every view.
 
 An Origin 2000 or Onyx2 node board (IP27) wires eight banks of DIMM
 pairs. SGI's Theory of Operations (007-3439-002, printed page 35) gives
@@ -901,7 +929,7 @@ The machines bind these items today:
   Timekeeper NVRAM and the clock record its model keeps beside it, N
   counting the boards that carry one. A clock record needs its NVRAM
   bound too; an NVRAM bound alone restores its calendar with no time
-  added, as before.
+  added.
 - ``ds1742-<board>-data`` and ``ds1742-<board>-clock`` on the IP53 products
   (``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host``): the 2 KiB
   image of the DS1742 linked to IO9 board ``<board>`` and the clock
@@ -1061,11 +1089,12 @@ Base I/O -- the IOC3 plus one or two SCSI controllers, and on the IO-8 a USB
 controller, behind an XIO-to-PCI bridge -- is one device, ``sgi-baseio``
 (``hw/mips/sgi/baseio.c``), with a preset per shipped board design rather
 than a separate class each: ``ip29`` (the Origin 200 System Board's onboard
-I/O, on the node's own Bridge), ``baseio`` (the Origin 2000/Onyx2 standard
-XIO board, behind a Crossbow), and ``io8`` (the Origin 300 IO-8 assembly's
-PCI population -- a QLogic ISP12160, an IOC3 and a Lucent OHCI controller --
-placed on the SN1 node's own XBridge head F). A preset name that matches
-none of the three is refused outright. IP29's onboard I/O is soldered to the
+I/O, on the node's own Bridge), ``io6`` (the Origin 2000 standard XIO
+board, behind a Crossbow), ``io6g`` (the BaseIO-G, the Onyx2's board),
+``menet`` and ``mscsi`` (optional XIO boards), ``io8`` (the Origin 300
+IO-8 assembly's PCI population -- a QLogic ISP12160, an IOC3 and a Lucent
+OHCI controller -- placed on the SN1 node's own XBridge head F) and
+``fuel`` (the Fuel's onboard I/O). Any other preset name is refused. IP29's onboard I/O is soldered to the
 System Board rather than plugged into a slot, so the Origin 200 node builds
 its ``ip29`` instance directly on its own XIO port, with no board
 wrapper; the Origin 300 node's ``io8`` instance is placed the same way,
@@ -1079,8 +1108,9 @@ built from a ``sgi-baseio`` preset: ``io6``, ``io6g``, ``menet`` or
 ``sgi-pci-carrier`` (the Origin 2000 PCI Carrier Assembly, three PCI slots
 and its own board record), ``sgi-pci-shoehorn`` (a Bridge carrying one PCI
 card), ``sgi-gigachannel`` (the GIGAchannel cabinet's own Bridge),
-``sgi-kona`` (the InfiniteReality pipe) and ``sgi-mgras`` (the SI graphics
-board, whose widget answers XIO directly with no Bridge). Realizing a
+``sgi-kona`` (the InfiniteReality pipe), ``sgi-mgras`` (the IMPACT
+graphics board, whose widget answers XIO directly with no Bridge) and
+``sgi-odyssey`` (the VPro board). Realizing a
 board builds its own widget-facing device, then re-parents the board under
 ``/machine/module<N>`` so ``info qom-tree`` shows it where the hardware puts
 it.
@@ -1120,11 +1150,7 @@ GIGAchannel's cabinet Bridge is ``io7``). Its PCI bus follows QEMU's
 child-bus idiom, ``<id>.0``: a card goes into the carrier in IO2 with
 ``bus=io2.0``, and ``screendump device=io3`` names an SI board in IO3.
 
-These renames and the stock topologies break saved state from earlier
-builds: a default ``-M origin2000`` snapshot carries an ``sgi-mgras``
-section the stock machine no longer has, and board ids and bus names
-changed. Migration is supported only between identical builds, so no
-compatibility shim is kept.
+Migration is supported only between identical builds.
 
 The Onyx2 deskside is a different midplane, not only a different
 population. Its two node slots drive Hub slot-identity bits 3 and 2, where
@@ -1268,7 +1294,7 @@ resetting the node, with the warm reset reaching the nodes the Routers and
 the Hubs' protection registers admit. The model resets the machine, and no
 supported guest depends on the difference: every software reset path writes
 bits 7 and 0 together and so asks for the whole machine, and the Routers'
-masks and the Hubs' protection bit, still readable and writable, no longer
+masks and the Hubs' protection bit, still readable and writable, do not
 steer a reset. A module that is off is left off.
 
 The module start also resets every Crossbow the module's nodes reach and the
@@ -1396,6 +1422,13 @@ product sections of these pages state it.
      - ``scsi``
      - ``ioc3-ethernet``
      - R10000, R12000
+   * - ``origin350``, ``onyx350``, ``tezro``, ``onyx4-host``
+     - ``l1-uart``
+     - ``none``
+     - ``scsi.0``
+     - ``bcm5701-ethernet`` (``onyx350``, ``tezro``), ``unsupported``
+       (``origin350``, ``onyx4-host``)
+     - R16000
 
 .. _sgi-sn-launch-console:
 
@@ -1427,7 +1460,8 @@ Disk bus and other hints
 The disk bus is the QEMU SCSI bus id a launcher attaches the boot disk
 to: ``scsi.0`` is the first onboard SCSI controller's bus on every SN
 product. The netboot adapter names the device the stock PROM's netboot
-has been confirmed to drive on the model. The Origin 200 offering also
+has been confirmed to drive on the model; ``unsupported`` means the
+offering names none. The Origin 200 offering also
 asks launchers without a display to pass ``debug-leds=off``. Origin 300
 launchers support booting an installed IRIX disk and netboot but not an
 IRIX installation run; that is a harness limit, not a machine one. The
@@ -1439,14 +1473,11 @@ The install media list ``netboot`` where the harness installs IRIX by
 booting the miniroot over the netboot adapter from an install server, the
 PROM's "Install System Software" from a remote directory. The IRIX
 6.5.30 ``prom(1M)`` page documents that menu choice and its network
-source for SGI PROMs generally. On the model it was confirmed by complete
-IRIX 6.5.30 installs on 2026-10-24: an Origin 2000 with one node, BaseIO-G
-and an SI board, an Onyx2 rack with one node, an Octane with SI and an
-Octane2 with V12, each to the installed system's login prompt, and an
-Onyx2 deskside to the miniroot's first question. The Origin 2000 deskside
-and two-module offerings inherit the entry from the module layer without
-an install of their own. Fuel lists ``netboot`` for the harness's existing
-Fuel serial installation; no Fuel install was repeated for this entry.
+source for SGI PROMs generally. Complete IRIX 6.5.30 installs this way reach the
+installed system's login prompt on the Origin 2000, Onyx2 rack, Octane and
+Octane2. The Origin 2000 deskside and two-module offerings inherit the
+entry from the module layer. Fuel lists ``netboot`` for its serial
+installation.
 ``disk-image`` means a launcher can boot an installed disk image.
 
 The Origin 300 offering lists identity inputs a launcher may supply:
