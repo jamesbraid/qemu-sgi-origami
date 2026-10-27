@@ -422,6 +422,8 @@ struct SGIMachineState {
      * t->crossbars order: an I/O brick's chip, reached over an XIO cable.
      */
     DeviceState **enclosure_xbridges;
+    /* An IX-brick's or PX-brick's middle PIC, its enclosure crossbar. */
+    DeviceState *enclosure_pic;
     SGIXioLink *pic_links;
     size_t pic_host_count;
     SGIMachineNodeConfig *node_config;
@@ -1731,6 +1733,7 @@ static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
     case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
     case SGI_MODEL_IO_BOARD_PRESET_MENET:
     case SGI_MODEL_IO_BOARD_PRESET_MSCSI:
+    case SGI_MODEL_IO_BOARD_PRESET_PIC:
         return true;
     default:
         return false;
@@ -1752,7 +1755,19 @@ static bool sgi_machine_validate_board_cable(
     const SGIModelIoBoard *board = boards[board_end->index];
     const SGIModelCrossbar *crossbar = crossbars[port_end->index];
     const SGIModelXioAttachment *a = NULL;
+    bool pic_crossbar = crossbar->kind == SGI_MODEL_CROSSBAR_KIND_PIC;
 
+    /*
+     * An IX-brick or PX-brick builds single attachment: its middle PIC's
+     * links to the outer PICs, 0xc and 0xd, are the only board ports.
+     */
+    if (pic_crossbar && port_end->port != 0xc && port_end->port != 0xd) {
+        error_setg(errp, "topology '%s' XIO cable '%s' meets PIC crossbar "
+                   "'%s' at port 0x%x; its outer PICs are on ports 0xc and "
+                   "0xd, and no other port has a link", t->name, cable->name,
+                   crossbar->id, port_end->port);
+        return false;
+    }
     if (port_end->port < SGI_MACHINE_XIO_LINK_FIRST ||
         port_end->port > SGI_MACHINE_XIO_LINK_LAST) {
         error_setg(errp, "topology '%s' XIO cable '%s' meets crossbar '%s' "
@@ -1780,7 +1795,8 @@ static bool sgi_machine_validate_board_cable(
         return false;
     }
     if (board->populated &&
-        !sgi_machine_enclosure_board_preset(board->preset)) {
+        (!sgi_machine_enclosure_board_preset(board->preset) ||
+         pic_crossbar != (board->preset == SGI_MODEL_IO_BOARD_PRESET_PIC))) {
         error_setg(errp, "topology '%s' I/O board '%s' is cabled to crossbar "
                    "'%s'; preset '%s' is not built on an enclosure crossbar "
                    "yet", t->name, board->id, crossbar->id,
@@ -1902,6 +1918,27 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
             default:
                 break;
             }
+            if (crossbars[peer_end->index]->kind ==
+                SGI_MODEL_CROSSBAR_KIND_PIC) {
+                if (node->has_board_kind &&
+                    node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+                    error_setg(errp, "topology '%s' node '%s' is an Origin "
+                               "350 compute module; it cannot be named as "
+                               "an I/O attachment of PIC crossbar '%s'",
+                               t->name, node->id,
+                               crossbars[peer_end->index]->id);
+                    return false;
+                }
+                if (peer_end->port != 0xa) {
+                    error_setg(errp, "topology '%s' XIO cable '%s' meets PIC "
+                               "crossbar '%s' at port 0x%x; only single "
+                               "attachment at port 0xa is built, and no "
+                               "contract gives dual attachment", t->name,
+                               cable->name, crossbars[peer_end->index]->id,
+                               peer_end->port);
+                    return false;
+                }
+            }
             if (!sgi_machine_node_is_ip35(node)) {
                 error_setg(errp, "topology '%s' node '%s' has an XBridge on "
                            "its own board; only an IP35 node takes an XIO "
@@ -1954,7 +1991,8 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
         for (size_t a = 0; a < attachment_count; a++) {
             attached |= attachments[a]->crossbar_index == (int64_t)i;
         }
-        if (crossbars[i]->kind != SGI_MODEL_CROSSBAR_KIND_XBRIDGE) {
+        if (crossbars[i]->kind != SGI_MODEL_CROSSBAR_KIND_XBRIDGE &&
+            crossbars[i]->kind != SGI_MODEL_CROSSBAR_KIND_PIC) {
             error_setg(errp, "topology '%s' crossbar '%s' is not an XBridge; "
                        "an SN1 crossbar record is an I/O brick's XBridge",
                        t->name, crossbars[i]->id);
@@ -4043,6 +4081,11 @@ static bool sgi_machine_instantiate_io7(
  * other preset once, so this dispatch trusts it and only reports the
  * case it does not recognize.
  */
+static bool sgi_machine_instantiate_enclosure_pic(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXioAttachment *attachment, Error **errp);
+
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -4101,6 +4144,10 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_VBRICK:
         return sgi_machine_instantiate_vbrick(s, record, board_index,
                                               attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_PIC:
+        return sgi_machine_instantiate_enclosure_pic(s, t, record,
+                                                     board_index, attachment,
+                                                     errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
@@ -4152,6 +4199,118 @@ static void sgi_machine_set_enclosure_req64(const SGIModelTopology *t,
  * bus, so each chip's buses take its module's id as their prefix. The
  * N-brick's four chips share it; they carry no PCI device.
  */
+/*
+ * Connect INTA of each configuration device d on both heads of an
+ * enclosure PIC to the head's interrupt input d - 1; INTB to INTD stay
+ * unconnected, so the head logs an assertion of one. A reviewed transfer
+ * of the Origin 350 IO9 route, not measured brick wiring.
+ */
+static void sgi_machine_wire_enclosure_pic_intx(SGIPICState *pic)
+{
+    for (unsigned int head = 0; head < 2; head++) {
+        DeviceState *dev = sgi_pic_head_device(pic, head);
+
+        for (unsigned int device = 1; device <= 4; device++) {
+            qdev_connect_gpio_out_named(dev, "pci-intx", device * 4,
+                                        qdev_get_gpio_in(dev, device - 1));
+        }
+    }
+}
+
+/*
+ * An IX-brick's or PX-brick's middle PIC, built in its module as the
+ * enclosure crossbar under the enclosure head policy and handed to the
+ * node whose cable reaches it, which links and realizes it. Its PXBOW's
+ * revision is fixed by the composition, so a record naming another
+ * cannot be presented. Validation left one such crossbar, on port 0xa.
+ */
+static bool sgi_machine_create_pic_crossbar(SGIMachineState *s,
+                                            const SGIModelTopology *t,
+                                            const SGIModelCrossbar *record,
+                                            unsigned int node, Error **errp)
+{
+    g_autofree char *module_name = g_strdup_printf("module%u",
+                                                   record->module_index);
+    Object *container = object_resolve_path_component(OBJECT(s),
+                                                      module_name);
+    DeviceState *pic;
+    uint64_t revision;
+
+    g_assert(container);
+    if (s->enclosure_pic) {
+        error_setg(errp, "topology '%s' crossbar '%s' would be a second PIC "
+                   "enclosure crossbar; one is built", t->name, record->id);
+        return false;
+    }
+    pic = qdev_new(TYPE_SGI_PIC);
+    object_property_add_child(container, "pic", OBJECT(pic));
+    object_unref(OBJECT(pic));
+    revision = object_property_get_uint(OBJECT(pic), "pxbow-revision",
+                                        &error_abort);
+    if (revision != record->widget_revision) {
+        error_setg(errp, "topology '%s' crossbar '%s' names revision %u; "
+                   "the PIC enclosure crossbar presents revision %" PRIu64,
+                   t->name, record->id, record->widget_revision, revision);
+        return false;
+    }
+    qdev_prop_set_enum(pic, "compatibility-profile",
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_ENCLOSURE_EXPERIMENTAL);
+    if (!sgi_pic_enable_enclosure_crossbar(SGI_PIC(pic),
+                                           SGI_BEDROCK_IO_PIO_SIZE, errp) ||
+        !sn1_node_supply_pic_crossbar(SN1_NODE(s->bedrock_nodes[node]), pic,
+                                      errp)) {
+        return false;
+    }
+    /*
+     * The IX-brick's IO9 waits on its IOC4 port presence, its QLogic part
+     * and its BCM5701 identity; neither brick has another on-board device.
+     */
+    qemu_log_mask(LOG_UNIMP, "%s: PIC enclosure '%s' fits no on-board "
+                  "device; an IX-brick's IO9 in bus 1 slot 1 is not "
+                  "modelled\n", t->name, record->id);
+    s->enclosure_pic = pic;
+    return true;
+}
+
+/*
+ * An outer PIC of an IX-brick or PX-brick: its own widget on one link
+ * to the middle PIC's crossbar port the cable meets, under the same head
+ * policy. It is linked before it realizes, so its packets enter the
+ * crossbar at that port.
+ */
+static bool sgi_machine_instantiate_enclosure_pic(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXioAttachment *attachment, Error **errp)
+{
+    g_autofree char *module_name = g_strdup_printf("module%u",
+                                                   record->module_index);
+    g_autofree char *link_name = g_strdup_printf("io-board%u-link",
+                                                 board_index);
+    Object *container = object_resolve_path_component(OBJECT(s),
+                                                      module_name);
+    Object *crossbar =
+        OBJECT(s->enclosure_xbridges[attachment->crossbar_index]);
+    SGIXioLink *link = &s->board_links[board_index];
+    DeviceState *pic;
+
+    g_assert(container && object_dynamic_cast(crossbar, TYPE_SGI_PIC));
+    pic = qdev_new(TYPE_SGI_PIC);
+    object_property_add_child(container, record->id, OBJECT(pic));
+    object_unref(OBJECT(pic));
+    qdev_prop_set_enum(pic, "compatibility-profile",
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_ENCLOSURE_EXPERIMENTAL);
+    sgi_xio_link_init(link, OBJECT(s), link_name, crossbar,
+                      attachment->widget, OBJECT(pic), 0);
+    if (!sgi_xio_link_connect(link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(pic), errp) ||
+        !sgi_xio_link_connect(link, errp)) {
+        return false;
+    }
+    sgi_machine_wire_enclosure_pic_intx(SGI_PIC(pic));
+    return true;
+}
+
 static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
                                                   const SGIModelTopology *t,
                                                   Error **errp)
@@ -4184,6 +4343,13 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
         hosted = sgi_machine_crossbar_host(t, i, &node, &port);
         g_assert(record->module_index < module_count);
         if (!hosted) {
+            continue;
+        }
+        if (record->kind == SGI_MODEL_CROSSBAR_KIND_PIC) {
+            if (!sgi_machine_create_pic_crossbar(s, t, record, node, errp)) {
+                return false;
+            }
+            s->enclosure_xbridges[i] = s->enclosure_pic;
             continue;
         }
         /*
@@ -4332,6 +4498,10 @@ static bool sgi_machine_build_board_cables(SGIMachineState *s,
         }
     }
 
+    /* The middle PIC realized with its node; its heads' INTx wire now. */
+    if (s->enclosure_pic) {
+        sgi_machine_wire_enclosure_pic_intx(SGI_PIC(s->enclosure_pic));
+    }
     boards = sgi_model_io_board_array(t->io_boards, &board_count);
     attachments = sgi_model_xio_attachment_array(t->xio_attachments,
                                                  &attachment_count);

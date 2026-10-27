@@ -1623,6 +1623,72 @@ static void bedrock_test_install_pbrick(void)
 }
 
 /*
+ * A three-PIC I/O enclosure, as the PIC enclosure approximation builds
+ * one: c1 cabled to port A (0xa) of the middle PIC's crossbar, the lower
+ * and upper PICs on its ports C and D (0xc and 0xd), the middle PIC's own
+ * heads at 0xf, and no L1. The enclosure is a PX-brick, or an IX-brick
+ * whose IO9 is not fitted yet; nothing else tells the two apart in this
+ * build. c0 carries no XIO. A fault string selects one of the refusals:
+ * a second host cable, an Origin 350 module as the host, or an outer PIC
+ * cabled to port 8.
+ */
+static uint64_t pic_enclosure_bank_mib[] = { 0, 0, 64, 0, 0, 0, 0, 0 };
+
+static void bedrock_test_install_pic_enclosure(const char *module,
+                                               const char *fault)
+{
+    g_autofree char *lower = g_strdup_printf("%s-pic-lower", module);
+    g_autofree char *upper = g_strdup_printf("%s-pic-upper", module);
+    uint8_t lower_port = !strcmp(fault, "outer-on-port-8") ? 8 : 0xc;
+
+    cbrick_test_install_nodes(2);
+    /* c1's memory sits in bank 2, one of its installed banks. */
+    cbrick_test_nodes[1].bank_mib = uint64_list(
+        pic_enclosure_bank_mib, ARRAY_SIZE(pic_enclosure_bank_mib));
+    cbrick_test_modules[2] = (SGIModelModule) {
+        .id = (char *)module, .controller_index = -1,
+        .has_controller = true,
+        .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+    };
+    cbrick_test_crossbars[0] = (SGIModelCrossbar) {
+        .id = (char *)"enclosure-pic", .module_index = 2,
+        .kind = SGI_MODEL_CROSSBAR_KIND_PIC, .widget_revision = 5,
+    };
+    cbrick_test_xio[0] = (SGIModelXioAttachment) {
+        .crossbar_index = 0, .widget = 15, .node_index = 1,
+    };
+    cbrick_test_xio[1] = (SGIModelXioAttachment) {
+        .crossbar_index = 0, .widget = lower_port, .node_index = 1,
+    };
+    cbrick_test_xio[2] = (SGIModelXioAttachment) {
+        .crossbar_index = 0, .widget = 0xd, .node_index = 1,
+    };
+    for (unsigned int i = 0; i < 2; i++) {
+        cbrick_test_io_boards[i] = (SGIModelIoBoard) {
+            .id = fixture_remember(g_strdup(i ? upper : lower)),
+            .module_index = 2, .populated = true,
+            .preset = SGI_MODEL_IO_BOARD_PRESET_PIC,
+            .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+            .has_attachment = true, .attachment = 1 + i,
+        };
+    }
+    cbrick_test_publish(3, 1, 3, 2);
+    cbrick_test_add_xio_cable("c1-to-enclosure", cbrick_node_end(1),
+                              cbrick_crossbar_end(0, 0xa));
+    cbrick_test_add_xio_cable("middle-to-lower",
+                              cbrick_crossbar_end(0, lower_port),
+                              cbrick_board_end(0));
+    cbrick_test_add_xio_cable("middle-to-upper", cbrick_crossbar_end(0, 0xd),
+                              cbrick_board_end(1));
+    if (!strcmp(fault, "second-host")) {
+        cbrick_test_add_xio_cable("c0-to-enclosure", cbrick_node_end(0),
+                                  cbrick_crossbar_end(0, 0xb));
+    } else if (!strcmp(fault, "origin350-host")) {
+        cbrick_test_nodes[1].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    }
+}
+
+/*
  * An R-brick-shaped module: two or four C-bricks, with no XIO, each
  * cabled to its own port of one SN1 router, which sits in a module of
  * its own with its own controller and takes nodes on ports 2 to 5 only,
@@ -2029,6 +2095,14 @@ static void bedrock_test_set_construction_fault(Object *obj,
         bedrock_test_install_cbrick_board(0xb);
     } else if (!strcmp(value, "cbrick-origin3200-xbrick")) {
         bedrock_test_install_origin3200_xbrick();
+    } else if (g_str_has_prefix(value, "pxbrick") ||
+               g_str_has_prefix(value, "ixbrick")) {
+        g_autofree char *module = g_strndup(value, strlen("pxbrick"));
+        const char *fault = value + strlen("pxbrick");
+
+        bedrock_test_install_pic_enclosure(
+            fixture_remember(g_steal_pointer(&module)),
+            *fault == '-' ? fault + 1 : fault);
     } else if (g_str_has_prefix(value, "cbrick-")) {
         if (!bedrock_test_install_cbrick_fault(value + strlen("cbrick-"))) {
             error_setg(errp, "unknown sn-builder-bedrock-test construction "

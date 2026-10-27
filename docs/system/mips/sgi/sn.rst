@@ -296,6 +296,45 @@ built: whether U1 and U2 present each head on its own link, which head
 rides which link, the PCI device number of each slot and the slots'
 interrupt wiring all lack a reviewed contract.
 
+.. _sgi-sn-family-ixpx:
+
+IX-brick and PX-brick PIC enclosures
+------------------------------------
+
+Both bricks hold three PICs. The middle one serves buses 3 and 4, meets
+the two Crosstown2 connectors on its ports A and B, and joins the lower
+PIC (buses 1 and 2) and the upper PIC (buses 5 and 6) by one link each
+(established, 007-4604-001 Figure 2 and 007-4605-001 Figure 2). The
+model builds the middle PIC's integrated PXBOW as the enclosure
+crossbar, with the host on port 0xa, the lower PIC on 0xc, the upper on
+0xd and the middle PIC's own heads on 0xf; links present, alive at
+startup and restored by a link reset are those four. That port reading
+follows the XBridge port letters as hex digits and the public Linux
+Altix brick table; it is a reviewed approximation, not a measured
+board. Every PIO, DMA and interrupt packet crosses the crossbar: no PIC
+has a direct Bedrock peer. Each packet enters at its PIC's port and
+reaches the Bedrock as a packet from that widget, so the Bedrock's
+inbound access register governs it per PIC. Interrupt packets go to the
+host port the cable meets, with the level in destination bits 63:48.
+
+All six heads run ``pic-rev3-enclosure-experimental``: the PIC register
+layout at revision 3, configuration device 0 reserved, the direct
+32-bit DMA window and the ``DIR_MAP`` field rule, and none of the IP53
+compatibility behaviours (no held-input reassertion, no IP35 PROM reset
+values or masks, no 32-bit control writes, no direct64 decode). Head 0
+drives the lower-numbered bus. INTA of configuration device *d* drives
+interrupt input *d* - 1; INTB to INTD reach no input and are logged. A
+failed DMA send is logged by the PIC from its own result.
+
+Only single attachment is built: a cable to port 0xb, a cable from an
+Origin 350 compute module and a board on any other crossbar port are
+refused. Neither brick has an L1, and no on-board device is fitted: the
+IX-brick's IO9 waits on contracts for its IOC4 port presence, its
+QLogic part and its BCM5701 identity, so its bus 1 slot 1 is empty and
+logged as such. No catalogued machine builds either brick yet, because
+no reviewed configuration attaches one to a C-brick; the builder test
+builds them.
+
 .. _sgi-sn-family-rbrick:
 
 R-brick and NUMAlink module ports

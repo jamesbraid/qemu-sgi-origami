@@ -45,6 +45,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/pci-host/sgi-pic.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-bedrock-pi.h"
@@ -2367,10 +2368,60 @@ static bool sn1_node_join_supplied_xbridge(SN1NodeState *node, Error **errp)
     return true;
 }
 
+/*
+ * The IP35 path for an IX-brick or PX-brick: join the middle PIC whose
+ * integrated crossbar the cable reaches at port 10. The crossbar does the
+ * routing, so every widget number goes to it: widget 0 to its registers,
+ * the others through its host port, where a number with no live link
+ * takes the crossbar's own unreachable or illegal-destination path.
+ */
+static bool sn1_node_join_supplied_pic_crossbar(SN1NodeState *node,
+                                                Error **errp)
+{
+    SGIPICState *pic = SGI_PIC(node->supplied_pic_crossbar);
+
+    sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "pic-crossbar-link",
+                      OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
+                      OBJECT(pic), 10);
+    if (!sgi_xio_link_connect(&node->xbridge_link, errp) ||
+        !sysbus_realize(SYS_BUS_DEVICE(pic), errp)) {
+        return false;
+    }
+    for (unsigned int widget = 0; widget < SGI_XIO_WIDGETS; widget++) {
+        g_autofree char *property = g_strdup_printf("widget-%u", widget);
+        MemoryRegion *view = sgi_pic_enclosure_widget_view(pic, widget, errp);
+
+        if (!view) {
+            return false;
+        }
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(view), &error_abort);
+    }
+    return true;
+}
+
+bool sn1_node_supply_pic_crossbar(SN1NodeState *node, DeviceState *pic,
+                                  Error **errp)
+{
+    if (qdev_is_realized(DEVICE(node)) || node->supplied_xbridge ||
+        node->supplied_pic_crossbar) {
+        error_setg(errp, "an enclosure crossbar is supplied once, before the "
+                   "node realizes");
+        return false;
+    }
+    object_property_add_link(OBJECT(node), "pic-crossbar", TYPE_SGI_PIC,
+                             (Object **)&node->supplied_pic_crossbar,
+                             qdev_prop_allow_set_link_before_realize,
+                             OBJ_PROP_LINK_STRONG);
+    return object_property_set_link(OBJECT(node), "pic-crossbar",
+                                    OBJECT(pic), errp);
+}
+
 bool sn1_node_supply_xbridge(SN1NodeState *node, DeviceState *xbridge,
                              Error **errp)
 {
-    if (qdev_is_realized(DEVICE(node)) || node->supplied_xbridge) {
+    if (qdev_is_realized(DEVICE(node)) || node->supplied_xbridge ||
+        node->supplied_pic_crossbar) {
         error_setg(errp, "an XBridge is supplied once, before the node "
                    "realizes");
         return false;
@@ -2633,6 +2684,10 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
     if (node->supplied_xbridge) {
         if (!sn1_node_join_supplied_xbridge(node, errp)) {
+            return false;
+        }
+    } else if (node->supplied_pic_crossbar) {
+        if (!sn1_node_join_supplied_pic_crossbar(node, errp)) {
             return false;
         }
     } else if (!node->ip53_assembly_validated &&
@@ -2959,7 +3014,8 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
         return;
     }
     /* An IP35 board has no XBridge, so none of its riser or IO-8 wiring. */
-    if (node->supplied_xbridge && !sn1_node_is_ip35(node)) {
+    if ((node->supplied_xbridge || node->supplied_pic_crossbar) &&
+        !sn1_node_is_ip35(node)) {
         error_setg(errp, "sgi-sn1-node takes a supplied XBridge only on "
                    "board kind 'ip35'");
         return;
