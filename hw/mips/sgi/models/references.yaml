@@ -1393,6 +1393,46 @@ web:
     obtain:
       url: null
       message_id: "<3E2794B8.669DBAE1@machtnix.net>"
+  irixnet-thread-2737:
+    title: "IRIXnet thread 2737, Origin 300 serial console session with L1 1.18.5"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-2737.html
+  nekonomicon-16724335:
+    title: "Nekochan forum archive thread 16724335, two-brick Origin 300 with router, L1 1.48.1"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16724335/1.html
+  graphica-tezro-hinv:
+    title: "John Hartley's quad-CPU V12 Tezro inventory"
+    publisher: "John Hartley"
+    kind: capture
+    locator: section
+    rights: obtain-only
+    obtain:
+      url: https://just.graphica.com.au/tips/what-is-inside-that-box-sgi-hinv/#quad-cpu-v12-tezro
+  irixnet-post-26015:
+    title: "IRIXnet thread 785, post 26015, Tezro hinv -vm"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-785-post-26015.html
+  irixnet-thread-3613:
+    title: "IRIXnet thread 3613, 1 GHz Tezro PROM inventory"
+    publisher: "IRIXnet forums"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://forums.irixnet.org/thread-3613.html
   usenet-6kd8bj:
     title: "comp.sys.sgi.marketplace, 1998-05-25, dual-module Origin 200 for sale, Message-ID <6kd8bj$diu$1@news2.ispnews.com>"
     publisher: "Usenet"
