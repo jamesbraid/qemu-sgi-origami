@@ -153,6 +153,12 @@ typedef struct SGIIOCSerialDMAOps {
      * the engine raises the port's DMA error source.
      */
     void (*dma_error)(void *opaque, unsigned port, bool rx, hwaddr addr);
+    /*
+     * Rewrite a received character's status byte. Optional; IOC4 keeps its
+     * earlier status values through it until it takes the engine's.
+     */
+    uint8_t (*rx_status)(void *opaque, unsigned port, uint8_t status,
+                         bool loopback);
 } SGIIOCSerialDMAOps;
 
 typedef struct SGIIOCSerialDMA SGIIOCSerialDMA;
@@ -264,6 +270,9 @@ void sgi_ioc_sdma_kick(SGIIOCSerialDMA *d, unsigned port);
 void sgi_ioc_sdma_set_tx_ready(SGIIOCSerialDMA *d, unsigned port, bool level);
 /* Apply loopback arrivals and timer expiries already due. */
 void sgi_ioc_sdma_catch_up(SGIIOCSerialDMA *d);
+
+/* Recompute the level-following sources, as after a migration. */
+void sgi_ioc_sdma_refresh(SGIIOCSerialDMA *d);
 
 /* No transfer is under way: what a chip's DMA idle status reports. */
 bool sgi_ioc_sdma_idle(SGIIOCSerialDMA *d);

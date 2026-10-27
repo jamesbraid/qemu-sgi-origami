@@ -48,6 +48,7 @@ config SGI_IOC4
     depends on PCI
     select SERIAL
     select SGI_IOC3_KBC
+    select SGI_IOC_SERIAL_DMA
 
 config SGI_IOC3_PARALLEL
     bool
