@@ -626,8 +626,8 @@ typedef struct SGIKonaGLHistogram {
 /*
  * glRenderMode's state on one context (see sgi_kona_gl_render_mode()):
  * the mode 0x19 last gave, the feedback type 0x17 last gave, and the name
- * stack. The stack holds OpenGL 1.2.1's least depth, 64; what the pipe
- * holds is unknown.
+ * stack. The stack holds 64 names: the client library sets that limit
+ * when it creates a context and answers it for GL_MAX_NAME_STACK_DEPTH.
  */
 #define SGI_KONA_GL_RENDER          0x1c00
 #define SGI_KONA_GL_FEEDBACK        0x1c01

@@ -6270,7 +6270,8 @@ static void sgi_kona_gl_raster_nothing(void *opaque, const SGIRasterOp *op)
  * fragment reaches the framebuffer (OpenGL 1.2.1, sections 5.2 and 5.3),
  * so every draw, pixel and bitmap goes nowhere. So does a clear, which
  * the specification does not name; Mesa skips it the same way (model
- * choice). The fence still answers glFinish.
+ * choice; what a real pipe does with a clear in these modes is unknown).
+ * The fence still answers glFinish.
  */
 static void sgi_kona_gl_sink(SGIKonaState *s, SGIGLSink *sink)
 {
@@ -9084,6 +9085,10 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
         n = 1;
     } else if (name == 0xbb0) {
         native[0] = s->state[i]->attrib_depth;
+        n = 1;
+    } else if (name == 0xd70) {
+        /* GL_NAME_STACK_DEPTH: the names on the stack now. */
+        native[0] = s->state[i]->render.name_count;
         n = 1;
     } else if (name >= 0xcb0 && name <= 0xcb9) {
         const SGIKonaGLPixelTransfer *t = &s->state[i]->pipe.pixel_transfer;
