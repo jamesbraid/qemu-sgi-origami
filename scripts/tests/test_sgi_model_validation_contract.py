@@ -1940,6 +1940,30 @@ class Origin3000BrickValidationTests(unittest.TestCase):
         del model["xio_cables"][0]["sources"]
         self.assertFails(model, "schema:")
 
+    def test_cbrick_root_carries_its_l1_brick_type(self):
+        model = self.model()
+        self.assertEqual(self.component(model, "c0-chassis")["brick_type"],
+                         "C")
+        self.assertEqual(
+            [item["id"] for item in model["components"]
+             if "brick_type" in item],
+            ["c0-chassis"])
+
+    def test_brick_type_outside_the_established_set_is_refused(self):
+        for letter in ("I", "R", "c", "6"):
+            with self.subTest(letter=letter):
+                model = self.model()
+                self.component(model, "ibrick-brick")["brick_type"] = letter
+                self.assertFails(
+                    model, f"component 'ibrick-brick' brick_type '{letter}' "
+                    "is not an established L1 brick type")
+
+    def test_brick_type_belongs_on_a_module_root(self):
+        model = self.model()
+        self.component(model, "c0-bedrock")["brick_type"] = "C"
+        self.assertFails(model, "component 'c0-bedrock' carries "
+                         "brick_type but is not a chassis or module")
+
 
 if __name__ == "__main__":
     unittest.main()

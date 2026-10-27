@@ -2046,6 +2046,12 @@
         "name": { "type": "string", "description": "Canonical name from the component taxonomy. Prose uses this exact string." },
         "kind": { "$ref": "#/$defs/component-kind" },
         "board_record": {"type": "object", "required": ["role", "barcode", "part", "revision", "name", "serial"], "additionalProperties": false, "properties": {"role": {"type": "string", "minLength": 1}, "barcode": {"type": "string", "minLength": 1}, "part": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "serial": {"$ref": "#/$defs/address"}}},
+        "brick_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1,
+          "description": "The character a module's L1 returns as its brick type, carried on the module's root component. Only established characters are accepted: 4 (0x34) for the Origin 300's IP45 and C (0x43) for the C-brick's IP35. A brick whose character no source establishes leaves it unset."
+        },
         "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
         "ds1742_fresh_year_base": {
           "type": "integer",
