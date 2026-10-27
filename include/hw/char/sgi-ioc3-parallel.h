@@ -71,8 +71,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_ECP_SIZE       (SGI_IOC3_PAR_ECP_EXTENDED + 1)
 
 /*
- * nFault is active low. A port with a peripheral behind its backend reports
- * no fault and no other input. Bit 7 reads the inverse of the BUSY pin.
+ * The status lines as the external SuperIO part reads them: bit 7 is the
+ * inverse of the Busy pin, bits 6 to 3 are nAck, PError, Select and nFault
+ * as the pins stand (nAck and nFault are active low). Bit 2 (the part's
+ * PRINT interrupt indicator) is not modelled and reads clear.
  */
 #define SGI_IOC3_PAR_STATUS_ATTENTION (1u << 2)
 #define SGI_IOC3_PAR_STATUS_NFAULT    (1u << 3)
@@ -80,7 +82,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3ParallelState, SGI_IOC3_PARALLEL)
 #define SGI_IOC3_PAR_STATUS_PAPER     (1u << 5)
 #define SGI_IOC3_PAR_STATUS_NACK      (1u << 6)
 #define SGI_IOC3_PAR_STATUS_BUSY      (1u << 7)
-#define SGI_IOC3_PAR_STATUS_IDLE      SGI_IOC3_PAR_STATUS_NFAULT
+/*
+ * A ready printer: Busy low (bit 7 set), nAck high, Select high, no paper
+ * error, nFault high. Every host backend is taken as one that always
+ * accepts what is sent, an approximation: a file or pty never holds Busy.
+ */
+#define SGI_IOC3_PAR_STATUS_READY     (SGI_IOC3_PAR_STATUS_BUSY | \
+                                       SGI_IOC3_PAR_STATUS_NACK | \
+                                       SGI_IOC3_PAR_STATUS_SELECT | \
+                                       SGI_IOC3_PAR_STATUS_NFAULT)
 /*
  * Nothing on the connector: each of the five inputs sits at the level a
  * pull-up gives it, high. BUSY high reads as a clear bit 7.
