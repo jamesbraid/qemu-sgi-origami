@@ -18,13 +18,12 @@ profile for one processor: it gives the stock IP30 PROM and IRIX 6.5.30
 the registers they use, and it is not a revision-matched description
 of the chip.
 
-Facts below are rated *established* (a cited manual or a measurement of
-an identified machine), *observed* (a published capture), *software
-expectation* (what a public driver or a shipped IRIX 6.5.30 binary
-reads, writes or requires; it shows what software needs, not what the
-chip does), *inferred*, *approximation* (a model choice where the
-hardware is not known) or *unknown*. No HEART specification is public,
-so most register behaviour here is approximation.
+Facts are rated as described in :ref:`sgi-ratings`. No HEART
+specification is public, so most register behaviour here is
+approximation. What the stock PROM and IRIX kernel did on this model is
+a *software expectation* observed on the model: it shows what that
+software asks of HEART and what the model answered, not what HEART
+does.
 
 .. _sgi-heart-sources:
 
@@ -37,7 +36,7 @@ Sources
   Crossbow, and its monitoring of I/O writes for cache coherence.
   Printed pages 2-21 to 2-23 describe memory banks. It gives no register
   values.
-- The owner's guides :src:`007-3435-004 p. 54` (Octane) and
+- The Owner's Guides :src:`007-3435-004 p. 54` (Octane) and
   :src:`007-4207-002 p. 47` (Octane2): DIMM pairs, bank order and bank
   capacities.
 - OpenBSD ``sys/arch/sgi/xbow/xheartreg.h``, ``xheart.c``,
@@ -61,6 +60,10 @@ Sources
   for the meaning of a one-wire reset slot.
 - The IP30 PROM and the IP30 kernel and stock diagnostic shipped with
   IRIX 6.5.30, read as binaries, as software expectations.
+- The same PROM, :src:`ip30-prom-4.17 memory sizing`, and the IRIX
+  6.5.30 kernel it boots, run on the ``octane2`` model with QEMU's
+  trace events recording every HEART and Bridge register access. These
+  are software expectations observed on the model.
 - Reads taken on the reference Octane2 (:ref:`sgi-heart-measurements`).
 
 .. _sgi-heart-identity:
@@ -126,7 +129,21 @@ at ``0x50000`` reads zero. These are *approximations* for the
 one-processor profile. The full status word of either revision is
 *unknown*. The IRIX 6.5.30 kernel takes the low nibble of status as the
 destination widget for PCI DMA, a *software expectation*; with a zero
-nibble it would send SCSI DMA to widget 0.
+nibble it would send SCSI DMA to widget 0. On the model the PROM reads
+status and the processor ID register repeatedly during startup
+(:src:`ip30-prom-4.17 processor status`), a *software expectation*
+observed on the model; what it would do with another answer is not
+shown.
+
+OpenBSD reads the processor ID register to learn which processor is
+running (``include/asm.h`` lines 16-19, ``sgi/locore.S`` lines 93-100
+and ``sgi/ip30_nmi.S`` lines 25 and 56-62 under ``sys/arch/sgi`` at
+``2df91d80c104``), treating zero as processor 0. Linux names status
+bits 7:4 as the processor-active bits and mode bits 63:60 as
+processor disables (``arch/mips/include/asm/sgi/heart.h`` lines 158-160
+and 230-240 at ``db2ddb871435``) but uses neither. Neither driver reads
+processor presence from HEART: both scan the PROM's per-processor
+blocks in memory. These are *software expectations*.
 
 .. _sgi-heart-registers:
 
@@ -349,16 +366,21 @@ the ``octane`` fails the read. A 32-bit read of either half and any
 write fail on both machines.
 
 The IP30 PROM reads, modifies and writes the 32-bit control word at
-``0x24``, a *software expectation*. The model stores all 32 bits and
+``0x24``, a *software expectation*. On the model it reads zero and
+writes ``0x4008``, and later reads that back and writes ``0x4c08``
+(:src:`ip30-prom-4.17 widget registers`). The model stores all 32 bits and
 returns them; zero reset and full writability are *approximations*.
 
 The request-timeout word is one stored 32-bit value. A 32-bit access at
 ``0x2c`` and a 64-bit access at ``0x28`` reach it; a 64-bit write keeps
-its low 32 bits and a 64-bit read returns zero in the upper half. The
-IRIX 6.5.30 kernel reads the 32-bit word while attaching I/O and writes
-``0x80`` when the value is lower, a *software expectation*; from the
-model's zero it takes that write. The reference Octane2 read ``0x28``
-after PROM startup (:ref:`sgi-heart-octane2-timeout`). The unit and the
+its low 32 bits and a 64-bit read returns zero in the upper half. On
+the model the PROM writes ``0x28`` to the 32-bit word and the IRIX
+6.5.30 kernel later writes ``0x9c40`` and reads it back
+(:src:`ip30-prom-4.17 widget registers`), *software expectations*
+observed on the model. Neither writes the 64-bit view. The reference
+Octane2 read ``0x28`` after PROM startup
+(:ref:`sgi-heart-octane2-timeout`); that its PROM wrote that value is
+*inferred* from the same value on the model. The unit and the
 effect of the timeout are *unknown*; the model times out nothing.
 
 .. _sgi-heart-widget-errors:
@@ -366,12 +388,24 @@ effect of the timeout are *unknown*; the model times out nothing.
 Widget error registers
 ----------------------
 
-The IRIX 6.5.30 kernel reads error status at ``0x60``, writes the value
-back, zeroes the error command word at ``0x44`` and writes
-``0x3ff62c07`` to the error mask at ``0x68``, a *software expectation*
-that suggests write-one-to-clear status and a writable mask. The reference
-Octane2 read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM
-startup (:ref:`sgi-heart-octane2-widget`).
+No public source defines HEART widget registers at ``0x60``, ``0x68``,
+``0x70``, ``0x78`` or ``0x90``. Linux and OpenBSD define ``0x44`` only
+as the common widget error command word
+(``arch/mips/include/asm/xtalk/xwidget.h`` line 26 at ``db2ddb871435``,
+``sys/arch/sgi/xbow/widget.h`` lines 22-53 at ``2df91d80c104``).
+
+On the model the PROM writes ``0x3ff7fc0f`` to the error mask at
+``0x68``, later writes zero to ``0x44``, writes ``0x3ff7fc0f`` to error
+status at ``0x60`` and acknowledges pending bits 51-58. The IRIX 6.5.30
+kernel writes zero to the mask, reads status and writes the value back,
+zeroes ``0x44``, reads cause and writes zero to it, then writes
+``0x3ff62c07`` to the mask (:src:`ip30-prom-4.17 widget registers`).
+These are *software expectations* observed on the model; they suggest
+write-one-to-clear status and a writable mask. The reference Octane2
+read zero at ``0x60`` and ``0x3ff7fc0f`` at ``0x68`` after PROM startup
+(:ref:`sgi-heart-octane2-widget`); that the PROM wrote that mask is
+*inferred* from the same value on the model. What each bit means is
+*unknown*.
 
 The model has no error source. Status reads zero and a 64-bit write to
 it is accepted and changes nothing. The mask stores the low 32 bits of a
@@ -381,8 +415,14 @@ takes only a zero write.
 After a bus error, including the one a guarded probe of an absent PCI
 device takes, the IRIX 6.5.30 kernel reads ``0x60`` (64-bit), ``0x44``,
 ``0x14`` and ``0x1c`` (32-bit), then ``0x90``, ``0x70`` and ``0x78``
-(64-bit), a *software expectation*. Linux names ``0x14``, ``0x1c`` and
-``0x44`` as common widget registers. The model answers every one of
+(64-bit), a *software expectation*; on the model it reads each of
+these, and processor-interface ``0x88``, ``0x90``, ``0x98``, ``0xa0``
+and ``0xa8``, three times before the login prompt. Linux names
+``0x14``, ``0x1c`` and ``0x44`` as common widget registers, and the
+processor-interface words as bus-error address and miscellaneous,
+memory-error address and data, and processor-interface access error,
+with no field layout (``arch/mips/include/asm/sgi/heart.h`` lines 40-43
+and 97-102). The model answers every one of
 these reads with zero, which the kernel treats as no recorded error, an
 *approximation*: what HEART records after a Bridge timeout is *unknown*.
 
@@ -393,15 +433,20 @@ Memory bank descriptors and the PROM's sizing probe
 
 The eight 32-bit descriptors at ``0x20``-``0x3c`` follow OpenBSD
 ``xheartreg.h`` and Linux ``heart.h``, which agree: bit 31 marks a valid
-bank, bits 24:22 are a density code, bits 21:16 are one less than the
-bank's size in 32 MiB units, and bits 8:0 are its base in 32 MiB units
-above ``0x20000000``. Neither public kernel uses the density code to
-size a bank. A 32-bit access reaches any word; a 64-bit access at
-``0x20``, ``0x28``, ``0x30`` or ``0x38`` reaches two words, the lower
-offset in the upper half. Words 0-3 map banks 0-3; words 4-7 are
-stored and map nothing. Each owner's guide numbers its banks 1 to 4;
-that guide bank 1 is descriptor 0 is *inferred*, not a measured wiring
-fact.
+bank, bits 24:22 are a density code, bits 21:16 are one less than the bank's
+size in 32 MiB units, and bits 8:0 are its base in 32 MiB units above
+``0x20000000``. Neither public kernel uses the density code to size a bank.
+A 32-bit access reaches any word; a 64-bit access at ``0x20``, ``0x28``,
+``0x30`` or ``0x38`` reaches two words, the lower offset in the upper half.
+Words 0-3 map banks 0-3; words 4-7 are stored and map nothing. Linux reads
+only words 0-3 and its header notes eight slots in four banks of two
+(``arch/mips/include/asm/sgi/heart.h`` lines 15-19 and 72-77,
+``arch/mips/sgi-ip30/ip30-setup.c`` lines 48-79 at ``db2ddb871435``).
+OpenBSD reads all eight (``sys/arch/sgi/sgi/ip30_machdep.c`` lines 94-140 at
+``2df91d80c104``). The six-bit size field allows at most 2 GiB a bank.
+Whether HEART decodes words 4-7 is *unknown*. Each Owner's Guide numbers its
+banks 1 to 4; that guide bank 1 is descriptor 0 is *inferred*, not a
+measured wiring fact.
 
 A bank holds two matched DIMMs and banks fill from bank 1 without a gap
 (:src:`007-3435-004 p. 54`, :src:`007-4207-002 p. 47`), *established*.
@@ -420,7 +465,9 @@ guest started without the PROM finds its RAM mapped. These are
 *approximations*.
 
 The PROM sizes each bank itself, a *software expectation* from the
-shipped IP30 PROM. It clears the four descriptors with two 64-bit
+shipped IP30 PROM, observed on the model
+(:src:`ip30-prom-4.17 memory sizing`). On the model it touches only
+words 0-3. It clears the four descriptors with two 64-bit
 writes, writes a temporary descriptor ``0x81bf0040`` (valid, 2 GiB,
 density 6, base ``0x40``) to each bank, and tests presence at offsets 0
 and 8. It then picks the capacity from a sixteen-word table of
@@ -431,7 +478,10 @@ on a match. On revision 6 and later it writes zero at the bank base,
 writes all ones at half the provisional size and reads the base back:
 a nonzero read shows the write aliased onto the base and halves the
 descriptor, and a zero read keeps it. Last, it assigns bases largest
-bank first and writes the final descriptors. The IRIX 6.5.30 kernel
+bank first and writes the final descriptors. While it probes banks 1-3
+it parks bank 0's descriptor invalid at base ``0x1ff``. On a 256 MiB
+``octane2`` the sequence ends with ``0x81470000`` in word 0 and zero in
+words 1-3, the value the reference Octane2 reports. The IRIX 6.5.30 kernel
 only reads the descriptors: it sums ``(size + 1) * 32 MiB`` over the
 valid ones in banks 0-3 and never reads the density code.
 
@@ -504,8 +554,16 @@ board, would settle them.
 
 The PROM also writes mode bits 21, 11 and 4 before its probe and clears
 bit 21 after it, writes ``0x00084000`` to memory refresh and eight
-values ``(index << 16) | 0x21`` to SDRAM mode, a *software
-expectation*. The model stores these writes with no electrical effect.
+values ``(index << 16) | 0x21`` to SDRAM mode
+(:src:`ip30-prom-4.17 mode writes`), a *software expectation*
+observed on the model. Every mode write is a read-modify-write. Later
+it sets mode bits 61-63, which Linux names processor disables for
+processors 1-3, then bit 17 (Linux ``HM_CACHED_PROM_EN``), bit 13
+(interrupt enable), and finally the error-enable bits 0-3, 5-8, 10, 12,
+14-16 and bit 25, leaving ``0xe00000000203fdff``. The kernel reads that
+value and does not change it. The model stores these writes with no
+electrical effect, except as :ref:`sgi-heart-interrupts` and
+:ref:`sgi-heart-ecc` describe.
 
 .. _sgi-heart-interrupts:
 
@@ -518,10 +576,30 @@ into five levels: bits 0-15 level 0, 16-31 level 1, 32-49 level 2, bit
 exception). Linux sends levels 0-4 to CPU interrupt lines IP2-IP6. Both
 drivers set, clear and mask bits through the registers in the map and
 read pending separately from the mask. These are *software
-expectations*. The IRIX 6.5.30 kernel clears all four masks, writes
-``0x8800440000000000`` to processor 0's mask before it starts Crossbow
-and IOC3, reads ``0x10038`` in its dispatcher and acknowledges a source
-by writing its bit to ``0x10028``.
+expectations*. At start-up Linux writes zero to all four masks,
+acknowledges every bit through ``0x10028`` and adds the error sources
+``0x8ff8000000000000`` to processor 0's mask: the HEART exception, its
+own bus error and the Crossbow and widget errors
+(``arch/mips/sgi-ip30/ip30-irq.c`` lines 271-286 at ``db2ddb871435``).
+OpenBSD acknowledges everything first, then zeroes the masks, and never
+enables bits 50-63 (``sys/arch/sgi/xbow/xheart.c`` lines 157-177 at
+``2df91d80c104``). Both send inter-processor interrupts by writing a bit
+to ``0x10020``. OpenBSD names bit 41 the power button, 42 + *n* debug
+and 46 + *n* the IPI for processor *n*. Linux never writes ``0x10040``;
+no public source says how a cause bit clears.
+
+On the model, the PROM zeroes masks 0-2 after walking a one through all 64
+bits of mask 3, then enables bit 41, the processor 0 bus error (59) and the
+HEART exception (63) in mask 0. It polls pending rather than enabling a
+source it is waiting on, reads cause, writes zero to it and acknowledges
+through ``0x10028`` (:src:`ip30-prom-4.17 interrupt masks`). The IRIX
+6.5.30 kernel clears all four masks, writes ``0x8800440000000000`` (bits 42,
+46, 59, 63) to processor 0's mask, adds bits 16, 17, 41, 57 and 58 and the
+level-0 device bits 3-6 as it attaches, reads ``0x10038`` in its dispatcher
+and acknowledges a source by writing its bit to ``0x10028``. It writes
+``0x10020`` only for device bits, reads cause and writes zero to it, and
+leaves masks 1-3 at zero. These are *software expectations* observed on the
+model.
 
 The model drives five outputs to CPU IP2-IP6. Each is high while some
 bit of its level is both pending and set in mask 0. Bit 63 also needs
@@ -555,6 +633,16 @@ trigger at ``0x40000``; Linux agrees on width and rate. These are *software
 expectations*. The model's count advances one tick per 80 ns of virtual time
 from zero at reset and wraps at 52 bits, *approximation* for the phase: the
 chip's starting value is *unknown*.
+
+Linux uses the counter as its clocksource and calibrates the processor
+clock by waiting 1,250,000 ticks for it to advance
+(``arch/mips/sgi-ip30/ip30-timer.c`` lines 22-48 and ``ip30-setup.c``
+lines 84-102 at ``db2ddb871435``); OpenBSD uses it as a timecounter
+(``sys/arch/sgi/xbow/xheart.c`` lines 80-88 at ``2df91d80c104``).
+Neither programs compare, trigger or the timer bit. On the model the
+PROM reads the counter in wait loops, the longest about 6,000,000 ticks,
+and never touches compare (:src:`ip30-prom-4.17 counter`). These are
+*software expectations*; all of them need the counter to advance.
 
 Compare stores the low 24 bits of a 64-bit write and reads them back.
 It raises no interrupt and does not touch the counter. The trigger
@@ -664,9 +752,24 @@ PCI DMA through Crossbow
 The technical report has HEART handle I/O requests to memory and
 monitor them for coherence (:src:`octane-technical-report p. 2-15`),
 but no public source gives HEART's request decode, response format or
-coherence rules. OpenBSD programs the onboard Bridge's direct map for
-widget 8 and adds ``0x80000000`` to a physical address to make a PCI
-DMA address (:doc:`bridge`), a *software expectation*.
+coherence rules. Both public drivers write ``0x00800000`` to the onboard
+Bridge's direct-map register: widget 8, offset 0, the 512 MiB add bit
+clear (Linux ``arch/mips/pci/pci-xtalk-bridge.c`` line 695 at
+``db2ddb871435``, OpenBSD ``sys/arch/sgi/xbow/xbridge.c`` lines
+2048-2068 at ``2df91d80c104``). OpenBSD then adds ``0x80000000`` to a
+physical address to make a PCI DMA address, so the Bridge passes the
+physical address to widget 8 unchanged (:doc:`bridge`). Linux instead
+issues 64-bit DMA addresses, ``0x8100000000000000`` plus the physical
+address, with widget 8 in bits 63:60 (``pci-xtalk-bridge.c`` lines 29-40
+and 663). These are *software expectations*.
+
+On the model the PROM writes the same ``0x00800000`` and all of its DMA
+uses the 32-bit direct window. The IRIX 6.5.30 kernel writes
+``0x00820000``, which sets the bit Linux names ``BRIDGE_DIRMAP_ADD512``,
+but all of its DMA before the login prompt uses 64-bit addresses to
+widget 8 (:src:`ip30-prom-4.17 Bridge direct map`). These are
+*software expectations* observed on the model. Either way the physical
+address arrives at HEART unchanged.
 
 The model accepts a Crosstalk read or write addressed to HEART when
 every byte falls in a valid descriptor window of a fitted bank. It uses
@@ -841,8 +944,10 @@ Model limits
   that profile; masks 1-3 drive nothing and inter-processor interrupts
   have no second target.
 - Mode bits other than 0, 1, 13, 15, 19, 20, 21 and 25 are stored with
-  no effect, including the reset, refresh and cached-PROM bits Linux
-  names.
+  no effect, including the reset, refresh, cached-PROM and processor
+  disable bits Linux names. Linux restarts the machine by setting mode
+  bit 23 (``arch/mips/sgi-ip30/ip30-power.c`` lines 13-22); the model
+  does not reset on that write.
 - No error source: bus-error address and miscellaneous words, the
   processor-interface access error word and the widget error registers
   never record anything. Bridge errors do not reach HEART.
