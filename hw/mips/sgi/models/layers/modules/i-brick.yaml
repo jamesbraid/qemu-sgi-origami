@@ -29,6 +29,35 @@ layer:
         provenance: vendor-document
         parent: xbridge
         sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+      - id: port-a
+        name: Crosstown2 port A connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xa
+          notes: >-
+            A compute-node port. The composition says which brick's cable
+            ends here.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"]
+      - id: port-b
+        name: Crosstown2 port B connector
+        kind: connector
+        provenance: vendor-document
+        parent: xbridge-crossbar
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          port: 0xb
+          notes: >-
+            The second Crosstown2 port: a second compute node, or a G- or
+            V-brick when port A carries the C-brick. Nothing is cabled here in
+            this layer.
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes", "007-4264-002 printed page 8: an I-brick port connects to a C-brick, G-brick or V-brick"]
       - id: fibre-channel
         name: QLogic 2200 Fibre Channel
         kind: storage-hba
@@ -60,6 +89,15 @@ layer:
         notes: A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.
     buses:
       - {id: io7-bus, name: "IO7, bus 1 (head F)", kind: pci, master: xbridge, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
+      - id: port-b-xio
+        name: XBridge Crosstown2 port B
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: ["108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"]
+        notes: >-
+          The crossbar's port B, out to its connector. A composition that
+          cables a brick here attaches that brick's widget to this bus.
     connections:
       - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
@@ -70,3 +108,5 @@ layer:
       # compute-node port this layer uses; which port a boot I-brick uses
       # is unknown.
       - {component: xbridge-crossbar, bus: host-port-a-xio, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"], notes: "Host port A, widget 0xA (10 decimal)."}
+      - {component: port-a, bus: host-port-a-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"]}
+      - {component: port-b, bus: port-b-xio, role: endpoint, provenance: vendor-document, sources: ["108-0240-002 printed pages 2-26 to 2-29: XBridge Crosstown2 ports A (10) and B (11); in the I-brick, ports A and B go to compute nodes"]}

@@ -658,6 +658,31 @@ def validate_physical_slots(model: dict[str, Any]) -> None:
         slots[key] = cid
 
 
+def validate_connector_ports(model: dict[str, Any]) -> None:
+    """A connector naming an XBridge port sits on that crossbar, once.
+
+    The port is what an XIO cable reaching the connector meets, so it
+    must belong to one crossbar and no other connector may claim it.
+    """
+    components = {item["id"]: item for item in model.get("components", [])}
+    claimed: dict[tuple[str, int], str] = {}
+    for cid, component in components.items():
+        port = (component.get("connector") or {}).get("port")
+        if port is None:
+            continue
+        parent = components.get(component.get("parent"), {})
+        if parent.get("kind") != "crossbar":
+            raise ResolutionError(
+                f"connector '{cid}' names XBridge port {port:#x} but is not "
+                "on a crossbar")
+        key = (parent["id"], port)
+        if key in claimed:
+            raise ResolutionError(
+                f"crossbar '{parent['id']}' port {port:#x} is named by "
+                f"'{claimed[key]}' and '{cid}'")
+        claimed[key] = cid
+
+
 def validate_connector_population(model: dict[str, Any]) -> None:
     selections = model.get("composition", {}).get("connector_population", [])
     if not isinstance(selections, list):
@@ -1279,11 +1304,11 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     The order matches what a resolved model must satisfy end to end: routed
     firmware graphs, reference-model purity, the emulation profile, CPU and
     memory populations, direct references, physical slots, connector
-    population, synthetic identities, initial module numbers, hub NI
-    revision overrides, board identity overrides, and the excluded_components
-    ledger the resolved model itself carries. Each check raises on its own
-    first violation; nothing here collects a list, matching the resolver's
-    fail-fast style.
+    population, connector ports, synthetic identities, initial module
+    numbers, hub NI revision overrides, board identity overrides, and the
+    excluded_components ledger the resolved model itself carries. Each
+    check raises on its own first violation; nothing here collects a list,
+    matching the resolver's fail-fast style.
     """
     if not isinstance(model.get("composition"), dict):
         raise ResolutionError("system model requires composition")
@@ -1295,6 +1320,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_direct_model_references(model)
     validate_physical_slots(model)
     validate_connector_population(model)
+    validate_connector_ports(model)
     validate_synthetic_identities(model)
     validate_initial_module_numbers(model)
     validate_hub_ni_revision_overrides(model)
