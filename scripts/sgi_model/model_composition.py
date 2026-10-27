@@ -845,6 +845,28 @@ def validate_xio_cables(model: dict[str, Any]) -> None:
             raise ResolutionError(f"XIO cable '{cid}' ends share no XIO bus")
 
 
+# The L1 brick-type characters a source establishes, by the board that
+# reports them. Every other brick's character is unknown until its own L1
+# contract supplies it, so a guessed letter cannot reach a guest.
+ESTABLISHED_BRICK_TYPES = {"4": "IP45", "C": "IP35"}
+
+
+def validate_brick_types(model: dict[str, Any]) -> None:
+    for component in model.get("components", []):
+        if "brick_type" not in component:
+            continue
+        cid = component["id"]
+        if component.get("kind") not in {"chassis", "module"}:
+            raise ResolutionError(
+                f"component '{cid}' carries brick_type but is not a chassis "
+                "or module")
+        letter = component["brick_type"]
+        if letter not in ESTABLISHED_BRICK_TYPES:
+            raise ResolutionError(
+                f"component '{cid}' brick_type '{letter}' is not an "
+                "established L1 brick type (4 or C)")
+
+
 def validate_synthetic_identities(model: dict[str, Any]) -> None:
     if _fabric_topology(model) != "router":
         return
@@ -1366,11 +1388,11 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     The order matches what a resolved model must satisfy end to end: routed
     firmware graphs, reference-model purity, the emulation profile, CPU and
     memory populations, direct references, physical slots, connector
-    population, connector ports, XIO cables, synthetic identities, initial
-    module numbers, hub NI revision overrides, board identity overrides,
-    and the excluded_components ledger the resolved model itself carries. Each
-    check raises on its own first violation; nothing here collects a list,
-    matching the resolver's fail-fast style.
+    population, connector ports, XIO cables, brick types, synthetic
+    identities, initial module numbers, hub NI revision overrides, board
+    identity overrides, and the excluded_components ledger the resolved
+    model itself carries. Each check raises on its own first violation;
+    nothing here collects a list, matching the resolver's fail-fast style.
     """
     if not isinstance(model.get("composition"), dict):
         raise ResolutionError("system model requires composition")
@@ -1384,6 +1406,7 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_connector_population(model)
     validate_connector_ports(model)
     validate_xio_cables(model)
+    validate_brick_types(model)
     validate_synthetic_identities(model)
     validate_initial_module_numbers(model)
     validate_hub_ni_revision_overrides(model)

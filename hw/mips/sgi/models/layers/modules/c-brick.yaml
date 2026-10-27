@@ -11,6 +11,9 @@ layer:
         name: C-brick
         kind: chassis
         provenance: derived
+        # The character the C-brick's L1 reports for an IP35 module.
+        brick_type: C
+        sources: ["linux-history:381ab1f53816 include/asm-ia64/sn/ksys/l1.h line 263: brick type C is 0x43"]
       - id: bedrock
         name: Bedrock
         kind: node-asic
