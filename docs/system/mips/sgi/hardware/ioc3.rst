@@ -447,9 +447,12 @@ The chip's PCI Status register must read 0x0280 at reset (medium
 DEVSEL, fast back-to-back), both bits read-only: IRIX's
 configuration-space diagnostic compares the whole dword containing
 it and fails the slot on a zero Status half. Chip-control bit 22 (PCI
-arbiter idle) is read-only and always reads set: the model has no
-serial-DMA engine driving PCI traffic, and a kernel's console setup
-does not complete until it reads idle.
+arbiter idle) is read-only. It reads clear only while the serial DMA
+engine is inside a transfer, the rule IOC4's serial idle bit shares.
+QEMU completes each transfer before the access that started it returns,
+so software always reads it set, which a kernel's console setup needs:
+it does not complete until the bit reads idle. Whether the hardware
+also clears it for Ethernet or parallel-port DMA is not modelled.
 
 M48T35 timekeeper
 =================
