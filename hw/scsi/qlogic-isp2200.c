@@ -372,7 +372,11 @@ struct QLogicISP2200State {
     SCSIBus bus;
 
     uint16_t csr;
-    bool csr_reset_visible;     /* Soft reset bit reads set until a read. */
+    /*
+     * A soft reset in progress: it ends at the next register read, which
+     * still sees it (CSR bit 0 or HCCR bit 6), or at an HCCR write.
+     */
+    bool csr_reset_visible;
     uint16_t icr;
     uint16_t semaphore;
     uint16_t nvram;
@@ -557,8 +561,9 @@ static void isp2200_cancel_all(QLogicISP2200State *s);
 static void isp2200_loop_reset(QLogicISP2200State *s);
 
 /*
- * HCCR reset and the CSR soft reset hold the RISC the same way. The
- * firmware goes with it: every supported driver downloads again after a
+ * HCCR reset holds the RISC here until a release; the CSR soft reset
+ * passes through the same state and boots the ROM code. The firmware
+ * goes with it: every supported driver downloads again after a
  * reset, and a guest that expects firmware to survive one is unsupported.
  * So does the loop, and every command in flight is cancelled without a
  * status: the rings it would post to are gone.
@@ -601,7 +606,15 @@ static void isp2200_soft_reset(QLogicISP2200State *s)
 {
     trace_qlogic_isp2200_soft_reset();
 
+    /*
+     * The RISC comes out running ROM code, as from a device reset. The
+     * IRIX 6.5.30 driver polls HCCR bit 6 for the end of the reset with
+     * no release first; the public drivers reset and release the RISC
+     * themselves, so they see their own hold.
+     */
     isp2200_hold_risc(s);
+    s->risc_reset = false;
+    isp2200_boot_rom(s);
     s->csr = 0;
     s->csr_reset_visible = true;
     s->icr = 0;
@@ -625,9 +638,6 @@ static void isp2200_reset_hold(Object *obj, ResetType type)
     s->csr_reset_visible = false;
     s->gpio_data = 0;
     s->gpio_enable = 0;
-    s->risc_reset = false;
-    memset(s->mbox_out, 0, sizeof(s->mbox_out));
-    isp2200_boot_rom(s);
 
     /* What the stand-in service saw belongs to this power cycle only. */
     s->fc_submissions = 0;
@@ -2427,7 +2437,8 @@ static uint16_t isp2200_reg_value(QLogicISP2200State *s, hwaddr addr,
         return s->nvram;
     case ISP2200_REG_HCCR:
         return (s->host_int ? ISP2200_HCCR_HOST_INT : 0) |
-               (s->risc_reset ? ISP2200_HCCR_RISC_RESET : 0) |
+               (s->risc_reset || reset_visible ?
+                ISP2200_HCCR_RISC_RESET : 0) |
                (s->risc_paused ? ISP2200_HCCR_RISC_PAUSED : 0);
     case ISP2200_REG_GPIO_DATA:
         return s->gpio_data;
@@ -2513,6 +2524,8 @@ static void isp2200_reg_write(void *opaque, hwaddr addr, uint64_t val64,
         break;
 
     case ISP2200_REG_HCCR:
+        /* qlogicfc resets and releases before it reads anything. */
+        s->csr_reset_visible = false;
         isp2200_host_command(s, val);
         break;
 

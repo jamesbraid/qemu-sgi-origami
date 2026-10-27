@@ -580,13 +580,34 @@ static void test_undescribed_registers(void *obj, void *data,
 }
 
 /*
+ * The IRIX 6.5.30 driver's soft reset, as it ran on the model: pause the
+ * RISC, write 0x0004 to three DMA-engine control registers, set CSR bit
+ * 0, then read HCCR (never CSR) until bit 6 clears, with no HCCR write
+ * first.
+ */
+static void isp_soft_reset_hccr_poll(Isp *t)
+{
+    wr(t, REG_HCCR, HCCR_PAUSE);
+    g_assert_cmphex(rd(t, REG_HCCR) & HCCR_RISC_PAUSE, ==, HCCR_RISC_PAUSE);
+    wr(t, 0x40, 0x0004);
+    wr(t, 0x60, 0x0004);
+    wr(t, 0x20, 0x0004);
+    wr(t, REG_CSR, CSR_SOFT_RESET);
+    g_assert_cmphex(rd(t, REG_HCCR), ==, HCCR_RISC_RESET);
+    g_assert_cmphex(rd(t, REG_HCCR), ==, 0);
+}
+
+/*
  * Approximation: the reset states. A device reset leaves the ROM code
- * running and its image readable; a soft reset holds the RISC until an
- * explicit release. The device reset checked is the system reset the
- * qos runner issues between cases, after earlier cases left the adapter
- * running firmware with live rings; a reset issued inside a case would
- * also clear the Bridge test head's I/O window, which only the runner
- * rebuilds.
+ * running and its image readable. A soft reset ends at the first
+ * register read after it, or at an HCCR write, with the ROM code
+ * running and the image readable; only that first read, of CSR or of
+ * HCCR, still shows the reset in progress. An HCCR reset holds the RISC
+ * until an explicit release. The device reset checked is the system
+ * reset the qos runner issues between cases, after earlier cases left
+ * the adapter running firmware with live rings; a reset issued inside a
+ * case would also clear the Bridge test head's I/O window, which only
+ * the runner rebuilds.
  */
 static void test_reset_states(void *obj, void *data, QGuestAllocator *alloc)
 {
@@ -599,10 +620,83 @@ static void test_reset_states(void *obj, void *data, QGuestAllocator *alloc)
     wr(&t, REG_HCCR, HCCR_RELEASE);
     assert_boot_image(&t);
 
+    /* IRIX's order: bit 6 reads set once, then the image, not paused. */
+    isp_soft_reset_hccr_poll(&t);
+    assert_boot_image(&t);
+    g_assert_cmphex(rd(&t, REG_CSR) & CSR_SOFT_RESET, ==, 0);
+
+    /* The public drivers' order: CSR polled, then their own hold. */
     isp_soft_reset(&t);
+    g_assert_cmphex(rd(&t, REG_HCCR) & HCCR_RISC_RESET, ==, 0);
+    wr(&t, REG_HCCR, HCCR_RESET);
     assert_held_in_reset(&t);
     wr(&t, REG_HCCR, HCCR_RELEASE);
     assert_boot_image(&t);
+
+    /* A first read of a mailbox ends the reset too, with the image. */
+    wr(&t, REG_CSR, CSR_SOFT_RESET);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, 0);
+    g_assert_cmphex(rd(&t, REG_HCCR), ==, 0);
+    g_assert_cmphex(rd(&t, REG_CSR), ==, 0);
+    assert_boot_image(&t);
+
+    /* qlogicfc's order: HCCR reset and release with no read between. */
+    wr(&t, REG_CSR, CSR_SOFT_RESET);
+    wr(&t, REG_HCCR, HCCR_RESET);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+    g_assert_cmphex(rd(&t, REG_HCCR), ==, 0);
+    g_assert_cmphex(rd(&t, REG_CSR), ==, 0);
+    assert_boot_image(&t);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: either soft-reset order, followed by HCCR reset,
+ * semaphore 0 and release, a download and Execute, reaches running
+ * firmware. A model that holds bit 6 after a soft reset fails the HCCR
+ * poll; one that skips the hold after HCCR 0x1000 fails the CSR order.
+ */
+static void test_soft_reset_orders(void *obj, void *data,
+                                   QGuestAllocator *alloc)
+{
+    static const uint16_t pattern[] = {
+        CMD_REGISTER_TEST, 0xaaaa, 0x5555, 0xaa55, 0x55aa, 0xa5a5,
+        0x5a5a, 0x2525,
+    };
+    unsigned order, i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    for (order = 0; order < 2; order++) {
+        if (order == 0) {
+            isp_soft_reset_hccr_poll(&t);
+            g_assert_cmphex(rd(&t, MBOX(0)), ==, 0);
+        } else {
+            isp_soft_reset(&t);
+        }
+        wr(&t, REG_HCCR, HCCR_RESET);
+        g_assert_cmphex(rd(&t, REG_HCCR), ==, HCCR_RISC_RESET);
+        g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_BUSY);
+        wr(&t, REG_SEMAPHORE, 0);
+        wr(&t, REG_HCCR, HCCR_RELEASE);
+        if (order == 0) {
+            wr(&t, REG_HCCR, HCCR_PARITY_PAUSE);
+        }
+        assert_boot_image(&t);
+
+        isp_start(&t);
+        g_assert_cmphex(isp_call_ack(&t, CMD_NOP, 0, 0, 0), ==,
+                        MBOX_COMPLETE);
+        g_assert_cmphex(isp_mbox(&t, pattern, ARRAY_SIZE(pattern)), ==,
+                        MBOX_COMPLETE);
+        for (i = 1; i < ARRAY_SIZE(pattern); i++) {
+            g_assert_cmphex(rd(&t, MBOX(i)), ==, pattern[i]);
+        }
+        isp_ack(&t);
+        /* The firmware runs: a ROM-subset reset did not hide it. */
+        g_assert_cmphex(isp_call_ack(&t, CMD_GET_FW_STATE, 0, 0, 0), ==,
+                        MBOX_COMPLETE);
+    }
     isp_close(&t);
 }
 
@@ -4067,6 +4161,8 @@ static void isp2200_register_nodes(void)
     qos_add_test("undescribed-registers", "qlogic-isp2200",
                  test_undescribed_registers, NULL);
     qos_add_test("reset-states", "qlogic-isp2200", test_reset_states, NULL);
+    qos_add_test("soft-reset-orders", "qlogic-isp2200",
+                 test_soft_reset_orders, NULL);
     qos_add_test("soft-reset-clears", "qlogic-isp2200",
                  test_soft_reset_clears, NULL);
     qos_add_test("risc-control", "qlogic-isp2200", test_risc_control, NULL);
