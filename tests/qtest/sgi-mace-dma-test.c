@@ -115,12 +115,10 @@ static MACEDMATest mace_dma_start_mode(uint64_t size, bool link_ram,
                                        bool aic_diagnostic, bool word_swap)
 {
     MACEDMATest t = { .fd = -1, .size = size };
-    g_autofree char *cwd = g_get_current_dir();
     g_autoptr(QDict) reply = NULL;
 
-    /* The qtest build directory is on the configured project scratch volume. */
-    t.dir = g_build_filename(cwd, ".mace-dma-XXXXXX", NULL);
-    g_assert_nonnull(g_mkdtemp(t.dir));
+    t.dir = g_dir_make_tmp("mace-dma-XXXXXX", NULL);
+    g_assert_nonnull(t.dir);
     t.path = g_build_filename(t.dir, "ram", NULL);
     t.fd = g_open(t.path, O_RDWR | O_CREAT | O_EXCL, 0600);
     g_assert_cmpint(t.fd, >=, 0);
@@ -237,16 +235,13 @@ static void test_master_non_qtest_refused(void)
         "{\"execute\":\"quit\",\"id\":\"quit\"}\n";
     g_autoptr(GError) error = NULL;
     g_autoptr(GSubprocess) proc = NULL;
-    g_autofree char *cwd = g_get_current_dir();
-    g_autofree char *rom_path = g_build_filename(cwd,
-                                                 ".mace-blank-rom-XXXXXX",
-                                                 NULL);
+    g_autofree char *rom_path = NULL;
     g_autofree char *output = NULL;
     g_autofree char *stderr_output = NULL;
     g_auto(GStrv) lines = NULL;
     bool refused = false, unchanged = false;
     const uint8_t blank = 0;
-    int rom_fd = g_mkstemp(rom_path);
+    int rom_fd = g_file_open_tmp("mace-blank-rom-XXXXXX", &rom_path, NULL);
 
     g_assert_cmpint(rom_fd, >=, 0);
     g_assert_cmpint(write(rom_fd, &blank, sizeof(blank)), ==, sizeof(blank));
