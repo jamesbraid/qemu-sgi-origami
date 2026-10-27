@@ -346,6 +346,10 @@ static bool sgi_bridge_dma_test_master_get(Object *obj, Error **errp)
 {
     PCIDevice *dev = PCI_DEVICE(obj);
 
+    if (!qdev_is_realized(DEVICE(obj))) {
+        error_setg(errp, "test-master-enable requires machine initialization");
+        return false;
+    }
     return !!(pci_default_read_config(dev, PCI_COMMAND, 2) &
               PCI_COMMAND_MASTER);
 }
