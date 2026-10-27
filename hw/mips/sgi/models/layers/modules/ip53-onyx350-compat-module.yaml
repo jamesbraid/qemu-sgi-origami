@@ -3,7 +3,7 @@
 layer_version: 1
 sources:
   onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"
-  onyx350-hinv: "web:living-raptor-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad: public inventory for module 001c01"
+  onyx350-hinv: "web:graphica-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad: public inventory for module 001c01"
 layer:
   kind: module
   id: ip53-onyx350-compat-module

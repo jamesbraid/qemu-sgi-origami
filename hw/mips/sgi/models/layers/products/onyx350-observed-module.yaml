@@ -2,8 +2,8 @@
 # Captured module 001c01 from a customized multi-module Onyx 350.
 layer_version: 1
 sources:
-  onyx350-observed-module: "web:living-raptor-onyx350-hinv  captured Onyx 350 module 001c01 inventory"
-  living-raptor-01: "web:living-raptor-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad; public 2021 Onyx 350 inventory, `hinv -mv`, module 001c01; reports IP53_4CPU 030-2013-001 rev D, four 800 MHz R16000 rev 3.0 with 8 MiB cache, 8192 MiB across logical banks 0-7, IO9 030-1771-006 rev A, 2U_INT_53 030-1809-006 rev D, and IP35prom 6.211"
+  onyx350-observed-module: "web:graphica-onyx350-hinv  captured Onyx 350 module 001c01 inventory"
+  graphica-onyx350-inventory: "web:graphica-onyx350-hinv  SHA-256 a32ede9c66f71ac2de8d06e87c39f1ed39f788c6d226cf32a87a3376015d6aad; public 2021 Onyx 350 inventory, `hinv -mv`, module 001c01; reports IP53_4CPU 030-2013-001 rev D, four 800 MHz R16000 rev 3.0 with 8 MiB cache, 8192 MiB across logical banks 0-7, IO9 030-1771-006 rev A, 2U_INT_53 030-1809-006 rev D, and IP35prom 6.211"
   onyx350-guide: "007-4632-001 printed pages 48, 50, 53, 55, 57: base module, distinct L1 and Serial 0 connectors, component block diagram, 4 MiB L2 statement, and IO9 location"
 layer:
   kind: product
@@ -39,7 +39,7 @@ layer:
         name: Onyx 350 compute module 001c01
         kind: chassis
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
       - id: ip53-board
         name: IP53_4CPU node board
         kind: board
@@ -48,34 +48,34 @@ layer:
         identity: {part: "030-2013-001"}
         description: IP53_4CPU board revision D, as reported in module 001c01.
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
       - id: cpu0
         name: R16000
         kind: cpu
         parent: ip53-board
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
         notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
       - id: cpu1
         name: R16000
         kind: cpu
         parent: ip53-board
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
         notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
       - id: cpu2
         name: R16000
         kind: cpu
         parent: ip53-board
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
         notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
       - id: cpu3
         name: R16000
         kind: cpu
         parent: ip53-board
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
         notes: Captured at 800 MHz, revision 3.0, with 8 MiB secondary cache.
       - id: memory
         name: node memory
@@ -83,7 +83,7 @@ layer:
         parent: ip53-board
         description: 8192 MiB; enabled logical banks 0 through 7, each 1024 MiB.
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
       - id: io9
         name: IO9
         kind: board
@@ -91,7 +91,7 @@ layer:
         identity: {part: "030-1771-006"}
         description: Revision A, as reported in module 001c01.
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
       - id: two-u-int53
         name: 2U_INT_53 PIC interface board
         kind: board
@@ -100,7 +100,7 @@ layer:
         identity: {part: "030-1809-006"}
         description: Revision D, as reported in module 001c01.
         provenance: observed-hardware
-        sources: [onyx350-observed-module, living-raptor-01]
+        sources: [onyx350-observed-module, graphica-onyx350-inventory]
       - id: l1
         name: L1 system controller
         kind: system-controller

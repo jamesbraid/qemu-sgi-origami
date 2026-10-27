@@ -12,7 +12,7 @@ sources:
   ip53-l1-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
   ip53-l1-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected local controller 0x37 input and limits"
   ip53-clock-year-review: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected fresh-clock seed and limits"
-  onyx4-host-hinv: "web:irixnet-thread-2263  cute-shrimp/02.hinv, source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
+  onyx4-host-hinv: "web:irixnet-thread-2263  source date 2021-06-19, module 001c01 IP59_4CPU CPU, memory, and IO9 inventory"
   onyx4-host-guide: "SGI Onyx4 UltimateVision User's Guide 007-4634-002 printed pages 21-23: host boot module retains IO9"
   onyx4-host-contract: "qemu:docs/system/mips/sgi/ip35.rst#sgi-ip53-serial-profiles  selected Onyx 4 host candidate and compatibility limit"
 layer:
