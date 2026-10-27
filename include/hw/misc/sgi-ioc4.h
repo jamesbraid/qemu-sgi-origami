@@ -15,7 +15,7 @@
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC4 "sgi-ioc4"
-#define IOC4_PORTS 4
+#define SGI_IOC4_PORTS 4
 
 typedef struct SGIIOC4State SGIIOC4State;
 typedef struct SGIIOC4Port SGIIOC4Port;
@@ -46,8 +46,8 @@ struct SGIIOC4State {
     bool clock_alias_initialized;
     bool clock_alias_mapped;
     bool kbc_realized;
-    SerialState uart[IOC4_PORTS];
-    SGIIOC4Port dma[IOC4_PORTS];
+    SerialState uart[SGI_IOC4_PORTS];
+    SGIIOC4Port dma[SGI_IOC4_PORTS];
     SGIIOCSerialDMA sdma;
     uint32_t other_pending;
     uint32_t dma_error_low;
@@ -59,7 +59,7 @@ struct SGIIOC4State {
     bool pci_status_compat;
     bool ata_readback_compat;
     uint32_t ata_readback;
-    IRQState uart_irq[IOC4_PORTS];
+    IRQState uart_irq[SGI_IOC4_PORTS];
     uint32_t serial_pending;
     uint32_t serial_enable;
     uint32_t other_enable;
