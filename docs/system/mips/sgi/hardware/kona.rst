@@ -15,8 +15,10 @@ OpenBSD call the widget KONA. QEMU models the pipe as ``sgi-kona`` in
 ``hw/misc/sgi-kona.c``, with its DMA engine in ``sgi-kona-dma.c``, its
 command tables in ``sgi-kona-ports.c``, and its OpenGL decoder and texture
 store in ``sgi-kona-gl-decode.c`` and ``sgi-kona-texture.c``. The
-``onyx2`` machine fits one at its catalogue slot; ``-device sgi-kona``
-fits one at any free XIO slot. No chip revision is modelled: the widget
+``onyx2`` machine fits one at its catalogue slot. On the Origin and
+Onyx2 machines ``-device sgi-kona`` fits one where the topology's
+catalogue allows a pipe; ``x-uncatalogued-graphics=on`` lifts the check,
+which the register-contract qtests use. No chip revision is modelled: the widget
 answers revision 0.
 
 No register specification, schematic or capture of the pipe's host
@@ -40,8 +42,9 @@ Sources
   ``hinv -v`` (:src:`nekonomicon-16723250`), a deskside board list
   (:src:`sgistuff-collection-2200`), and an Onyx2 rack InfiniteReality3
   with ``hinv -v -m``, board list and ``gfxinfo -v``
-  (:src:`nekonomicon-16285`). An owner's board list and ``gfxinfo`` for a
-  two-geometry-engine InfiniteReality2 supply the GE14-2 and DG5-2 parts.
+  (:src:`nekonomicon-16285`). No cited capture shows a two-engine GE14-2
+  pipe, so the GE14-2 and DG5-2 part numbers the model reports are an
+  *approximation*.
 - Montrym, Baum, Dignam and Migdal's InfiniteReality paper,
   :src:`montrym-infinitereality-1997`, for the board architecture and the
   colour-index map size.
@@ -139,7 +142,9 @@ GE16-4 with 256 MB texture prints InfiniteReality3
 (:src:`nekonomicon-16285`). The board-set numbers are the classes the
 IRIX 6.5.30 kernel records for each name, a *software expectation*.
 ``ir2e`` combines the rack capture's GE16-4 and
-RM9 with 64 MB texture boards, *inferred*. Three names are refused:
+RM9 with 64 MB texture boards. The texture board's part is the RM7
+pipe's, an *approximation*: no cited capture shows an RM9-64's boards.
+Three names are refused:
 ``ir``, since IRIX names no Onyx2 pipe InfiniteReality; ``reality``,
 since no capture gives its boards; and ``ir4``, since the only captured
 InfiniteReality4 is an Onyx 350's, whose host board this model does not
@@ -165,7 +170,9 @@ attach.
      - Four needs a Ktown record: a deskside pipe holds at most two.
    * - ``texture-mb``
      - 64 (TM7 030-1053-001 rev F), 256 (030-1588-001)
-     - The 256 MB board's name and revision are unknown and left blank.
+     - Fixed by the product (64 for ``ir2`` and ``ir2e``, 256 for
+       ``ir3``); another value is refused. The 256 MB board's name and
+       revision are unknown and left blank.
    * - ``display``
      - ``dg5-8`` 030-1087-001, eight channels; ``dg5-2`` 030-1055-001,
        two channels; ``dg5-2-gvo`` 030-1242-001 rev D with a GVO record
@@ -179,14 +186,16 @@ attach.
      - Refused when the raster managers' pixel memory cannot hold it.
 
 The pixel-depth check follows the IRIX X server's rule: raster managers
-times 20,971,520 divided by height times width rounded up to 160 must be
+times 20,971,520, divided by the height times the width rounded up to a
+multiple of 160, must be
 at least 8 for Small and 16 for Medium, a *software expectation*. Large
 and Extra-Large are refused, an *approximation*: their visuals are
 untested.
 
 Without ``product`` the pipe is unconfigured: setting any other
 configuration property is refused, the class reads stay logged zeros and
-the configuration answer carries seven fields only. That answer matches no
+the configuration answer carries seven fields and the pool
+descriptors only. That answer matches no
 real pipe. The machine catalogue always sets a product.
 
 Other properties: ``fabric`` and ``fabric-hub-widget`` name the address
@@ -435,7 +444,8 @@ token, ``0x10000`` before its arguments and 0 after, a *software
 expectation*. The model reads bit 17 as force: an open kernel command is
 abandoned and logged, and an open user command is set aside until the
 kernel packet ends. Bit 16 marks the following words as a kernel command's.
-Both readings are *inferred* from a register table in an IRIX pipe tool.
+Both readings are *inferred* from the register table in the IRIX 6.5.30
+pipe-manager tool, read as a binary.
 Other bits are logged ``LOG_GUEST_ERROR``.
 
 How the pipe tells the textport and GL grammars apart is *unknown*: GL
@@ -514,8 +524,8 @@ noted.
      - Queues five mailbox words: 0, 0, 0, 1280, 1024.
 
 That commands 2 and 3 carry an index and pre-scaled components, and the
-bitmap header's field order, are *inferred* from a recorded PROM boot on
-the model, whose drawing becomes legible only under that reading. The PROM
+bitmap header's field order, are the model's reading of the IO6 PROM's
+command sends, an *approximation*: no specification states them. The PROM
 reads graphics-information words 3 and 4 as width and height, and falls
 back to 1280x1024 when they are negative, a *software expectation*; the
 other three words are *approximated* as zero. The PROM waits for the
@@ -955,8 +965,8 @@ Model limits
 Tests
 =====
 
-The qtests fit the pipe with ``-device sgi-kona`` on an ``origin2000``
-unless noted.
+The qtests fit the pipe with ``-device sgi-kona`` on
+``-M origin2000,nodes=1,x-uncatalogued-graphics=on`` unless noted.
 
 - ``tests/qtest/sn0-origin2000-kona-test.c``: identity and aperture,
   one-wire records, plain-storage registers, reset, credit register,

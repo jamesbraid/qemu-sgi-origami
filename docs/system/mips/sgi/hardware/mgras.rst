@@ -1046,8 +1046,8 @@ row count at 7, bytes per row at 8 and the kick at 11; the destination
 box is raster registers ``0x046`` and ``0x047``. A store that reaches
 register 11 starts the transfer. The kick byte's bits 2:1 name the
 mapping slot and bit 3 the direction: clear moves host memory to the
-screen, set reads the screen back to host memory, *established* as what
-the X server and client send. Each byte offset ``row * pitch + byte`` plus
+screen, set reads the screen back to host memory, *software
+expectation* of what the X server and client send. Each byte offset ``row * pitch + byte`` plus
 the source offset walks the slot's page list, 4 KiB to an entry. A kick
 naming a slot with no pages logs and moves nothing.
 
@@ -1067,8 +1067,8 @@ offset and a size, executes a display list from the page list in slot 4,
 which the IRIX kernel installs for the client's list pool just before,
 *software expectation*. The model reads the list through the page list
 and follows its chain of ranges and calls with its own parser,
-*established* as the client's list format and *inferred* as the board's
-order. One execute is limited to 2^20 words, 2,048 ranges and 64 nested
+*software expectation* for the client's list format and *inferred* for
+the board's order. One execute is limited to 2^20 words, 2,048 ranges and 64 nested
 calls, the model's bounds; a list past any of them, or outside the pool,
 draws nothing.
 
@@ -1106,7 +1106,7 @@ The GE11 program IRIX 6.5.30 ships is a flat image of 712,704 bytes:
 59,392 records of 12 bytes. A program record holds one 72-bit
 instruction as bits 31:0, then bits 63:32, then three zero bytes and bits
 71:64; 54,472 of the records are program words in that layout,
-*established* by analysis of the shipped file. The upload length the
+a property of the shipped file, a *software expectation*. The upload length the
 model accepts is the record count times three words. The instruction set
 is *unknown*.
 
@@ -1132,7 +1132,7 @@ The model keeps 512 raster registers, written by command-port and normal
 FIFO records. Executes it implements, with OpenBSD's names where it has
 them:
 
-- ``0x040`` (``RE_POINT``) and ``0x041`` (``RE_LINE``): a point at, or a
+- ``0x040`` and ``0x041``, the point and line executes: a point at, or a
   line to, the execute's own value, with stipple;
 - ``0x047`` (``BLOCKXYENDI``): a rectangle fill from ``0x046``
   (``BLOCKXYSTARTI``), coloured from registers ``0x176`` to ``0x178``
@@ -1146,8 +1146,8 @@ them:
 
 Logic operations, the colour masks and the inclusive clip box in
 ``0x147``, ``0x148`` and ``0x14f`` apply to every paint. These meanings are
-*inferred* from what the IRIX 6.5.30 X server writes and how its desktop
-looks, not from hardware. Any other execute is logged ``LOG_UNIMP`` and
+*inferred* from what the IRIX 6.5.30 X server writes, not from
+hardware. Any other execute is logged ``LOG_UNIMP`` and
 leaves the pixels alone. Block copy has no known payload grammar and is
 not implemented. Register ``0x161`` (``PP1FILLMODE``, which carries the
 logic operation) resets to ``0x0c000000`` and ``0x163`` to all ones,
@@ -1156,7 +1156,8 @@ logic operation) resets to ``0x0c000000`` and ``0x163`` to all ones,
 The X server reads small boxes through the data port: after an
 ``IR_ALIAS`` execute with ``0x102`` = ``0xa``, each 8-byte unit is read as
 ``0x02d1c0`` then ``0x02c1c4``, two 4-byte pixels a unit, rows from the
-top, *established* as the server's reads and *inferred* as the layout.
+top, *software expectation* for the server's reads and *inferred* for the
+layout.
 The model advances on ``0x02d1c0`` and returns the latched half at
 ``0x02c1c4``; other transfer modes read zero and log.
 
@@ -1213,15 +1214,15 @@ shows a 12-bit index, any other an 8-bit one, *inferred* from the X
 server's visuals. A nonzero overlay index covers the main planes when the
 window's overlay mode has bit 0 set, through the map in bits 7:3. A
 window ID whose bit is set in the XMAP buffer select under index 0 shows
-bank 1 instead of bank 0, *inferred* from swap captures.
+bank 1 instead of bank 0, an *approximation* of what the X server
+writes. The hardware rule is *unknown*.
 
 The CMAP selector at ``0x070c30`` names a map in bits 4:0 and a first
 entry in bits 15:8; each 32-bit write to ``0x070d18`` stores the next
 entry, wrapping in the map's 256, and a read returns the current one.
 The model reads an entry's colour from bits 31:8, red high, because every
-write the IRIX X server makes has a zero low byte and its palette reads
-correctly that way, *inferred*. The
-8,192 entries are what the server addresses; the physical capacity is
+write the IRIX X server makes has a zero low byte, an *approximation*.
+The hardware's use of the low byte is *unknown*. The 8,192 entries are what the server addresses; the physical capacity is
 *unknown*.
 
 The DAC is addressed by the halfword at ``0x071810`` with the register
@@ -1372,8 +1373,8 @@ Model limits
 Tests
 =====
 
-The register-contract qtests run on the one-node Origin 2000 with the
-board in IO3:
+The register-contract qtests run on the default four-node ``origin2000``
+with the board in IO3:
 
 - ``tests/qtest/sgi-mgras-board-test.c``: identity, version bytes and the
   ``hinv`` decode for all eight boards (``board-identity/*``), the

@@ -27,7 +27,8 @@ image" does, it states what the shipped L1 firmware image version 1.44.0
 for the Origin 300 product group, :src:`l1-firmware-1.44.0`, was read to
 do. Those statements are rated *inferred*: the image is the controller's
 software, and its behaviour on a fitted chassis follows only if that
-image runs there. Captures show Origin 300s running L1 1.18.5 and 1.48.1,
+image runs there. Captures show Origin 300s running L1 1.18.5
+(:src:`irixnet-thread-2737`) and 1.48.1 (:src:`nekonomicon-16724335`),
 and other versions may differ. Facts are rated as described in
 :ref:`sgi-ratings`.
 
@@ -251,7 +252,7 @@ minus 104. The firmware revision (``0x0005``) comes from
 ``revision-major``, ``-minor`` and ``-patch``. All three must be set or
 none; without them the request answers minus 104 and logs ``LOG_UNIMP``.
 The Origin 300, Origin 350, Onyx 350 and Onyx 4 machines select 1.18.5,
-a version Origin 300 captures show. The Tezro profiles select 1.48.1,
+the version an Origin 300 capture shows (:src:`irixnet-thread-2737`). The Tezro profiles select 1.48.1,
 the version in :src:`ip35-patch-sg0007149`. The Fuel selects none. These
 are compatibility choices, not measured factory values.
 
@@ -670,7 +671,7 @@ Extra arguments are accepted. "Sent by" names the known senders, all
      - *inferred*
    * - ``0x1009``
      - Front-panel control: value, selector. Stock PROM.
-     - Accepted; minus 105 for a selector above 2. No panel action.
+     - Accepted; minus 105 for a selector whose low four bits exceed 2. No panel action.
      - Shape *inferred*; meaning *unknown*.
    * - ``0x100a``
      - Clear event subchannel. Stock PROM.
@@ -678,8 +679,8 @@ Extra arguments are accepted. "Sent by" names the known senders, all
      - *inferred*
    * - ``0x100b``
      - Report PROM version: exactly three integers.
-     - Logs ``N0: PROM <major>.<minor> (PR <patch>)`` and disables
-       events.
+     - Logs ``N0: PROM <major>.<minor> (PR <patch>)``, major and minor in
+       hex and patch in decimal, and disables events.
      - *inferred*; the image clears events only when they were on this
        port.
    * - ``0x100c``
@@ -804,9 +805,10 @@ Built identity records
 The built records are *approximations*: names, parts and revisions come
 from published inventories (``IP45_2CPU``, ``030-1780-001`` revision C,
 :src:`nekonomicon-16726611`), everything else is a placeholder. With
-the marked serial the stock PROM keeps its NVRAM across resets on the
-model; with ``000000`` it reinitialised it on every boot, a *software
-expectation* observed on the model. The Origin 300 machine supplies no
+the marked serial the model keeps the stock PROM's NVRAM across
+resets. With the serial ``000000`` the stock PROM reinitialises its
+NVRAM on every boot. That is model behaviour, not a statement about
+hardware. The Origin 300 machine supplies no
 SPD records, so the PROM's SPD reads answer minus 104, an
 *approximation* that OpenBSD sees as absent memory modules.
 
@@ -1030,8 +1032,9 @@ answers only when a profile selects it:
 
 - ``irouter-compat`` (Origin 350 family profiles): types ``0x37``,
   ``0x39`` and ``0x51`` answer the local commands ``brick`` and
-  ``brick`` with a trailing space with ``rack: 001, slot: 01, partition:
-  none, type: <label> [?MB flash], serial:<serial>, source: OTHER``.
+  ``brick`` with a trailing space with ``rack: <rack>, slot: <slot>,
+  partition: none|<n>, type: <label> [?MB flash], serial:<serial>,
+  source: OTHER``. Rack, slot and partition are the configured values.
 - ``o300-l1cmd-compat`` (the ``origin300-l1cmd-compat`` machine option):
   type ``0x34`` answers ``brick``, ``version`` and ``serial all``, each
   with a trailing space, with text whose missing fields read
@@ -1056,8 +1059,8 @@ expanders, supplies, fans and temperatures, and reads the board
 EEPROMs into RAM at start, *inferred*. ``0x0006`` serves that RAM copy.
 The SCL rate, fitted parts and bus topology are *unknown*.
 
-The model has none of this. Its only board-side action is an
-experiment for the PCI expansion module: when the machine binds an
+The model has none of this. Its only board-side action is
+for the PCI expansion module: when the machine binds an
 interface board, each controller restart writes the packed rack and bay
 to that board through two operations (bus 0, address ``0x8c`` for
 position 0 or ``0x8e`` for position 1, command ``0x13`` with the high
@@ -1134,7 +1137,8 @@ Reset
 A controller restart (realize, ``reboot_l1``, ``0x4002``) applies the
 pending rack and slot, leaves console mode, clears the command line,
 the frame parsers and request logging, sets the console field from
-``node-position``, clears a registered event subchannel below 4, writes
+``node-position``, clears a registered event subchannel below 4, clears a pending
+power-down, writes
 ``001c01     /`` and ``L1 running`` and logs ``L1 booting x.y.z``. It
 keeps node power, the log, the debug switches, partition and the
 records. The router, expansion and reference controllers are on the
@@ -1142,7 +1146,8 @@ machine's reset tree and restart on a system reset. A compute node's
 controller is not: a node reset leaves it running, as the manuals
 describe :src:`007-3938-006 p. 91`, *inferred*.
 
-A reset of ``sgi-l1-uart`` clears its registers, divisor and queue,
+A device reset of ``sgi-l1`` also clears every multi-frame assembly and
+the USB test state. A reset of ``sgi-l1-uart`` clears its registers, divisor and queue,
 lowers its interrupt and discards the controller's partial frame and
 multi-frame assembly for that UART.
 
@@ -1459,7 +1464,7 @@ general request and reply code, the command interpreter, console mode,
 retargeting and short frames, the power, reset, NMI and power-cycle
 paths, controller restart and node position, raw, whole-image and built
 EEPROM records, the Fuel station-address record, the peer pair, the
-query and attached routing experiments (with
+query and attached routing models (with
 ``tests/qtest/l1-query-routing-fixture.c``), the expansion, router and
 reference profiles, the interface-board start-up (with
 ``tests/qtest/l1-bic-startup-fixture.c``), the multi-frame transport for
