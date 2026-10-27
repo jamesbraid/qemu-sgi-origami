@@ -1539,6 +1539,36 @@ static void bedrock_test_install_nbrick(void)
 }
 
 /*
+ * A P-brick-shaped module: c0 cabled to port A of U0, and the four links
+ * of 108-0240-002 Figure 2-24 (printed page 2-31) from U0 to U1 and U2,
+ * two per downstream chip on distinct ports. No contract gives the
+ * downstream chips' mode, so the builder must accept the records and
+ * then refuse to build them.
+ */
+static void bedrock_test_install_pbrick(void)
+{
+    static const char *const ids[] = { "pbrick-u0", "pbrick-u1", "pbrick-u2" };
+
+    bedrock_test_install_cbrick_descriptor(0xa);
+    cbrick_test_modules[2].id = (char *)"pbrick";
+    for (unsigned int i = 0; i < 3; i++) {
+        cbrick_test_crossbars[i] = (SGIModelCrossbar) {
+            .id = (char *)ids[i], .module_index = 2,
+            .kind = SGI_MODEL_CROSSBAR_KIND_XBRIDGE, .widget_revision = 2,
+        };
+    }
+    cbrick_test_publish(3, 3, 0, 0);
+    cbrick_test_add_xio_cable("u0-d-to-u2-d", cbrick_crossbar_end(0, 0xd),
+                              cbrick_crossbar_end(2, 0xd));
+    cbrick_test_add_xio_cable("u0-c-to-u2-8", cbrick_crossbar_end(0, 0xc),
+                              cbrick_crossbar_end(2, 8));
+    cbrick_test_add_xio_cable("u0-9-to-u1-8", cbrick_crossbar_end(0, 9),
+                              cbrick_crossbar_end(1, 8));
+    cbrick_test_add_xio_cable("u0-8-to-u1-d", cbrick_crossbar_end(0, 8),
+                              cbrick_crossbar_end(1, 0xd));
+}
+
+/*
  * One change to the C-brick fixture, with its XBridge host on port A,
  * that the builder must refuse. None is a hardware claim.
  */
@@ -1702,6 +1732,14 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "cbrick-io7")) {
         bedrock_test_install_cbrick_descriptor(0xa);
         bedrock_test_install_cbrick_io7();
+    } else if (!strcmp(value, "cbrick-pbrick")) {
+        bedrock_test_install_pbrick();
+    } else if (!strcmp(value, "cbrick-pbrick-port-reused")) {
+        bedrock_test_install_pbrick();
+        cbrick_test_xio_ends[4][1].port = 8;
+    } else if (!strcmp(value, "cbrick-pbrick-revision-mismatch")) {
+        bedrock_test_install_pbrick();
+        cbrick_test_crossbars[0].widget_revision = 3;
     } else if (!strcmp(value, "cbrick-nbrick")) {
         bedrock_test_install_nbrick();
     } else if (!strcmp(value, "cbrick-board-port-8")) {

@@ -1188,9 +1188,11 @@ node joins and realizes it as an Origin 300 node does its own. The
 node's Bedrock decodes the chip at the cable's port and at each of the
 chip's heads the node hosts, and nothing at the chip's other Crosstown2
 port. A second node cabled to that port is refused, since whether one
-XBridge serves two hosts at once is unknown, and so are a host also
-cabled to a router and chained crossbars, neither of which this builder
-makes yet.
+XBridge serves two hosts at once is unknown, and so is a host also
+cabled to a router. Cables between two crossbars, such as the P-brick's
+two links from its first chip to each of the others, are checked like
+any other cable and then refused while the machine is built, since no
+contract gives the downstream chips' mode.
 
 An XIO cable from one of the chip's other link ports, 8 to 0xd, reaches
 one XIO board: a card in an X-brick slot, or a board on the I-brick's
