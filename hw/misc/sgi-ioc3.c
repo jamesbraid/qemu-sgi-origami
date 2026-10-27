@@ -1726,6 +1726,18 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/*
+ * Restoring is safe only because of the field order. Each 16550's post_load
+ * signals its interrupt line and transmit-ready, which recompute the PCI
+ * interrupt and kick the serial DMA engine before the rest of this state
+ * has loaded. int_status and int_enable load before serial[], so the
+ * recomputed interrupt is already the saved one. chip_control loads after
+ * serial[], so on a destination fresh from reset it still holds its reset
+ * value during those kicks, the ports
+ * read as unreachable, and the engine does nothing with its not yet loaded
+ * state; post_load kicks each port once everything is in. Reordering these
+ * fields needs the guard IOC4 uses instead.
+ */
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
     .version_id = 22,
