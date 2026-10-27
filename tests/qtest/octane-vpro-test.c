@@ -7,6 +7,7 @@
  * HEART through the Crossbow.
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
@@ -185,6 +186,130 @@ static void test_interrupt_reaches_heart(gconstpointer data)
     qtest_quit(qts);
 }
 
+/*
+ * The command-FIFO pages post their stores: TCG performs a FIFO store in
+ * the middle of a translation block instead of ending the block there and
+ * re-running the store as a block of its own. Nothing the guest can see
+ * may change. A processor runs one straight-line block of FIFO stores (the
+ * PROM textport's first quad and flush, as traced on a Fuel), writes a
+ * sentinel to RAM and spins. The same program runs with x-posted-fifo off
+ * and on: the drawn pixels, the board's interrupt flags and the sentinel
+ * must match, and only the unposted run may have made the extra
+ * single-store blocks. Under instruction counting the posted pages make
+ * them too.
+ */
+#define OCTANE_RAM 0x20000000ULL
+#define SENTINEL 0x1357
+#define ODSY_INTR_FLAGS 0x1014
+
+static const uint32_t posted_words[] = {
+    0x22008001, 0x23008003, 0xce80cc08, 0x0, 0x0, 0x0, 0xc580c406, 0x2,
+    0x10658, 0x120000, 0x14400, 0x7, 0x8080c800, 0x118, 0x332, 0x8080c800,
+    0x121, 0x332, 0x8080c800, 0x121, 0x343, 0x8080c800, 0x118, 0x343,
+    0x14001, 0x10443, 0xfa, 0x10046, 0x10046, 0x10019, 0x10443, 0x96,
+    0x10046, 0x10046, 0x10046, 0x10046, 0x10443, 0xfa, 0x10046, 0x10046,
+};
+
+typedef struct PostedRun {
+    char *pixels;
+    uint32_t intr_flags;
+    uint64_t tbs;
+} PostedRun;
+
+static uint64_t tb_count(QTestState *qts)
+{
+    g_autofree char *jit = qtest_hmp(qts, "info jit");
+    const char *line = strstr(jit, "TB count");
+
+    g_assert_nonnull(line);
+    return g_ascii_strtoull(line + strlen("TB count"), NULL, 10);
+}
+
+static void posted_run(bool posted, bool icount, PostedRun *run)
+{
+    g_autofree char *dir = g_dir_make_tmp("vpro-posted-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "prom.bin", NULL);
+    g_autofree uint8_t *image = g_malloc0(64 * 1024);
+    g_autofree char *quoted = NULL;
+    g_autoptr(QDict) row = NULL;
+    unsigned pos = 0;
+    QTestState *qts;
+    int64_t deadline;
+
+#define EMIT(w) do { stl_be_p(image + pos, (w)); pos += 4; } while (0)
+    EMIT(0x400a6000); EMIT(0x354a0080); EMIT(0x408a6000); /* Status.KX = 1 */
+    EMIT(0); EMIT(0); EMIT(0); EMIT(0);
+    EMIT(0x3c089600); EMIT(0x0008403c);         /* t0 = 0x9600 << 48 */
+    EMIT(0x3c092000); EMIT(0x35294000);         /* t1 = RAM + 0x4000 */
+    EMIT(0x01094025);                           /* t0 |= t1 */
+    EMIT(0x3c0bbb11);                           /* t3 = VPRO_SHORT + FIFO */
+    for (unsigned i = 0; i < G_N_ELEMENTS(posted_words); i++) {
+        EMIT(0x3c0c0000 | (posted_words[i] >> 16));     /* lui t4 */
+        EMIT(0x358c0000 | (posted_words[i] & 0xffff));  /* ori t4, t4 */
+        EMIT(0xad6c0000);                               /* sw t4, 0(t3) */
+    }
+    EMIT(0x340a0000 | SENTINEL);                /* t2 = SENTINEL */
+    EMIT(0xad0a0000);                           /* sw t2, 0(t0) */
+    EMIT(0x1000ffff); EMIT(0);                  /* spin */
+#undef EMIT
+    g_assert_true(g_file_set_contents(path, (char *)image, 64 * 1024, NULL));
+    quoted = g_shell_quote(path);
+    qts = qtest_initf("-M octane2 -m 256M -cpu %s -bios %s "
+                      "-accel tcg,thread=single -S %s "
+                      "-device sgi-odyssey,slot=widget-11,product=v12,"
+                      "x-posted-fifo=%s", OCTANE2_CPU, quoted,
+                      icount ? "-icount shift=3,align=off,sleep=off" : "",
+                      posted ? "on" : "off");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_readl(qts, OCTANE_RAM + 0x4000) != SENTINEL) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    run->tbs = tb_count(qts);
+    run->intr_flags = qtest_readl(qts, VPRO_SHORT + ODSY_INTR_FLAGS);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-pixel-x','value':%d}}",
+        VPRO_PATH, 0x110);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-pixel-y','value':%d}}",
+        VPRO_PATH, 0x33a);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-pixel-count','value':%d}}",
+        VPRO_PATH, 24);
+    row = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                    "{'path':%s,'property':'x-test-pixel-row'}}", VPRO_PATH);
+    run->pixels = g_strdup(qdict_get_str(row, "return"));
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_posted_fifo(void)
+{
+    PostedRun unposted, posted, counted;
+
+    posted_run(false, false, &unposted);
+    posted_run(true, false, &posted);
+    /* Instruction counting needs every I/O access to end its block. */
+    posted_run(true, true, &counted);
+    g_test_message("pixels %s, flags 0x%x, blocks %" PRIu64 " unposted, %"
+                   PRIu64 " posted", posted.pixels, posted.intr_flags,
+                   unposted.tbs, posted.tbs);
+    g_assert_cmpstr(posted.pixels, ==, unposted.pixels);
+    g_assert_cmpuint(posted.intr_flags, ==, unposted.intr_flags);
+    /* Every unposted store but the block's last ends a block of its own. */
+    g_assert_cmpuint(unposted.tbs, >=,
+                     posted.tbs + G_N_ELEMENTS(posted_words) - 1);
+    g_assert_cmpstr(counted.pixels, ==, unposted.pixels);
+    g_assert_cmpuint(counted.tbs, >=,
+                     posted.tbs + G_N_ELEMENTS(posted_words) - 1);
+    g_free(unposted.pixels);
+    g_free(posted.pixels);
+    g_free(counted.pixels);
+}
+
 int main(int argc, char **argv)
 {
     const struct {
@@ -220,6 +345,7 @@ int main(int argc, char **argv)
             qtest_add_data_func(path, GINT_TO_POINTER(profile), tests[i].test);
         }
     }
+    qtest_add_func("/octane2/vpro/posted-fifo", test_posted_fifo);
     result = g_test_run();
     g_assert_cmpint(unlink(flash_path), ==, 0);
     g_free(flash_path);
