@@ -24,6 +24,7 @@ docs/system/mips/sgi/hardware/mscsi.rst
 docs/system/mips/sgi/ip27.rst
 docs/system/mips/sgi/hardware/pci-expansion.rst
 docs/system/mips/sgi/prom-image.rst
+docs/system/mips/sgi/references.rst
 docs/system/mips/sgi/hardware/qlogic-isp.rst
 docs/system/mips/sgi/hardware/router.rst
 docs/system/mips/sgi/sn.rst
@@ -371,6 +372,7 @@ scripts/sgi-model.py
 scripts/sgi-replay-convert.py
 scripts/sgi_model/__init__.py
 scripts/sgi_model/citations.py
+scripts/sgi_model/references_doc.py
 scripts/sgi_model/exceptions.py
 scripts/sgi_model/model_compile.py
 scripts/sgi_model/model_composition.py
@@ -465,6 +467,7 @@ scripts/tests/test_sgi_model_ip30.py
 scripts/tests/test_sgi_model_resolution.py
 scripts/tests/test_sgi_model_resolution_contract.py
 scripts/tests/test_sgi_model_validation_contract.py
+scripts/tests/test_sgi_model_references_doc.py
 scripts/tests/test_sgi_synthetic_serial.py
 subprojects/libslirp.wrap
 target/mips/r10k.h
