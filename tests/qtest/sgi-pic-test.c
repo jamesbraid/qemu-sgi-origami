@@ -2458,7 +2458,6 @@ static void test_bedrock_ioc4_pending_migration(void)
     const uint8_t rx[] = { 0x71, 0x72, 0x73 };
     uint8_t entry[8];
     const uint8_t serial_data = IOC4_UART_DATA;
-    uint32_t cleared;
 
     g_assert_no_error(error);
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
@@ -2488,19 +2487,18 @@ static void test_bedrock_ioc4_pending_migration(void)
     g_assert_cmphex(qtest_readq(to, TARGET + 0x1000), ==, 0x11234);
 
     /*
-     * The pass-through bit is a level: the UART read that quiets the port
-     * lowers the line, once, and the acknowledgement after it changes
-     * nothing. Count from here; restoring state may already have sent the
-     * PIC a clear and a set of its own.
+     * Restoring a pending source sends the PIC nothing: the line was high
+     * and stays high. The pass-through bit is a level, so the UART read
+     * that quiets the port lowers it, once, and the acknowledgement after
+     * it changes nothing.
      */
-    cleared = pic_requests_at(to, PIC_CHILD, 0, 0, false);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==, 0);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, true), ==, 1);
     g_assert_cmphex(qtest_readb(to, IOC4_UART0 + 2), ==, 2);
-    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==,
-                     cleared + 1);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==, 1);
     pic_ioc4_write_reg(to, 0x08, IOC4_UART_PASS);
     g_assert_cmphex(qtest_readq(to, TARGET + 0x1000), ==, 0x1234);
-    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==,
-                     cleared + 1);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==, 1);
     qtest_writeq(to, HEAD(0) + 0x110, 1);
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x100), ==, 0);
 

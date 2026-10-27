@@ -56,6 +56,8 @@ struct SGIIOC4State {
     uint8_t pci_status_compat_mode;
     uint8_t ata_readback_compat_mode;
     bool serial_dma_experimental;
+    /* State is loading; the interrupt words are not all in yet. */
+    bool loading;
     bool pci_status_compat;
     bool ata_readback_compat;
     uint32_t ata_readback;
