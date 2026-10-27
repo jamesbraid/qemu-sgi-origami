@@ -132,6 +132,52 @@ bool sgi_pi_gfx_take_starved(SGIPIGfx *g, unsigned int slot,
     return true;
 }
 
+/* Ticks from the count to the compare: a whole turn when they are equal. */
+static uint64_t sgi_pi_gfx_int_left(const SGIPIGfx *g, unsigned int slot)
+{
+    uint32_t left = (g->int_compare[slot] - g->int_count[slot]) &
+                    SGI_PI_GFX_INT_MASK;
+
+    return left ? left : (uint64_t)SGI_PI_GFX_INT_MASK + 1;
+}
+
+bool sgi_pi_gfx_int_advance(SGIPIGfx *g, unsigned int slot, uint64_t now)
+{
+    bool fired = false;
+
+    g_assert(slot < SGI_PI_GFX_SLOTS);
+    if (g->int_running[slot] && now > g->int_epoch[slot]) {
+        uint64_t elapsed = now - g->int_epoch[slot];
+
+        if (elapsed >= sgi_pi_gfx_int_left(g, slot)) {
+            g->int_count[slot] = g->int_compare[slot];
+            fired = true;
+        } else {
+            g->int_count[slot] = (g->int_count[slot] + elapsed) &
+                                 SGI_PI_GFX_INT_MASK;
+        }
+    }
+    g->int_epoch[slot] = now;
+    /*
+     * At or below zero, as the header's counter comment has it; the
+     * twelve-bit counter is never below. Whether the chip also asks for
+     * the counter to be below the bias is unknown. The model asks for
+     * both, its choice, so a slot whose bias is zero, as every slot is out
+     * of reset and after IRIX detaches, sends nothing.
+     */
+    g->int_running[slot] = g->credit[slot] == 0 && g->bias[slot] > 0;
+    return fired;
+}
+
+uint64_t sgi_pi_gfx_int_due(const SGIPIGfx *g, unsigned int slot)
+{
+    g_assert(slot < SGI_PI_GFX_SLOTS);
+    if (!g->int_running[slot]) {
+        return UINT64_MAX;
+    }
+    return g->int_epoch[slot] + sgi_pi_gfx_int_left(g, slot);
+}
+
 /*
  * The mark on the store a processor path is forwarding, per host thread:
  * the forward and the head's handler run on the issuing vCPU's thread.

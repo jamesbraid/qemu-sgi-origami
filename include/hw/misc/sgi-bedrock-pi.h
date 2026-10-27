@@ -106,6 +106,9 @@ struct SGIBedrockPIState {
     uint8_t gfx_credit_mode;
     /* Broadcast when a stopped graphics slot is released. */
     QemuCond gfx_cond;
+    /* Each slot's interrupt counter reaching its compare. */
+    QEMUTimer *gfx_int_timer[SGI_BEDROCK_PI_PROCESSORS];
+    SGIBedrockPITimerLine gfx_int_line[SGI_BEDROCK_PI_PROCESSORS];
     bool lb_error;
     bool ni_error;
     bool xb_error;

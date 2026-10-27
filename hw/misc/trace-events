@@ -732,6 +732,7 @@ sgi_bedrock_pi_pending_read(unsigned interface, int cpu, unsigned bank, uint64_t
 sgi_bedrock_pi_gfx_below_bias(unsigned interface, unsigned slot, uint32_t credit, uint32_t bias) "pi%u slot %u graphics credits 0x%x below bias 0x%x: interrupt, slot stopped"
 sgi_bedrock_pi_gfx_stall(unsigned interface, unsigned slot, uint32_t credit) "pi%u slot %u counted store waits, credits 0x%x"
 sgi_bedrock_pi_gfx_stalled(unsigned interface, unsigned slot, const char *why, int64_t ns, uint32_t credit) "pi%u slot %u counted store goes on (%s) after %" PRId64 " ns, credits 0x%x"
+sgi_bedrock_pi_gfx_int_compare(unsigned interface, unsigned slot, uint32_t compare) "pi%u slot %u graphics interrupt counter reached its compare 0x%x: interrupt"
 sgi_bedrock_pi_gfx_release(unsigned interface, unsigned slot, const char *why, uint32_t credit) "pi%u slot %u released (%s), credits 0x%x"
 sgi_bedrock_pi_nmi(unsigned interface, unsigned slot, uint64_t value) "pi%u slot %u NMI store 0x%" PRIx64
 

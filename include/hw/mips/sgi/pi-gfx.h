@@ -71,6 +71,12 @@ typedef struct SGIPIGfx {
      * (sgi_bedrock_pi_gfx_store()). The Hub does not use it.
      */
     bool stopped[SGI_PI_GFX_SLOTS];
+    /*
+     * Bedrock: the interrupt counter runs (the credit counter is at
+     * zero), and the clock tick at which int_count held its value.
+     */
+    bool int_running[SGI_PI_GFX_SLOTS];
+    uint64_t int_epoch[SGI_PI_GFX_SLOTS];
 } SGIPIGfx;
 
 /* Every register zero, every page disabled (the model's choice). */
@@ -108,6 +114,26 @@ bool sgi_pi_gfx_count_store(SGIPIGfx *g, unsigned int slot, hwaddr addr,
  */
 bool sgi_pi_gfx_take_starved(SGIPIGfx *g, unsigned int slot,
                              const char *who);
+
+/*
+ * The interrupt counter, for an interface that runs it (the Bedrock).
+ * The SN1 header's rules: it counts one per clock while the credit
+ * counter is at or below zero (and, the model's choice, below a nonzero
+ * bias); when it reaches the compare the graphics
+ * interrupt is sent and the counter is loaded with the compare, so it
+ * sends no second one until it comes round again or software rewrites
+ * it. 'now' is the caller's clock in counter ticks; which clock the chip
+ * counts is unknown.
+ *
+ * sgi_pi_gfx_int_advance() brings int_count up to 'now', then starts or
+ * stops the count for the credit counter as it now stands. Call it before
+ * and after anything changes the credit counter or the interrupt
+ * registers. True when the counter reached the compare: the caller sends
+ * the interrupt. sgi_pi_gfx_int_due() is the tick at which it will, or
+ * UINT64_MAX while it does not run.
+ */
+bool sgi_pi_gfx_int_advance(SGIPIGfx *g, unsigned int slot, uint64_t now);
+uint64_t sgi_pi_gfx_int_due(const SGIPIGfx *g, unsigned int slot);
 
 /*
  * Whether the processor store now being forwarded was counted. A processor
