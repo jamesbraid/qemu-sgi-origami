@@ -16455,30 +16455,39 @@ bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                 sgi_kona_gl_image_clear(s);
                 return false;
             }
-            for (uint32_t k = 0; k < n; k++) {
-                if (u->header[3] == 7 && !d.pixels.strided) {
-                    uint64_t at = offset + k;
-
-                    u->words[at / 4] |= (uint32_t)chunk[k] <<
-                                       (24 - 8 * (at % 4));
-                    continue;
-                }
+            if (u->header[3] == 7 && !d.pixels.strided) {
+                sgi_kona_gl_words_or_bytes(u->words, offset, chunk, n);
+                offset += n;
+                continue;
+            }
+            /*
+             * Each run is the useful part of one row, at consecutive
+             * staging offsets: when its last byte has a place, all do.
+             */
+            for (uint32_t k = 0; k < n;) {
                 uint32_t row = d.pixels.strided ? line :
                                (offset + k) / d.pixels.stride;
                 uint32_t col = d.pixels.strided ? offset + k :
                                (offset + k) % d.pixels.stride;
-                uint64_t at;
+                uint32_t run = d.pixels.strided ? n - k :
+                               MIN(n - k, d.pixels.stride - col);
+                uint64_t at, last, useful;
 
                 if (col < d.pixels.row_bytes) {
-                    if (!sgi_kona_gl_pixels_pio_offset(&d.pixels, row, col,
-                                                        &at) ||
-                        at / 4 >= u->count) {
+                    useful = MIN(run, d.pixels.row_bytes - col);
+                    if (!sgi_kona_gl_pixels_pio_offset(&d.pixels, row,
+                                                        col + useful - 1,
+                                                        &last) ||
+                        last / 4 >= u->count ||
+                        !sgi_kona_gl_pixels_pio_offset(&d.pixels, row, col,
+                                                        &at)) {
                         sgi_kona_gl_image_clear(s);
                         return false;
                     }
-                    u->words[at / 4] |= (uint32_t)chunk[k] <<
-                                       (24 - 8 * (at % 4));
+                    sgi_kona_gl_words_or_bytes(u->words, at, chunk + k,
+                                               useful);
                 }
+                k += run;
             }
             offset += n;
         }
