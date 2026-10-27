@@ -123,6 +123,8 @@ typedef enum SGIIOCSerialDMASource {
 
 /* What differs between the chips, fixed per chip. */
 typedef struct SGIIOCSerialDMAParams {
+    /* The chip's name in trace events. */
+    const char *name;
     /*
      * The produce index reports the packer's held count in bits 24-26.
      * IOC3's header defines the field; IOC4's does not, so whether IOC4
@@ -257,6 +259,9 @@ uint32_t sgi_ioc_sdma_port_read(SGIIOCSerialDMA *d, unsigned port,
                                 hwaddr offset);
 void sgi_ioc_sdma_port_write(SGIIOCSerialDMA *d, unsigned port,
                              hwaddr offset, uint32_t val);
+/* A write the chip turned away, such as a user page's read-only index. */
+void sgi_ioc_sdma_write_refused(SGIIOCSerialDMA *d, unsigned port,
+                                hwaddr offset, uint32_t val);
 
 /* Something changed that may let the engine move. */
 void sgi_ioc_sdma_kick(SGIIOCSerialDMA *d, unsigned port);
