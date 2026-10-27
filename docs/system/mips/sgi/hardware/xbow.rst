@@ -7,7 +7,8 @@ SGI Crossbow XIO crossbar (XBow)
 ================================
 
 Crossbow is the eight-link crossbar of the Origin 2000 and Onyx2
-modules and of the Origin 200 GIGAchannel cabinet. It routes packets
+modules, of the Origin 200 GIGAchannel cabinet and of the Octane and
+Octane2 system boards. It routes packets
 between the host links and the I/O widgets by destination widget number
 and answers, itself, as logical widget 0. QEMU models it in
 ``hw/misc/sgi-xbow.c``. This page is the contract the machine models in
@@ -17,10 +18,10 @@ statement comes from.
 
 Ratings follow :ref:`sgi-ip30`: established, inferred, approximation or
 unknown. The sources are the *Crossbow ASIC Specification*, revision
-12.0, 18 November 1996 (``web:crossbow-asic-spec-12.0``; printed and PDF
+12.0, 18 November 1996 (:src:`crossbow-asic-spec-12.0`; printed and PDF
 page numbers agree, and the page given is the PDF page), the *Origin2000
 Theory of Operations* (007-3439-002), SGI's *Hardware Quick-reference
-Booklet* (``web:origin-onyx2-quick-reference-booklet``) and public
+Booklet* (:src:`origin-onyx2-quick-reference-booklet`) and public
 OpenBSD sgi sources.
 
 .. _sgi-xbow-role:
@@ -159,6 +160,28 @@ slot on a big-endian host; this page uses the aligned offset.
        listed as not functional, so the model keeps the register but
        drives no one-wire bus.
      - established, spec PDF pages 92-93
+   * - 0x0078
+     - Widget 0 reset fence
+     - Revision 5 and later. Eight-bit mask, reset ``0xff``. An accepted
+       warm reset leaves a programmed fence as it was.
+     - established for existence and warm-reset retention on the
+       measured Octane2 (:ref:`sgi-xbow-measurements`)
+   * - 0x0080 + 8 * link
+     - Per-link reset fence
+     - Revision 5 and later. One eight-bit mask per link, reset ``0xff``.
+       These are separate from the per-link register sets below.
+     - established on the measured Octane2
+   * - 0x00c0, 0x00c8
+     - Resource lock, lock clear
+     - Revision 5 and later. A write to ``0x00c0`` is stored only while
+       the lock reads zero; any write to ``0x00c8`` clears it. Both
+       offsets read the stored value with no side effect. Reset zero.
+     - existence and zero after power-on established on the measured
+       Octane2; the acquire and release rule is inferred from the
+       XBridge's crossbar, which implements the same two offsets
+
+Below revision 5 the fence and lock offsets are reserved, and an access
+is the reserved-address error described above.
 
 The identification revision is a property of the fitted chip and not a
 resettable value; reset and migration rebuild it. The model's
@@ -212,6 +235,41 @@ up (alive set); failed after coming up (max-retry set). This is
 established by the specification's link error description (PDF
 pages 65-69). It is what a guest reads to decide whether anything is
 plugged in.
+
+.. _sgi-xbow-measurements:
+
+Measurements
+============
+
+.. _sgi-xbow-octane2-id:
+
+These reads come from the :ref:`sgi-measured-octane2`, in the PROM Command
+Monitor after the firmware had initialised the machine.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Read
+     - Width
+     - Value
+     - What it shows
+   * - Widget 0 identification, physical ``0x10000004``
+     - 32-bit
+     - ``0x50000001``
+     - Revision code 5 in bits 31:28; the inventory prints ASIC
+       revision 1.4.
+   * - Widget 0 fence ``0x0078`` and the widget 11 link fence, after
+       the PROM's own fenced warm reset
+     - 32-bit
+     - bit 3 clear in both
+     - The fences exist on revision 5, and the warm reset they gate does
+       not restore them.
+   * - Resource lock ``0x00c0`` after power-on
+     - 32-bit
+     - zero
+     - The lock exists on revision 5 and starts released.
+
+None of these is a cold-reset value of the chip.
 
 .. _sgi-xbow-model-choices:
 

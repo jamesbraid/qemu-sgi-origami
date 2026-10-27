@@ -1,0 +1,549 @@
+.. SPDX-License-Identifier: BSD-3-Clause
+
+.. _sgi-ds1685:
+
+=====================================================
+DS1685 real-time clock and NVRAM (Octane clock)
+=====================================================
+
+The DS1685 is the real-time clock with 242 bytes of battery-backed RAM on
+the Octane and Octane2 system boards. It sits on the IOC3's byte bus
+(:doc:`ioc3`) and also supplies the machine's power-off control. A published
+Octane boot log reports a DS1687, the same die sealed with its crystal and
+cell. QEMU models the DS1685 die, programming model of Maxim document
+19-5215 revision 10/12, as ``hw/rtc/ds1685.c`` (QOM type ``ds1685``). The
+``octane`` and ``octane2`` machines get it from the IOC3 with
+subsystem ID ``0xc304`` and ``timekeeper-kind`` DS1685; other IOC3 boards keep
+the M48T35 Timekeeper or none. The O2's MACE ASIC instantiates the same
+device through a third, directly mapped window (see
+:ref:`sgi-ds1685-direct`).
+
+Facts below are rated *established* (the manufacturer's datasheet),
+*observed* (a published capture), *inferred* (a stated step from
+established facts), *approximation* (a model choice where the hardware is
+not known) or *unknown*. A model run shows what the model does, not what
+the hardware does.
+
+.. _sgi-ds1685-sources:
+
+Sources
+=======
+
+- *DS1685/DS1687 3V/5V Real-Time Clocks*, Maxim Integrated document
+  19-5215, revision 10/12, :src:`maxim-ds1685-ds1687-rev-10-12`. Page
+  numbers below are its printed "N of 34" numbers. Mainline Linux cites
+  revision 4/10 of the same document number.
+- The OpenBSD/sgi story, part 4, :src:`miod-openbsd-sgi-story-4`: an
+  OpenBSD boot log of a 175 MHz Octane that reports the DS1687.
+- Linux at ``db2ddb87143519e20a95aa36c60b36107b736a58``:
+  ``drivers/rtc/rtc-ds1685.c``, ``include/linux/rtc/ds1685.h``,
+  ``drivers/mfd/ioc3.c``, ``arch/mips/pci/pci-xtalk-bridge.c`` and
+  ``arch/mips/include/asm/sn/ioc3.h``.
+- OpenBSD, branch ``sgi-is-alive-at-7.9``: ``sys/arch/sgi/dev/dsrtc.c``,
+  ``dsrtcvar.h`` and ``power.c``, ``sys/dev/ic/ds1687reg.h`` and
+  ``sys/arch/sgi/pci/iocreg.h``. NetBSD ``sys/dev/ic/ds1687reg.h`` is a
+  third transcription of the register map.
+
+The drivers are software expectations, not hardware evidence.
+
+.. _sgi-ds1685-identity:
+
+Identity and placement
+======================
+
+The chip is a Dallas/Maxim DS1685 die. The DS1687 package adds a crystal and
+lithium cell, and its crystal-select bit is inert :src:`maxim-ds1685-ds1687-rev-10-12 p. 3, 22`, *established*. The published Octane boot log names the part as a
+DS1687 :src:`miod-openbsd-sgi-story-4 Octane boot log`, *observed* on a
+175 MHz Octane. That the Octane2 board carries the same part is *inferred*
+from the shared board design. No revision-matched measurement of an Octane2
+clock exists.
+
+The chip has a multiplexed address and data bus. The IOC3 reaches it with two
+byte-wide ports, *established* by Linux ``drivers/mfd/ioc3.c`` and OpenBSD
+``dsrtc.c``, which both use them this way:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Port
+     - IOC3 offset
+     - Access
+     - Effect
+   * - Address
+     - ``0x0a0000`` (byte-bus select 1)
+     - byte write
+     - Latches the register number. Bits 6-0 are kept, bit 7 is dropped.
+   * - Data
+     - ``0x0c0000`` (byte-bus select 2)
+     - byte read or write
+     - Reads or writes the register the latch names. The latch is not
+       changed.
+
+Each select owns ``0x20000`` bytes of IOC3 address space. The model maps
+four bytes at the base of each, one device region per port, and answers on
+every byte position of that word. The Bridge moves a byte access to the
+byte position a big-endian cycle uses, so a driver's byte access to offset
+0 arrives at offset 3 (Linux does this, OpenBSD does not). A port that
+decoded only offset 0 would never be reached. Beyond the first four bytes
+the device decodes nothing. How far up its span the real select answers is
+*unknown*; the IOC3 byte-bus timing description or a trace of the PROM
+touching those windows would settle it.
+
+Each region accepts byte accesses only. What a real part returns for an
+address-port read, or for an index of ``0x80`` and above, is *unknown*. The
+model masks the index to seven bits and answers an address-port read with
+the latch, logging ``LOG_GUEST_ERROR``.
+
+Register map
+============
+
+Register numbers are values written to the address port. Every register is
+one byte. The common registers ``00h``-``3Fh`` are the same cells in both
+banks. Only ``40h``-``7Fh`` changes meaning with the bank bit, ``DV0`` (bit 4
+of register A) :src:`maxim-ds1685-ds1687-rev-10-12 p. 11, 18`, *established*.
+
+The vendor leaves almost every power-up value undefined. The "Initial"
+column is what the model holds after realize and a first machine reset, an
+*approximation*. It is not a claim about the part.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Name
+     - Initial
+     - Access
+     - Notes
+   * - ``00h``
+     - Seconds
+     - from clock
+     - rw, bit 7 reads zero
+     - Writes keep bits 6-0.
+   * - ``01h``, ``03h``, ``05h``
+     - Seconds, minutes, hours alarm
+     - ``00h``
+     - rw
+     - A byte of ``C0h`` or above matches every value of its field.
+   * - ``02h``, ``04h``, ``06h``-``09h``
+     - Minutes, hours, weekday, day, month, year
+     - from clock
+     - rw
+     - Weekday is 1-7, Sunday is 1.
+   * - ``0Ah``
+     - Control A
+     - ``20h``
+     - rw, bit 7 read-only
+     - ``UIP`` (7), ``DV2``-``DV0`` (6-4), rate ``RS3``-``RS0`` (3-0).
+   * - ``0Bh``
+     - Control B
+     - ``06h``
+     - rw
+     - ``SET``, ``PIE``, ``AIE``, ``UIE``, ``SQWE``, ``DM``, ``24/12``,
+       ``DSE``.
+   * - ``0Ch``
+     - Control C
+     - ``00h``
+     - read-only
+     - ``IRQF``, ``PF``, ``AF``, ``UF``. Bits 3-0 read zero.
+   * - ``0Dh``
+     - Control D
+     - ``80h``
+     - read-only
+     - ``VRT`` always reads one.
+   * - ``0Eh``-``3Fh``
+     - User RAM
+     - ``00h``
+     - rw
+     - 50 bytes, in both banks.
+   * - ``40h``-``7Fh``, bank 0
+     - User RAM
+     - ``00h``
+     - rw
+     - 64 bytes.
+   * - ``40h``, bank 1
+     - Model number
+     - ``71h``
+     - read-only
+     - ``71h`` is the DS1685 and DS1687 :src:`maxim-ds1685-ds1687-rev-10-12 p. 19`.
+   * - ``41h``-``47h``, bank 1
+     - Serial number and CRC
+     - ``00h``
+     - read-only
+     - Seven bytes.
+   * - ``48h``, bank 1
+     - Century
+     - from clock
+     - rw
+     - In the format ``DM`` selects.
+   * - ``49h``, bank 1
+     - Date alarm
+     - ``00h``
+     - rw
+     - Day of month, no don't-care encoding.
+   * - ``4Ah``, bank 1
+     - Extended control 4A
+     - ``80h``
+     - rw, bits 7 and 6 read-only
+     - ``VRT2`` (7), ``INCR`` (6), reserved (5-4), ``PAB`` (3), ``RF``,
+       ``WF``, ``KF`` (2-0).
+   * - ``4Bh``, bank 1
+     - Extended control 4B
+     - ``40h``
+     - rw
+     - ``ABE``, ``E32K``, ``CS``, ``RCE``, ``PRS``, ``RIE``, ``WIE``,
+       ``KSE``.
+   * - ``4Ch``, ``4Dh``, ``51h``, ``52h``, ``54h``-``7Fh``, bank 1
+     - Reserved
+     - ``00h``
+     - read zero
+     - Writes are dropped.
+   * - ``4Eh``, ``4Fh``, bank 1
+     - SMI recovery stack
+     - ``00h``
+     - read zero
+     - Not latched. Reads and writes log ``LOG_UNIMP``.
+   * - ``50h``, bank 1
+     - Extended RAM address
+     - ``00h``
+     - rw
+     - Seven bits are used.
+   * - ``53h``, bank 1
+     - Extended RAM data port
+     - ``00h``
+     - rw
+     - Reads or writes the extended RAM byte ``50h`` names. The address
+       does not advance.
+
+The register contents and bit positions are *established*
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 9, 17-22`. The 242 bytes of user RAM
+are the 50 common bytes, 64 bank-0 bytes and 128 extended-RAM bytes
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 1, 14`, *established*. The model keeps
+the serial number and CRC at zero, because no public source gives a value
+for either, *unknown*. The CRC algorithm is not in the datasheet.
+
+Register A, B and C
+-------------------
+
+Writes to register A ignore bit 7. Both drivers write back the value they
+just read, so a write that stored ``UIP`` would set it. Writes to registers C
+and D, and to the model number, serial bytes and CRC, are dropped with
+``LOG_GUEST_ERROR``.
+
+Reading register C returns ``PF``, ``AF`` and ``UF`` and clears them, then
+reports ``IRQF`` as set while any enabled flag remains set
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 14`, *established*. The extended flags
+in register 4A are not cleared by a read. Software clears each by writing a
+zero, and may write a one to force the condition.
+
+Bits that read zero in the time and date registers still store a written one
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 9`, *established*; only seconds bit 7
+is refused. The next update cycle rewrites the byte.
+
+Bits 5 and 4 of register 4A are reserved on this part and the datasheet says
+they can be read and written with no effect
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 21`. The model stores both and acts on
+neither. NetBSD names bit 5 as burst-mode enable. Burst mode belongs to the
+DS17x85 family and Linux compiles that definition out for the DS1685.
+
+.. _sgi-ds1685-time:
+
+Time, update cycle and SET
+==========================
+
+The model keeps a seconds counter and copies it into the visible time and
+date bytes. Bit combinations in ``DV2`` and ``DV1`` decide whether the
+counter runs: ``DV2`` clear with ``DV1`` set counts. Any other combination
+holds the counter and stops the update cycle and the periodic interrupt
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 11, 15`, *established*.
+
+While counting and with ``SET`` clear, an update cycle runs every second of
+virtual time. It rewrites the visible bytes from the counter, sets ``UF``,
+checks the alarm and then the wake-up alarm. The time fields come from QEMU's
+selected ``-rtc`` clock as UTC fields. The model has no time zone. Setting
+``SET`` inhibits the update cycle and the alarm checks, and clears ``UIE``
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 11-12`, *established*. Clearing
+``SET`` commits the visible bytes to the counter, as the datasheet's
+calendar-set sequence expects.
+
+``UIP`` is computed. It reads one for the 244 microseconds before the next
+update while the counter runs and ``SET`` is clear :src:`maxim-ds1685-ds1687-rev-10-12 p. 16`, *established*. Bank-1 ``INCR`` always reads zero, because an update
+is one atomic step here. Linux spins on ``INCR`` with no timeout in probe
+and on every time read, so an ``INCR`` that read one would hang the guest
+before the clock is named. That is a driver expectation, *established* by
+``rtc-ds1685.c``; the model's choice is an *approximation* of the 122
+microsecond window the datasheet describes.
+
+``DM`` and ``24/12`` do not convert stored bytes. Software must rewrite the
+fields after changing either, as the datasheet requires
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 8`, *established*. The model decodes
+hours as 12-hour with bit 7 as the PM flag or as 24-hour according to
+``24/12``.
+
+The alarm compares the raw visible bytes, so in 12-hour mode the alarm hours
+byte includes the PM bit. A matching alarm sets ``AF`` each update, whether
+or not ``AIE`` is set. The wake-up alarm adds a compare of ``49h`` against the
+day byte and sets ``WF``.
+
+The periodic interrupt sets ``PF`` every ``2^(n-1)`` periods of the 32.768 kHz
+crystal for rate code ``n``. Code 0 is off and codes 1 and 2 behave as 8
+and 9 :src:`maxim-ds1685-ds1687-rev-10-12 p. 11, 16`, *established*. The flag
+is set regardless of ``PIE``. The daylight-saving enable ``DSE`` is stored, and
+setting it logs ``LOG_UNIMP``: the part's fixed pre-2007 United States rule
+is not applied :src:`maxim-ds1685-ds1687-rev-10-12 p. 12`.
+
+Interrupts
+==========
+
+Six sources drive one level-sensitive output: ``PF``, ``AF`` and ``UF`` from
+register C, with their enables in register B, and ``RF``, ``WF`` and ``KF``
+from register 4A, with their enables in register 4B
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 14`, *established*. The model
+recomputes the output after every register write, every flag change and
+reset. Flags set regardless of their enables. Enabling an already-set flag
+asserts the output at once.
+
+Only the update cycle sets ``UF``, ``AF`` and ``WF``. Only the periodic timer
+sets ``PF``. Nothing in the model sets ``KF`` (no kickstart pin) or ``RF`` (no
+``RCLR`` pin). Software can write either to one.
+
+On the Octane the IOC3 does not connect the clock's output to anything, so the
+guest sees no interrupt from it. Linux asks the Bridge for interrupt pin 6
+through slot 6 for the clock, and its power-button path takes a kickstart
+off that line. OpenBSD takes the Octane power button from a HEART interrupt
+and uses the clock only to read and clear ``KF``. Neither is evidence about
+the board wiring. Where the board routes the clock's ``IRQ`` pin is
+*unknown*; a board schematic, or firmware seen programming the Bridge
+interrupt registers, would settle it.
+
+Power control
+=============
+
+``PAB`` in register 4A is the power-off control: one in the bit puts the
+``PWR`` pin in its high-impedance state :src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. Linux's power-off path writes ``PAB`` and spins. The
+model treats a write that leaves ``PAB`` set as a guest power-off request
+(``SHUTDOWN_CAUSE_GUEST_SHUTDOWN``).
+
+The part will not hold the supply off while an enabled wake-up or kickstart
+asks for it on. After any write or flag change, if ``WF`` and ``WIE`` or ``KF``
+and ``KSE`` are both set, the model clears ``PAB`` :src:`maxim-ds1685-ds1687-rev-10-12 p. 21`, *established*. A write of ``PAB`` while one of those pairs is set
+therefore requests no shutdown.
+
+That the Octane's kickstart pin is the front power button rests on two
+drivers, Linux and OpenBSD, and no vendor document, *inferred*. The model
+has no pin, so the button is not modelled through this part. ``PRS``, ``ABE``,
+``CS`` and ``RCE`` are stored and have no effect. ``E32K`` is stored and no
+square wave is produced.
+
+Reset
+=====
+
+A machine or IOC3 reset is treated as supply returning to a part whose cell
+never went away. It applies only the vendor's documented power-on values:
+``DV1`` set in register A, ``E32K`` set in register 4B and ``PAB`` clear
+:src:`maxim-ds1685-ds1687-rev-10-12 p. 11, 20, 22`, *established*. It then
+recomputes the interrupt output and restarts the timers. The register file,
+all three RAM regions, the bank bit, ``SET`` and the running time survive
+a reset, an *approximation*. A flag and its enable that both survive bring
+the output back at once.
+
+At realize the model chooses the undefined values once: register B
+``06h`` (binary data, 24-hour mode), ``VRT`` and ``VRT2`` set, model byte
+``71h``, all flags clear, RAM zero, and a calendar taken from the selected
+clock. A fresh backing image leaves these in place (see below).
+
+Non-volatile storage
+====================
+
+Without a backing drive the RAM, registers and time start as above and are
+lost at exit. The Octane machines take two optional stores, bound by the
+catalogue items ``nvram0`` and ``nvram0-clock`` or by the older block drives
+``sgi-nvram0`` and ``sgi-nvram0-clock``. The IOC3 forwards them to the device
+as ``ds1685-drive`` and ``ds1685-clock-drive``. Both forms of one store at
+once, ``nvram0-clock`` without ``nvram0``, and a store of the wrong size
+are refused. A block drive named ``<id>-clock`` is picked up as the clock
+store of the drive ``<id>`` when no explicit clock drive is given. A drive
+property on a board with no DS1685 is refused.
+
+NVRAM image
+-----------
+
+``nvram0`` is exactly 512 bytes. The first 320 bytes are the device state,
+and the last 192 are written as zero and ignored on read:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Image offset
+     - Length
+     - Contents
+   * - ``0x000``
+     - ``0x40``
+     - Registers ``00h``-``3Fh``: calendar, alarms, controls, 50 RAM bytes
+   * - ``0x040``
+     - ``0x40``
+     - Bank-0 RAM, ``40h``-``7Fh``
+   * - ``0x080``
+     - ``0x40``
+     - Bank-1 register storage, ``40h``-``7Fh``
+   * - ``0x0c0``
+     - ``0x80``
+     - Extended RAM
+   * - ``0x140``
+     - ``0xc0``
+     - Padding
+
+This is the model's own file layout, not an address map of the part, and
+not a PROM environment format. It carries no header. Bytes the model derives
+are written in canonical form and forced on load: ``UIP`` and ``INCR`` clear,
+register C holding only its three flags, register D ``80h``, seconds bit 7
+clear, model byte ``71h``, ``VRT2`` set, serial bytes, reserved locations,
+the SMI stack and the extended-RAM data slot zero.
+
+What the PROM or an operating system keeps in the 242 bytes is *unknown*.
+Linux exposes them as an unstructured nvmem device and the public sources
+give no firmware layout.
+
+Fresh image
+-----------
+
+A new machine starts with zero-filled stores. If the first 320 bytes of the
+NVRAM image are all zero, the model treats it as fresh: it keeps the realize
+values, takes the calendar from the selected ``-rtc`` clock and ignores the
+clock store, even one with valid contents. The padding does not take part
+in the test. A fresh image is first written when the machine resets, stops
+or shuts down, or when a persistent byte changes.
+
+An image that is not all zero is restored. The model checks the stored
+calendar against the stored ``DM`` and ``24/12`` bits: BCD digits, hour
+range, weekday, day, month, year and century, and that the date exists. An
+invalid calendar logs ``LOG_UNIMP`` and the calendar is initialised from the
+selected clock. RAM, alarms and controls are kept. An invalid calendar with
+``SET`` raised is kept as an unfinished edit if the clock store holds a
+valid reference. This fallback is host policy, an *approximation*; the
+datasheet calls invalid dates undefined.
+
+Clock store
+-----------
+
+``nvram0-clock`` is at least 24 bytes and the first 24 are used:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Offset
+     - Length
+     - Contents
+   * - ``0``
+     - 8
+     - ASCII ``DS168RF1``
+   * - ``8``
+     - 8
+     - Little-endian signed seconds of the selected clock when the image
+       was saved
+   * - ``16``
+     - 8
+     - Little-endian signed running-counter seconds at that moment
+
+On restore, if the counter was running, the model adds the time the
+selected ``-rtc`` clock advanced since the save. That is an *approximation*
+of battery time: with a fixed ``-rtc base`` or ``clock=vm`` downtime need not
+advance the clock, and changing ``-rtc`` between runs changes the offline
+time added. A held counter (oscillator off) gains nothing. A wrong magic
+or a missing record means no usable reference: the model restores the
+stored calendar, adds no offline time and logs ``LOG_UNIMP``. A negative
+or overflowing elapsed time adds zero and logs ``LOG_UNIMP``.
+
+When the image is written
+-------------------------
+
+The model writes both stores when a guest write changes a persistent byte
+(a register A write counts only for ``DV2`` and ``DV1``), at reset, when the
+VM stops, at unrealize and after a load into a running VM. Reads, register C
+acknowledgement and bank or rate selection do not write. While the block
+backend is inactive, such as during migration, writes are deferred. A
+failed write is reported with ``error_report`` and the next successful write
+reports recovery. Abrupt termination has no final save.
+
+Migration
+=========
+
+The migration stream carries the index latch, all four register arrays, the
+counter state, the update and periodic deadlines and both timers (device
+version 2). A load recomputes the interrupt output. A load into a running
+machine and a migration that completes then write the backing stores.
+Migration works only between identical builds.
+
+.. _sgi-ds1685-direct:
+
+Other users
+===========
+
+The device also exports a third region, 32 KiB wide, in which the register
+number is the byte offset divided by 256. The O2's MACE ASIC maps it at its
+offset ``0x3a0000`` and connects the interrupt output. The Octane does not
+use it.
+
+Measurements
+============
+
+No register of this part has been read on a physical machine for this
+project. The only observation is a published boot log.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Source
+     - Read
+     - Value
+     - Chip revision
+     - Point in the boot
+   * - :src:`miod-openbsd-sgi-story-4 Octane boot log`
+     - OpenBSD driver attach line
+     - part reported as DS1687
+     - not reported
+     - kernel autoconfiguration
+
+The log establishes that a DS1687-family part is present on a 175 MHz Octane
+and that OpenBSD's driver attached to it. It does not establish any
+register value, the chip revision, the NVRAM contents, the interrupt route or
+that an Octane2 carries the same package.
+
+Model limits
+============
+
+- Register power-up values, the initial calendar format and the zero serial
+  number are model choices, not facts about the part.
+- The ``IRQ`` output is not connected on the Octane.
+- ``INCR`` never reads one. The 122 microsecond window is not modelled.
+- No pins are modelled: ``SQW`` and the 32.768 kHz output, ``KS``, ``RCLR``,
+  ``PWR`` electrical state, the oscillator trim and the battery. ``VRT`` and
+  ``VRT2`` always read one. ``KF`` and ``RF`` are set only by guest writes,
+  and RAM clear does not happen.
+- The SMI recovery stack at ``4Eh`` and ``4Fh`` is not latched. Accesses
+  log ``LOG_UNIMP``.
+- The daylight-saving rule is not applied. Setting ``DSE`` logs ``LOG_UNIMP``.
+- ``DM`` and ``24/12`` changes do not convert stored bytes.
+- Offline time on restore is measured by the selected ``-rtc`` clock, not by
+  the host wall clock.
+- Only the first four bytes of each byte-bus select are decoded.
+- Writes to reserved locations are dropped with a trace point and no log.
+  Writes to register C, D, the model number, serial and CRC log
+  ``LOG_GUEST_ERROR``, as does a read of the address port.
+- Migration works only between identical builds.
+
+Tests
+=====
+
+``tests/qtest/sn0-ds1685-test.c`` drives the Octane IOC3 population and
+covers the initial calendar and mode writes, address-latch persistence and
+seven-bit masking, bank switching of only ``40h``-``7Fh``, the common
+low half, the model byte, read-only and fixed-zero bits, reserved
+locations, register C and extended-flag clearing, the level interrupt,
+extended RAM addressing, the three RAM regions, ``INCR`` reading clear,
+reset behaviour, the ``PAB`` shutdown and wake-up rule, counter hold,
+IOC3 populations with and without the part, migration, and the whole
+persistence path: image restore cases, rejected backends, write errors,
+snapshots, migration with storage and process restart.
+``tests/qtest/octane-test.c`` covers the ``nvram0`` and ``nvram0-clock``
+bindings, the older drive names and the refusals. ``tests/qtest/sn0-ioc3-test.c``
+checks which IOC3 boards carry the part.
