@@ -623,6 +623,24 @@ typedef struct SGIKonaGLHistogram {
     uint32_t min[4], max[4];    /* R, G, B and A, float bits */
 } SGIKonaGLHistogram;
 
+/*
+ * glRenderMode's state on one context (see sgi_kona_gl_render_mode()):
+ * the mode 0x19 last gave, the feedback type 0x17 last gave, and the name
+ * stack. The stack holds OpenGL 1.2.1's least depth, 64; what the pipe
+ * holds is unknown.
+ */
+#define SGI_KONA_GL_RENDER          0x1c00
+#define SGI_KONA_GL_FEEDBACK        0x1c01
+#define SGI_KONA_GL_SELECT          0x1c02
+#define SGI_KONA_GL_NAME_STACK_DEPTH 64
+
+typedef struct SGIKonaGLRenderMode {
+    uint32_t mode;
+    uint32_t feedback_type;     /* 0: none given yet */
+    uint32_t name_count;
+    uint32_t names[SGI_KONA_GL_NAME_STACK_DEPTH];
+} SGIKonaGLRenderMode;
+
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
 typedef struct SGIKonaGLState {
@@ -649,6 +667,7 @@ typedef struct SGIKonaGLState {
     uint32_t imaging_enabled_attrib[SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLColourTables tables;
     SGIKonaGLHistogram histogram;
+    SGIKonaGLRenderMode render;
 } SGIKonaGLState;
 
 typedef struct SGIKonaPendingSwap {
@@ -1109,7 +1128,12 @@ typedef struct SGIKonaGLBitmapUpload {
     uint8_t bytes[SGI_KONA_GL_BITMAP_BYTES];
 } SGIKonaGLBitmapUpload;
 
-/* One context-owned select-feed bracket, with dense output staged at read. */
+/*
+ * One context-owned select-feed bracket, with dense output staged at read.
+ * render_mode is the context's render mode when the bracket opened: a
+ * feedback or selection pass's bracket, which the library opens on
+ * entering the mode, has no read inside it.
+ */
 typedef struct SGIKonaGLReadDMA {
     bool active, refused;
     int32_t context;
@@ -1117,6 +1141,7 @@ typedef struct SGIKonaGLReadDMA {
     uint32_t descriptor[6], header[7];
     uint32_t selector;
     uint32_t count;
+    uint32_t render_mode;
     uint8_t *data;
 } SGIKonaGLReadDMA;
 

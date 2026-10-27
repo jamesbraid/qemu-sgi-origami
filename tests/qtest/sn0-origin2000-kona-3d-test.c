@@ -19041,8 +19041,12 @@ static void test_colour_matrix_texture(void)
 
 /*
  * glRenderMode's 0x19 and mode frame as one command, as GLperf sends
- * 0x19 0x1c00 at every start: the words after it are commands again. The
- * feedback and selection modes are logged as not modelled.
+ * 0x19 0x1c00 at every start, and so do the words a selection or
+ * feedback pass sends: glInitNames 0x10c 0, glPushName 0xc3 n,
+ * glLoadName 0x10d n, glPopName 0xc2 0, glFeedbackBuffer's 0x17 type and
+ * glPassThrough's 0xc1 value. Before they were framed they reached the
+ * textport as stray words, and their arguments with them. The records
+ * are logged as not modelled.
  */
 static void test_render_mode(void)
 {
@@ -19053,12 +19057,121 @@ static void test_render_mode(void)
     gl_window_cleared(s, 0, 0, 1);
     kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
     kona_command(s, 0x19, (uint32_t[]) { 0x1c02 }, 1);
+    kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xc3, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x10d, (uint32_t[]) { 11 }, 1);
+    kona_command(s, 0xc2, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    kona_command(s, 0x17, (uint32_t[]) { 0x602 }, 1);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c01 }, 1);
+    kona_command_f(s, 0xc1, (float[]) { 17.25f }, 1);
     kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
     assert_convolution_in_step(s);
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_null(strstr(found, "expected a sync word"));
     g_assert_cmpuint(count_occurrences(found, "render mode 0x1c02"), ==, 1);
+    g_assert_cmpuint(count_occurrences(found, "render mode 0x1c01"), ==, 1);
+}
+
+/*
+ * Nothing is drawn in selection or feedback mode (OpenGL 1.2.1, sections
+ * 5.2 and 5.3): a red triangle sent in either leaves the blue window
+ * blue, and the same triangle back in GL_RENDER draws.
+ */
+static void test_render_mode_draws_nothing(gconstpointer opaque)
+{
+    uint32_t mode = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0x19, (uint32_t[]) { mode }, 1);
+    stencil_triangle(s);
+    assert_stencil_colour(s, 0x0000ff);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    assert_stencil_colour(s, 0x0000ff);
+    stencil_triangle(s);
+    assert_stencil_colour(s, 0xff0000);
+    qtest_quit(s);
+}
+
+/*
+ * A selection or feedback pass's select feed: the library enters the
+ * mode, opens the feed (0x1f5 and a six-word descriptor), draws, leaves
+ * the mode and finishes the feed (0x1f6 0x100 and the context index),
+ * then the kernel sleeps until the pipe posts reason 0x100, or kills the
+ * pipe at its timeout (death reason 5). The model writes no records, so
+ * the completion reports none written: word 2, the bytes left unwritten,
+ * is the descriptor's total and word 3 has no overflow. Before, the
+ * finish posted nothing. Mode 2 migrates in the middle of the pass.
+ */
+static void test_render_mode_feed_completes(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const uint64_t reason = 0x300000;
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command_kicked(s, 0x1f1,
+        (uint32_t[]) { physical_page_word(reason),
+                       tagged_offset_word(reason), 0x4000 }, 3);
+    read_dma_clear_notifications(s, reason);
+    kona_command(s, 0x19, (uint32_t[]) { mode == 1 ? 0x1c01 : 0x1c02 }, 1);
+    kona_command(s, 0x1f5, (uint32_t[]) { 0x380, 0x9000, 256, 256, 0, 0 },
+                 6);
+    kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xc3, (uint32_t[]) { 7 }, 1);
+    if (mode == 2) {
+        read_dma_migrate(from, &s, &to, &dir);
+    }
+    stencil_triangle(s);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x1234 }, 2);
+    g_assert_cmphex(guest_word(s, reason), ==, 0x100);
+    g_assert_cmphex(guest_word(s, reason + 4), ==, 0x1234);
+    g_assert_cmphex(guest_word(s, reason + 8), ==, 256);
+    g_assert_cmphex(guest_word(s, reason + 12), ==, 0);
+    assert_stencil_colour(s, 0x0000ff);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+/*
+ * The name stack's errors in selection mode: a pop of the empty stack is
+ * GL_STACK_UNDERFLOW, a load into it GL_INVALID_OPERATION, and a push
+ * past 64 names GL_STACK_OVERFLOW. Outside selection mode the same
+ * commands do nothing and raise nothing.
+ */
+static void test_name_stack_errors(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command(s, 0xc2, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x10d, (uint32_t[]) { 1 }, 1);
+    assert_native_error(s, 0);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c02 }, 1);
+    kona_command(s, 0x10c, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0xc2, (uint32_t[]) { 0 }, 1);
+    assert_native_error(s, 0x504);
+    kona_command(s, 0x10d, (uint32_t[]) { 1 }, 1);
+    assert_native_error(s, 0x502);
+    for (uint32_t n = 0; n < 64; n++) {
+        kona_command(s, 0xc3, &n, 1);
+    }
+    assert_native_error(s, 0);
+    kona_command(s, 0xc3, (uint32_t[]) { 64 }, 1);
+    assert_native_error(s, 0x503);
+    kona_command(s, 0x19, (uint32_t[]) { 0x1c00 }, 1);
+    qtest_quit(s);
 }
 
 /*
@@ -19810,6 +19923,18 @@ int main(int argc, char **argv)
     add_data_case("sn0/origin2000/kona-3d/histogram/minmax-sink",
                   GUINT_TO_POINTER(1), test_minmax);
     add_case("sn0/origin2000/kona-3d/render-mode", test_render_mode);
+    add_data_case("sn0/origin2000/kona-3d/render-mode-select-draws-nothing",
+                  GUINT_TO_POINTER(0x1c02), test_render_mode_draws_nothing);
+    add_data_case("sn0/origin2000/kona-3d/render-mode-feedback-draws-nothing",
+                  GUINT_TO_POINTER(0x1c01), test_render_mode_draws_nothing);
+    add_data_case("sn0/origin2000/kona-3d/render-mode-select-feed-completes",
+                  GUINT_TO_POINTER(0), test_render_mode_feed_completes);
+    add_data_case("sn0/origin2000/kona-3d/render-mode-feedback-feed-completes",
+                  GUINT_TO_POINTER(1), test_render_mode_feed_completes);
+    add_data_case("sn0/origin2000/kona-3d/render-mode-select-feed-migrates",
+                  GUINT_TO_POINTER(2), test_render_mode_feed_completes);
+    add_case("sn0/origin2000/kona-3d/render-mode-name-stack-errors",
+             test_name_stack_errors);
     add_case("sn0/origin2000/kona-3d/stencil-visual/read",
              test_stencil_visual_read);
     add_case("sn0/origin2000/kona-3d/stencil-visual/copy",

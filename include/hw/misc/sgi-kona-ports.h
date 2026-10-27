@@ -168,6 +168,21 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * on it (established from the IRIX client library's sender).
  */
 #define SGI_KONA_CMD_GL_RENDER_MODE 0x19
+/*
+ * The name stack, the feedback type and pass-through, one word each
+ * after the selector (established from the IRIX client library's
+ * senders): glInitNames 0x10c and 0, glLoadName 0x10d and the name,
+ * glPopName 0xc2 and 0, glPushName 0xc3 and the name, glFeedbackBuffer
+ * 0x17 and the type (GL_2D 0x600 to GL_4D_COLOR_TEXTURE 0x604; the size
+ * and the buffer stay in the library) and glPassThrough 0xc1 and its
+ * value as a binary32 word.
+ */
+#define SGI_KONA_CMD_GL_INIT_NAMES  0x10c
+#define SGI_KONA_CMD_GL_LOAD_NAME   0x10d
+#define SGI_KONA_CMD_GL_POP_NAME    0xc2
+#define SGI_KONA_CMD_GL_PUSH_NAME   0xc3
+#define SGI_KONA_CMD_GL_FEEDBACK_TYPE 0x17
+#define SGI_KONA_CMD_GL_PASS_THROUGH 0xc1
 #define SGI_KONA_CMD_GL_VIEWPORT    0xe3
 #define SGI_KONA_CMD_GL_SCISSOR     0xc
 #define SGI_KONA_CMD_GL_SET_ERROR   0xe4

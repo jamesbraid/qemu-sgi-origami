@@ -412,8 +412,9 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     /* Histogram and minmax. */
     { 0x102, 5 }, { 0x103, 1 }, { 0x104, 1 }, { 0x105, 2 },
     { 0x107, 2 }, { 0x108, 1 }, { 0x109, 1 }, { 0x10a, 1 },
-    /* glRenderMode. */
-    { 0x19, 1 },
+    /* glRenderMode, the name stack, the feedback type and pass-through. */
+    { 0x19, 1 }, { 0x10c, 1 }, { 0x10d, 1 }, { 0xc2, 1 }, { 0xc3, 1 },
+    { 0x17, 1 }, { 0xc1, 1 },
     { 0x72, 2 }, { 0x73, 1 }, { 0x74, 1 }, { 0x75, 1 },
     /* Lighting. */
     { 0x7, 6 }, { 0x8, 6 }, { 0x9, 5 }, { 0xa, 5 }, { 0x97, 6 },
