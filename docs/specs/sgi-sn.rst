@@ -1474,8 +1474,10 @@ booting the miniroot over the netboot adapter from an install server, the
 PROM's "Install System Software" from a remote directory. The IRIX
 6.5.30 ``prom(1M)`` page documents that menu choice and its network
 source for SGI PROMs generally. Complete IRIX 6.5.30 installs this way reach the
-installed system's login prompt on the Origin 2000, Onyx2 rack, Octane and
-Octane2. The Origin 2000 deskside and two-module offerings inherit the
+installed system's login prompt on the Origin 2000 with an SI board, the
+Onyx2 rack, the Octane with SI and the Octane2 with V12. The Onyx2
+deskside has reached the miniroot's first question, not a complete
+install. The Origin 2000 deskside and two-module offerings inherit the
 entry from the module layer. Fuel lists ``netboot`` for its serial
 installation.
 ``disk-image`` means a launcher can boot an installed disk image.

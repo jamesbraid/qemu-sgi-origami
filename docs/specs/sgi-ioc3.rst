@@ -262,8 +262,8 @@ never rewritten.
 The PHY is a DP83840A modelled with mii.h register names, at an
 address the ``phy-addr`` property selects (default 31, an alias
 chain from ``sgi-ioc3`` through the eth child to the transceiver's
-own ``addr`` property). 31 is Origin 200's address; the Octane
-board sets 1, and Origin 300's IO-8 board sets 1, the address its BASEIO PROM's MII helper
+own ``addr`` property). 31 is Origin 200's address. Origin 300's
+IO-8 board sets 1, the address its BASEIO PROM's MII helper
 functions hard-code and OpenBSD on a real board confirms. Its
 autonegotiation completes on a
 settle window timed so the firmware diagnostic's probe lands
@@ -302,7 +302,7 @@ gives the bit names.
 
 The Octane board carries an ICS1890 instead (``hw/net/ics1890.c``),
 which the ``phy-ics1890`` property selects through the same alias
-chain.
+chain. The Octane machine places it at address 1.
 
 Buffer RAM
 ==========
