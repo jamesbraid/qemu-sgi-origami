@@ -376,6 +376,7 @@ config SGI_BEDROCK_MD
 
 config SGI_BEDROCK_IO
     bool
+    select SGI_PIO_FORWARD
     default y if SGI_DEVICES
 
 config SGI_BEDROCK_LB
