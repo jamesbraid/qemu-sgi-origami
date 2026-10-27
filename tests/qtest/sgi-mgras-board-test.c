@@ -1667,6 +1667,35 @@ static void test_board_mapping_port_raster_write(gconstpointer data)
     qtest_quit(s);
 }
 
+/*
+ * SGI's IP30 diagnostic brings the board up with no context switch: it
+ * writes the bare 64-bit word 0x65781 to the main port, then selects an RE
+ * through the mapping port (the HQ4 contract's IDE bring-up). That word is
+ * not a framed register packet. Parsed as a command header it would open a
+ * 129-byte payload, and the mapping port's raster write would be lost.
+ */
+static void test_board_ide_bringup_word_before_any_switch(void)
+{
+    const MgrasBoardExpect *e = NULL;
+    QTestState *s;
+
+    for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
+        if (!strcmp(mgras_board_expect[i].board, "ssi")) {
+            e = &mgras_board_expect[i];
+        }
+    }
+    g_assert_nonnull(e);
+    s = mgras_board_init(e);
+    qtest_writeq(s, REG_CONTEXT_COMMAND, 0x65781);
+    qtest_writel(s, MGRAS_REG(0x130400),
+                 (((0x112 | 0x1800) & 0x1fff) << 8) | 0x00400004);
+    qtest_writel(s, MGRAS_REG(0x130400), 1);
+    g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
+                    1 << 2 | (e->re - 1));
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
 /* Selecting an RE leaves the revision in bits 7:4 and the ready bit 8. */
 static void test_board_re4_status_keeps_revision_bits(void)
 {
@@ -2205,6 +2234,10 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/hq-vector-registers",
         test_hq_vector_registers, true);
+
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ide-bringup-word-before-any-switch",
+        test_board_ide_bringup_word_before_any_switch, false);
 
     ret = g_test_run();
     if (qts) {

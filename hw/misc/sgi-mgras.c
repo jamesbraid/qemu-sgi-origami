@@ -475,6 +475,35 @@ static void mgras_retrace_rephase(SGIMgrasState *s)
     timer_mod(so->retrace_timer, next);
 }
 
+/*
+ * Whether an 8-byte word at the main port (0x120400) is a command. Never
+ * during the image a context switch uploads, from the selection at
+ * 0x130500 until its 63rd word. Once a first switch has completed, every
+ * other word is. Before it, only a word that holds a whole packet, a
+ * header and its one payload word (sgi_mgras_raster_is_whole_packet()),
+ * is, and every other word is dropped as before.
+ *
+ * The IP30 PROM's graphical console draws its menu through this port and
+ * never selects an entry. A traced fresh-NVRAM boot of an Octane SI to the
+ * IRIX login writes 2,579,419 eight-byte words here before the kernel's
+ * first selection: 2,579,404 direct register packets, and 15 other
+ * whole packets with headers 0x001a6804, 0x000c0004, 0x0000ff04 and
+ * 0x00008c04. The OpenBSD impact driver draws with the direct packets and
+ * no switch, through 0x020400. That the board executes them before any
+ * switch is inferred from those callers. SGI's IP30 diagnostic writes the
+ * bare word 0x65781 here during bring-up, also with no switch; its high
+ * word is zero, so it is not a whole packet. What the board does with it
+ * is unknown, and taken as a header its low word would open a 129-byte
+ * payload and swallow the diagnostic's later register writes, so it stays
+ * dropped. That a word between a selection and its first acknowledgement
+ * is an error is the model's choice.
+ */
+static bool mgras_port_takes_command(SGIMgrasState *s, uint64_t word)
+{
+    return s->protocol != 1 &&
+           (s->ready || sgi_mgras_raster_is_whole_packet(word));
+}
+
 static void mgras_complete_context(SGIMgrasState *s)
 {
     sgi_mgras_gl_context_loaded(s);
@@ -1109,16 +1138,17 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
 
     trace_sgi_mgras_mmio(sequence, addr, value, size, true);
     /*
-     * Nearly every store is a command word to the main port once the
-     * port is ready. It passes every width check below, so take it
-     * before them; the same case in the switch handles the rest.
+     * Nearly every store is a command word to the main port outside a
+     * context switch's image upload. It passes every width check below,
+     * so take it before them; the same case in the switch handles the
+     * rest.
      */
-    if (addr == MGRAS_CONTEXT_COMMAND && s->ready && s->protocol != 1) {
-        if (size == 4) {
+    if (addr == MGRAS_CONTEXT_COMMAND && s->protocol != 1) {
+        if (size == 4 && s->ready) {
             sgi_mgras_raster_command_token(s, value);
             return;
         }
-        if (size == 8) {
+        if (size == 8 && mgras_port_takes_command(s, value)) {
             sgi_mgras_raster_command(s, value);
             return;
         }
@@ -1342,21 +1372,21 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     case 0x120400:
         /*
-         * s->ready alone cannot gate this dispatch: it latches true after
-         * the first context switch and stays true, but a later switch's
-         * image words (protocol == 1, mid-transaction) must still reach
-         * mgras_context_write() even though the port has been ready since an
-         * earlier switch. Only route to the command-FIFO parsers once a
-         * transaction is not in its image-upload phase.
+         * A switch's image words (protocol == 1, from the selection until
+         * the 63rd word) go to mgras_context_write(). Other 8-byte words
+         * follow mgras_port_takes_command(). A 4-byte token is a command
+         * only once a first switch has completed: no caller is known to
+         * write one earlier, so the model keeps treating one as a context
+         * word out of place, a model choice.
          */
         if (size == 4 && s->ready && s->protocol != 1) {
             sgi_mgras_raster_command_token(s, value);
         } else if (size == 4) {
             mgras_context_write(s, value);
-        } else if (size == 8 && s->ready && s->protocol != 1) {
+        } else if (size == 8 && mgras_port_takes_command(s, value)) {
             sgi_mgras_raster_command(s, value);
         } else if (size == 8 && !s->entry_selected) {
-            /* Pre-selection traffic is opaque and has no modeled effect. */
+            /* Other pre-selection traffic has no modeled effect. */
             return;
         } else {
             mgras_error(s, addr, size, "unsupported context width");

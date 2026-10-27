@@ -1074,6 +1074,47 @@ static void test_direct_glyph_row(void)
 
 
 /*
+ * The IP30 PROM's graphical console draws through the main port with no
+ * context switch: a fresh-NVRAM Octane SI boot writes 1,910,919 eight-byte
+ * command words to 0x120400 (fills and CHAR_H glyph rows among them) and
+ * never selects an entry at 0x130500. The board must draw them, or the
+ * PROM's menu stays black while the PROM waits at it for a key. The IP30
+ * diagnostic's bare bring-up word 0x65781 before them is not a register
+ * packet and must not eat them.
+ */
+static void test_glyph_row_before_any_context_switch(void)
+{
+    mgras_reset();
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, 0x65781);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00ffffff)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BKGRD_RG, 0x00000000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (47u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x81u << 24));
+
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 41, 40), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 47, 40), ==, 0x00ffffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* A context switch afterwards still takes its 63 image words. */
+    mgras_enter_context(qts);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A row up to 32 columns wide executes entirely on CHAR_H; CHAR_L is never
  * written. Markers sit at columns 0, 15, 16 and 19 to exercise both CHAR_H
  * halfwords and the row's last column. A second CHAR_H execute paints a
@@ -3909,6 +3950,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/direct-glyph-row",
         test_direct_glyph_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/glyph-row-before-any-context-switch",
+        test_glyph_row_before_any_context_switch, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/direct-glyph-row-char-h-only",
         test_direct_glyph_row_char_h_only, true);

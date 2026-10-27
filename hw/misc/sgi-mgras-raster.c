@@ -802,6 +802,19 @@ uint32_t sgi_mgras_dma_map_slot_control(SGIMgrasState *s, unsigned int slot)
     return s->dma_map_regs[MGRAS_DMA_MAP_SLOT_CONTROL + slot];
 }
 
+/*
+ * A whole packet in one 64-bit word: the high word a token header that
+ * carries exactly one payload word (bits 7:0 equal 4, no inline block),
+ * the low word that payload. OpenBSD's direct register packets
+ * (0x0018000400000000 with the register in bits 48:40) are of this form.
+ */
+bool sgi_mgras_raster_is_whole_packet(uint64_t word)
+{
+    uint32_t header = word >> 32;
+
+    return !(header & MGRAS_CMD_HDR_INLINE_BLOCK) && (header & 0xff) == 4;
+}
+
 void sgi_mgras_raster_command(SGIMgrasState *s, uint64_t word)
 {
     uint32_t selector = (word >> 34) & 0xffffff;
