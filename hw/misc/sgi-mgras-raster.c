@@ -919,10 +919,27 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
 #define MGRAS_PP1FILLMODE_RGB12_MASK 0x6700
 #define MGRAS_PP1FILLMODE_RGB12_VALUE 0x4000
 
+/*
+ * Bits 10:8 of 5 keep a paint CI8 even with bit 13 set. The IP30 PROM's
+ * console paints its backdrop and menu text under PP1FILLMODE 0x02006500
+ * with its colours as indices in RED alone, stepped one index at a time
+ * down the backdrop, over a colour map whose entries 0x60 and up it loads
+ * with that backdrop's blue ramp; read as RGB, every one of those paints
+ * stores black. The X server's CI8 windows (0x4504) share the field value,
+ * its 24-bit ones (0x6204) do not. Inferred from those streams alone; what
+ * the field's other values select is unknown.
+ */
+#define MGRAS_PP1FILLMODE_FORMAT_MASK 0x0700
+#define MGRAS_PP1FILLMODE_FORMAT_CI8 0x0500
+
 static uint8_t mgras_pixel_format(SGIMgrasState *s)
 {
     uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
 
+    if ((pp1 & MGRAS_PP1FILLMODE_FORMAT_MASK) ==
+        MGRAS_PP1FILLMODE_FORMAT_CI8) {
+        return SGI_MGRAS_PIXEL_FORMAT_CI8;
+    }
     if (pp1 & MGRAS_PP1FILLMODE_RGB) {
         return SGI_MGRAS_PIXEL_FORMAT_RGB;
     }
