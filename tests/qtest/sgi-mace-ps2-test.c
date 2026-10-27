@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "memtx.h"
 #include "sgi-migrate.h"
 #include "hw/mips/sgi/mace-ps2.h"
@@ -250,6 +251,147 @@ static void test_mouse_input(void)
     g_assert_cmphex(receive(s, 1), ==, 0xaa);
     g_assert_cmphex(receive(s, 1), ==, 0);
     qtest_quit(s);
+}
+
+static void check_button_trace(const char *path)
+{
+    const uint8_t bytes[] = { 0x09, 0, 0, 0x08, 0, 0 };
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned received = 0, reads = 0, outputs = 0;
+    bool last_full = true, last_irq = true;
+    void *mouse = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *rx_event = strstr(lines[i], "mace_ps2_receive ");
+        const char *read_event = strstr(lines[i], "mace_ps2_read ");
+        const char *outputs_event = strstr(lines[i], "mace_ps2_outputs ");
+
+        if (rx_event) {
+            unsigned port, data, accepted, rx, errors, full;
+            void *child;
+
+            g_assert_cmpint(sscanf(rx_event, "mace_ps2_receive child %p "
+                "port %u data 0x%x accepted %u rx 0x%x "
+                "errors 0x%x rx_full %u",
+                &child, &port, &data, &accepted, &rx, &errors, &full), ==, 7);
+            g_assert_nonnull(child);
+            if (!mouse) {
+                mouse = child;
+            }
+            g_assert_true(child == mouse);
+            g_assert_cmpuint(port, ==, 1);
+            g_assert_cmpuint(received, <, ARRAY_SIZE(bytes));
+            g_assert_cmpuint(received, ==, reads);
+            g_assert_cmphex(data, ==, bytes[received]);
+            g_assert_cmphex(rx, ==, data);
+            g_assert_cmpuint(accepted, ==, 1);
+            g_assert_cmphex(errors, ==, 0);
+            g_assert_cmpuint(full, ==, 1);
+            received++;
+        } else if (read_event) {
+            uint64_t value;
+            unsigned port, had_full, full, errors;
+
+            g_assert_cmpint(sscanf(read_event, "mace_ps2_read port %u value 0x%"
+                SCNx64 " had_full %u rx_full %u errors 0x%x",
+                &port, &value, &had_full, &full, &errors), ==, 5);
+            g_assert_cmpuint(port, ==, 1);
+            g_assert_cmpuint(reads, <, ARRAY_SIZE(bytes));
+            g_assert_cmpuint(received, ==, reads + 1);
+            g_assert_cmphex(value, ==, 0x1800 | bytes[reads]);
+            g_assert_cmpuint(had_full, ==, 1);
+            g_assert_cmpuint(full, ==, 0);
+            g_assert_cmphex(errors, ==, 0);
+            reads++;
+        } else if (outputs_event) {
+            unsigned port, ctrl, pending, full, ready, irq, poll;
+
+            g_assert_cmpint(sscanf(outputs_event, "mace_ps2_outputs port %u "
+                "control 0x%x tx_pending %u rx_full %u ready %u irq %u "
+                "poll %u", &port, &ctrl, &pending, &full, &ready, &irq,
+                &poll), ==, 7);
+            if (port != 1) {
+                continue;
+            }
+            g_assert_cmphex(ctrl, ==, ENABLE | RXIE);
+            g_assert_cmpuint(pending, ==, 0);
+            g_assert_cmpuint(ready, ==, 1);
+            g_assert_cmpuint(irq, ==, full);
+            g_assert_cmpuint(poll, ==, 1);
+            last_full = full;
+            last_irq = irq;
+            outputs++;
+        }
+    }
+    g_assert_cmpuint(received, ==, ARRAY_SIZE(bytes));
+    g_assert_cmpuint(reads, ==, ARRAY_SIZE(bytes));
+    g_assert_cmpuint(outputs, >, 0);
+    g_assert_false(last_full);
+    g_assert_false(last_irq);
+}
+
+static void test_mouse_button_only(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("mace-ps2-buttons-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "events.txt", NULL);
+    g_autofree char *extra = g_strdup_printf("-trace file=%s", path);
+    QTestState *s = start_extra(extra);
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    control(s, 1, ENABLE | RXIE);
+    command(s, 1, 0xf4);
+    qtest_writeq(s, IMASK, MIRQ);
+    for (unsigned tracing = 0; tracing < 2; tracing++) {
+        if (tracing) {
+            g_autoptr(QDict) reply = qtest_qmp(s,
+                "{'execute':'trace-event-get-state',"
+                "'arguments':{'name':'mace_ps2_*'}}");
+            QList *events = qdict_get_qlist(reply, "return");
+            const QListEntry *entry;
+            unsigned count = 0;
+
+            QLIST_FOREACH_ENTRY(events, entry) {
+                QDict *event = qobject_to(QDict, qlist_entry_obj(entry));
+
+                g_assert_cmpstr(qdict_get_str(event, "state"), ==, "disabled");
+                count++;
+            }
+            g_assert_cmpuint(count, >=, 3);
+            qtest_qmp_assert_success(s,
+                "{'execute':'trace-event-set-state','arguments':"
+                "{'name':'mace_ps2_*','enable':true}}");
+        }
+        for (unsigned release = 0; release < 2; release++) {
+            const uint8_t expected[] = { release ? 0x08 : 0x09, 0, 0 };
+
+            expect_empty(s, 1);
+            g_assert_false(qtest_get_irq(s, 5));
+            qtest_qmp_assert_success(s,
+                "{'execute':'input-send-event','arguments':{'events':["
+                "{'type':'btn','data':{'button':'left','down':%i}}]}}",
+                !release);
+            for (unsigned byte = 0; byte < ARRAY_SIZE(expected); byte++) {
+                g_assert_cmphex(qtest_readq(s, reg(1, STATUS)), ==, 0x18);
+                g_assert_cmphex(qtest_readq(s, ISTAT) & (MIRQ | MPOLL),
+                                ==, MIRQ | MPOLL);
+                g_assert_true(qtest_get_irq(s, 5));
+                g_assert_cmphex(receive(s, 1), ==, expected[byte]);
+                g_assert_cmphex(qtest_readq(s, reg(1, STATUS)), ==,
+                                byte < 2 ? 0x18 : 0x0b);
+                g_assert_cmphex(qtest_readq(s, ISTAT) & (MIRQ | MPOLL),
+                                ==, MPOLL | (byte < 2 ? MIRQ : 0));
+                g_assert_cmpint(qtest_get_irq(s, 5), ==, byte < 2);
+            }
+        }
+    }
+    expect_empty(s, 0);
+    qtest_quit(s);
+    check_button_trace(path);
+    g_unlink(path);
+    g_rmdir(dir);
 }
 
 static void test_inhibit_queue_priority(void)
@@ -563,6 +705,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace-ps2/accesses", test_accesses);
     qtest_add_func("/sgi/mace-ps2/keyboard-input", test_keyboard_input);
     qtest_add_func("/sgi/mace-ps2/mouse-input", test_mouse_input);
+    qtest_add_func("/sgi/mace-ps2/mouse-button-only", test_mouse_button_only);
     qtest_add_func("/sgi/mace-ps2/inhibit-queue-priority",
                    test_inhibit_queue_priority);
     qtest_add_func("/sgi/mace-ps2/local-reset", test_local_reset);

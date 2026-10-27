@@ -14,6 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "trace.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(MACEPS2State, SGI_MACE_PS2)
 
@@ -41,10 +42,14 @@ static void mace_ps2_update(MACEPS2State *s)
         bool tx = ready && !p->tx_pending;
         bool rx = ready && p->rx_full;
 
-        qemu_set_irq(s->output[2 * n],
-                     (tx && (p->control & MACE_PS2_TXIE)) ||
-                     (rx && (p->control & MACE_PS2_RXIE)));
-        qemu_set_irq(s->output[2 * n + 1], tx || rx);
+        bool irq = (tx && (p->control & MACE_PS2_TXIE)) ||
+                   (rx && (p->control & MACE_PS2_RXIE));
+        bool poll = tx || rx;
+
+        trace_mace_ps2_outputs(n, p->control, p->tx_pending, p->rx_full,
+                               ready, irq, poll);
+        qemu_set_irq(s->output[2 * n], irq);
+        qemu_set_irq(s->output[2 * n + 1], poll);
     }
 }
 
@@ -78,8 +83,11 @@ static void mace_ps2_progress(MACEPS2State *s)
         }
         if (mace_ps2_clock_permitted(p) && !ps2_queue_empty(child)) {
             uint8_t data = ps2_read_data(child);
+            bool accepted = mace_ps2_receive_frame(p, data, false,
+                                                    !(ctpop8(data) & 1), true);
 
-            mace_ps2_receive_frame(p, data, false, !(ctpop8(data) & 1), true);
+            trace_mace_ps2_receive(child, n, data, accepted, p->rx,
+                                   p->errors, p->rx_full);
         }
     }
     s->pumping = false;
@@ -97,7 +105,8 @@ static void mace_ps2_available(void *opaque, int n, int level)
 static uint64_t mace_ps2_read(void *opaque, hwaddr addr, unsigned size)
 {
     MACEPS2State *s = opaque;
-    MACEPS2Port *p = &s->port[(addr >> 5) & 1];
+    unsigned n = (addr >> 5) & 1;
+    MACEPS2Port *p = &s->port[n];
     uint64_t value;
 
     if (size != 8 || (addr & 7)) {
@@ -107,10 +116,13 @@ static uint64_t mace_ps2_read(void *opaque, hwaddr addr, unsigned size)
     case 8:
         if (p->rx_full) {
             value = mace_ps2_receive(p);
+            trace_mace_ps2_read(n, value, true, p->rx_full, p->errors);
             mace_ps2_progress(s);
             return value;
         }
-        return p->rx | ((uint64_t)mace_ps2_status(p) << 8);
+        value = p->rx | ((uint64_t)mace_ps2_status(p) << 8);
+        trace_mace_ps2_read(n, value, false, p->rx_full, p->errors);
+        return value;
     case 16:
         return p->control;
     case 24:
