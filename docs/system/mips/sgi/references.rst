@@ -613,6 +613,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16726767``
    *Nekochan forum archive thread 16726767, Tezro inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16726767/1.html>`__ SHA-256 ``a3360e7032e6dbd5d86ca5fe808304da80306ca3b795e4c53241ed64f52f4876``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-nekonomicon-16727032:
+
+``nekonomicon-16727032``
+   *Nekochan forum archive thread 16727032, two-node Onyx2 deskside PROM 6.156 and IRIX boot console with hinv*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/10/16727032/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-nekonomicon-16727444:
 
 ``nekonomicon-16727444``
@@ -642,6 +647,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``nekonomicon-16729560``
    *Nekochan forum archive thread 16729560, two-node Origin 2200 board list*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16729560/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-16729597:
+
+``nekonomicon-16729597``
+   *Nekochan forum archive thread 16729597, two-processor Origin 200 PROM inventory with a 180 MHz R10000 and 2 MB cache*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16729597/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-nekonomicon-16731033:
 
@@ -721,11 +731,6 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 .. _sgi-ref-pci-local-bus-2-2:
 
 ``pci-local-bus-2.2``
-   *PCI Local Bus Specification, revision 2.2, 1998-12-18*. PCI Special Interest Group. Asic spec, cited by page. `<https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf>`__ SHA-256 ``7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354``. Public, without a redistribution grant: cited and linked, never copied into this tree.
-
-.. _sgi-ref-pcisig-pci-local-bus-spec-2-2:
-
-``pcisig-pci-local-bus-spec-2.2``
    *PCI Local Bus Specification, revision 2.2, 1998-12-18*. PCI Special Interest Group. Asic spec, cited by page. `<https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf>`__ SHA-256 ``7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-philips-pcf8584-1997:
@@ -927,6 +932,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``usenet-3be33f04``
    *comp.sys.sgi.hardware, 2001-11-03, Q:R12k 270 upgrade in older Octane, Message-ID <3BE33F04.848B3CEE@odense.kollegienet.dk>*. Usenet. Capture, cited by line. Message-ID ``<3BE33F04.848B3CEE@odense.kollegienet.dk>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-3e2794b8:
+
+``usenet-3e2794b8``
+   *comp.sys.sgi.hardware, 2003-01-17, Origin 200 inventory with PIMM\_1XT5\_2MB (Michael Schmidt), Message-ID <3E2794B8.669DBAE1@machtnix.net>*. Usenet. Capture, cited by line. Message-ID ``<3E2794B8.669DBAE1@machtnix.net>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-3fef80f1:
 

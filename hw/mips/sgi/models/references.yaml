@@ -1368,6 +1368,31 @@ web:
     obtain:
       url: null
       message_id: "<35AB0320.794B@kyb.tuebingen.mpg.de>"
+  nekonomicon-16727032:
+    title: "Nekochan forum archive thread 16727032, two-node Onyx2 deskside PROM 6.156 and IRIX boot console with hinv"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/10/16727032/1.html
+  nekonomicon-16729597:
+    title: "Nekochan forum archive thread 16729597, two-processor Origin 200 PROM inventory with a 180 MHz R10000 and 2 MB cache"
+    publisher: "Nekochan forum archive"
+    kind: capture
+    locator: post
+    rights: obtain-only
+    obtain:
+      url: https://nekonomicon.irixnet.org/forum/14/16729597/1.html
+  usenet-3e2794b8:
+    title: "comp.sys.sgi.hardware, 2003-01-17, Origin 200 inventory with PIMM_1XT5_2MB (Michael Schmidt), Message-ID <3E2794B8.669DBAE1@machtnix.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3E2794B8.669DBAE1@machtnix.net>"
   usenet-6kd8bj:
     title: "comp.sys.sgi.marketplace, 1998-05-25, dual-module Origin 200 for sale, Message-ID <6kd8bj$diu$1@news2.ispnews.com>"
     publisher: "Usenet"
@@ -1433,15 +1458,6 @@ web:
     obtain:
       url: null
       message_id: "<4415F863.9040203@simg.de>"
-  pcisig-pci-local-bus-spec-2.2:
-    title: "PCI Local Bus Specification, revision 2.2, 1998-12-18"
-    publisher: "PCI Special Interest Group"
-    kind: asic-spec
-    locator: page
-    rights: obtain-only
-    obtain:
-      url: https://bitsavers.org/pdf/pciSIG/PCI_Local_Bus_Specification_2.2_199812.pdf
-      sha256: 7ab2ea9d141716f4c0b8f9bb188797727da192fea2fbc8d3e87bcbd2bbb01354
   graphica-irix-flash-1m:
     title: "flash(1M) manual page, IRIX 6.5.30 (Graphica mirror)"
     publisher: "Silicon Graphics"
