@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/char/sgi-ioc-serial-dma.h"
+#include "chardev/char-fe.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
 
@@ -907,10 +908,97 @@ void sgi_ioc_sdma_init(SGIIOCSerialDMA *d, unsigned nports,
     }
 }
 
+/*
+ * With modem-control bit 4 set a PC16550D disconnects its serial input, so
+ * a character arriving from outside in loopback goes nowhere; QEMU's 16550
+ * core would take it. The engine sits between the port's character backend
+ * and its UART and discards such input on arrival, leaving looped-back
+ * characters alone. The 16550 core's own handlers still do the rest. When
+ * the discard happens is an approximation: on arrival from the host, not a
+ * character time on the line later.
+ */
+static bool sdma_uart_looped(SGIIOCSerialDMAPort *p)
+{
+    return p->uart->mcr & UART_MCR_LOOP;
+}
+
+static int sdma_chr_can_read(void *opaque)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (sdma_uart_looped(p)) {
+        return 1;
+    }
+    return p->saved_can_read ? p->saved_can_read(p->saved_opaque) : 0;
+}
+
+static void sdma_chr_read(void *opaque, const uint8_t *buf, int size)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (sdma_uart_looped(p)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc-serial-dma: port %u discarded %d character(s) "
+                      "from outside while in loopback\n", p->index, size);
+        return;
+    }
+    if (p->saved_read) {
+        p->saved_read(p->saved_opaque, buf, size);
+    }
+}
+
+static void sdma_chr_event(void *opaque, QEMUChrEvent event)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (p->saved_event) {
+        p->saved_event(p->saved_opaque, event);
+    }
+}
+
+static int sdma_chr_be_change(void *opaque);
+
+static void sdma_interpose_chr(SGIIOCSerialDMAPort *p)
+{
+    CharFrontend *chr = &p->uart->chr;
+
+    p->saved_can_read = chr->chr_can_read;
+    p->saved_read = chr->chr_read;
+    p->saved_event = chr->chr_event;
+    p->saved_be_change = chr->chr_be_change;
+    p->saved_opaque = chr->opaque;
+    qemu_chr_fe_set_handlers(chr, sdma_chr_can_read, sdma_chr_read,
+                             sdma_chr_event, sdma_chr_be_change, p, NULL,
+                             true);
+}
+
+/* A new backend: the 16550 core installs its handlers again, then us. */
+static int sdma_chr_be_change(void *opaque)
+{
+    SGIIOCSerialDMAPort *p = opaque;
+
+    if (p->saved_be_change && p->saved_be_change(p->saved_opaque) < 0) {
+        return -1;
+    }
+    sdma_interpose_chr(p);
+    return 0;
+}
+
 void sgi_ioc_sdma_attach_uart(SGIIOCSerialDMA *d, unsigned port,
                               SerialState *uart)
 {
-    d->port[port].uart = uart;
+    SGIIOCSerialDMAPort *p = &d->port[port];
+
+    p->uart = uart;
+    /*
+     * A port realized without a backend has no chardev for chardev-change
+     * to replace, so it never gains one later and needs no wrapper. A
+     * backend that chardev-change swaps out keeps the wrapper through
+     * sdma_chr_be_change.
+     */
+    if (qemu_chr_fe_backend_connected(&uart->chr)) {
+        sdma_interpose_chr(p);
+    }
 }
 
 void sgi_ioc_sdma_finalize(SGIIOCSerialDMA *d)

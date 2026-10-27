@@ -143,6 +143,13 @@ typedef struct SGIIOCSerialDMAPort {
 
     uint32_t reg[SGI_IOC_SDMA_PORT_REGS];
 
+    /* The 16550 core's character handlers, which the engine wraps. */
+    IOCanReadHandler *saved_can_read;
+    IOReadHandler *saved_read;
+    IOEventHandler *saved_event;
+    BackendChangeHandler *saved_be_change;
+    void *saved_opaque;
+
     /* Re-entry guard for loopback walks; only true inside a call. */
     bool busy;
 
