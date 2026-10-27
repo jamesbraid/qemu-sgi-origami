@@ -944,6 +944,11 @@ ESTABLISHED_BRICK_TYPES = {"4": "IP45", "C": "IP35"}
 
 def validate_brick_types(model: dict[str, Any]) -> None:
     for component in model.get("components", []):
+        if ("controller" in component and
+                component.get("kind") != "module"):
+            raise ResolutionError(
+                f"component '{component['id']}' carries controller: "
+                f"{component['controller']} but is not a module")
         if "brick_type" not in component:
             continue
         cid = component["id"]

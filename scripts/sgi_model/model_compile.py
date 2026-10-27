@@ -2742,6 +2742,19 @@ def _compile_module(model: dict, module_id: str, module_index: int,
              if entry["module_index"] == module_index]
     if peers:
         record["io_peers"] = peers
+    root = _components_by_id(model).get(module_id, {})
+    if "brick_type" in root:
+        record["brick_type"] = root["brick_type"]
+    if root.get("controller") == "absent":
+        if nodes or peers:
+            raise CompileError(
+                f"module '{module_id}' has controller: absent but carries a "
+                "node or I/O peer")
+        if owned:
+            raise CompileError(
+                f"module '{module_id}' has controller: absent but controller "
+                f"index {owned[0]}")
+        record["controller"] = "absent"
     return record
 
 
