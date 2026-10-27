@@ -1140,6 +1140,57 @@ static void test_dma_loopback_full_ring_recovery(void)
     g_assert_nonnull(contents);
 }
 
+/*
+ * A full receive ring does not stall the transmit walk in loopback: the
+ * characters that do not fit are lost to the 16550's overrun, and the
+ * overrun bit reaches the status byte of the next character the engine
+ * reads. With hardware flow control on, what the part does is not known.
+ */
+static void test_dma_loopback_overrun_reaches_status(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, true, 0, -1, log);
+    const uint8_t valid[4] = { TX_VALID, TX_VALID, TX_VALID, TX_VALID };
+    g_autofree char *contents = NULL;
+    uint8_t entry[8];
+    bool overrun = false;
+    unsigned i, posted;
+
+    ioc4_set_pair_base_default(qts, 0, 0x400);
+    qtest_writeb(qts, UART(0) + 2, 0x01);
+    qtest_writeb(qts, UART(0) + 4, 0x13);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    /* Room for one entry before the ring is full. */
+    reg_write(qts, SDMA_RX_CONSUME(0), 16);
+    for (i = 0; i < 8; i++) {
+        const uint8_t out[4] = { 4 * i, 4 * i + 1, 4 * i + 2, 4 * i + 3 };
+
+        ioc4_write_tx_entry(qts, 0, 0x400, 8 * i, out, valid);
+    }
+    reg_write(qts, SDMA_TX_PRODUCE(0), 64);
+    ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 64);
+    /* The last character still on the line lands too. */
+    qtest_clock_step(qts, 5000000);
+    g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)) & 0x3f8, ==, 8);
+
+    /* Make room; what the FIFO kept comes in, marked after the loss. */
+    reg_write(qts, SDMA_RX_CONSUME(0), 8);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
+    ioc4_run_line_until(qts, SDMA_CONTROL(0), SSCR_DRAIN, 0);
+    posted = (reg_read(qts, SDMA_RX_PRODUCE(0)) & 0x3f8) / 8;
+    g_assert_cmpuint(posted, >, 1);
+    for (i = 1; i < posted; i++) {
+        ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 8 * i, entry,
+                      sizeof(entry));
+        overrun |= (entry[4] | entry[5] | entry[6] | entry[7]) & 0x01;
+        }
+    g_assert_true(overrun);
+    g_assert_cmpuint(posted * 4, <, 32);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(contents);
+}
+
 static void test_dma_tx_wrap_1k(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -3374,6 +3425,8 @@ int main(int argc, char **argv)
                    test_dma_loopback_discards_external_input);
     qtest_add_func("/sgi-ioc4/dma-loopback-full-ring-recovery",
                    test_dma_loopback_full_ring_recovery);
+    qtest_add_func("/sgi-ioc4/dma-loopback-overrun-reaches-status",
+                   test_dma_loopback_overrun_reaches_status);
     qtest_add_func("/sgi-ioc4/dma-tx-wrap-1k", test_dma_tx_wrap_1k);
     qtest_add_func("/sgi-ioc4/dma-tx-wrap-4k", test_dma_tx_wrap_4k);
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
