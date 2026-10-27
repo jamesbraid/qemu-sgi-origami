@@ -3773,13 +3773,15 @@ static SGIRenderResource mgras_gl_render_resource(const SGIMgrasState *s,
 
 /*
  * The callbacks may run on band workers (concurrent_pixels, unless the
- * x-raster-bands property is off): each writes
- * only its own pixel's elements of the planes, and reads the clip-ID
- * plane, the context image and the texture views, which nothing changes
- * during a draw. They keep no counters or caches; the one log message
- * is thread-safe. A slice's draw on the board's thread has let go of the
- * big lock, but its workers touch only what the draw itself would, and
- * finish before it takes the lock back (mgras_gl_soft_draw()).
+ * x-raster-bands property is off): each writes only its own pixel's
+ * elements of the planes, and reads the clip-ID plane, the context image
+ * and the texture views, which nothing changes during a draw. They keep
+ * no counters or caches; the one log message is thread-safe. Its lines,
+ * and the rasterizer's once-per-draw reports, can come out in a different
+ * order than from one thread; their text and count, and every pixel, do
+ * not change. A slice's draw on the board's thread has let go of the big
+ * lock, but its workers touch only what the draw itself would, and finish
+ * before it takes the lock back (mgras_gl_soft_draw()).
  */
 static const SGIRasterTarget mgras_gl_target = {
     .store_colour = mgras_gl_store_colour,
