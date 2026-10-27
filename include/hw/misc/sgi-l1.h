@@ -156,6 +156,13 @@ struct SGIL1State {
      * controllers' network mode is 422.
      */
     struct SGIL1State *peer;
+    /*
+     * A second controller across a separate cable, or NULL: an I/O brick's
+     * controller on a compute brick's XIO cable. The peer record admits one
+     * controller, and a compute brick with an I/O brick and another compute
+     * brick has two. Like the peer, the link carries no wire format.
+     */
+    struct SGIL1State *io_peer;
     bool network_422;
     SGIL1QueryRouter *query_router;
     Object *power_receiver;

@@ -4056,6 +4056,26 @@ static void l1_power_command_reachable_set(Object *obj, bool reachable,
     s->power_command_reachable = reachable;
 }
 
+/*
+ * The second peer slot names a different controller from the first and never
+ * the controller itself. What may sit in it, by profile, is the owning
+ * profile's business.
+ */
+static void l1_io_peer_check(const Object *obj, const char *name, Object *val,
+                             Error **errp)
+{
+    const SGIL1State *s = SGI_L1(OBJECT(obj));
+
+    if (!val) {
+        return;
+    }
+    if (val == obj) {
+        error_setg(errp, "L1 io-peer cannot be the controller itself");
+    } else if (val == OBJECT(s->peer)) {
+        error_setg(errp, "L1 io-peer must differ from the peer");
+    }
+}
+
 static void l1_init(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
@@ -4093,6 +4113,8 @@ static void l1_init(Object *obj)
     */
     object_property_add_link(obj, "peer", TYPE_SGI_L1, (Object **)&s->peer,
                              object_property_allow_set_link, 0);
+    object_property_add_link(obj, "io-peer", TYPE_SGI_L1,
+                             (Object **)&s->io_peer, l1_io_peer_check, 0);
 }
 
 static void l1_class_init(ObjectClass *klass, const void *data)
