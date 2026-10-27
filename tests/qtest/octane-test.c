@@ -980,10 +980,11 @@ static void test_ioc3_parallel_chardev(gconstpointer data)
  * The port's status lines follow what is behind its backend. With no
  * -parallel the machine gives the port a null backend, and a null backend
  * or none reads as a bare connector, every input high: 0x78. A real
- * backend reads 0x08, no fault and nothing else.
+ * backend reads as a ready printer: Busy low, nAck, Select and nFault
+ * high, no paper error, 0xd8.
  */
 #define PAR_STATUS_EMPTY 0x78
-#define PAR_STATUS_PERIPHERAL 0x08
+#define PAR_STATUS_PERIPHERAL 0xd8
 
 static void ioc3_map(QTestState *qts)
 {

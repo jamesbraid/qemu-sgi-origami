@@ -266,7 +266,7 @@ static uint64_t sgi_ioc3_parallel_ecp_read(void *opaque, hwaddr addr,
     /* The lines follow the cable: a peripheral, or pull-ups on nothing. */
     case SGI_IOC3_PAR_ECP_STATUS:
         return sgi_ioc3_parallel_peripheral_attached(s) ?
-               SGI_IOC3_PAR_STATUS_IDLE : SGI_IOC3_PAR_STATUS_EMPTY;
+               SGI_IOC3_PAR_STATUS_READY : SGI_IOC3_PAR_STATUS_EMPTY;
 
     case SGI_IOC3_PAR_ECP_CONTROL:
         return s->control;

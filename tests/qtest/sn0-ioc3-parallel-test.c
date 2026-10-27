@@ -493,17 +493,20 @@ static void test_fuel_ti_fifo_survives_savevm_loadvm(const void *data)
 }
 
 /*
- * The status register's peripheral lines. Only nFault's polarity is
- * specified: a clear level means a fault. A port with a peripheral behind
- * its backend reports no fault and nothing else. A port with nothing on its
- * connector reads each of the five inputs at the level a pull-up gives it,
- * so only the inverted BUSY bit reads clear.
+ * The status register's peripheral lines. Bit 7 is the inverse of the Busy
+ * pin; bits 6 to 3 are nAck, PError, Select and nFault as the pins stand.
+ * A host backend reads as a ready printer: Busy low, nAck, Select and
+ * nFault high, no paper error, 0xd8. A port with nothing on its connector
+ * reads all five inputs high, as pull-ups would leave them, so only the
+ * inverted Busy bit reads clear: 0x78.
  */
 #define STATUS_NFAULT    (1u << 3)
 #define STATUS_SELECT    (1u << 4)
 #define STATUS_PAPER     (1u << 5)
 #define STATUS_NACK      (1u << 6)
-#define STATUS_IDLE      STATUS_NFAULT
+#define STATUS_BUSY      (1u << 7)
+#define STATUS_READY     (STATUS_BUSY | STATUS_NACK | STATUS_SELECT | \
+                          STATUS_NFAULT)
 #define STATUS_EMPTY     (STATUS_NFAULT | STATUS_SELECT | STATUS_PAPER | \
                           STATUS_NACK)
 
@@ -823,8 +826,8 @@ static void test_the_status_register_reports_an_empty_cable(const void *data)
 }
 
 /*
- * A real backend stands in for a peripheral that accepts what it is sent:
- * the lines read idle, no fault and nothing else.
+ * A real backend stands in for a printer that accepts what it is sent and
+ * is never busy, so the lines read ready.
  */
 static void test_the_status_register_reports_a_peripheral(const void *data)
 {
@@ -840,7 +843,7 @@ static void test_the_status_register_reports_a_peripheral(const void *data)
     qts = qtest_init(args);
     sn0_ioc3_attach(qts);
 
-    g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_IDLE);
+    g_assert_cmphex(qtest_readb(qts, ECP_STATUS), ==, STATUS_READY);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -853,6 +856,18 @@ static void test_fuel_status_reports_an_empty_cable(const void *data)
     QTestState *qts = fuel_parallel_start(&prom_path, "");
 
     g_assert_cmphex(qtest_readb(qts, FUEL_ECP_STATUS), ==, STATUS_EMPTY);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
+}
+
+/* The Fuel's port with a host backend reads a ready printer. */
+static void test_fuel_status_reports_a_peripheral(const void *data)
+{
+    g_autofree char *prom_path = NULL;
+    QTestState *qts = fuel_parallel_start(&prom_path,
+        "-chardev file,id=plp0,path=/dev/null -parallel chardev:plp0");
+
+    g_assert_cmphex(qtest_readb(qts, FUEL_ECP_STATUS), ==, STATUS_READY);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
 }
@@ -1621,6 +1636,8 @@ int main(int argc, char **argv)
                         NULL, test_the_status_register_reports_an_empty_cable);
     qtest_add_data_func("sn0/ioc3/fuel-parallel-status-empty-cable", NULL,
                         test_fuel_status_reports_an_empty_cable);
+    qtest_add_data_func("sn0/ioc3/fuel-parallel-status-peripheral", NULL,
+                        test_fuel_status_reports_a_peripheral);
     qtest_add_data_func("sn0/ioc3/parallel-status-reports-a-peripheral",
                         NULL, test_the_status_register_reports_a_peripheral);
     qtest_add_data_func("sn0/ioc3/parallel-control-holds-its-lines", NULL,

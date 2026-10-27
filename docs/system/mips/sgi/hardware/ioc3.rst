@@ -379,11 +379,14 @@ from the specified hardware:
   machine gives an empty slot a null backend, and a null backend, none
   at all or ``-parallel none`` read as a bare connector: all five
   inputs high, ``0x78`` (bit 7 is the inverse of the Busy pin, so it
-  reads clear). A real backend, such as a file, reads ``0x08``: no
-  fault and no other input. Bit positions and polarity follow the
-  fitted TL16PIR552's published status register and Linux's ``lp``
-  convention; the pull direction on the boards is an inference, since
-  no source measures an unplugged port.
+  reads clear). A real backend, such as a file, reads as a ready
+  printer, ``0xd8``: Busy low, nAck, Select and nFault high, no paper
+  error. Treating every host backend as always ready is an
+  approximation. Bit positions and polarity follow the fitted
+  TL16PIR552's published status register, Linux's ``parport`` and
+  OpenBSD's ``lpt``; the pull direction on the boards is an inference,
+  since no source measures an unplugged port. Bit 2, the part's PRINT
+  indicator, is not modelled.
 * The transmit FIFO is bottomless. A byte written to it leaves
   within the write and is discarded, empty always reads set and full
   never does, because no source gives the FIFO a depth or a drain
