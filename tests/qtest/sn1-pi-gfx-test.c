@@ -308,6 +308,14 @@ static void head_returns(QTestState *qts, uint32_t credits)
         "  'property': 'return', 'value': %u } }", credits);
 }
 
+static void head_set(QTestState *qts, const char *property, int64_t credits)
+{
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'qom-set',"
+        "  'arguments': { 'path': '/machine/peripheral/head',"
+        "  'property': %s, 'value': %" PRId64 " } }", property, credits);
+}
+
 static uint64_t reg(unsigned int node, unsigned int pi, uint64_t offset)
 {
     return BEDROCK_NODE(node) + pi * PI1 + offset;
@@ -659,6 +667,41 @@ static void test_stall_below_bias(void)
     qtest_quit(qts);
 }
 
+/*
+ * Credits a head owes for words it has not yet taken settle when software
+ * rewrites the map entry naming the head: they are delivered under the
+ * entry as it stood, before the write, and the head's later repayments of
+ * them are dropped (the node's model choice; IRIX's detach zeroes the
+ * entry and then saves the counter). A write of the value already there
+ * settles nothing. A repayment of credits still owed is routed as a return.
+ */
+static void test_map_rewrite_settles_owed_credits(void)
+{
+    QTestState *qts = start(ONE_NODE);
+
+    prime(qts, 0, 0, 0, 0, 10);
+    map(qts, 0, MAP(0, 0, 0, HEAD_WIDGET));
+
+    head_set(qts, "owe", 5);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 10);
+    map(qts, 0, MAP(0, 0, 0, HEAD_WIDGET));
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 10);
+    map(qts, 0, 0);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 15);
+    head_set(qts, "repay", 5);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 15);
+
+    map(qts, 0, MAP(0, 0, 0, HEAD_WIDGET));
+    head_set(qts, "owe", 3);
+    head_set(qts, "repay", 2);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 17);
+    /* A board reset cancels what it abandons. */
+    head_set(qts, "owe", -1);
+    map(qts, 0, 0);
+    g_assert_cmpuint(credit(qts, 0, 0, 0), ==, 17);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -676,6 +719,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/pi-gfx/wrap-mode-and-interrupt",
                    test_wrap_mode_and_interrupt);
     qtest_add_func("sn1/pi-gfx/stall-below-bias", test_stall_below_bias);
+    qtest_add_func("sn1/pi-gfx/map-rewrite-settles-owed-credits",
+                   test_map_rewrite_settles_owed_credits);
     qtest_add_func("sn1/pi-gfx/cross-node", test_cross_node);
     qtest_add_func("sn1/pi-gfx/head-returns-only-counted-stores",
                    test_head_returns_only_counted_stores);

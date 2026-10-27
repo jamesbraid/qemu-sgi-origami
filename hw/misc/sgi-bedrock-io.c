@@ -429,6 +429,11 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
 
     /* Both keep all 64 bits: model policy, not an established field map. */
     if (retained >= 0) {
+        if (s->bedrock &&
+            (offset == II_GFX_MAP0 || offset == II_GFX_MAP0 + 8)) {
+            sgi_bedrock_gfx_map_written(s->bedrock,
+                                        (offset - II_GFX_MAP0) / 8, value);
+        }
         s->retained[retained] = value;
         return;
     }

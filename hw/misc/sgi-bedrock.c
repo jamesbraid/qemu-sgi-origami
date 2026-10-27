@@ -1282,6 +1282,66 @@ static void bedrock_return_gfx_credits(Object *obj, unsigned int widget,
     sgi_bedrock_pi_gfx_return(&target->pi[route.pi], route.slot, credits);
 }
 
+/*
+ * Credits a head owes. A board returns a credit when it takes a word into
+ * its command FIFO, and a full FIFO leaves words waiting with their credits
+ * owed. A real board takes them within microseconds; the model's board
+ * takes them at its own pace, seconds later under a heavy GL stream. IRIX
+ * 6.5.30's detach zeroes the processor's map entry and then reads the
+ * credit counter into the flow's saved count, which the next attach
+ * writes back. A credit that arrived after the detach would match no entry
+ * and be lost, and the saved count with it, for good: every later attach
+ * of that flow would start that many credits short.
+ *
+ * So the node keeps a ledger of the credits each widget owes, and a write
+ * to a map entry first settles the debt of the widget the entry names: its
+ * owed credits are delivered under the entry as it stands, before the new
+ * value takes effect, and the head's later repayments of them are dropped.
+ * This is the model's choice, not a known property of the I/O interface:
+ * it stands in for a board fast enough that nothing is owed by the time
+ * software rewrites the map.
+ */
+static void bedrock_owe_gfx_credits(Object *obj, unsigned int widget,
+                                    int32_t credits)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    int64_t owed;
+
+    widget &= 0xf;
+    owed = (int64_t)s->gfx_owed[widget] + credits;
+    s->gfx_owed[widget] = MAX(owed, 0);
+}
+
+static void bedrock_repay_gfx_credits(Object *obj, unsigned int widget,
+                                      uint32_t credits)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    uint32_t repaid = MIN(credits, s->gfx_owed[widget & 0xf]);
+
+    if (repaid) {
+        s->gfx_owed[widget & 0xf] -= repaid;
+        bedrock_return_gfx_credits(obj, widget, repaid);
+    }
+    if (repaid < credits) {
+        trace_sgi_bedrock_gfx_repay_settled(widget, credits - repaid);
+    }
+}
+
+void sgi_bedrock_gfx_map_written(SGIBedrockState *s, unsigned int entry,
+                                 uint64_t value)
+{
+    uint64_t old = sgi_bedrock_io_gfx_map(&s->io, entry);
+    unsigned int widget = old & 0xf;
+    uint32_t owed = s->gfx_owed[widget];
+
+    if (!owed || old == value) {
+        return;
+    }
+    trace_sgi_bedrock_gfx_settle(entry, widget, owed);
+    s->gfx_owed[widget] = 0;
+    bedrock_return_gfx_credits(OBJECT(s), widget, owed);
+}
+
 static void bedrock_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockState *s = SGI_BEDROCK(dev);
@@ -1962,7 +2022,10 @@ static SGINetPacketResult bedrock_net_receive(Object *port,
 
 static void bedrock_reset_enter(Object *obj, ResetType type)
 {
-    sgi_bedrock_hold_reset(SGI_BEDROCK(obj));
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+
+    memset(s->gfx_owed, 0, sizeof(s->gfx_owed));
+    sgi_bedrock_hold_reset(s);
 }
 
 static void bedrock_unrealize(DeviceState *dev)
@@ -2020,6 +2083,8 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     npc->describe = bedrock_net_describe;
     npc->receive = bedrock_net_receive;
     gpc->return_credits = bedrock_return_gfx_credits;
+    gpc->owe_credits = bedrock_owe_gfx_credits;
+    gpc->repay_credits = bedrock_repay_gfx_credits;
 }
 
 static const TypeInfo bedrock_info = {

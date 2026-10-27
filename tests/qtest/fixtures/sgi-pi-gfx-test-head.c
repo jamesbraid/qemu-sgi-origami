@@ -89,11 +89,48 @@ static void test_head_return(Object *obj, Visitor *v, const char *name,
     sgi_pi_gfx_return_credits(s->pi, s->widget, credits);
 }
 
+/* "owe" adds to, or with a negative count cancels, the node's debt. */
+static void test_head_owe(Object *obj, Visitor *v, const char *name,
+                          void *opaque, Error **errp)
+{
+    SGIPIGfxTestHeadState *s = SGI_PI_GFX_TEST_HEAD(obj);
+    int32_t credits;
+
+    if (!visit_type_int32(v, name, &credits, errp)) {
+        return;
+    }
+    if (!s->pi) {
+        error_setg(errp, "pi link is not set");
+        return;
+    }
+    sgi_pi_gfx_owe_credits(s->pi, s->widget, credits);
+}
+
+/* "repay" returns owed credits. */
+static void test_head_repay(Object *obj, Visitor *v, const char *name,
+                            void *opaque, Error **errp)
+{
+    SGIPIGfxTestHeadState *s = SGI_PI_GFX_TEST_HEAD(obj);
+    uint32_t credits;
+
+    if (!visit_type_uint32(v, name, &credits, errp)) {
+        return;
+    }
+    if (!s->pi) {
+        error_setg(errp, "pi link is not set");
+        return;
+    }
+    sgi_pi_gfx_repay_credits(s->pi, s->widget, credits);
+}
+
 static void test_head_init(Object *obj)
 {
     SGIPIGfxTestHeadState *s = SGI_PI_GFX_TEST_HEAD(obj);
 
     object_property_add(obj, "return", "uint32", NULL, test_head_return,
+                        NULL, NULL);
+    object_property_add(obj, "owe", "int32", NULL, test_head_owe, NULL, NULL);
+    object_property_add(obj, "repay", "uint32", NULL, test_head_repay,
                         NULL, NULL);
     object_property_add_uint32_ptr(obj, "taken", &s->taken,
                                    OBJ_PROP_FLAG_READ);
