@@ -12038,10 +12038,31 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
 /* Stores waiting behind work before the next one finishes the work. */
 #define ODSY_WORK_QUEUE_MAX 65536
 
+/*
+ * The command FIFO's depth, in stores. A processor's counted store gets
+ * its credit back when the board takes it into the FIFO, not when its
+ * work runs (the Bedrock PI datasheet's sizing, inferred: the IRIX
+ * 6.5.30 IP35 kernel allows 32 or 188 doublewords in flight without a
+ * wait and gives the board 25 ms to acknowledge any more, which fits a
+ * FIFO that takes words as they arrive and drains them behind). The
+ * waiting stores are the FIFO: the oldest ODSY_CFIFO_DEPTH of them are in
+ * it and have been credited, and a store behind them keeps its credit
+ * until the work ahead has run and it moves up. A store that does not
+ * wait passes through the FIFO at once and is credited at once. The
+ * depth is unknown; 64 is the model's choice, and with the usual 100
+ * credits and bias 68 it lets 96 stores wait before the PI stops the
+ * writer.
+ */
+#define ODSY_CFIFO_DEPTH 64
+
 typedef struct OdysseyQueuedStore {
     uint64_t value;
     uint32_t addr;
     uint8_t size;
+    /* The processor interface counted it: its credit is due. */
+    bool counted;
+    /* It waited outside the FIFO, so the node holds its credit as owed. */
+    bool owed;
     /* When it was stored (QEMU_CLOCK_VIRTUAL), for the trace. */
     int64_t queued_at;
 } OdysseyQueuedStore;
@@ -12071,15 +12092,57 @@ static bool odyssey_command_store(hwaddr addr, unsigned size)
            odyssey_reg(addr, size) == ODSY_CTX_SHADOW_ADDR_LOWER;
 }
 
+/* A counted store's credit, to the processor interface the node names. */
+static void odyssey_return_credit(SGIOdysseyState *s)
+{
+    if (s->pi) {
+        sgi_pi_gfx_return_credits(s->pi, s->parent_obj.slot, 1);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: counted graphics "
+                      "store has no processor interface for its return\n");
+    }
+}
+
+/*
+ * Waiting stores that have moved up into the FIFO get their credits. One
+ * that waited outside it repays a credit the node holds as owed
+ * (sgi_pi_gfx_owe_credits()).
+ */
+static void odyssey_work_admit(SGIOdysseyState *s)
+{
+    while (s->work_in_fifo < s->work_queue->len &&
+           s->work_in_fifo < ODSY_CFIFO_DEPTH) {
+        OdysseyQueuedStore *q = &g_array_index(s->work_queue,
+                                               OdysseyQueuedStore,
+                                               s->work_in_fifo);
+
+        if (q->owed) {
+            if (s->pi) {
+                sgi_pi_gfx_repay_credits(s->pi, s->parent_obj.slot, 1);
+            }
+            q->owed = false;
+        } else if (q->counted) {
+            odyssey_return_credit(s);
+        }
+        s->work_in_fifo++;
+    }
+}
+
 static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
-                                uint64_t value, unsigned size)
+                                uint64_t value, unsigned size, bool counted)
 {
     OdysseyQueuedStore q = {
-        .value = value, .addr = addr, .size = size,
+        .value = value, .addr = addr, .size = size, .counted = counted,
         .queued_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
     };
 
     g_array_append_val(s->work_queue, q);
+    odyssey_work_admit(s);
+    if (counted && s->work_in_fifo < s->work_queue->len && s->pi) {
+        g_array_index(s->work_queue, OdysseyQueuedStore,
+                      s->work_queue->len - 1).owed = true;
+        sgi_pi_gfx_owe_credits(s->pi, s->parent_obj.slot, 1);
+    }
     sgi_head_work_schedule(&s->work);
 }
 
@@ -12093,6 +12156,9 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
             g_array_index(s->work_queue, OdysseyQueuedStore, 0);
 
         g_array_remove_index(s->work_queue, 0);
+        /* The store leaves the FIFO, and the next waiting one moves up. */
+        s->work_in_fifo--;
+        odyssey_work_admit(s);
         odyssey_write_dispatch(s, q.addr, q.value, q.size);
         if (!s->work_queue->len) {
             /* The FIFO has drained: below low water again. */
@@ -12261,7 +12327,8 @@ static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
                                       MemTxAttrs attrs)
 {
     SGIOdysseyState *s = opaque;
-    bool counted = sgi_pi_gfx_take_mark();
+    bool counted = sgi_pi_gfx_take_mark() ||
+                   (s->test_counted_stores && !current_cpu);
 
     if (!sgi_head_work_enter()) {
         return odyssey_refuse(addr, true);
@@ -12270,7 +12337,9 @@ static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
         if (s->work_queue->len >= ODSY_WORK_QUEUE_MAX && !s->work.drawing) {
             odyssey_work_drain(s, addr);
         }
-        odyssey_work_append(s, addr, value, size);
+        odyssey_work_append(s, addr, value, size, counted);
+        /* Credited as it enters the FIFO (odyssey_work_admit()). */
+        counted = false;
     } else if (odyssey_fifo_port(addr) && current_cpu) {
         int64_t start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
 
@@ -12290,12 +12359,8 @@ static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
         odyssey_write_dispatch(s, addr, value, size);
     }
     if (counted) {
-        if (s->pi) {
-            sgi_pi_gfx_return_credits(s->pi, s->parent_obj.slot, 1);
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: counted graphics "
-                          "store has no processor interface for its return\n");
-        }
+        /* It went through the FIFO inside the store. */
+        odyssey_return_credit(s);
     }
     sgi_head_work_leave();
     return MEMTX_OK;
@@ -12318,7 +12383,14 @@ static void odyssey_work_reset(SGIOdysseyState *s)
         return;
     }
     sgi_head_work_wait_slice(&s->work);
+    for (guint i = 0; i < s->work_queue->len; i++) {
+        if (g_array_index(s->work_queue, OdysseyQueuedStore, i).owed &&
+            s->pi) {
+            sgi_pi_gfx_owe_credits(s->pi, s->parent_obj.slot, -1);
+        }
+    }
     g_array_set_size(s->work_queue, 0);
+    s->work_in_fifo = 0;
     s->work_queued_until = 0;
     sgi_head_work_idle(&s->work);
 }
@@ -13306,6 +13378,17 @@ static void odyssey_test_get_unlocked_draws(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/* The command FIFO's level: the stores still waiting. */
+static void odyssey_test_get_work_waiting(Object *obj, Visitor *v,
+                                          const char *name, void *opaque,
+                                          Error **errp)
+{
+    SGIOdysseyState *s = SGI_ODYSSEY(obj);
+    uint32_t value = s->work_queue ? s->work_queue->len : 0;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void odyssey_instance_init(Object *obj)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
@@ -13343,8 +13426,17 @@ static void odyssey_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-slice-words",
                                    &s->work.test_words,
                                    OBJ_PROP_FLAG_READWRITE);
+    /*
+     * Treat every store from outside a processor as one the processor
+     * interface counted, so a qtest can watch its credit come back.
+     */
+    object_property_add_uint8_ptr(obj, "x-test-counted-stores",
+                                 &s->test_counted_stores,
+                                 OBJ_PROP_FLAG_READWRITE);
     object_property_add_bool(obj, "x-test-work-pending",
                              odyssey_test_get_work_pending, NULL);
+    object_property_add(obj, "x-test-work-waiting", "uint32",
+                        odyssey_test_get_work_waiting, NULL, NULL, NULL);
     object_property_add(obj, "x-test-unlocked-draws", "uint32",
                         odyssey_test_get_unlocked_draws, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,

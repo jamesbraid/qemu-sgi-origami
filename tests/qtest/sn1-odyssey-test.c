@@ -3457,6 +3457,30 @@ static QTestState *work_start(void)
     return qts;
 }
 
+/* The stores still waiting: the command FIFO's level. */
+static uint32_t work_waiting(QTestState *qts)
+{
+    return odsy_qom_get_uint(qts, "x-test-work-waiting");
+}
+
+/*
+ * One slice: step the clock past the slice's timer and wait for the
+ * board's thread to run it, one store here.
+ */
+static void work_step(QTestState *qts)
+{
+    uint32_t before = work_waiting(qts);
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+    g_assert_cmpuint(before, >, 0);
+    qtest_clock_step(qts, 1000 * 1000);
+    while (work_waiting(qts) == before) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(work_waiting(qts), ==, before - 1);
+}
+
 static bool work_pending(QTestState *qts)
 {
     QDict *resp = qtest_qmp(qts,
@@ -3593,6 +3617,96 @@ static void test_command_work_low_water_after_drain(void)
                     ==, ODSY_INTR_FIFO_LOW_WATER);
     g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
                     ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
+    board_quit(qts);
+}
+
+/*
+ * A counted store's credit comes back when the board takes it into its
+ * command FIFO, not when its work runs: the oldest 64 waiting stores (the
+ * model's FIFO depth) have their credits back, and each store behind them
+ * gets its credit as the work ahead runs and it moves up. The node-widget
+ * map sends the board's credits to PI0 slot A. A qtest store is not
+ * charged on the way in, so the count rises by the credits returned.
+ */
+#define WORK_CFIFO_DEPTH 64
+#define WORK_PI_CREDIT_A (BEDROCK_NODE0 + 0x308)
+#define WORK_GFX_MAP_0 (BEDROCK_NODE0 + 0x400140)
+
+static void test_command_work_credits_at_fifo_entry(void)
+{
+    QTestState *qts = work_start();
+    unsigned int stores = 0;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-counted-stores', 'value': 1}}", BOARD);
+    qtest_writeq(qts, WORK_GFX_MAP_0, SLOT);
+    qtest_writeq(qts, WORK_PI_CREDIT_A, 1000);
+
+    /* Each fence pair is six stores; twelve of them overfill the FIFO. */
+    for (unsigned int i = 0; i < 12; i++) {
+        work_push_fences(qts);
+        stores += 6;
+    }
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
+                     1000 + WORK_CFIFO_DEPTH);
+
+    /* One store runs per slice here: the next one moves up and is repaid. */
+    work_step(qts);
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
+                     1000 + WORK_CFIFO_DEPTH + 1);
+
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==, 1000 + stores);
+
+    /* A store that does not wait is repaid inside the store. */
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': 0}}", BOARD);
+    cmd_push(qts, ODSY_CMD_HOST_WRITE_SELECT);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x5a00);
+    g_assert_false(work_pending(qts));
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
+                     1000 + stores + 3);
+    board_quit(qts);
+}
+
+/*
+ * A credit the board owes for a store still waiting outside its FIFO
+ * settles when software rewrites the node-widget map entry naming the
+ * board: it is delivered under the entry as it stood, and the board's later
+ * repayment is dropped. IRIX's detach zeroes the entry and then reads the
+ * counter into the flow's saved count, so without this the count would be
+ * short by every owed credit (the node's model choice).
+ */
+static void test_command_work_map_rewrite_settles(void)
+{
+    QTestState *qts = work_start();
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-counted-stores', 'value': 1}}", BOARD);
+    qtest_writeq(qts, WORK_GFX_MAP_0, SLOT);
+    qtest_writeq(qts, WORK_PI_CREDIT_A, 1000);
+    for (unsigned int i = 0; i < 12; i++) {
+        work_push_fences(qts);
+    }
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==,
+                     1000 + WORK_CFIFO_DEPTH);
+
+    /* The detach: the eight owed credits arrive before the entry clears. */
+    qtest_writeq(qts, WORK_GFX_MAP_0, 0);
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==, 1000 + 72);
+
+    /* Rewriting it again owes nothing more, and the repayments are dropped. */
+    qtest_writeq(qts, WORK_GFX_MAP_0, SLOT);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmpuint(qtest_readq(qts, WORK_PI_CREDIT_A), ==, 1000 + 72);
     board_quit(qts);
 }
 
@@ -22717,6 +22831,10 @@ int main(int argc, char **argv)
                    test_command_work_status_shows_waiting_stores);
     add_fresh_case("sn1/odyssey/command-work-low-water-after-drain",
                    test_command_work_low_water_after_drain);
+    add_fresh_case("sn1/odyssey/command-work-credits-at-fifo-entry",
+                   test_command_work_credits_at_fifo_entry);
+    add_fresh_case("sn1/odyssey/command-work-map-rewrite-settles",
+                   test_command_work_map_rewrite_settles);
     add_fresh_case("sn1/odyssey/command-work-stop-and-reset",
                    test_command_work_stop_and_reset);
     add_fresh_case("sn1/odyssey/command-work-draws-on-board-thread",

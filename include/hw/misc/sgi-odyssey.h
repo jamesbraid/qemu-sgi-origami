@@ -357,6 +357,10 @@ struct SGIOdysseyState {
      */
     SGIHeadWork work;
     GArray *work_queue;
+    /* The oldest waiting stores, this many, are in the FIFO and credited. */
+    guint work_in_fifo;
+    /* qtest: stores from outside a processor count as counted. */
+    uint8_t test_counted_stores;
     /* Until when (QEMU_CLOCK_VIRTUAL) FIFO stores queue after a long one. */
     int64_t work_queued_until;
     /* Scalar draws run without the big lock, for the qtest. */
