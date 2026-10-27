@@ -21,7 +21,7 @@ midplane with four node-board slots, two Router slots, two Crossbows
 and twelve XIO slots, plus the module system controller. This page is
 the contract the ``origin2000`` machine models cite for how a module is
 populated, how its management bus is wired and how the processor's
-reset mode is chosen. Ratings follow :ref:`sgi-ip30`. The Router chip
+reset mode is chosen. Ratings follow :ref:`sgi-ratings`. The Router chip
 itself is on :doc:`/system/mips/sgi/hardware/router`, the Crossbow on :doc:`/system/mips/sgi/hardware/xbow` and the
 controller's command protocol on :doc:`/system/mips/sgi/hardware/elsc`.
 

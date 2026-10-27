@@ -16,23 +16,7 @@ the machine models in ``hw/mips/sgi/models/`` cite for these two
 products: what is fitted, how it is wired, what the emulator chose
 where the hardware is not known, and which sources back each statement.
 
-Every fact carries one of these ratings:
-
-established
-  stated by a cited specification or manual, or read from an identified
-  real machine;
-observed
-  reported by a published capture of a real machine;
-software expectation
-  what public drivers, the IRIX kernel or the stock PROM do or rely on,
-  which shows what software needs, not what the hardware is;
-inferred
-  follows from *established* facts by a stated step;
-approximation
-  an emulator value standing in for hardware that is not known, with its
-  limitation stated;
-unknown
-  no available source settles it; the entry says what would.
+Facts are rated as described in :ref:`sgi-ratings`.
 
 The two machine names select two fitted populations, not two hardware
 architectures. Register behaviour follows the fitted chip and board

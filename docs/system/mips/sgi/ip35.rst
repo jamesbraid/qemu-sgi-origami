@@ -24,7 +24,7 @@ processor selects a space, how the node number sits in a physical
 address, node memory, the crosstalk windows, the Bedrock's register
 space, the hand-off and reset registers, and the interrupt-send address.
 The Bedrock units behind the register space are on :doc:`/system/mips/sgi/hardware/bedrock`.
-Ratings follow :ref:`sgi-ip30`.
+Ratings follow :ref:`sgi-ratings`.
 
 Sources, all public. Citations give the file and lines at the pinned
 commit:

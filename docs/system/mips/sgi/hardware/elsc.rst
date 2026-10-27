@@ -993,7 +993,7 @@ share. It holds the board inventory log from address 0 and, at 0x700,
 the controller's block: validity marker, password, debug-switch values,
 configuration byte, module number, self-test flags and partition, domain,
 cluster and cell numbers. ``hw/nvram/sgi-elsc-nvram.c`` models it as one
-device. Ratings follow :ref:`sgi-ip30`.
+device. Ratings follow :ref:`sgi-ratings`.
 
 .. list-table::
    :header-rows: 1

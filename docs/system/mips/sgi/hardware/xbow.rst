@@ -16,7 +16,7 @@ and answers, itself, as logical widget 0. QEMU models it in
 what the model chose where the sources are silent, and where each
 statement comes from.
 
-Ratings follow :ref:`sgi-ip30`: established, observed, software expectation,
+Ratings follow :ref:`sgi-ratings`: established, observed, software expectation,
 inferred, approximation or unknown. The sources are the *Crossbow ASIC
 Specification*, revision 12.0, 18 November 1996
 (:src:`crossbow-asic-spec-12.0`; printed and PDF page numbers agree, and the

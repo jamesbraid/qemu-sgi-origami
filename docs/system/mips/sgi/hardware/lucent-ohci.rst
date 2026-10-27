@@ -11,7 +11,7 @@ host controller that enumerates as PCI ``11c1:5802``. QEMU models it as
 the ``lucent-ohci`` type (``hw/usb/lucent-ohci.c``), a subtype of the
 existing ``pci-ohci`` wrapper, so the transfer engine is QEMU's own OHCI
 core and only the identity, ports and a few reset words are this
-project's. Ratings follow :ref:`sgi-ip30`.
+project's. Ratings follow :ref:`sgi-ratings`.
 
 Sources: *OpenHCI: Open Host Controller Interface Specification for USB*,
 release 1.0a (``web:openhci-1.0a``); *USS-312 Two-Port PCI-to-USB OpenHCI

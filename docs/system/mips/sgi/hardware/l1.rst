@@ -15,7 +15,7 @@ operator console. The controller's board-side interfaces (environmental
 monitoring, JTAG scan, USB to an upstream controller, the RS-422
 peer links) are not modelled. This page states what public sources
 establish, what the model chose, and what has no public source.
-Ratings follow :ref:`sgi-ip30`.
+Ratings follow :ref:`sgi-ratings`.
 
 Sources: OpenBSD sgi at
 ``openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf``
