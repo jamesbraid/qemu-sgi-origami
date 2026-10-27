@@ -18,9 +18,9 @@ covers three of them and the tape drive that sits behind them.
 - The ISP12160, a dual-channel SCSI adapter, is the controller of the
   Origin 300 and Fuel IO8 boards, the Origin 350 IO9 board and the PCI
   carriers. QEMU models it as ``qlogic-isp12160``, PCI revision 6.
-- The ISP2200, a Fibre Channel adapter, is the part an Origin 3200 I-brick
-  reports. QEMU models it as ``qlogic-isp2200``. No machine fits one by
-  default.
+- The ISP2200, a Fibre Channel adapter, is modelled as ``qlogic-isp2200``.
+  No machine fits one by default. It has its own page,
+  :doc:`qlogic-isp2200`.
 - ``scsi-tape`` is a generic SCSI sequential-access target, not a QLogic
   part. It attaches to any of the adapters above.
 
@@ -58,7 +58,7 @@ Sources
 - The QLogic *Hardware Installation Guide for the QLA2200 Board Family*,
   :src:`860-0228-001`: board RAM and NVRAM sizes and interrupt line A.
 - The PCI Local Bus Specification revision 2.2,
-  :src:`pcisig-pci-local-bus-spec-2.2`, for the layout of the Status
+  :src:`pci-local-bus-2.2`, for the layout of the Status
   register and the capabilities list.
 - Linux ``drivers/scsi/qla1280.c`` and ``qla1280.h`` (ISP1040, ISP12160)
   and ``drivers/scsi/qla2xxx/`` (ISP2200) at ``db2ddb871435``.
@@ -154,8 +154,9 @@ onboard PCI devices 0 and 1 of the Bridge. The Origin 200 and Origin 2000
 BaseIO boards build two at devices 0 and 1, and the MSCSI board four at
 devices 0 to 3. The Origin 300 IO8 and Fuel boards each place one ISP12160
 at device 1, the Origin 350 IO9 board places one on its PCI head, and PCI
-carriers accept either part with ``-device``. The board models set the PCI
-revision byte after they create the device. No machine instantiates
+carriers accept either part with ``-device``. The Origin board models set
+the PCI revision byte after they create the device. The Octane models keep
+the type's default of 5. No machine instantiates
 ``qlogic-isp2200``. It is a PCI device for ``-device``.
 
 Two adapters per BaseIO is *established* by :src:`007-3439-002 Figure 2-25,
@@ -164,7 +165,10 @@ PROM inventory lists two ``PCI-SCSI Rev 5`` adapters at PCI ids 0 and 1
 (:src:`nekonomicon-16727716`), *observed*. The Origin 200 drawings put
 channel 0 on a 50-pin connector for the 5.25-inch bay and channel 1 on a
 68-pin connector for the 3.5-inch bays (:src:`007-3708-002`),
-*established*.
+*established*. Which of the two PCI devices is the drawing's channel 0 is
+*unknown*. The inventory places the system disk at ID 1 on the first
+adapter and the tape and CD-ROM on the second, and a read of the board's
+connector wiring would settle the mapping.
 
 PCI revision and the two revision fields
 ----------------------------------------
@@ -196,7 +200,7 @@ ordinary path. That the real ISP1040C reports 6 is *inferred* from the
 numbering and has not been read from hardware.
 
 No consumer reads a revision from bus configuration 0 on the ISP12160, and
-the data sheet gives it no meaning, so the model reads 0, an
+the QLogic sheet names no such field, so the model reads 0, an
 *approximation*. The ISP12160 PCI revision ``0x06`` is *observed* in two
 mailing-list posts of raw configuration bytes from ISP12160 functions on
 other systems (:src:`mail-isp12160-config-capture-2005`,
@@ -216,9 +220,9 @@ Command and Status together for each PCI device in its I/O configuration
 check and compares all 32 bits with an expected value. For this adapter it
 expects ``0x02000000``: Command 0 and Status ``0x0200``. A model that
 presents a zero Status half fails the I/O slot (*software expectation*,
-observed on the model). No QLogic document in the corpus gives a reset
+observed on the model). No public QLogic document gives a reset
 value for this register. DEVSEL timing as the meaning of Status bits 10:9
-is *established* by :src:`pcisig-pci-local-bus-spec-2.2`. That the real
+is *established* by :src:`pci-local-bus-2.2`. That the real
 chip resets to ``0x0200`` is *unknown*, and a raw configuration read of the
 real part would settle it. The error latches in Status are the PCI core's
 write-one-to-clear bits, and nothing in the model sets them.
@@ -241,13 +245,16 @@ The ISP12160 differs in these ways.
   power management control word and requires it back (*software
   expectation*, observed on the model). Reading all five Command bits back
   says the part implements them. Memory write and invalidate and parity
-  error response are corroborated by the data sheet's claims of the PCI
-  cache commands and of PCI 2.1 compliance. The other Command bits are
-  *unknown* and read-only. The width of the Latency Timer is *unknown*,
+  error response are corroborated by the ISP12160A sheet's claims of the
+  PCI cache commands and of PCI 2.1 compliance. The model leaves the other
+  Command bits as the PCI core sets them: I/O space, memory space, bus
+  master, SERR enable and INTx disable are writable, and special cycles,
+  VGA palette snoop, wait cycle control and fast back-to-back are
+  read-only. Whether the real part implements them is *unknown*. The width of the Latency Timer is *unknown*,
   because the test writes zeros into its low three bits. The model makes the
   whole byte writable. Whether the part advertises PME event support, which
   would decide if the enable bit holds, is *unknown*.
-- The part declares itself a 64-bit PCI agent, from the data sheet's
+- The part declares itself a 64-bit PCI agent, from the ISP12160A sheet's
   "66-MHz, 64-bit PCI host bus interface". In a slot the board wires to the
   64-bit data path it runs 64-bit data phases and the Bridge places its
   bytes by that width. Whether the IO8 board's on-board bus carries the
@@ -353,9 +360,9 @@ registers at ``0x10`` and ``0x12``, the GPIO data and enable registers at
 ``0xcc`` and ``0xce``, the rest of each ISP1040 DMA block (status, FIFO,
 count and address) and, on the ISP12160, all four flat DMA offsets. Linux
 and OpenBSD name the flash and GPIO registers, and no boot path reads them.
-The SGI PROM SCSI diagnostic writes ``0x000a`` to the two DMA control
-registers once per adapter and reads neither back, so the model keeps no
-value there.
+The SGI PROM's SCSI power-on diagnostic writes ``0x000a`` to the two DMA
+control registers once per adapter and reads neither back (*software
+expectation*, observed on the model), so the model keeps no value there.
 
 Bus configuration 1 and the bank window
 ---------------------------------------
@@ -417,12 +424,13 @@ NVRAM
 -----
 
 The adapter carries a 128-byte serial EEPROM, read by bit-banging the NVRAM
-register. The model never asserts data in, so every read returns the same
+register (*software expectation*, OpenBSD ``qlw``). The model never asserts data in, so every read returns the same
 fixed pattern, which fails the identifier and checksum validation. OpenBSD
 then prints that the NVRAM is corrupt and proceeds on its built-in defaults
 (*software expectation*). The contents of a real Origin 200 EEPROM are
 *unknown*. OpenBSD hard-codes SGI initiator ID 0 where the standard default
-is 7, so the fallback is correct for these machines.
+is 7, so the fallback is correct for these machines (*software
+expectation*, OpenBSD ``qlw``).
 
 Host command register
 ---------------------
@@ -663,8 +671,8 @@ parts.
   silicon does (*unknown*). The firmware transfers are small and low, so
   nothing on a boot path tells the two apart.
 - ISP12160: a load, dump or checksum whose start plus count exceeds 65,536
-  answers parameter error ``0x4006`` and writes nothing. The ISP12160 data
-  sheet leaves the failure code open, so ``0x4006`` is an *approximation*.
+  answers parameter error ``0x4006`` and writes nothing. No source gives
+  the chip's failure code, so ``0x4006`` is an *approximation*.
   The 65,536-word array is also an *approximation*, since the physical RAM
   size and its reset contents are *unknown*.
 
@@ -685,8 +693,10 @@ pass the end of RAM answers ``0x4006`` and leaves the sum mailboxes alone.
 The exact checksum algorithm of the chip is *unknown*. This follows the
 loaders that all three drivers share.
 
-The stock BaseIO PROM SCSI diagnostic issues load RAM ``0x0001`` and dump
-RAM ``0x0003`` against the ISP12160 (*software expectation*). It writes a
+The SCSI diagnostic of the stock IP35 PROM (release 6.210, the BaseIO
+image) issues load RAM ``0x0001`` and dump RAM ``0x0003`` against the
+ISP12160 on the Origin 300 IO8 board (*software expectation*, observed on
+the model). It writes a
 pattern through the adapter and reads it back.
 
 Queue initialisation
@@ -857,19 +867,19 @@ The two parts compute a completed command's flags differently.
   no data phase, such as TEST UNIT READY, raises data bits for work that did
   not run. That is an *approximation* of the part, and no source
   contradicts it.
-- ISP12160: the data sheet forbids a flag for work the command skipped. The
-  model always reports bus, target, CDB and status. It adds data transferred
+- ISP12160: a flag for work the command skipped would misreport it, and
+  Linux checks the bus and target flags before the later phases. The model
+  therefore reports a flag only for work done, an *approximation*. It always reports bus, target, CDB and status. It adds data transferred
   once a byte has moved, transfer complete when every described byte moved,
   and sense only when sense was collected. A command with no data therefore
   reports neither data bit.
 
 The sense bit must stay clear on a GOOD completion. The sense phase means
 that the adapter ran auto-sense, which a target triggers only by returning
-CHECK CONDITION. With the bit raised on every completion, IRIX 6.5.30 on
-the model re-issued a CD-ROM's MODE SELECT without bound and never reached
-the login. The mechanism, that IRIX validates the phases of a completed
-command, is *inferred* from that difference and was not read from the
-driver.
+CHECK CONDITION. With the bit raised on every completion, IRIX 6.5.30
+re-issues a CD-ROM's MODE SELECT without bound and never reaches the login
+(*software expectation*, observed on the model). Why IRIX reacts so is
+*unknown*; a read of its completion path would settle it.
 
 Missing targets
 ---------------
@@ -889,8 +899,8 @@ plugged into the same machine (*software expectation*, observed on the
 model). The PROM SCSI walk completes cleanly with the bit set. Both parts
 set the bit. What real silicon reports in this word is *unknown*. For the
 ISP1040 the answer is an *approximation* that satisfies all four consumers.
-For the ISP12160 the data sheet leaves the word unresolved and the IRIX
-behaviour settles the choice.
+For the ISP12160 no source gives the word, and the IRIX behaviour settles
+the choice.
 
 Response ring pressure
 ----------------------
@@ -973,15 +983,15 @@ from a captured device, and all are an *approximation*.
 
 - Abort command answers ``0x4005`` for an unknown handle, or one that does
   not match the request found at the channel, target and LUN, and retires
-  nothing. The code is unreviewed even as a choice.
+  nothing.
 - Abort device answers ``0x4000`` when nothing is outstanding for the LUN.
 - On the ISP12160, bus reset answers ``0x4006`` for a channel number at or
   past the channel count. The three abort commands take the channel from a
   single selector bit and can never name a third channel, so the same check
   cannot fail for them.
 
-The `Tests`_ pin only that the unknown-handle answer is not a completion
-and retires nothing.
+The `Tests`_ pin the unknown-handle answer only as not a completion that
+retires nothing, and pin the abort-device answer to exactly ``0x4000``.
 
 .. _sgi-qlogic-isp-reset:
 
@@ -1032,10 +1042,12 @@ mapping for this adapter. On the Origin 200 model both ISP slots read
 up, so bit 19 is set and bits 20 and 13 are clear (*software expectation*,
 observed on the model). IRIX writes no byte-order setting to the adapter
 itself. The kernel keeps queue entries as big-endian structures and swaps
-each 32-bit word in software on the way in and out, so the entries sit in
-host memory in the little-endian layout the public drivers use. Data
+each 32-bit word in software on the way in and out (*software
+expectation*), so the entries sit in host memory in the little-endian
+layout the public drivers use. Data
 blocks pass through the same mapping unchanged. That the adapter therefore
-sees host-memory order is *established* by the Bridge's swap-set tables.
+sees host-memory order is *inferred* from that behaviour and the Bridge's
+swap-set tables.
 Whether the chip itself puts a byte stream or word values on the bus is
 *unknown*, and an ISP1040 manual that states the bus order would settle it.
 The ISP1040 is a 32-bit PCI agent and is not declared 64-bit.
@@ -1079,8 +1091,8 @@ model tracks that position.
 
 A published Origin 200 inventory lists ``ARCHIVE Python 02779-XXX`` at SCSI
 ID 5 on the second adapter, beside the CD-ROM at ID 6, with the system disk
-at ID 1 on the first (*observed*). The Python line is an ARCHIVE family of
-DDS (4 mm DAT) drives. That this unit is DDS is unverified. The tape is not
+at ID 1 on the first (*observed*). Whether this unit is a DDS (4 mm DAT) drive is *unknown*;
+a manufacturer document for the product would settle it. The tape is not
 on any boot path. Guests reach it through ``mt``, ``tar``, ``cpio``, ``bru``
 and the online tape diagnostic.
 
@@ -1091,10 +1103,10 @@ Vendor, product and revision come from the ``vendor``, ``product`` and
 ``ver`` properties, space-padded to 8, 16 and 4 bytes. Without them the
 INQUIRY answer is ``QEMU``, ``QEMU TAPE`` and the QEMU hardware version. The
 model does not default to the Origin's drive identity. The functional
-diagnostics present ``ARCHIVE`` and ``Python 25601``, a product string the
-IRIX 6.5.30 tape driver recognises as a DAT drive, because the string in the
-real machine's inventory is not one IRIX recognises. That choice is an
-*approximation* and a decision, not a hardware fact. The real drive's
+diagnostics set the properties to ``ARCHIVE`` and ``Python 25601``, not to
+the inventory string. That is a model choice, an *approximation*. Whether
+IRIX 6.5.30 treats the two strings differently is *unknown*; running its
+online tape test against each would settle it. The real drive's
 INQUIRY revision is *unknown*.
 
 INQUIRY returns 36 bytes: type 1, the removable-medium bit set, version 2,
@@ -1365,7 +1377,7 @@ Model limits
 ============
 
 - No microcode runs. The RAM holds what was downloaded and nothing executes
-  it. Execute firmware only marks the part running. SCSI, Fibre Channel and
+  it. Execute firmware answers ``0x4000`` and changes nothing. SCSI, Fibre Channel and
   tape timing, bus phases and negotiation are not modelled. Every setter
   that nothing reads back is accepted and ignored.
 - Target mode, flash BIOS, GPIO, the ISP1040 DMA block registers beyond
@@ -1381,15 +1393,10 @@ Model limits
   selections and the held-completion rules are *approximation*, listed where
   they appear above.
 - No ISP1040 vendor programming manual exists, so its register contract is
-  weaker than that of a part with a vendor register table. Its revision
-  encoding, 5 in PCI configuration space and 6 in bus configuration 0, is
-  *inferred* and has not been read from hardware.
-- The ISP2200 has no Fibre Channel service and reports a disconnected loop.
-  It has no reduced-interrupt or fast-post completions, target mode, IP,
-  ISP2300-class layouts, flash BIOS, frame-buffer or FPM banks, parity
-  diagnostics or single step. Its reset states, command window, posting
-  window, firmware identity and per-command error codes are model choices.
-  The ISP2200 and ISP2200A differ in mailbox 7 only.
+  weaker than that of a part with a vendor register table. Its PCI
+  revision of 5 is *observed* on Origin 200 captures. The value 6 in bus
+  configuration 0 is *inferred* from the family numbering and has not been
+  read from hardware.
 - The tape models no real DDS mechanics (helical scan, compression
   negotiation beyond a mode page, tension, repositioning time), no medium
   changer, no partitions, setmarks or audio mode, no end-of-medium
@@ -1434,16 +1441,6 @@ Tests
   channel, abort device, abort command, abort target and bus reset scoped to
   a channel, a completion racing an abort, handle reuse and migration of
   distinct state.
-- ``tests/qtest/qlogic-isp2200-test.c`` covers the ISP2200: identity, the
-  window and undescribed registers, reset states, RISC control, the host
-  interrupt, unmodelled host commands, the register test, mailbox storage,
-  completion posting, a second result waiting, the doorbell waiting for the
-  slot, the semaphore, unknown commands, the ROM subset, RAM load and
-  checksum, firmware identity and options, Initialise firmware refusals,
-  command round trips, continuations, the segment list, markers, ring wrap,
-  a full response ring, malformed entries, DMA errors, disabled bus
-  mastering, NVRAM, the Linux and OpenBSD register orders, the OpenBSD
-  interleave and expanded LUN addressing.
 - ``tests/qtest/scsi-tape-test.c`` drives the tape through an ISP1040. It
   covers inquiry and its identity, unit ready and load, block limits, mode
   sense with write protect and the partition page, write, rewind and read,
