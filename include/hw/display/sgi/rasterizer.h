@@ -584,6 +584,14 @@ typedef struct SGIRasterTarget {
      * thread.
      */
     bool concurrent_pixels;
+    /*
+     * Host-only, for tests: when nonzero, the pixel count from which a
+     * draw or clear into this target runs in bands, in place of the
+     * process-wide threshold (sgi_raster_set_parallel()). A family's
+     * qtest sets it through a test property so that small draws, and
+     * every callback they reach, run on band workers.
+     */
+    uint32_t band_min_pixels;
 } SGIRasterTarget;
 
 /*

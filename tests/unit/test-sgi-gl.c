@@ -328,6 +328,59 @@ static void test_band_parallel_draw(void)
     g_hash_table_destroy(threads);
 }
 
+/*
+ * A target's own band threshold replaces the process-wide one: a 10x40
+ * clear, far below the default threshold, runs on one thread into a
+ * target that sets none, and in four bands into one that sets a
+ * threshold of one pixel, leaving the same planes.
+ */
+static void test_band_target_threshold(void)
+{
+    static BandPlanes runs[2];
+    GHashTable *threads[2];
+    SGIRasterRules rules = rules_supported;
+
+    sgi_raster_set_parallel(4, SGI_RASTER_PARALLEL_MIN_PIXELS);
+    for (unsigned run = 0; run < 2; run++) {
+        BandPlanes *b = &runs[run];
+        SGIRasterTarget t = {
+            .store_colour = band_store_colour,
+            .load_colour = band_load_colour,
+            .load_depth = band_load_depth,
+            .store_depth = band_store_depth,
+            .load_stencil = band_load_stencil,
+            .store_stencil = band_store_stencil,
+            .opaque = b,
+            .concurrent_pixels = true,
+            .band_min_pixels = run,
+        };
+        SGIRasterOp clear = {
+            .kind = SGI_RASTER_CLEAR, .ntargets = 1,
+            .x0 = 3, .y0 = 0, .x1 = 12, .y1 = 39,
+            .clip = { .n = 1, .r = { { 0, 0, W - 1, H - 1 } } },
+            .clear_buffers = SGI_GL_COLOR_BUFFER_BIT,
+            .clear_rgba = { 0.25, 0.5, 0.75, 1 },
+            .clear_colour_mask = SGI_GL_COLOUR_MASK_ALL,
+        };
+
+        memset(b, 0, sizeof(*b));
+        sgi_soft_raster(&rules, &t, &clear);
+        threads[run] = g_hash_table_new(NULL, NULL);
+        for (unsigned i = 0; i < W * H; i++) {
+            if (b->owner[i]) {
+                g_hash_table_add(threads[run], b->owner[i]);
+            }
+        }
+    }
+    sgi_raster_set_parallel(0, SGI_RASTER_PARALLEL_MIN_PIXELS);
+    g_assert(memcmp(&runs[0].p, &runs[1].p, sizeof(runs[0].p)) == 0);
+    g_assert_cmpuint(g_hash_table_size(threads[0]), ==, 1);
+    /* Forty rows are five eight-row runs: every one of four bands drew. */
+    g_assert_cmpuint(g_hash_table_size(threads[1]), ==, 4);
+    g_hash_table_destroy(threads[0]);
+    g_hash_table_destroy(threads[1]);
+}
+
 #ifdef SGI_GL_PROCESSORS_WRAP
 static unsigned processor_queries;
 
@@ -14380,6 +14433,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/triangle-coverage-exact",
                     test_triangle_coverage_exact);
     g_test_add_func("/sgi-gl/band-parallel-draw", test_band_parallel_draw);
+    g_test_add_func("/sgi-gl/band-target-threshold",
+                    test_band_target_threshold);
     g_test_add_func("/sgi-gl/band-choice-asks-no-host",
                     test_band_choice_asks_no_host);
     g_test_add_func("/sgi-gl/finish-is-a-fence", test_finish_is_a_fence);
