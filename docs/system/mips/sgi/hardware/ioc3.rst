@@ -66,6 +66,8 @@ level first. And the record follows the character the chip handed
 over, so a byte the backend later refuses and the hold bound later
 abandons is in the record and not on the wire -- which is the point.
 
+.. _sgi-ioc3-serial-dma:
+
 Serial DMA engines
 ==================
 
@@ -73,11 +75,12 @@ Each port has an engine moving characters between the port's 16550 and a
 pair of memory rings. The engine is shared with IOC4, which has the same
 per-port registers and ring format, and lives in
 ``hw/char/sgi-ioc-serial-dma.c``; the chip supplies the register window,
-its interrupt status bits and the UARTs. One base register places all
-four rings -- port A transmit, A receive, B transmit, B receive, in that
-order, each of the size the base register's low bit selects -- so a
-ring's address is derived from port and direction and is not readable
-back.
+its interrupt status bits and the UARTs. This section describes the
+engine for both chips; :ref:`sgi-ip53-ioc4` lists where IOC4 differs.
+One base register places all four rings -- port A transmit, A receive,
+B transmit, B receive, in that order, each of the size the base
+register's low bit selects -- so a ring's address is derived from port
+and direction and is not readable back.
 The chip-control register's port-offset fields are stored, not acted
 on: real silicon multiplexes the ports through them, and every guest
 programs the two offsets the model implements.
@@ -114,6 +117,22 @@ Transmit
     silicon's, if the part runs ahead that way; nothing observed settles
     which.
 
+    Outside loopback the 16550 core takes each character at once. A
+    port with no backend completes it, as a line with nothing attached
+    would; a backend that cannot take it holds the walk for at most two
+    seconds before the core gives the character up. That bound is the
+    core's approximation, not a hardware value.
+
+    In loopback a full receive ring does not stop the transmit walk.
+    The looped-back character the ring cannot take overruns the 16550,
+    as it would arriving off a line, and the overrun bit reaches the
+    status byte of the next character posted. Whether hardware flow
+    control changes this is not known. Characters arriving from the
+    backend while the port is in loopback are discarded on arrival and
+    logged as a guest error, because loopback disconnects the receiver
+    from the line; discarding at arrival rather than at the exact moment
+    the modem-control write lands is an approximation.
+
 Receive
     Characters pack four to an entry; the produce index reports the
     packer's held count so a driver can see the difference between a
@@ -138,7 +157,10 @@ Receive
     storms a guest whose service loop cannot clear it, which is
     exactly IRIX's ring-console behavior against a latching model.
     Transmit-ring-empty is a level too, set while ring DMA is on and
-    nothing is left to send.
+    nothing is left to send, and so is receive-ring-full, set while
+    ring DMA is on and an entry waits that the ring had no room for (a
+    model choice); a ring filled exactly with nothing waiting does not
+    raise it, and writes that acknowledge either are ignored.
 
 Two control-register bits are commands, not settings: the channel
 reset returns the four indices to the ring start while preserving

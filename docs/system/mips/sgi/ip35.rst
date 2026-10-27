@@ -465,6 +465,24 @@ The experiment profiles enable the existing serial-DMA option. The Origin
 66,666,667 Hz. These are software inputs, not claims about board straps or
 the complete IOC4 reset state.
 
+IOC4's serial ring DMA is the engine IOC3 uses, described once in
+:ref:`sgi-ioc3-serial-dma`. IOC4 differs from IOC3 in these ways:
+
+* Two ring-base pairs, one for ports 0 and 1 and one for ports 2 and 3,
+  where IOC3 has one.
+* The receive produce index does not report the packer's held count,
+  since IOC4's register definitions do not name that field.
+* A failed ring transfer halts the port until a channel reset, captures
+  the failing address and raises the port's error source in the other
+  interrupt register.
+* Enabling ring DMA over queued PIO data, disabling it with ring work
+  pending, changing an active pair's base and a PIO transmit while DMA
+  is on are logged as guest errors and then take effect; the 16550
+  orders PIO and DMA characters itself.
+* The serial idle bit in the ``SIO_CR`` register reads busy only while
+  the engine is inside a transfer, the rule IOC3's arbiter-idle bit
+  follows.
+
 The public serial-console contract covers byte-wide UART windows and the
 IOC4-local interrupt state used by the selected subset. ATA, keyboard and
 mouse, general-purpose pins, full byte-bus behavior, and board-level
