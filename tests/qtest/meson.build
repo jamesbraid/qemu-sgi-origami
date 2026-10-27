@@ -498,6 +498,9 @@ sn1_board_qtests = \
      'sn1-fuel-test', 'sn1-fuel-usb-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-pio-forward-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-fuel-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_TIGON') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
