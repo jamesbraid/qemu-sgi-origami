@@ -1537,16 +1537,95 @@ static bool sgi_machine_crossbar_host(const SGIModelTopology *t,
     return false;
 }
 
+/* An XBridge's link ports: Crosstalk 8, 9, C and D, Crosstown2 A and B. */
+#define SGI_MACHINE_XIO_LINK_FIRST 0x8
+#define SGI_MACHINE_XIO_LINK_LAST  0xd
+
+/*
+ * The presets a crossbar-to-board cable can join: XIO cards that build
+ * their own widget and take its link from sgi_machine_attach_xio_card().
+ * A graphics pipe is claimed after machine init, and the Origin 2000
+ * BaseIO cards bind the console's serial lines and flash, so neither is
+ * built at an enclosure crossbar port until a brick contract needs it.
+ */
+static bool sgi_machine_enclosure_board_preset(SGIModelIoBoardPreset preset)
+{
+    switch (preset) {
+    case SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER:
+    case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
+    case SGI_MODEL_IO_BOARD_PRESET_MENET:
+    case SGI_MODEL_IO_BOARD_PRESET_MSCSI:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * One cable from crossbar port @port_end to board @board_end: a link
+ * port, at most one cable per board, at the place the board's own
+ * attachment names, and a preset the cable loop can build.
+ */
+static bool sgi_machine_validate_board_cable(
+    const SGIModelTopology *t, const SGIModelXioCable *cable,
+    const SGIModelXioEnd *board_end, const SGIModelXioEnd *port_end,
+    const SGIModelCrossbar **crossbars,
+    const SGIModelXioAttachment **attachments, size_t attachment_count,
+    const SGIModelIoBoard **boards, bool *board_cabled, Error **errp)
+{
+    const SGIModelIoBoard *board = boards[board_end->index];
+    const SGIModelCrossbar *crossbar = crossbars[port_end->index];
+    const SGIModelXioAttachment *a = NULL;
+
+    if (port_end->port < SGI_MACHINE_XIO_LINK_FIRST ||
+        port_end->port > SGI_MACHINE_XIO_LINK_LAST) {
+        error_setg(errp, "topology '%s' XIO cable '%s' meets crossbar '%s' "
+                   "at port 0x%x; a board's cable meets a link port, 0x%x "
+                   "to 0x%x", t->name, cable->name, crossbar->id,
+                   port_end->port, SGI_MACHINE_XIO_LINK_FIRST,
+                   SGI_MACHINE_XIO_LINK_LAST);
+        return false;
+    }
+    if (board_cabled[board_end->index]) {
+        error_setg(errp, "topology '%s' I/O board '%s' carries more than one "
+                   "XIO cable", t->name, board->id);
+        return false;
+    }
+    board_cabled[board_end->index] = true;
+    if (board->has_attachment && board->attachment < attachment_count) {
+        a = attachments[board->attachment];
+    }
+    if (!a || a->crossbar_index != (int64_t)port_end->index ||
+        a->widget != port_end->port) {
+        error_setg(errp, "topology '%s' XIO cable '%s' meets I/O board '%s' "
+                   "at crossbar '%s' port 0x%x, but the board's XIO "
+                   "attachment is not there", t->name, cable->name,
+                   board->id, crossbar->id, port_end->port);
+        return false;
+    }
+    if (board->populated &&
+        !sgi_machine_enclosure_board_preset(board->preset)) {
+        error_setg(errp, "topology '%s' I/O board '%s' is cabled to crossbar "
+                   "'%s'; preset '%s' is not built on an enclosure crossbar "
+                   "yet", t->name, board->id, crossbar->id,
+                   SGIModelIoBoardPreset_str(board->preset));
+        return false;
+    }
+    return true;
+}
+
 /*
  * Check the XIO cables before any device exists. A cable joins an IP35
  * node's II to port A or B of an XBridge in another brick; that node
- * hosts the chip, and every attachment on the chip names it. Ranges and
- * end counts were checked with the runtime endpoints. The checks also
- * refuse what this builder cannot build honestly yet: a second host
- * node on one XBridge, since whether one chip serves hosts on A and B at
- * once is unknown; a host cabled to a router, which no Origin 3000 rule
- * covers; a crossbar port cabled to a board; and chained crossbars, for
- * which no contract gives the downstream chips' mode.
+ * hosts the chip, and every attachment on the chip names it. A cable
+ * from another of the chip's link ports reaches one XIO board, whose own
+ * attachment sits at that port. Ranges and end counts were checked with
+ * the runtime endpoints. The checks also refuse what this builder cannot
+ * build honestly yet: a second host node on one XBridge, since whether
+ * one chip serves hosts on A and B at once is unknown; a host cabled to
+ * a router, which no Origin 3000 rule covers; a board whose preset is
+ * not an XIO card this builder can join to a crossbar port; and chained
+ * crossbars, for which no contract gives the downstream chips' mode.
  */
 static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
                                             Error **errp)
@@ -1559,9 +1638,8 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
     g_autofree bool *port_cabled = NULL;
     g_autofree bool *chained = NULL;
     g_autofree int64_t *host = NULL;
+    g_autofree bool *board_cabled = NULL;
     const SGIModelXioCable *chain = NULL;
-    const SGIModelXioCable *to_board = NULL;
-    unsigned int board_index = 0;
     bool ip53 = false;
     const SGIModelXioCableList *entry;
     size_t node_count, crossbar_count, attachment_count, board_count, i;
@@ -1582,6 +1660,7 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
     node_cabled = g_new0(bool, MAX(node_count, 1));
     port_cabled = g_new0(bool, MAX(crossbar_count, 1) * SGI_XIO_WIDGETS);
     chained = g_new0(bool, MAX(crossbar_count, 1));
+    board_cabled = g_new0(bool, MAX(board_count, 1));
     host = g_new(int64_t, MAX(crossbar_count, 1));
     for (i = 0; i < MAX(crossbar_count, 1); i++) {
         host[i] = -1;
@@ -1674,10 +1753,13 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
             chained[ends[0]->index] = chained[ends[1]->index] = true;
         } else if (ends[0]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR ||
                    ends[1]->kind == SGI_MODEL_XIO_END_KIND_CROSSBAR) {
-            if (!to_board) {
-                to_board = cable;
-                board_index = ends[ends[0]->kind ==
-                                   SGI_MODEL_XIO_END_KIND_CROSSBAR]->index;
+            bool board_first = ends[0]->kind == SGI_MODEL_XIO_END_KIND_IO_BOARD;
+
+            if (!sgi_machine_validate_board_cable(
+                    t, cable, ends[!board_first], ends[board_first],
+                    crossbars, attachments, attachment_count, boards,
+                    board_cabled, errp)) {
+                return false;
             }
         } else {
             error_setg(errp, "topology '%s' XIO cable '%s' joins two I/O "
@@ -1740,6 +1822,23 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
             return false;
         }
     }
+    for (i = 0; !ip53 && i < board_count; i++) {
+        const SGIModelXioAttachment *a;
+
+        if (!boards[i]->has_attachment ||
+            boards[i]->attachment >= attachment_count || board_cabled[i]) {
+            continue;
+        }
+        a = attachments[boards[i]->attachment];
+        if (a->crossbar_index >= 0 && a->widget >= SGI_MACHINE_XIO_LINK_FIRST &&
+            a->widget <= SGI_MACHINE_XIO_LINK_LAST) {
+            error_setg(errp, "topology '%s' I/O board '%s' sits at crossbar "
+                       "'%s' port 0x%x, which no XIO cable reaches", t->name,
+                       boards[i]->id, crossbars[a->crossbar_index]->id,
+                       a->widget);
+            return false;
+        }
+    }
     for (i = 0; i < node_count; i++) {
         if (sgi_machine_node_is_ip35(nodes[i]) &&
             nodes[i]->has_option_intx_map) {
@@ -1790,12 +1889,6 @@ static bool sgi_machine_validate_xio_cables(const SGIModelTopology *t,
     if (chain) {
         error_setg(errp, "topology '%s' XIO cable '%s': no reviewed contract "
                    "for chained crossbars", t->name, chain->name);
-        return false;
-    }
-    if (to_board) {
-        error_setg(errp, "topology '%s' XIO cable '%s' to I/O board '%s' is "
-                   "not built yet", t->name, to_board->name,
-                   boards[board_index]->id);
         return false;
     }
     return true;
@@ -2704,7 +2797,8 @@ static char *sgi_machine_xio_board_name(const SGIModelTopology *t,
 /*
  * Parent a catalogue-built XIO board under the machine by its slot name,
  * give it that name as its qdev id, and place it at its module and
- * widget. The id also names the board's PCI bus, <id>.0.
+ * widget. The id also names the board's PCI bus, <id>.0. On an SN1
+ * machine the only such board is one cabled to an I/O brick's crossbar.
  */
 static void sgi_machine_add_xio_board(SGIMachineState *s, DeviceState *dev,
                                       const SGIModelIoBoard *record,
@@ -2712,8 +2806,13 @@ static void sgi_machine_add_xio_board(SGIMachineState *s, DeviceState *dev,
                                       const SGIModelXioAttachment *attachment)
 {
     const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree char *name = sgi_machine_xio_board_name(t, record,
-                                                       board_index);
+    /*
+     * A board cabled to an I/O brick's crossbar sits in no XIO slot the
+     * catalogue labels; it is known by its catalogue id instead.
+     */
+    g_autofree char *name = s->enclosure_xbridges ?
+        g_strdup(record->id) :
+        sgi_machine_xio_board_name(t, record, board_index);
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
     object_unref(OBJECT(dev));
@@ -3038,10 +3137,12 @@ static bool sgi_machine_attach_xio_card(
 {
     SGIXioLink *link = &s->board_links[board_index];
     g_autofree char *name = g_strdup_printf("io-board%u-link", board_index);
+    Object *crossbar = s->enclosure_xbridges ?
+        OBJECT(s->enclosure_xbridges[attachment->crossbar_index]) :
+        OBJECT(s->crossbars[attachment->crossbar_index]);
 
-    sgi_xio_link_init(link, OBJECT(s), name,
-                      OBJECT(s->crossbars[attachment->crossbar_index]),
-                      attachment->widget, OBJECT(dev), 0);
+    sgi_xio_link_init(link, OBJECT(s), name, crossbar, attachment->widget,
+                      OBJECT(dev), 0);
     sgi_machine_link_board_pi(s, OBJECT(dev), attachment->node_index);
     if (!sgi_xio_link_connect(link, errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(dev), errp) ||
@@ -3905,6 +4006,58 @@ static bool sgi_machine_create_enclosure_xbridges(SGIMachineState *s,
             return false;
         }
         s->enclosure_xbridges[i] = xbridge;
+    }
+    return true;
+}
+
+/* The XIO cable whose far end is board @board_index, or NULL. */
+static const SGIModelXioCable *sgi_machine_board_cable(
+    const SGIModelTopology *t, unsigned int board_index)
+{
+    const SGIModelXioCableList *entry;
+
+    for (entry = t->xio_cables; entry; entry = entry->next) {
+        const SGIModelXioEndList *end;
+
+        for (end = entry->value->ends; end; end = end->next) {
+            if (end->value->kind == SGI_MODEL_XIO_END_KIND_IO_BOARD &&
+                end->value->index == board_index) {
+                return entry->value;
+            }
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Join each board an XIO cable reaches from an I/O brick's crossbar port.
+ * Every node has realized, and with it each crossbar, so the cable
+ * becomes one XIO link from the crossbar port to the board, connected
+ * before and after the board realizes. Validation put the board's own
+ * attachment at that port, so the preset's builder places the board by
+ * it, and the hosting node's Bedrock already decodes that widget.
+ */
+static bool sgi_machine_build_board_cables(SGIMachineState *s,
+                                           const SGIModelTopology *t,
+                                           Error **errp)
+{
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t board_count, attachment_count, i;
+
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    for (i = 0; i < board_count; i++) {
+        if (!sgi_machine_board_cable(t, i)) {
+            continue;
+        }
+        g_assert(boards[i]->attachment < attachment_count);
+        if (!sgi_machine_instantiate_io_board(
+                s, t, boards[i], i, attachments[boards[i]->attachment],
+                errp)) {
+            return false;
+        }
     }
     return true;
 }
@@ -8432,7 +8585,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                  board_index++) {
                 const SGIModelIoBoard *record = io_boards[board_index];
 
-                if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IO9) {
+                if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IO9 ||
+                    sgi_machine_board_cable(t, board_index)) {
                     continue;
                 }
                 if (record->attachment >= attachment_count) {
@@ -8458,7 +8612,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 }
             }
         }
-        if (!sgi_machine_build_pic_io9(s, t, errp)) {
+        if (!sgi_machine_build_board_cables(s, t, errp) ||
+            !sgi_machine_build_pic_io9(s, t, errp)) {
             return false;
         }
         if (!sgi_machine_load_flash(machine, t, s, errp)) {

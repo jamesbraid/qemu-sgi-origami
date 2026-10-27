@@ -1236,33 +1236,44 @@ static void bedrock_test_install_unbuilt_record(const char *record)
  * claims; the XBridge record's revision is the one the device model
  * presents.
  */
-#define CBRICK_TEST_MAX_CABLES 4
+#define CBRICK_TEST_MAX_CABLES 8
+#define CBRICK_TEST_MAX_NODES 4
 
 static SGIModelL1Config cbrick_test_l1 = {
     .has_reported_type = true,
     .reported_type = 0x43,
     .revision = &bedrock_test_l1_revision,
 };
-static SGIModelController cbrick_test_controllers[2];
-static SGIModelNode cbrick_test_nodes[2];
-static unsigned int cbrick_test_module_nodes[2][1] = { { 0 }, { 1 } };
-static SGIModelModule cbrick_test_modules[4];
-static SGIModelCrossbar cbrick_test_crossbars[2];
-static SGIModelXioAttachment cbrick_test_xio[3];
-static SGIModelIoBoard cbrick_test_io_boards[2];
+static SGIModelController cbrick_test_controllers[CBRICK_TEST_MAX_NODES];
+static SGIModelNode cbrick_test_nodes[CBRICK_TEST_MAX_NODES];
+static unsigned int cbrick_test_module_nodes[CBRICK_TEST_MAX_NODES][1] = {
+    { 0 }, { 1 }, { 2 }, { 3 },
+};
+static SGIModelModule cbrick_test_modules[8];
+static SGIModelCrossbar cbrick_test_crossbars[4];
+static SGIModelXioAttachment cbrick_test_xio[8];
+static SGIModelIoBoard cbrick_test_io_boards[4];
 static SGIModelXioEnd cbrick_test_xio_ends[CBRICK_TEST_MAX_CABLES][2];
 static SGIModelXioEndList cbrick_test_xio_end_lists[CBRICK_TEST_MAX_CABLES][2];
 static SGIModelXioCable cbrick_test_xio_cables[CBRICK_TEST_MAX_CABLES];
 static SGIModelXioCableList cbrick_test_xio_cable_list[CBRICK_TEST_MAX_CABLES];
 static size_t cbrick_test_xio_cable_count;
-static SGIModelLinkEnd cbrick_test_numalink_ends[] = {
-    { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 0, .port = 0 },
-    { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 1, .port = 0 },
+/* NUMAlink pairs c0 with c1 and, in the four-node fixture, c2 with c3. */
+static SGIModelLinkEnd cbrick_test_numalink_ends[2][2] = {
+    {
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 0, .port = 0 },
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 1, .port = 0 },
+    },
+    {
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 2, .port = 0 },
+        { .kind = SGI_MODEL_LINK_END_KIND_NODE, .index = 3, .port = 0 },
+    },
 };
 static SGIModelCable cbrick_test_numalink[] = {
     { .name = (char *)"c0-c1-numalink", .kind = SGI_MODEL_CABLE_KIND_CABLE },
+    { .name = (char *)"c2-c3-numalink", .kind = SGI_MODEL_CABLE_KIND_CABLE },
 };
-static unsigned int cbrick_test_population_cpus[] = { 1, 1 };
+static unsigned int cbrick_test_population_cpus[] = { 1, 1, 1, 1 };
 static SGIModelCpuPopulation cbrick_test_population;
 
 static SGIModelXioEnd cbrick_node_end(unsigned int node)
@@ -1329,16 +1340,27 @@ static void cbrick_test_publish(size_t modules, size_t crossbars,
         io_board_list(cbrick_test_io_boards, boards) : NULL;
 }
 
-static void bedrock_test_install_cbrick_descriptor(uint8_t host_port)
+/*
+ * @count IP35 nodes c0..c<count-1>, each alone in its own C-brick module
+ * with its own L1, joined in pairs by NUMAlink, with no XIO yet.
+ */
+static void cbrick_test_install_nodes(unsigned int count)
 {
-    static const char *const node_ids[] = { "c0", "c1" };
-    static const char *const module_ids[] = { "cbrick-c0", "cbrick-c1" };
-    static const char *const l1_ids[] = { "l1-c0", "l1-c1" };
+    static const char *const node_ids[] = { "c0", "c1", "c2", "c3" };
+    static const char *const module_ids[] = {
+        "cbrick-c0", "cbrick-c1", "cbrick-c2", "cbrick-c3",
+    };
+    static const char *const l1_ids[] = { "l1-c0", "l1-c1", "l1-c2", "l1-c3" };
     SGIModelControllerList **tail;
 
-    for (unsigned int i = 0; i < 2; i++) {
-        cbrick_test_nodes[i] = bedrock_test_nodes[i];
+    g_assert(count == 2 || count == CBRICK_TEST_MAX_NODES);
+    bedrock_test_topology.controllers = NULL;
+    tail = &bedrock_test_topology.controllers;
+    for (unsigned int i = 0; i < count; i++) {
+        cbrick_test_nodes[i] = bedrock_test_nodes[MIN(i, 1)];
         cbrick_test_nodes[i].id = (char *)node_ids[i];
+        cbrick_test_nodes[i].module_index = i;
+        cbrick_test_nodes[i].slot = i;
         cbrick_test_nodes[i].has_board_kind = true;
         cbrick_test_nodes[i].board_kind = SGI_MODEL_BOARD_KIND_IP35;
         cbrick_test_controllers[i] = (SGIModelController) {
@@ -1349,7 +1371,32 @@ static void bedrock_test_install_cbrick_descriptor(uint8_t host_port)
             .id = (char *)module_ids[i], .controller_index = i,
             .nodes = uint32_list(cbrick_test_module_nodes[i], 1),
         };
+        QAPI_LIST_APPEND(tail, &cbrick_test_controllers[i]);
     }
+    for (SGIModelControllerList *entry = bedrock_test_topology.controllers;
+         entry; entry = entry->next) {
+        fixture_remember(entry);
+    }
+    bedrock_test_topology.nodes = node_list(cbrick_test_nodes, count);
+    bedrock_test_topology.cables = cable_list(cbrick_test_numalink, count / 2);
+    for (unsigned int i = 0; i < count / 2; i++) {
+        cbrick_test_numalink[i].ends = link_end_list(
+            cbrick_test_numalink_ends[i],
+            ARRAY_SIZE(cbrick_test_numalink_ends[i]));
+    }
+    cbrick_test_xio_cable_count = 0;
+    bedrock_test_topology.has_xio_cables = false;
+    bedrock_test_topology.xio_cables = NULL;
+    cbrick_test_population.cpus_per_node = uint32_list(
+        cbrick_test_population_cpus, count);
+    bedrock_test_topology.node_populations = whole_population(
+        &bedrock_test_topology,
+        cpu_population_list(&cbrick_test_population, 1));
+}
+
+static void bedrock_test_install_cbrick_descriptor(uint8_t host_port)
+{
+    cbrick_test_install_nodes(2);
     cbrick_test_modules[2] = (SGIModelModule) {
         .id = (char *)"ibrick", .controller_index = -1,
         .has_controller = true,
@@ -1365,27 +1412,9 @@ static void bedrock_test_install_cbrick_descriptor(uint8_t host_port)
     cbrick_test_xio[1] = (SGIModelXioAttachment) {
         .crossbar_index = 0, .widget = 15, .node_index = 0,
     };
-
-    bedrock_test_topology.nodes = node_list(cbrick_test_nodes, 2);
-    bedrock_test_topology.controllers = NULL;
-    tail = &bedrock_test_topology.controllers;
-    for (unsigned int i = 0; i < 2; i++) {
-        QAPI_LIST_APPEND(tail, &cbrick_test_controllers[i]);
-    }
-    fixture_remember(bedrock_test_topology.controllers);
-    fixture_remember(bedrock_test_topology.controllers->next);
     cbrick_test_publish(3, 1, 2, 0);
-    bedrock_test_topology.cables = cable_list(cbrick_test_numalink, 1);
-    cbrick_test_numalink[0].ends = link_end_list(
-        cbrick_test_numalink_ends, ARRAY_SIZE(cbrick_test_numalink_ends));
-    cbrick_test_xio_cable_count = 0;
     cbrick_test_add_xio_cable("c0-to-ibrick", cbrick_node_end(0),
                               cbrick_crossbar_end(0, host_port));
-    cbrick_test_population.cpus_per_node = uint32_list(
-        cbrick_test_population_cpus, ARRAY_SIZE(cbrick_test_population_cpus));
-    bedrock_test_topology.node_populations = whole_population(
-        &bedrock_test_topology,
-        cpu_population_list(&cbrick_test_population, 1));
 }
 
 /* The I-brick's IO7 on head F of the C-brick fixture's XBridge. */
@@ -1399,6 +1428,65 @@ static void bedrock_test_install_cbrick_io7(void)
         .has_ioc3_subsystem_id = true, .ioc3_subsystem_id = 0xffff,
     };
     cbrick_test_publish(3, 1, 2, 1);
+}
+
+static SGIModelXioEnd cbrick_board_end(unsigned int board)
+{
+    return (SGIModelXioEnd) {
+        .kind = SGI_MODEL_XIO_END_KIND_IO_BOARD, .index = board,
+    };
+}
+
+/*
+ * Fit board @board, an Origin 2000 PCI carrier XIO card standing in for
+ * any XIO board, in module @module, attached for @node at @port of
+ * crossbar @crossbar through attachment @attachment. The card is a
+ * fixture choice, not a claim that any brick takes one.
+ */
+static void cbrick_test_fit_board(unsigned int board, const char *id,
+                                  unsigned int module, unsigned int crossbar,
+                                  uint8_t port, unsigned int node,
+                                  unsigned int attachment)
+{
+    cbrick_test_xio[attachment] = (SGIModelXioAttachment) {
+        .crossbar_index = crossbar, .widget = port, .node_index = node,
+    };
+    cbrick_test_io_boards[board] = (SGIModelIoBoard) {
+        .id = (char *)id, .module_index = module, .populated = true,
+        .preset = SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER,
+        .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+        .has_attachment = true, .attachment = attachment,
+        .has_serial = true, .serial = 0x5c0000000001ULL + board,
+    };
+}
+
+/*
+ * The C-brick fixture with one XIO board cabled to a port of its
+ * crossbar: port 8, a Crosstalk port as an X-brick's slots use, with the
+ * crossbar's heads left unattached; or port B, the I-brick's free
+ * Crosstown2 port, with the board in a module of its own as a G-brick's
+ * pipe would be.
+ */
+static void bedrock_test_install_cbrick_board(uint8_t port)
+{
+    bedrock_test_install_cbrick_descriptor(0xa);
+    if (port == 8) {
+        cbrick_test_modules[2].id = (char *)"xbrick";
+        cbrick_test_crossbars[0].id = (char *)"xbrick-xbridge";
+        cbrick_test_fit_board(0, "xbrick-board", 2, 0, 8, 0, 0);
+        cbrick_test_publish(3, 1, 1, 1);
+    } else {
+        cbrick_test_modules[3] = (SGIModelModule) {
+            .id = (char *)"board-brick", .controller_index = -1,
+            .has_controller = true,
+            .controller = SGI_MODEL_MODULE_CONTROLLER_ABSENT,
+        };
+        cbrick_test_fit_board(0, "port-b-board", 3, 0, port, 0, 2);
+        cbrick_test_publish(4, 1, 3, 1);
+    }
+    cbrick_test_add_xio_cable("crossbar-to-board",
+                              cbrick_crossbar_end(0, port),
+                              cbrick_board_end(0));
 }
 
 /*
@@ -1439,24 +1527,23 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
         cbrick_test_add_xio_cable("first-to-second",
                                   cbrick_crossbar_end(0, 8),
                                   cbrick_crossbar_end(1, 0xa));
-    } else if (!strcmp(fault, "board-cable")) {
-        /* An unpopulated board record on port B: only its cable matters. */
-        cbrick_test_xio[2] = (SGIModelXioAttachment) {
-            .crossbar_index = 0, .widget = 11, .node_index = 0,
-        };
-        cbrick_test_io_boards[0] = (SGIModelIoBoard) {
-            .id = (char *)"port-b-board", .module_index = 2,
-            .preset = SGI_MODEL_IO_BOARD_PRESET_MENET,
-            .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
-            .has_attachment = true, .attachment = 2,
-        };
-        cbrick_test_publish(3, 1, 3, 1);
-        cbrick_test_add_xio_cable("port-b-to-board",
-                                  cbrick_crossbar_end(0, 0xb),
-                                  (SGIModelXioEnd) {
-                                      .kind = SGI_MODEL_XIO_END_KIND_IO_BOARD,
-                                      .index = 0,
-                                  });
+    } else if (!strcmp(fault, "board-cabled-twice")) {
+        bedrock_test_install_cbrick_board(8);
+        cbrick_test_add_xio_cable("crossbar-to-board-again",
+                                  cbrick_crossbar_end(0, 9),
+                                  cbrick_board_end(0));
+    } else if (!strcmp(fault, "board-attached-elsewhere")) {
+        bedrock_test_install_cbrick_board(8);
+        cbrick_test_xio[0].widget = 9;
+    } else if (!strcmp(fault, "board-on-head")) {
+        bedrock_test_install_cbrick_board(8);
+        cbrick_test_xio_ends[1][0].port = 0xe;
+    } else if (!strcmp(fault, "board-uncabled")) {
+        bedrock_test_install_cbrick_board(8);
+        cbrick_test_xio_cable_list[0].next = NULL;
+    } else if (!strcmp(fault, "board-preset-unbuilt")) {
+        bedrock_test_install_cbrick_board(8);
+        cbrick_test_io_boards[0].preset = SGI_MODEL_IO_BOARD_PRESET_ODYSSEY;
     } else if (!strcmp(fault, "onboard-xbridge-node")) {
         cbrick_test_nodes[0].has_board_kind = false;
     } else if (!strcmp(fault, "routed-host")) {
@@ -1464,8 +1551,8 @@ static bool bedrock_test_install_cbrick_fault(const char *fault)
          * No router record: the refusal names the cable before anything
          * looks the router up.
          */
-        cbrick_test_numalink_ends[1].kind = SGI_MODEL_LINK_END_KIND_ROUTER;
-        cbrick_test_numalink_ends[1].index = 0;
+        cbrick_test_numalink_ends[0][1].kind = SGI_MODEL_LINK_END_KIND_ROUTER;
+        cbrick_test_numalink_ends[0][1].index = 0;
     } else if (!strcmp(fault, "io8-on-host")) {
         cbrick_test_xio[2] = (SGIModelXioAttachment) {
             .crossbar_index = -1, .widget = 15, .node_index = 0,
@@ -1566,6 +1653,10 @@ static void bedrock_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "cbrick-io7")) {
         bedrock_test_install_cbrick_descriptor(0xa);
         bedrock_test_install_cbrick_io7();
+    } else if (!strcmp(value, "cbrick-board-port-8")) {
+        bedrock_test_install_cbrick_board(8);
+    } else if (!strcmp(value, "cbrick-board-port-b")) {
+        bedrock_test_install_cbrick_board(0xb);
     } else if (g_str_has_prefix(value, "cbrick-")) {
         if (!bedrock_test_install_cbrick_fault(value + strlen("cbrick-"))) {
             error_setg(errp, "unknown sn-builder-bedrock-test construction "
