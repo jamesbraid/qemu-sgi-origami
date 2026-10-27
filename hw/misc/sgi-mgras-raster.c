@@ -932,6 +932,24 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
 #define MGRAS_PP1FILLMODE_FORMAT_MASK 0x0700
 #define MGRAS_PP1FILLMODE_FORMAT_CI8 0x0500
 
+/*
+ * The logic op a paint applies: PP1FILLMODE bits 29:26 in the X11 GX
+ * encoding, except that with bit 25 set the paint replaces the
+ * destination (GXcopy) whatever those bits hold. The IP30 PROM's console
+ * paints its backdrop and its menu text under PP1FILLMODE 0x02006500,
+ * whose op bits read CLEAR: taken as CLEAR, nothing it draws would show.
+ * Inferred from that command stream alone; no X server capture sets bit
+ * 25, and what the bit does on its own is unknown.
+ */
+#define MGRAS_PP1FILLMODE_REPLACE (1u << 25)
+
+static uint8_t mgras_pp1_op(SGIMgrasState *s)
+{
+    uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
+
+    return pp1 & MGRAS_PP1FILLMODE_REPLACE ? 0x3 : pp1 >> 26;
+}
+
 static uint8_t mgras_pixel_format(SGIMgrasState *s)
 {
     uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
@@ -1185,7 +1203,7 @@ static void mgras_fill_clip_id(SGIMgrasState *s)
 static void mgras_draw_fill(SGIMgrasState *s)
 {
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     uint8_t format = mgras_pixel_format(s);
     uint32_t color;
 
@@ -1249,7 +1267,7 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     uint32_t ink = mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
         mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]));
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     uint64_t bits = ((uint64_t)s->rss[MGRAS_RSS_CHAR_H] << 32) |
                     s->rss[MGRAS_RSS_CHAR_L];
     bool overlay = mgras_overlay_target(s);
@@ -1428,7 +1446,7 @@ static void mgras_draw_byte_row(SGIMgrasState *s)
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     uint32_t packing = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
 
     if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
@@ -1486,7 +1504,7 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
         s->rss[MGRAS_RSS_BKGRD_BA] & 0x00ffffff,
     };
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     uint8_t format = mgras_pixel_format(s);
 
     /*
@@ -1633,7 +1651,7 @@ static void mgras_draw_point(SGIMgrasState *s)
     uint32_t color = mgras_format_color(format, s->rss[MGRAS_RSS_RED] >> 12,
         mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]));
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
 
     mgras_apply_window_origin(s, &x, &y);
@@ -1698,7 +1716,7 @@ static void mgras_draw_line(SGIMgrasState *s)
     uint32_t pattern = s->rss[MGRAS_RSS_LINE_STIPPLE];
     uint32_t background = mgras_stipple_background(s, format);
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t op = mgras_pp1_op(s);
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int dx, dy, sx, sy, err;
@@ -2667,7 +2685,7 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         .guest_bpp = bpp,
         .offset = mgras_raster_dma_src_offset(s),
     };
-    mgras_raster_dma_transfer(s, slot, &d, s->rss[MGRAS_RSS_PP1FILLMODE] >> 26,
+    mgras_raster_dma_transfer(s, slot, &d, mgras_pp1_op(s),
                               s->rss[MGRAS_RSS_COLORMASKLSBSA], false, 0, 0);
 }
 
