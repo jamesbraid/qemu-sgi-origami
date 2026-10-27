@@ -265,3 +265,161 @@ Emulator choices
   observed requests; no public document describes them beyond the user
   guides' operator-side commands (007-3938-006 printed pages 9-12, 19, 28,
   46-48, 63-64, 77-79, 100-103 and 110-111).
+
+.. _sgi-l1-origin3000:
+
+Origin 3000 C-brick and I-brick profiles
+========================================
+
+``brick-type=cbrick`` and ``brick-type=ibrick`` model the L1 of the Origin
+3000 compute brick and system I/O brick. Each brick has its own controller
+with its own rack, slot, type and records (007-4240-002 printed pages 69,
+72, 118 and 128). The profiles reuse this page's request encoding, framing
+and task-6 request codes, which the public Linux and OpenBSD headers name
+for the Origin 3000 products; that a fitted C-brick frames bytes the same
+way is *unknown*. No firmware version is modelled: ``revision-*`` and
+``brick-type-code`` are refused, and request ``0x0005`` stays unavailable.
+
+Ratings follow :ref:`sgi-ip30`; the choices below are approximations, not
+captured controller output.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 12 58
+
+   * - Fact
+     - Rating
+     - Basis
+   * - A brick is named rack, type letter and slot (``003c01``); a brick
+       with neither set shows ``---c--`` or ``---i--`` in ``config``.
+     - established
+     - 007-4240-002 printed pages 112-113.
+   * - ``brick rack``, ``brick slot`` and ``brick partition`` take effect
+       at the next L1 restart.
+     - established
+     - 007-3938-001 printed page 39.
+   * - ``0x0003`` answers the packed rack and bay and the letter ``C`` or
+       ``I``.
+     - inferred
+     - Linux v2.6.0 ``ksys/l1.h`` ``L1_BRICKTYPE_C`` and
+       ``L1_BRICKTYPE_I``. The C-brick letter is a candidate for the
+       module name only: which controller answers the I/O side's
+       identity request on a C-brick is unknown. The case of the I-brick
+       letter is the model's choice.
+   * - A C-brick's records: node board at component 0, two PIMMs at 1 and
+       2, DIMM ``n`` at ``3 + (n >> 1) + 4 * (n & 1)``.
+     - approximated
+     - OpenBSD ``l1.h``. Linux uses ``3 + n``; the only published
+       C-brick dump (007-3938-001 printed page 47) lists DIMMs in the
+       OpenBSD order, which is a print order, not a component index.
+   * - An I-brick's records: power board at 0, logic board at 1 with the
+       base I/O Ethernet address.
+     - inferred
+     - Linux ``ksys/l1.h`` and OpenBSD ``l1.h``.
+   * - Which attached-brick port each cable appears at in ``0x000c``,
+       ``0x000d`` and ``config``.
+     - unknown
+     - The guides number it differently by edition (007-3938-001 printed
+       page 41, 007-4240-002 printed pages 105-106), so ``io-port`` and
+       ``c-port`` configure it. An I-brick answers ``0x000c`` and
+       ``0x000d`` with the unknown-request code.
+
+What the model chooses, and the limit of each choice:
+
+- A brick with no rack and slot answers an identity request with the
+  router's error reply, because the integer a real one returns is unknown.
+  Rack and slot are supplied with ``named=on``, ``rack`` and ``bay``.
+- All records are synthetic and marked as such; the SPD records set only
+  the length, size and checksum bytes and a position marker. An unfitted
+  PIMM or DIMM (``pimm-mask``, ``dimm-mask``) has no record and answers
+  minus 104, where a real controller's wire form is unknown.
+- The C-to-C and C-to-I links are in-process calls and carry no wire
+  format, baud rate or detection. A C-brick has two links: ``peer`` for the
+  other C-brick and ``io-peer`` for its I-brick. Both are checked against the
+  two profiles: a C-brick pairs only with a C-brick, and ``io-peer`` joins a
+  C-brick to an I-brick. The check holds whether the link is given with the
+  device (it runs when the device realizes) or set afterwards (it runs when
+  the link is set). An I-brick takes one C-brick: the fitted system's cabling
+  of a second is unknown, so a second is refused with an error, and the first
+  link stays. After ``reboot_l1`` a brick answers no peer for one second of
+  virtual time.
+- ``power`` and ``reset`` on an I-brick act on that brick only; a C-brick
+  keeps the single-node power and reset behaviour above. ``*`` runs a
+  command on this brick, the other C-brick and the I-brick in turn, each
+  result headed by that brick's name. Which of two C-bricks is master is
+  not modelled.
+- ``select``, ``nmi``, ``softreset``, ``cpu``, ``pimm``, ``autopower``,
+  ``ctc``, ``cti``, ``debug``, ``leds``, ``junkbus`` and ``*`` are refused
+  on an I-brick, ``pci`` on a C-brick and ``router`` on both, with
+  ``INFO: command not supported on this brick type``; other commands the
+  guide lists but this model does not run are reported as unimplemented.
+  The refusal text and the ``config`` line format are the model's choices.
+
+The exact text and layout of each reply below are the model's own, whether
+or not a manual prints a similar form. All are approximations. A console
+ends each line with CR LF. A reply to a command interpreter request (task 3)
+carries each line as its own field with no line ending; a line the model
+ends with LF, as the Origin 300 profile's text does, keeps that LF inside
+its field. The Origin 3000 refusals and the ``no response`` line below are
+written CR LF-ended, so on a console, or relayed, they do not run into the
+next brick's name line, and on task 3 they arrive as separate fields.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 36 30
+
+   * - Choice
+     - Limit
+     - Printed forms
+   * - ``config`` prints ``N: name`` per brick, ``N`` being 0 for this brick
+       and then the cable's port, in ascending order. It lists only bricks
+       on this brick's own links.
+     - A C-brick with no I-brick of its own omits the other C-brick's I/O
+       brick, which the guides imply is listed. The port set is the
+       configured one.
+     - ``:0 - 003c01`` style lines (007-3938-006 printed page 25); the
+       model's spacing, punctuation and order match none of them.
+   * - ``*``, ``ctc`` and ``cti`` print the target's name and a colon on its
+       own line, then its output. ``*`` runs on this brick, the other
+       C-brick and the I-brick, in that order, and prints a block only for
+       a brick that is cabled.
+     - The order is the model's: the guides print two different orders
+       (007-3938-001 printed pages 17-18; 007-3938-006 printed page 27).
+       ``*`` does not reach the other C-brick's I-brick, which the guides
+       imply it should. ``ctci`` is not implemented: it is reported as an
+       unknown command and nothing runs. The other C-brick runs the plain
+       command itself, so a ``*`` ``power`` or ``reset`` acts through that
+       brick's own handling and may request the machine action again; the
+       model does not propagate between bricks, and the sender's own part
+       of ``* power down`` skips the two-step first request that a plain
+       ``power down`` gives.
+     - Name, then output (007-3938-006 printed page 27).
+   * - An attached brick with no rack and slot is absent in ``0x000c`` and
+       ``0x000d`` and shown as ``---i--`` or ``---c--`` in ``config``.
+     - What a controller returns for an unnamed attached brick is not
+       published.
+     - ``config`` shows the unnamed brick (007-4240-002 printed pages
+       112-113).
+   * - The partition is limited to 16 bits, as a property, by ``brick
+       partition`` and by the request that sets it.
+     - The manuals name no width; this is the width of the stored value.
+     - None.
+   * - ``cti`` with no I-brick prints ``INFO: no I/O brick is attached.``
+       and fails.
+     - The text is the model's.
+     - None.
+   * - A ``cti``, ``ctc`` or ``*`` run on a brick that was itself reached by
+       a relay is refused: ``INFO: nested cti is unsupported.``, ``INFO:
+       nested ctc is unsupported.`` or ``INFO: nested * is unsupported.``.
+       A ``*`` that names another ``*`` is refused the same way. Nothing
+       runs, and the relay depth is one.
+     - Whether a real L1 relays a command back through its peer is not
+       published. Without the bound, each extra ``*`` doubled the work. The
+       refusals carry no brick-name prefix, where the guide prints one for
+       a remote reply (007-3938-001 printed page 18).
+     - None.
+   * - A relay to a restarting brick prints its name, then ``no response``.
+     - The interval is one second of virtual time, chosen by the model;
+       the layout and words differ from the printed form.
+     - ``003c01 ERROR: no response from ---i--`` answers the restart
+       command itself (007-3938-001 printed page 24).
