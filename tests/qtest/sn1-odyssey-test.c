@@ -5918,10 +5918,13 @@ static void window_300_200(QTestState *qts)
 /*
  * A clear of the 200x150 window is large enough to draw in bands of rows,
  * and the GL target lets it: the clear starts the rasterizer's band
- * workers and still fills exactly the window.
+ * workers, colours every pixel of the window, including the rows on each
+ * side of every band boundary, and leaves the one-pixel frame around it.
  */
 static void test_gl_large_clear_draws_in_bands(void)
 {
+    enum { X = 299, Y = 199, W = 202, H = 152 };
+    g_autofree uint32_t *got = g_new(uint32_t, W * H);
     QTestState *qts = board_start("");
     int workers;
 
@@ -5929,10 +5932,15 @@ static void test_gl_large_clear_draws_in_bands(void)
     g_assert_cmpint(sgi_raster_band_workers(qts), <=, 0);
     push_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_200,
                ODSY_F_150);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 200), ==, ODSY_PLANE_BLUE);
-    g_assert_cmphex(odsy_test_pixel(qts, 499, 349), ==, ODSY_PLANE_BLUE);
-    g_assert_cmphex(odsy_test_pixel(qts, 299, 200), ==, 0);
-    g_assert_cmphex(odsy_test_pixel(qts, 499, 350), ==, 0);
+    odsy_test_pixels(qts, X, Y, W, H, got);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            bool inside = x > 0 && x < W - 1 && y > 0 && y < H - 1;
+
+            g_assert_cmphex(got[y * W + x], ==,
+                            inside ? ODSY_PLANE_BLUE : 0);
+        }
+    }
     workers = sgi_raster_band_workers(qts);
     board_quit(qts);
     if (workers < 0) {
