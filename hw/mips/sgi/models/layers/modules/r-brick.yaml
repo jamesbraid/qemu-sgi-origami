@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3000 R-brick: an eight-port SN1 router, one port cabled to a C-brick.
+# Origin 3000 R-brick: one eight-port SN1 router with its L1 and USB hub.
+# A composition cables a port by attaching its far end to port-<n>-cable.
 layer_version: 1
 layer:
   kind: module
@@ -9,39 +10,84 @@ layer:
     components:
       - id: brick
         name: R-brick
-        kind: chassis
-        provenance: derived
+        kind: module
+        provenance: vendor-document
+        sources: ["007-4240-002 printed pages 191 to 194 and 007-4311-002 printed page 36: one router ASIC with eight NUMAlink 3 ports, an L1 controller, a USB hub, a power board and two fans; no processors, memory or I/O"]
+        notes: >-
+          The L1 brick-type character is not set: no reviewed L1 contract
+          gives the R-brick's. The rear L1 PORT, which carries the USB hub's
+          upstream link to the rack's L2, the two fans and the power board's
+          +48 Vdc domain are not modelled.
       - id: router
-        name: SN1 Router
+        name: SN1 router
         kind: router-asic
         hardware_kind: router
-        router_asic: {port_count: 8, role: router}
+        router_asic:
+          port_count: 8
+          role: router
+          node_ports: [2, 3, 4, 5]
+        identity: {part: "0x3017", hardware_revision: 1, chip_inputs: 0}
         provenance: derived
         parent: brick
-        notes: 3400 R-bricks disable ports 7 and 8; not modeled as a distinct variant here.
-      - {id: port-1, name: "Port 1 (chip A)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip A, occupancy: opaque, notes: Router-to-router normally.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-3, name: "Port 3 (chip C)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip C, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-4, name: "Port 4 (chip D)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip D, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-5, name: "Port 5 (chip E)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip E, occupancy: opaque, notes: C-brick port range (2-5).}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-6, name: "Port 6 (chip F)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip F, occupancy: opaque, notes: Router-to-router normally.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-7, name: "Port 7 (chip G)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip G, occupancy: opaque, notes: Router-to-router normally; disabled on a 3400 R-brick.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-8, name: "Port 8 (chip H)", kind: connector, provenance: vendor-document, parent: router, connector: {interface: NUMAlink 3, location: chip H, occupancy: opaque, notes: Router-to-router normally; disabled on a 3400 R-brick.}, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+        sources: ["007-4311-002 printed pages 36 and 37: eight ports, and a C-brick connects only to port 2, 3, 4 or 5, since only those carry the USB signals that reach its L1", "007-4240-002 printed page 196: the C-bricks are cabled only to ports 2, 3, 4 and 5", "linux-history:381ab1f538162eb985c9244aa7d56e54315881ab include/asm-ia64/sn/sn1/bedrock.h lines 19-20: router chip identity 0x3017"]
+        notes: >-
+          The part number is the public SN1 router family's; that it is the
+          R-brick's fitted ASIC is inferred from the family and the shared
+          software-reported router Revision 1, not measured. Zero chip inputs
+          are an emulator configuration policy. Router-to-router links may
+          use any port, the C-brick ports included, so only nodes are bound
+          to ports 2 to 5.
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        parent: brick
+        sources: ["007-4240-002 printed page 194: the R-brick's L1 monitors temperature, voltage margins and LEDs, reads serial EEPROMs and drives the front display", "007-4240-002 printed page 234: only L1 index 0, the local brick, is valid for an R-brick"]
+        notes: >-
+          The R-brick L1's request set, router-type setting and serial-number
+          checks have no reviewed contract.
+      - id: usb-hub
+        name: Router-board USB hub
+        kind: bus-controller
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 printed page 2-42 and 007-4240-002 printed page 73: a six-port hub: one port to the R-brick's own L1, four through the cables on ports 2 to 5 to the attached C-bricks' L1s, one to the L2"]
+        notes: >-
+          Management only. It is not a data path, and the L2 it serves is
+          not modelled.
+      - {id: port-1, name: "Port 1 (A)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 1, occupancy: opaque, notes: "R-brick to R-brick; carries no USB."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H; ports 1, 6, 7 and 8 carry no USB and join R-bricks"]}
+      - {id: port-2, name: "Port 2 (B)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 2, occupancy: opaque, notes: "A C-brick, or an R-brick, whose cable then ignores the USB signals."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed pages 36 and 37: ports 2 to 5 lettered B to E carry USB and take C-bricks; an R-brick link on one ignores the USB"]}
+      - {id: port-3, name: "Port 3 (C)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 3, occupancy: opaque, notes: "A C-brick, or an R-brick, whose cable then ignores the USB signals."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed pages 36 and 37: ports 2 to 5 lettered B to E carry USB and take C-bricks; an R-brick link on one ignores the USB"]}
+      - {id: port-4, name: "Port 4 (D)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 4, occupancy: opaque, notes: "A C-brick, or an R-brick, whose cable then ignores the USB signals."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed pages 36 and 37: ports 2 to 5 lettered B to E carry USB and take C-bricks; an R-brick link on one ignores the USB"]}
+      - {id: port-5, name: "Port 5 (E)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 5, occupancy: opaque, notes: "A C-brick, or an R-brick, whose cable then ignores the USB signals."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed pages 36 and 37: ports 2 to 5 lettered B to E carry USB and take C-bricks; an R-brick link on one ignores the USB"]}
+      - {id: port-6, name: "Port 6 (F)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 6, occupancy: opaque, notes: "R-brick to R-brick; carries no USB."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H; ports 1, 6, 7 and 8 carry no USB and join R-bricks"]}
+      - {id: port-7, name: "Port 7 (G)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 7, occupancy: opaque, notes: "R-brick to R-brick; carries no USB."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H; ports 1, 6, 7 and 8 carry no USB and join R-bricks"]}
+      - {id: port-8, name: "Port 8 (H)", kind: connector, provenance: vendor-document, parent: brick, connector: {interface: NUMAlink 3, location: rear panel port 8, occupancy: opaque, notes: "R-brick to R-brick; carries no USB."}, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H; ports 1, 6, 7 and 8 carry no USB and join R-bricks"]}
     buses:
-      - {id: port-1-link, name: Router to port 1, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-3-link, name: Router to port 3, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-4-link, name: Router to port 4, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-5-link, name: Router to port 5, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-6-link, name: Router to port 6, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-7-link, name: Router to port 7, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {id: port-8-link, name: Router to port 8, kind: fabric, master: router, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {id: port-1-cable, name: NUMAlink 3 cable at port 1, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-2-cable, name: NUMAlink 3 cable at port 2, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-3-cable, name: NUMAlink 3 cable at port 3, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-4-cable, name: NUMAlink 3 cable at port 4, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-5-cable, name: NUMAlink 3 cable at port 5, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-6-cable, name: NUMAlink 3 cable at port 6, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-7-cable, name: NUMAlink 3 cable at port 7, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
+      - {id: port-8-cable, name: NUMAlink 3 cable at port 8, kind: fabric, master: router, link: {kind: cable}, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"], notes: "The cable a composition fits here; one fitted to nothing joins no link."}
     connections:
-      - {component: port-1, bus: port-1-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-3, bus: port-3-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-4, bus: port-4-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-5, bus: port-5-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-6, bus: port-6-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-7, bus: port-7-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      - {component: port-8, bus: port-8-link, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
-      # c-brick-cable is the NUMAlink 3 cable to a C-brick, which the
-      # composition declares and binds with bus_bindings.
-      - {component: router, bus: c-brick-cable, role: endpoint, provenance: vendor-document, sources: ["007-4311-002 p.36-37: ports 1-8 are chip A-H; C-bricks must use 2-5; router to router normally 1, 6, 7, 8 but not restricted; 3400 R-bricks disable 7 and 8; 108-0266-001 p.40-41"]}
+      - {component: router, bus: port-1-cable, role: master, fabric_port: 1, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-1, bus: port-1-cable, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-2-cable, role: master, fabric_port: 2, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-2, bus: port-2-cable, role: endpoint, fabric_port: 2, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-3-cable, role: master, fabric_port: 3, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-3, bus: port-3-cable, role: endpoint, fabric_port: 3, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-4-cable, role: master, fabric_port: 4, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-4, bus: port-4-cable, role: endpoint, fabric_port: 4, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-5-cable, role: master, fabric_port: 5, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-5, bus: port-5-cable, role: endpoint, fabric_port: 5, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-6-cable, role: master, fabric_port: 6, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-6, bus: port-6-cable, role: endpoint, fabric_port: 6, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-7-cable, role: master, fabric_port: 7, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-7, bus: port-7-cable, role: endpoint, fabric_port: 7, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: router, bus: port-8-cable, role: master, fabric_port: 8, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
+      - {component: port-8, bus: port-8-cable, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: ["007-4240-002 printed pages 194 to 197 and 007-4311-002 printed page 37: ports 1 to 8 lettered A to H, each a 100-pin NUMAlink 3 connector"]}
