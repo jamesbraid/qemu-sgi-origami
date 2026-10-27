@@ -1820,6 +1820,105 @@ static void test_option_intx_migration(void)
     g_rmdir(dir);
 }
 
+/*
+ * Every processor of both nodes starts at its reset vector at once, each on
+ * its own vCPU thread, and so each first fetches through its node's reset
+ * router together with its sibling. TCG adds a processor's notifier to a
+ * router on its first fill there, without the BQL, so the machine adds them
+ * all before any vCPU runs; the router refuses one added later, which ends
+ * the run before a processor can publish. Each processor publishes its
+ * slice into its own real-time compare register through the local form,
+ * which resolves to the requester's own processor interface.
+ */
+#define START_PI_RT_COMPARE_A UINT64_C(0x108)
+#define START_PI1 UINT64_C(0x200000)
+#define START_MARK_BASE 0xa0
+
+static char *create_start_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    stl_be_p(image + 0x004, 0x00000000); /* nop */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
+    }
+    stl_be_p(image + 0x400, 0x400c6000); /* mfc0 t4, Status */
+    stl_be_p(image + 0x404, 0x358c0080); /* ori t4, t4, Status.KX */
+    stl_be_p(image + 0x408, 0x408c6000); /* mtc0 t4, Status */
+    stl_be_p(image + 0x40c, 0x00000000); /* nop */
+    stl_be_p(image + 0x410, 0x3c089200); /* lui t0, 0x9200 */
+    stl_be_p(image + 0x414, 0x0008403c); /* dsll32 t0, t0, 0 */
+    stl_be_p(image + 0x418, 0x3c090100); /* lui t1, 0x0100 */
+    stl_be_p(image + 0x41c, 0x01094025); /* or t0, t0, t1 */
+    stl_be_p(image + 0x420, 0xdd0a0020); /* ld t2, 0x20(t0) -- CPU number */
+    stl_be_p(image + 0x424, 0x314a0003); /* andi t2, t2, 3 -- the slice */
+    stl_be_p(image + 0x428, 0x354b00a0); /* ori t3, t2, START_MARK_BASE */
+    stl_be_p(image + 0x42c, 0x314c0001); /* andi t4, t2, 1 -- slot in PI */
+    stl_be_p(image + 0x430, 0x000c60f8); /* dsll t4, t4, 3 -- compare stride */
+    stl_be_p(image + 0x434, 0x010c602d); /* daddu t4, t0, t4 */
+    stl_be_p(image + 0x438, 0xfd8b0108); /* sd t3, 0x108(t4) -- own compare */
+    stl_be_p(image + 0x43c, 0x00000000); /* nop */
+    stl_be_p(image + 0x440, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x444, 0x00000000); /* nop */
+
+    fd = g_file_open_tmp("sn1-cross-node-start-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_every_processor_starts_through_its_router(void)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+    SgiWait w;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_start_prom();
+    quoted = g_shell_quote(prom);
+    qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
+                      "-no-shutdown -S", quoted);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    /* Processors 0 and 2 read their own node's registers. */
+    for (unsigned int node = 0; node < 2; node++) {
+        unsigned int reader = node * 2;
+        unsigned int published = 0;
+
+        sgi_wait_start(&w, "node %u's processors' marks", node);
+        for (;;) {
+            published = 0;
+            for (unsigned int slice = 0; slice < 4; slice++) {
+                uint64_t address = BEDROCK_LOCAL + START_PI_RT_COMPARE_A +
+                                   (slice >> 1) * START_PI1 + (slice & 1) * 8;
+                uint64_t value = cpu_read_ok(qts, reader, address);
+
+                if (value) {
+                    g_assert_cmphex(value, ==, START_MARK_BASE | slice);
+                    published++;
+                }
+            }
+            if (published == 2) {
+                break;
+            }
+            sgi_wait_pause(&w, 10000);
+        }
+        g_assert_cmpuint(published, ==, 2);
+    }
+
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1869,6 +1968,8 @@ int main(int argc, char **argv)
                         test_bte_memory_route);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
                    test_bte_data_goes_by_number);
+    qtest_add_func("sn1/cross-node/every-processor-starts-through-its-router",
+                   test_every_processor_starts_through_its_router);
     if (qtest_has_device("sgi-compute-option-intx-fixture")) {
         qtest_add_data_func("sn1/option-intx/selected-pins",
                             GINT_TO_POINTER(1), test_option_intx_pins);

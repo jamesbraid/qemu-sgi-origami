@@ -25,12 +25,16 @@
 #include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/rcu.h"
 #include "qapi/error.h"
 #include "block/block-global-state.h"
 #include "block/block-io.h"
 #include "qobject/qdict.h"
 #include "chardev/char.h"
+#include "accel/tcg/iommu.h"
+#include "exec/page-protection.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
@@ -52,6 +56,7 @@
 #include "system/reset.h"
 #include "system/runstate.h"
 #include "system/system.h"
+#include "system/tcg.h"
 #include "cpu.h"
 #include "cpu-qom.h"
 #include "sn1-node.h"
@@ -1041,6 +1046,31 @@ static int sn1_reset_num_indexes(IOMMUMemoryRegion *iommu)
     return SN1_RESET_INDEXES;
 }
 
+/* A reference sn1_reset_attrs_to_index() sends to @index. */
+static MemTxAttrs sn1_reset_index_attrs(int index)
+{
+    return (MemTxAttrs) { .mips_cca = index == SN1_RESET_PROM ? 3 : 5 };
+}
+
+/*
+ * TCG adds a vCPU's notifier to the router the first time that vCPU fills a
+ * TLB entry through it, from the vCPU thread and without the BQL, so two
+ * first fills at once corrupt the shared list. sn1_register_reset_notifiers()
+ * adds every one before any vCPU runs; a later first registration means one
+ * was missed.
+ */
+static int sn1_reset_notify_flag_changed(IOMMUMemoryRegion *iommu,
+                                         IOMMUNotifierFlag old,
+                                         IOMMUNotifierFlag new, Error **errp)
+{
+    if (!bql_locked()) {
+        error_setg(errp, "%s: notifier registered by a running vCPU",
+                   memory_region_name(MEMORY_REGION(iommu)));
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static IOMMUTLBEntry sn1_reset_translate(IOMMUMemoryRegion *iommu,
                                          hwaddr addr, IOMMUAccessFlags flags,
                                          int index)
@@ -1131,6 +1161,110 @@ static void sn1_reset_router_class_init(ObjectClass *klass, const void *data)
     imrc->attrs_to_index = sn1_reset_attrs_to_index;
     imrc->num_indexes = sn1_reset_num_indexes;
     imrc->translate = sn1_reset_translate;
+    imrc->notify_flag_changed = sn1_reset_notify_flag_changed;
+}
+
+/*
+ * Where each router is mapped for the moment registration takes: above any
+ * physical address a processor can issue, so nothing there is displaced.
+ */
+#define SN1_RESET_PROBE_BASE (UINT64_C(1) << 60)
+#define SN1_RESET_PROBE_STRIDE (UINT64_C(1) << 36)
+
+/*
+ * Give every processor its notifier on every node's reset router, under the
+ * BQL and before any vCPU runs, so that TCG's later fills find them present
+ * and never write the router's notifier list (sn1_reset_notify_flag_changed).
+ * A processor can reach a router other than its own node's through a claim on
+ * another node's space once the PROM numbers the nodes, so registering at the
+ * local reset window alone would not cover it. The only interface that
+ * registers is a TLB fill, which needs the router in the processor's view:
+ * each router is mapped into the system space at a probe address, filled once
+ * per index from each address space of each processor, and unmapped again.
+ * The fills write no TLB entry.
+ */
+void sn1_register_reset_notifiers(SN1NodeState *const *nodes,
+                                  unsigned int count)
+{
+    unsigned int expected = 0;
+    unsigned int i;
+    CPUState *cs;
+
+    if (!tcg_enabled()) {
+        return;
+    }
+    CPU_FOREACH(cs) {
+        expected += SN1_RESET_INDEXES;
+    }
+
+    memory_region_transaction_begin();
+    for (i = 0; i < count; i++) {
+        SN1NodeState *node = nodes[i];
+        MemoryRegion *router = MEMORY_REGION(&node->reset_router);
+
+        if (!node->reset_router_ready) {
+            continue;
+        }
+        memory_region_init_alias(&node->reset_probe, OBJECT(node),
+                                 "sn1.reset-router.probe", router, 0,
+                                 memory_region_size(router));
+        memory_region_add_subregion(get_system_memory(),
+                                    SN1_RESET_PROBE_BASE +
+                                    i * SN1_RESET_PROBE_STRIDE,
+                                    &node->reset_probe);
+    }
+    memory_region_transaction_commit();
+
+    for (i = 0; i < count; i++) {
+        SN1NodeState *node = nodes[i];
+        unsigned int registered = 0;
+        IOMMUNotifier *n;
+
+        if (!node->reset_router_ready) {
+            continue;
+        }
+        CPU_FOREACH(cs) {
+            for (int asidx = 0; asidx <= cs->cc->max_as; asidx++) {
+                if (!cpu_get_address_space(cs, asidx)) {
+                    continue;
+                }
+                for (int index = 0; index < SN1_RESET_INDEXES; index++) {
+                    MemTxAttrs attrs = sn1_reset_index_attrs(index);
+                    int prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
+                    hwaddr xlat, plen = 1;
+
+                    g_assert(sn1_reset_attrs_to_index(&node->reset_router,
+                                                      attrs) == index);
+                    WITH_RCU_READ_LOCK_GUARD() {
+                        address_space_translate_for_iotlb(cs, asidx,
+                            SN1_RESET_PROBE_BASE + i * SN1_RESET_PROBE_STRIDE,
+                            &xlat, &plen, attrs, &prot);
+                    }
+                }
+            }
+        }
+        IOMMU_NOTIFIER_FOREACH(n, &node->reset_router) {
+            registered++;
+        }
+        /* One per processor and index, however many views reached it. */
+        if (registered != expected) {
+            error_report("%s: %u reset router notifiers registered, "
+                         "expected %u",
+                         memory_region_name(MEMORY_REGION(&node->reset_router)),
+                         registered, expected);
+            exit(1);
+        }
+    }
+
+    memory_region_transaction_begin();
+    for (i = 0; i < count; i++) {
+        if (nodes[i]->reset_router_ready) {
+            memory_region_del_subregion(get_system_memory(),
+                                        &nodes[i]->reset_probe);
+            object_unparent(OBJECT(&nodes[i]->reset_probe));
+        }
+    }
+    memory_region_transaction_commit();
 }
 
 static const char * const sn1_prom_view_names[] = {
