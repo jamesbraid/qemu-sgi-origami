@@ -125,11 +125,23 @@
     {
       "id": "ibrick-io7-bus",
       "kind": "pci",
-      "master": "ibrick-xbridge",
+      "master": "ibrick-xbridge-bridge-f",
       "name": "IO7, bus 1 (head F)",
       "provenance": "vendor-document",
       "sources": [
         "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "id": "ibrick-heads-xio",
+      "kind": "xio",
+      "master": "ibrick-xbridge-crossbar",
+      "name": "XBridge crossbar to its PCI heads",
+      "notes": "The crossbar's internal ports E (14) and F (15), one PCI head each.",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
       ]
     },
     {
@@ -198,6 +210,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -227,6 +240,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -256,6 +270,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -285,6 +300,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -317,6 +333,26 @@
       "sources": [
         "108-0240-002 printed pages 2-5 and 2-6: banks 2n and 2n+1 reside on DIMM pair n, the DIMMs of a pair match, eight 512 MB banks give 4 GB"
       ]
+    },
+    {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The C-brick's L1, on the IP35 motherboard: it serves the console, reads the brick's identity parts and reaches the I/O brick's L1 over the XIO cable and the other C-brick's over the NUMAlink cable.",
+      "hardware_kind": "l1",
+      "id": "c0-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "c0-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 115 to 116 and 121 to 125: the L1 on the IP35 motherboard, its console and its links to the I/O brick and the other C-brick",
+        "108-0240-002 printed page 2-47: RS-422 L1 links over the NUMAlink and Crosstown2 cables"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
     },
     {
       "connector": {
@@ -378,6 +414,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -407,6 +444,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -436,6 +474,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -465,6 +504,7 @@
         "cache_clock_mhz": 266,
         "cache_mib": 8,
         "clock_mhz": 400,
+        "fpu_identification": "0x0935",
         "processor_identification": "0x0e35",
         "variants": [
           {
@@ -499,6 +539,26 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The C-brick's L1, on the IP35 motherboard: it serves the console, reads the brick's identity parts and reaches the I/O brick's L1 over the XIO cable and the other C-brick's over the NUMAlink cable.",
+      "hardware_kind": "l1",
+      "id": "c1-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "c1-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 115 to 116 and 121 to 125: the L1 on the IP35 motherboard, its console and its links to the I/O brick and the other C-brick",
+        "108-0240-002 printed page 2-47: RS-422 L1 links over the NUMAlink and Crosstown2 cables"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
       "connector": {
         "interface": "Crosstown2",
         "location": "rear panel",
@@ -528,6 +588,25 @@
       ]
     },
     {
+      "datasheet_contracts": [
+        "qemu:docs/system/mips/sgi/hardware/l1.rst"
+      ],
+      "description": "The I-brick's L1, on its power board. It knows only the C-brick its XIO cable joins, and that C-brick's L1 reaches it over the same cable.",
+      "hardware_kind": "l1",
+      "id": "ibrick-l1",
+      "kind": "system-controller",
+      "name": "L1 system controller",
+      "parent": "ibrick-brick",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4240-002 printed pages 105 to 106, 121 to 122 and 127 to 131: the I-brick L1, the C-brick L1 reaching it over the XIO connection, and an I-brick L1 knowing only its attached C-brick"
+      ],
+      "system_controller": {
+        "kind": "l1"
+      }
+    },
+    {
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge",
       "kind": "pci-host-bridge",
@@ -549,6 +628,10 @@
       },
       "hardware_kind": "xbridge",
       "id": "ibrick-xbridge-crossbar",
+      "identity": {
+        "notes": "The revision the QEMU XBridge model presents. The I-brick's fitted XBridge revision is unknown; a widget scan or verbose PROM boot of a real I-brick would settle it.",
+        "widget_revision": 2
+      },
       "kind": "crossbar",
       "name": "XBridge crossbar section",
       "parent": "ibrick-xbridge",
@@ -556,6 +639,32 @@
       "regions": [],
       "sources": [
         "108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 14, bus 2, with the I-brick's PCI slots.",
+      "id": "ibrick-xbridge-bridge-e",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xe",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
+      "description": "The PCI head behind widget 15, bus 1, with the IO7 and the Fibre Channel card.",
+      "id": "ibrick-xbridge-bridge-f",
+      "kind": "subfunction",
+      "name": "XBridge bridge at port 0xf",
+      "parent": "ibrick-xbridge",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
       ]
     },
     {
@@ -625,6 +734,32 @@
       "regions": [],
       "sources": [
         "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-ethernet",
+      "id": "ibrick-ioc3-ethernet",
+      "kind": "subfunction",
+      "name": "Ethernet MAC",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
+      ]
+    },
+    {
+      "hardware_kind": "ioc3-serial-a",
+      "id": "ibrick-ioc3-serial-a",
+      "kind": "subfunction",
+      "name": "serial port A",
+      "parent": "ibrick-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"
       ]
     },
     {
@@ -965,6 +1100,38 @@
       ]
     },
     {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-e",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 14
+    },
+    {
+      "bus": "ibrick-heads-xio",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ],
+      "widget": 15
+    },
+    {
+      "bus": "ibrick-io7-bus",
+      "component": "ibrick-xbridge-bridge-f",
+      "provenance": "vendor-document",
+      "role": "bridge-downstream",
+      "sources": [
+        "108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"
+      ]
+    },
+    {
       "bus": "ibrick-io7-bus",
       "component": "ibrick-fibre-channel",
       "pci_device": 1,
@@ -1036,20 +1203,206 @@
   ],
   "evidence_policy": "strict",
   "interrupts": [],
+  "links": [
+    {
+      "kind": "l1-peer",
+      "source": "c0-l1",
+      "target": "c1-l1"
+    },
+    {
+      "kind": "l1-peer",
+      "source": "c1-l1",
+      "target": "c0-l1"
+    }
+  ],
   "machine": {
     "architecture_ip": "IP35",
     "board_ip": "IP35",
     "emulation": {
+      "bedrock_nodes": {
+        "c0-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        },
+        "c1-bedrock": {
+          "board_id_word": 2,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fitted-banks"
+          },
+          "local_region": 0,
+          "notes": "Approximation. Established: product code 0. Chosen: low nibble 2, the configuration row of the selected fit; which nibble a physical C-brick presents is unknown, and a register read on a matching board would settle it.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick",
+            "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"
+          ]
+        }
+      },
       "display_description": "SGI Origin 3200 (IP35), two C-bricks and an I-brick",
-      "lifecycle": "planned",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          4096
+        ]
+      },
+      "firmware_payload": {
+        "argument": "-bios",
+        "notes": "The Origin 300's stock IP35 PROM 6.210 payload and views, carried by each C-brick's node; the Origin 3200 inventory reports the same PROM revision. Emulator compatibility policy; no fitted flash part or physical reset decoder is claimed.",
+        "path": "firmware/6.5.30/ip35prom.payload.bin",
+        "provenance": "derived",
+        "read_only": true,
+        "second_selection": {
+          "address": "0x100_1a000000",
+          "size": "0x0080_0000"
+        },
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": "0x1686a8",
+        "sources": [
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines",
+          "qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views"
+        ],
+        "views": [
+          {
+            "address": "0x000_001fc00000",
+            "name": "CPU reset view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_18000000",
+            "name": "local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_1fc00000",
+            "name": "bounded high local Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          },
+          {
+            "address": "0x100_38000000",
+            "name": "node-zero remote Hub-special boot view",
+            "payload_offset": "0x0",
+            "size": "0x1686a8"
+          }
+        ]
+      },
+      "initial_module_numbers": [
+        {
+          "component": "c0-chassis",
+          "number": 4,
+          "reason": "The first C-brick's slot, U04, where the configuration manual places it (module 001c04)."
+        },
+        {
+          "component": "c1-chassis",
+          "number": 7,
+          "reason": "The second C-brick's slot, U07 (module 001c07)."
+        },
+        {
+          "component": "ibrick-brick",
+          "number": 14,
+          "reason": "The I-brick's slot, U14, where the configuration manual places it (module 001i14)."
+        }
+      ],
+      "io_boards": {
+        "ibrick-xbridge-bridge-f": {
+          "ieee1394_absent": true,
+          "ioc3_subsystem_id": 65535,
+          "mac_source": "none",
+          "notes": "The IOC3 subsystem field is the unobserved placeholder, and no source gives where the IO7's Ethernet address comes from. The IEEE 1394 link controller is left out, a stated limitation: its PHY and bus are not modelled.",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick",
+            "hw/misc/tsb12lv22.c"
+          ]
+        }
+      },
+      "ip35_firmware": {
+        "cpu_mode_word": 1410639749,
+        "machine_type": 0,
+        "notes": "Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.",
+        "provenance": "derived",
+        "sources": [
+          "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"
+        ]
+      },
+      "l1_controllers": {
+        "c0-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "c1-l1": {
+          "notes": "The C-brick profile of the L1 model; its firmware revision is unknown and not carried.",
+          "profile": "cbrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        },
+        "ibrick-l1": {
+          "notes": "The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.",
+          "profile": "ibrick",
+          "provenance": "derived",
+          "sources": [
+            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+          ]
+        }
+      },
+      "lifecycle": "implemented",
       "machine_name": "origin3000",
-      "profile": "origin3200"
+      "profile": "origin3200",
+      "synthetic_identities": [
+        {
+          "component": "c0-bedrock",
+          "reason": "Synthetic node identity N0, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e00"
+        },
+        {
+          "component": "c1-bedrock",
+          "reason": "Synthetic node identity N1, carrying the \"QEMU\" marker; not hardware evidence.",
+          "serial": "0x51454d554e01"
+        }
+      ]
     },
     "generation": "SN1",
+    "harness": {
+      "console": "l1-uart",
+      "default_cpu_model": "R12000",
+      "default_topology": "origin3200",
+      "disk_bus": "none",
+      "install_media": [
+        "netboot"
+      ],
+      "netboot_adapter": "ioc3-ethernet",
+      "prom_dialogue": "ip35-l1-prompt",
+      "provenance": "derived",
+      "sources": [
+        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata"
+      ],
+      "supported_guests": [
+        "irix"
+      ]
+    },
     "kernel_ip": "IP27",
     "model_role": "emulation-target",
     "name": "Origin 3200",
-    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. Planned: the C-brick layer carries no L1, the C-brick's board-identification word, FPU identification and reset mode are unknown, and the compiler does not yet build PCI heads on an enclosure crossbar, so this target is not exported to the emulator."
+    "notes": "Two C-bricks and one I-brick in a short rack, each C-brick fitted as a posted Origin 3200 inventory reports: four 400 MHz R12000s with 8 MB secondary caches on two PIMMs and 4096 MB in eight 512 MB banks. The C-bricks join LINK (NI) to LINK (NI), with no R-brick, which the Origin 3200 does not support, and the I-brick hangs off the first C-brick's XIO (II) connector at its XBridge port A. Port A is the documented compute-node port; which port a boot I-brick uses is unknown. A second I/O brick is a documented expansion this composition does not show. The I-brick's XBridge head and PCI device numbers are the provisional placements the module layers already carry. The C-brick's board-identification word, FPU identification and reset mode are model choices recorded with their values, and the Fibre Channel card is not built."
   },
   "model_version": 1,
   "open_questions": [],
@@ -1058,7 +1411,8 @@
       "part": "r12000",
       "provenance": "observed-hardware",
       "sources": [
-        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, the CPU 0 to 7 and Scache lines",
+        "web:nekonomicon-16723604 hinv -mv of an Origin 3200, the CPU 0 to 7, FPU and Scache lines",
+        "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row, word 0x5414a785",
         "108-0240-002 printed page 2-4: a PIMM carries R12000 processors at 360 MHz or R12000A at 400 MHz with a 4 or 8 MB secondary cache",
         "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 76 and 229: R12000 implementation and revision mask"
       ],
@@ -1067,8 +1421,10 @@
           "cache_clock_mhz": 266,
           "cache_mib": 8,
           "clock_mhz": 400,
-          "notes": "The Origin 3200 C-brick's selected fit. Established: a posted Origin 3200 inventory reports four 400 MHz R12000s per C-brick at revision 3.5, each with an 8 MB secondary cache at 266 MHz. Inferred: the PRId, from that printed revision and the R12000 implementation number. The FPU identification and the reset-mode word are not established for this part on an IP35 board, so neither is carried.",
-          "processor_identification": "0x0e35"
+          "fpu_identification": "0x0935",
+          "notes": "The Origin 3200 C-brick's selected fit. Established: a posted Origin 3200 inventory reports four 400 MHz R12000s per C-brick at revision 3.5, each with an 8 MB secondary cache at 266 MHz, and an R12010 FPU at revision 3.5. Inferred: the PRId and the FPU identification, from those printed revisions and the R10000-family implementation numbers. Approximated: the reset-mode word is the low 25 bits of the stock IP35 PROM's configuration-table word for a 400 MHz, 8 MB C-brick, the way the Origin 300's R14000 word is its row's; no capture of a C-brick's reset mode exists.",
+          "processor_identification": "0x0e35",
+          "reset_mode_bits": "0x0014a785"
         }
       ]
     },

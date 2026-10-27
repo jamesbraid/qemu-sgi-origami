@@ -55,6 +55,7 @@ typedef struct TopologyExtra {
     const char *machine_options;   /* appended to -M */
     bool storage;                  /* binds the expansion configuration */
     bool io9;                      /* needs IO9 timekeeper backends */
+    bool unmarked;                 /* exposes no synthetic identity */
 } TopologyExtra;
 
 static const TopologyExtra topology_extras[] = {
@@ -75,6 +76,11 @@ static const TopologyExtra topology_extras[] = {
     { "origin300-numalink-pci-expansion",
       STORAGE_BINDING, true },
     { "origin300-pci-expansion", STORAGE_BINDING, true },
+    /*
+     * The Origin 3200's bricks carry no one-wire part and their L1
+     * profiles synthesize their records, so nothing here is marked.
+     */
+    { "origin3200", "", .unmarked = true },
 };
 
 typedef struct MachineCase {
@@ -83,6 +89,7 @@ typedef struct MachineCase {
     bool ip35;             /* takes the IP35 PROM size */
     bool storage;          /* binds the expansion configuration storage */
     bool io9;              /* needs IO9 timekeeper backends */
+    bool unmarked;         /* exposes no synthetic identity */
 } MachineCase;
 
 /* What one machine's walk collected. */
@@ -360,7 +367,7 @@ static void test_machine_serials(const void *data)
      * An IP53 IO9 profile can expose neither; the walk still checks any
      * matching identity properties it does expose.
      */
-    if (!c->io9) {
+    if (!c->io9 && !c->unmarked) {
         g_assert_cmpuint(inv.parts + g_hash_table_size(inv.l1_instances),
                          >, 0);
     }
@@ -484,6 +491,7 @@ static GPtrArray *catalogue_cases(void)
         c->ip35 = boot_flash_is_ip35(offering);
         c->storage = extra && extra->storage;
         c->io9 = extra && extra->io9;
+        c->unmarked = extra && extra->unmarked;
         c->args = g_strdup_printf(
             "%s%s -cpu %s -smp %" PRId64 " -m %" PRId64 "M",
             qdict_get_str(offering, "machine-options"),

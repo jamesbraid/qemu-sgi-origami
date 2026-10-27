@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "0f057dbbcb0177b6be08936a163446cce3432c035d73556b443f28ea3d66466d"
+    "7518969588a34516e2960886f1351b72d0e308348da93713c68d61c71fd7a6f5"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -505,6 +505,7 @@ class StorageTests(unittest.TestCase):
                 if offering["topology"] in ds1744_topologies
                 else set()
                 if offering.get("launch-recipe") == "ip53-discovery"
+                or offering["topology"] == "origin3200"
                 else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)
@@ -808,6 +809,13 @@ class FuelTests(unittest.TestCase):
         }
         for topology in catalogue["topologies"]:
             product = topology["product"]
+            if topology["name"] == "origin3200":
+                # The C-brick's machine-type byte and reset-mode word come
+                # from the PROM's CPU-configuration table row.
+                self.assertEqual(topology["ip35-firmware"], {
+                    "machine-type": 0,
+                    "cpu-mode-word": 0x5414a785})
+                continue
             if product not in ("origin300", "fuel", "origin350",
                                "onyx350", "tezro", "onyx4-host"):
                 self.assertNotIn("ip35-firmware", topology)

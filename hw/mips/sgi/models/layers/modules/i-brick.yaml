@@ -12,6 +12,19 @@ layer:
         kind: module
         provenance: vendor-document
         sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        parent: brick
+        description: >-
+          The I-brick's L1, on its power board. It knows only the C-brick
+          its XIO cable joins, and that C-brick's L1 reaches it over the same
+          cable.
+        datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+        sources: ["007-4240-002 printed pages 105 to 106, 121 to 122 and 127 to 131: the I-brick L1, the C-brick L1 reaching it over the XIO connection, and an I-brick L1 knowing only its attached C-brick"]
       - id: xbridge
         name: XBridge
         kind: pci-host-bridge
@@ -26,9 +39,32 @@ layer:
         kind: crossbar
         hardware_kind: xbridge
         crossbar: {kind: xbridge}
+        identity:
+          widget_revision: 2
+          notes: >-
+            The revision the QEMU XBridge model presents. The I-brick's
+            fitted XBridge revision is unknown; a widget scan or verbose
+            PROM boot of a real I-brick would settle it.
         provenance: vendor-document
         parent: xbridge
         sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+      # The two PCI heads, ports E and F, which inventories print as
+      # xtalk/14 and xtalk/15. The numbering is inferred from the port
+      # letters, as on the Origin 300's XBridge.
+      - id: xbridge-bridge-e
+        name: XBridge bridge at port 0xe
+        kind: subfunction
+        provenance: vendor-document
+        parent: xbridge
+        description: The PCI head behind widget 14, bus 2, with the I-brick's PCI slots.
+        sources: &ibrick-heads ["108-0240-002 printed pages 2-26 to 2-29: PCI ports E and F; IO7 on port F bus 1, bus 2 on port E", "web:nekonomicon-16723604 hinv -mv of an Origin 3200: the IBRICK board at Ibrick/xtalk/14 and Ibrick/xtalk/15"]
+      - id: xbridge-bridge-f
+        name: XBridge bridge at port 0xf
+        kind: subfunction
+        provenance: vendor-document
+        parent: xbridge
+        description: The PCI head behind widget 15, bus 1, with the IO7 and the Fibre Channel card.
+        sources: *ibrick-heads
       - id: port-a
         name: Crosstown2 port A connector
         kind: connector
@@ -72,6 +108,8 @@ layer:
         identity: {pci_vendor: "0x10a9", pci_device: "0x0003"}
         provenance: observed-hardware
         parent: brick
+      - {id: ioc3-ethernet, name: Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: vendor-document, sources: &ibrick-ioc3 ["007-4311-002 printed page 29, Figure 3-12: the IO7's IOC3 block carries Ethernet, serial and TOD/NVRAM", "web:nekonomicon-16723604 hinv -mv of an Origin 3200: Integral Fast Ethernet ef0 at module 001c04, pci 4"]}
+      - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: *ibrick-ioc3}
       - id: usb
         name: USB controller (OHCI)
         kind: io-controller
@@ -88,7 +126,14 @@ layer:
         parent: brick
         notes: A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.
     buses:
-      - {id: io7-bus, name: "IO7, bus 1 (head F)", kind: pci, master: xbridge, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
+      - {id: io7-bus, name: "IO7, bus 1 (head F)", kind: pci, master: xbridge-bridge-f, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
+      - id: heads-xio
+        name: XBridge crossbar to its PCI heads
+        kind: xio
+        master: xbridge-crossbar
+        provenance: vendor-document
+        sources: *ibrick-heads
+        notes: The crossbar's internal ports E (14) and F (15), one PCI head each.
       - id: port-b-xio
         name: XBridge Crosstown2 port B
         kind: xio
@@ -99,6 +144,9 @@ layer:
           The crossbar's port B, out to its connector. A composition that
           cables a brick here attaches that brick's widget to this bus.
     connections:
+      - {component: xbridge-bridge-e, bus: heads-xio, role: bridge-upstream, widget: 14, provenance: vendor-document, sources: *ibrick-heads}
+      - {component: xbridge-bridge-f, bus: heads-xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: *ibrick-heads}
+      - {component: xbridge-bridge-f, bus: io7-bus, role: bridge-downstream, provenance: vendor-document, sources: *ibrick-heads}
       - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}
       - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick]}

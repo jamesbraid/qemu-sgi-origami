@@ -1369,8 +1369,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         "bedrock_nodes": {"board_id_word", "board_id_mask",
                           "board_id_required_bits", "local_region",
                           "initiator_region", "installed_bank_mask"},
-        "l1_controllers": {"reported_type", "revision", "mac_eeprom_input"},
-        "io_boards": {"ioc3_subsystem_id", "mac_source"},
+        "l1_controllers": {"reported_type", "revision", "mac_eeprom_input",
+                           "profile"},
+        "io_boards": {"ioc3_subsystem_id", "mac_source", "ieee1394_absent"},
         "pci_function_revisions": {"revision"},
     }
     bindings = {
@@ -1479,6 +1480,18 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 elif mask != {"mode": "fitted-banks"}:
                     raise ResolutionError(
                         f"'{cid}' installed bank mask policy is invalid")
+            elif section == "l1_controllers" and "profile" in entry:
+                # An Origin 3000 brick profile owns its type letter, and
+                # its controller firmware revision is unknown.
+                if entry["profile"] not in {"cbrick", "ibrick"}:
+                    raise ResolutionError(
+                        f"'{cid}' names unsupported L1 profile "
+                        f"'{entry['profile']}'")
+                if set(entry) & {"reported_type", "revision",
+                                 "mac_eeprom_input"}:
+                    raise ResolutionError(
+                        f"'{cid}' L1 profile '{entry['profile']}' takes no "
+                        "reported type, revision or MAC input")
             elif section == "l1_controllers":
                 required(entry, "reported_type", f"'{cid}'")
                 integer(entry["reported_type"], 255,
@@ -1499,6 +1512,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 if entry.get("mac_source") not in {"none", "module-l1"}:
                     raise ResolutionError(
                         f"'{cid}' has no supported MAC source")
+                if entry.get("ieee1394_absent", True) is not True:
+                    raise ResolutionError(
+                        f"'{cid}' ieee1394_absent, when given, must be true")
             else:
                 integer(entry.get("revision"), 255, f"'{cid}' PCI revision")
 

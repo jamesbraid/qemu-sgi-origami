@@ -4293,71 +4293,30 @@ class L1PeerLinkTests(unittest.TestCase):
                 compile_model(model)
 
 
-# The I-brick's XBridge and IO7, which the compiler does not yet compile.
-_IBRICK_IO = {"ibrick-xbridge", "ibrick-fibre-channel", "ibrick-ioc3",
-              "ibrick-usb", "ibrick-firewire"}
+# The I-brick's XBridge heads and the functions on them.
+_IBRICK_IO = {"ibrick-xbridge-bridge-e", "ibrick-xbridge-bridge-f",
+              "ibrick-fibre-channel", "ibrick-ioc3", "ibrick-ioc3-ethernet",
+              "ibrick-ioc3-serial-a", "ibrick-usb", "ibrick-firewire",
+              "ibrick-l1"}
 
 
 def _origin3200_fixture(*, ibrick_io: bool = False) -> dict:
-    """The Origin 3200 composition made compilable for compiler tests.
+    """The Origin 3200 catalogue entry, resolved.
 
-    The catalogue entry is a planned target that does not compile: its
-    C-brick has no L1, and the R12000's FPU identification, reset mode and
-    the C-brick's board word are unknown. So this borrows the two-chassis
-    Origin 300's emulation choices, R14000 processor, L1 and synthetic
-    Bedrock serials, and one 512 MiB bank per node, to reach the code under
-    test. None of them is an Origin 3200 claim.
-    Without `ibrick_io` the I-brick keeps only its crossbar, with a
-    placeholder revision, since its PCI heads are not compiled yet.
+    Without `ibrick_io` the I-brick keeps only its XBridge and crossbar,
+    with no L1, so a test of the cable or the bricks reads no PCI head.
     """
-    donor = _resolved("origin300-two-chassis")
     model = _resolved("origin3200")
-    emulation = copy.deepcopy(donor["machine"]["emulation"])
-    for key in ("io_boards", "system_timekeepers", "initial_module_numbers",
-                "initially_operational_crossbow_links"):
-        emulation.pop(key, None)
-    rename = {"master-": "c0-", "slave-": "c1-"}
-
-    def renamed(ident):
-        for old, new in rename.items():
-            if ident.startswith(old):
-                return new + ident[len(old):]
-        return ident
-
-    for section in ("bedrock_nodes", "l1_controllers"):
-        emulation[section] = {renamed(key): value
-                              for key, value in emulation[section].items()}
-    emulation["synthetic_identities"] = [
-        dict(entry, component=renamed(entry["component"]))
-        for entry in emulation["synthetic_identities"]
-        if entry["component"].endswith("-bedrock")]
-    model["machine"]["model_role"] = "emulation-target"
-    model["machine"]["emulation"] = emulation
-    model["processors"] = copy.deepcopy(donor["processors"])
-    components = {item["id"]: item for item in donor["components"]}
-    for index, component in enumerate(model["components"]):
-        if component["kind"] == "cpu":
-            model["components"][index] = dict(
-                copy.deepcopy(components["master-cpu0"]),
-                id=component["id"], parent=component["parent"],
-                processor_slice=component["processor_slice"])
-    for brick in ("c0", "c1"):
-        model["components"].append(dict(
-            copy.deepcopy(components["master-l1"]), id=f"{brick}-l1",
-            parent=f"{brick}-chassis"))
-    model["composition"]["population"]["memory_bank_mib_per_node"] = [
-        [512, 0, 0, 0, 0, 0, 0, 0], [512, 0, 0, 0, 0, 0, 0, 0]]
     if not ibrick_io:
         model["components"] = [item for item in model["components"]
                                if item["id"] not in _IBRICK_IO]
         model["connections"] = [item for item in model["connections"]
                                 if item["component"] not in _IBRICK_IO]
         model["buses"] = [item for item in model["buses"]
-                          if item["id"] != "ibrick-io7-bus"]
-        for component in model["components"]:
-            if component["id"] == "ibrick-xbridge-crossbar":
-                component["parent"] = "ibrick-brick"
-                component["identity"] = {"widget_revision": 1}
+                          if item["id"] not in {"ibrick-io7-bus",
+                                                "ibrick-heads-xio"}]
+        model["machine"]["emulation"].pop("io_boards")
+        model["machine"]["emulation"]["l1_controllers"].pop("ibrick-l1")
     return model
 
 
@@ -4375,7 +4334,7 @@ class XioCableCompileTests(unittest.TestCase):
                      {"kind": "CROSSBAR", "index": 0, "port": 0xa}]}])
         self.assertEqual(entry["crossbars"], [{
             "id": "ibrick-xbridge-crossbar", "module_index": 2,
-            "kind": "XBRIDGE", "widget_revision": 1}])
+            "kind": "XBRIDGE", "widget_revision": 2}])
         self.assertEqual([node["board_kind"] for node in entry["nodes"]],
                          ["ip35", "ip35"])
         self.assertEqual(entry["io_boards"], [])
@@ -4436,13 +4395,71 @@ class XioCableCompileTests(unittest.TestCase):
                 with self.assertRaisesRegex(CompileError, message):
                     compile_model(model)
 
-    def test_pci_heads_on_an_enclosure_crossbar_are_not_compiled_yet(self):
+    def test_ibrick_heads_attach_to_the_cabled_node(self):
+        from sgi_model.model_emit import _render_topology
+        entry = compile_model(_origin3200_fixture(ibrick_io=True))
+        self.assertEqual(entry["xio_attachments"], [
+            {"crossbar_index": 0, "widget": widget, "node_index": 0,
+             "decoded_widget_mask": 0, "discovery_widget": 0}
+            for widget in (14, 15)])
+        board, = entry["io_boards"]
+        self.assertEqual(
+            (board["id"], board["board_kind"], board["module_index"],
+             board["slot_index"], board["mac_source"],
+             board["ioc3_subsystem_id"], board["ieee1394_absent"]),
+            ("ibrick-xbridge-bridge-f", "IO7", 2, 1, "none", 0xffff, True))
+        self.assertEqual(board["pci"], [{"kind": "IOC3", "ethernet": True},
+                                        {"kind": "LUCENT_OHCI"}])
+        self.assertIsNone(board["ioc3_serial"])
+        emitted, = _render_topology(entry, "origin3200")["io-boards"]
+        self.assertEqual(emitted["preset"], "io7")
+        self.assertEqual(emitted["carrier"], "machine-placed")
+        self.assertEqual(emitted["attachment"], 1)
+        self.assertTrue(emitted["ieee1394-absent"])
+        for field in ("pci-functions", "ioc3-serial", "part", "revision",
+                      "serial"):
+            self.assertNotIn(field, emitted)
+
+    def test_fitted_ieee1394_stays_on_the_io7(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        model["machine"]["emulation"]["io_boards"][
+            "ibrick-xbridge-bridge-f"].pop("ieee1394_absent")
+        board, = compile_model(model)["io_boards"]
+        self.assertNotIn("ieee1394_absent", board)
+        self.assertEqual([item["kind"] for item in board["pci"]],
+                         ["IOC3", "LUCENT_OHCI", "TI_TSB12LV22"])
+
+    def test_brick_head_population_needs_a_preset(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        connection = next(item for item in model["connections"]
+                          if item["component"] == "ibrick-usb")
+        connection["pci_device"] = 7
         with self.assertRaisesRegex(
                 CompileError,
-                "I/O board 'ibrick-xbridge' carries enclosure crossbar "
-                "'ibrick-xbridge-crossbar'; PCI heads on an enclosure "
-                "crossbar are not compiled yet"):
-            compile_model(_origin3200_fixture(ibrick_io=True))
+                "I/O brick head 'ibrick-xbridge-bridge-f' carries "
+                r"\['IOC3', 'TI_TSB12LV22', 'LUCENT_OHCI'\], which no "
+                "catalogue preset builds"):
+            compile_model(model)
+
+    def test_brick_heads_take_one_host_node(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        model["xio_cables"].append({
+            "id": "c1-to-ibrick",
+            "ends": ["c1-xio-ii-connector", "ibrick-port-b"]})
+        with self.assertRaisesRegex(
+                CompileError,
+                "I/O brick crossbar 'ibrick-xbridge-crossbar' is cabled to 2 "
+                "nodes; its heads take one host node"):
+            compile_model(model)
+
+    def test_io7_names_no_mac_source(self):
+        model = _origin3200_fixture(ibrick_io=True)
+        model["machine"]["emulation"]["io_boards"][
+            "ibrick-xbridge-bridge-f"]["mac_source"] = "module-l1"
+        with self.assertRaisesRegex(
+                CompileError, "I/O board 'ibrick-xbridge-bridge-f' names a "
+                "MAC source; no source gives the IO7's"):
+            compile_model(model)
 
 
 class ModuleRecordCompileTests(unittest.TestCase):

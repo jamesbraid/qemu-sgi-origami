@@ -133,6 +133,8 @@ struct SGIBaseioState {
     uint8_t system_timekeeper_kind;
     uint32_t system_timekeeper_year_base;
     char *ioc3_mac;
+    /* io7 only: leave the IEEE 1394 link controller out. */
+    bool ieee1394_absent;
     char *nvram_drive_id;
     char *nvram_clock_drive_id;
     char *chardev_a_id;
@@ -787,6 +789,9 @@ static bool baseio_build_io7(SGIBaseioState *s, Error **errp)
     }
     baseio_wire_xbridge_intx(chip, IO7_USB_DEVICE, IO7_USB_DEVICE);
 
+    if (s->ieee1394_absent) {
+        return true;
+    }
     link = pci_new(PCI_DEVFN(IO7_1394_DEVICE, 0), "tsb12lv22");
     object_property_add_child(OBJECT(s), "ieee1394", OBJECT(link));
     if (!pci_realize_and_unref(link, s->pci_bus, errp)) {
@@ -1099,6 +1104,11 @@ static void baseio_realize(DeviceState *dev, Error **errp)
                   s->preset ? s->preset : "(unset)");
         return;
     }
+    if (s->ieee1394_absent && strcmp(preset->name, "io7")) {
+        error_setg(errp, "sgi-baseio: ieee1394-absent applies to the io7 "
+                   "preset only");
+        return;
+    }
     if (!s->pci_bus) {
         error_setg(errp, "sgi-baseio requires the PCI bus its preset "
                   "populates");
@@ -1199,6 +1209,8 @@ static const Property baseio_properties[] = {
     DEFINE_PROP_UINT32("ioc3-subsystem-id", SGIBaseioState,
                        ioc3_subsystem_id, UINT32_MAX),
     DEFINE_PROP_STRING("ioc3-mac", SGIBaseioState, ioc3_mac),
+    DEFINE_PROP_BOOL("ieee1394-absent", SGIBaseioState, ieee1394_absent,
+                     false),
     DEFINE_PROP_UINT32("scsi-revision", SGIBaseioState, scsi_revision,
                        UINT32_MAX),
     DEFINE_PROP_UINT32("ioc3-revision", SGIBaseioState, ioc3_revision,

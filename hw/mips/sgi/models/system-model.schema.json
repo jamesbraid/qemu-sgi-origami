@@ -1813,6 +1813,9 @@
         "mac_eeprom_input": {
           "$ref": "#/$defs/initialization-input"
         },
+        "profile": {
+          "enum": ["cbrick", "ibrick"]
+        },
         "provenance": {
           "$ref": "#/$defs/fact-provenance"
         },
@@ -1835,6 +1838,10 @@
         "notes"
       ],
       "properties": {
+        "ieee1394_absent": {
+          "const": true,
+          "description": "Leave an IO7's IEEE 1394 link controller out: a stated limitation while its PHY and bus are unmodelled."
+        },
         "ioc3_subsystem_id": {
           "type": "integer",
           "minimum": 0,

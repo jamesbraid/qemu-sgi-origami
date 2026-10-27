@@ -162,10 +162,47 @@ and 2-6). The Origin 3200 catalogue entry fixes each C-brick at the fit
 a :ref:`posted Origin 3200 inventory <sgi-ref-web-nekonomicon-16723604>`
 reports, four 400 MHz R12000s with 8 MB secondary caches on two PIMMs
 and 4096 MB in eight 512 MB banks, and resolution refuses any other
-processor or bank population for that product. The entry is a planned
-target, left out of the emulator's catalogue. The C-brick layer has no
-L1, and the R12000's FPU identification and reset-mode word on this
-board and the C-brick's full board-identification word are unknown.
+processor or bank population for that product.
+
+The entry is the ``origin3000`` machine, topology ``origin3200``. Its
+C-brick values the sources do not settle are model choices:
+
+* The board-identification word is ``0x2``. Product code 0 in bits
+  15:12 is a C-brick (established, OpenBSD ``ip27.h``); the low nibble
+  2 selects the stock IP35 PROM 6.210's configuration row for a
+  400 MHz, 8 MB fit, and the other bits read zero (approximated: no
+  C-brick has been read).
+* The flash configuration block carries machine type 0 and that row's
+  word ``0x5414a785``, and each processor's reset mode is the word's
+  low 25 bits (approximated, as the Origin 300's R14000 values are
+  taken from its own row).
+* The FPU identification is ``0x0935``, from the R12010 revision 3.5
+  the inventory prints (inferred).
+* The L1 is the ``cbrick`` profile, named by its slot: 001c04 and
+  001c07. The two C-brick L1s are peers over the NUMAlink cable.
+* With no XIO cable, a C-brick's II link reads down (inferred, as the
+  Bedrock II model already takes it).
+
+.. _sgi-sn-origin3200:
+
+Origin 3200 machine
+-------------------
+
+``-M origin3000`` builds two C-bricks joined LINK (NI) to LINK (NI)
+and an I-brick on c0's ``XIO (II)`` connector at XBridge port A, with
+8 R12000s (``-cpu R12000 -smp 8``) and 8192 MB. The I-brick's XBridge
+is ``/machine/module2/xbridge``; its heads E and F are widgets 14 and
+15 of c0, and its IO7 is ``/machine/module2/io7`` on head F. The
+I-brick's L1 is ``/machine/module2/l1``, the ``ibrick`` profile named
+001i14, reached from c0's L1 over the XIO cable as an in-process call;
+it holds the IO7's Ethernet address, the machine's ``mac``.
+
+Stated limitations: the Fibre Channel card at head F device 1 is not
+fitted, so the machine has no disk; the IO7's IEEE 1394 link controller
+is left out, because its model has no PHY or bus and the stock PROM's
+probe waits on them; the IO7 has no Timekeeper, its part being
+unidentified; head E's PCI slots are empty; the I-brick's XBridge
+revision is the model's.
 
 .. _sgi-sn-family-ibrick:
 

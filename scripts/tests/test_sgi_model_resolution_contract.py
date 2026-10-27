@@ -2966,10 +2966,10 @@ class Origin3000BrickTests(unittest.TestCase):
                 self.assertEqual(
                     {field: cpu["identity"][field] for field in (
                         "clock_mhz", "cache_mib", "cache_clock_mhz",
-                        "processor_identification")},
+                        "processor_identification", "fpu_identification")},
                     {"clock_mhz": 400, "cache_mib": 8, "cache_clock_mhz": 266,
-                     "processor_identification": "0x0e35"})
-                self.assertNotIn("fpu_identification", cpu["identity"])
+                     "processor_identification": "0x0e35",
+                     "fpu_identification": "0x0935"})
         population = model["composition"]["population"]
         self.assertEqual(population["cpus_per_node"], [4, 4])
         self.assertEqual(population["dimms_per_node"], [8, 8])
@@ -2977,7 +2977,8 @@ class Origin3000BrickTests(unittest.TestCase):
         self.assertEqual(population["memory_bank_mib_per_node"],
                          [[512] * 8, [512] * 8])
         self.assertEqual(model["machine"]["model_role"], "emulation-target")
-        self.assertEqual(model["machine"]["emulation"]["lifecycle"], "planned")
+        self.assertEqual(model["machine"]["emulation"]["lifecycle"],
+                         "implemented")
 
     def test_origin3200_refuses_a_fit_outside_the_selected_fit(self):
         product = "layers/products/origin3200.yaml"
@@ -3075,12 +3076,52 @@ class Origin3000BrickTests(unittest.TestCase):
             model["composition"]["population"]["memory_bank_mib_per_node"],
             [mixed, mixed])
 
-    def test_origin3200_is_a_planned_target_the_compiler_refuses(self):
-        from sgi_model.model_compile import CompileError, compile_model
+    def test_origin3200_compiles_as_an_implemented_target(self):
+        from sgi_model.model_compile import compile_model
+        entry = compile_model(self.resolve())
+        self.assertEqual([node["bedrock"]["board_id_word"]
+                          for node in entry["nodes"]], [2, 2])
+        assembly = entry["nodes"][0]["cpu_slots"][0]["assembly"]
+        self.assertEqual(
+            (assembly["kind"], assembly["prid"], assembly["fpu_prid"],
+             assembly["mode_bits"]),
+            ("R12000", 0x0e35, 0x0935, 0x0014a785))
+        self.assertEqual(entry["ip35_firmware"],
+                         {"machine_type": 0, "cpu_mode_word": 0x5414a785})
+        self.assertEqual(
+            [item.get("l1", {}).get("profile")
+             for item in entry["controllers"]],
+            ["cbrick", "cbrick", "ibrick"])
+        self.assertEqual(entry["l1_peer_links"], [
+            {"source_controller_index": 0, "target_controller_index": 1},
+            {"source_controller_index": 1, "target_controller_index": 0}])
+        self.assertEqual([module["initial_module_number"]
+                          for module in entry["modules"]], [4, 7, 14])
+
+    def test_origin3200_refuses_two_cbricks_with_one_module_number(self):
+        def repeat(document):
+            numbers = document["layer"]["data"]["machine"]["emulation"][
+                "initial_module_numbers"]
+            numbers[1]["number"] = numbers[0]["number"]
+
         with self.assertRaisesRegex(
-                CompileError, "PCI heads on an enclosure crossbar are not "
-                "compiled yet"):
-            compile_model(self.resolve())
+                _resolver.ResolutionError,
+                "initial module identity has repeated number 4"):
+            self.load_origin3200_with(
+                [("layers/products/origin3200.yaml", repeat)])
+
+    def test_origin3200_refuses_two_bedrocks_with_one_serial(self):
+        def repeat(document):
+            identities = document["layer"]["data"]["machine"]["emulation"][
+                "synthetic_identities"]
+            identities[1]["serial"] = identities[0]["serial"]
+
+        with self.assertRaisesRegex(
+                _resolver.ResolutionError,
+                "synthetic serial 0x51454d554e00 is given to both "
+                "'c0-bedrock' and 'c1-bedrock'"):
+            self.load_origin3200_with(
+                [("layers/products/origin3200.yaml", repeat)])
 
     def test_unrouted_two_chassis_refuses_one_serial_twice(self):
         # Before this check a repeated serial passed resolution and
@@ -3253,20 +3294,16 @@ class Origin3000BrickTests(unittest.TestCase):
                       [(item["id"], item["ends"])
                        for item in model["xio_cables"]])
         from sgi_model.model_compile import CompileError, compile_model
-        # The product is a planned emulation target, so these variants
-        # inherit its role and stop at the same missing compiler feature.
-        with self.assertRaisesRegex(
-                CompileError, "PCI heads on an enclosure crossbar are not "
-                "compiled yet"):
+        # The composition keeps the product as a reference: the emulator
+        # builds no P-brick or X-brick.
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
             compile_model(model)
 
     def test_origin3200_xbrick_never_compiles(self):
         from sgi_model.model_compile import CompileError, compile_model
-        # The product is a planned emulation target, so these variants
-        # inherit its role and stop at the same missing compiler feature.
-        with self.assertRaisesRegex(
-                CompileError, "PCI heads on an enclosure crossbar are not "
-                "compiled yet"):
+        # The composition keeps the product as a reference: the emulator
+        # builds no P-brick or X-brick.
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
             compile_model(self.resolve(self.ORIGIN3200_XBRICK))
 
 

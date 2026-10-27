@@ -427,6 +427,28 @@ def _xio_cable_ends(model: dict, components: dict[str, dict],
     return cables
 
 
+def _cabled_xbridges(model: dict, components: dict[str, dict]) -> set[str]:
+    """The XBridge chips in an I/O brick: a chip with a crossbar section
+    in a module that carries no node, so only an XIO cable reaches it.
+
+    Its PCI heads are compiled with the node its cable reaches
+    (`_compile_brick_xbridge_heads`), not as XIO boards of their own.
+    """
+    node_modules = {
+        _grouping_module(components, item)["id"]
+        for item in components.values() if item.get("kind") == "node-asic"}
+    chips = set()
+    for crossbar in components.values():
+        chip = components.get(crossbar.get("parent"), {})
+        if (crossbar.get("kind") == "crossbar"
+                and chip.get("kind") == "pci-host-bridge"
+                and chip.get("hardware_kind") == "xbridge"
+                and _grouping_module(components, chip)["id"]
+                not in node_modules):
+            chips.add(chip["id"])
+    return chips
+
+
 def _cabled_nodes(cables: list[dict]) -> dict[str, set[str]]:
     """Which node ASICs reach each enclosure crossbar over an XIO cable.
 
@@ -511,9 +533,11 @@ def index_graph(model: dict) -> dict:
     }
     descriptor_host_ids = pic_host_ids | io9_host_ids
     split_bridges = _split_bridge_parents(model, components)
+    brick_xbridges = _cabled_xbridges(model, components)
     io_board_components = {cid: item for cid, item in components.items()
                             if cid not in split_bridges
                             and cid not in descriptor_host_ids
+                            and cid not in brick_xbridges
                             and not (item.get("hardware_kind") == "xbridge"
                                      and any(_is_within(components, item, module)
                                              for module in assembly_modules))}
@@ -662,6 +686,10 @@ def index_graph(model: dict) -> dict:
                 # PIC records carry their own typed host reference; their
                 # single upstream route is compiled with that record below.
                 continue
+            if component.get("parent") in brick_xbridges:
+                # An I/O brick XBridge's own PCI head, compiled with its
+                # cabled node by `_compile_brick_xbridge_heads`.
+                continue
             if crossbar is None and component.get("kind") == "board":
                 # A Hub cabled to a passive adapter rather than a widget:
                 # the Crosstown board that replaces the XTalk jumper.
@@ -808,6 +836,7 @@ def index_graph(model: dict) -> dict:
         "io_boards": io_boards, "xio_attachments": xio_attachments,
         "xio_slots": xio_slots, "links": links,
         "xio_cables": xio_cables, "enclosure_crossbars": enclosure_crossbars,
+        "brick_xbridges": brick_xbridges,
         "modules": [{"id": module_id, "index": index} for module_id, index in module_order],
     }
 
@@ -1201,9 +1230,12 @@ def _mode_bits(model: dict, node: dict, processor: dict) -> int:
     is established for it; the R14000 write mask is not established, so the
     processor catalogue carries a literal reset word for the selected SKU.
     """
-    if processor["kind"] == "R14000":
-        return _r14000_mode_bits(
-            model, processor["clock_hz"] // 1_000_000, processor["cache_mib"])
+    if processor["kind"] == "R14000" or (
+            processor["kind"] == "R12000"
+            and node.get("hardware_kind") == "bedrock"):
+        return _catalogued_mode_bits(
+            model, processor["kind"].lower(),
+            processor["clock_hz"] // 1_000_000, processor["cache_mib"])
     if processor["kind"] == "R10000":
         return _r10000_mode_bits(model, node, processor["clock_hz"])
     if processor["kind"] == "R16000":
@@ -1241,27 +1273,30 @@ def _r10000_mode_bits(model: dict, hub: dict, cpu_clock_hz: int) -> int:
     return _compile_r10000_reset_mode(firmware, cpu_clock_hz, hub_clock_hz)
 
 
-def _r14000_mode_bits(model: dict, clock_mhz: int, cache_mib: int) -> int:
-    """The R14000 reset-mode word for the selected clock/cache SKU, read as
-    the one literal the processors catalogue carries
-    (`layers/architectures/sn1.yaml`, `reset_mode_bits`). A SKU the
-    catalogue does not carry a word for (the 600 MHz variant today) is
-    refused by name rather than derived from the 500 MHz word.
+def _catalogued_mode_bits(model: dict, part: str, clock_mhz: int,
+                          cache_mib: int) -> int:
+    """The reset-mode word for the selected clock/cache SKU of a Bedrock
+    node's @part, read as the one literal the processors catalogue carries
+    (`layers/architectures/sn1.yaml`, `reset_mode_bits`). Neither the
+    R14000's nor the R12000's Config0 write mask is established for these
+    boards, so no word is assembled field by field. A SKU the catalogue
+    does not carry a word for (the 600 MHz R14000 today) is refused by name
+    rather than derived from another's word.
     """
     for entry in model.get("processors", []):
-        if entry.get("part") != "r14000":
+        if entry.get("part") != part:
             continue
         for variant in entry.get("variants", []):
             if (variant.get("clock_mhz") == clock_mhz
                     and variant.get("cache_mib") == cache_mib):
                 if "reset_mode_bits" not in variant:
                     raise CompileError(
-                        f"the r14000 {clock_mhz} MHz/{cache_mib} MiB variant "
+                        f"the {part} {clock_mhz} MHz/{cache_mib} MiB variant "
                         "carries no reset_mode_bits in the processors catalogue"
                     )
                 return num(variant["reset_mode_bits"])
     raise CompileError(
-        f"no catalogued r14000 variant matches {clock_mhz} MHz/{cache_mib} MiB"
+        f"no catalogued {part} variant matches {clock_mhz} MHz/{cache_mib} MiB"
     )
 
 
@@ -2276,6 +2311,139 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
     return io_boards, xio_attachments
 
 
+# The I-brick's IO7, by the parts on its head and their device numbers
+# (108-0240-002 printed page 2-28; owners' inventories print the same
+# three): what the `io7` preset builds.
+_IO7_FUNCTIONS = [(4, "IOC3"), (5, "LUCENT_OHCI"), (6, "TI_TSB12LV22")]
+_BRICK_HEAD_PCI_KINDS = {"ioc3": "IOC3", "lucent-ohci": "LUCENT_OHCI",
+                         "ti-tsb12lv22": "TI_TSB12LV22",
+                         "qlogic-isp2200": "QLOGIC_ISP2200"}
+
+
+def _compile_brick_xbridge_heads(model: dict, components: dict[str, dict],
+                                 graph: dict, crossbars: list[dict],
+                                 first_attachment: int
+                                 ) -> tuple[list[dict], list[dict]]:
+    """The PCI heads of each XBridge in an I/O brick, for the one node
+    its XIO cable reaches.
+
+    Each head is an `SGIModelXioAttachment` on the brick's crossbar,
+    hosted by that node. A head carrying the IO7's parts becomes the
+    `io7` board the machine places on it. The Fibre Channel card beside
+    the IO7 on head F has no builder yet, so it is left out here and the
+    machine fits none; the catalogue documents that limitation. Any
+    other population on a head has no preset and is refused.
+    """
+    node_index = {entry["id"]: index
+                  for index, entry in enumerate(graph["nodes"])}
+    crossbar_index = {item["id"]: index for index, item in enumerate(crossbars)}
+    io_boards: list[dict] = []
+    xio_attachments: list[dict] = []
+    for chip in sorted(graph["brick_xbridges"]):
+        crossbar = next(item["id"] for item in components.values()
+                        if item.get("kind") == "crossbar"
+                        and item.get("parent") == chip)
+        owners = sorted(graph["enclosure_crossbars"].get(crossbar, ()))
+        if len(owners) != 1:
+            raise CompileError(
+                f"I/O brick crossbar '{crossbar}' is cabled to "
+                f"{len(owners)} nodes; its heads take one host node")
+        heads = []
+        for bus in model["buses"]:
+            if bus["kind"] != "xio" or bus.get("master") != crossbar:
+                continue
+            for attachment in _connections_for_bus(model, bus["id"]):
+                head = components.get(attachment["component"], {})
+                if (head.get("parent") == chip
+                        and attachment.get("role") == "bridge-upstream"):
+                    heads.append((_integer(attachment, "widget",
+                                           f"XIO attachment '{head['id']}'",
+                                           8), head))
+        module_index = graph["modules_by_id"][
+            _grouping_module(components, components[chip])["id"]]
+        for widget, head in sorted(heads, key=lambda item: item[0]):
+            slot = first_attachment + len(xio_attachments)
+            xio_attachments.append({
+                "crossbar_index": crossbar_index[crossbar], "widget": widget,
+                "node_index": node_index[owners[0]],
+                "decoded_widget_mask": 0, "discovery_widget": 0,
+            })
+            functions = _brick_head_functions(model, components, head["id"])
+            configured = model["machine"]["emulation"].get(
+                "io_boards", {}).get(head["id"], {})
+            absent = {"QLOGIC_ISP2200"}
+            if configured.get("ieee1394_absent"):
+                absent.add("TI_TSB12LV22")
+            fitted = [(device, kind) for device, kind, _cid in functions
+                      if kind not in absent]
+            if not fitted:
+                continue
+            if configured.get("ieee1394_absent"):
+                fitted = sorted([*fitted, (6, "TI_TSB12LV22")])
+            if fitted != _IO7_FUNCTIONS or widget != 15:
+                raise CompileError(
+                    f"I/O brick head '{head['id']}' carries "
+                    f"{[kind for _device, kind in fitted]}, which no "
+                    "catalogue preset builds")
+            configured = _initialization(model, "io_boards", head["id"])
+            if configured.get("mac_source", "none") != "none":
+                raise CompileError(
+                    f"I/O board '{head['id']}' names a MAC source; no source "
+                    "gives the IO7's")
+            board = {
+                "id": head["id"],
+                "module_index": module_index,
+                "board_kind": "IO7",
+                "slot_index": slot,
+                "label": None,
+                "revision": None,
+                "serial": None,
+                "part": None,
+                "other_identities": [],
+                "pci": [{"kind": kind, **({"ethernet": _ioc3_has_ethernet(
+                            components, cid)} if kind == "IOC3" else {})}
+                        for _device, kind, cid in functions
+                        if kind not in absent],
+                # Whether the IO7's IOC3 has a one-wire part of its own is
+                # unknown, so the record names none.
+                "ioc3_serial": None,
+                "ioc3_subsystem_id": _integer(
+                    configured, "ioc3_subsystem_id", head["id"], 16),
+                "mac_source": "none",
+            }
+            if configured.get("ieee1394_absent"):
+                board["ieee1394_absent"] = True
+            selected = model["machine"]["emulation"].get(
+                "system_timekeepers", {}).get(head["id"])
+            if selected is not None:
+                board["system_timekeeper"] = {
+                    key: selected[key] for key in
+                    ("kind", "year_base", "initial_ip27_fixture")}
+            io_boards.append(board)
+    return io_boards, xio_attachments
+
+
+def _brick_head_functions(model: dict, components: dict[str, dict],
+                          head_id: str) -> list[tuple[int, str, str]]:
+    """The PCI parts on the bus @head_id drives, in device order."""
+    buses = {item["id"] for item in model["buses"]
+             if item["kind"] == "pci" and item.get("master") == head_id}
+    functions = []
+    for connection in model["connections"]:
+        if connection["bus"] not in buses or connection["component"] == head_id:
+            continue
+        component = components[connection["component"]]
+        if component.get("kind") == "connector":
+            continue
+        kind = _BRICK_HEAD_PCI_KINDS.get(component.get("hardware_kind"))
+        if kind is None:
+            raise CompileError(
+                f"PCI component '{component['id']}' is unsupported")
+        device = _integer(connection, "pci_device", component["id"], 8)
+        functions.append((device, kind, component["id"]))
+    return sorted(functions)
+
+
 # Crossbow-attached add-in boards that name their own design by the board
 # component's `hardware_kind`, rather than being recognised as a BaseIO by
 # the parts fitted to them.
@@ -3222,8 +3390,12 @@ def compile_model(model: dict) -> dict:
                 raise CompileError(
                     f"Bedrock '{node['id']}' has no configured L1 controller")
             used_l1.add(controllers[controller]["id"])
-        configured_l1 = set(
-            machine.get("emulation", {}).get("l1_controllers", {}))
+        # An I-brick's L1 belongs to a module with no node; its C-brick's
+        # L1 reaches it over the XIO cable instead.
+        configured_l1 = {
+            cid for cid, entry in machine.get("emulation", {}).get(
+                "l1_controllers", {}).items()
+            if entry.get("profile") != "ibrick"}
         unused_l1 = configured_l1 - used_l1
         if unused_l1:
             raise CompileError(
@@ -3268,6 +3440,12 @@ def compile_model(model: dict) -> dict:
                         first_attachment=len(xio_attachments))
                     io_boards.extend(boards)
                     xio_attachments.extend(attachments)
+                boards, attachments = _compile_brick_xbridge_heads(
+                    model, components,
+                    {**graph, "modules_by_id": modules_by_id},
+                    crossbars, len(xio_attachments))
+                io_boards.extend(boards)
+                xio_attachments.extend(attachments)
                 for entry, attachment in zip(graph["io_boards"],
                                              graph["xio_attachments"], strict=True):
                     board = _compile_io_board(model, components, entry)

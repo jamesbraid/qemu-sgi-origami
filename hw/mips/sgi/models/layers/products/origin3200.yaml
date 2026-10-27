@@ -60,16 +60,138 @@ layer:
         uses is unknown. A second I/O brick is a documented expansion this
         composition does not show. The I-brick's XBridge head and PCI
         device numbers are the provisional placements the module layers
-        already carry. Planned: the C-brick layer carries no L1, the
-        C-brick's board-identification word, FPU identification and reset
-        mode are unknown, and the compiler does not yet build PCI heads on
-        an enclosure crossbar, so this target is not exported to the
-        emulator.
+        already carry. The C-brick's board-identification word, FPU
+        identification and reset mode are model choices recorded with their
+        values, and the Fibre Channel card is not built.
       emulation:
+        bedrock_nodes:
+          c0-bedrock: &cbrick-bedrock
+            # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the
+            # stock PROM. The low nibble selects the PROM's configuration
+            # row; 2 is the 400 MHz, 8 MB row this fit matches. The other
+            # bits are unknown and read zero.
+            board_id_word: 2
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: ["openbsd-sgi:2df91d80c104 sys/arch/sgi/sgi/ip27.h lines 43 to 46: product code 0 is a C-brick", "firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row"]
+            notes: >-
+              Approximation. Established: product code 0. Chosen: low nibble
+              2, the configuration row of the selected fit; which nibble a
+              physical C-brick presents is unknown, and a register read on a
+              matching board would settle it.
+          c1-bedrock: *cbrick-bedrock
+        l1_controllers:
+          c0-l1: &cbrick-l1
+            profile: cbrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The C-brick profile of the L1 model; its firmware revision is unknown and not carried.
+          c1-l1: *cbrick-l1
+          ibrick-l1:
+            profile: ibrick
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            notes: The I-brick profile of the L1 model, reached from c0's L1 over the XIO cable.
+        io_boards:
+          ibrick-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            # The TSB12LV22 model has no PHY or bus, and its reviewed
+            # register contract keeps it out of product profiles until
+            # those exist; the stock PROM's 1394 probe waits on them.
+            ieee1394_absent: true
+            provenance: derived
+            sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-ibrick, hw/misc/tsb12lv22.c]
+            notes: >-
+              The IOC3 subsystem field is the unobserved placeholder, and no
+              source gives where the IO7's Ethernet address comes from. The
+              IEEE 1394 link controller is left out, a stated limitation:
+              its PHY and bus are not modelled.
+        # The IP35 flash configuration block's product values: machine type
+        # 0, the C-brick rows' class, and the 400 MHz, 8 MB row's word.
+        ip35_firmware:
+          machine_type: 0
+          cpu_mode_word: 0x5414a785
+          provenance: derived
+          sources: ["firmware:ip35-prom-6.210 CPU-configuration table, the 400 MHz, 8 MiB C-brick row and its machine-type byte"]
+          notes: Inferred from the PROM's own table, as the Origin 300's values are; no C-brick flash block has been captured.
         machine_name: origin3000
         display_description: SGI Origin 3200 (IP35), two C-bricks and an I-brick
         profile: origin3200
-        lifecycle: planned
+        lifecycle: implemented
+        # Each C-brick runs the selected fit's 4096 MB only.
+        emulator_constraints:
+          accepted_bank_sizes_mib: [4096]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-carrier, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-trampolines, qemu:docs/system/mips/sgi/prom-image.rst#sgi-prom-image-ip35-views]
+          notes: >-
+            The Origin 300's stock IP35 PROM 6.210 payload and views, carried
+            by each C-brick's node; the Origin 3200 inventory reports the same
+            PROM revision. Emulator compatibility policy; no fitted flash part
+            or physical reset decoder is claimed.
+        initial_module_numbers:
+          - component: c0-chassis
+            number: 4
+            reason: >-
+              The first C-brick's slot, U04, where the configuration manual
+              places it (module 001c04).
+          - component: c1-chassis
+            number: 7
+            reason: >-
+              The second C-brick's slot, U07 (module 001c07).
+          - component: ibrick-brick
+            number: 14
+            reason: >-
+              The I-brick's slot, U14, where the configuration manual places
+              it (module 001i14).
+        synthetic_identities:
+          - component: c0-bedrock
+            serial: "0x51454d554e00"
+            reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
+          - component: c1-bedrock
+            serial: "0x51454d554e01"
+            reason: Synthetic node identity N1, carrying the "QEMU" marker; not hardware evidence.
+      harness:
+        console: l1-uart
+        prom_dialogue: ip35-l1-prompt
+        default_cpu_model: R12000
+        # No boot disk bus is built yet: the I-brick's Fibre Channel card
+        # has no builder, so the harness boots this product over the network.
+        disk_bus: none
+        netboot_adapter: ioc3-ethernet
+        default_topology: origin3200
+        supported_guests: [irix]
+        install_media: [netboot]
+        provenance: derived
+        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-launch-metadata]
     evidence_policy: strict
     components:
       - id: rack

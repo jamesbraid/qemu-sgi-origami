@@ -14,6 +14,11 @@ static const char * const sgi_sn1_r14000_cpu_types[] = {
     NULL,
 };
 
+static const char * const sgi_sn1_r12000_cpu_types[] = {
+    MIPS_CPU_TYPE_NAME("R12000"),
+    NULL,
+};
+
 static const char * const sgi_sn1_r16000_cpu_types[] = {
     MIPS_CPU_TYPE_NAME("R16000"),
     NULL,
@@ -41,7 +46,8 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     smc->default_topology = t->name;
     mc->desc = t->description;
     mc->valid_cpu_types = ip53 ? sgi_sn1_r16000_cpu_types :
-                                 sgi_sn1_r14000_cpu_types;
+                          g_str_equal(product, "origin3000") ?
+                          sgi_sn1_r12000_cpu_types : sgi_sn1_r14000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);
     mc->min_cpus = sgi_machine_product_min_cpus(product);
     mc->max_cpus = sgi_machine_product_max_cpus(product);
@@ -57,6 +63,12 @@ static const TypeInfo sn1_machine_types[] = {
         .parent = TYPE_SGI_SN_MACHINE,
         .class_init = sn1_machine_class_init,
         .class_data = "origin300",
+    },
+    {
+        .name = MACHINE_TYPE_NAME("origin3000"),
+        .parent = TYPE_SGI_SN_MACHINE,
+        .class_init = sn1_machine_class_init,
+        .class_data = "origin3000",
     },
     {
         .name = MACHINE_TYPE_NAME("origin350"),
