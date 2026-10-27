@@ -2976,6 +2976,8 @@ class Origin3000BrickTests(unittest.TestCase):
         self.assertEqual(population["memory_mib_per_node"], [4096, 4096])
         self.assertEqual(population["memory_bank_mib_per_node"],
                          [[512] * 8, [512] * 8])
+        self.assertEqual(model["machine"]["model_role"], "emulation-target")
+        self.assertEqual(model["machine"]["emulation"]["lifecycle"], "planned")
 
     def test_origin3200_refuses_a_fit_outside_the_selected_fit(self):
         product = "layers/products/origin3200.yaml"
@@ -3073,9 +3075,11 @@ class Origin3000BrickTests(unittest.TestCase):
             model["composition"]["population"]["memory_bank_mib_per_node"],
             [mixed, mixed])
 
-    def test_origin3200_still_never_compiles(self):
+    def test_origin3200_is_a_planned_target_the_compiler_refuses(self):
         from sgi_model.model_compile import CompileError, compile_model
-        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+        with self.assertRaisesRegex(
+                CompileError, "PCI heads on an enclosure crossbar are not "
+                "compiled yet"):
             compile_model(self.resolve())
 
     ORIGIN3200_XBRICK = INPUTS / "origin3200-xbrick.yaml"
@@ -3203,12 +3207,20 @@ class Origin3000BrickTests(unittest.TestCase):
                       [(item["id"], item["ends"])
                        for item in model["xio_cables"]])
         from sgi_model.model_compile import CompileError, compile_model
-        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+        # The product is a planned emulation target, so these variants
+        # inherit its role and stop at the same missing compiler feature.
+        with self.assertRaisesRegex(
+                CompileError, "PCI heads on an enclosure crossbar are not "
+                "compiled yet"):
             compile_model(model)
 
     def test_origin3200_xbrick_never_compiles(self):
         from sgi_model.model_compile import CompileError, compile_model
-        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+        # The product is a planned emulation target, so these variants
+        # inherit its role and stop at the same missing compiler feature.
+        with self.assertRaisesRegex(
+                CompileError, "PCI heads on an enclosure crossbar are not "
+                "compiled yet"):
             compile_model(self.resolve(self.ORIGIN3200_XBRICK))
 
 

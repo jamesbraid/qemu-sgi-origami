@@ -10,6 +10,7 @@ layers:
 module_instances:
   - model: layers/modules/c-brick.yaml
     prefix: c0-
+    module_role: MASTER
     parent: rack
     observed_hardware: &cbrick-basis
       mode: projected
@@ -20,6 +21,7 @@ module_instances:
         this C-brick.
   - model: layers/modules/c-brick.yaml
     prefix: c1-
+    module_role: SLAVE
     parent: rack
     observed_hardware: *cbrick-basis
   - model: layers/modules/i-brick.yaml

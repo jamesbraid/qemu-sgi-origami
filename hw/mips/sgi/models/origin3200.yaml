@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 3200 reference composition: two four-processor C-bricks and an
-# I-brick. Resolve before validation or generation.
+# Origin 3200 composition: two four-processor C-bricks and an I-brick.
+# Resolve before validation or generation.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip35.yaml
   - layers/products/origin3200.yaml
 module_instances:
+  # module_role marks c0, the bottom C-brick that carries the console and
+  # the I-brick, as the console node. No source gives the two C-bricks'
+  # L1s a master and slave designation, and this asserts none.
   - model: layers/modules/c-brick.yaml
     prefix: c0-
+    module_role: MASTER
     parent: rack
     observed_hardware: &cbrick-basis
       mode: projected
@@ -19,6 +23,7 @@ module_instances:
         this C-brick.
   - model: layers/modules/c-brick.yaml
     prefix: c1-
+    module_role: SLAVE
     parent: rack
     observed_hardware: *cbrick-basis
   - model: layers/modules/i-brick.yaml
