@@ -7,61 +7,459 @@ SGI IP35: Origin 300, Fuel and the Origin 350 family
 ====================================================
 
 IP35 is the software platform of SGI's second Scalable Node generation,
-built around the Bedrock node controller. QEMU models it as the
-``origin300``, ``fuel``, ``origin350``, ``onyx350``, ``tezro`` and
-``onyx4-host`` machines on the shared base described in :doc:`sn`. This
-page covers the platform's physical address map and the IP53 board's
-I/O and compatibility components.
+built around the Bedrock node controller. QEMU models six products on it:
+``origin300`` (board IP45), ``fuel`` (board IP34), and four products on
+the IP53 board, ``origin350``, ``onyx350``, ``tezro`` and ``onyx4-host``.
+The machine classes are in ``hw/mips/sgi/sn1.c``. Each node is an
+``sgi-sn1-node`` (``hw/mips/sgi/sn1-node.c``), and the shared Scalable
+Node builder in ``hw/mips/sgi/sn-machine.c`` assembles the nodes from the
+compiled catalogue (:doc:`sn`). Every machine boots a stock IP35 PROM that
+the user supplies. This page is the hardware contract the IP35 model
+layers in ``hw/mips/sgi/models/`` cite: what each product fits, how it is
+wired, the physical address map, and where the emulator chose a value
+the hardware does not settle. Chip register behaviour is on the part
+pages listed under :ref:`sgi-ip35-devices`.
+
+Facts are rated as described in :ref:`sgi-ratings`.
+
+The Origin 300 and Fuel are modelled from manuals and published
+captures of those products. The four IP53 products are serial software
+profiles. Each fixes a processor, memory, PIC and IO9 population drawn
+from one published capture or manual, and fills the gaps with stated
+choices. They run the stock PROM and IRIX on the model. They do not
+establish that any physical IP53 board is wired the way they are.
+
+.. _sgi-ip35-sources:
+
+Sources
+=======
+
+SGI manuals, by document number and printed page:
+
+- *SGI Origin 300 User's Guide*, :src:`007-4365-002`: pages 1 and 8-14
+  (processors, memory, rear connectors, the one- and two-chassis
+  systems) and 38 (connecting two servers).
+- *SGI Origin 300 System with NUMAlink Module User's Guide*,
+  :src:`007-4498-002`: pages 2-16 and 93-98 (ports, cabling, rack
+  population) and 130-133 (controllers).
+- *SGI Origin 300 PCI Expansion Module User's Guide*,
+  :src:`007-4499-002`: pages 12-13 and 38.
+- *Origin 3000 System Architecture*, :src:`108-0240-002`: pages 2-26 to
+  2-29 (XBridge ports) and 2-47 (the L1 link between chassis).
+- *Scan Tools for SGI Origin 300 System and SGI 3000 Family*,
+  :src:`108-0263-004 p. 2-18` (Origin 300 processor configurations).
+- *sMDK-based Field Diagnostics*, :src:`108-0264-004` (node addresses
+  and IO-8 device numbers).
+- *Silicon Graphics Fuel Visual Workstation Hardware User's Guide*,
+  :src:`007-4480-001`: pages 6, 30-32, 35-38 and 60.
+- *SGI Origin 350 Server System User's Guide*, :src:`007-4566-001`:
+  pages 68-75, 114 and 116.
+- *Onyx 350 Visualization System User's Guide*, :src:`007-4632-001`:
+  pages 47, 50 and 53.
+- *Tezro Visual Workstation Hardware User's Guide*, tower configuration,
+  :src:`007-4564-001`: pages 26-30 and 38; rack configuration,
+  :src:`007-4643-003`: pages 21-32.
+- *Onyx4 UltimateVision User's Guide*, :src:`007-4634-002`: pages 1-2,
+  15, 20-23 and 30-32.
+- *XBridge ASIC Specification*, revision 0.5, :src:`xbridge-asic-spec-0.5`.
+
+Public software:
+
+- OpenBSD/sgi, branch ``sgi-is-alive-at-7.9`` at
+  ``2df91d80c104636deeef8124252ddd5951b55fbf``:
+  ``sys/arch/mips64/include/cpu.h``, ``sys/arch/sgi/include/mnode.h``,
+  ``sys/arch/sgi/xbow/hub.h``, ``xbow.c``, ``xbridge.c``,
+  ``xbridgereg.h``, ``sys/arch/sgi/sgi/ip27.h``, ``ip27_machdep.c``,
+  ``sginode.c``, ``l1.c``, ``sys/arch/sgi/pci/ioc.c``,
+  ``sys/arch/sgi/dev/dsrtc.c`` and ``sys/arch/sgi/conf/GENERIC-IP27``.
+- SGI's Linux SN1 headers in the pre-git Linux history at
+  ``7570df54ef8c`` (tag v2.5.40): ``include/asm-ia64/sn/sn1/addrs.h``,
+  ``arch.h``, ``bedrock.h``, ``hubpi.h``, ``hubpi_next.h``, ``hubio.h``,
+  ``hubio_next.h``, ``hublb.h``, ``hubni.h``, ``hubni_next.h``,
+  ``hubmd.h``, ``include/asm-ia64/sn/kldir.h`` and
+  ``arch/ia64/sn/io/sn1/ip37.c``; and v2.5.0 at ``381ab1f53816``. SGI
+  generated these from its register database for an Itanium port. They
+  are a register-definition source, not a MIPS guest, and not independent
+  corroboration of anything else SGI wrote.
+- The out-of-tree MIPS IP35 port at ``9f613a321ea0``:
+  ``arch/mips/include/asm/mach-ip35/spaces.h``,
+  ``arch/mips/include/asm/sn/sn1/addrs.h``, ``arch/mips/sgi-ip35/`` and
+  ``arch/mips/pci/pci-sgipic.c``. Nothing records it booting.
+- Imre Kaloz's IP35 series for Linux, patch 35,
+  :src:`lore-kaloz-ip35-35`: the L1 brick-type letters it maps to
+  products.
+- Mainline Linux at ``db2ddb871435``,
+  ``arch/mips/pci/pci-xtalk-bridge.c`` (IOC3 subsystem identities).
+
+Published captures:
+
+- Origin 300: a two-processor inventory, :src:`nekonomicon-16726611`;
+  OpenBSD boots on one chassis and on a cabled pair,
+  :src:`marc-openbsd-sgi-125897882029839` and
+  :src:`marc-openbsd-sgi-139223952727384`; a two-chassis inventory,
+  :src:`nekonomicon-17314`; a six-chassis rack inventory,
+  :src:`nekonomicon-16727514`.
+- Fuel: an IRIX 6.5.22 console and inventory,
+  :src:`tingo-fuel-irix-console`; OpenBSD boots in
+  :src:`miod-openbsd-sgi-story`; L1 and PROM sessions in
+  :src:`graphica-o350-chimera-notes`; a repair account,
+  :src:`sgi-sh-fuel-repair-attempt`; a memory inventory,
+  :src:`usenet-slrndfs77l`.
+- Origin 350: :src:`nekonomicon-16724207` and
+  :src:`nekonomicon-16729141`.
+- Onyx 350: one module of a multi-module system,
+  :src:`graphica-onyx350-hinv`.
+- Tezro: a 700 MHz four-processor inventory captioned as a deskside,
+  :src:`graphica-tezro-hinv`; an 800 MHz four-processor inventory,
+  :src:`irixnet-post-26015`; a 1 GHz PROM transcript,
+  :src:`irixnet-thread-3613`.
+- Onyx 4: an owner's inventory of a system labelled Onyx 350 with an IP59
+  board, :src:`irixnet-thread-2263`.
+
+The stock firmware is :src:`ip35-prom-6.210`. What it does is a
+*software expectation*, never a hardware fact.
+
+.. _sgi-ip35-machines:
+
+Machines
+========
+
+Each machine builds one or two Bedrock nodes. ``-M <machine>,topology=``
+selects a wiring the catalogue lists. An unknown name, such as
+``topology=help``, makes the machine print the topologies it accepts and
+exit.
+
+.. _sgi-ip35-products:
+
+Products
+--------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Machine
+     - Topologies
+     - Processors
+     - Memory
+     - Node board
+   * - ``origin300``
+     - ``origin300`` (default), ``origin300-two-chassis``,
+       ``origin300-pci-expansion``, ``origin300-numalink-pci-expansion``
+     - two or four R14000 per chassis, 500 MHz, 2 MiB secondary cache
+     - 512 MiB per chassis
+     - IP45
+   * - ``fuel``
+     - ``fuel``
+     - one R14000, 500 MHz, 2 MiB
+     - 512 MiB
+     - IP34 ``030-1707-003`` revision G
+   * - ``origin350``
+     - ``origin350``
+     - four R16000, 700 MHz, 8 MiB
+     - 2 GiB
+     - IP53 ``030-1868-001`` revision C
+   * - ``onyx350``
+     - ``onyx350-compat`` (must be named)
+     - four R16000, 800 MHz, 8 MiB
+     - 8 GiB
+     - IP53 ``030-2013-001`` revision D
+   * - ``tezro``
+     - ``tezro-tower-one``, ``tezro-tower-multi``, ``tezro-rack`` (one
+       must be named)
+     - one, four and one R16000 respectively, 700 MHz, 4 MiB
+     - 4 GiB
+     - IP53
+   * - ``onyx4-host``
+     - ``onyx4-host-serial-compat``
+     - four R16000, 1 GHz, 16 MiB
+     - 8 GiB
+     - IP53 path standing in for an IP59 board
+
+``origin300`` and ``fuel`` accept only ``-cpu R14000``. The IP53 machines
+accept only ``-cpu R16000``. ``-kernel`` is refused on every machine.
+``onyx350`` and ``tezro`` have no default topology and refuse a launch
+that does not name one.
+
+``origin300`` (*established* for the product): an Origin 300 holds two or
+four processors and 512 MB to 4 GB (:src:`007-4365-002 p. 1, 10-12`). The
+scan guide lists two- and four-processor 500 MHz R14000 configurations
+with 2 MB of cache (:src:`108-0263-004 p. 2-18`). A published
+two-processor board reports ``IP45_2CPU``, part ``030-1780-001``
+revision C, with processors A and C fitted (:src:`nekonomicon-16726611`),
+*observed*. The four-processor population fits the remaining positions B
+and D on the same two processor interfaces, *inferred*. The 512 MiB
+population is the guide's minimum and the only size the model accepts.
+
+``fuel`` (*established* for the product): one processor module, a
+500 MHz R14000A option, and two 256 MiB DIMMs as the minimum pair
+(:src:`007-4480-001 p. 30-32, 60`). A published IRIX inventory reports
+board ``030-1707-003`` revision G and an R14000 revision 2.3
+(:src:`tingo-fuel-irix-console`), *observed*. That machine had 1536 MiB.
+Pairing its board with the guide's 512 MiB minimum is a model choice. A
+second processor is not a Fuel option.
+
+The IP53 products are described in :ref:`sgi-ip35-ip53`.
+
+.. _sgi-ip35-processors:
+
+Processors
+----------
+
+The Origin 300 and Fuel fit QEMU's R14000 at 500 MHz with 2 MiB of
+secondary cache. The IP53 profiles fit the R16000 with each profile's
+clock, cache size and reset mode word (:ref:`sgi-ip53-serial-profiles`).
+:doc:`hardware/r10000` describes the identity words, the reset mode word
+and how the R16000 inputs are checked.
+
+A Bedrock has two processor interfaces with two processors each. The
+machine populates them diagonally: a two-processor node fits interface 0
+position A and interface 1 position A first (``sn1-topology.c``), as the
+published two-processor board does.
+
+.. _sgi-ip35-memory:
+
+Memory
+------
+
+Each topology fixes one memory population per node, and ``-m`` must name
+its total. The bank positions are model choices unless stated.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - Banks (MiB) at positions
+     - Basis
+   * - Origin 300
+     - 256, 256 at banks 2 and 3
+     - *approximation*; two 256 MB DIMMs give the guide's 512 MB minimum
+   * - Fuel
+     - 256, 256 at banks 0 and 1
+     - *observed* software bank numbers of a revision F Fuel
+       (:src:`usenet-slrndfs77l`); the socket-to-bank wiring is *unknown*
+   * - Origin 350
+     - 1024, 1024 at banks 0 and 1
+     - *approximation*; no DIMM part or SPD is supplied
+   * - Onyx 350, Onyx 4 host
+     - eight banks of 1024 at 0-7
+     - *observed* logical banks of the captured Onyx 350 module
+       (:src:`graphica-onyx350-hinv`)
+   * - Tezro
+     - 1024, 1024, 512, 512, 512, 512 at 0-5
+     - *observed* logical banks of the captured 700 MHz Tezro
+       (:src:`graphica-tezro-hinv`)
+
+The Origin 300 has four DIMM slots as two pairs, 512 MB to 4 GB a
+chassis, and the pairs may differ (:src:`007-4365-002 p. 11`). The Fuel
+takes four DDR sockets in equal pairs, pair 1 in sockets 0 and 2, up to
+4 GiB (:src:`007-4480-001 p. 60`). The Origin 350 has eight DIMM slots
+as four pairs, 1 to 8 GB (:src:`007-4566-001 p. 114, 116`). All
+*established*. Larger and unequal populations are not offered. The
+Bedrock's memory banks are described on :doc:`hardware/bedrock`.
+
+.. _sgi-ip35-devices:
+
+Supported devices
+=================
+
+- Bedrock node controller: :doc:`hardware/bedrock`
+- L1 system controller: :doc:`hardware/l1`
+- XBridge on the Origin 300 and Fuel: :doc:`hardware/xbridge`
+- PIC on the IP53 products: :doc:`hardware/pic`
+- IOC3 on the IO-8 and the Fuel board: :doc:`hardware/ioc3`
+- IOC4 on IO9: :doc:`hardware/ioc4`
+- DP83843 Ethernet transceiver behind the IOC3: :doc:`hardware/dp8384x`
+- BCM5701 Ethernet on IO9: :doc:`hardware/bcm570x`
+- Lucent USB OHCI on the IO-8 and the revision G Fuel:
+  :doc:`hardware/lucent-ohci`
+- QLogic ISP12160 SCSI on the IO-8, the Fuel and IO9:
+  :doc:`hardware/qlogic-isp`
+- M48T35-compatible and DS1744 timekeepers: :doc:`hardware/timekeepers`
+- BIC on the Origin 300 PCI expansion module: :doc:`hardware/bic`
+- SN1 router: :doc:`hardware/sn1-router`
+- Origin 300 PCI expansion module: :doc:`hardware/pci-expansion`
+- Origin 3000 bricks and the NUMAlink module, as reference compositions
+  only, including the I-brick's TSB12LV22 (:doc:`hardware/tsb12lv22`):
+  :doc:`hardware/bricks`
+- R14000 and R16000 processors: :doc:`hardware/r10000`
+- VPro graphics: :doc:`hardware/odyssey` and :doc:`hardware/graphics`
+
+.. _sgi-ip35-components:
+
+Components and connections
+--------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Component
+     - Attachment
+     - Rating and basis
+   * - Bedrock
+     - both processor interfaces; enters the crossbar at widget ``0xa``
+     - Origin 300: *observed*, a published verbose PROM trace prints the
+       Bedrock attached as widget ``0xa``. Fuel: *observed*
+       (:src:`graphica-o350-chimera-notes`). IP53: *approximation*
+   * - XBridge (Origin 300, Fuel)
+     - crossbar at widget 0, PCI heads at widgets 14 (head E) and 15
+       (head F)
+     - *observed* in the OpenBSD captures
+       (:src:`marc-openbsd-sgi-125897882029839 lines 55-90`) and the Fuel
+       inventory; the specification gives the XBridge mode's internal
+       ports ``0xe`` and ``0xf`` (:src:`xbridge-asic-spec-0.5 p. 17, 44-46`)
+   * - Origin 300 IO-8 on head F
+     - ISP12160 at PCI device 1, IOC3 at 4, Lucent OHCI at 5
+     - *observed* (:src:`marc-openbsd-sgi-125897882029839 lines 55-90`;
+       :src:`108-0264-004 p. 2-11`, Table 2-4)
+   * - Origin 300 option slots on head E
+     - PCI devices 1 and 2
+     - *observed* (:src:`007-4365-002 p. 9, 12`); empty by default
+   * - Fuel onboard I/O on head F
+     - ISP12160 at device 1, IOC3 at 4, Lucent OHCI ``11c1:5802`` at 5
+     - *observed* (:src:`miod-openbsd-sgi-story`,
+       :src:`tingo-fuel-irix-console`); the OHCI identity follows the
+       revision G inventory, and another Fuel reports an Opti
+       ``1045:c861`` there
+   * - Fuel head E
+     - empty
+     - the Intel 82550 an OpenBSD capture shows at device 2 is an add-in
+       card, *observed*
+   * - PIC (IP53)
+     - one at widget 15; on ``tezro-tower-multi``, two, at widgets 11
+       and 15
+     - :ref:`sgi-ip53-pic`
+   * - IO9 (IP53)
+     - PIC widget 15, head 0: IOC4 at PCI device 1, ISP12160 at 3,
+       BCM5701 at 4
+     - :ref:`sgi-ip35-ip53-io9`
+   * - L1
+     - the Bedrock's register window; the system console
+     - :doc:`hardware/l1`
+
+The IOC3's timekeeper on the Origin 300 and Fuel is an M48T35-compatible
+32 KiB part on byte-bus select 0, read with the 1968 year base OpenBSD's
+``dsrtc.c`` (lines 169-174) applies on IP35. The Fuel board carries a
+DS1742W, so on the Fuel this is an *approximation* (:ref:`sgi-ip35-fuel`).
+
+.. _sgi-ip35-identity:
+
+Board identity inputs
+---------------------
+
+Each product carries the values its firmware reads to recognise it. They
+are catalogue defaults. Machine properties of the same names override
+them: ``board-id-word``, ``l1-type-code``, ``l1-revision``,
+``bedrock-revision`` and ``ioc3-subsystem-id``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - Board word
+     - L1 type
+     - L1 revision
+     - Flash machine type
+   * - Origin 300
+     - ``0x8001``
+     - ``0x34`` (``4``)
+     - 1.18.5
+     - 1
+   * - Fuel
+     - ``0x4004``
+     - ``0x41`` (``A``)
+     - none
+     - 2
+   * - Origin 350, Onyx 350, Onyx 4 host
+     - ``0x2001``
+     - ``0x37`` (``7``)
+     - 1.18.5
+     - 0
+   * - Tezro tower
+     - ``0x2001``
+     - ``0x39`` (``9``)
+     - 1.48.1
+     - 0
+   * - Tezro rack
+     - ``0x2001``
+     - ``0x51`` (``Q``)
+     - 1.48.1
+     - 0
+
+- Board word bits 15:12: OpenBSD reads them as the product code and
+  assigns C-brick 0, Origin 350 2, Fuel 4 and Origin 300 8 (``ip27.h``
+  lines 43-46, ``ip27_machdep.c`` lines 165-185), a *software
+  expectation*. The low bits are *unknown* on every product. The stock
+  PROM uses the low nibble to pick a row of its processor-configuration
+  table: 1 on the Origin 300 and 4 on the Fuel select the 500 MHz, 2 MiB
+  R14000 rows (:src:`ip35-prom-6.210`), a *software expectation*. On the
+  IP53 products the low bits ``0x001`` are a choice. The register is on
+  :doc:`hardware/bedrock`.
+- L1 type: Kaloz's series maps ``4`` to Origin 300, ``A`` to Fuel, and
+  ``9`` and ``Q`` to the Tezro deskside and rack (:src:`lore-kaloz-ip35-35`),
+  a *software expectation*. ``0x37`` on the IP53 servers is a choice. No
+  captured L1 type reply exists for any of them, *unknown*.
+- L1 revision: the Fuel captures report 1.48.1 and 1.14.4, and neither
+  is tied to the modelled board, so the Fuel answers the unknown-version
+  error unless a launch supplies ``l1-revision=``. The Tezro's 1.48.1 is
+  the image in the IP35 patch :src:`ip35-patch-sg0007149`. The others are
+  choices.
+- Flash machine type: the value written into the PROM's configuration
+  block. The PROM's Origin 300 rows carry type 1 and its Fuel rows type 2,
+  a *software expectation*. A real Fuel's ``flash -f`` session answers 2
+  (:src:`graphica-o350-chimera-notes`), *observed*. The IP53 value 0 is a
+  choice. :doc:`prom-image` gives the block layout.
+- Bedrock revision 2 at 200 MHz: every published Origin 300, Origin 350,
+  Fuel and Onyx 4 inventory reports ``HUB`` revision 2, *observed*. The
+  raw register value behind that field is *unknown*.
+- The IOC3 subsystem identity is ``0xc30a`` on the Fuel, the code Linux
+  ``pci-xtalk-bridge.c`` assigns the IP34 board (*software expectation*),
+  and ``0xffff`` on the Origin 300 (*unknown*).
+
+Barcodes and serial numbers in board records are synthetic ``EMU``
+values carrying a ``QEMU`` marker, not taken from a real machine.
+
+.. _sgi-ip35-missing:
+
+Missing devices
+===============
+
+- The Origin 300 rear XIO connector's graphics enclosure. The connector
+  is modelled empty at crossbar port ``0xb``, an *approximation*.
+- The L2 controller and the NUMAlink module's USB path to it.
+- Origin 3000 C-, I-, P- and X-bricks. The ``origin3200`` composition is
+  a reference model; no machine builds it.
+- On the IP53 products: the Onyx 350's four-port USB card, factory disk
+  attachment and serial daughtercard; the TI ``104c:ac28`` PCI-to-PCI
+  bridge and the other PCI functions in the Tezro captures; IOC4's ATA,
+  keyboard and mouse ports beyond what :doc:`hardware/ioc4` lists; every
+  G2 and G2N brick; any NUMAlink peer; the second enclosure of a Tezro
+  rack.
+- The Fuel's DS1742W decode. Its clock is an M48T35-compatible stand-in.
 
 .. _sgi-ip35-address-map:
 
 IP35 physical address map (Origin 300, IP45)
 ============================================
 
-This page is the address map the Origin 300 and Fuel machine models
+This is the address map the Origin 300 and Fuel models
 (``hw/mips/sgi/sn1.c`` and ``sn1-node.c``) follow: how an R10000-family
 processor selects a space, how the node number sits in a physical
 address, node memory, the crosstalk windows, the Bedrock's register
 space, the hand-off and reset registers, and the interrupt-send address.
-The Bedrock units behind the register space are on :doc:`/system/mips/sgi/hardware/bedrock`.
-Ratings follow :ref:`sgi-ratings`.
-
-Sources, all public. Citations give the file and lines at the pinned
-commit:
-
-- OpenBSD sgi, ``openbsd-sgi:2df91d80c104636deeef8124252ddd5951b55fbf``:
-  ``sys/arch/mips64/include/cpu.h``, ``sys/arch/sgi/include/mnode.h``,
-  ``sys/arch/sgi/xbow/hub.h``, ``xbow.c``, ``xbridge.c``,
-  ``sys/arch/sgi/sgi/ip27.h``, ``ip27_machdep.c``, ``sginode.c``,
-  ``l1.c`` and ``sys/arch/sgi/conf/GENERIC-IP27``.
-- SGI's Linux SN1 headers, ``linux-history:7570df54ef8c`` (tag
-  v2.5.40): ``include/asm-ia64/sn/sn1/addrs.h``, ``arch.h``,
-  ``bedrock.h``, ``hubpi.h``, ``hubpi_next.h``, ``hubio.h``,
-  ``hubio_next.h``, ``hublb.h``, ``hubni.h``, ``hubni_next.h``,
-  ``hubmd.h``, ``include/asm-ia64/sn/kldir.h`` and
-  ``arch/ia64/sn/io/sn1/ip37.c``. These are SGI-written, generated from
-  its register database: a register-definition source and an Itanium
-  consumer, not a MIPS guest and not independent corroboration of
-  anything else SGI wrote.
-- The out-of-tree MIPS IP35 port, ``linux-ip35:9f613a321ea0``:
-  ``arch/mips/include/asm/mach-ip35/spaces.h``,
-  ``arch/mips/include/asm/sn/sn1/addrs.h``, ``arch/mips/sgi-ip35/`` and
-  ``arch/mips/pci/pci-sgipic.c``; nothing records it booting.
-- *Origin 300 User's Guide* (007-4365-002), *Origin 3000 System
-  Architecture* (108-0240-002), *XBridge ASIC Specification* revision
-  0.5 (``web:xbridge-asic-spec-0.5``) and *sMDK-based Field
-  Diagnostics* (108-0264-004).
+The IP53 profiles share it. The Bedrock units behind the register space
+are on :doc:`hardware/bedrock`.
 
 .. _sgi-ip35-address-map-spaces:
 
 Processor-side spaces
 ---------------------
 
-The processor selects a space with two bits beside the address, not inside
-it: an R10000-family processor takes the uncached attribute from
-virtual-address bits 58:57 of an uncached xkphys address and drives it with
-the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113; linux-ip35
-``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines 40-44).
+The processor selects a space with two bits beside the address, not
+inside it: an R10000-family processor takes the uncached attribute from
+virtual-address bits 58:57 of an uncached xkphys address and drives it
+with the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113;
+linux-ip35 ``spaces.h`` lines 13-16; Linux SN1 ``bedrock.h`` lines
+40-44), *established*.
 
 .. list-table::
    :header-rows: 1
@@ -70,7 +468,7 @@ the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113; linux-ip35
    * - Space
      - Attribute
      - Base an unmapped R10000 guest uses
-     - Source (all established)
+     - Source (all *established*)
    * - cached memory
      - none
      - ``0xa800_0000_0000_0000``
@@ -95,10 +493,11 @@ the 40-bit physical address (OpenBSD ``cpu.h`` lines 92-113; linux-ip35
      - ``0x9600_0000_0000_0000``
      - ``cpu.h`` line 101, ``mnode.h`` line 49; ``spaces.h`` line 22.
 
-There are exactly four uncached spaces on the MIPS side. The Itanium port's
-seven bases do not apply. The Origin 200's 42-bit machine-bus carrier
-(a two-bit window number above the 40-bit physical address) fits this
-generation unchanged (emulator choice).
+There are exactly four uncached spaces on the MIPS side. The Itanium
+port's seven bases do not apply. The model carries the two attribute bits
+above the 40-bit physical address in a 42-bit machine-bus address, as it
+does for the Origin 200, an *approximation* of an internal path no
+software sees.
 
 .. _sgi-ip35-address-map-node:
 
@@ -112,7 +511,7 @@ The node number
    * - Item
      - M mode
      - N mode
-     - Source (established)
+     - Source (*established*)
    * - node field
      - bits 39:33 (7 bits)
      - bits 39:32 (8 bits)
@@ -127,27 +526,29 @@ The node number
      - 128
      - ``sn1/arch.h`` ``MAX_NASIDS``; OpenBSD ``mnode.h`` line 438 (the
        64-node M-mode cap in ``sginode.c`` is an OpenBSD choice).
-   * - Origin 200
+   * - Origin 200, for comparison
      - bits 39:32, 4 GB
      - bits 39:31, 2 GB
      - mainline Linux ``sn0/addrs.h`` lines 53-74.
 
-The vendor's own Origin 300 field-diagnostics manual prints a sample
-configuration for an Origin 3000 pair in which node 1's cached memory base
-is ``0xa800000200000000``, 2^33 above node 0's (108-0264-004 printed page
-A-2), agreeing with the seven-bit field at bit 33 (established).
+The field diagnostics manual prints a sample configuration for an Origin
+3000 pair in which node 1's cached memory base is
+``0xa800000200000000``, 2^33 above node 0's
+(:src:`108-0264-004 p. A-2`), agreeing with the seven-bit field at bit
+33, *established*.
 
-How a guest learns the mode conflicts across consumers: OpenBSD takes bit
-18 of the network port status register (offset ``0x680000``) as "more nodes
-than M mode holds" (``sginode.c`` lines 100-103, ``hub.h`` line 218), the
-Origin 200 rule; the Bedrock register file defines only bits 2:0 of that
-register (Linux SN1 ``sn1/hubni.h`` lines 1015-1033), and the Itanium
-port reads the local block's system-size field, bits 47:46 of its revision
-register, where 2 means N mode (``hublb_next.h`` lines 19-32, ``ip37.c``
-lines 34-38). The model returns zero in both (an approximation): OpenBSD
-prints "Machine is in M mode" on real Origin 300s, one chassis and two
-cabled, so bit 18 reading clear is observed; what an N-mode Bedrock
-returns, and which register the PROM consults, are unknown.
+How a guest learns the mode differs across consumers. OpenBSD takes bit
+18 of the network-interface port status register (offset ``0x680000``)
+as "more nodes than M mode holds" (``sginode.c`` lines 100-103,
+``hub.h`` line 218), the Origin 200 rule. The Bedrock register file
+defines only bits 2:0 of that register (Linux SN1 ``sn1/hubni.h`` lines
+1015-1033). The Itanium port reads the local block's system-size field,
+bits 47:46 of its revision register, where 2 means N mode
+(``hublb_next.h`` lines 19-32, ``ip37.c`` lines 34-38). OpenBSD prints
+"Machine is in M mode" on real Origin 300s, one chassis and two cabled,
+so bit 18 reading clear is *observed*. The model reads bit 18 clear and
+resets the local-block field to 0. What an N-mode Bedrock returns, and
+which register the PROM consults, are *unknown*.
 
 .. _sgi-ip35-address-map-memory:
 
@@ -155,15 +556,14 @@ Node memory and the low-memory map
 ----------------------------------
 
 Memory is reported per bank in 1 GB steps (OpenBSD ``sginode.c`` lines
-549-590); the Linux SN1 headers give a 1 GB slot shift, a 64 MB minimum and
-eight slots per node (``sn1/arch.h`` lines 47 and 53-54). OpenBSD does not
-manage the first 64 MB of a node on IP35, against 32 MB on IP27
-(``sginode.c`` lines 566-575, 519-528). The Origin 300 has four DIMM slots
-as two pairs, 512 MB to 4 GB per chassis, the pairs allowed to differ
-(007-4365-002 printed page 11). Established.
+549-590). The Linux SN1 headers give a 1 GB slot shift, a 64 MB minimum
+and eight slots per node (``sn1/arch.h`` lines 47 and 53-54). OpenBSD
+does not manage the first 64 MB of a node on IP35, against 32 MB on IP27
+(``sginode.c`` lines 566-575, 519-528). All *established*.
 
 The firmware's low-memory map, as the Linux SN1 tree draws it
-(``kldir.h`` lines 164-283 for the diagram, 310-361 for the constants):
+(``kldir.h`` lines 164-283 for the diagram, 310-361 for the constants),
+*established*:
 
 .. list-table::
    :header-rows: 1
@@ -210,15 +610,15 @@ The firmware's low-memory map, as the Linux SN1 tree draws it
        links the same address (``GENERIC-IP27`` line 19, one kernel for
        both boards)
 
-The directory slot numbers are unchanged from the Origin 200 (0 launch, 1
-KLCONFIG, 2 NMI, 3 GDA, 4 free memory, 5 symmon stack, 6 PI error, 7
-kernel variables, 8 kernel cross-partition, 9 partition id: OpenBSD
-``mnode.h`` lines 91-100; both Linux trees). That the stock IP35 PROM
-places its configuration graph at ``0x30000`` is measured from the stock
-image (``firmware:ip35-prom-6.210``, ``init_klcfg: nasid 0 start
-9600000000030000``). The Origin 200's offsets (NMI save area ``0x11400``,
-GDA ``0x11000``, KLCONFIG ``0x4000``, kernel ``0x19000``) do not apply to
-IP35.
+The directory slot numbers are unchanged from the Origin 200 (0 launch,
+1 KLCONFIG, 2 NMI, 3 GDA, 4 free memory, 5 symmon stack, 6 PI error,
+7 kernel variables, 8 kernel cross-partition, 9 partition id: OpenBSD
+``mnode.h`` lines 91-100; both Linux trees). The stock IP35 PROM places
+its configuration graph at ``0x30000``: the image reports
+``init_klcfg: nasid 0 start 9600000000030000`` (:src:`ip35-prom-6.210`),
+a *software expectation*. The Origin 200's offsets (NMI save area
+``0x11400``, GDA ``0x11000``, KLCONFIG ``0x4000``, kernel ``0x19000``)
+do not apply to IP35.
 
 .. _sgi-ip35-address-map-io:
 
@@ -231,15 +631,15 @@ Crosstalk windows
 
    * - Item
      - Value
-     - Source (established unless marked)
+     - Source (*established* unless marked)
    * - small window
      - 16 MB per widget; widget ``w`` at node I/O base ``+ w << 24``;
        devices are widgets 8 to 15.
      - OpenBSD ``hub.h`` lines 22-26, ``ip27_machdep.c`` lines 488-489;
        both Linux trees' ``sn/addrs.h``.
    * - big window
-     - 512 MB in M mode, 256 MB in N mode; window ``k`` at node I/O base
-       ``+ (k + 1) << 29`` (28 in N mode).
+     - 512 MB in M mode, 256 MB in N mode; window ``k`` at node I/O
+       base ``+ (k + 1) << 29`` (28 in N mode).
      - OpenBSD ``ip27_machdep.c`` lines 69, 236-237, 493-497; linux-ip35
        ``sn1/addrs.h`` lines 65 and 51; Linux SN1 lines 86 and 72.
    * - translation entries
@@ -254,22 +654,18 @@ Crosstalk windows
    * - widget 0
      - reached through big window 6, which the PROM programs for it.
      - OpenBSD ``ip27_machdep.c`` lines 478-486, 535-536; both Linux
-       trees. Whether the remap is still needed on a Bedrock is open
+       trees. Whether a Bedrock still needs the remap is *unknown*
        (Linux's own header asks, ``hubio_next.h`` line 144); reading
-       entry 6 after a stock PROM boot would settle it, and the model
+       entry 6 after a stock PROM boot would settle it. The model
        answers both forms.
 
-The crossbar is at widget 0, the XBridge heads at widgets 14 and 15 and the
-Bedrock enters at port ``0xa`` (observed on real Origin 300s in three
-owners' inventories, ``ASIC XBOW Rev 2`` with ``ASIC BRIDGE Rev 2`` at
-widgets 14 and 15, and a verbose PROM trace printing ``HUB at 0x0 attached
-as widget 0xa`` and ``xbow_base= 0x9200000000000000``); the XBridge
-specification, revision 0.5 printed pages 17 and 44-46, gives the XBridge
-mode with internal ports ``0xe`` and ``0xf`` (:doc:`/system/mips/sgi/hardware/xbridge`). A device
-register behind the XBridge composes as I/O space plus the node offset plus
-the widget window (``widget << 24``) plus the bridge's device window plus the
-register offset; the device windows are two 2 MB windows from ``0x200000``
-and six 1 MB windows from ``0x600000``.
+On the Origin 300 the crossbar is at widget 0, the XBridge heads at
+widgets 14 and 15, and the Bedrock enters at port ``0xa``
+(:ref:`sgi-ip35-components`). A device register behind the XBridge
+composes as I/O space plus the node offset plus the widget window
+(``widget << 24``) plus the bridge's device window plus the register
+offset. The device windows are two 2 MB windows from ``0x200000`` and
+six 1 MB windows from ``0x600000`` (:doc:`hardware/xbridge`).
 
 .. _sgi-ip35-address-map-hub:
 
@@ -284,7 +680,7 @@ The Bedrock's registers are XIO widget 1 of its own node.
 
    * - Form
      - Address
-     - Source (established)
+     - Source (*established*)
    * - local register ``r``
      - ``0x9200_0000_0100_0000 + r``
      - OpenBSD ``hub.h`` lines 28-29; both Linux trees' ``IALIAS_BASE``.
@@ -295,16 +691,16 @@ The Bedrock's registers are XIO widget 1 of its own node.
      - remote form ``+ 0x200000``
      - ``hub.h`` lines 32-34 and 110-114; ``hubpi_next.h`` lines 16-19.
 
-Unit bases inside the 8 MB window (hub-relative; established): processor
-interface 0 at ``0x000000`` (OpenBSD ``hub.h`` line 85); processor
-interface 1 at ``0x200000`` (lines 110-114); I/O interface ``0x400000``
-(line 189); local block ``0x600000`` (line 208); network interface
-``0x680000`` (line 215); crossbar ``0x700000`` (line 233); memory and
-directory ``0x780000`` (line 180); each matches the first register of the
-corresponding ``hub*.h`` header. OpenBSD expects the local form to reach the
-requester's own interface; whether the Bedrock selects the interface that
-way is unmeasured, and the two-processor board needs a PI0/PI1 local-read
-test to settle it.
+Unit bases inside the 8 MB window (hub-relative), *established*:
+processor interface 0 at ``0x000000`` (OpenBSD ``hub.h`` line 85);
+processor interface 1 at ``0x200000`` (lines 110-114); I/O interface
+``0x400000`` (line 189); local block ``0x600000`` (line 208); network
+interface ``0x680000`` (line 215); crossbar ``0x700000`` (line 233);
+memory and directory ``0x780000`` (line 180). Each matches the first
+register of the corresponding ``hub*.h`` header. OpenBSD expects the
+local form to reach the requester's own interface. Whether the Bedrock
+selects the interface that way is *unknown*; a PI0/PI1 local-read test
+on a two-processor board would settle it.
 
 .. _sgi-ip35-address-map-special:
 
@@ -320,62 +716,68 @@ Hub special space
      - Source
    * - local register window, ``0x1000_0000``
      - 128 MB
-     - established: OpenBSD ``hub.h`` lines 63-64; Linux SN1
+     - *established*: OpenBSD ``hub.h`` lines 63-64; Linux SN1
        ``sn/addrs.h`` lines 123-125.
    * - boot window, ``0x1800_0000``
      - 128 MB
-     - observed: Linux SN1 ``sn/addrs.h`` lines 126-128; OpenBSD defines
-       and never uses it. The PROM copies itself from
-       ``0x9000000018000000`` (the Tezro verbose trace).
+     - *observed*: Linux SN1 ``sn/addrs.h`` lines 126-128; OpenBSD
+       defines it and never uses it. A published verbose PROM trace from
+       a Tezro shows the PROM copying itself from ``0x9000000018000000``.
    * - second PROM, boot-window offset ``0x0200_0000``
      - 32 MiB stride
-     - established: Linux SN1 defines two PROMs on 32 MiB boundaries; the
-       model maps the upper 8 MiB of the 16 MiB backing there
-       (emulator choice).
+     - *established*: Linux SN1 defines two PROMs on 32 MiB boundaries.
+       The model maps the upper 8 MiB of the 16 MiB boot-flash store
+       there, an *approximation*.
    * - remote register window of node ``n``, ``0x3000_0000``
      - 128 MB
-     - established: OpenBSD ``hub.h`` lines 48-49; Linux SN1
+     - *established*: OpenBSD ``hub.h`` lines 48-49; Linux SN1
        ``sn/addrs.h`` line 148.
    * - remote boot window of node ``n``, ``0x3800_0000``
      - 128 MB
-     - observed plus derived: Linux SN1 ``sn/addrs.h`` line 153;
-       OpenBSD never forms it.
+     - *observed*: Linux SN1 ``sn/addrs.h`` line 153; OpenBSD never
+       forms it.
    * - directory backdoor, ``0x1c000_0000``
      - 1 GB aperture
-     - observed: Linux v2.5.0 (``linux-history:381ab1f538162``)
-       ``sn/addrs.h`` maps one Bedrock directory word at ``+0`` and
-       names ``+8`` as the page-counter address.
+     - *observed*: Linux v2.5.0 ``sn/addrs.h`` maps one Bedrock directory
+       word at ``+0`` and names ``+8`` as the page-counter address.
 
 The uncached alias of the reader's own node memory at offset 0 is
-inherited text from the Origin 200 headers and no IP35 consumer uses it
-(observed, linux-ip35 ``sn/addrs.h`` lines 119-133). The cached-alias size
-register in each processor interface (``0x28``) takes a 4-bit code, 0 off
-and 1 to 15 for 4 KB doubling to 64 MB (``hubpi_next.h`` lines 199-215;
-OpenBSD ``hub.h`` lines 89-90); OpenBSD writes 0 to both interfaces and all
-ones to both region-present registers at setup (``ip27_machdep.c`` lines
-338-345). Whether IP35 flips the bottom 128 KB of the uncached alias per
-processor as the Origin 200 does is unknown; observing where a stock PROM
-places each processor's handler copies would settle it.
+inherited text from the Origin 200 headers, and no IP35 consumer uses it
+(linux-ip35 ``sn/addrs.h`` lines 119-133), *observed*. The cached-alias
+size register in each processor interface (``0x28``) takes a 4-bit code,
+0 off and 1 to 15 for 4 KB doubling to 64 MB (``hubpi_next.h`` lines
+199-215; OpenBSD ``hub.h`` lines 89-90). OpenBSD writes 0 to both
+interfaces and all ones to both region-present registers at setup
+(``ip27_machdep.c`` lines 338-345). Whether IP35 flips the bottom 128 KB
+of the uncached alias per processor as the Origin 200 does is *unknown*;
+where a stock PROM places each processor's handler copies would settle
+it.
+
+Inside both register windows the model answers the L1 UART at ``0x80``,
+four per-processor LED registers at ``0xc0`` and the board-identification
+word at ``0x0400_0000``, and refuses the other offsets it does not decode
+with a bus error. The evidence for each is on :doc:`hardware/bedrock`
+and :doc:`hardware/l1`.
 
 .. _sgi-ip35-address-map-interrupt:
 
 Interrupt send
 --------------
 
-A widget raises a Bedrock interrupt by writing to an XIO address naming the
-node, the Bedrock's own widget 1, the remote form and the
+A widget raises a Bedrock interrupt by writing to an XIO address naming
+the node, the Bedrock's own widget 1, the remote form and the
 interrupt-pending-modify register: bit 47, the node shifted by 39 (38 on
-IP27) and ``0x0180_0090`` (OpenBSD ``ip27_machdep.c`` lines 350-353; Linux
-``sn/xtalk/xtalkaddrs.h`` lines 66-91, adding ``0x200000`` for a target
-on the second interface, ``hub_intr.c`` line 145). Writing ``0x100 | level``
-sets, ``level`` alone clears (``hub.h`` lines 98-100; Linux ``sn1/intr.h``
-lines 122-143). The bridge's interrupt-destination registers carry the
-Bedrock's crossbar widget number in bits 51:48 (``xbridge.c`` lines
-2177-2191), from the configuration graph's crossbar record, default ``0xa``
-(``sginode.c`` lines 159-160, 338). For a Bridge-class bridge on a node
-other than 0 OpenBSD places the node at bit 9 and linux-ip35 at bit 8
-(``xbridge.c`` lines 1393-1394; ``pci-sgipic.c`` line 77): open, and
-irrelevant until a second node exists. Established, except the open item.
+IP27) and ``0x0180_0090`` (OpenBSD ``ip27_machdep.c`` lines 350-353;
+Linux ``sn/xtalk/xtalkaddrs.h`` lines 66-91, adding ``0x200000`` for a
+target on the second interface, ``hub_intr.c`` line 145). Writing
+``0x100 | level`` sets, ``level`` alone clears (``hub.h`` lines 98-100;
+Linux ``sn1/intr.h`` lines 122-143). The bridge's interrupt-destination
+registers carry the Bedrock's crossbar widget number in bits 51:48
+(``xbridge.c`` lines 2177-2191), from the configuration graph's crossbar
+record, default ``0xa`` (``sginode.c`` lines 159-160, 338). All
+*established*. For a Bridge-class bridge on a node other than 0, OpenBSD
+places the node at bit 9 and linux-ip35 at bit 8 (``xbridge.c`` lines
+1393-1394; ``pci-sgipic.c`` line 77); which is right is *unknown*.
 
 .. _sgi-ip35-address-map-handoff:
 
@@ -395,19 +797,19 @@ Firmware hand-off, reset and launch
        ``0x20``, restart ``0x30``, reboot ``0x40``, interactive monitor
        ``0x50``) and options (no diagnostics ``0x100``, no memory init
        ``0x200``, no device init ``0x400``).
-     - OpenBSD ``ip27_machdep.c`` lines 680-704, ``mnode.h`` lines
-       456-466 (established). The Origin 200 uses processor-interface
-       ``0x418`` (line 703); both Linux SN1 trees name ``0x418`` here
-       and never write it, and the held IP35 PROM's choice on a warm
-       reset is unconfirmed (open).
+     - *established*: OpenBSD ``ip27_machdep.c`` lines 680-704,
+       ``mnode.h`` lines 456-466. The Origin 200 uses
+       processor-interface ``0x418`` (line 703); both Linux SN1 trees
+       name ``0x418`` here and never write it. Which one the stock IP35
+       PROM reads on a warm reset is *unknown*.
    * - network port reset
      - hub offset ``0x680008``: bit 0 link reset, bit 1 port (warm)
        reset, bit 2 local Bedrock reset.
-     - OpenBSD ``hub.h`` lines 219-225; Linux ``hubni_next.h`` lines
-       28-30 (established).
+     - *established*: OpenBSD ``hub.h`` lines 219-225; Linux
+       ``hubni_next.h`` lines 28-30.
    * - reset enable
      - hub offset ``0x680010``, bit 0 = 1 allows the reset.
-     - ``hub.h`` lines 226-227; ``hubni.h`` line 35 (established).
+     - *established*: ``hub.h`` lines 226-227; ``hubni.h`` line 35.
    * - halt sequence
      - for each other node write reset-enable 1 then the reset register,
        then the local node last; the reset value is local plus link
@@ -420,312 +822,569 @@ Firmware hand-off, reset and launch
        stack and global pointer; no public MIPS consumer uses a
        register-level launch. The launch area holds four entries of
        ``0x100`` on IP35 against two of ``0x200`` on the Origin 200.
-     - ``ip27.h`` lines 60-64; ``ip27_machdep.c`` lines 1083-1085; Linux
-       ``kldir.h`` lines 310-313 (established).
+     - *established*: ``ip27.h`` lines 60-64; ``ip27_machdep.c`` lines
+       1083-1085; Linux ``kldir.h`` lines 310-313.
 
-IP53 IO and compatibility components
-====================================
+.. _sgi-ip35-fuel:
 
-This page records the component boundaries used by the IP53 module profiles.
-Those profiles are software constructions for the Origin 350 and Tezro, and
-for proposed captured Onyx 350 compatibility work. They do not establish that
-every selected device, setting, or connection matches a physical board.
-Chip-level behavior and evidence limits are stated below; the detailed
-reviewed Origami contracts remain the authority for profile-specific
-policies.
+The Fuel
+========
+
+The ``fuel`` machine builds the IP34 board: one Bedrock with one
+processor, an XBridge whose head F carries the onboard ISP12160, IOC3 and
+OHCI (the ``fuel`` preset of ``sgi-baseio``), an empty head E, an L1,
+and the VPro graphics connector at crossbar widget 13
+(:ref:`sgi-ip35-graphics`). The guide's rear panel shows no external XIO
+connector (:src:`007-4480-001 p. 6`), *established*.
+
+The IOC3 serves the guide's two serial ports, PS/2 keyboard and mouse,
+parallel port and 10/100 Ethernet (:src:`007-4480-001 p. 35-38`),
+*established*. An OpenBSD boot on a Fuel reports a DP83843 at MII
+address 1 (:src:`miod-openbsd-sgi-story`), *observed*, and the model fits
+that transceiver. The guide's lower connector, Serial 1, is IOC3 UART A,
+*inferred* from OpenBSD's port map and a PROM menu captured on that
+connector (:src:`graphica-o350-chimera-notes`).
+
+The onboard Ethernet address comes from the L1. Without input it is the
+``mac`` machine property's placeholder ``08:00:69:12:34:56``, in SGI's
+OUI and no machine's factory value. It seeds the L1's address reply, the
+component-1 board record and the IOC3. ``fuel-mac-eeprom=<file>``
+replaces it with a 512-byte record image, and a ``-nic mac=`` that
+disagrees with the record is refused. Where a physical Fuel stores this
+record is *unknown*. :doc:`hardware/l1` has the record format.
+
+A revision B Fuel board photograph shows a DS1742W, a 2 KiB clock part,
+and OpenBSD's ``dsrtc.c`` comment names the same package, *observed*.
+Its decode on the IOC3 byte bus is *unknown*, and OpenBSD calls its own
+mapping a guess. The model fits the flat 32 KiB M48T35-compatible
+timekeeper the Origin 300 uses, an *approximation*.
+
+.. _sgi-ip35-fuel-interrupts:
+
+Onboard interrupt routing
+-------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Source
+     - PCI position
+     - XBridge head F input
+   * - ISP12160 SCSI, PCI INTA
+     - device 1
+     - 1
+   * - IOC3 SuperIO output (serial, parallel, keyboard)
+     - device 4
+     - 0
+   * - IOC3 Ethernet, PCI INTA
+     - device 4
+     - 4
+   * - OHCI USB, PCI INTA
+     - device 5
+     - 5
+
+This is an *approximation* of board wiring. An OpenBSD 4.5-current boot
+on a Fuel of unstated board revision reports XBridge revision 2 at widget
+15 and handlers on these four indices
+(:src:`miod-openbsd-sgi-story lines 5676-5695`), *observed*. An earlier
+boot on the same page reports SuperIO at index 6 and a lost serial
+interrupt, so the SuperIO index was not fixed across boots. OpenBSD's
+``xbridge.c`` (lines 204-213 and 1220-1288) maps pin A to the device
+number and gives the onboard IOC3's SuperIO the first empty slot, which
+explains all four indices as driver policy. The traces on the modelled
+revision G board are *unknown*. A schematic or an interrupt trace on an
+identified revision G Fuel would settle them.
+
+.. _sgi-ip35-numalink:
+
+Origin 300 NUMAlink module and routed topologies
+================================================
+
+The Origin 300 topologies beyond one chassis:
+
+``origin300-two-chassis``
+  Two complete base modules, each with its own IP45 board, Bedrock,
+  XBridge, IO-8 and L1, joined LINK connector to LINK connector by one
+  NUMAlink 3 cable with no router, as the guide's "Connecting Two
+  Servers" procedure builds them (:src:`007-4365-002 p. 38`),
+  *established*. Two published cabled pairs show the per-module parts
+  (:src:`marc-openbsd-sgi-139223952727384 lines 17-62`,
+  :src:`nekonomicon-17314`), *observed*. The same cable carries the two
+  L1s' RS-422 pair (:src:`108-0240-002 p. 2-47`), *established*. Accepted
+  ``-smp`` splits are 2+2, 4+2, 2+4 and 4+4, and ``population=`` chooses
+  between 4+2 and 2+4. The stock PROM numbers the nodes itself at every
+  boot.
+
+``origin300-pci-expansion``
+  One base module cabled from its LINK connector to a PCI expansion
+  module (:src:`007-4499-002 p. 12`), *established*. The expansion's
+  Bedrock interface card (:doc:`hardware/bic`) has no processors or
+  memory. Every launch binds a caller-owned 16 MiB raw image as the
+  expansion's configuration storage with
+  ``expansion-storage.0=expansion-enclosure=<drive>``. Its startup,
+  power, register visibility, interrupt map and identity are
+  *approximations* listed on :doc:`hardware/pci-expansion`.
+
+``origin300-numalink-pci-expansion``
+  Two base modules and a PCI expansion module through one logical
+  eight-port SN1 router (:doc:`hardware/sn1-router`). The cables are
+  selections: the first module's LINK to router port 1, the second's to
+  port 6, the expansion's to port 4. The manual allows base modules on
+  ports 1 and 6 and expansion modules only on ports 2 to 5
+  (:src:`007-4498-002 p. 10-11, 96`), *established*. The router answers
+  as chip revision 1, *inferred* from a six-chassis inventory's router
+  "Revision 1" (:src:`nekonomicon-16727514`), and its L1 type ``0x52``
+  is a choice. USB and L2 transport, router main power and reset
+  propagation between modules are not modelled.
+
+The NUMAlink module has eight external ports, A to H on the rear panel.
+Ports 2 to 5 also carry USB and take base or PCI expansion modules;
+ports 1, 6, 7 and 8 take base modules only. The module contains an L1
+and a USB hub to the rack's L2. A documented system has two to eight
+base modules in a tall rack (:src:`007-4498-002 p. 2, 10-16, 93-98,
+130-133`). All *established*. The router chip's part number, ASIC count
+and silicon revision are *unknown*. Linux SN1 headers name an
+eight-port router family with chip identifier ``0x3017``, which ties to
+this module only by *inference*. The ``origin300-numalink-module``
+composition that records the full rack is a reference model;
+:doc:`hardware/bricks` gives its tall-rack cabling.
+
+.. _sgi-ip35-ip53:
+
+IP53 profiles
+=============
+
+The four IP53 machines run six serial profiles. Each fixes one processor
+population, one memory map and one I/O construction, and the machine
+checks the whole tuple before building anything. A launch that changes
+any member of the tuple, such as ``-smp 2`` on ``tezro-tower-multi``,
+needs ``ip53-experimental=on``. None fits a graphics pipe by default.
+
+.. _sgi-ip53-serial-profiles:
+
+Selected inputs
+---------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Machine and topology
+     - Processors
+     - Memory
+     - Cache each
+     - Reset mode
+     - PICs
+     - IOC4 clock
+   * - ``origin350``
+     - four 700 MHz R16000
+     - 2 GiB
+     - 8 MiB
+     - ``0x009cad85``
+     - widget 15
+     - 33,333,333 Hz
+   * - ``onyx350``, ``onyx350-compat``
+     - four 800 MHz R16000
+     - 8 GiB
+     - 8 MiB
+     - ``0x009caf85``
+     - widget 15
+     - 33,333,333 Hz
+   * - ``tezro``, ``tezro-tower-one``
+     - one 700 MHz R16000
+     - 4 GiB
+     - 4 MiB
+     - ``0x009bad85``
+     - widget 15
+     - 66,666,667 Hz
+   * - ``tezro``, ``tezro-tower-multi``
+     - four 700 MHz R16000
+     - 4 GiB
+     - 4 MiB
+     - ``0x009bad85``
+     - widgets 11 and 15
+     - 66,666,667 Hz
+   * - ``tezro``, ``tezro-rack``
+     - one 700 MHz R16000
+     - 4 GiB
+     - 4 MiB
+     - ``0x009bad85``
+     - widget 15
+     - 66,666,667 Hz
+   * - ``onyx4-host``
+     - four 1 GHz R16000
+     - 8 GiB
+     - 16 MiB
+     - ``0x009dad85``
+     - widget 15
+     - 33,333,333 Hz
+
+The reset mode words, PIC placement and revision, IOC4 clocks, Bedrock
+board word ``0x2001`` and L1 identities are software inputs, not
+measured values (*approximation*). The capture facts behind each profile
+follow. Two profiles carry a node-board identity record for the L1 to
+serve, taken from their captures: ``IP53_4CPU``, ``030-1868-001``,
+revision C on ``origin350`` and ``IP53_4CPU``, ``030-2013-001``, revision
+D on ``onyx350``. The others serve none. No capture supplies raw EEPROM
+bytes.
+
+.. _sgi-ip35-origin350:
+
+Origin 350
+~~~~~~~~~~
+
+The Origin 350 compute module holds two or four R16000 with 4 MB of
+secondary cache each, eight DIMM slots in four pairs for 1 to 8 GB, one
+Bedrock, one external NUMAlink 3 port, an L1 with a display, and the IO9
+in the lowermost PCI slot (:src:`007-4566-001 p. 68-75, 114, 116`),
+*established*. One published inventory reports the board
+``030-1868-001`` revision C, a PIC carrier at widget 15 and IO9
+``030-1771-005`` revision A (:src:`nekonomicon-16724207`), and another
+reports Bedrock revision 2 (:src:`nekonomicon-16729141`), *observed*.
+
+The profile's 8 MiB cache departs from the guide's 4 MB, and its 2 GiB
+in two banks is not a captured population. Both are *approximations*.
+The Bedrock's entry widget on an Origin 350 is *unknown*; the model uses
+``0xa``. The profile names no netboot adapter.
+
+.. _sgi-ip35-onyx350:
+
+Onyx 350
+~~~~~~~~
+
+The profile builds one module, ``001c01``, of a published multi-module
+Onyx 350 (:src:`graphica-onyx350-hinv`), without its graphics or the
+other modules. The capture reports board ``IP53_4CPU`` ``030-2013-001``
+revision D, four 800 MHz R16000 revision 3.0 with 8 MiB caches, Bedrock
+revision 2 at 200 MHz, 8 GiB in eight logical 1 GiB banks, a
+``2U_INT_53`` carrier ``030-1809-006`` revision D at widget 15 and IO9
+``030-1771-006`` revision A, *observed*. The capture does not show the
+module booting alone, and it reports PROM 6.211 where the model runs
+6.210. The guide describes the base module's factory disk, four-port USB
+card, IO9 and serial daughtercard (:src:`007-4632-001 p. 47, 50, 53`),
+*established*. The capture does not tie them to this module, and none
+of them is built. The netboot adapter is the BCM5701.
+
+.. _sgi-ip35-tezro:
+
+Tezro tower and rack
+~~~~~~~~~~~~~~~~~~~~
+
+The tower guide allows one, two or four processors with 4 MB of cache
+and places IO9 at bus 1, slot 1. The two- and four-processor board has a
+second XIO connector for an optional board; the one-processor board has
+one (:src:`007-4564-001 p. 26-30, 38`). The rack guide gives the same
+processor choices and 8 or 16 GiB in one or two enclosures
+(:src:`007-4643-003 p. 21-32`). All *established*.
+
+The profiles take their processors, memory and IO9 from a published
+four-processor Tezro captioned as a deskside (:src:`graphica-tezro-hinv`):
+``IP53_4CPU`` ``030-1868-001`` revision C, four 700 MHz R16000 revision
+2.1 with 4 MiB caches, Bedrock revision 2, 4 GiB in six banks,
+``WS_INT_53`` boards at widgets ``0xb`` and ``0xf``, and IO9
+``030-1771-005`` revision A at ``0xf``, *observed*. Applying it to a
+tower or a rack is an *inference* from the product family. An 800 MHz
+Tezro inventory reports the same two interface-board widgets
+(:src:`irixnet-post-26015`), *observed*.
+
+``tezro-tower-multi`` builds two PICs, at widgets 11 and 15, with the
+IO9 on the widget-15 PIC's head 0 and nothing on the other. The model
+routes its widget-0 view through the PIC that owns the IO9, an
+*approximation*: through the widget-11 PIC, the stock PROM could not
+build its configuration for the node on the model. ``tezro-tower-one``
+and ``tezro-rack`` build one PIC, at widget 15. The rack profile models
+the first enclosure only. The netboot adapter is the BCM5701 on
+``tezro-tower-multi`` and none on the other two.
+
+.. _sgi-ip35-onyx4:
+
+Onyx 4 host
+~~~~~~~~~~~
+
+An Onyx 4 host carries the system's PCI cards, including the boot IO9 at
+bus 1, slot 1, and connects to G2N bricks over NUMAlink. A serial
+terminal attaches to the host's L1 (:src:`007-4634-002 p. 1-2, 15,
+20-23, 30-32`). All *established*. The profile takes module ``001c01`` of
+a published inventory of a system labelled Onyx 350: board ``IP59_4CPU``
+``030-1989-003`` revision C, four 1 GHz R16000 revision 3.0 with 16 MiB
+caches, 8 GiB, and IO9 ``030-1771-006`` revision A at widget 15
+(:src:`irixnet-thread-2263`), *observed*. The owner says a quad 1 GHz
+board was installed in a G2N, and the inventory places that board at
+``001c02``. Treating ``001c01`` as the Onyx 4 host is an *inference*.
+
+The model maps this IP59 board onto the IP53 board path, its PIC and its
+IO9 wiring, an *approximation*: no source describes the IP59 PIC, its
+revision or its routes. It builds no G2, G2N or NUMAlink peer. The
+``onyx4-host-g2`` and ``onyx4-host-g2n`` compositions are reference
+models that no machine builds.
+
+.. _sgi-ip35-ip53-io9:
+
+IO9 and its PCI routes
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+
+   * - Function
+     - PCI identity
+     - Device
+     - PCI revision
+     - PIC input
+   * - IOC4
+     - ``10a9:100a``
+     - 1
+     - ``0x53``
+     - 0
+   * - ISP12160
+     - ``1077:1216``
+     - 3
+     - ``0x06``
+     - 2
+   * - BCM5701
+     - ``14e4:1645``
+     - 4
+     - ``0x00``
+     - 3
+
+Every captured IP53 inventory places these functions at IRIX PCI ids 1,
+3 and 4, *observed*. PIC configuration devices are its internal slots
+plus one (OpenBSD ``xbridge.c``), so these are the configuration devices
+too, *inferred*. The revisions are the existing models' values, not read
+from any IO9; one Tezro PROM prints a BCM570x revision of ``15``
+(:src:`irixnet-thread-3613`). Each function's INTA goes to the PIC input
+numbered one below its device, the linux-ip35 ``pci-sgipic.c``
+convention (lines 51-100, 383-413), a *software expectation*. The
+physical routes are *unknown*.
 
 .. _sgi-ip53-pic:
 
-PIC PCI host bridge
--------------------
+PIC
+~~~
 
-The profile exposes one PIC with two PCI heads. Public OpenBSD sources show
-the second head at offset ``0x800000`` within the same XIO widget; public
-Linux sources describe the PIC configuration-device numbering used by these
-profiles. The two-head layout is selected from those software sources.
-
-The Origin 350, Tezro, and proposed Onyx 350 profiles select PIC widgets and
-direct-DMA settings as explicit software inputs. In particular, the supported
-direct-DMA fields and the direct64 path are emulator policies for those
-profiles. They do not establish the complete PIC revision 3 register
-contract, reset image, or physical Bedrock-to-PIC wiring. Unsupported fields
-and untranslated DMA remain observable. See the PIC model and qtests for the
-implemented boundary.
+Each PIC is one widget with two PCI-X heads, the second head's
+registers ``0x800000`` above the first (OpenBSD ``xbridgereg.h`` lines
+24-28 and ``xbowdevs``: part ``0xd102``, second head ``0xd112``,
+manufacturer ``0x024``), *established*. The profiles select revision 3
+behaviour and their direct-DMA settings as named compatibility profiles.
+These do not establish the fitted PIC revision, its reset image or the
+Bedrock-to-PIC wiring. :doc:`hardware/pic` describes the model and its
+profiles.
 
 .. _sgi-ip53-ioc4:
 
-IOC4 on IO9
------------
+IOC4
+~~~~
 
-The selected IO9 component uses one IOC4 PCI function, with PCI identity
-``0x10a9:0x100a``. The profile selects the existing QEMU revision value
-``0x53``; this is not a measured revision for either selected IO9 board.
-The profiles enable the existing serial-DMA option. The Origin
-350 and proposed Onyx 350 profiles choose a 33,333,333 Hz clock; Tezro chooses
-66,666,667 Hz. These are software inputs, not claims about board straps or
-the complete IOC4 reset state.
-
-IOC4's serial ring DMA is the engine IOC3 uses, described once in
-:ref:`sgi-ioc3-serial-dma`. IOC4 differs from IOC3 in these ways:
-
-* Two ring-base pairs, one for ports 0 and 1 and one for ports 2 and 3,
-  where IOC3 has one.
-* The receive produce index does not report the packer's held count,
-  since IOC4's register definitions do not name that field.
-* A failed ring transfer halts the port until a channel reset, captures
-  the failing address and raises the port's error source in the other
-  interrupt register.
-* Enabling ring DMA over queued PIO data, disabling it with ring work
-  pending, changing an active pair's base and a PIO transmit while DMA
-  is on are logged as guest errors and then take effect; the 16550
-  orders PIO and DMA characters itself.
-* The serial idle bit in the ``SIO_CR`` register reads busy only while
-  the engine is inside a transfer, the rule IOC3's arbiter-idle bit
-  follows.
-
-The public serial-console contract covers byte-wide UART windows and the
-IOC4-local interrupt state used by the selected subset. ATA, keyboard and
-mouse, general-purpose pins, full byte-bus behavior, and board-level
-interrupt routing are outside this profile page. Unimplemented accesses
-must remain visible. Exact reset values, the complete access-width matrix,
-and the physical interrupt route remain unresolved.
+IO9 carries one IOC4 function, ``10a9:100a``, at the existing model's
+revision ``0x53``, with serial DMA enabled. The clock is 33,333,333 Hz on
+the Origin 350, Onyx 350 and Onyx 4 host profiles and 66,666,667 Hz on
+the Tezro profiles, all choices; the board straps are *unknown*. The L1
+console and the four IOC4 serial ports are separate endpoints, as the
+Onyx 350 and Onyx 4 guides describe. :doc:`hardware/ioc4` describes the
+model.
 
 .. _sgi-ip53-bcm570x:
 
-BCM5701 Ethernet controller
----------------------------
+BCM5701
+~~~~~~~
 
-The profile selects the existing generic BCM570x model as a single-port
-BCM5701, PCI identity ``0x14e4:0x1645``. The selected PCI revision value is
-an emulator setting, not an observed IO9 card revision. The model uses
-QEMU's network backend interface; the IP53 profile does not claim that a
-particular host network backend or physical network route exists.
-
-The QEMU BCM570x model's register, DMA, and interrupt behavior is exercised
-by ``tests/qtest/bcm570x-test.c`` and ``tests/qtest/sn0-bcm570x-test.c``.
-Those qtests establish model behavior, not physical BCM5701 behavior on IO9.
-Startup timing includes a bounded model approximation. Physical startup
-timing and the exact fitted IO9 Ethernet component remain unverified. DMA
-must continue through the selected PCI device's bus-master address space.
+IO9's Ethernet is the generic ``bcm570x`` model as a single-port BCM5701,
+``14e4:1645``. The fitted IO9 Ethernet part and its revision are
+*unknown*. :doc:`hardware/bcm570x` describes the model.
 
 .. _sgi-ip53-ds1742:
 
-DS1742-compatible clock resource
---------------------------------
-
-The legacy clock-only selection links the existing DS1742 model to IOC4.
-It exposes the eight clock-byte addresses used by the selected
-compatibility contract and retains the model's 2 KiB backing image. It does not
-establish the fitted IO9 package, full IOC4 byte-bus decode, SRAM aliases, or
-physical address wiring. The reported IOC4 clock label does not identify the
-fitted part. The broader storage span and PROM environment/checksum area
-remain outside this legacy selection.
-
 .. _sgi-ip53-ds1744:
 
-DS1744-compatible timekeeper resource
--------------------------------------
+Timekeeper
+~~~~~~~~~~
 
-The serial IO9 profiles select a 32 KiB DS1744-compatible geometry through
-the board's standard system-timekeeper record. IOC4 maps the child's complete
-byte-wide region at BAR0 offset ``0x80000``. Device offsets
-``0x0000`` through ``0x7ff7`` are ordinary SRAM. The eight clock bytes occupy
-``0x7ff8`` through ``0x7fff``. Firmware owns all SRAM contents, including
-PROM variables and checksums. The emulator does not construct or repair
-those records.
-
-This geometry follows Analog Devices/Maxim's published DS1744/DS1744P
-specification, document 19-5502, revision 6/13. OpenBSD's public SGI driver
-uses the same 32 KiB span at IOC4 BAR0 plus ``0x80000`` and the same final
-eight clock offsets. These sources support a compatibility mapping. They do
-not identify the physical IO9 package or establish its address wiring.
-
-The device shares the DS1742 calendar and backing-store implementation.
-Its data image is exactly 32768 bytes and its paired clock-reference image
-uses the existing 16-byte format. The board retains the IP53
-``fresh-year-base=1968`` policy for fresh or blank clock initialization.
-Valid saved calendars retain their values. Guest reset retains SRAM and
-calendar state. DS1744 has a separate migration identity, while the legacy
-DS1742 migration format remains unchanged. An existing 2 KiB backing image
-is rejected rather than resized.
-
-The public specification is available at:
-https://www.analog.com/media/en/technical-documentation/data-sheets/DS1744-DS1744P.pdf
+Every IP53 profile links a DS1744-compatible 32 KiB timekeeper
+(:src:`analog-ds1744-rev-6-13`) to IOC4, mapped whole at IOC4 BAR0
+offset ``0x80000`` with the clock in its last eight bytes, the span
+OpenBSD's driver uses. A fresh or blank clock starts from the 1968 year
+base. Its data and clock record are the ``nvram0`` and ``nvram0-clock``
+stores. The fitted IO9 part and its address wiring are *unknown*. The
+older DS1742 selection, which exposed only the clock bytes of a 2 KiB
+part, is not chosen by any profile. :doc:`hardware/timekeepers`
+describes both parts.
 
 .. _sgi-ip53-io-profile:
 
 Profile boundaries
-------------------
+~~~~~~~~~~~~~~~~~~
 
-These component selections describe the software model projection. The
-Origin 350 and Onyx 350 captures differ in board identity and context; their
-topologies and unmeasured board behavior must not be inferred from one
-another. The PIC attachment, IOC4 settings, PCI revisions, and linked clock
-are profile choices where explicitly identified above. Physical behavior
-that lacks matching evidence remains unknown.
+The Origin 350 and Onyx 350 captures are different boards in different
+systems. Neither profile's topology or unmeasured behaviour is inferred
+from the other, and the two-PIC Tezro layout is not inferred from an
+Origin 350. A guest reaching the PROM menu or an IRIX login on one of
+these profiles shows that the model runs that software, not that the
+named product is wired that way.
 
-.. _sgi-ip53-serial-profiles:
+.. _sgi-ip35-firmware:
 
-Headless serial profile choices
--------------------------------
+Firmware and boot
+=================
 
-The machine catalogue selects the following inputs for serial IRIX configurations.
-These values define the emulator profiles; a successful guest boot does not
-measure a processor reset pin, PROM image fitted to a board, or PCI wiring on
-the named product. The physical inventory facts cited by the catalogue have
-separate public capture or manual references.
+Every machine boots a stock IP35 PROM. ``-bios`` takes the raw payload or
+SGI's distribution container, which the machine decodes
+(:doc:`prom-image`). The payload must be exactly 1,476,264 bytes
+(``0x1686a8``), the size of :src:`ip35-prom-6.210`.
 
-=================================  ===================  ======  ==========  ==========
-Profile                            Processors           Memory  Cache each  Reset mode
-=================================  ===================  ======  ==========  ==========
-Origin 350                         four 700 MHz R16000  2 GiB   8 MiB       0x009cad85
-Onyx 350 captured module           four 800 MHz R16000  8 GiB   8 MiB       0x009caf85
-Tezro, one-processor board         one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Tezro, two/four-processor board    four 700 MHz R16000  4 GiB   4 MiB       0x009bad85
-Tezro rack, first enclosure        one 700 MHz R16000   4 GiB   4 MiB       0x009bad85
-Onyx 4 host candidate (IP59)       four 1 GHz R16000    8 GiB   16 MiB      0x00edb385
-=================================  ===================  ======  ==========  ==========
+Given only ``-bios``, the PROM's writes to its boot flash do not persist.
+On the model the Origin 300 then prints the L1 banner and "Starting PROM
+Boot process", resets, and repeats that sequence without reaching a
+prompt. A writable boot flash fixes this. ``qemu-sgi-machine-init``
+(:doc:`/tools/qemu-sgi-machine-init`) creates one, with the timekeeper
+stores, from the same PROM image. With every store bound, ``-bios`` may
+be left out.
 
-The Tezro 4 GiB is a selected memory kit, not a measured population. Every
-observed Tezro population comes from a two- or four-processor board, and the
-kit matches one of them, a four-processor 700 MHz machine, with the bank
-placement inferred. The one-processor board's installed DIMMs are unknown, so
-its 4 GiB, and the rack's, only reuse that kit.
+.. list-table::
+   :header-rows: 1
 
-The machine fits these R16000 properties itself for every processor
-population a listed composition's topology accepts, with no machine option
-or explicit CPU property: the table gives each default, and the Tezro
-two/four-processor board also accepts two processors, the Tezro rack two
-or four. A population, memory size or processor the topology does not
-describe is refused, and so is a ``maxcpus`` above the ``-smp`` count,
-which would fit sockets the profile was never checked against. These are
-software inputs, not measured silicon values. The Onyx 350 and Onyx 4 rows
-project a captured module into a single-module host. The Onyx 4 capture
-reports an IP59 board in a system called Onyx 350; assigning that module to
-the Onyx 4 host is an inference. The ``onyx4-host`` topology therefore builds
-only the IP59 board, its default and only record: no source gives the Onyx 4
-host an IP53 processor tuple, so ``board=ip53`` is refused there. Its profile uses the IP53
-guest-board path as a compatibility mapping, not a physical IP59 schematic.
-The public IP59 module inventory reports HUB revision 2 at 200 MHz.
-Mapping that report to Bedrock revision 2 is a profile choice; raw NI and
-widget register identities remain unmeasured.
+   * - Store
+     - Size
+     - Starts from
+   * - ``node0-flash``
+     - 16 MiB
+     - the PROM image in the first 8 MiB flash position, with the
+       product's configuration-block values, and the blank-media label
+       in the second
+   * - ``nvram0``
+     - 32 KiB
+     - zero; the IOC3 timekeeper on the Origin 300 and Fuel, the IO9
+       timekeeper on the IP53 products
+   * - ``nvram0-clock``
+     - 16 bytes
+     - zero
 
-The Origin 350, Onyx 350 and Onyx 4 host profiles each select one PIC at XIO
-widget 15. The Tezro's two interface boards are two variants of the one
-``tezro`` topology, and ``-smp`` picks the board: one processor builds the
-one-processor board, two or four the two/four-processor board. The
-two/four-processor board selects two PIC widgets, 11 and 15, and places the
-modeled IO9 behind widget 15. The one-processor board selects only the PIC
-at widget 15; one PIC is inferred from that board's two PCI-X buses
-(007-4564-001 printed pages 26-31), not shown by an inventory. Otherwise the
-two boards share the same selected memory and I/O construction. The rack
-profile models only the first enclosure. Both Tezro boards and the Onyx 350
-profile take an optional V12 in graphics slot ``widget-12``
-(``-device sgi-odyssey,slot=widget-12,product=v12``), and all default to no
-graphics. On the two/four-processor board and the Onyx 350 the widget
-position follows published inventories; on the Onyx 350 it is an alternative
-to an InfiniteReality configuration. The one-processor board's placement is
-inferred: the Tezro guide gives that board one XIO connector for a VPro board
-(007-4564-001 printed pages 29-30) but names no widget, so the slot reuses the
-two/four-processor board's widget 12 and route. The pipe links to that port
-of the PXBOW of the PIC that owns widget 0, reuses Odyssey and Bedrock PI
-credit handling, and is marked alive and routed once it has realized. No profile attaches a G2/G2N brick or a NUMAlink peer.
-Direct-link XIO and the PIC interrupt and DMA settings are emulator choices
-where physical routing remains unknown.
+A two-node topology adds ``node1-flash``, and ``origin300-pci-expansion``
+adds the expansion's own storage. :ref:`sgi-sn-storage` describes how
+stores bind.
 
-These profiles select an IP35 PROM 6.210 payload and a profile-specific flash
-seed. Flash read and write cycle inputs are both 16, and the machine-type
-input is 0 for the six standard profiles. The Origin 350 and Onyx 350 profiles
-select a 33,333,333 Hz IOC4 clock; Tezro selects 66,666,667 Hz. The linked
-clock resource uses a 1968
-fresh-year base. Platform identity ``0x2001`` is a selected software input.
-Origin 350 and the Onyx 4 host select L1 type ``0x37``. Onyx 350 selects
-``0x38``: a published PROM session on a real Onyx 350 graphics module with a
-VPro board reports the class the IP35 PROM ties to that type, and the PROM's
-environment reset then chooses the graphics console, as it does for the Tezro
-types. The ``tezro`` and ``tezro-rack`` profiles select ``0x39`` and ``0x51``
-respectively, following the published Linux IP35 machine-name mapping.
-Physical L1 type replies remain unmeasured.
+Where the processor's reset fetch reaches flash, which flash part is
+fitted, and what answers outside the image are *unknown*.
+:ref:`sgi-prom-image-ip35-views` gives the views the model maps and why.
 
-The Tezro's L1 reports the node board the published Tezro inventories print
-(``docs/datasheets/ip53-tezro-node-board-identity.md``): ``IP53_4CPU``, part
-``030-1868-001``, revision ``-C``, with four processors on slices A to D, and
-``IP53_2CPU``, part ``030-1869-001``, revision ``-C``, with two on slices A
-and C. No inventory shows a one-processor board, so one processor keeps the
-L1's generic record. The rack's first enclosure takes the tower's record for
-its processor count, an inference.
+The console is the L1's serial line, the first ``-serial``. The PROM
+prints through the L1 and its maintenance menu appears there. On the
+Origin 300 and Fuel the next serial lines are IOC3 ports A and B; on the
+IP53 profiles they are the four IOC4 ports. The PROM keeps its console
+choice in the boot flash, so it is firmware state, not a board property.
 
-The public captures do not establish the selected clocks,
-an installed flash image, or the complete PIC and IO9 interrupt wiring.
+.. _sgi-ip35-running:
 
-.. _sgi-ip59-profiles:
+Running
+=======
 
-IP59 node board profiles
-------------------------
+Each command below reached the stock 6.210 PROM's "System Maintenance
+Menu" on the L1 line, on the model, within a 150-second timeout. Create
+the stores once per machine, naming the selection as
+``qemu-sgi-machine-init --machine help`` spells it:
 
-The IP59 is the 1 GHz generation of the IP53 compute board: the same
-four-socket, eight-DIMM 2U design with one Bedrock (the inventory prints
-``HUB ... Revision 2 Speed 200.00 Mhz``) and the same IO9 and interface boards.
-It is inferred to have been sold as an upgrade for the Origin 350, Onyx 350
-and Tezro; one owner reports fitting a quad 1 GHz board into an Onyx 4 G2N
-brick. The model therefore builds each IP59
-product from the IP53 assembly, PIC and IO9, and changes only what the
-captures show: the node-board record, and the processor tuple of 1.0 GHz
-R16000 revision 3.0 with a 16 MB secondary cache at one third of the CPU clock
-(333 MHz, ``Tap 0x15``).
+.. code-block:: shell
 
-Each IP53 topology also builds the IP59, selected with ``board=ip59``; the
-IP53 stays the default board. The ``onyx4-host`` topology builds only the
-IP59, which is therefore its default.
+   qemu-sgi-machine-init --machine origin300,topology=origin300,nodes=1 \
+       --boot-prom ip35prom.img state
 
-=====================  =================================  ======  ==============
-Topology               Machine                            Memory  Default board
-=====================  =================================  ======  ==============
-``origin350``          ``origin350``                      2 GiB   ``ip53``
-``onyx350``            ``onyx350``                        8 GiB   ``ip53``
-``tezro``              ``tezro``, two or four processors  4 GiB   ``ip53``
-``tezro-rack``         ``tezro``, rack first enclosure    4 GiB   ``ip53``
-``onyx4-host``         ``onyx4-host``                     8 GiB   ``ip59`` (only)
-``origin3900``         ``origin3000``, one Cx-brick       2 GiB   ``ip53``
-                                                          per
-                                                          board
-=====================  =================================  ======  ==============
+Then start the machine on them. For the Origin 300:
 
-The L1 reports the node board from its record, as it does for IP53. A
-four-processor node reports ``IP59_4CPU``, part ``030-1989-003``, revision
-``-C``, the most common revision in the captures. A two-processor node reports
-``IP59_2CPU``, part ``030-2059-002``, revision ``A``. No capture shows a
-one-processor IP59 board, so its record is unknown, and the ``tezro``
-topology builds the IP59 only on the two/four-processor interface board:
-``board=ip59`` with ``-smp 1`` is refused. For the same reason the rack's
-first enclosure takes two or four IP59 processors. Serials and barcodes use the
-synthetic scheme; part names and revisions are the captured values.
+.. code-block:: shell
 
-The reset-mode word ``0x00edb385`` and the flash configuration word
-``0x4aedb385`` are inferred inputs, not measured values. No published updater
-row covers a 1 GHz, 16 MB part, and no raw
-Config0 or processor revision register has been read from a 1 GHz module.
-The pair is derived so that the stock PROM and IRIX print the captured
-``Speed 333 Mhz  Tap 0x15`` and a 200 MHz hub: the secondary-cache clock
-divisor selects one third of the CPU clock, the system-clock divisor selects
-a fifth of it, and the cache tap uses the fifth tap bit (bit 22) that the
-R16000 adds to the R10000 layout. A boot that printed the PROM's "invalid tap
-setting" text would refute that reading. The model does not claim to know
-whether the part is an R16000A.
-The PROM payload is the same 6.210 image the IP53 profiles use; real IP59
-boards ran 6.210 and 6.211.
+   qemu-system-mips64 -M origin300,node0-flash=f,nvram0=n,nvram0-clock=c \
+       -blockdev driver=file,filename=state/node0-flash.raw,node-name=f \
+       -blockdev driver=file,filename=state/nvram0.raw,node-name=n \
+       -blockdev driver=file,filename=state/nvram0-clock.raw,node-name=c \
+       -display none -nodefaults -monitor none -serial file:console.txt
 
-An Origin 3900 Cx-brick is all IP53 or all IP59: ``board=ip59`` fits four
-IP59 node boards, and the generator refuses a record that mixes the two. The Cx-brick's L1 reports the IP59_4CPU record for every board. No
-Cx-brick capture is held; the choice rests on the inferred upgrade history, the
-public IP-number table that lists the Origin 3900 against IP59, and IRIX
-treating IP53 and IP59 nodes alike. Whether
-a Cx-brick's IP59 is the same board as the 2U one is unknown, and the 16 MB
-cache follows the captured IP59 boards.
+The PROM reports two processors and 512 MB. The same pair of commands,
+with each product's own state, runs the others; only the selection and
+the start of ``-M`` change:
 
-The IP59 L1 differs from the IP53's in firmware tables the model does not
-carry: three further fans (``N0 LEFT``, ``N0 CNTR`` and ``N0 RIGHT``), IP59
-sensor names and limits, and different expander names. The L1 model does not
-produce environment readings, so none of this is visible to a guest.
-Separate IP59 modules may be mixed with IP53 modules in one NUMAlink system
-as real systems were; the one-node profiles here do not build such a system.
+.. list-table::
+   :header-rows: 1
+
+   * - Product
+     - ``qemu-sgi-machine-init --machine``
+     - Start of ``-M``
+     - PROM reports
+   * - Fuel
+     - ``fuel,topology=fuel,nodes=1``
+     - ``fuel``, with or without ``-vga none``
+     - one processor, 512 MB
+   * - Origin 350
+     - ``origin350,topology=origin350,nodes=1``
+     - ``origin350``
+     - four processors, 2048 MB
+   * - Onyx 350
+     - ``onyx350,topology=onyx350-compat,nodes=1``
+     - ``onyx350,topology=onyx350-compat``
+     - four processors, 8192 MB
+   * - Tezro
+     - ``tezro,topology=tezro-tower-multi,nodes=1``
+     - ``tezro,topology=tezro-tower-multi``
+     - four processors, 4096 MB
+   * - Onyx 4 host
+     - ``onyx4-host,topology=onyx4-host-serial-compat,nodes=1``
+     - ``onyx4-host``
+     - four processors, 8192 MB
+
+Booting IRIX from here needs a disk on ``scsi.0``, the first onboard SCSI
+controller, or a netboot through the IOC3 on the Origin 300 and Fuel or
+the BCM5701 where the profile names it. :ref:`sgi-sn-launch-metadata`
+lists each product's launch hints.
+
+.. _sgi-ip35-graphics:
+
+Graphics
+========
+
+``fuel`` fits a V12 VPro at its graphics connector by default, as
+``-device sgi-odyssey,slot=widget-13,product=v12`` would; ``-vga none``
+leaves the slot empty. A Fuel IRIX inventory and an OpenBSD capture both
+place the VPro at widget 13 (:src:`tingo-fuel-irix-console`,
+:src:`miod-openbsd-sgi-story`), *observed*. The captured Fuel carried a
+V10, so fitting a V12 there is a choice.
+
+``tezro-tower-multi`` and ``onyx350-compat`` take an optional V12 at
+``widget-12``, ``-device sgi-odyssey,slot=widget-12,product=v12``, and
+fit none by default. The published 700 MHz Tezro inventory reports its
+V12, part ``030-1884-002`` revision D, at widget 12
+(:src:`graphica-tezro-hinv`), *observed*. On the Onyx 350 the same
+position is an alternative to its InfiniteReality, a choice. The pipe
+links to that port of the crossbar of the PIC that owns widget 0, uses
+the Bedrock's graphics-credit handling, and is marked alive once it
+realizes. The route from either physical XIO connector to the Bedrock is
+*unknown*. On the model, with a V12 fitted to ``tezro-tower-multi``, the
+stock PROM finds the Odyssey board on nasid 0 and passes its
+diagnostics.
+
+The other IP35 topologies have no graphics slot. :ref:`sgi-sn-graphics-pipes`
+describes how slots, defaults and refusals work, and
+:doc:`hardware/odyssey` describes the board.
+
+.. _sgi-ip35-unknowns:
+
+Open questions
+==============
+
+- The low bits of every product's board-identification word, and the
+  board word, L1 type and L1 revision of any physical IP53 board.
+- The Bedrock's crossbar entry widget on IP53 boards.
+- The PIC revision, reset state and Bedrock-to-PIC wiring on each IP53
+  product, and IO9's PCI interrupt routes, endpoint revisions and clock
+  straps.
+- Whether the four-processor Tezro capture describes a tower, and what
+  the TI PCI-to-PCI bridge and the other functions in the Tezro captures
+  are.
+- The R16000 reset mode word for each profile's clock and cache, and the
+  Origin 350's fitted cache size.
+- The Fuel's DS1742W decode, its interrupt wiring on revision G, where
+  its Ethernet-address record lives, and its L1 type reply.
+- The physical-to-software memory bank mapping on every product.
+- How the reset fetch reaches flash, the fitted flash part, and which
+  register the stock PROM reads on a warm reset.
+- How a guest learns M or N mode, and whether a Bedrock still needs the
+  widget-0 remap through big window 6.
+- The NUMAlink module's router silicon and the L1's USB branch.
+- The Origin 300 rear XIO connector's crossbar port.
