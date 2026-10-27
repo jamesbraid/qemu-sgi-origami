@@ -1261,6 +1261,40 @@ static void test_prom_glyph_rows_in_hardware_rows(void)
     g_assert_cmphex(mgras_test_pixel(qts, 40, 100), ==, 0);
 }
 
+/*
+ * A PROM glyph wider than 32 columns: CHAR_H is only written, and the
+ * CHAR_L execute paints the row from both, CHAR_H bits 31:0 as columns
+ * 0-31 and CHAR_L bits 31:0 as columns 32-63, stopping at the block's
+ * right edge. The PROM draws its menu icons this way (blocks 34 to 38
+ * wide, one CHAR_L execute per row).
+ */
+static void test_prom_wide_glyph_row_on_char_l(void)
+{
+    const uint32_t bottom = MGRAS_SCREEN_HEIGHT - 1 - 100;
+
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x30u << 12));
+    mgras_prom_block(MGRAS_FILLMODE_PROM_GLYPH, 40, 100, 77, 101);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CHAR_H, 0x80000001u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_L, 0xc6000000u));
+
+    g_assert_cmphex(mgras_test_pixel(qts, 40, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 41, bottom), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 71, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 72, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 73, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 74, bottom), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 76, bottom), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 77, bottom), ==, 0x30);
+    /* CHAR_L bit 25 would be column 78, past the block, and is dropped. */
+    g_assert_cmphex(mgras_test_pixel(qts, 78, bottom), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, bottom - 1), ==, 0);
+}
+
 /* With CONFIG bit 3 set the same glyph's rows run top-down from row 100. */
 static void test_prom_glyph_rows_top_down_with_config_bit_3(void)
 {
@@ -4160,6 +4194,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/prom-glyph-rows-in-hardware-rows",
         test_prom_glyph_rows_in_hardware_rows, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-wide-glyph-row-on-char-l",
+        test_prom_wide_glyph_row_on_char_l, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/prom-glyph-rows-top-down-with-config-bit-3",
         test_prom_glyph_rows_top_down_with_config_bit_3, true);
