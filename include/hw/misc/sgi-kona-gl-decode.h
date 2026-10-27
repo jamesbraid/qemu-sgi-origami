@@ -144,6 +144,14 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
 /* The native storage code a supported internal-format index uploads as. */
 bool sgi_kona_gl_texture_format_storage(uint32_t index, uint32_t *storage);
 
+/*
+ * OR n bytes into a buffer of big-endian words, starting at byte offset
+ * at: byte k lands in words[(at + k) / 4], most significant byte first.
+ * The caller bounds the buffer.
+ */
+void sgi_kona_gl_words_or_bytes(uint32_t *words, uint64_t at,
+                                const uint8_t *bytes, size_t n);
+
 /* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type);

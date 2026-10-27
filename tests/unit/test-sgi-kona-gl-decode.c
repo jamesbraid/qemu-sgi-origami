@@ -3114,6 +3114,36 @@ static void test_pixel_pack_refusals(void)
     g_assert_cmphex(out[2], ==, 0);
 }
 
+/*
+ * The word-at-a-time OR stages exactly the bytes a byte-at-a-time OR does,
+ * for every start phase and length over a few words, on top of existing
+ * contents.
+ */
+static void test_words_or_bytes(void)
+{
+    uint8_t bytes[40];
+
+    for (unsigned k = 0; k < sizeof(bytes); k++) {
+        bytes[k] = 0x11 * k + 3;
+    }
+    for (uint64_t at = 0; at < 12; at++) {
+        for (size_t n = 0; n <= sizeof(bytes); n++) {
+            uint32_t expected[16], actual[16];
+
+            for (unsigned k = 0; k < 16; k++) {
+                expected[k] = actual[k] = 0x01020408u << (k % 4);
+            }
+            for (size_t k = 0; k < n; k++) {
+                expected[(at + k) / 4] |=
+                    (uint32_t)bytes[k] << (24 - 8 * ((at + k) % 4));
+            }
+            sgi_kona_gl_words_or_bytes(actual, at, bytes, n);
+            g_assert_cmpmem(actual, sizeof(actual), expected,
+                            sizeof(expected));
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3271,6 +3301,8 @@ int main(int argc, char **argv)
                     test_pixel_index_transfer);
     g_test_add_func("/sgi-kona-gl-decode/index/round", test_pixel_index_round);
     g_test_add_func("/sgi-kona-gl-decode/index/pack", test_pixel_index_pack);
+    g_test_add_func("/sgi-kona-gl-decode/words-or-bytes",
+                    test_words_or_bytes);
     g_test_add_func("/sgi-kona-gl-decode/packed/decode",
                     test_pixel_packed_decode);
     g_test_add_func("/sgi-kona-gl-decode/packed/pack",
