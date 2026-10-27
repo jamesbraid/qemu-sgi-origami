@@ -598,6 +598,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``nekonomicon-16719032``
    *Nekochan forum archive thread 16719032, two-module rack Tezro inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16719032/1.html>`__ SHA-256 ``a211c43f1a350be3f8726f694a21533a73baedf04b173ca0b26c2ec821a36b4d``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-nekonomicon-16719632:
+
+``nekonomicon-16719632``
+   *Nekochan forum archive thread 16719632, 12-processor Onyx 3000 inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16719632/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nekonomicon-16720581:
+
+``nekonomicon-16720581``
+   *Nekochan forum archive thread 16720581, five-C-brick Origin 3400 inventory*. Nekochan forum archive. Capture, cited by post. `<https://nekonomicon.irixnet.org/forum/14/16720581/1.html>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-nekonomicon-16723250:
 
 ``nekonomicon-16723250``

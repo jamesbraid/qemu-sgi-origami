@@ -80,7 +80,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology
+            - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
           slave-bedrock:
@@ -93,7 +93,7 @@ layer:
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
-            - qemu:docs/system/mips/sgi/sn.rst#sgi-sn-topology
+            - qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory
             - hw/mips/sgi/sn-machine.c
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:

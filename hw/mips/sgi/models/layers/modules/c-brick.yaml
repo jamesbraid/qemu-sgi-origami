@@ -120,14 +120,14 @@ layer:
             says whether it joins another C-brick or an R-brick port.
         sources: ["007-4240-002 printed pages 124 and 125: the LINK (NI) connector joins a C-brick to an R-brick, or to another C-brick when the system has no R-brick"]
     buses:
-      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {id: sysad1, name: "SysAD, processor interface 1", kind: sysad, master: cpu2, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {id: sysad1, name: "SysAD, processor interface 1", kind: sysad, master: cpu2, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
       - {id: xio-ii, name: "XIO, the Bedrock's I/O interface", kind: xio, master: bedrock, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick", "108-0240-002 printed page 2-26: the Bedrock reaches I/O through a Crosstown2 port of the I/O brick's XBridge"]}
     connections:
-      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: cpu2, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: cpu3, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
-      - {component: bedrock, bus: sysad1, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick]}
+      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {component: cpu2, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {component: cpu3, bus: sysad1, role: master, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
+      - {component: bedrock, bus: sysad1, role: endpoint, provenance: vendor-document, sources: [qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick]}
       - {component: xio-ii-connector, bus: xio-ii, role: endpoint, provenance: vendor-document, sources: ["007-4240-002 printed page 124: the XIO (II) connector joins a C-brick to an I-, P- or X-brick"]}

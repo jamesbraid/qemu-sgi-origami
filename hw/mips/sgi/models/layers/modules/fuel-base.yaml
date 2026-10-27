@@ -187,7 +187,7 @@ layer:
           The model routes ISP12160 INTA to head-F input 1. This is a
           reviewed approximation from a Fuel OpenBSD handler report on an
           unidentified board revision, not a measured revision G trace.
-        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-fuel-interrupts]
         chain:
           - {at: scsi, as: "PCI INTA at device 1", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 1", mechanism: wire}
@@ -200,7 +200,7 @@ layer:
         description: >-
           The model routes the IOC3 SuperIO output to head-F input 0 under
           the same reviewed, revision-unverified approximation.
-        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-fuel-interrupts]
         chain:
           - {at: ioc3, as: "separate SuperIO output", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 0", mechanism: wire}
@@ -213,7 +213,7 @@ layer:
         description: >-
           The model routes IOC3 Ethernet INTA to head-F input 4 under the
           same reviewed, revision-unverified approximation.
-        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-fuel-interrupts]
         chain:
           - {at: ioc3, as: "Ethernet PCI INTA at device 4", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 4", mechanism: wire}
@@ -226,7 +226,7 @@ layer:
         description: >-
           The model routes OHCI INTA to head-F input 5 under the same
           reviewed, revision-unverified approximation.
-        sources: [qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts, qemu:docs/system/mips/sgi/sn.rst#sgi-sn-fuel-interrupts-evidence]
+        sources: [qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-fuel-interrupts]
         chain:
           - {at: usb, as: "PCI INTA at device 5", mechanism: level}
           - {at: xbridge-bridge-f, as: "modeled input 5", mechanism: wire}

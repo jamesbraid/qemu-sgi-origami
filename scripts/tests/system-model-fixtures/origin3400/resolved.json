@@ -165,7 +165,7 @@
       "name": "SysAD, processor interface 0",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -175,7 +175,7 @@
       "name": "SysAD, processor interface 1",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -196,7 +196,7 @@
       "name": "SysAD, processor interface 0",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -206,7 +206,7 @@
       "name": "SysAD, processor interface 1",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -227,7 +227,7 @@
       "name": "SysAD, processor interface 0",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -237,7 +237,7 @@
       "name": "SysAD, processor interface 1",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -258,7 +258,7 @@
       "name": "SysAD, processor interface 0",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -268,7 +268,7 @@
       "name": "SysAD, processor interface 1",
       "provenance": "vendor-document",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2314,7 +2314,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2323,7 +2323,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2332,7 +2332,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2341,7 +2341,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2350,7 +2350,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2359,7 +2359,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2377,7 +2377,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2386,7 +2386,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2395,7 +2395,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2404,7 +2404,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2413,7 +2413,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2422,7 +2422,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2440,7 +2440,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2449,7 +2449,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2458,7 +2458,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2467,7 +2467,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2476,7 +2476,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2485,7 +2485,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2503,7 +2503,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2512,7 +2512,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2521,7 +2521,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2530,7 +2530,7 @@
       "provenance": "vendor-document",
       "role": "master",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2539,7 +2539,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
@@ -2548,7 +2548,7 @@
       "provenance": "vendor-document",
       "role": "endpoint",
       "sources": [
-        "qemu:docs/system/mips/sgi/sn.rst#sgi-sn-family-origin3000-cbrick"
+        "qemu:docs/system/mips/sgi/hardware/bricks.rst#sgi-bricks-cbrick"
       ]
     },
     {
