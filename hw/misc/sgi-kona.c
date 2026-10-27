@@ -8936,14 +8936,15 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * library waits on the return page.
  *
  * Inferred: bit 28 of word 13 is the bank a load's word 17 bit 3 names.
- * Words 13 to 15 come from the texture's bind record: word 13 is its
- * third word, whose bit 28 marks a first level in bank one, and word 15
- * its first, the format and layout byte 0x43 or 0x44, which says nothing
- * of the bank. GLperf's mipmapped TexImage case read back a 256x256
- * level loaded in bank one with word 13 0x138c0024 and word 15 0x43;
- * every earlier readback observed came from bank zero, with bit 28
- * clear. Word 6 (zero in every readback observed) and the rest of words
- * 13 and 15 are not checked: what they carry is unknown.
+ * Words 13 and 15 come from the texture's bind: word 13 is the third word
+ * of the bind command (0x1d5 or 0x106), whose bit 28 the model already
+ * reads as the first level's bank, and word 15 the first word of the 0x179
+ * record that follows it, the format and layout byte 0x43 or 0x44, which
+ * says nothing of the bank. GLperf's mipmapped TexImage case read back a
+ * 256x256 level loaded in bank one with word 13 0x138c0024 and word 15
+ * 0x43; every earlier readback observed came from bank zero, with bit 28
+ * clear. Word 6 (zero in every readback observed) and the rest of words 13
+ * and 15 are not checked: what they carry is unknown.
  *
  * Approximated: the model keeps a texture as 32-bit RGBA texels, not in
  * the pipe's memory layout, and the copy it writes is those words,

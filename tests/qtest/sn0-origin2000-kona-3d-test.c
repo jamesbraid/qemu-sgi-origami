@@ -4802,18 +4802,18 @@ static void assert_texture_staging(QTestState *s, const uint32_t *v,
 }
 
 /*
- * Bind texture handle with a record whose first level is in bank one
- * (bit 28 of the record's third word) or bank zero.
+ * Bind texture handle with its first level in bank one or bank zero: bit
+ * 28 of the bind command's third word, where the library puts it.
  */
 static void texture_native_bind_bank(QTestState *s, uint32_t handle,
                                      bool bank_one)
 {
-    uint32_t record[22] = { 0x43, 0x101010,
-                            (256u << 10) | (bank_one ? 1u << 28 : 0) };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
 
     kona_command(s, 0x1d5,
                  (uint32_t[]) { handle, (2u << 28) | (41 << 12),
-                                0x30 << 14, 0x11, 1 }, 5);
+                                (0x30 << 14) | (bank_one ? 1u << 28 : 0),
+                                0x11, 1 }, 5);
     kona_command(s, 0x179, record, 22);
 }
 
@@ -4924,14 +4924,15 @@ static void test_texture_native_publication(void)
  * posted no completion, and the select-feed timeout killed the pipe; a
  * model refusal must not.
  *
- * The readback names the bank by bit 28 of its word 13, the bind's third
- * word, not by word 15, whose 0x43 is the bind record's format and
- * layout byte. GLperf's mipmapped TexImage case loaded a 256x256 level in
- * bank one (load word 17 bit 3) and read it back with word 13 0x138c0024
- * and word 15 0x43. The model looked in bank zero, found nothing, and the
- * select feed timed out: the pipe died (death reason 5) and every later
- * GLperf case failed. Mode 3 is that readback; mode 4 names bank zero for
- * the same bank-one texture, which matches nothing.
+ * The readback names the bank by bit 28 of its word 13, the third word of
+ * the bind command (0x1d5), not by word 15, whose 0x43 is the 0x179
+ * record's format and layout byte. GLperf's mipmapped TexImage case loaded
+ * a 256x256 level in bank one (load word 17 bit 3) and read it back with
+ * word 13 0x138c0024 and word 15 0x43. The model looked in bank zero,
+ * found nothing, and the select feed timed out: the pipe died (death
+ * reason 5) and every later GLperf case failed. Mode 3 is that readback;
+ * mode 4 names bank zero for the same bank-one texture, which matches
+ * nothing.
  */
 static void test_texture_readback(gconstpointer opaque)
 {
