@@ -1407,11 +1407,57 @@ static bool sgi_machine_ip53_normal_tuple(
     return fitted_count == profile->fitted_cpus;
 }
 
+static bool sgi_machine_node_is_memory(const SGIModelNode *node)
+{
+    return node->has_role && node->role == SGI_MODEL_NODE_ROLE_MEMORY;
+}
+
+/*
+ * A memory node is a Bedrock with banks and no processor. The console
+ * node runs the PROM, so it cannot be one.
+ */
+static bool sgi_machine_validate_memory_node(const SGIModelTopology *t,
+                                             unsigned int index,
+                                             const SGIModelNode *n,
+                                             Error **errp)
+{
+    const uint64List *bank;
+    bool banked = false;
+
+    if (n->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
+        error_setg(errp, "topology '%s' memory node '%s' is not a Bedrock "
+                   "node", t->name, n->id);
+        return false;
+    }
+    if ((int64_t)index == t->console) {
+        error_setg(errp, "topology '%s' memory node '%s' cannot be the "
+                   "console node", t->name, n->id);
+        return false;
+    }
+    for (const SGIModelCpuSlotList *slot = n->cpu_slots; slot;
+         slot = slot->next) {
+        if (slot->value->assembly) {
+            error_setg(errp, "topology '%s' memory node '%s' has a fitted "
+                       "processor", t->name, n->id);
+            return false;
+        }
+    }
+    for (bank = n->bank_mib; bank; bank = bank->next) {
+        banked |= bank->value != 0;
+    }
+    if (!banked) {
+        error_setg(errp, "topology '%s' memory node '%s' has no populated "
+                   "memory bank", t->name, n->id);
+        return false;
+    }
+    return true;
+}
+
 /*
  * Refuse catalogue records this builder cannot build yet, before anything
- * is created: a memory-only node, a module that owns its L1 for its
- * nodes and a module's catalogued L1 brick type. Building any of them
- * as the nearest existing shape would show the guest hardware the
+ * is created: a node with no boot flash, a module that owns its L1 for
+ * its nodes and a module's catalogued L1 brick type. Building any of
+ * them as the nearest existing shape would show the guest hardware the
  * topology does not describe.
  */
 static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
@@ -1420,15 +1466,19 @@ static bool sgi_machine_refuse_unbuilt_records(const SGIModelTopology *t,
     const SGIModelNodeList *node;
     const SGIModelModuleList *module;
     const SGIModelControllerList *controller;
+    unsigned int index = 0;
 
-    for (node = t->nodes; node; node = node->next) {
+    for (node = t->nodes; node; node = node->next, index++) {
         const SGIModelNode *n = node->value;
 
-        if (n->has_role && n->role == SGI_MODEL_NODE_ROLE_MEMORY) {
-            error_setg(errp, "topology '%s' node '%s' is a memory node; "
-                       "memory nodes are not built yet", t->name, n->id);
+        if (sgi_machine_node_is_memory(n) &&
+            !sgi_machine_validate_memory_node(t, index, n, errp)) {
             return false;
         }
+        /*
+         * Whether a memory-only board carries boot flash is unknown, so
+         * every node still needs its own.
+         */
         if (!n->flash) {
             error_setg(errp, "topology '%s' node '%s' has no boot flash",
                        t->name, n->id);
@@ -8062,6 +8112,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     node_count = sgi_machine_topology_node_count(t);
     requested = g_new0(unsigned int, node_count);
+    nodes = sgi_model_node_array(t->nodes, &node_count_check);
+    g_assert(node_count_check == node_count);
     {
         const SGIModelCpuPopulation *population;
         const SGIModelCpuPopulation *second;
@@ -8096,6 +8148,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         for (node_index = 0; node_index < node_count &&
              node_index < population_node_count; node_index++) {
             requested[node_index] = cpus_per_node[node_index];
+            if (sgi_machine_node_is_memory(nodes[node_index])) {
+                if (requested[node_index]) {
+                    error_setg(errp, "%s: topology '%s' population fits "
+                               "processors to memory node %u", mc->name,
+                               t->name, node_index);
+                    return false;
+                }
+                continue;
+            }
             if (!sgi_machine_processor_fits(s, requested[node_index])) {
                 error_setg(errp, "%s: no %u-processor module of processor "
                           "'%s' is known; give -smp a population its "
@@ -8106,8 +8167,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
 
-    nodes = sgi_model_node_array(t->nodes, &node_count_check);
-    g_assert(node_count_check == node_count);
     node_ram_size = g_new0(uint64_t, node_count);
     node_ram_offset = g_new0(uint64_t, node_count);
     {
