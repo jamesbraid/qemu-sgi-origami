@@ -52,7 +52,7 @@ struct SGIO2GBEState {
     uint8_t model_config;
     uint64_t reference_hz, ttl_hz, differential_hz;
     uint32_t ctrl, dot, sysclk;
-    uint32_t vt[20], ovr[3], frm[4], did[2];
+    uint32_t vt[20], ovr[3], frm[4], did[2], vc[2];
     uint32_t invalid_timing_reported;
     uint32_t wid[32], cmap[CMAP_COUNT], gmap[256], crs[5], glyph[64];
     uint8_t wid_written[32], cmap_written[CMAP_COUNT], gmap_written[256];
@@ -753,6 +753,9 @@ static uint64_t read_reg(void *opaque, hwaddr addr, unsigned size)
 {
     SGIO2GBEState *s = opaque;
     unsigned index;
+    if (addr == 0x80000 || addr == 0x80004) {
+        return s->vc[(addr - 0x80000) / 4];
+    }
     sync_clock(s);
     arm(s);
     if (addr >= 0x10000 && addr < 0x10050) {
@@ -841,6 +844,10 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     uint32_t v = value;
     unsigned index;
     uint64_t old_den, old_num = clock_rate(s, &old_den);
+    if (addr == 0x80000 || addr == 0x80004) {
+        s->vc[(addr - 0x80000) / 4] = v & FIELDS;
+        return;
+    }
     sync_clock(s);
     if (addr >= 0x10000 && addr < 0x10050) {
         index = (addr - 0x10000) / 4;
@@ -1032,6 +1039,7 @@ static void reset_enter(Object *obj, ResetType type)
     memset(s->ovr, 0, sizeof(s->ovr));
     memset(s->frm, 0, sizeof(s->frm));
     memset(s->did, 0, sizeof(s->did));
+    memset(s->vc, 0, sizeof(s->vc));
     memset(s->wid, 0, sizeof(s->wid));
     memset(s->cmap, 0, sizeof(s->cmap));
     memset(s->gmap, 0, sizeof(s->gmap));
@@ -1124,6 +1132,7 @@ static const VMStateDescription vmstate_gbe = {
         VMSTATE_UINT32_ARRAY(ovr, SGIO2GBEState, 3),
         VMSTATE_UINT32_ARRAY(frm, SGIO2GBEState, 4),
         VMSTATE_UINT32_ARRAY(did, SGIO2GBEState, 2),
+        VMSTATE_UINT32_ARRAY(vc, SGIO2GBEState, 2),
         VMSTATE_UINT32_ARRAY(wid, SGIO2GBEState, 32),
         VMSTATE_UINT32_ARRAY(cmap, SGIO2GBEState, CMAP_COUNT),
         VMSTATE_UINT32_ARRAY(gmap, SGIO2GBEState, 256),
