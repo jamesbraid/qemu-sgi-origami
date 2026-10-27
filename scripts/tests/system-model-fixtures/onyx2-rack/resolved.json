@@ -2405,7 +2405,7 @@
     {
       "datasheet_contracts": [
         "qemu:docs/system/mips/sgi/ip27.rst",
-        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+        "qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-products"
       ],
       "hardware_kind": "kona",
       "id": "io3-pipe",
@@ -2423,7 +2423,7 @@
     {
       "datasheet_contracts": [
         "qemu:docs/system/mips/sgi/ip27.rst",
-        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+        "qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-identity"
       ],
       "hardware_kind": "xg",
       "id": "io3-xg",
@@ -2499,7 +2499,7 @@
     {
       "datasheet_contracts": [
         "qemu:docs/system/mips/sgi/ip27.rst",
-        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+        "qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-products"
       ],
       "hardware_kind": "kona",
       "id": "io7-pipe",
@@ -2517,7 +2517,7 @@
     {
       "datasheet_contracts": [
         "qemu:docs/system/mips/sgi/ip27.rst",
-        "qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona"
+        "qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-identity"
       ],
       "hardware_kind": "xg",
       "id": "io7-xg",

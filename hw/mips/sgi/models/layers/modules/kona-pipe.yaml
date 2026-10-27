@@ -31,7 +31,7 @@ layer:
         kind: board
         hardware_kind: kona
         provenance: datasheet
-        datasheet_contracts: [qemu:docs/system/mips/sgi/ip27.rst, qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip27.rst, qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-products]
         sources: [qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-role, qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-pipe-identity]
         notes: >-
           The pipe's board set as one catalogue board: a geometry board
@@ -49,7 +49,7 @@ layer:
           widget_mfg: "0x2aa"
           widget_part: "0xc102"
           widget_revision: 0
-        datasheet_contracts: [qemu:docs/system/mips/sgi/ip27.rst, qemu:docs/system/mips/sgi/hardware/graphics.rst#sgi-graphics-kona]
+        datasheet_contracts: [qemu:docs/system/mips/sgi/ip27.rst, qemu:docs/system/mips/sgi/hardware/kona.rst#sgi-kona-identity]
         sources: [qemu:docs/system/mips/sgi/ip27.rst#sgi-onyx2-pipe-identity, "linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"]
         notes: >-
           Sits on the geometry board, where the host path ends on both
