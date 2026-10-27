@@ -38,6 +38,7 @@ struct SGIMACEEthState {
     void *irq_opaque;
     SGIMACEEthIRQRequest irq_request;
     SGIMACEEthResetIRQ irq_reset;
+    bool defer_post_load;
     uint16_t tx_read;
     uint16_t tx_write;
     uint8_t tx_reinit_seen;

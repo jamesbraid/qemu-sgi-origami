@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "hw/char/serial.h"
 #include "hw/mips/sgi/mace.h"
+#include "hw/net/sgi-mace-eth.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -170,9 +171,36 @@ static const TypeInfo mace_rx_threshold_type = {
     .class_init = mace_test_class_init,
 };
 
+static DeviceRealize eth_test_parent_realize;
+
+static void eth_test_realize(DeviceState *dev, Error **errp)
+{
+    if (!qtest_enabled()) {
+        error_setg(errp, "standalone Ethernet fixture requires qtest");
+        return;
+    }
+    eth_test_parent_realize(dev, errp);
+}
+
+static void eth_test_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->user_creatable = true;
+    device_class_set_parent_realize(dc, eth_test_realize,
+                                    &eth_test_parent_realize);
+}
+
+static const TypeInfo eth_standalone_type = {
+    .name = "sgi-mace-eth-standalone-test",
+    .parent = TYPE_SGI_MACE_ETH,
+    .class_init = eth_test_class_init,
+};
+
 static void peer_register_types(void)
 {
     type_register_static(&peer_type);
+    type_register_static(&eth_standalone_type);
     type_register_static(&mace_offset_type);
     type_register_static(&mace_rx_threshold_type);
 }

@@ -1410,6 +1410,13 @@ static void o2_instance_finalize(Object *obj)
     g_free(s->password_clear_input);
 }
 
+static void o2_test_device_reset(void *opaque, int n, int level)
+{
+    if (level) {
+        device_cold_reset(DEVICE(opaque));
+    }
+}
+
 static void o2_init(MachineState *machine)
 {
     O2MachineState *s = (O2MachineState *)machine;
@@ -1910,6 +1917,13 @@ static void o2_init(MachineState *machine)
     if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(mace), &err)) {
         error_report_err(err);
         exit(1);
+    }
+    if (qtest_enabled()) {
+        DeviceState *eth = DEVICE(object_resolve_path_component(OBJECT(mace),
+                                                                "eth"));
+
+        qdev_init_gpio_in_named(eth, o2_test_device_reset, "x-test-reset", 1);
+        qdev_init_gpio_in_named(crime, o2_test_device_reset, "x-test-reset", 1);
     }
     sysbus_mmio_map(SYS_BUS_DEVICE(mace), 0, O2_MACE_BASE);
     sysbus_mmio_map(SYS_BUS_DEVICE(mace), 1, O2_AIC_PCI_VIEW);

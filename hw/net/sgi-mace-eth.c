@@ -772,6 +772,9 @@ static void sgi_mace_eth_write(void *opaque, hwaddr offset, uint64_t value,
             }
             if (s->irq_request) {
                 s->irq_request(s->irq_opaque, value);
+            } else {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-mace-eth: interrupt request has no handler\n");
             }
             return;
         case MACE_ETH_TX_POINTER:
@@ -903,8 +906,9 @@ static int sgi_mace_eth_post_load(void *opaque, int version_id)
 {
     SGIMACEEthState *s = opaque;
 
-    /* MACE publishes the restored Ethernet level after its own baseline. */
-    sgi_mace_eth_rx_retire(s);
+    if (!s->defer_post_load) {
+        sgi_mace_eth_restore_post_load(s);
+    }
     return 0;
 }
 
