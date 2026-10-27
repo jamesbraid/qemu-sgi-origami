@@ -1580,6 +1580,7 @@ F: tests/qtest/o2-r10k-scache-reset-test.c
 F: tests/qtest/sgi-pci-expansion-ni-fixture.c
 F: tests/qtest/sgi-pci-expansion-ni-test.c
 F: tests/qtest/sgi-mgras-*-test.c
+F: tests/qtest/sgi-raster-bands.h
 F: tests/qtest/sgi-pic-test.c
 F: tests/qtest/sgi-sn1-router-test.c
 F: tests/qtest/sgi-replay-test.c
