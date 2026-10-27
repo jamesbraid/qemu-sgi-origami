@@ -14,6 +14,7 @@ docs/system/mips/sgi/hardware/elsc.rst
 docs/system/mips/sgi/hardware/gigachannel.rst
 docs/system/mips/sgi/hardware/graphics.rst
 docs/system/mips/sgi/hardware/hub.rst
+docs/system/mips/sgi/hardware/ics1890.rst
 docs/system/mips/sgi/hardware/ioc3-boards.rst
 docs/system/mips/sgi/hardware/ioc3.rst
 docs/system/mips/sgi/ip30.rst
