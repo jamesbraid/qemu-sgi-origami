@@ -236,6 +236,12 @@ static void ioc4_kbc_irq(void *opaque, int n, int level)
     }
 }
 
+/*
+ * A UART pass-through source follows the UART's own interrupt level: what
+ * quiets it is the UART register access that clears the UART's interrupt,
+ * and a write to the status register cannot clear it. Linux's IOC3 header
+ * treats these bits as levels, and IOC4 follows its sibling.
+ */
 static void ioc4_uart_irq(void *opaque, int n, int level)
 {
     SGIIOC4State *s = opaque;
@@ -243,7 +249,6 @@ static void ioc4_uart_irq(void *opaque, int n, int level)
 
     if (level) {
         s->uart_level |= bit;
-        s->serial_pending |= bit;
     } else {
         s->uart_level &= ~bit;
     }

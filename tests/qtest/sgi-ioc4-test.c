@@ -1596,6 +1596,30 @@ static void test_dma_zero_reload_expires_at_once(void)
     close(sv[0]);
 }
 
+/*
+ * A UART pass-through source follows the UART's own interrupt level: it
+ * falls when the UART is quieted, with no write to the status register,
+ * and a write cannot clear it while the UART still asserts. Linux's IOC3
+ * header treats these bits as levels, and IOC4 follows its sibling.
+ */
+static void test_uart_pass_through_is_a_level(void)
+{
+    QTestState *qts = ioc4_start(33333333);
+
+    reg_write(qts, 0x08, 0xffffffff);
+    qtest_writeb(qts, UART(0) + 1, 2);
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(0), ==, PASS(0));
+    reg_write(qts, 0x08, PASS(0));
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(0), ==, PASS(0));
+
+    /* Quieted by the UART alone, unacknowledged, it falls. */
+    qtest_writeb(qts, UART(1) + 1, 2);
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(1), ==, PASS(1));
+    g_assert_cmphex(qtest_readb(qts, UART(1) + 2) & 0xf, ==, 2);
+    g_assert_cmphex(reg_read(qts, 0x08) & PASS(1), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -3142,6 +3166,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/uart-pass-through-is-a-level",
+                   test_uart_pass_through_is_a_level);
     qtest_add_func("/sgi-ioc4/dma-zero-reload-expires-at-once",
                    test_dma_zero_reload_expires_at_once);
     qtest_add_func("/sgi-ioc4/dma-consume-without-arm-keeps-it",
