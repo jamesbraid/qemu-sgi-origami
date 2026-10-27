@@ -71,6 +71,7 @@ board /mips64/sn1/odyssey/processor-credit-return
 board /mips64/sn1/odyssey/readback
 board /mips64/sn1/odyssey/dma
 
+board /mips64/sn1/odyssey/reset-clears-flag-level
 fifo /mips64/sn1/odyssey/command-fifo-lowater-interrupt
 fifo /mips64/sn1/odyssey/command-fifo-selftest
 fifo /mips64/sn1/odyssey/command-fifo-fillrect

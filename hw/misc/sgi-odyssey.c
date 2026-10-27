@@ -12115,6 +12115,11 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      */
     s->intr_flags = ODSY_INTR_FIFO_LOW_WATER;
     s->intr_enable = 0;
+    /*
+     * The level falls with the enables. The routed destination is reset
+     * below, so no clearing packet has anywhere to go.
+     */
+    s->interrupt_asserted = false;
     s->flctl_config = ODSY_FLCTL_CONFIG_RESET;
     s->sw_token = 0;
     s->route_dest_upper = 0;
