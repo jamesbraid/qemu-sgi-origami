@@ -1115,6 +1115,46 @@ static void test_glyph_row_before_any_context_switch(void)
 }
 
 /*
+ * One glyph row of 0x81 at (40, 40) under PP1FILLMODE pp1, with RED holding
+ * index 0x30 and PACKEDCOLOR white, so the pixel shows which source and op
+ * the paint took.
+ */
+static uint32_t mgras_glyph_row_under_pp1(uint32_t pp1)
+{
+    mgras_reset();
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_PP1FILLMODE, pp1));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, MGRAS_PIXEL_WORD(0x00ffffff)));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x30u << 12));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (47u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x81u << 24));
+    return mgras_test_pixel(qts, 40, 40);
+}
+
+/*
+ * PP1FILLMODE bits 10:8 of 5 keep a paint CI8 although bit 13 is set: the
+ * PROM console paints its indices under 0x6500. Read as RGB the row would
+ * store PACKEDCOLOR's white.
+ */
+static void test_pp1_format_field_5_is_ci8(void)
+{
+    g_assert_cmphex(mgras_glyph_row_under_pp1(
+                        (MGRAS_LOGIC_OP_COPY << 26) | 0x6500), ==, 0x30);
+    g_assert_cmphex(mgras_test_format(qts, 40, 40), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    /* The X server's 24-bit windows' 0x6204 still paints RGB. */
+    g_assert_cmphex(mgras_glyph_row_under_pp1(
+                        (MGRAS_LOGIC_OP_COPY << 26) | 0x6204), ==, 0x00ffffff);
+}
+
+/*
  * A row up to 32 columns wide executes entirely on CHAR_H; CHAR_L is never
  * written. Markers sit at columns 0, 15, 16 and 19 to exercise both CHAR_H
  * halfwords and the row's last column. A second CHAR_H execute paints a
@@ -3953,6 +3993,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/glyph-row-before-any-context-switch",
         test_glyph_row_before_any_context_switch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pp1-format-field-5-is-ci8",
+        test_pp1_format_field_5_is_ci8, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/direct-glyph-row-char-h-only",
         test_direct_glyph_row_char_h_only, true);
