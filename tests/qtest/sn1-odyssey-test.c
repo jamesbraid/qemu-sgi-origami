@@ -3548,25 +3548,51 @@ static void test_command_work_read_waits(void)
 }
 
 /*
- * A low-water clear written behind queued FIFO stores acts at once and
- * keeps its order: each store raises low water as it drains, and the
- * clear, run after them, leaves the flag clear, as the synchronous board
- * did.
+ * While stores wait the FIFO is neither empty nor below low water, in
+ * the status the kernel's credit flow control reads before it sleeps on
+ * the low-water interrupt; it reads ready again once they have run.
  */
-static void test_command_work_intr_clear_keeps_order(void)
+static void test_command_work_status_shows_waiting_stores(void)
 {
     QTestState *qts = work_start();
 
-    reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    work_push_fences(qts);
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10000000);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    g_assert_cmphex(reg_read(qts, ODSY_STATUS0), ==, 0x10030000);
+    board_quit(qts);
+}
+
+/*
+ * The kernel's credit flow control: it clears low water, finds stores
+ * still waiting, enables the source and sleeps until the interrupt. Low
+ * water is not raised while stores wait, and is raised, with its
+ * interrupt, once the last has run.
+ */
+static void test_command_work_low_water_after_drain(void)
+{
+    QTestState *qts = work_start();
+
+    flag_dest_program(qts);
     work_push_fences(qts);
     reg_write(qts, ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    reg_write(qts, ODSY_INTR_ENABLE_SET, ODSY_INTR_FIFO_LOW_WATER);
+    qtest_clock_step(qts, 1000 * 1000);
+    g_assert_true(work_pending(qts));
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value") &
+                    ODSY_HUB_INT_MODIFY_SET, ==, 0);
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
                     ==, 0);
     while (work_pending(qts)) {
         qtest_clock_step(qts, 1000 * 1000);
     }
     g_assert_cmphex(reg_read(qts, ODSY_INTR_FLAGS) & ODSY_INTR_FIFO_LOW_WATER,
-                    ==, 0);
+                    ==, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(odsy_qom_get_uint(qts, "x-test-last-interrupt-value"), ==,
+                    ODSY_TEST_VECTOR | ODSY_HUB_INT_MODIFY_SET);
     board_quit(qts);
 }
 
@@ -22687,8 +22713,10 @@ int main(int argc, char **argv)
                    test_command_work_orders_context_switch);
     add_fresh_case("sn1/odyssey/command-work-read-waits",
                    test_command_work_read_waits);
-    add_fresh_case("sn1/odyssey/command-work-intr-clear-keeps-order",
-                   test_command_work_intr_clear_keeps_order);
+    add_fresh_case("sn1/odyssey/command-work-status-shows-waiting-stores",
+                   test_command_work_status_shows_waiting_stores);
+    add_fresh_case("sn1/odyssey/command-work-low-water-after-drain",
+                   test_command_work_low_water_after_drain);
     add_fresh_case("sn1/odyssey/command-work-stop-and-reset",
                    test_command_work_stop_and_reset);
     add_fresh_case("sn1/odyssey/command-work-draws-on-board-thread",

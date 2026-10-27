@@ -419,8 +419,9 @@
 
 /*
  * Status register 0x1064 (odsy status0). This model's command FIFO drains
- * synchronously in the write handler, so it is always enabled, always empty and
- * always below the low-water mark, and never fills. The kernel's periodic
+ * in the write handler or, while stores wait for the board's work, behind
+ * them; it is always enabled, and empty and below the low-water mark
+ * whenever no store waits. The kernel's periodic
  * gfx-credits check reads this register and treats a clear low-water or enabled
  * bit as a graphics error, so a board that never answered it (the default
  * no-register path, reading zero) drew a graphics-error alert for board 0 on
@@ -440,9 +441,10 @@
  * ODSY_INTR_FLAGS' low-water bit, the command-FIFO low-water interrupt. The
  * driver enables this source and waits on it to replenish its graphics command
  * credits: on real hardware it fires when the FIFO drains to its low-water
- * mark. This model drains the FIFO synchronously in the write handler, so every
- * command submission leaves the FIFO empty and below low water. Raise it on
- * each submission (the drain edge). Without it the driver's command credits
+ * mark. This model drains the FIFO in the write handler, or in the board's
+ * work behind the stores that wait, so a submission that leaves no store
+ * waiting leaves the FIFO empty and below low water. Raise it then (the
+ * drain edge). Without it the driver's command credits
  * stay below their threshold, the kernel logs a graphics error for board 0, and
  * it gives up starting Xsgi. The real board's timing-dependent occupancy is not
  * modeled (see the datasheet's approximation ledger).
@@ -2336,17 +2338,24 @@ static void odyssey_update_irq(SGIOdysseyState *s)
     }
 }
 
+static bool odyssey_work_pending(SGIOdysseyState *s);
+
 /*
- * Latch the command-FIFO low-water flag. The FIFO drains synchronously, so
- * this stands in for the real board raising the flag once its level crosses
- * back below the low-water mark. The flag latches whatever the enable mask
- * says; it reaches the driver only while the source is enabled. The driver
- * enables it from its high-water path and its handler disables it again
- * through ODSY_INTR_ENABLE_SET/_CLEAR, so it fires once per high-water
- * episode, and the driver clears the flag through ODSY_INTR_CLEAR.
+ * Latch the command-FIFO low-water flag. The FIFO drains synchronously, or
+ * in the board's work once no stores wait, so this stands in for the real
+ * board raising the flag once its level crosses back below the low-water
+ * mark. The flag latches whatever the enable mask says; it reaches the
+ * driver only while the source is enabled. The driver enables it from its
+ * high-water path and its handler disables it again through
+ * ODSY_INTR_ENABLE_SET/_CLEAR, so it fires once per high-water episode,
+ * and the driver clears the flag through ODSY_INTR_CLEAR.
  */
 static void odyssey_raise_lowater(SGIOdysseyState *s)
 {
+    if (odyssey_work_pending(s)) {
+        /* Stores still wait: the FIFO is not below low water yet. */
+        return;
+    }
     s->intr_flags |= ODSY_INTR_FIFO_LOW_WATER;
     odyssey_update_irq(s);
 }
@@ -2655,15 +2664,18 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         /* No crosstalk error is ever posted, so the error class is clear. */
         break;
     case ODSY_INTR_FLAGS:
-        /* A clear still queued behind work reads as done. */
-        value = s->intr_flags & ~s->work_intr_clears;
+        value = s->intr_flags;
         break;
     case ODSY_INTR_ENABLE_SET:
         value = s->intr_enable;
         break;
     case ODSY_STATUS0:
-        /* Enabled, empty, below low water: the FIFO drains synchronously. */
-        value = ODSY_STATUS0_READY;
+        /*
+         * Enabled, empty and below low water, unless stores wait for the
+         * board (see "Command work after the store"); then only enabled.
+         */
+        value = odyssey_work_pending(s) ? ODSY_STATUS0_FIFO_ENABLED :
+                                          ODSY_STATUS0_READY;
         break;
     case ODSY_CFIFO_SELFTEST:
         /*
@@ -12034,12 +12046,6 @@ typedef struct OdysseyQueuedStore {
     int64_t queued_at;
 } OdysseyQueuedStore;
 
-/*
- * Interrupt flags queued work raises when it runs: the FIFO low-water
- * flag, which each command-FIFO store raises as it drains.
- */
-#define ODSY_WORK_INTR_SOURCES ODSY_INTR_FIFO_LOW_WATER
-
 static bool odyssey_work_pending(SGIOdysseyState *s)
 {
     return s->work_queue && s->work_queue->len;
@@ -12065,20 +12071,6 @@ static bool odyssey_command_store(hwaddr addr, unsigned size)
            odyssey_reg(addr, size) == ODSY_CTX_SHADOW_ADDR_LOWER;
 }
 
-/* What a flag clear still in the queue will remove. */
-static void odyssey_work_clears_update(SGIOdysseyState *s)
-{
-    s->work_intr_clears = 0;
-    for (unsigned int i = 0; i < s->work_queue->len; i++) {
-        OdysseyQueuedStore *q =
-            &g_array_index(s->work_queue, OdysseyQueuedStore, i);
-
-        if (q->addr == ODSY_INTR_CLEAR) {
-            s->work_intr_clears |= q->value;
-        }
-    }
-}
-
 static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
                                 uint64_t value, unsigned size)
 {
@@ -12102,8 +12094,9 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
 
         g_array_remove_index(s->work_queue, 0);
         odyssey_write_dispatch(s, q.addr, q.value, q.size);
-        if (q.addr == ODSY_INTR_CLEAR) {
-            odyssey_work_clears_update(s);
+        if (!s->work_queue->len) {
+            /* The FIFO has drained: below low water again. */
+            odyssey_raise_lowater(s);
         }
         if (sgi_head_work_spent(b)) {
             break;
@@ -12152,15 +12145,15 @@ static void odyssey_work_drain(SGIOdysseyState *s, hwaddr addr)
  *   widget registers (identity, status, control, request timeout, error
  *   records and error interrupt destination, which IRIX reads from its
  *   interrupt path), the interrupt route and enables, the FIFO
- *   status (which reads empty: the model takes every store), and the swap
+ *   status (which reads not empty while stores wait), and the swap
  *   and displayed-buffer registers and the cursor, which act on scanout.
  * - Offsets the model does not implement, which it logs and answers with
  *   zero: the kernel's scheduler writes one beside the software token, and
  *   the OpenGL client polls one at 0x120004 while it draws.
- * - The interrupt flags: a clear acts at once and also waits in the queue,
- *   so a low-water flag a queued store raises when it runs is cleared after
- *   it, as the processor ordered; a read leaves out what a queued clear
- *   will remove.
+ * - The interrupt flags. The one flag the queued work raises is low
+ *   water, and only once no store waits, so a clear written behind the
+ *   stores still comes before that edge, as on a board whose FIFO is above
+ *   low water until it drains.
  */
 static bool odyssey_access_waits(hwaddr addr, unsigned size, bool write)
 {
@@ -12295,11 +12288,6 @@ static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
             odyssey_work_drain(s, addr);
         }
         odyssey_write_dispatch(s, addr, value, size);
-        if (addr == ODSY_INTR_CLEAR && odyssey_work_pending(s) &&
-            (value & ODSY_WORK_INTR_SOURCES)) {
-            odyssey_work_append(s, addr, value & ODSY_WORK_INTR_SOURCES, size);
-            odyssey_work_clears_update(s);
-        }
     }
     if (counted) {
         if (s->pi) {
@@ -12331,7 +12319,6 @@ static void odyssey_work_reset(SGIOdysseyState *s)
     }
     sgi_head_work_wait_slice(&s->work);
     g_array_set_size(s->work_queue, 0);
-    s->work_intr_clears = 0;
     s->work_queued_until = 0;
     sgi_head_work_idle(&s->work);
 }
