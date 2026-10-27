@@ -41,6 +41,7 @@ docs/system/mips/sgi/hardware/ioc3-boards.rst
 docs/system/mips/sgi/hardware/ioc3.rst
 docs/system/mips/sgi/ip30.rst
 docs/system/mips/sgi/ip35.rst
+docs/system/mips/sgi/ip53.rst
 docs/system/mips/sgi/hardware/l1.rst
 docs/system/mips/sgi/hardware/lucent-ohci.rst
 docs/system/mips/sgi/hardware/mscsi.rst
@@ -49,6 +50,7 @@ docs/system/mips/sgi/hardware/pci-expansion.rst
 docs/system/mips/sgi/prom-image.rst
 docs/system/mips/sgi/references.rst
 docs/system/mips/sgi/hardware/qlogic-isp.rst
+docs/system/mips/sgi/hardware/qlogic-isp2200.rst
 docs/system/mips/sgi/hardware/router.rst
 docs/system/mips/sgi/sn.rst
 docs/system/mips/sgi/vocabulary.rst
