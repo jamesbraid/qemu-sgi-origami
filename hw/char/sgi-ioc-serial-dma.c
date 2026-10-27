@@ -433,11 +433,6 @@ static void sdma_receive(SGIIOCSerialDMAPort *p, int64_t since)
         if (msr & UART_MSR_DCD) {
             status |= SGI_IOC_SDMA_RX_CD;
         }
-        if (p->engine->ops->rx_status) {
-            status = p->engine->ops->rx_status(p->engine->opaque, p->index,
-                                               status,
-                                               serial->mcr & UART_MCR_LOOP);
-        }
         p->packer[SGI_IOC_SDMA_ENTRY_CHARS + p->packed] = status;
 
         ++p->packed;

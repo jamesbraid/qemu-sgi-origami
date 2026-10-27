@@ -44,7 +44,11 @@
 #define IOC4_DMA_RX_CONSUME 0x320
 #define IOC4_DMA_ENABLE (1U << 28)
 #define IOC4_DMA_DRAIN (1U << 27)
-#define IOC4_RX_DATA_VALID 0x80
+/*
+ * A received slot's status: data and modem state valid, with the socket
+ * backend's CTS and DCD asserted.
+ */
+#define IOC4_RX_FROM_LINE 0xf0
 #define IOC4_UART_PASS 0x40
 #define IOC4_UART_DATA 0x41
 
@@ -2393,9 +2397,9 @@ static void test_bedrock_ioc4_serial_dma(void)
     qtest_memread(qts, TARGET + 0x400, entry, sizeof(entry));
     g_assert_cmpmem(entry, 3, rx, sizeof(rx));
     g_assert_cmphex(entry[3], ==, 0);
-    g_assert_cmphex(entry[4], ==, IOC4_RX_DATA_VALID);
-    g_assert_cmphex(entry[5], ==, IOC4_RX_DATA_VALID);
-    g_assert_cmphex(entry[6], ==, IOC4_RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, IOC4_RX_FROM_LINE);
+    g_assert_cmphex(entry[5], ==, IOC4_RX_FROM_LINE);
+    g_assert_cmphex(entry[6], ==, IOC4_RX_FROM_LINE);
     g_assert_cmphex(entry[7], ==, 0);
 
     qtest_quit(qts);
@@ -2517,9 +2521,9 @@ static void test_bedrock_ioc4_pending_migration(void)
     pic_ioc4_wait_reg(to, IOC4_DMA_RX_PRODUCE, 0xff8, 8);
     qtest_memread(to, TARGET + 0x400, entry, sizeof(entry));
     g_assert_cmpmem(entry, 3, rx, sizeof(rx));
-    g_assert_cmphex(entry[4], ==, IOC4_RX_DATA_VALID);
-    g_assert_cmphex(entry[5], ==, IOC4_RX_DATA_VALID);
-    g_assert_cmphex(entry[6], ==, IOC4_RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, IOC4_RX_FROM_LINE);
+    g_assert_cmphex(entry[5], ==, IOC4_RX_FROM_LINE);
+    g_assert_cmphex(entry[6], ==, IOC4_RX_FROM_LINE);
 
     qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x100), ==, 0);
