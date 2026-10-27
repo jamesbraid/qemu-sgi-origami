@@ -658,7 +658,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          * IRIX's IP30 kernel arms its scheduler clock a few register
          * instructions after reading or writing Count; the Count-sample
          * window keeps a host delay between the two from costing a full
-         * Count wrap (docs/system/mips/sgi/ip30.rst).
+         * Count wrap (docs/system/mips/sgi/hardware/r10000.rst).
          */
         if (!object_property_set_bool(OBJECT(dev), "count-sample-window",
                                       true, errp)) {
@@ -668,7 +668,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
          * The catalogue's processor part: PRId, inferred from kernel
          * inventory records, and on the R12000 the FPU identification and
          * the approximated reset word with the cache it selects
-         * (docs/system/mips/sgi/ip30.rst).
+         * (docs/system/mips/sgi/hardware/r10000.rst).
          */
         if (!object_property_set_bool(OBJECT(dev), "big-endian", true, errp) ||
             !sgi_cpu_apply_processor(dev, processor, errp) ||

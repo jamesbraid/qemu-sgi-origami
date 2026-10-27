@@ -14,6 +14,11 @@ docs/system/mips/sgi/hardware/bridge.rst
 docs/system/mips/sgi/hardware/elsc.rst
 docs/system/mips/sgi/hardware/gigachannel.rst
 docs/system/mips/sgi/hardware/graphics.rst
+docs/system/mips/sgi/hardware/ds1685.rst
+docs/system/mips/sgi/hardware/heart.rst
+docs/system/mips/sgi/hardware/r10000.rst
+docs/system/mips/sgi/hardware/rad1-audio.rst
+docs/system/mips/sgi/measured-machines.rst
 docs/system/mips/sgi/hardware/hub.rst
 docs/system/mips/sgi/hardware/ics1890.rst
 docs/system/mips/sgi/hardware/ioc3-boards.rst

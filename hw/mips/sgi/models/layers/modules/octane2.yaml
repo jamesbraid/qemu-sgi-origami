@@ -29,7 +29,7 @@ layer:
         # Inferred. One running IRIX 6.5.30m Octane2 kernel recorded these
         # CPU and FPU identity words for its 360 MHz R12000 (chip revision
         # 3.5); they are kernel inventory state, not raw CP0 or CP1 reads
-        # (docs/system/mips/sgi/ip30.rst, R12000 catalogue defaults). The machine's
+        # (docs/system/mips/sgi/hardware/r10000.rst, Config and the reset mode word). The machine's
         # r12000-prid and r12000-fpu-id properties override them.
         processor_identification: '0x0e35'
         fpu_identification: '0x0900'
@@ -39,15 +39,15 @@ layer:
       datasheet_contracts: [qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-components]
       provenance: derived
       sources:
-      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-octane2-heart-id
-      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-octane2-heart-status
+      - qemu:docs/system/mips/sgi/hardware/heart.rst#sgi-heart-octane2-id
+      - qemu:docs/system/mips/sgi/hardware/heart.rst#sgi-heart-octane2-status
       parent: ip30-board
       hardware_kind: heart
       identity:
         widget_revision: 6
         widget_id_64: '0x6c00106d'
         widget_status_f_measured: true
-        # Measured: the reference Octane2's PROM read returned 0x60 (sgi-ip30.rst, sgi-ip30-octane2-heart-status).
+        # Measured: the reference Octane2's PROM read returned 0x60 (docs/system/mips/sgi/hardware/heart.rst, sgi-heart-octane2-status).
     - id: memory
       name: memory
       kind: memory
@@ -61,7 +61,7 @@ layer:
       datasheet_contracts: [qemu:docs/system/mips/sgi/hardware/xbow.rst]
       provenance: derived
       sources:
-      - qemu:docs/system/mips/sgi/ip30.rst#sgi-ip30-octane2-xbow-id
+      - qemu:docs/system/mips/sgi/hardware/xbow.rst#sgi-xbow-octane2-id
       parent: ip30-board
       hardware_kind: xbow
       crossbar:
