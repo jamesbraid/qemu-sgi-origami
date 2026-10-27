@@ -29,8 +29,8 @@ Sources
 =======
 
 - The stock images :src:`ip27-prom-6.156`, :src:`ip35-prom-6.210` and
-  :src:`ip30-prom-4.17`, and the I/O PROM distributed beside the IP27
-  PROM on the same media. The container layout, payload sizes,
+  :src:`ip30-prom-4.17`, and the I/O PROM :src:`io6-prom-6.156`
+  distributed beside the IP27 PROM on the same media. The container layout, payload sizes,
   configuration blocks and entry trampolines below were read from them.
 - SGI's *Origin200/2000 IP27 PROM Technical Reference Manual*,
   :src:`108-0170-001 p. 2-3`, for the IP27 flash's sector use.
@@ -389,9 +389,10 @@ bytes included, followed by erased bytes.
 Entry trampolines
 =================
 
-The IP35 payload begins with ten entry trampolines, one every eight bytes
-from ``0x1fc00000`` to ``0x1fc00048`` (:src:`ip35-prom-6.210 0x1fc00000`),
-*established* for that image. Software outside the PROM calls fixed
+The IP35 payload begins with a table of entry trampolines at an
+eight-byte stride from ``0x1fc00000``, ending before the configuration
+block at offset ``0x60`` (:src:`ip35-prom-6.210 0x1fc00000`),
+*established* for that image. This page gives no slot count. Software outside the PROM calls fixed
 entries in this range. OpenBSD's IP27 port starts secondary processors
 through the entry at ``0x1fc00038`` (``IP27_PROM_LAUNCH_SLAVE`` in
 ``ip27.h``), a *software expectation*. The model maps the payload
@@ -469,9 +470,9 @@ When the machine changes fields in a block, it rewrites the checksum
 adjustment so that the unsigned byte sum of the whole ``0x50``-byte block,
 modulo 256, is unchanged. That the PROM checks this sum is *inferred*,
 not established. The Linux header names the field only as "used after
-config hdr overlay". On the model, a Fuel block with machine type 2
-failed the PROM's checksum with the adjustment byte left at the Origin
-300 value and passed with the byte recomputed this way. No public source
+config hdr overlay". The stock PROM rejects a Fuel block whose
+adjustment byte does not restore the byte sum and accepts one that
+does, a *software expectation*. No public source
 states the algorithm. A trace of the PROM's checksum routine would settle
 it.
 
@@ -553,7 +554,7 @@ a bound store on an IP53 profile, whose block is authored with the store.
 ``qemu-sgi-machine-init`` writes the same fields into a new store.
 
 - Machine type 2 for Fuel: a published Fuel ``flash -f`` session prompts
-  ``Enter machine type (0)SN1 (1)SN10 (2)SN11 (3)SN12`` and its owner
+  ``Enter machine type (0)SN1 (1)SN10 (2)SN11 (3)SN12`` and the user
   enters 2 (:src:`graphica-o350-chimera-notes flash -f session`),
   *observed*. The stock PROM's CPU-configuration table carries 2 on its
   Fuel rows and 1 on its Origin 300 rows (:src:`ip35-prom-6.210
@@ -650,8 +651,10 @@ state:
   counter, translated through its MMU, lies in the flash or the RAM-copy
   range at ``0x1a00000``, 1 MiB on IP27 and 2 MiB on IP35.
 - While armed, its window accesses go to its own block, and the RAM-copy
-  range resolves to its own node's memory whatever node number the
-  address carries. On IP35 the test follows the node's programmed number.
+  range in its node-zero form resolves to its own node's memory. An
+  address naming another node's number reaches that node. On IP35 the
+  classification also counts an address naming the node's own programmed
+  number as local.
 - The phase ends when bit 1 is clear and the program counter has left
   both ranges. A poll on each processor every 10 ms of guest time applies
   that test, so release lags the hand-off by up to one period.
