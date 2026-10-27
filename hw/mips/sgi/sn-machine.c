@@ -2110,7 +2110,8 @@ static bool sgi_machine_index_xio_attachments(
  * The backend id for board @index's parallel port: the user's -parallel,
  * else a null backend. The machine opts out of QEMU's default parallel
  * port (see sgi_machine_class_init()) because that is a text console, so
- * an empty slot gets its own backend here.
+ * an empty slot gets its own backend here. The port reads a null backend
+ * as nothing plugged in.
  */
 static const char *sgi_machine_parallel_label(unsigned int index)
 {

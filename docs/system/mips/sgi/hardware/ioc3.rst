@@ -375,11 +375,15 @@ into four calls and run the FIFO write four times over.
 Nothing is on the cable. Four behaviours follow from that rather than
 from the specified hardware:
 
-* The status register reads a constant idle cable: no fault, no
-  peripheral selected, no paper error, never busy. Only nFault's
-  level is pinned by a source -- clear means a fault -- and
-  never-busy is the level that stops a driver waiting for the
-  printer from waiting forever.
+* The status register follows what is behind the port's backend. The
+  machine gives an empty slot a null backend, and a null backend, none
+  at all or ``-parallel none`` read as a bare connector: all five
+  inputs high, ``0x78`` (bit 7 is the inverse of the Busy pin, so it
+  reads clear). A real backend, such as a file, reads ``0x08``: no
+  fault and no other input. Bit positions and polarity follow the
+  fitted TL16PIR552's published status register and Linux's ``lp``
+  convention; the pull direction on the boards is an inference, since
+  no source measures an unplugged port.
 * The transmit FIFO is bottomless. A byte written to it leaves
   within the write and is discarded, empty always reads set and full
   never does, because no source gives the FIFO a depth or a drain
