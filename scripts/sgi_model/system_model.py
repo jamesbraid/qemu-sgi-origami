@@ -1207,6 +1207,9 @@ def resolve_system_model(
     module_instances = _merge_module_instances(
         path, composition, resolved, selected,
         population if check_population else None, bricks)
+    model_composition.validate_supported_processors(
+        selected["product"]["id"], selected["product"].get("topology", {}),
+        resolved.get("components", []))
     rules = selected["product"].get("composition_rules")
     if rules is not None:
         model_composition.validate_composition_rules(
