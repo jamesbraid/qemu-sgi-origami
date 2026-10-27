@@ -3769,6 +3769,92 @@ static void test_soft_reset_cancels(void *obj, void *data,
 }
 
 /*
+ * An HCCR RISC reset cancels every command in flight without a status,
+ * as a soft reset does, but leaves the loop's devices alone: none reports
+ * a unit attention afterwards. Once the disks' reads are over, no data
+ * has reached the host's buffers, no entry has reached the ring and
+ * ISR is clear.
+ */
+static void test_hccr_reset_cancels(void *obj, void *data,
+                                    QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 1024);
+    uint8_t e[ENTRY_SIZE], zero[ENTRY_SIZE] = { 0 };
+    int64_t reads5, reads1;
+    uint64_t slot;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+    slot = t.rs + t.rs_next * ENTRY_SIZE;
+    qtest_memset(t.qts, buf, 0xa5, 1024);
+    reads5 = isp_reads_done(&t, "disk0");
+    reads1 = isp_reads_done(&t, "disk2");
+
+    isp_submit_read(&t, 0xe5, 5, 0, buf);
+    isp_submit_read(&t, 0xe1, 1, 0, buf + 512);
+    wr(&t, REG_HCCR, HCCR_RESET);
+    g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
+    wr(&t, REG_HCCR, HCCR_RELEASE);
+    isp_wait_reads(&t, "disk0", reads5 + 1);
+    isp_wait_reads(&t, "disk2", reads1 + 1);
+    g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
+    assert_untouched(&t, buf, 1024, 0xa5);
+    qtest_memread(t.qts, slot, e, sizeof(e));
+    g_assert_cmpint(memcmp(e, zero, sizeof(e)), ==, 0);
+
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0);
+    g_assert_cmpint(isp_tur_sense(&t, 5, 1), ==, 0);
+    g_assert_cmpint(isp_tur_sense(&t, 1, 0), ==, 0);
+    isp_close(&t);
+}
+
+/*
+ * Initialise-firmware again with a command in flight cancels it without
+ * a status. Once its disk's read is over, no data has reached the host's
+ * buffer, neither the old response ring nor the new one has an entry for
+ * it, ISR is clear, and the new ring's first entry is the next command's.
+ */
+static void test_init_firmware_cancels(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    uint64_t buf = guest_alloc(alloc, 512);
+    uint8_t e[ENTRY_SIZE], zero[ENTRY_SIZE] = { 0 };
+    uint64_t old_slot;
+    int64_t reads;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    isp_clear_unit_attention(&t, &slow_config);
+    old_slot = t.rs + t.rs_next * ENTRY_SIZE;
+    qtest_memset(t.qts, buf, 0xa5, 512);
+    reads = isp_reads_done(&t, "disk0");
+
+    isp_submit_read(&t, 0xf5, 5, 0, buf);
+    isp_rings_at(&t, 16, 16, guest_alloc(alloc, ICB_SIZE),
+                 guest_alloc(alloc, 16 * ENTRY_SIZE),
+                 guest_alloc(alloc, 16 * ENTRY_SIZE), ICB_OPT_PORT_DB, 0);
+    qtest_clock_step(t.qts, BRINGUP_NS);
+    isp_expect_events(&t, bringup_events, ARRAY_SIZE(bringup_events));
+    isp_wait_reads(&t, "disk0", reads + 1);
+    g_assert_cmphex(rd(&t, REG_ISR), ==, 0);
+    g_assert_cmphex(rd(&t, REG_RESPONSE), ==, 0);
+    assert_untouched(&t, buf, 512, 0xa5);
+    qtest_memread(t.qts, old_slot, e, sizeof(e));
+    g_assert_cmpint(memcmp(e, zero, sizeof(e)), ==, 0);
+
+    /* The new ring's first entry is this command's. */
+    isp_tur_sense(&t, 1, 0);
+    qtest_memread(t.qts, t.rs, e, sizeof(e));
+    g_assert_cmphex(e[0], ==, ENTRY_STATUS);
+    g_assert_cmphex(ldl_le_p(e + 4), ==, 0x7e00);
+    isp_close(&t);
+}
+
+/*
  * A data DMA the host bridge refuses completes the command 0x0002 (DMA
  * error) with no SCSI status, whether the adapter is delivering read data
  * or fetching write data, and the port keeps working.
@@ -3865,6 +3951,85 @@ static void test_loop_down_commands(void *obj, void *data,
     isp_expect_events(&t, bringup_events, ARRAY_SIZE(bringup_events));
     isp_clear_unit_attention(&t, &loop_config);
     g_assert_cmpint(isp_tur_sense(&t, 5, 0), ==, 0);
+    isp_close(&t);
+}
+
+/*
+ * Approximation: a discovery command whose result DMA the host bridge
+ * refuses answers 0x4002, as the host interface's other refused DMAs do.
+ */
+static void test_loop_dma_refused(void *obj, void *data,
+                                  QGuestAllocator *alloc)
+{
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    g_assert_cmphex(isp_get_id_list(&t, UNMAPPED_PHYS), ==,
+                    MBOX_HOST_IF_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_PORT_NAME_LIST, 0x08,
+                                 UNMAPPED_PHYS), ==, MBOX_HOST_IF_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_GET_PORT_DB, 5 << 8, UNMAPPED_PHYS),
+                    ==, MBOX_HOST_IF_ERROR);
+    isp_ack(&t);
+    g_assert_cmphex(isp_call_dma(&t, CMD_POSITION_MAP, 0, UNMAPPED_PHYS), ==,
+                    MBOX_HOST_IF_ERROR);
+    isp_ack(&t);
+    isp_close(&t);
+}
+
+/*
+ * OpenBSD writes the port name list's inputs without mailbox 7, so the
+ * address takes bits 47:32 from what the host last wrote there. Here
+ * that is 1, from an earlier command: the list lands above 4 GiB, and
+ * nothing reaches the same low 32 bits, which then hold no memory.
+ */
+static void test_port_name_list_retains_m7(void *obj, void *data,
+                                           QGuestAllocator *alloc)
+{
+    uint64_t bridge_device = 0x40000000ULL + 4 + 0x200 + 8 * 4;
+    uint8_t names[32];
+    uint64_t low;
+    unsigned i;
+    Isp t;
+
+    if (!is_mips64()) {
+        g_test_skip("high memory belongs to the SGI Bridge test head");
+        return;
+    }
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    low = guest_alloc(alloc, sizeof(names));
+    qtest_sysbus_mmio_map(t.qts, "/machine/peripheral/transfer-ram", 0,
+                          0x102000000ULL);
+    qtest_writel(t.qts, bridge_device,
+                 qtest_readl(t.qts, bridge_device) | (1u << 19));
+    qtest_memset(t.qts, low + (1ULL << 32), 0xa5, sizeof(names));
+
+    /* A No-op that writes mailbox 7 as 1. */
+    for (i = 0; i < 8; i++) {
+        wr(&t, MBOX(i), i == 7 ? 1 : 0);
+    }
+    wr(&t, REG_HCCR, HCCR_SET_HOST);
+    g_assert_cmphex(rd(&t, MBOX(0)), ==, MBOX_COMPLETE);
+    isp_ack(&t);
+
+    {
+        const uint16_t in[] = {
+            CMD_PORT_NAME_LIST, 0x08, (low >> 16) & 0xffff, low & 0xffff,
+            0, 0, 0,
+        };
+
+        g_assert_cmphex(isp_mbox(&t, in, ARRAY_SIZE(in)), ==, MBOX_COMPLETE);
+        g_assert_cmphex(rd(&t, MBOX(1)), ==, 20);
+        isp_ack(&t);
+    }
+    qtest_memread(t.qts, low + (1ULL << 32), names, sizeof(names));
+    g_assert_cmphex(ldq_le_p(names), ==, WWN_PORT(1));
+    g_assert_cmphex(ldq_le_p(names + 10), ==, WWN_PORT(5));
+    g_assert_cmphex(names[20], ==, 0xa5);
     isp_close(&t);
 }
 
@@ -4009,10 +4174,18 @@ static void isp2200_register_nodes(void)
                  test_unplug_disconnect, &slow_opts);
     qos_add_test("soft-reset-cancels", "qlogic-isp2200",
                  test_soft_reset_cancels, &slow_opts);
+    qos_add_test("hccr-reset-cancels", "qlogic-isp2200",
+                 test_hccr_reset_cancels, &slow_opts);
+    qos_add_test("init-firmware-cancels", "qlogic-isp2200",
+                 test_init_firmware_cancels, &slow_opts);
     qos_add_test("scsi-dma-error", "qlogic-isp2200", test_scsi_dma_error,
                  &loop_opts);
     qos_add_test("loop-down-commands", "qlogic-isp2200",
                  test_loop_down_commands, &loop_opts);
+    qos_add_test("loop-dma-refused", "qlogic-isp2200", test_loop_dma_refused,
+                 &loop_opts);
+    qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
+                 test_port_name_list_retains_m7, &loop_opts);
 }
 
 libqos_init(isp2200_register_nodes);
