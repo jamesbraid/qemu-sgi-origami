@@ -11316,11 +11316,60 @@ static void odyssey_cmd_start(SGIOdysseyState *s, uint32_t tag,
     }
 }
 
+/*
+ * A register-select word (0x0001rrrr): the most common command word, since
+ * every flush and state write is one. No other word classify matches has
+ * this shape, so it is tested first rather than after every by-value match.
+ */
+static void odyssey_cmd_classify_register(SGIOdysseyState *s, uint32_t word)
+{
+    uint32_t reg = word & ~ODSY_CMD_REGISTER_SHAPE;
+    unsigned operands = odyssey_cmd_arity(reg);
+    uint32_t fmt;
+
+    /*
+     * A pixel burst while an image is open: its data words paint into the
+     * box rather than streaming through the generic operand path. Outside
+     * an image the same register-select is an ordinary state word.
+     */
+    if (s->image_active && operands > 0 &&
+        odyssey_image_burst_fmt(reg, &fmt)) {
+        s->image_fmt = fmt;
+        if (!odyssey_image_pairing_supported(s->image_code, fmt)) {
+            odyssey_cmd_unimplemented(s, word);
+        }
+        s->cmd_state = ODSY_CMD_IMAGE_BURST;
+        s->cmd_operand_count = operands;
+        s->cmd_operand_index = 0;
+        return;
+    }
+
+    /*
+     * The 32x32-bit pattern loads: a 16-word burst each, more than
+     * cmd_operand[] holds, so they stream straight into the pattern buffer
+     * (0x3c4e -> words 0-15, 0x3c4f -> words 16-31) rather than through the
+     * generic operand path.
+     */
+    if (reg == ODSY_REG_PATTERN_LOW || reg == ODSY_REG_PATTERN_HIGH) {
+        s->cmd_state = ODSY_CMD_PATTERN_LOAD;
+        s->cmd_operand_count = operands;
+        s->cmd_operand_index = 0;
+        s->pattern_load_offset =
+            reg == ODSY_REG_PATTERN_HIGH ? ODSY_PATTERN_WORDS : 0;
+        return;
+    }
+    odyssey_cmd_start(s, reg, operands);
+}
+
 /* Classify a word arriving while the parser is idle: a new command. */
 static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
 {
     unsigned int i;
 
+    if ((word & ODSY_CMD_REGISTER_SHAPE) == ODSY_CMD_REGISTER_TAG) {
+        odyssey_cmd_classify_register(s, word);
+        return;
+    }
     if (word == 0x4c0 || word == 0x4c0 + ODSY_QUERY_KIND_RASTER) {
         odyssey_query_begin(s);
         s->query_kind = word - 0x4c0;
@@ -11484,46 +11533,6 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     if ((word & ODSY_CMD_STATE_WORD_MASK) == ODSY_CMD_STATE_WORD ||
         word == ODSY_CMD_IMAGE_HEADER || word == ODSY_CMD_IMAGE_HEADER_TAIL) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
-        return;
-    }
-    if ((word & ODSY_CMD_REGISTER_SHAPE) == ODSY_CMD_REGISTER_TAG) {
-        uint32_t reg = word & ~ODSY_CMD_REGISTER_SHAPE;
-        unsigned operands = odyssey_cmd_arity(reg);
-        uint32_t fmt;
-
-        /*
-         * A pixel burst while an image is open: its data words paint into the
-         * box rather than streaming through the generic operand path. Outside
-         * an image the same register-select is an ordinary state word and
-         * falls through to be consumed and dropped below.
-         */
-        if (s->image_active && operands > 0 &&
-            odyssey_image_burst_fmt(reg, &fmt)) {
-            s->image_fmt = fmt;
-            if (!odyssey_image_pairing_supported(s->image_code, fmt)) {
-                odyssey_cmd_unimplemented(s, word);
-            }
-            s->cmd_state = ODSY_CMD_IMAGE_BURST;
-            s->cmd_operand_count = operands;
-            s->cmd_operand_index = 0;
-            return;
-        }
-
-        /*
-         * The 32x32-bit pattern loads: a 16-word burst each, more than
-         * cmd_operand[] holds, so they stream straight into the pattern buffer
-         * (0x3c4e -> words 0-15, 0x3c4f -> words 16-31) rather than through the
-         * generic operand path.
-         */
-        if (reg == ODSY_REG_PATTERN_LOW || reg == ODSY_REG_PATTERN_HIGH) {
-            s->cmd_state = ODSY_CMD_PATTERN_LOAD;
-            s->cmd_operand_count = operands;
-            s->cmd_operand_index = 0;
-            s->pattern_load_offset =
-                reg == ODSY_REG_PATTERN_HIGH ? ODSY_PATTERN_WORDS : 0;
-            return;
-        }
-        odyssey_cmd_start(s, reg, operands);
         return;
     }
     /*
