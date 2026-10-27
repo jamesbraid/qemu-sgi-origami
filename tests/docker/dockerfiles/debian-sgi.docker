@@ -5,6 +5,8 @@ FROM docker.io/library/debian:trixie-slim
 # python3-jsonschema and python3-yaml are pythondeps.toml's sgi-model group,
 # installed here so the model suites run without fetching from PyPI.
 # gdb-multiarch drives the functional tests' reverse-debugging cases.
+# python3-sphinx and python3-sphinx-rtd-theme build the manual, which the
+# script suites check with warnings treated as errors.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
         binutils-mips64-linux-gnuabi64 \
@@ -34,6 +36,8 @@ RUN apt-get update && \
         python3 \
         python3-jsonschema \
         python3-pip \
+        python3-sphinx \
+        python3-sphinx-rtd-theme \
         python3-venv \
         python3-wheel \
         python3-yaml \

@@ -25,6 +25,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -305,8 +306,19 @@ def model(args):
     script_suites(MODEL_SUITES, args.python)
 
 
+def docs(args):
+    # The manual's own build runs Sphinx only with --enable-docs, which the
+    # CI configure turns off. Build it directly so a broken page, label or
+    # table fails the pull request instead of going unnoticed.
+    with tempfile.TemporaryDirectory() as out:
+        run([args.python or sys.executable, '-m', 'sphinx', '-W', '--keep-going',
+             '-q', '-b', 'html', '-d', os.path.join(out, 'doctrees'),
+             SOURCE / 'docs', os.path.join(out, 'html')])
+
+
 def scripts(args):
     script_suites(SCRIPT_SUITES, args.python)
+    docs(args)
 
 
 QTEST_MESON = 'tests/qtest/meson.build'
@@ -886,6 +898,12 @@ def main(argv=None):
                       help='build directory (default: build-windows in the '
                            'source tree)')
     mode.set_defaults(func=windows)
+
+    mode = modes.add_parser(
+        'docs', help='build the manual with Sphinx, warnings as errors')
+    mode.add_argument('--python', type=Path,
+                      help='interpreter to run Sphinx with')
+    mode.set_defaults(func=docs)
 
     mode = modes.add_parser('model', help='run the sgi_model contract suites')
     mode.add_argument('--python', type=Path,
