@@ -1167,6 +1167,149 @@ static void test_pp1_bit_25_replaces(void)
 }
 
 /*
+ * The IP30 PROM console's own drawing state, from a traced Octane SI boot:
+ * PP1FILLMODE 0x02006500 (whose op bits read CLEAR), the colour as an
+ * index in RED, CONFIG 4 and rows counted up from the bottom of the screen.
+ */
+#define REG_PROM_BLOCK               0x013
+#define REG_CONFIG                   0x112
+#define MGRAS_PROM_PP1FILLMODE       0x02006500
+#define MGRAS_PROM_CONFIG            0x4
+#define MGRAS_CONFIG_TOP_DOWN        0x8
+#define MGRAS_FILLMODE_PROM_INK_FILL 0x00018000
+#define MGRAS_FILLMODE_PROM_GLYPH    0x00418008
+#define MGRAS_SCREEN_HEIGHT          1024
+
+static void mgras_prom_state(uint32_t config)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_PROM_PP1FILLMODE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xffffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_CONFIG, config));
+}
+
+static void mgras_prom_block(uint32_t fillmode, uint32_t x0, uint32_t y0,
+                             uint32_t x1, uint32_t y1)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, fillmode));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (x0 << 16) | y0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (x1 << 16) | y1));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_PROM_BLOCK, 0x18));
+}
+
+/*
+ * The PROM paints its backdrop a row at a time: RED's index in a block of
+ * FILLMODE 0x00018000, started by a register 0x013 execute. Row 5 counted
+ * from the bottom is screen line 1018. Under the op bits alone the paint
+ * would CLEAR, and under bit 13 alone it would store RGB from PACKEDCOLOR;
+ * either leaves the pixel 0.
+ */
+static void test_prom_ink_fill_in_hardware_rows(void)
+{
+    const uint32_t row = MGRAS_SCREEN_HEIGHT - 1 - 5;
+
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x60u << 12));
+    mgras_prom_block(MGRAS_FILLMODE_PROM_INK_FILL, 10, 5, 20, 5);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 10, row), ==, 0x60);
+    g_assert_cmphex(mgras_test_pixel(qts, 20, row), ==, 0x60);
+    g_assert_cmphex(mgras_test_format(qts, 15, row), ==,
+                    MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_pixel(qts, 9, row), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 21, row), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 15, row + 1), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 15, 5), ==, 0);
+}
+
+/*
+ * A PROM glyph: FILLMODE 0x00418008 and a register 0x013 execute start the
+ * block, then each CHAR_H execute paints the next row up from the block's
+ * bottom row in RED's index, leaving clear bits alone.
+ */
+static void test_prom_glyph_rows_in_hardware_rows(void)
+{
+    const uint32_t bottom = MGRAS_SCREEN_HEIGHT - 1 - 100;
+
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x30u << 12));
+    mgras_prom_block(MGRAS_FILLMODE_PROM_GLYPH, 40, 100, 47, 101);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, bottom), ==, 0);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x81u << 24));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x18u << 24));
+
+    g_assert_cmphex(mgras_test_pixel(qts, 40, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 41, bottom), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 47, bottom), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, bottom - 1), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 43, bottom - 1), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 44, bottom - 1), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 100), ==, 0);
+}
+
+/* With CONFIG bit 3 set the same glyph's rows run top-down from row 100. */
+static void test_prom_glyph_rows_top_down_with_config_bit_3(void)
+{
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG | MGRAS_CONFIG_TOP_DOWN);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x30u << 12));
+    mgras_prom_block(MGRAS_FILLMODE_PROM_GLYPH, 40, 100, 47, 101);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x81u << 24));
+
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 100), ==, 0x30);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, MGRAS_SCREEN_HEIGHT - 1 - 100),
+                    ==, 0);
+}
+
+/*
+ * A bottom-up block that runs past the top of the screen clips there, as
+ * a top-down fill clips at the bottom: rows 1020-1030 counted from the
+ * bottom paint screen lines 3 to 0.
+ */
+static void test_prom_ink_fill_clips_past_the_top(void)
+{
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x60u << 12));
+    mgras_prom_block(MGRAS_FILLMODE_PROM_INK_FILL, 10, 1020, 20, 1030);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 10, 0), ==, 0x60);
+    g_assert_cmphex(mgras_test_pixel(qts, 20, 3), ==, 0x60);
+    g_assert_cmphex(mgras_test_pixel(qts, 15, 4), ==, 0);
+}
+
+/* A register 0x013 execute under any other FILLMODE paints nothing. */
+static void test_prom_block_other_fillmode_is_inert(void)
+{
+    mgras_reset();
+    mgras_prom_state(MGRAS_PROM_CONFIG);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RED, 0x60u << 12));
+    mgras_prom_block(0x00100000, 10, 5, 20, 5);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 10, MGRAS_SCREEN_HEIGHT - 1 - 5),
+                    ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 10, 5), ==, 0);
+}
+
+/*
  * A row up to 32 columns wide executes entirely on CHAR_H; CHAR_L is never
  * written. Markers sit at columns 0, 15, 16 and 19 to exercise both CHAR_H
  * halfwords and the row's last column. A second CHAR_H execute paints a
@@ -4011,6 +4154,21 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/pp1-bit-25-replaces",
         test_pp1_bit_25_replaces, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-ink-fill-in-hardware-rows",
+        test_prom_ink_fill_in_hardware_rows, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-glyph-rows-in-hardware-rows",
+        test_prom_glyph_rows_in_hardware_rows, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-glyph-rows-top-down-with-config-bit-3",
+        test_prom_glyph_rows_top_down_with_config_bit_3, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-ink-fill-clips-past-the-top",
+        test_prom_ink_fill_clips_past_the_top, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prom-block-other-fillmode-is-inert",
+        test_prom_block_other_fillmode_is_inert, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/direct-glyph-row-char-h-only",
         test_direct_glyph_row_char_h_only, true);
