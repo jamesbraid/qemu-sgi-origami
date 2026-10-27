@@ -544,7 +544,10 @@ bring-up timer and, through the SCSI layer's request hooks, every
 command in flight with its loop ID, LUN, segments and progress. The
 loop itself is not in the stream: it is the devices on the bus, which a
 matching configuration makes identical, and a load whose adapter loop
-ID one of them holds fails.
+ID one of them holds fails. So does one whose queued events this build
+could not have queued -- more than five, a repeated code, or more than
+one bring-up's LIP event -- or whose commands in flight and held
+entries together pass the 512-command budget.
 
 Limitations
 ===========

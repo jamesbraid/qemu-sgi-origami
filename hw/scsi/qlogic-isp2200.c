@@ -304,8 +304,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(QLogicISP2200State, QLOGIC_ISP2200)
  * wait: the host interface raises two kinds itself, each queued at most
  * once (see isp2200_raise_event()), and the loop queues at most one
  * bring-up's three, because a new bring-up first takes back the events
- * of any earlier one still queued (see isp2200_bringup()).
+ * of any earlier one still queued (see isp2200_bringup()). That is five;
+ * the queue keeps a power of two.
  */
+#define ISP2200_EVENTS_REACHABLE    5
 #define ISP2200_EVENTS_MAX          8
 
 /*
@@ -2561,6 +2563,12 @@ static void *isp2200_load_request(QEMUFile *f, SCSIRequest *sreq)
     scsi_req_ref(sreq);
     req->sreq = sreq;
 
+    /* The budget the walk keeps, whichever of the two loads first. */
+    if (s->outstanding + s->held_count > ISP2200_MAX_OUTSTANDING) {
+        qemu_file_set_error(f, -EINVAL);
+        return req;
+    }
+
     loop_id = qemu_get_be32(f);
     lun = qemu_get_be32(f);
     n = qemu_get_be32(f);
@@ -2768,11 +2776,48 @@ static void isp2200_instance_init(Object *obj)
                             isp2200_get_fc_last, NULL);
 }
 
+/*
+ * The queue as this build can fill it: at most one each of the host
+ * interface's two events and one bring-up's set, so that the next push
+ * cannot pass the bound isp2200_push_event() asserts.
+ */
+static bool isp2200_events_valid(QLogicISP2200State *s)
+{
+    unsigned lip = 0, i, j;
+
+    if (s->event_count > ISP2200_EVENTS_REACHABLE) {
+        return false;
+    }
+    for (i = 0; i < s->event_count; i++) {
+        uint16_t code = s->events[i][0];
+
+        switch (code) {
+        case ISP2200_ASYNC_LIP_OCCURRED:
+        case ISP2200_ASYNC_LIP_RESET:
+            lip++;
+            break;
+        case ISP2200_ASYNC_LOOP_UP:
+        case ISP2200_ASYNC_PORT_DB_CHANGED:
+        case ISP2200_ASYNC_REQUEST_DMA_ERROR:
+        case ISP2200_ASYNC_RESPONSE_DMA_ERROR:
+            break;
+        default:
+            return false;
+        }
+        for (j = 0; j < i; j++) {
+            if (s->events[j][0] == code) {
+                return false;
+            }
+        }
+    }
+    return lip <= 1;
+}
+
 static bool isp2200_counts_valid(void *opaque, int version_id)
 {
     QLogicISP2200State *s = opaque;
 
-    return s->event_count <= ISP2200_EVENTS_MAX &&
+    return isp2200_events_valid(s) &&
            s->held_head < ISP2200_HELD_MAX &&
            s->held_count <= ISP2200_HELD_MAX;
 }
@@ -2815,6 +2860,9 @@ static int isp2200_post_load(void *opaque, int version_id)
     QLogicISP2200State *s = opaque;
 
     if (s->has_loop_id && isp2200_port(s, s->loop_id)) {
+        return -EINVAL;
+    }
+    if (s->outstanding + s->held_count > ISP2200_MAX_OUTSTANDING) {
         return -EINVAL;
     }
     isp2200_update_irq(s);
