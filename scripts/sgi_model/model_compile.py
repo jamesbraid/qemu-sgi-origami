@@ -2983,6 +2983,11 @@ def _compile_router(model: dict, entry: dict, router_index: int) -> dict:
         # the same mechanism a node's Hub uses (`_synthetic_serial`); the
         # router's own `identity` block never carries one.
         "serial": _synthetic_serial(model, router["id"], "router", router_index),
+        # The enclosure's node-port rule, which validation already holds
+        # the authored cables to; the builder holds the records it is
+        # handed to it again.
+        **({"node_ports": sorted(router_asic["node_ports"])}
+           if "node_ports" in router_asic else {}),
     }
 
 

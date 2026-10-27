@@ -164,6 +164,7 @@ def _router(raw: dict) -> dict:
         "serial": raw["serial"],
         **({"synthetic-diagnostics": True}
            if raw.get("synthetic_diagnostics") else {}),
+        **({"node-ports": raw["node_ports"]} if "node_ports" in raw else {}),
     }
 
 
