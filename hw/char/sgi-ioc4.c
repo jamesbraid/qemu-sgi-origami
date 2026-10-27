@@ -63,8 +63,6 @@
 #define IOC4_SRCIR_TIMER_ARM 0x80000000
 #define IOC4_RING_1K 0x400
 #define IOC4_RING_4K 0x1000
-#define IOC4_RX_VALID 0x80
-#define IOC4_RX_MODEM_VALID 0x40
 #define IOC4_TX_VALID 0x40
 #define IOC4_TX_EXPLICIT 0x20
 #define IOC4_TX_MCR 0x80
@@ -263,23 +261,11 @@ static void ioc4_sdma_dma_error(void *opaque, unsigned port, bool rx,
     ioc4_update_irq(s);
 }
 
-/*
- * Until the receive status rule is taken from the engine, keep this model's
- * earlier values: data-valid alone for external input, data-valid and
- * modem-valid for loopback.
- */
-static uint8_t ioc4_sdma_rx_status(void *opaque, unsigned port,
-                                   uint8_t status, bool loopback)
-{
-    return loopback ? IOC4_RX_VALID | IOC4_RX_MODEM_VALID : IOC4_RX_VALID;
-}
-
 static const SGIIOCSerialDMAOps ioc4_sdma_ops = {
     .raise = ioc4_sdma_raise,
     .set_level = ioc4_sdma_set_level,
     .reachable = ioc4_sdma_reachable,
     .dma_error = ioc4_sdma_dma_error,
-    .rx_status = ioc4_sdma_rx_status,
 };
 
 static void ioc4_uart_tx_ready(void *opaque, int n, int level)

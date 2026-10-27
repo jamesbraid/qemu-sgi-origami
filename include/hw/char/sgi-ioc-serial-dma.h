@@ -153,12 +153,6 @@ typedef struct SGIIOCSerialDMAOps {
      * the engine raises the port's DMA error source.
      */
     void (*dma_error)(void *opaque, unsigned port, bool rx, hwaddr addr);
-    /*
-     * Rewrite a received character's status byte. Optional; IOC4 keeps its
-     * earlier status values through it until it takes the engine's.
-     */
-    uint8_t (*rx_status)(void *opaque, unsigned port, uint8_t status,
-                         bool loopback);
 } SGIIOCSerialDMAOps;
 
 typedef struct SGIIOCSerialDMA SGIIOCSerialDMA;

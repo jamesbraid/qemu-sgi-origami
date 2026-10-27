@@ -63,7 +63,13 @@
 #define TX_MCR 0x80
 #define TX_DELAY 0xc0
 #define RX_DATA_VALID 0x80
-#define RX_LOOPBACK_VALID 0xc0
+/*
+ * Received status: data-valid and modem-valid with the CTS and DCD levels.
+ * From the line, both are up, as the 16550 resets them; looped back with
+ * DTR, RTS and loopback set, RTS returns as CTS and OUT2, clear, as DCD.
+ */
+#define RX_FROM_LINE 0xf0
+#define RX_LOOPBACK_VALID 0xd0
 #define RX_RING_FULL(n) (1u << (8 * (n) + 1))
 #define RX_THRESHOLD(n) (1u << (8 * (n) + 2))
 #define RX_TIMER_EXPIRED(n) (1u << (8 * (n) + 3))
@@ -811,9 +817,9 @@ static void test_dma_rx_drain_and_threshold(void)
                   sizeof(entry));
     g_assert_cmpmem(entry, 3, input, sizeof(input));
     g_assert_cmphex(entry[3], ==, 0);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
-    g_assert_cmphex(entry[5], ==, RX_DATA_VALID);
-    g_assert_cmphex(entry[6], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
+    g_assert_cmphex(entry[5], ==, RX_FROM_LINE);
+    g_assert_cmphex(entry[6], ==, RX_FROM_LINE);
     g_assert_cmphex(entry[7], ==, 0);
     ioc4_wait_reg(qts, 0x08, RX_THRESHOLD(0), RX_THRESHOLD(0));
     reg_write(qts, 0x08, RX_THRESHOLD(0));
@@ -1078,7 +1084,7 @@ static void test_dma_loopback_full_ring_recovery(void)
     ioc4_set_pair_base_default(qts, 0, 0x400);
     /* The 16550's FIFO on, to hold what the full ring cannot take. */
     qtest_writeb(qts, UART(0) + 2, 0x01);
-    qtest_writeb(qts, UART(0) + 4, 0x10);
+    qtest_writeb(qts, UART(0) + 4, 0x13);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
     ioc4_fill_loopback_tx_ring(qts, expected_ring);
     ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
@@ -1220,8 +1226,8 @@ static void test_dma_rx_full_and_staged_recovery(void)
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x400) + 0x3f8,
                   entry, sizeof(entry));
     g_assert_cmpmem(entry, 4, incoming, 4);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
-    g_assert_cmphex(entry[7], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
+    g_assert_cmphex(entry[7], ==, RX_FROM_LINE);
     g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==, 0);
 
     ioc4_wait_rx_produce(qts, 8, log);
@@ -1229,7 +1235,7 @@ static void test_dma_rx_full_and_staged_recovery(void)
                   sizeof(entry));
     g_assert_cmphex(entry[0], ==, incoming[4]);
     g_assert_cmphex(entry[1], ==, 0);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
     g_assert_cmphex(entry[5], ==, 0);
     /* Full again, but nothing waits for room: the source stays down. */
     g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==, 0);
@@ -1245,7 +1251,7 @@ static void test_dma_rx_full_and_staged_recovery(void)
                   sizeof(entry));
     g_assert_cmphex(entry[0], ==, incoming[4]);
     g_assert_cmphex(entry[1], ==, 0);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
     g_assert_cmphex(entry[5], ==, 0);
     qtest_quit(qts);
     close(sv[0]);
@@ -1278,7 +1284,7 @@ static void test_dma_rx_timer_expiry(void)
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
                   sizeof(entry));
     g_assert_cmphex(entry[0], ==, input);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
     g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==,
                     RX_TIMER_EXPIRED(0));
     g_assert_cmphex(reg_read(qts, 0x08) & RX_THRESHOLD(0), ==,
@@ -1660,6 +1666,40 @@ static void test_uart_pass_through_is_a_level(void)
     qtest_quit(qts);
 }
 
+/*
+ * A character from the line carries modem-valid with the live CTS and DCD
+ * levels, as the IOC3 engine reports them; Linux checks DCD transitions on
+ * every modem-valid slot, so the levels must be the UART's.
+ */
+static void test_dma_rx_status_carries_modem_state(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    int sv[2];
+    QTestState *qts;
+    const uint8_t input = 0x6e;
+    uint8_t entry[8];
+    unsigned i;
+
+    ioc4_socketpair(sv);
+    qts = ioc4_start_dma(false, true, 0, sv[1], log);
+    close(sv[1]);
+    ioc4_set_pair_base_default(qts, 0, 0x1000);
+    reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN);
+    g_assert_cmpint(write(sv[0], &input, 1), ==, 1);
+    for (i = 0; i < 1000 && !(reg_read(qts, SDMA_RX_PRODUCE(0)) & 0xff8);
+         i++) {
+        reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_DRAIN);
+        g_usleep(1000);
+    }
+    ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
+                  sizeof(entry));
+    g_assert_cmphex(entry[0], ==, input);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
+    g_assert_cmphex(qtest_readb(qts, UART(0) + 6) & 0xb0, ==, 0xb0);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 static void test_dma_rx_timer_expiry_after_full_entry(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -1682,8 +1722,8 @@ static void test_dma_rx_timer_expiry_after_full_entry(void)
     ioc4_dma_read(qts, ioc4_rx_ring_offset(0, 0x1000), entry,
                   sizeof(entry));
     g_assert_cmpmem(entry, sizeof(input), input, sizeof(input));
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
-    g_assert_cmphex(entry[7], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
+    g_assert_cmphex(entry[7], ==, RX_FROM_LINE);
 
     qtest_clock_step(qts, 124999);
     g_assert_cmphex(reg_read(qts, 0x08) & RX_TIMER_EXPIRED(0), ==, 0);
@@ -3040,7 +3080,7 @@ static void test_dma_active_state_migration(void)
                   sizeof(entry));
     g_assert_cmphex(entry[0], ==, queued_input);
     g_assert_cmphex(entry[1], ==, 0);
-    g_assert_cmphex(entry[4], ==, RX_DATA_VALID);
+    g_assert_cmphex(entry[4], ==, RX_FROM_LINE);
     g_assert_cmphex(entry[5], ==, 0);
     g_assert_true(qtest_get_irq(to, 0));
 
@@ -3239,6 +3279,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/dma-rx-full-staged-recovery",
                    test_dma_rx_full_and_staged_recovery);
     qtest_add_func("/sgi-ioc4/dma-rx-timer-expiry", test_dma_rx_timer_expiry);
+    qtest_add_func("/sgi-ioc4/dma-rx-status-carries-modem-state",
+                   test_dma_rx_status_carries_modem_state);
     qtest_add_func("/sgi-ioc4/uart-pass-through-is-a-level",
                    test_uart_pass_through_is_a_level);
     qtest_add_func("/sgi-ioc4/dma-zero-reload-expires-at-once",
