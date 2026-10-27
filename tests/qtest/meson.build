@@ -458,6 +458,7 @@ sgi_bridge_card_qtests = \
   (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
   (config_all_devices.has_key('CONFIG_QLOGIC_ISP2200_PCI') ?
     ['qlogic-isp2200-migration-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_DBRICK') ? ['sgi-dbrick-test'] : []) + \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \

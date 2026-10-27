@@ -2612,6 +2612,8 @@ typedef struct LoopConfig {
     unsigned ndisks;
     /* Unplugged drives "spare0".. for device_add. */
     unsigned spares;
+    /* Appended after the disks, which it may name as port0... */
+    const char *extra;
 } LoopConfig;
 
 typedef struct LoopTest {
@@ -2683,6 +2685,9 @@ static void *loop_test_setup(GString *cmd_line, void *arg)
                                " -drive id=spare%u,if=none,format=raw,"
                                "file=null-co://,file.read-zeroes=on", i);
     }
+    if (test->config->extra) {
+        g_string_append_printf(cmd_line, " %s", test->config->extra);
+    }
     g_test_queue_destroy(loop_test_destroy, test);
     return test;
 }
@@ -2719,6 +2724,53 @@ static const LoopDisk low_disks[] = {
 static const LoopConfig low_config = {
     .disks = low_disks,
     .ndisks = ARRAY_SIZE(low_disks),
+};
+
+/*
+ * A D-brick with disks in bays 1/3, 4/3 and 2/1. The loop IDs and names
+ * are the disks' own, chosen by whoever fits them: which loop ID a bay
+ * gets on a real D-brick is unknown.
+ */
+static const LoopDisk dbrick_disks[] = {
+    { 1, 0, WWN_PORT(0x13), WWN_NODE(0x13), "BAY13", LOOP_ZEROES },
+    { 2, 0, WWN_PORT(0x43), WWN_NODE(0x43), "BAY43", LOOP_ZEROES },
+    { 9, 0, WWN_PORT(0x21), WWN_NODE(0x21), "BAY21", LOOP_ZEROES },
+};
+
+static const LoopConfig dbrick_config = {
+    .disks = dbrick_disks,
+    .ndisks = ARRAY_SIZE(dbrick_disks),
+    .extra = "-device sgi-dbrick,id=dbrick0,bay1-3=port0,bay4-3=port1,"
+             "bay2-1=port2",
+};
+
+/*
+ * A D-brick with all twelve bays fitted, at loop IDs 1 to 12 in bay order.
+ * The IDs are the disks' own, as above.
+ */
+static const LoopDisk dbrick_full_disks[] = {
+    { 1, 0, WWN_PORT(0x11), WWN_NODE(0x11), "BAY11", LOOP_ZEROES },
+    { 2, 0, WWN_PORT(0x12), WWN_NODE(0x12), "BAY12", LOOP_ZEROES },
+    { 3, 0, WWN_PORT(0x13), WWN_NODE(0x13), "BAY13", LOOP_ZEROES },
+    { 4, 0, WWN_PORT(0x21), WWN_NODE(0x21), "BAY21", LOOP_ZEROES },
+    { 5, 0, WWN_PORT(0x22), WWN_NODE(0x22), "BAY22", LOOP_ZEROES },
+    { 6, 0, WWN_PORT(0x23), WWN_NODE(0x23), "BAY23", LOOP_ZEROES },
+    { 7, 0, WWN_PORT(0x31), WWN_NODE(0x31), "BAY31", LOOP_ZEROES },
+    { 8, 0, WWN_PORT(0x32), WWN_NODE(0x32), "BAY32", LOOP_ZEROES },
+    { 9, 0, WWN_PORT(0x33), WWN_NODE(0x33), "BAY33", LOOP_ZEROES },
+    { 10, 0, WWN_PORT(0x41), WWN_NODE(0x41), "BAY41", LOOP_ZEROES },
+    { 11, 0, WWN_PORT(0x42), WWN_NODE(0x42), "BAY42", LOOP_ZEROES },
+    { 12, 0, WWN_PORT(0x43), WWN_NODE(0x43), "BAY43", LOOP_ZEROES },
+};
+
+static const LoopConfig dbrick_full_config = {
+    .disks = dbrick_full_disks,
+    .ndisks = ARRAY_SIZE(dbrick_full_disks),
+    .extra = "-device sgi-dbrick,id=dbrick0,"
+             "bay1-1=port0,bay1-2=port1,bay1-3=port2,"
+             "bay2-1=port3,bay2-2=port4,bay2-3=port5,"
+             "bay3-1=port6,bay3-2=port7,bay3-3=port8,"
+             "bay4-1=port9,bay4-2=port10,bay4-3=port11",
 };
 
 static uint16_t isp_fw_state(Isp *t)
@@ -3527,6 +3579,102 @@ static void test_scsi_unavailable(void *obj, void *data,
         isp_publish(&t, e);
         g_assert_cmphex(rd(&t, REG_REQUEST), ==, t.rq_next);
         isp_expect_no_event(&t);
+    }
+    isp_close(&t);
+}
+
+static char *qom_get_link(QTestState *qts, const char *path,
+                          const char *property)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                           "{ 'path': %s, 'property': %s } }", path,
+                           property);
+    char *value = g_strdup(qdict_get_str(rsp, "return"));
+
+    qobject_unref(rsp);
+    return value;
+}
+
+/*
+ * With a D-brick on the loop, each occupied bay is one port at its disk's
+ * loop ID and an empty bay is no port. The enclosure adds no port of its
+ * own: an enclosure-services request, here RECEIVE DIAGNOSTIC RESULTS for
+ * the configuration page, sent to a further LUN of a bottom-corner disk
+ * finds no logical unit there.
+ */
+static void test_dbrick_loop(void *obj, void *data, QGuestAllocator *alloc)
+{
+    static const char *const bays[][2] = {
+        { "bay1-3", "/machine/peripheral/port0" },
+        { "bay4-3", "/machine/peripheral/port1" },
+        { "bay2-1", "/machine/peripheral/port2" },
+        { "bay1-1", "" },
+        { "bay3-2", "" },
+    };
+    static const uint8_t cdb_diag[6] = { 0x1c, 0x01, 0x01, 0x01, 0x00 };
+    uint64_t buf = guest_alloc(alloc, 256);
+    uint8_t cdb[6], inquiry[36];
+    ScsiResult r;
+    unsigned i;
+    Isp t;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    assert_id_list(&t, "e8:1 e4:2 d6:9");
+    for (i = 0; i < ARRAY_SIZE(bays); i++) {
+        g_autofree char *disk = qom_get_link(t.qts,
+                                             "/machine/peripheral/dbrick0",
+                                             bays[i][0]);
+
+        g_assert_cmpstr(disk, ==, bays[i][1]);
+    }
+
+    isp_clear_unit_attention(&t, &dbrick_config);
+    for (i = 0; i < ARRAY_SIZE(dbrick_disks); i++) {
+        cdb_inquiry(cdb, false, 0, sizeof(inquiry));
+        qtest_memset(t.qts, buf, 0xa5, sizeof(inquiry));
+        isp_scsi(&t, 0x5100 + i, dbrick_disks[i].loop_id, 0, cdb, 6, 0x20,
+                 buf, sizeof(inquiry), 0, &r);
+        g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+        g_assert_cmphex(r.scsi_status & 0xff, ==, 0);
+        qtest_memread(t.qts, buf, inquiry, sizeof(inquiry));
+        /* A direct-access disk, not an enclosure-services device. */
+        g_assert_cmphex(inquiry[0], ==, 0x00);
+    }
+
+    isp_scsi(&t, 0x5200, 1, 1, cdb_diag, sizeof(cdb_diag), 0x20, buf, 256,
+             0, &r);
+    g_assert_cmphex(r.completion, ==, COMPLETION_COMPLETE);
+    g_assert_cmphex(r.scsi_status & 0xff, ==, SCSI_CHECK_CONDITION);
+    g_assert_cmphex(r.sense[2] & 0x0f, ==, 0x05);
+    g_assert_cmphex(r.sense[12], ==, 0x25);
+    isp_close(&t);
+}
+
+/* Every one of twelve fitted bays is on the one loop's ID list. */
+static void test_dbrick_full_loop(void *obj, void *data,
+                                  QGuestAllocator *alloc)
+{
+    static const char *const bays[] = {
+        "bay1-1", "bay1-2", "bay1-3", "bay2-1", "bay2-2", "bay2-3",
+        "bay3-1", "bay3-2", "bay3-3", "bay4-1", "bay4-2", "bay4-3",
+    };
+    Isp t;
+    unsigned i;
+
+    isp_open(&t, obj, alloc);
+    isp_loop_up(&t, ICB_OPT_PORT_DB);
+    /* Loop IDs 1 to 12 in "alpa:loop" pairs. */
+    assert_id_list(&t, "e8:1 e4:2 e2:3 e1:4 e0:5 dc:6 da:7 d9:8 d6:9 "
+                   "d5:10 d4:11 d3:12");
+    for (i = 0; i < ARRAY_SIZE(bays); i++) {
+        g_autofree char *want = g_strdup_printf("/machine/peripheral/port%u",
+                                                i);
+        g_autofree char *disk = qom_get_link(t.qts,
+                                             "/machine/peripheral/dbrick0",
+                                             bays[i]);
+
+        g_assert_cmpstr(disk, ==, want);
     }
     isp_close(&t);
 }
@@ -4547,6 +4695,14 @@ static void isp2200_register_nodes(void)
         .before = loop_test_setup,
         .arg = (void *)&slow_config,
     };
+    QOSGraphTestOptions dbrick_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&dbrick_config,
+    };
+    QOSGraphTestOptions dbrick_full_opts = {
+        .before = loop_test_setup,
+        .arg = (void *)&dbrick_full_config,
+    };
     QOSGraphTestOptions low_opts = {
         .before = loop_test_setup,
         .arg = (void *)&low_config,
@@ -4693,6 +4849,10 @@ static void isp2200_register_nodes(void)
     qos_add_test("port-name-list-retains-m7", "qlogic-isp2200",
                  test_port_name_list_retains_m7, &loop_opts);
     qos_add_test("retry-count", "qlogic-isp2200", test_retry_count, NULL);
+    qos_add_test("dbrick-loop", "qlogic-isp2200", test_dbrick_loop,
+                 &dbrick_opts);
+    qos_add_test("dbrick-full-loop", "qlogic-isp2200", test_dbrick_full_loop,
+                 &dbrick_full_opts);
     qos_add_test("refused-loop-commands", "qlogic-isp2200",
                  test_refused_loop_commands, &loop_opts);
 }
