@@ -109,10 +109,11 @@ static unsigned int bcm_slot = BCM_WIDE_SLOT;
 #define BCM_RXBD_IDX_LEN        0x08    /* index (31:16), length (15:0) */
 #define BCM_RXBD_TYPE_FLAGS     0x0c    /* type (31:16), flags (15:0) */
 #define BCM_RXBD_CSUM           0x10    /* IP sum 31:16; TCP/UDP sum 15:0 */
-#define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
-#define BCM_RXBDFLAG_IP_CKSUM   0x0002u
-#define BCM_RXBDFLAG_END        0x0004u
-#define BCM_RXBDFLAG_JUMBO_RING 0x0020u
+#define BCM_RXBDFLAG_IP_CKSUM_OK       0x1000u
+#define BCM_RXBDFLAG_TCP_UDP_CKSUM_OK  0x2000u
+#define BCM_RXBDFLAG_TCP               0x4000u
+#define BCM_RXBDFLAG_END               0x0004u
+#define BCM_RXBDFLAG_JUMBO_RING        0x0020u
 #define BCM_ETH_FCS_LEN         4
 
 /* Status-block idx[0]: rx_producer at byte offset 16 (tg3 layout). */
@@ -390,8 +391,8 @@ static void test_receive_descriptor_big_endian(const void *data)
      * the type (high) half stays clear. A byte-swapped word fails both.
      */
     g_assert_cmphex(type_flags & 0xffff, ==,
-                    BCM_RXBDFLAG_END | BCM_RXBDFLAG_IP_CKSUM |
-                    BCM_RXBDFLAG_TCP_UDP_CKSUM);
+                    BCM_RXBDFLAG_END | BCM_RXBDFLAG_IP_CKSUM_OK |
+                    BCM_RXBDFLAG_TCP_UDP_CKSUM_OK | BCM_RXBDFLAG_TCP);
     g_assert_cmphex(type_flags >> 16, ==, 0);
     /*
      * The IP sum the card computed sits in the checksum word's high half; a
