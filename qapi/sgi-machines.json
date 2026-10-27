@@ -7,22 +7,23 @@
 # SGI machine catalogue
 # *********************
 #
-# The record types of the compiled machine catalogue (`hw/mips/sgi/
-# sgi-machines.json`, embedded into the emulator at build time): one
-# `topologies` entry per configuration the SGI Scalable Node family
-# builder can construct, and one `offerings` entry per accepted CPU
-# population a launcher may select.  A `topologies` record carries
-# only what a machine description is responsible for:
-# which devices are present, where each plugs in, and a fitted part's
-# own identity, revision or size.  A fact the same on every machine
-# fitting one chip -- a PCI function's position, an I2C address, a
-# crossbar's manufacturer id, a Router's port count, a flash's named
-# views, an XIO attachment's decode mask -- is a device fact
-# instead, fixed in the device model that already owns it.  An
-# `offerings` record carries what a launcher may choose, unfiltered by
-# that rule: the accepted CPU and memory populations, the firmware
-# images and writable stores a machine needs, storage controllers,
-# and console and network placement.
+# The record types of the compiled machine catalogue
+# (``hw/mips/sgi/sgi-machines.json``, embedded into the emulator at
+# build time): one
+# ``topologies`` entry per configuration the SGI Scalable Node family
+# builder can construct, and one ``offerings`` entry per accepted CPU
+# population a launcher may select.  A ``topologies`` record carries
+# only what a machine description is responsible for: which devices
+# are present, where each plugs in, and a fitted part's own identity,
+# revision or size.  A fact the same on every machine fitting one chip
+# -- a PCI function's position, an I2C address, a crossbar's
+# manufacturer id, a Router's port count, a flash's named views, an
+# XIO attachment's decode mask -- is a device fact instead, fixed in
+# the device model that already owns it.  An ``offerings`` record
+# carries what a launcher may choose, unfiltered by that rule: the
+# accepted CPU and memory populations, the firmware images and
+# writable stores a machine needs, storage controllers, and console
+# and network placement.
 ##
 
 ##
@@ -87,11 +88,11 @@
 ##
 # @SGIModelProcessorOption:
 #
-# One processor module a launch may select with `processor=`, in place
-# of the topology's default part.
+# One processor module a launch may select with ``processor=``, in
+# place of the topology's default part.
 #
 # @assembly: the processor every fitted slot then holds; its @id is
-#     the `processor=` value
+#     the ``processor=`` value
 #
 # @accepted-memory-mib: the per-node memory sizes accepted with it,
 #     which replace each node's @accepted-memory-mib
@@ -143,8 +144,8 @@
 #
 # A node board's boot flash.  Which named execution or maintenance
 # views the flash controller answers, and their addresses, are fixed
-# by the node ASIC and are not carried here; the node device (`sn0.c`
-# for HUB, `sn1-node.c` for BEDROCK) names them itself.
+# by the node ASIC and are not carried here; the node device
+# (``sn0.c`` for HUB, ``sn1-node.c`` for BEDROCK) names them itself.
 #
 # @kind: the fitted chip
 #
@@ -1003,7 +1004,7 @@
 #
 # Which base I/O board design a board record fits: the functions each
 # preset's Bridge carries are a design fact of the board and are not
-# carried here (`sgi-baseio`'s own preset table does).
+# carried here (``sgi-baseio``'s own preset table does).
 #
 # @ip29-io: Origin 200's integrated IP29 System Board I/O
 #
@@ -1391,8 +1392,8 @@
 ##
 # @SGIModelCpuPopulation:
 #
-# One accepted `-smp`/`-numa` population: processors populated, per
-# node, in node order.
+# One accepted ``-smp``/``-numa`` population: processors populated,
+# per node, in node order.
 #
 # @cpus-per-node: processor count for each node in the topology's own
 #     @nodes list, in order
@@ -1446,7 +1447,7 @@
 # One count of node boards a chassis accepts, fitted in the order SGI
 # fills its node slots, and what that count decides: which Routers
 # and cables are fitted, which XIO slots work and which node controls
-# each, and which processor populations fit.  The `nodes` machine
+# each, and which processor populations fit.  The ``nodes`` machine
 # property selects a row by its node count.
 #
 # @nodes: positions in the topology's own @nodes list of the fitted
@@ -1462,7 +1463,7 @@
 # @xio-slots: every empty XIO position this row can use; a
 #     position not named here is refused to a board fitted at launch
 #
-# @supported-cpu-populations: every `-smp` population the builder
+# @supported-cpu-populations: every ``-smp`` population the builder
 #     accepts for this row, counting only its own fitted nodes, in
 #     @nodes order
 #
@@ -1589,7 +1590,7 @@
 ##
 # @SGIModelGraphicsProperty:
 #
-# One `-device` or `-M` property and its value.
+# One ``-device`` or ``-M`` property and its value.
 #
 # @name: the property
 #
@@ -1606,7 +1607,7 @@
 #
 # One value a setting offers.
 #
-# @value: the value, spelled as `-device` takes it (dg5-8)
+# @value: the value, spelled as ``-device`` takes it (dg5-8)
 #
 # @description: what it is, in words
 #
@@ -1632,8 +1633,8 @@
 # @values: the values offered at this slot; a setting with one value
 #     is still listed
 #
-# @default: the value a pipe takes when `-device` leaves the property
-#     unset; one of @values
+# @default: the value a pipe takes when ``-device`` leaves the
+#     property unset; one of @values
 #
 # @changeable: whether the value may change between boots of one
 #     machine
@@ -1653,7 +1654,7 @@
 # One product a slot offers.  Its @name and @description are the same
 # everywhere it appears.
 #
-# @product: the `product=` value
+# @product: the ``product=`` value
 #
 # @name: the product's name ("SI with texture")
 #
@@ -1689,7 +1690,7 @@
 #
 # @family: the chip set
 #
-# @device: the `-device` type that builds it
+# @device: the ``-device`` type that builds it
 #
 # @name: the family's name (IMPACT, VPro, InfiniteReality, PsiTech)
 #
@@ -1710,7 +1711,7 @@
 #
 # @family: the chip set
 #
-# @product: the `product=` value
+# @product: the ``product=`` value
 #
 # @settings: every setting the product has at the slot
 #
@@ -1750,7 +1751,7 @@
 # The conditions under which a slot exists.
 #
 # @min-nodes: the slot's Crossbow port belongs to a node board the
-#     machine fits only from this many nodes (`nodes=`)
+#     machine fits only from this many nodes (``nodes=``)
 #
 # Since: 11.2
 ##
@@ -1766,11 +1767,11 @@
 #
 # @description: where this is on the real machine, in words
 #
-# @placement: the `-device` properties that put a pipe here (slot=io4;
-#     bus=pci and addr=5)
+# @placement: the ``-device`` properties that put a pipe here
+#     (slot=io4; bus=pci and addr=5)
 #
 # @default: the pipe the machine fits here when no SGI graphics
-#     `-device` and no `-vga none` is given; at most one slot of a
+#     ``-device`` and no ``-vga none`` is given; at most one slot of a
 #     topology has one
 #
 # @changeable: whether the pipe in this slot may be added, removed or
@@ -1801,7 +1802,7 @@
 # Machine properties a launch sets whenever it fits a graphics pipe,
 # because the topology's own default for them does not suit one.
 #
-# @properties: each `-M` property and its value
+# @properties: each ``-M`` property and its value
 #
 # @reason: why, a phrase without a final full stop
 #
@@ -1814,7 +1815,7 @@
 ##
 # @SGIModelGraphics:
 #
-# The graphics pipes a topology takes.  Each pipe is a `-device` of
+# The graphics pipes a topology takes.  Each pipe is a ``-device`` of
 # its family's device type, and QEMU refuses one this record does not
 # offer.
 #
@@ -1822,15 +1823,16 @@
 #
 # @headless: whether a launcher offers this topology without
 #     graphics.  QEMU itself starts any topology with no pipe on
-#     `-vga none` or `-nodefaults` and never refuses one by this flag.
+#     ``-vga none`` or ``-nodefaults`` and never refuses one by this
+#     flag.
 #
 # @headless-refused: why a launcher does not offer it, present
 #     exactly when @headless is false
 #
 # @machine-properties: the machine properties a launch that fits any
-#     pipe adds to `-M`; absent when a pipe needs none.  QEMU does not
-#     add them itself: the machine's boards exist before any `-device`
-#     does.
+#     pipe adds to ``-M``; absent when a pipe needs none.  QEMU does
+#     not add them itself: the machine's boards exist before any
+#     ``-device`` does.
 #
 # @slots: every slot QEMU can put a pipe in
 #
@@ -1863,7 +1865,7 @@
 # @SGIModelIp53NormalSelection:
 #
 # The one resolved launch an IP53 runtime profile accepts without
-# `ip53-experimental=on`.
+# ``ip53-experimental=on``.
 #
 # @cpus: the -smp count the launch requests
 #
@@ -1918,7 +1920,7 @@
 #     topology selects once the IP53 runtime is authorized
 #
 # @normal-selection: the launch admitted without
-#     `ip53-experimental=on`; absent where every launch needs it
+#     ``ip53-experimental=on``; absent where every launch needs it
 #
 # @l1-irouter-compat: whether the node's L1 answers the
 #     router-compatible command set and reports a first port speed
@@ -1940,9 +1942,9 @@
 # One chassis a product ships in: its wiring with every node slot
 # fitted, and the counts of node boards it accepts.
 #
-# @name: catalogue name of this topology (`topology=` selects it)
+# @name: catalogue name of this topology (``topology=`` selects it)
 #
-# @product: which product this topology is a configuration of (`-M`
+# @product: which product this topology is a configuration of (``-M``
 #     value); not a device or wiring fact, but what a loaded catalogue
 #     needs to pick a product's default topology without a second,
 #     hand-authored table
@@ -2006,7 +2008,7 @@
 # @ip35-firmware: the product values for the IP35 flash configuration
 #     block; present exactly when the node boards are SN1
 #
-# @processor-options: the processor modules `processor=` may select,
+# @processor-options: the processor modules ``processor=`` may select,
 #     the nodes' own part first; absent where the topology offers no
 #     choice
 #
@@ -2016,10 +2018,10 @@
 # @ip53-runtime: how the topology runs as an IP53 runtime profile;
 #     absent where it is not one
 #
-# @machine-default: whether the `-M` machine of @product takes its
+# @machine-default: whether the ``-M`` machine of @product takes its
 #     description and its -smp and -m defaults from this topology.
 #     One topology of each product sets it, including a product that
-#     requires `topology=`; absent means false
+#     requires ``topology=``; absent means false
 #
 # Since: 11.2
 ##
@@ -2173,8 +2175,8 @@
 #
 # @controller-nvram: the configuration NVRAM a module system
 #     controller leaves after its first power-up: zero-filled apart
-#     from its block of the validity marker, the password `none`, its
-#     configuration byte and the module number
+#     from its block of the validity marker, the password ``none``,
+#     its configuration byte and the module number
 #
 # Since: 11.2
 ##
@@ -2193,9 +2195,10 @@
 # named @name and binds that node through the machine property of the
 # same name.
 #
-# @name: the store's name: `node<N>-flash`, `io<N>-flash`, `nvram<N>`,
-#     `nvram<N>-clock`, `ds1742-<board>-data`, `ds1742-<board>-clock`,
-#     `<module>-flash` or `module<N>-nvram`
+# @name: the store's name: ``node<N>-flash``, ``io<N>-flash``,
+#     ``nvram<N>``, ``nvram<N>-clock``, ``ds1742-<board>-data``,
+#     ``ds1742-<board>-clock``, ``<module>-flash`` or
+#     ``module<N>-nvram``
 #
 # @size: the store's exact size in bytes; a clock record may instead
 #     be larger
@@ -2227,12 +2230,13 @@
 #
 # @size: byte size of one instance, when documented
 #
-# @argument: the QEMU argument form this resource becomes.  `N` stands
-#     for an indexed instance; `BOARD` is an IO board's stable id.
-#     For `ds1742`, this describes the deprecated data backend; the
-#     paired clock reference backend is `sgi-ds1742-clock-BOARD`.  The
-#     offering's `ds1742-BOARD-data` and `ds1742-BOARD-clock`
-#     storage items back the same pair.
+# @argument: the QEMU argument form this resource becomes.  ``N``
+#     stands for an indexed instance; ``BOARD`` is an IO board's
+#     stable id.  For ``ds1742``, this describes the deprecated data
+#     backend; the paired clock reference backend is
+#     ``sgi-ds1742-clock-BOARD``.  The offering's
+#     ``ds1742-BOARD-data`` and ``ds1742-BOARD-clock`` storage items
+#     back the same pair.
 #
 # @part: fitted part when a resource needs part-specific backing
 #
@@ -2279,7 +2283,7 @@
 # NIC follows it without colliding.  A launcher may also name the
 # address on the NIC itself, through the offering's @nic-mac-option,
 # but QEMU refuses one that differs from the derived address.  A NIC
-# that is not derived takes the address its `-net nic` names; with
+# that is not derived takes the address its ``-net nic`` names; with
 # none, it gets SGI's 08:00:69 prefix followed by the tail of the
 # address QEMU generates in creation order, which can collide with an
 # address another NIC was given, so a launcher should name a unique
@@ -2288,8 +2292,8 @@
 # @derived: whether the address follows the machine's identity
 #     address
 #
-# @machine-property: the `-M` property that sets the identity address
-#     (mac); present when @derived
+# @machine-property: the ``-M`` property that sets the identity
+#     address (mac); present when @derived
 #
 # @offset: added to the identity address to give this NIC's address;
 #     0 for the first onboard Ethernet; present when @derived
@@ -2316,9 +2320,9 @@
 # @SGIModelNetworkOffering:
 #
 # One onboard Ethernet an offering's I/O boards carry, in the order
-# QEMU builds them.  A launcher binds a backend to it with
-# `-netdev <backend>,id=<ID> -net nic,model=<nic-model>,netdev=<ID>`;
-# a `-net nic` naming no model binds the next unbound onboard
+# QEMU builds them.  A launcher binds a backend to it with ``-netdev
+# <backend>,id=<ID> -net nic,model=<nic-model>,netdev=<ID>``; a
+# ``-net nic`` naming no model binds the next unbound onboard
 # Ethernet in this order.
 #
 # @kind: adapter kind: ioc3-ethernet (an IOC3's Fast Ethernet) or
@@ -2330,13 +2334,13 @@
 #     networks, which equals @index while every network shares one
 #     @nic-model
 #
-# @nic-model: the `model=` value that binds a `-net nic` to this
+# @nic-model: the ``model=`` value that binds a ``-net nic`` to this
 #     adapter
 #
-# @nic-mac-option: the `-net nic` option naming an address
-#     (macaddr; the `-nic` form spells it mac); for a derived address
-#     optional, and refused unless it equals the derived address in
-#     @mac
+# @nic-mac-option: the ``-net nic`` option naming an address
+#     (macaddr; the ``-nic`` form spells it mac); for a derived
+#     address optional, and refused unless it equals the derived
+#     address in @mac
 #
 # @index: this adapter's position among the offering's adapters of
 #     the same @nic-model
@@ -2413,9 +2417,9 @@
 #
 # Where a launch sets an override.
 #
-# @machine: a `-M` property of the offering's machine
+# @machine: a ``-M`` property of the offering's machine
 #
-# @cpu: a `-cpu` property of the offering's processor part
+# @cpu: a ``-cpu`` property of the offering's processor part
 #
 # Since: 11.2
 ##
@@ -2477,31 +2481,31 @@
 # One accepted configuration a launcher may select: a product, a
 # topology and one of its accepted CPU populations, with every fact a
 # launcher needs to build the QEMU command line for it.  Unlike a
-# `topologies` record, an offering is not limited to what a machine
+# ``topologies`` record, an offering is not limited to what a machine
 # description owns:
 # it is the catalogue's launcher-facing half, and carries what a
 # launcher may choose rather than only what QEMU's own builder needs.
 #
-# @product: `-M` value this offering is for
+# @product: ``-M`` value this offering is for
 #
-# @topology: `topology=` value this offering is for
+# @topology: ``topology=`` value this offering is for
 #
-# @default-topology: the topology @product builds with no `topology=`,
-#     when one exists; absence means the launcher must require an
-#     explicit topology selection.
+# @default-topology: the topology @product builds with no
+#     ``topology=``, when one exists; absence means the launcher must
+#     require an explicit topology selection.
 #
 # @display-name: human-readable name of this configuration
 #
 # @nodes: node count of this configuration
 #
-# @machine-options: the `-M` value that selects exactly this
+# @machine-options: the ``-M`` value that selects exactly this
 #     configuration's product, topology and node count
 #
 # @cpus-per-node: this offering's accepted population, per node
 #
 # @dimms-per-node: this offering's fitted DIMM count, per node
 #
-# @smp: total processor count (`-smp` value)
+# @smp: total processor count (``-smp`` value)
 #
 # @memory-per-node-mib: accepted per-node memory sizes
 #
@@ -2550,7 +2554,7 @@
 #
 # @install-media: install media kinds this offering supports
 #
-# @default-cpu-model: default `-cpu` value for this offering
+# @default-cpu-model: default ``-cpu`` value for this offering
 #
 # @synthesized-firmware-toggle: whether this product's PROM accepts a
 #     debug toggle for a synthesized (non-stock) firmware image
@@ -2603,7 +2607,7 @@
 # backs @query-sgi-machines, the running emulator's own copy for a
 # package build to read, and external launch tooling.
 #
-# @schema: catalogue schema name (`sgi-machines`)
+# @schema: catalogue schema name (``sgi-machines``)
 #
 # @version: catalogue schema version
 #
